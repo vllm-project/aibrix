@@ -180,7 +180,7 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList, 
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods for routing")
 	}
-	if len(readyPods) == 1 {
+	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 {
 		ctx.SetTargetPod(readyPods[0])
 		return ctx.TargetAddress(), nil
 	}
@@ -190,6 +190,11 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList, 
 
 // validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true
 func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) error {
+	// Skip validation in standalone mode (no gateway client)
+	if s.gatewayClient == nil {
+		return nil
+	}
+
 	errMsg := []string{}
 	name := fmt.Sprintf("%s-router", model)
 	httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(ctx, name, metav1.GetOptions{})

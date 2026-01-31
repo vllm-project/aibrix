@@ -146,6 +146,11 @@ if TYPE_CHECKING:
     # EIC Config
     AIBRIX_KV_CACHE_OL_EIC_CONFIG_FILE: str = ""
 
+    # SHFS (Shared File System) Env Vars
+    AIBRIX_KV_CACHE_OL_SHFS_ROOT: str = os.path.expanduser(
+        os.path.join(os.path.expanduser("~"), ".kv_cache_ol", "shfs")
+    )
+
 # The begin-* and end* here are used by the documentation generator
 # to extract the used env vars.
 
@@ -426,6 +431,13 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     # ================== EIC Env Vars ==================
     "AIBRIX_KV_CACHE_OL_EIC_CONFIG_FILE": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_EIC_CONFIG_FILE", "").strip()
+    ),
+    # ================== SHFS Env Vars ==================
+    "AIBRIX_KV_CACHE_OL_SHFS_ROOT": lambda: os.path.expanduser(
+        os.getenv(
+            "AIBRIX_KV_CACHE_OL_SHFS_ROOT",
+            os.path.join(os.path.expanduser("~"), ".kv_cache_ol", "shfs"),
+        )
     ),
 }
 

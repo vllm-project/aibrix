@@ -193,6 +193,7 @@ func TestBuildURLs(t *testing.T) {
 		podIP        string
 		config       config.RuntimeConfig
 		useSidecar   bool
+		engineType   string
 		expectedURLs URLConfig
 		expectError  bool
 	}{
@@ -204,11 +205,12 @@ func TestBuildURLs(t *testing.T) {
 				EnableRuntimeSidecar: false,
 			},
 			useSidecar: false,
+			engineType: VLLMEngine,
 			expectedURLs: URLConfig{
 				BaseURL:          fmt.Sprintf("http://%s:%s", "localhost", DefaultDebugInferenceEnginePort),
-				ListModelsURL:    fmt.Sprintf("http://%s:%s%s", "localhost", DefaultDebugInferenceEnginePort, ModelListPath),
-				LoadAdapterURL:   fmt.Sprintf("http://%s:%s%s", "localhost", DefaultDebugInferenceEnginePort, LoadLoraAdapterPath),
-				UnloadAdapterURL: fmt.Sprintf("http://%s:%s%s", "localhost", DefaultDebugInferenceEnginePort, UnloadLoraAdapterPath),
+				ListModelsURL:    fmt.Sprintf("http://%s:%s%s", "localhost", DefaultDebugInferenceEnginePort, ModelListVLLMAPIPath),
+				LoadAdapterURL:   fmt.Sprintf("http://%s:%s%s", "localhost", DefaultDebugInferenceEnginePort, LoadLoraAdapterVLLMAPIPath),
+				UnloadAdapterURL: fmt.Sprintf("http://%s:%s%s", "localhost", DefaultDebugInferenceEnginePort, UnloadLoraAdapterVLLMAPIPath),
 			},
 			expectError: false,
 		},
@@ -220,6 +222,7 @@ func TestBuildURLs(t *testing.T) {
 				EnableRuntimeSidecar: true,
 			},
 			useSidecar: true,
+			engineType: VLLMEngine,
 			expectedURLs: URLConfig{
 				BaseURL:          fmt.Sprintf("http://%s:%s", "192.168.1.2", DefaultRuntimeAPIPort),
 				ListModelsURL:    fmt.Sprintf("http://%s:%s%s", "192.168.1.2", DefaultRuntimeAPIPort, ModelListRuntimeAPIPath),
@@ -236,11 +239,46 @@ func TestBuildURLs(t *testing.T) {
 				EnableRuntimeSidecar: false,
 			},
 			useSidecar: false,
+			engineType: "",
 			expectedURLs: URLConfig{
 				BaseURL:          fmt.Sprintf("http://%s:%s", "192.168.1.3", DefaultInferenceEnginePort),
-				ListModelsURL:    fmt.Sprintf("http://%s:%s%s", "192.168.1.3", DefaultInferenceEnginePort, ModelListPath),
-				LoadAdapterURL:   fmt.Sprintf("http://%s:%s%s", "192.168.1.3", DefaultInferenceEnginePort, LoadLoraAdapterPath),
-				UnloadAdapterURL: fmt.Sprintf("http://%s:%s%s", "192.168.1.3", DefaultInferenceEnginePort, UnloadLoraAdapterPath),
+				ListModelsURL:    fmt.Sprintf("http://%s:%s%s", "192.168.1.3", DefaultInferenceEnginePort, ModelListVLLMAPIPath),
+				LoadAdapterURL:   fmt.Sprintf("http://%s:%s%s", "192.168.1.3", DefaultInferenceEnginePort, LoadLoraAdapterVLLMAPIPath),
+				UnloadAdapterURL: fmt.Sprintf("http://%s:%s%s", "192.168.1.3", DefaultInferenceEnginePort, UnloadLoraAdapterVLLMAPIPath),
+			},
+			expectError: false,
+		},
+		{
+			name:  "VLLM engine with useSidecar false",
+			podIP: "192.168.1.4",
+			config: config.RuntimeConfig{
+				DebugMode:            false,
+				EnableRuntimeSidecar: false,
+			},
+			useSidecar: false,
+			engineType: VLLMEngine,
+			expectedURLs: URLConfig{
+				BaseURL:          fmt.Sprintf("http://%s:%s", "192.168.1.4", DefaultInferenceEnginePort),
+				ListModelsURL:    fmt.Sprintf("http://%s:%s%s", "192.168.1.4", DefaultInferenceEnginePort, ModelListVLLMAPIPath),
+				LoadAdapterURL:   fmt.Sprintf("http://%s:%s%s", "192.168.1.4", DefaultInferenceEnginePort, LoadLoraAdapterVLLMAPIPath),
+				UnloadAdapterURL: fmt.Sprintf("http://%s:%s%s", "192.168.1.4", DefaultInferenceEnginePort, UnloadLoraAdapterVLLMAPIPath),
+			},
+			expectError: false,
+		},
+		{
+			name:  "SGLang engine with useSidecar false",
+			podIP: "192.168.1.5",
+			config: config.RuntimeConfig{
+				DebugMode:            false,
+				EnableRuntimeSidecar: false,
+			},
+			useSidecar: false,
+			engineType: SGLangEngine,
+			expectedURLs: URLConfig{
+				BaseURL:          fmt.Sprintf("http://%s:%s", "192.168.1.5", DefaultInferenceEnginePort),
+				ListModelsURL:    fmt.Sprintf("http://%s:%s%s", "192.168.1.5", DefaultInferenceEnginePort, ModelListSGLangAPIPath),
+				LoadAdapterURL:   fmt.Sprintf("http://%s:%s%s", "192.168.1.5", DefaultInferenceEnginePort, LoadLoraAdapterSGLangAPIPath),
+				UnloadAdapterURL: fmt.Sprintf("http://%s:%s%s", "192.168.1.5", DefaultInferenceEnginePort, UnloadLoraAdapterSGLangAPIPath),
 			},
 			expectError: false,
 		},
@@ -248,7 +286,7 @@ func TestBuildURLs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			urls := BuildURLs(tt.podIP, tt.config, tt.useSidecar)
+			urls := BuildURLs(tt.podIP, tt.config, tt.useSidecar, tt.engineType)
 
 			if tt.expectError {
 				t.Fatalf("Expected error but got none")

@@ -17,10 +17,10 @@ limitations under the License.
 package gateway
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go"
@@ -902,7 +902,7 @@ func TestGenerateErrorMessageWithHTTPCode(t *testing.T) {
 
 			// Parse JSON to verify structure
 			var errResponse map[string]interface{}
-			err := json.Unmarshal([]byte(result), &errResponse)
+			err := sonic.Unmarshal([]byte(result), &errResponse)
 			assert.NoError(t, err, "Result should be valid JSON")
 
 			errObj, ok := errResponse["error"].(map[string]interface{})
@@ -982,7 +982,7 @@ func TestBuildErrorResponse(t *testing.T) {
 			// Verify error body is valid JSON with correct structure
 			body := resp.GetImmediateResponse().GetBody()
 			var errResponse map[string]interface{}
-			err := json.Unmarshal([]byte(body), &errResponse)
+			err := sonic.Unmarshal([]byte(body), &errResponse)
 			assert.NoError(t, err, "Response body should be valid JSON")
 
 			errObj, ok := errResponse["error"].(map[string]interface{})
@@ -1020,5 +1020,110 @@ func TestBuildErrorResponse(t *testing.T) {
 				assert.Nil(t, errObj["param"], "Param should be null")
 			}
 		})
+	}
+}
+
+func Test_ValidateRequestBody_Classify(t *testing.T) {
+	testCases := []struct {
+		message     string
+		requestPath string
+		requestBody []byte
+		model       string
+		messages    string
+		stream      bool
+		user        utils.User
+		statusCode  envoyTypePb.StatusCode
+	}{
+		{
+			message:     "/v1/classify valid string input",
+			requestPath: "/v1/classify",
+			requestBody: []byte(`{"model": "classifier-model", "input": "text to classify"}`),
+			model:       "classifier-model",
+			messages:    "text to classify",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/classify valid array input",
+			requestPath: "/v1/classify",
+			requestBody: []byte(`{"model": "classifier-model", "input": ["text1", "text2"]}`),
+			model:       "classifier-model",
+			messages:    "text1 text2",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/classify missing model",
+			requestPath: "/v1/classify",
+			requestBody: []byte(`{"input": "text to classify"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/classify empty model",
+			requestPath: "/v1/classify",
+			requestBody: []byte(`{"model": "", "input": "text to classify"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/classify missing input",
+			requestPath: "/v1/classify",
+			requestBody: []byte(`{"model": "classifier-model"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/classify null input",
+			requestPath: "/v1/classify",
+			requestBody: []byte(`{"model": "classifier-model", "input": null}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/classify empty string input",
+			requestPath: "/v1/classify",
+			requestBody: []byte(`{"model": "classifier-model", "input": ""}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/classify empty array input",
+			requestPath: "/v1/classify",
+			requestBody: []byte(`{"model": "classifier-model", "input": []}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/classify invalid input type (number)",
+			requestPath: "/v1/classify",
+			requestBody: []byte(`{"model": "classifier-model", "input": 123}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/classify invalid input type (object)",
+			requestPath: "/v1/classify",
+			requestBody: []byte(`{"model": "classifier-model", "input": {"key": "value"}}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/classify invalid json",
+			requestPath: "/v1/classify",
+			requestBody: []byte(`{"model": "classifier-model", "input": "text"`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		t.Log(tt.message)
+		if tt.statusCode == 200 {
+			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
+		}
+		if tt.statusCode != 200 {
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().Status.Code, tt.message)
+		}
+
+		if tt.model != "" {
+			assert.Equal(t, tt.model, model, tt.message)
+		}
+		if tt.messages != "" {
+			assert.Equal(t, tt.messages, messages, tt.message)
+		}
+		if tt.stream {
+			assert.Equal(t, tt.stream, stream, tt.message)
+		}
 	}
 }

@@ -32,6 +32,7 @@ import (
 
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/cache/discovery"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
@@ -42,16 +43,26 @@ import (
 )
 
 var (
-	grpcAddr    string
-	metricsAddr string
+	grpcAddr        string
+	metricsAddr     string
+	standalone      bool
+	endpointsConfig string
 )
 
 func main() {
 	flag.StringVar(&grpcAddr, "grpc-bind-address", ":50052", "The address the gRPC server binds to.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
+	flag.BoolVar(&standalone, "standalone", false, "Run in standalone mode without Kubernetes.")
+	flag.StringVar(&endpointsConfig, "endpoints-config", "",
+		"Path to endpoints config file (required in standalone mode).")
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
 	flag.Parse()
+
+	// Validate standalone mode flags
+	if standalone && endpointsConfig == "" {
+		klog.Fatal("--endpoints-config is required when running in standalone mode")
+	}
 
 	redisClient := utils.GetRedisClient()
 	defer func() {
@@ -62,24 +73,43 @@ func main() {
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
+
 	var config *rest.Config
-	var err error
+	var k8sClient kubernetes.Interface
+	var gatewayK8sClient versioned.Interface
+	var discoveryProvider discovery.Provider
 
-	// ref: https://github.com/kubernetes-sigs/controller-runtime/issues/878#issuecomment-1002204308
-	kubeConfig := flag.Lookup("kubeconfig").Value.String()
-	if kubeConfig == "" {
-		klog.Info("using in-cluster configuration")
-		config, err = rest.InClusterConfig()
+	if standalone {
+		// Standalone mode: use file-based discovery
+		klog.Info("Running in standalone mode")
+		discoveryProvider = discovery.NewFileProvider(endpointsConfig)
 	} else {
-		klog.Infof("using configuration from '%s'", kubeConfig)
-		config, err = clientcmd.BuildConfigFromFlags("", kubeConfig)
+		// Kubernetes mode: load config and create clients
+		var err error
+		kubeConfig := flag.Lookup("kubeconfig").Value.String()
+		if kubeConfig == "" {
+			klog.Info("using in-cluster configuration")
+			config, err = rest.InClusterConfig()
+		} else {
+			klog.Infof("using configuration from '%s'", kubeConfig)
+			config, err = clientcmd.BuildConfigFromFlags("", kubeConfig)
+		}
+		if err != nil {
+			klog.Fatalf("Error building kubeconfig: %v", err)
+		}
+
+		k8sClient, err = kubernetes.NewForConfig(config)
+		if err != nil {
+			klog.Fatalf("Error creating kubernetes client: %v", err)
+		}
+
+		gatewayK8sClient, err = versioned.NewForConfig(config)
+		if err != nil {
+			klog.Fatalf("Error on creating gateway k8s client: %v", err)
+		}
 	}
 
-	if err != nil {
-		panic(err)
-	}
-
-	// Initialize cache with KV sync enabled for gateway
+	// Initialize cache
 	kvSyncEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheKVEventSyncEnabled, false)
 	remoteTokenizerEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
 
@@ -87,20 +117,12 @@ func main() {
 		EnableKVSync:        kvSyncEnabled && remoteTokenizerEnabled,
 		RedisClient:         redisClient,
 		ModelRouterProvider: routing.ModelRouterFactory,
+		DiscoveryProvider:   discoveryProvider,
 	})
-
-	k8sClient, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		klog.Fatalf("Error creating kubernetes client: %v", err)
-	}
 
 	lis, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
 		klog.Fatalf("failed to listen: %v", err)
-	}
-	gatewayK8sClient, err := versioned.NewForConfig(config)
-	if err != nil {
-		klog.Fatalf("Error on creating gateway k8s client: %v", err)
 	}
 
 	gatewayServer := gateway.NewServer(redisClient, k8sClient, gatewayK8sClient)

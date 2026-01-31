@@ -1,0 +1,14 @@
+# AIBrix Gateway Endpoints Configuration
+# This file defines the backend endpoints for the gateway plugin.
+#
+# Simple mode: Single vLLM engine
+# For P/D mode, use endpoints-pd.yaml instead.
+#
+# NETWORKING:
+# Uses hostnames that work for both Docker Compose and local development.
+# For local dev, add to /etc/hosts: 127.0.0.1 gateway vllm metadata-service
+
+models:
+  - name: "Qwen/Qwen2.5-1.5B-Instruct"
+    endpoints:
+      - address: "vllm:8000"

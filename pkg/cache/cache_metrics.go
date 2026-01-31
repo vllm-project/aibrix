@@ -33,20 +33,36 @@ import (
 const (
 	// When the engine's HTTP proxy is separated from the engine itself,
 	// the request port and metrics port may differ, so a dedicated metrics port is required.
-	MetricPortLabel                     = constants.ModelLabelMetricPort
-	engineLabel                         = constants.ModelLabelEngine
-	portLabel                           = constants.ModelLabelPort
-	modelLabel                          = constants.ModelLabelName
-	defaultMetricPort                   = 8000
-	defaultEngineLabelValue             = "vllm"
-	defaultPodMetricRefreshIntervalInMS = 50
-	defaultPodMetricsWorkerCount        = 10
+	MetricPortLabel                       = constants.ModelLabelMetricPort
+	engineLabel                           = constants.ModelLabelEngine
+	portLabel                             = constants.ModelLabelPort
+	modelLabel                            = constants.ModelLabelName
+	modelRoleNameLabel                    = "role-name"
+	defaultMetricPort                     = 8000
+	defaultEngineLabelValue               = "vllm"
+	defaultPodMetricRefreshIntervalInMS   = 50
+	defaultModelMetricRefreshIntervalInMS = 10000
+	defaultPodMetricsWorkerCount          = 10
+	aggregatedLogInterval                 = 60 * time.Second
 )
 
 var (
 	counterGaugeMetricNames = []string{
 		metrics.NumRequestsRunning,
 		metrics.NumRequestsWaiting,
+		metrics.EngineSleepState,
+		metrics.HTTPRequestTotal,
+		metrics.NumPrefillPreallocQueueReqs,
+		metrics.NumDecodePreallocQueueReqs,
+
+		metrics.KVCacheUsagePerc,
+		metrics.NixlNumFailedTransfers,
+		metrics.NixlNumFailedNotifications,
+		metrics.PrefixCacheQueriesTotal,
+		metrics.PrefixCacheHitTotal,
+		metrics.ExternalPrefixCacheHitsTotal,
+		metrics.ExternalPrefixCacheQueriesTotal,
+
 		metrics.NumRequestsSwapped,
 		metrics.PromptTokenTotal,
 		metrics.GenerationTokenTotal,
@@ -67,9 +83,19 @@ var (
 		metrics.RequestInferenceTimeSeconds,
 		metrics.RequestDecodeTimeSeconds,
 		metrics.RequestPrefillTimeSeconds,
+		metrics.HTTPRequestDurationSeconds,
+		metrics.HTTPRequestDurationHighRSeconds,
+		metrics.RequestPromptTokens,
+		metrics.RequestGenerationTokens,
+
+		metrics.NixlXferTimeSeconds,
+		metrics.NixlPostTimeSeconds,
+		metrics.NixlBytesTransferred,
+		metrics.NixlNumDescriptors,
 	}
 
 	prometheusMetricNames = []string{
+		metrics.DrainRate1m,
 		metrics.P95TTFT5m,
 		metrics.P95TTFT5mPod,
 		metrics.AvgTTFT5mPod,
@@ -88,7 +114,11 @@ var (
 		metrics.WaitingLoraAdapters,
 		metrics.RunningLoraAdapters,
 	}
-	podMetricRefreshInterval = time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
+	podMetricRefreshInterval   = time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
+	modelMetricRefreshInterval = time.Duration(utils.LoadEnvInt("AIBRIX_MODEL_METRIC_REFRESH_INTERVAL_MS", defaultModelMetricRefreshIntervalInMS)) * time.Millisecond
+
+	aggregatedLogLast sync.Map
+	lastCounterValues sync.Map
 )
 
 // MetricSnapshot represents a metric value at a specific timestamp
@@ -180,6 +210,52 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			continue
 		}
 
+		podLabelNames, podLabelValues := buildMetricLabels(pod, engineType, "")
+		for metricName, metricValue := range result.Metrics {
+			if shouldSkipMetric(pod.Name, metricName) {
+				continue
+			}
+			metrics.EmitMetricToPrometheus(metricName, metricValue, podLabelNames, podLabelValues)
+		}
+
+		for metricName, metricValue := range result.ModelMetrics {
+			parts := strings.SplitN(metricName, "/", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			model := parts[0]
+			metric := parts[1]
+
+			if shouldSkipMetric(pod.Name, metric) {
+				continue
+			}
+
+			labelNames, labelValues := buildMetricLabels(pod, engineType, model)
+
+			if strings.Contains(pod.Name, "prefill") && metric == metrics.PromptTokenTotal {
+				perSecRate := c.calculatePerSecondRate(pod, model, metric, metricValue.GetSimpleValue())
+				if perSecRate >= 0 {
+					rateMetricName := metrics.AvgPromptThroughputToksPerS
+					rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
+					metrics.SetGaugeMetric(rateMetricName, metrics.GetMetricHelp(rateMetricName), rateValue.GetSimpleValue(), labelNames, labelValues...)
+					_ = c.updatePodRecord(pod, model, rateMetricName, metrics.PodModelMetricScope, rateValue)
+					klog.V(4).InfoS("get metric per sec rate", "metric", rateMetricName, "raw_value", metricValue.GetSimpleValue(), "per_sec_rate", rateValue.GetSimpleValue())
+				}
+			}
+
+			if strings.Contains(pod.Name, "decode") && metric == metrics.GenerationTokenTotal {
+				perSecRate := c.calculatePerSecondRate(pod, model, metric, metricValue.GetSimpleValue())
+				if perSecRate >= 0 {
+					rateMetricName := metrics.AvgGenerationThroughputToksPerS
+					rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
+					metrics.SetGaugeMetric(rateMetricName, metrics.GetMetricHelp(rateMetricName), rateValue.GetSimpleValue(), labelNames, labelValues...)
+					_ = c.updatePodRecord(pod, model, rateMetricName, metrics.PodModelMetricScope, rateValue)
+					klog.V(4).InfoS("get metric per sec rate", "metric", rateMetricName, "raw_value", metricValue.GetSimpleValue(), "per_sec_rate", rateValue.GetSimpleValue())
+				}
+			}
+
+			metrics.EmitMetricToPrometheus(metric, metricValue, labelNames, labelValues)
+		}
 		// Update pod metrics using typed results
 		c.updatePodMetricsFromTypedResult(pod, result)
 
@@ -198,6 +274,31 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			"errors", len(result.Errors))
 
 		cancel()
+	}
+}
+
+func isPrefillOnlyMetric(metricName string) bool {
+	switch metricName {
+	case metrics.TimeToFirstTokenSeconds,
+		metrics.RequestPrefillTimeSeconds,
+		metrics.RequestPromptTokens:
+		return true
+	default:
+		return false
+	}
+}
+
+func isDecodeOnlyMetric(metricName string) bool {
+	switch metricName {
+	case metrics.TimePerOutputTokenSeconds,
+		metrics.RequestTimePerOutputTokenSeconds,
+		metrics.RequestDecodeTimeSeconds,
+		metrics.IterationTokensTotal,
+		metrics.RequestGenerationTokens,
+		metrics.RequestMaxNumGenerationTokens:
+		return true
+	default:
+		return false
 	}
 }
 

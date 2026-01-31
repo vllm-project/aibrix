@@ -1,0 +1,19 @@
+# Full dependencies including simulator support
+# Install with: pip install -r requirements-simulator.txt
+
+# Core dependencies
+-r requirements.txt
+
+# Kubernetes support
+kubernetes
+
+# Simulator dependencies (vidur)
+pandas
+scikit-learn
+wandb
+ddsketch
+plotly_express
+fasteners
+transformers
+git+https://github.com/zhangjyr/vidur.git
+ray[default]

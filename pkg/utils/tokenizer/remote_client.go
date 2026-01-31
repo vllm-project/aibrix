@@ -19,7 +19,6 @@ package tokenizer
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -27,6 +26,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"k8s.io/klog/v2"
 )
 
@@ -152,7 +152,7 @@ func (c *httpClient) Post(ctx context.Context, path string, request interface{})
 	url := c.baseURL + path
 
 	// Marshal request to JSON
-	jsonData, err := json.Marshal(request)
+	jsonData, err := sonic.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}

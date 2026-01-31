@@ -20,12 +20,15 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/selection"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
@@ -33,14 +36,14 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
-	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 )
 
 const (
@@ -53,15 +56,24 @@ const (
 	aibrixEnvoyGatewayNamespace = "aibrix-system"
 
 	defaultModelServingPort = 8000
+
+	modelRouterCustomPath = constants.ModelAnnoRouterCustomPath
 )
+
+var watchedWorkloads = []schema.GroupVersionKind{
+	{Group: "leaderworkerset.x-k8s.io", Version: "v1", Kind: "LeaderWorkerSet"},
+}
 
 var modelPaths = []string{
 	"/v1/completions",
 	"/v1/chat/completions",
 	"/v1/embeddings",
 	"/v1/rerank",
+	"/v1/classify",
 	"/generate",
 	"/generatevideo",
+	"/v1/audio/transcriptions",
+	"/v1/audio/translations",
 }
 
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
@@ -116,8 +128,23 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 		AddFunc:    modelRouter.addRouteFromRayClusterFleet,
 		DeleteFunc: modelRouter.deleteRouteFromRayClusterFleet,
 	})
+	if err != nil {
+		return err
+	}
 
-	return err
+	// add dynamic informer for all workloads
+	for _, gvk := range watchedWorkloads {
+		exists, err := utils.GVKCheckExists(mgr.GetConfig(), gvk)
+		if err != nil || !exists {
+			klog.InfoS("skip informer (optional CRD)", "GVK", gvk, "exists", exists, "error", err)
+			continue
+		}
+		if err := addInformerForGVK(mgr, modelRouter, gvk); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 type ModelRouter struct {
@@ -128,7 +155,7 @@ type ModelRouter struct {
 
 func (m *ModelRouter) addRouteFromDeployment(obj interface{}) {
 	deployment := obj.(*appsv1.Deployment)
-	m.createHTTPRoute(deployment.Namespace, deployment.Labels)
+	m.createHTTPRoute(deployment.Namespace, deployment.Labels, deployment.Annotations)
 }
 
 func (m *ModelRouter) deleteRouteFromDeployment(obj interface{}) {
@@ -148,7 +175,7 @@ func (m *ModelRouter) deleteRouteFromDeployment(obj interface{}) {
 
 func (m *ModelRouter) addRouteFromModelAdapter(obj interface{}) {
 	modelAdapter := obj.(*modelv1alpha1.ModelAdapter)
-	m.createHTTPRoute(modelAdapter.Namespace, modelAdapter.Labels)
+	m.createHTTPRoute(modelAdapter.Namespace, modelAdapter.Labels, modelAdapter.Annotations)
 }
 
 func (m *ModelRouter) deleteRouteFromModelAdapter(obj interface{}) {
@@ -168,7 +195,7 @@ func (m *ModelRouter) deleteRouteFromModelAdapter(obj interface{}) {
 
 func (m *ModelRouter) addRouteFromRayClusterFleet(obj interface{}) {
 	fleet := obj.(*orchestrationv1alpha1.RayClusterFleet)
-	m.createHTTPRoute(fleet.Namespace, fleet.Labels)
+	m.createHTTPRoute(fleet.Namespace, fleet.Labels, fleet.Annotations)
 }
 
 func (m *ModelRouter) deleteRouteFromRayClusterFleet(obj interface{}) {
@@ -186,7 +213,31 @@ func (m *ModelRouter) deleteRouteFromRayClusterFleet(obj interface{}) {
 	m.deleteHTTPRoute(fleet.Namespace, fleet.Labels)
 }
 
-func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string) {
+func (m *ModelRouter) addRouteFromUnstructuredObj(obj interface{}) {
+	u, ok := obj.(*unstructured.Unstructured)
+	if !ok {
+		klog.Errorf("Failed to get unstructured lws")
+		return
+	}
+	m.createHTTPRoute(u.GetNamespace(), u.GetLabels(), u.GetAnnotations())
+}
+
+func (m *ModelRouter) deleteRouteFromUnstructuredObj(obj interface{}) {
+	u, ok := obj.(*unstructured.Unstructured)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		u, ok = tombstone.Obj.(*unstructured.Unstructured)
+		if !ok {
+			return
+		}
+	}
+	m.deleteHTTPRoute(u.GetNamespace(), u.GetLabels())
+}
+
+func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string, annotations map[string]string) {
 	modelName, ok := labels[modelIdentifier]
 	if !ok {
 		return
@@ -254,6 +305,9 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 			},
 		},
 	}
+
+	appendCustomModelRouterPaths(&httpRoute, modelHeaderMatch, annotations)
+
 	err = m.Client.Create(context.Background(), &httpRoute)
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
@@ -376,4 +430,68 @@ func (m *ModelRouter) deleteReferenceGrant(namespace string) {
 		}
 	}
 	klog.InfoS("delete reference grant", "referencegrant", referenceGrantName)
+}
+
+// append matches if model-router-custom-paths is set
+func appendCustomModelRouterPaths(httpRoute *gatewayv1.HTTPRoute, modelHeaderMatch gatewayv1.HTTPHeaderMatch, annotations map[string]string) {
+	if httpRoute == nil || annotations == nil {
+		return
+	}
+
+	if len(httpRoute.Spec.Rules) == 0 {
+		// This case should not happen in the current workflow, as createHTTPRoute always creates a rule.
+		// Creating a rule here without BackendRefs would be incorrect.
+		klog.Warningf("Cannot append custom path to HTTPRoute %s with no rules.", httpRoute.Name)
+		return
+	}
+
+	paths, ok := annotations[modelRouterCustomPath]
+	if !ok {
+		return
+	}
+
+	pathSlice := strings.Split(paths, ",")
+	// avoid duplicates
+	pathSet := make(map[string]struct{})
+	for _, path := range pathSlice {
+		// remove illegal space in path
+		path = strings.ReplaceAll(path, " ", "")
+		if _, exists := pathSet[path]; path == "" || exists {
+			continue
+		}
+		httpRoute.Spec.Rules[0].Matches = append(httpRoute.Spec.Rules[0].Matches,
+			gatewayv1.HTTPRouteMatch{
+				Path: &gatewayv1.HTTPPathMatch{
+					Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+					Value: ptr.To(path),
+				},
+				Headers: []gatewayv1.HTTPHeaderMatch{
+					modelHeaderMatch,
+				},
+			})
+		klog.InfoS("Added custom model router path", "path", path)
+	}
+}
+
+func addInformerForGVK(mgr manager.Manager, modelRouter *ModelRouter, gvk schema.GroupVersionKind) error {
+	// create dynamic Informer
+	uObj := &unstructured.Unstructured{}
+	uObj.SetGroupVersionKind(gvk)
+
+	uInformer, err := mgr.GetCache().GetInformer(context.Background(), uObj)
+	if err != nil {
+		klog.ErrorS(err, "Failed to get informer", "GVK", gvk)
+		return err
+	}
+
+	// add Event Handler
+	_, err = uInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    modelRouter.addRouteFromUnstructuredObj,
+		DeleteFunc: modelRouter.deleteRouteFromUnstructuredObj,
+	})
+	if err != nil {
+		return err
+	}
+	klog.Infof("Added model router informer for %s", gvk)
+	return nil
 }

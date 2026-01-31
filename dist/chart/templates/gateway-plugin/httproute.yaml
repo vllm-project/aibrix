@@ -22,13 +22,16 @@ spec:
             value: /v1/embeddings
         - path:
             type: PathPrefix
-            value: /v1/image/generations
+            value: /v1/images/generations
         - path:
             type: PathPrefix
             value: /v1/video/generations
         - path:
             type: PathPrefix
             value: /v1/rerank
+        - path:
+            type: PathPrefix
+            value: /v1/classify
       backendRefs:
         - name: {{ include "aibrix.fullname" . }}-gateway-plugins
           port: 50052

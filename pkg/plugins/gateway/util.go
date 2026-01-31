@@ -17,38 +17,24 @@ limitations under the License.
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
-)
 
-const (
-	// https://github.com/openai/openai-go/blob/main/embedding.go#L126
-	MaxInputTokensPerModel = 8192
-	MaxTotalTokens         = 300000
-	MaxArrayDimensions     = 2048
-
-	// OpenAI Error Types
-	ErrorTypeInvalidRequest = "invalid_request_error"
-	ErrorTypeAuthentication = "authentication_error"
-	ErrorTypeRateLimit      = "rate_limit_error"
-	ErrorTypeApi            = "api_error"
-	ErrorTypeOverloaded     = "overloaded_error"
-
-	// OpenAI Error Codes
-	ErrorCodeInvalidAPIKey      = "invalid_api_key"
-	ErrorCodeModelNotFound      = "model_not_found"
-	ErrorCodeRateLimitExceeded  = "rate_limit_exceeded"
-	ErrorCodeServiceUnavailable = "service_unavailable"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 // validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
@@ -56,16 +42,16 @@ const (
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	var streamOptions openai.ChatCompletionStreamOptionsParam
 	var jsonMap map[string]json.RawMessage
-	if err := json.Unmarshal(requestBody, &jsonMap); err != nil {
+	if err := sonic.Unmarshal(requestBody, &jsonMap); err != nil {
 		klog.ErrorS(err, "error to unmarshal request body", "requestID", requestID, "requestBody", string(requestBody))
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	switch requestPath {
-	case "/v1/chat/completions":
+	case PathChatCompletions:
 		chatCompletionObj := openai.ChatCompletionNewParams{}
-		if err := json.Unmarshal(requestBody, &chatCompletionObj); err != nil {
+		if err := sonic.Unmarshal(requestBody, &chatCompletionObj); err != nil {
 			klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
 			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 			return
@@ -77,15 +63,16 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		if errRes = validateStreamOptions(requestID, user, &stream, streamOptions, jsonMap); errRes != nil {
 			return
 		}
-	case "/v1/completions":
+	case PathCompletions:
 		// openai.CompletionsNewParams does not support json unmarshal for CompletionNewParamsPromptUnion in release v0.1.0-beta.10
 		// once supported, input request will be directly unmarshal into openai.CompletionsNewParams
 		type Completion struct {
 			Prompt string `json:"prompt"`
 			Model  string `json:"model"`
+			Stream bool   `json:"stream"`
 		}
 		completionObj := Completion{}
-		err := json.Unmarshal(requestBody, &completionObj)
+		err := sonic.Unmarshal(requestBody, &completionObj)
 		if err != nil {
 			klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
 			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
@@ -93,9 +80,10 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		}
 		model = completionObj.Model
 		message = completionObj.Prompt
-	case "/v1/embeddings":
+		stream = completionObj.Stream
+	case PathEmbeddings:
 		embeddingObj := openai.EmbeddingNewParams{}
-		if err := json.Unmarshal(requestBody, &embeddingObj); err != nil {
+		if err := sonic.Unmarshal(requestBody, &embeddingObj); err != nil {
 			klog.ErrorS(err, "error to unmarshal embeddings object", "requestID", requestID, "requestBody", string(requestBody))
 			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 			return
@@ -108,27 +96,27 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		streamVal, ok := jsonMap["stream"]
 		if ok {
 			var streamBool bool
-			if err := json.Unmarshal(streamVal, &streamBool); err != nil || streamBool {
+			if err := sonic.Unmarshal(streamVal, &streamBool); err != nil || streamBool {
 				errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", "", "stream", HeaderErrorRequestBodyProcessing, "true")
 				return
 			}
 		}
-	case "/v1/image/generations", "/v1/video/generations":
+	case PathImagesGenerations, PathVideoGenerations:
 		imageGenerationObj := openai.ImageGenerateParams{}
-		if err := json.Unmarshal(requestBody, &imageGenerationObj); err != nil {
+		if err := sonic.Unmarshal(requestBody, &imageGenerationObj); err != nil {
 			klog.ErrorS(err, "error to unmarshal image generations object", "requestID", requestID, "requestBody", string(requestBody))
 			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		model = imageGenerationObj.Model
-	case "/v1/rerank":
+	case PathRerank:
 		type RerankRequest struct {
 			Model     string   `json:"model"`
 			Query     string   `json:"query"`
 			Documents []string `json:"documents"`
 		}
 		var req RerankRequest
-		if err := json.Unmarshal(requestBody, &req); err != nil {
+		if err := sonic.Unmarshal(requestBody, &req); err != nil {
 			klog.ErrorS(err, "error to unmarshal rerank object", "requestID", requestID)
 			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 			return
@@ -149,12 +137,155 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 
 		model = req.Model
 		message = strings.Join(append([]string{req.Query}, req.Documents...), " ")
+	case PathClassify:
+		model, message, errRes = validateClassifyRequest(requestID, requestBody)
+		if errRes != nil {
+			return
+		}
+	case PathAudioTranscriptions, PathAudioTranslations:
+		// Audio endpoints require multipart/form-data content-type, not JSON
+		// This case handles the error when JSON is sent to audio endpoints
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "audio requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
 	default:
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "message", message, "stream", stream, "streamOptions", streamOptions)
+	return
+}
+
+// isAudioRequest returns true if the request path is an audio endpoint
+func isAudioRequest(requestPath string) bool {
+	return requestPath == PathAudioTranscriptions || requestPath == PathAudioTranslations
+}
+
+// validateClassifyRequest validates a classify request and returns the model and message.
+// nolint:nakedret
+func validateClassifyRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	type ClassifyRequest struct {
+		Model string          `json:"model"`
+		Input json.RawMessage `json:"input"`
+	}
+	var req ClassifyRequest
+	if err := json.Unmarshal(requestBody, &req); err != nil {
+		klog.ErrorS(err, "error to unmarshal classify object", "requestID", requestID)
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if req.Model == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if len(req.Input) == 0 || string(req.Input) == "null" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	// Parse input - can be string or array of strings
+	var inputStr string
+	if err := json.Unmarshal(req.Input, &inputStr); err == nil {
+		if inputStr == "" {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' cannot be an empty string", "", "input", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		message = inputStr
+	} else {
+		var inputArr []string
+		if err := json.Unmarshal(req.Input, &inputArr); err != nil {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' must be a string or array of strings", "", "input", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		if len(inputArr) == 0 {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' array cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		message = strings.Join(inputArr, " ")
+	}
+
+	model = req.Model
+	return
+}
+
+// isMultipartRequest returns true if the content type indicates multipart form data
+func isMultipartRequest(contentType string) bool {
+	if contentType == "" {
+		return false
+	}
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	return strings.HasPrefix(mediaType, "multipart/")
+}
+
+// parseMultipartFormData parses multipart/form-data request body and extracts the model field.
+// It returns the model name, stream flag, and any processing error response.
+// nolint:nakedret
+func parseMultipartFormData(requestID string, contentType string, requestBody []byte) (model string, stream bool, errRes *extProcPb.ProcessingResponse) {
+	// Extract boundary from Content-Type
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		klog.ErrorS(err, "failed to parse content-type", "requestID", requestID, "contentType", contentType)
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "invalid content-type header", "", "", HeaderErrorMultipartParsing, "true")
+		return
+	}
+
+	if !strings.HasPrefix(mediaType, "multipart/") {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "expected multipart/form-data content-type", "", "", HeaderErrorMultipartParsing, "true")
+		return
+	}
+
+	boundary := params["boundary"]
+	if boundary == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "missing boundary in content-type", "", "", HeaderErrorMultipartParsing, "true")
+		return
+	}
+
+	// Parse multipart form
+	reader := multipart.NewReader(bytes.NewReader(requestBody), boundary)
+
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			klog.ErrorS(err, "failed to read multipart part", "requestID", requestID)
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "failed to parse multipart form", "", "", HeaderErrorMultipartParsing, "true")
+			return
+		}
+
+		fieldName := part.FormName()
+
+		switch fieldName {
+		case "model":
+			modelBytes, err := io.ReadAll(part)
+			if err != nil {
+				klog.ErrorS(err, "failed to read model field", "requestID", requestID)
+				errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "failed to read model field", "", "model", HeaderErrorMultipartParsing, "true")
+				return
+			}
+			model = strings.TrimSpace(string(modelBytes))
+
+		case "stream":
+			streamBytes, err := io.ReadAll(part)
+			if err == nil {
+				streamVal := strings.TrimSpace(strings.ToLower(string(streamBytes)))
+				stream = streamVal == "true" || streamVal == "1"
+			}
+		}
+
+		_ = part.Close()
+	}
+
+	// Validate required model field
+	if model == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorMultipartParsing, "true")
+		return
+	}
+
+	klog.V(4).InfoS("parseMultipartFormData", "requestID", requestID, "model", model, "stream", stream)
 	return
 }
 
@@ -165,7 +296,7 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 		return nil
 	}
 
-	if err := json.Unmarshal(streamData, stream); err != nil {
+	if err := sonic.Unmarshal(streamData, stream); err != nil {
 		klog.ErrorS(nil, "no stream option available", "requestID", requestID)
 		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream incorrectly set", "", "stream", HeaderErrorStream, "stream incorrectly set")
 	}
@@ -211,7 +342,7 @@ func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCo
 		case *string:
 			builder.WriteString(*content)
 		default:
-			if jsonBytes, err := json.Marshal(content); err == nil {
+			if jsonBytes, err := sonic.Marshal(content); err == nil {
 				builder.Write(jsonBytes)
 			} else {
 				klog.ErrorS(err, "error marshalling message content", "requestID", requestID, "message", m)
@@ -269,7 +400,7 @@ func generateErrorMessage(message, errorType, errorCode, param string) string {
 		errorStruct["error"].(map[string]interface{})["param"] = param
 	}
 
-	jsonData, err := json.Marshal(errorStruct)
+	jsonData, err := sonic.Marshal(errorStruct)
 	if err != nil {
 		klog.ErrorS(err, "failed to marshal OpenAI error response")
 		return `{"error":{"message":"internal server error while formatting error response","type":"api_error","code":null,"param":null}}`

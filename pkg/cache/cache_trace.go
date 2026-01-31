@@ -17,11 +17,12 @@ package cache
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"strconv"
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -49,6 +50,8 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 		return
 	}
 	pod := ctx.TargetPod()
+	port := ctx.TargetPort()
+
 	metaPod, ok := c.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
 	if !ok {
 		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
@@ -57,7 +60,11 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 
 	// Update running requests
 	requests := atomic.AddInt32(&metaPod.runningRequests, 1)
-	if err := c.updatePodRecord(metaPod, "", metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
+	metricName := metrics.RealtimeNumRequestsRunning
+	if port > 0 {
+		metricName = metricName + "/" + strconv.Itoa(port)
+	}
+	if err := c.updatePodRecord(metaPod, "", metricName, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
 		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s, err: %v", metrics.RealtimeNumRequestsRunning, metaPod.Name, requestID, err)
 	}
 
@@ -86,6 +93,7 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 		return
 	}
 	pod := ctx.TargetPod()
+	port := ctx.TargetPort()
 
 	// Now that pendingLoadProvider must be set.
 	metaPod, ok := c.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
@@ -96,7 +104,11 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 
 	// Update running requests
 	requests := atomic.AddInt32(&metaPod.runningRequests, -1)
-	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
+	metricName := metrics.RealtimeNumRequestsRunning
+	if port > 0 {
+		metricName = metricName + "/" + strconv.Itoa(port)
+	}
+	if err := c.updatePodRecord(metaPod, ctx.Model, metricName, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
 		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNumRequestsRunning, pod.Name, requestID)
 	}
 
@@ -150,7 +162,7 @@ func (c *Store) writeRequestTraceToStorage(roundT int64) {
 		trace.RecycleLocked()
 		trace.Unlock()
 
-		value, err := json.Marshal(traceMap)
+		value, err := sonic.Marshal(traceMap)
 		if err != nil {
 			klog.ErrorS(err, "error to marshall request trace for redis set")
 			return true

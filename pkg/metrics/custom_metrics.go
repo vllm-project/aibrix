@@ -17,6 +17,8 @@ limitations under the License.
 package metrics
 
 import (
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -24,10 +26,12 @@ import (
 )
 
 var (
-	customGauges     = make(map[string]*prometheus.GaugeVec)
-	customGaugesMu   sync.RWMutex
-	customCounters   = make(map[string]*prometheus.CounterVec)
-	customCountersMu sync.RWMutex
+	customGauges       = make(map[string]*prometheus.GaugeVec)
+	customGaugesMu     sync.RWMutex
+	customCounters     = make(map[string]*prometheus.CounterVec)
+	customCountersMu   sync.RWMutex
+	customHistograms   = make(map[string]*histogramCollector)
+	customHistogramsMu sync.RWMutex
 
 	// Function variables that can be overridden for testing
 	SetGaugeMetricFnForTest         = defaultSetGaugeMetric
@@ -84,6 +88,106 @@ func defaultIncrementCounterMetric(name string, help string, value float64, labe
 	counter.WithLabelValues(labelValues...).Add(value)
 }
 
+func SetHistogramMetric(name string, help string, value *HistogramMetricValue, labelNames []string, labelValues ...string) {
+	if value == nil {
+		return
+	}
+
+	customHistogramsMu.RLock()
+	collector, ok := customHistograms[name]
+	customHistogramsMu.RUnlock()
+
+	if !ok {
+		customHistogramsMu.Lock()
+		collector, ok = customHistograms[name]
+		if !ok {
+			collector = newHistogramCollector(name, help, labelNames)
+			prometheus.MustRegister(collector)
+			customHistograms[name] = collector
+		}
+		customHistogramsMu.Unlock()
+	}
+
+	collector.Set(value, labelValues...)
+}
+
+type histogramSnapshot struct {
+	labelValues []string
+	count       uint64
+	sum         float64
+	buckets     map[float64]uint64
+}
+
+type histogramCollector struct {
+	desc       *prometheus.Desc
+	labelNames []string
+	mu         sync.RWMutex
+	data       map[string]*histogramSnapshot
+}
+
+func newHistogramCollector(name string, help string, labelNames []string) *histogramCollector {
+	return &histogramCollector{
+		desc:       prometheus.NewDesc(name, help, labelNames, nil),
+		labelNames: labelNames,
+		data:       make(map[string]*histogramSnapshot),
+	}
+}
+
+func (c *histogramCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.desc
+}
+
+func (c *histogramCollector) Collect(ch chan<- prometheus.Metric) {
+	c.mu.RLock()
+	snapshots := make([]*histogramSnapshot, 0, len(c.data))
+	for _, snapshot := range c.data {
+		snapshots = append(snapshots, snapshot)
+	}
+	c.mu.RUnlock()
+
+	for _, snapshot := range snapshots {
+		ch <- prometheus.MustNewConstHistogram(
+			c.desc,
+			snapshot.count,
+			snapshot.sum,
+			snapshot.buckets,
+			snapshot.labelValues...,
+		)
+	}
+}
+
+func (c *histogramCollector) Set(value *HistogramMetricValue, labelValues ...string) {
+	if value == nil || len(labelValues) != len(c.labelNames) {
+		return
+	}
+
+	buckets := make(map[float64]uint64, len(value.Buckets))
+	for bound, cumulativeCount := range value.Buckets {
+		bound = strings.TrimSpace(bound)
+		upper, err := strconv.ParseFloat(bound, 64)
+		if err != nil {
+			continue
+		}
+		if cumulativeCount < 0 {
+			continue
+		}
+		buckets[upper] = uint64(cumulativeCount)
+	}
+
+	snapshot := &histogramSnapshot{
+		labelValues: append([]string(nil), labelValues...),
+		count:       uint64(value.Count),
+		sum:         value.Sum,
+		buckets:     buckets,
+	}
+
+	key := strings.Join(labelValues, "\xff")
+
+	c.mu.Lock()
+	c.data[key] = snapshot
+	c.mu.Unlock()
+}
+
 func GetMetricHelp(metricName string) string {
 	metric, ok := Metrics[metricName]
 	if !ok {
@@ -133,4 +237,28 @@ func SetupCounterMetricsForTest(metricName string, labelNames []string) (*promet
 	}
 
 	return testCounter, func() { IncrementCounterMetricFnForTest = originalFn }
+}
+
+func EmitMetricToPrometheus(metricName string, metricValue MetricValue, labelNames []string, labelValues []string) {
+	metricDef, exists := Metrics[metricName]
+	if !exists {
+		return
+	}
+
+	switch metricDef.MetricType.Raw {
+	case Gauge:
+		SetGaugeMetric(metricName, GetMetricHelp(metricName), metricValue.GetSimpleValue(), labelNames, labelValues...)
+	case Counter:
+		SetGaugeMetric(metricName, GetMetricHelp(metricName), metricValue.GetSimpleValue(), labelNames, labelValues...)
+	default:
+		if hv := metricValue.GetHistogramValue(); hv != nil {
+			SetHistogramMetric(metricName, GetMetricHelp(metricName), hv, labelNames, labelValues...)
+			p50, _ := hv.GetPercentile(50)
+			SetGaugeMetric(metricName+"_p50", GetMetricHelp(metricName), p50, labelNames, labelValues...)
+			p90, _ := hv.GetPercentile(90)
+			SetGaugeMetric(metricName+"_p90", GetMetricHelp(metricName), p90, labelNames, labelValues...)
+			p99, _ := hv.GetPercentile(99)
+			SetGaugeMetric(metricName+"_p99", GetMetricHelp(metricName), p99, labelNames, labelValues...)
+		}
+	}
 }

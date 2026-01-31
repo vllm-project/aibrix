@@ -17,8 +17,9 @@ limitations under the License.
 package tokenizer
 
 import (
-	"encoding/json"
 	"fmt"
+
+	"github.com/bytedance/sonic"
 )
 
 const (
@@ -112,7 +113,7 @@ func (va *vllmAdapter) ParseTokenizeResponse(data []byte) (*TokenizeResult, erro
 	// Optional fields: token_strs (omitempty tag allows this field to be missing)
 	// Note: json.Unmarshal will not fail if required fields are missing;
 	// they will be set to their zero values (0 for ints, nil for slices)
-	if err := json.Unmarshal(data, &resp); err != nil {
+	if err := sonic.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("failed to parse tokenize response: %w", err)
 	}
 
@@ -127,7 +128,7 @@ func (va *vllmAdapter) ParseTokenizeResponse(data []byte) (*TokenizeResult, erro
 // ParseDetokenizeResponse parses a vLLM detokenize response
 func (va *vllmAdapter) ParseDetokenizeResponse(data []byte) (string, error) {
 	var resp vllmDetokenizeResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
+	if err := sonic.Unmarshal(data, &resp); err != nil {
 		return "", fmt.Errorf("failed to parse detokenize response: %w", err)
 	}
 	return resp.Prompt, nil

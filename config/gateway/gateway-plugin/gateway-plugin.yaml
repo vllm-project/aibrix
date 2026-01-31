@@ -193,7 +193,10 @@ spec:
             value: /v1/rerank
         - path:
             type: PathPrefix
-            value: /v1/image/generations
+            value: /v1/classify
+        - path:
+            type: PathPrefix
+            value: /v1/images/generations
         - path:
             type: PathPrefix
             value: /v1/video/generations

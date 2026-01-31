@@ -28,12 +28,14 @@ import (
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // TestRouterAlgorithm is a dedicated routing algorithm for testing
@@ -59,12 +61,12 @@ func Test_handleRequestBody(t *testing.T) {
 	type testCase struct {
 		name        string
 		requestBody string
+		reqPath     string
 		user        utils.User
 		routingAlgo types.RoutingAlgorithm
 		mockSetup   func(*MockCache, *mockRouter)
 		expected    testResponse
 		validate    func(*testing.T, *testCase, *extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64)
-		checkStream bool
 	}
 
 	// Define test cases for different routing and error scenarios
@@ -121,7 +123,6 @@ func Test_handleRequestBody(t *testing.T) {
 					assert.NotEqual(t, HeaderTargetPod, header.Header.Key)
 				}
 			},
-			checkStream: false,
 		},
 		{
 			name:        "model not in cache - should return error",
@@ -161,7 +162,6 @@ func Test_handleRequestBody(t *testing.T) {
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
 			},
-			checkStream: false,
 		},
 		{
 			name:        "valid routing strategy - should set both routing and target pod headers",
@@ -267,7 +267,6 @@ func Test_handleRequestBody(t *testing.T) {
 				assert.True(t, foundRoutingStrategy, "HeaderRoutingStrategy not found")
 				assert.True(t, foundTargetPod, "HeaderTargetPod not found")
 			},
-			checkStream: false,
 		},
 		{
 			name:        "invalid routing strategy - should fallback to random router",
@@ -295,6 +294,7 @@ func Test_handleRequestBody(t *testing.T) {
 					},
 				}
 				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, metrics.RealtimeNumRequestsRunning).Return(&metrics.SimpleMetricValue{Value: 0}, nil)
 				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
 			},
 			expected: testResponse{
@@ -344,7 +344,6 @@ func Test_handleRequestBody(t *testing.T) {
 				assert.True(t, foundRoutingStrategy, "HeaderRoutingStrategy not found")
 				assert.True(t, foundTargetPod, "HeaderTargetPod not found")
 			},
-			checkStream: false,
 		},
 		{
 			name:        "no routable pods available - should return ServiceUnavailable",
@@ -413,7 +412,6 @@ func Test_handleRequestBody(t *testing.T) {
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
 			},
-			checkStream: false,
 		},
 		{
 			name:        "empty pods list - should return ServiceUnavailable",
@@ -459,7 +457,6 @@ func Test_handleRequestBody(t *testing.T) {
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
 			},
-			checkStream: false,
 		},
 		{
 			name:        "single pod in termination - should return ServiceUnavailable",
@@ -520,7 +517,6 @@ func Test_handleRequestBody(t *testing.T) {
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
 			},
-			checkStream: false,
 		},
 		{
 			name:        "routable pod without IP - should return ServiceUnavailable",
@@ -578,7 +574,47 @@ func Test_handleRequestBody(t *testing.T) {
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
 			},
-			checkStream: false,
+		},
+		{
+			name:        "request /v1/completions with stream header - should get the true value of stream",
+			reqPath:     "/v1/completions",
+			requestBody: `{"model": "test-model", "prompt": "test", "stream": true}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "",
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
+						{
+							Status: v1.PodStatus{
+								PodIP:      "1.2.3.4",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+							},
+						},
+						{
+							Status: v1.PodStatus{
+								PodIP:      "4.5.6.7",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				model:      "test-model",
+				stream:     true,
+				routingCtx: &types.RoutingContext{RequestID: "test-request-id"},
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.NotNil(t, routingCtx)
+			},
 		},
 	}
 
@@ -645,6 +681,9 @@ func Test_handleRequestBody(t *testing.T) {
 			// Call HandleRequestBody and validate the response
 			routingCtx := types.NewRoutingContext(context.Background(), tt.routingAlgo, tt.expected.model, "", "test-request-id", tt.user.Name)
 			routingCtx.ReqPath = "/v1/chat/completions"
+			if tt.reqPath != "" {
+				routingCtx.ReqPath = tt.reqPath
+			}
 			resp, model, routingCtx, stream, term := server.HandleRequestBody(
 				routingCtx,
 				"test-request-id",

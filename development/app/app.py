@@ -15,15 +15,6 @@ import os
 import json
 from typing import Optional
 
-try:
-    from kubernetes import client, config
-except Exception as e:
-    print(f"Failed to import kubernetes, skip: {e}")
-
-from simulator import Simulator
-from vidur.config import SimulationConfig
-from vidur.entities import Request
-
 # Global storage for overridden values
 overrides = {}
 
@@ -32,22 +23,45 @@ DEPLOYMENT_NAME = os.getenv("DEPLOYMENT_NAME", "llama2-7b")
 NAMESPACE = os.getenv("POD_NAMESPACE", "default")
 DEFAULT_REPLICAS = int(os.getenv("DEFAULT_REPLICAS", "1"))
 SIMULATION = os.getenv("SIMULATION", "disabled")
+STANDALONE_MODE = os.getenv("STANDALONE_MODE", "false").lower() in ("true", "1", "yes")
+
+# Optional kubernetes import (only needed in Kubernetes environment)
+if not STANDALONE_MODE:
+    try:
+        from kubernetes import client, config
+    except Exception as e:
+        print(f"Failed to import kubernetes, skip: {e}")
+        STANDALONE_MODE = True  # Fall back to standalone mode
+
+# Optional simulator/vidur imports - only loaded when SIMULATION is enabled
+if SIMULATION != "disabled":
+    try:
+        from simulator import Simulator
+        from vidur.config import SimulationConfig
+        from vidur.entities import Request as VidurRequest
+    except ImportError as e:
+        print(f"Simulator/vidur not available: {e}")
+        SIMULATION = "disabled"
+    except Exception as e:
+        print(f"Error loading simulator: {e}")
+        SIMULATION = "disabled"
 
 modelMaps = {
     "llama2-7b": "meta-llama/Llama-2-7b-hf",
     "llama2-70b": "meta-llama/Llama-2-70b-hf",
 }
 
-# Polifill the necessary arguments.
-if "--replica_config_device" not in sys.argv:
-    sys.argv.append("--replica_config_device")
-    sys.argv.append(SIMULATION)
-if "--replica_config_model_name" not in sys.argv:
-    sys.argv.append("--replica_config_model_name")
-    sys.argv.append(modelMaps.get(MODEL_NAME, MODEL_NAME))
+# Polyfill the necessary arguments (only if simulator is enabled)
+if SIMULATION != "disabled":
+    if "--replica_config_device" not in sys.argv:
+        sys.argv.append("--replica_config_device")
+        sys.argv.append(SIMULATION)
+    if "--replica_config_model_name" not in sys.argv:
+        sys.argv.append("--replica_config_model_name")
+        sys.argv.append(modelMaps.get(MODEL_NAME, MODEL_NAME))
 
 tokenizer = None
-simulator: Optional[Simulator] = None
+simulator = None  # Optional[Simulator] when simulation is enabled
 
 # Extract the api_key argument and prepare for authentication
 api_key = None
@@ -86,6 +100,62 @@ def auth_error(status):
 
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def create_error_response(message, error_type="invalid_request_error", param=None, code=None, status_code=400):
+    """
+    Create a consistent OpenAI-compatible error response.
+
+    Args:
+        message: Error message to display
+        error_type: Type of error (invalid_request_error, api_error, authentication_error, etc.)
+        param: The parameter that caused the error (if applicable)
+        code: Error code (if applicable)
+        status_code: HTTP status code
+
+    Returns:
+        Tuple of (response, status_code)
+    """
+    return (
+        jsonify({
+            "error": {
+                "message": message,
+                "type": error_type,
+                "param": param,
+                "code": code,
+            }
+        }),
+        status_code,
+    )
+
+
+def create_vllm_error(message, error_type, status_code):
+    """
+    Create a vLLM-specific error response.
+
+    Args:
+        message: Error message to display
+        error_type: Type of error (InvalidUserInput, NotFoundError, etc.)
+        status_code: HTTP status code
+
+    Returns:
+        Tuple of (response, status_code)
+    """
+    return (
+        jsonify({
+            "error": {
+                "message": message,
+                "type": error_type,
+                "param": None,
+                "code": status_code,
+            }
+        }),
+        status_code,
+    )
 
 
 def read_configs(file_path):
@@ -190,6 +260,10 @@ app = Flask(__name__)
 disable_endpoint_logs()
 
 
+# =============================================================================
+# HEALTH & UTILITY ENDPOINTS
+# =============================================================================
+
 @app.route("/health", methods=["GET"])
 def health():
     return {"status": "ok"}, 200
@@ -206,13 +280,43 @@ def get_models():
     return jsonify({"object": "list", "data": models})
 
 
+# =============================================================================
+# VLLM-SPECIFIC ENDPOINTS
+# =============================================================================
+
 @app.route("/v1/load_lora_adapter", methods=["POST"])
 @auth.login_required
-def load_model():
-    lora_name = request.json.get("lora_name")
-    # Check if the model already exists
+def load_lora_adapter():
+    """
+    Load a LoRA adapter. Matches vLLM error handling behavior.
+    """
+    data = request.json or {}
+    lora_name = data.get("lora_name")
+    lora_path = data.get("lora_path")
+
+    # Validate required fields
+    if not lora_name or not lora_path:
+        return create_vllm_error(
+            "Both 'lora_name' and 'lora_path' must be provided.",
+            "InvalidUserInput",
+            400,
+        )
+
+    # Check if adapter already loaded
     if any(model["id"] == lora_name for model in models):
-        return jsonify({"status": "success", "message": "Model already loaded"}), 200
+        return create_vllm_error(
+            f"The lora adapter '{lora_name}' has already been loaded.",
+            "InvalidUserInput",
+            400,
+        )
+
+    # Simulate path not found for paths containing "nonexistent" or "/invalid/"
+    if "nonexistent" in lora_path.lower() or "/invalid/" in lora_path.lower():
+        return create_vllm_error(
+            f"Loading lora {lora_name} failed: No adapter found for {lora_path}",
+            "NotFoundError",
+            404,
+        )
 
     new_model = {
         "id": lora_name,
@@ -220,7 +324,7 @@ def load_model():
         "object": "model",
         "owned_by": "vllm",
         "parent": None,
-        "root": request.json.get("lora_path"),
+        "root": lora_path,
     }
 
     models.append(new_model)
@@ -229,12 +333,37 @@ def load_model():
 
 @app.route("/v1/unload_lora_adapter", methods=["POST"])
 @auth.login_required
-def unload_model():
-    model_id = request.json.get("lora_name")
+def unload_lora_adapter():
+    """
+    Unload a LoRA adapter. Matches vLLM error handling behavior.
+    """
     global models
-    models = [model for model in models if model["id"] != model_id]
+    data = request.json or {}
+    lora_name = data.get("lora_name")
+
+    # Validate required field
+    if not lora_name:
+        return create_vllm_error(
+            "'lora_name' must be provided.",
+            "InvalidUserInput",
+            400,
+        )
+
+    # Check if adapter exists
+    if not any(model["id"] == lora_name for model in models):
+        return create_vllm_error(
+            f"The lora adapter '{lora_name}' cannot be found.",
+            "NotFoundError",
+            400,
+        )
+
+    models = [model for model in models if model["id"] != lora_name]
     return jsonify({"status": "success", "message": "Model unloaded successfully"}), 200
 
+
+# =============================================================================
+# OPENAI-COMPATIBLE ENDPOINTS
+# =============================================================================
 
 @app.route("/v1/completions", methods=["POST"])
 @auth.login_required
@@ -272,7 +401,7 @@ def completion():
         latency = 0.0
         if simulator is not None:
             latency = simulator.execute(
-                Request(
+                VidurRequest(
                     arrived_at, input_tokens, output_tokens, arrived_next=arrived_next
                 )
             )
@@ -360,7 +489,6 @@ def completion():
                     "prompt_tokens": input_tokens,
                     "completion_tokens": output_tokens,
                     "total_tokens": input_tokens + output_tokens,
-                    "time": latency,
                 },
             }
             return jsonify(response), 200
@@ -414,7 +542,7 @@ def chat_completions():
         latency = 0.0
         if simulator is not None:
             latency = simulator.execute(
-                Request(
+                VidurRequest(
                     arrived_at, input_tokens, output_tokens, arrived_next=arrived_next
                 )
             )
@@ -531,7 +659,6 @@ def chat_completions():
                     "prompt_tokens": input_tokens,
                     "completion_tokens": output_tokens,
                     "total_tokens": input_tokens + output_tokens,
-                    "time": latency,
                 },
                 "choices": [
                     {
@@ -550,6 +677,303 @@ def chat_completions():
         err = {
             "error": {
                 "message": f"The server had an error while processing your request. Sorry about that!",
+                "type": "api_error",
+                "param": None,
+                "code": None,
+            }
+        }
+        return jsonify(err), 500
+
+
+@app.route("/v1/audio/speech", methods=["POST"])
+@auth.login_required
+def audio_speech():
+    """
+    Simulates the OpenAI text-to-speech endpoint.
+    Returns mock audio data.
+    """
+    try:
+        model = request.json.get("model", "tts-1")
+        input_text = request.json.get("input")
+        voice = request.json.get("voice", "alloy")
+        response_format = request.json.get("response_format", "mp3")
+        speed = request.json.get("speed", 1.0)
+
+        if not input_text:
+            return create_error_response("'input' is a required parameter", param="input")
+
+        # Validate voice
+        valid_voices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+        if voice not in valid_voices:
+            return create_error_response(
+                f"Invalid voice '{voice}'. Must be one of: {', '.join(valid_voices)}",
+                param="voice"
+            )
+
+        # Validate response format
+        valid_formats = ["mp3", "opus", "aac", "flac", "wav", "pcm"]
+        if response_format not in valid_formats:
+            return create_error_response(
+                f"Invalid response_format '{response_format}'. Must be one of: {', '.join(valid_formats)}",
+                param="response_format"
+            )
+
+        # Simulate processing time based on text length
+        time.sleep(0.1 + len(input_text) * 0.001)
+
+        # Generate mock audio data (minimal valid audio bytes)
+        # This is a minimal MP3 frame header for testing purposes
+        mock_audio = bytes([
+            0xFF, 0xFB, 0x90, 0x00,  # MP3 frame header
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ])
+
+        # Set content type based on format
+        content_types = {
+            "mp3": "audio/mpeg",
+            "opus": "audio/opus",
+            "aac": "audio/aac",
+            "flac": "audio/flac",
+            "wav": "audio/wav",
+            "pcm": "audio/pcm",
+        }
+
+        return Response(
+            mock_audio,
+            mimetype=content_types.get(response_format, "audio/mpeg"),
+            headers={
+                "Content-Disposition": f"attachment; filename=speech.{response_format}"
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error in audio speech endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
+@app.route("/v1/audio/transcriptions", methods=["POST"])
+@auth.login_required
+def audio_transcriptions():
+    """
+    Simulates the OpenAI audio transcription endpoint.
+    Accepts multipart/form-data with audio file and returns a mock transcription.
+    """
+    try:
+        # Get form data
+        model = request.form.get("model")
+        language = request.form.get("language", "en")
+        response_format = request.form.get("response_format", "json")
+        stream = request.form.get("stream", "false").lower() in ("true", "1")
+
+        # Get the uploaded file (optional for mock)
+        audio_file = request.files.get("file")
+
+        if not model:
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "message": "'model' is a required parameter",
+                            "type": "invalid_request_error",
+                            "param": "model",
+                            "code": None,
+                        }
+                    }
+                ),
+                400,
+            )
+
+        # Simulate processing time
+        time.sleep(0.1)
+
+        # Mock transcription text
+        mock_text = f"This is a simulated transcription from {model}. The audio file was processed successfully."
+
+        if stream:
+            def generate():
+                completion_id = "transcript-" + "".join(
+                    random.choices(
+                        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                        k=20,
+                    )
+                )
+                words = mock_text.split()
+                for i, word in enumerate(words):
+                    chunk = {
+                        "id": completion_id,
+                        "object": "audio.transcription.chunk",
+                        "text": word + (" " if i < len(words) - 1 else ""),
+                    }
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                    time.sleep(0.05)
+
+                # Final chunk
+                final_chunk = {
+                    "id": completion_id,
+                    "object": "audio.transcription",
+                    "text": mock_text,
+                }
+                yield f"data: {json.dumps(final_chunk)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            response = Response(generate(), mimetype="text/event-stream")
+            response.headers['Cache-Control'] = 'no-cache'
+            response.headers['X-Accel-Buffering'] = 'no'
+            return response
+        else:
+            if response_format == "verbose_json":
+                response = {
+                    "task": "transcribe",
+                    "language": language,
+                    "duration": 5.5,
+                    "text": mock_text,
+                    "words": [
+                        {"word": word, "start": i * 0.5, "end": (i + 1) * 0.5}
+                        for i, word in enumerate(mock_text.split())
+                    ],
+                    "segments": [
+                        {
+                            "id": 0,
+                            "seek": 0,
+                            "start": 0.0,
+                            "end": 5.5,
+                            "text": mock_text,
+                            "tokens": list(range(100)),
+                            "temperature": 0.0,
+                            "avg_logprob": -0.25,
+                            "compression_ratio": 1.5,
+                            "no_speech_prob": 0.01,
+                        }
+                    ],
+                }
+            elif response_format in ("text", "srt", "vtt"):
+                return Response(mock_text, mimetype="text/plain")
+            else:  # json (default)
+                response = {"text": mock_text}
+
+            return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in audio transcriptions endpoint: {e}")
+        err = {
+            "error": {
+                "message": "The server had an error while processing your request. Sorry about that!",
+                "type": "api_error",
+                "param": None,
+                "code": None,
+            }
+        }
+        return jsonify(err), 500
+
+
+@app.route("/v1/audio/translations", methods=["POST"])
+@auth.login_required
+def audio_translations():
+    """
+    Simulates the OpenAI audio translation endpoint.
+    Accepts multipart/form-data with audio file and returns a mock translation to English.
+    """
+    try:
+        # Get form data
+        model = request.form.get("model")
+        response_format = request.form.get("response_format", "json")
+        stream = request.form.get("stream", "false").lower() in ("true", "1")
+
+        # Get the uploaded file (optional for mock)
+        audio_file = request.files.get("file")
+
+        if not model:
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "message": "'model' is a required parameter",
+                            "type": "invalid_request_error",
+                            "param": "model",
+                            "code": None,
+                        }
+                    }
+                ),
+                400,
+            )
+
+        # Simulate processing time
+        time.sleep(0.1)
+
+        # Mock translation text (always to English)
+        mock_text = f"This is a simulated English translation from {model}. The audio was translated successfully."
+
+        if stream:
+            def generate():
+                completion_id = "translation-" + "".join(
+                    random.choices(
+                        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                        k=20,
+                    )
+                )
+                words = mock_text.split()
+                for i, word in enumerate(words):
+                    chunk = {
+                        "id": completion_id,
+                        "object": "audio.translation.chunk",
+                        "text": word + (" " if i < len(words) - 1 else ""),
+                    }
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                    time.sleep(0.05)
+
+                # Final chunk
+                final_chunk = {
+                    "id": completion_id,
+                    "object": "audio.translation",
+                    "text": mock_text,
+                }
+                yield f"data: {json.dumps(final_chunk)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            response = Response(generate(), mimetype="text/event-stream")
+            response.headers['Cache-Control'] = 'no-cache'
+            response.headers['X-Accel-Buffering'] = 'no'
+            return response
+        else:
+            if response_format == "verbose_json":
+                response = {
+                    "task": "translate",
+                    "language": "en",
+                    "duration": 5.5,
+                    "text": mock_text,
+                    "segments": [
+                        {
+                            "id": 0,
+                            "seek": 0,
+                            "start": 0.0,
+                            "end": 5.5,
+                            "text": mock_text,
+                            "tokens": list(range(100)),
+                            "temperature": 0.0,
+                            "avg_logprob": -0.25,
+                            "compression_ratio": 1.5,
+                            "no_speech_prob": 0.01,
+                        }
+                    ],
+                }
+            elif response_format in ("text", "srt", "vtt"):
+                return Response(mock_text, mimetype="text/plain")
+            else:  # json (default)
+                response = {"text": mock_text}
+
+            return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in audio translations endpoint: {e}")
+        err = {
+            "error": {
+                "message": "The server had an error while processing your request. Sorry about that!",
                 "type": "api_error",
                 "param": None,
                 "code": None,
@@ -705,6 +1129,288 @@ def embeddings():
         return jsonify(err), 500
 
 
+@app.route("/v1/images/generations", methods=["POST"])
+@auth.login_required
+def images_generations():
+    """
+    Simulates the OpenAI image generation endpoint.
+    Returns mock image data in OpenAI format.
+    """
+    try:
+        model = request.json.get("model", "dall-e-3")
+        prompt = request.json.get("prompt")
+        n = request.json.get("n", 1)
+        size = request.json.get("size", "1024x1024")
+        quality = request.json.get("quality", "standard")
+        response_format = request.json.get("response_format", "url")
+        style = request.json.get("style", "vivid")
+        user = request.json.get("user")
+
+        if not prompt:
+            return create_error_response("'prompt' is a required parameter", param="prompt")
+
+        # Simulate processing time
+        time.sleep(0.2)
+
+        created = int(datetime.now().timestamp())
+
+        # Generate mock image data
+        data = []
+        for i in range(n):
+            if response_format == "url":
+                image_data = {
+                    "url": f"https://mock-images.example.com/{model}/{created}_{i}.png",
+                    "revised_prompt": f"Mock revised prompt for: {prompt[:50]}..."
+                }
+            else:  # b64_json
+                # Generate a small mock base64 encoded PNG (1x1 pixel transparent)
+                mock_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+                image_data = {
+                    "b64_json": mock_b64,
+                    "revised_prompt": f"Mock revised prompt for: {prompt[:50]}..."
+                }
+            data.append(image_data)
+
+        response = {
+            "created": created,
+            "data": data,
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in images generations endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
+@app.route("/v1/video/generations", methods=["POST"])
+@auth.login_required
+def video_generations():
+    """
+    Simulates a video generation endpoint.
+    Returns mock video data.
+    """
+    try:
+        model = request.json.get("model", "video-model")
+        prompt = request.json.get("prompt")
+        duration = request.json.get("duration", 5)
+        fps = request.json.get("fps", 24)
+        size = request.json.get("size", "1280x720")
+
+        if not prompt:
+            return create_error_response("'prompt' is a required parameter", param="prompt")
+
+        # Simulate processing time
+        time.sleep(0.3)
+
+        created = int(datetime.now().timestamp())
+
+        response = {
+            "id": f"video-{created}",
+            "object": "video.generation",
+            "created": created,
+            "model": model,
+            "data": [
+                {
+                    "url": f"https://mock-videos.example.com/{model}/{created}.mp4",
+                    "duration": duration,
+                    "fps": fps,
+                    "size": size,
+                    "revised_prompt": f"Mock revised prompt for: {prompt[:50]}..."
+                }
+            ],
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in video generations endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
+@app.route("/v1/rerank", methods=["POST"])
+@auth.login_required
+def rerank():
+    """
+    Simulates the rerank endpoint (vLLM/JinaAI format).
+    Re-ranks documents based on relevance to a query.
+    """
+    try:
+        model = request.json.get("model", "rerank-model")
+        query = request.json.get("query")
+        documents = request.json.get("documents", [])
+        top_n = request.json.get("top_n", 0)
+
+        if not query:
+            return create_error_response("'query' is a required parameter", param="query")
+
+        if not documents:
+            return create_error_response("'documents' is a required parameter", param="documents")
+
+        # Simulate processing time
+        time.sleep(0.1)
+
+        # Generate mock relevance scores
+        results = []
+        for idx, doc in enumerate(documents):
+            # Generate a random relevance score between 0 and 1
+            relevance_score = random.uniform(0.1, 0.95)
+            results.append({
+                "index": idx,
+                "document": {"text": doc if isinstance(doc, str) else str(doc)},
+                "relevance_score": round(relevance_score, 6)
+            })
+
+        # Sort by relevance score (descending)
+        results.sort(key=lambda x: x["relevance_score"], reverse=True)
+
+        # Apply top_n if specified
+        if top_n > 0:
+            results = results[:top_n]
+
+        # Calculate token counts
+        query_tokens = get_token_count(query) if tokenizer else len(query.split())
+        doc_tokens = sum(
+            get_token_count(d) if tokenizer else len(str(d).split())
+            for d in documents
+        )
+        total_tokens = query_tokens + doc_tokens
+
+        response = {
+            "id": f"rerank-{int(datetime.now().timestamp())}",
+            "model": model,
+            "usage": {
+                "prompt_tokens": total_tokens,
+                "total_tokens": total_tokens
+            },
+            "results": results
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in rerank endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
+@app.route("/version", methods=["GET"])
+def version():
+    """
+    Returns the version information (vLLM-compatible).
+    """
+    return jsonify({"version": "0.13.0-mock"})
+
+
+@app.route("/tokenize", methods=["POST"])
+@auth.login_required
+def tokenize():
+    """
+    Simulates the tokenize endpoint.
+    Returns token IDs for the given text.
+    """
+    try:
+        data = request.json or {}
+        model = data.get("model")
+        prompt = data.get("prompt")
+        add_special_tokens = data.get("add_special_tokens", True)
+
+        if not prompt:
+            return create_error_response("'prompt' is a required parameter", param="prompt")
+
+        # Generate mock tokens
+        if tokenizer is not None:
+            encoded = tokenizer(prompt, add_special_tokens=add_special_tokens)
+            tokens = encoded["input_ids"]
+        else:
+            # Mock tokenization: split by whitespace and assign sequential IDs
+            words = prompt.split()
+            tokens = list(range(100, 100 + len(words)))
+
+        response = {
+            "tokens": tokens,
+            "count": len(tokens),
+            "max_model_len": 16384,
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in tokenize endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
+@app.route("/detokenize", methods=["POST"])
+@auth.login_required
+def detokenize():
+    """
+    Simulates the detokenize endpoint.
+    Returns text for the given token IDs.
+    """
+    try:
+        data = request.json or {}
+        model = data.get("model")
+        tokens = data.get("tokens")
+
+        if not tokens:
+            return create_error_response("'tokens' is a required parameter", param="tokens")
+
+        # Generate mock detokenization
+        if tokenizer is not None:
+            try:
+                prompt = tokenizer.decode(tokens)
+            except Exception:
+                prompt = f"[Detokenized {len(tokens)} tokens]"
+        else:
+            prompt = f"[Mock detokenized text for {len(tokens)} tokens]"
+
+        response = {
+            "prompt": prompt,
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in detokenize endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
+@app.route("/load", methods=["GET"])
+def load():
+    """
+    Returns the current server load metrics (vLLM-compatible).
+    """
+    server_load = overrides.get("server_load", random.randint(0, 10))
+    return jsonify({"server_load": server_load})
+
+
+@app.route("/ping", methods=["GET", "POST"])
+def ping():
+    """
+    Simple health check endpoint (SageMaker-compatible).
+    """
+    return Response(status=200)
+
+
 @app.route("/set_metrics", methods=["POST"])
 def set_metrics():
     global overrides
@@ -851,18 +1557,21 @@ vllm:{metric_name}{{model_name="{model_name}"}} {value}
 @app.route("/metrics")
 def metrics():
     # get deployment information
-    try:
-        apps_v1 = client.AppsV1Api()
-        resp = apps_v1.read_namespaced_deployment(DEPLOYMENT_NAME, NAMESPACE)
-        replicas = resp.spec.replicas if resp.spec.replicas is not None else 1
-    except Exception as e:
-        print(
-            f"Failed to get deployment information: {DEPLOYMENT_NAME=} {NAMESPACE=} error={str(e)}"
-        )
-        print(
-            f"Due to the failure, replicas {DEFAULT_REPLICAS} will be used to calculate metrics"
-        )
+    if STANDALONE_MODE:
         replicas = DEFAULT_REPLICAS
+    else:
+        try:
+            apps_v1 = client.AppsV1Api()
+            resp = apps_v1.read_namespaced_deployment(DEPLOYMENT_NAME, NAMESPACE)
+            replicas = resp.spec.replicas if resp.spec.replicas is not None else 1
+        except Exception as e:
+            print(
+                f"Failed to get deployment information: {DEPLOYMENT_NAME=} {NAMESPACE=} error={str(e)}"
+            )
+            print(
+                f"Due to the failure, replicas {DEFAULT_REPLICAS} will be used to calculate metrics"
+            )
+            replicas = DEFAULT_REPLICAS
 
     # a reasonable mock total value
     total = overrides.get("total", 100.0)
@@ -1199,11 +1908,12 @@ if __name__ == "__main__":
 
     # Perform profiling and skip actual run
     if "--time_limit" not in sys.argv:
-        try:
-            # config.load_kube_config()
-            config.load_incluster_config()
-        except Exception as e:
-            print(f"Failed to load k8s config: {e}")
+        if not STANDALONE_MODE:
+            try:
+                # config.load_kube_config()
+                config.load_incluster_config()
+            except Exception as e:
+                print(f"Failed to load k8s config: {e}")
 
         app.run(host="0.0.0.0", port=8000)
 

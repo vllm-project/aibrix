@@ -48,6 +48,10 @@ func (m *MockPodList) ListByIndex(index string) []*v1.Pod {
 	return m.pods
 }
 
+func (m *MockPodList) ListPortsForPod() map[string][]int {
+	return nil
+}
+
 func createTestRoutingContext(model, message, requestID string) *types.RoutingContext {
 	ctx := context.Background()
 	return types.NewRoutingContext(ctx, RouterPrefixCachePreble, model, message, requestID, "")
