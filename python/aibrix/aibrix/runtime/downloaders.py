@@ -244,7 +244,7 @@ class GCSArtifactDownloader(ArtifactDownloader):
             # Check if it's a directory (prefix) or single file
             if blob_name.endswith("/"):
                 # Download directory
-                blobs = bucket.list_blobs(prefix=blob_name)
+                blobs = list(bucket.list_blobs(prefix=blob_name))
                 for blob in blobs:
                     if blob.name == blob_name:  # Skip directory marker
                         continue
@@ -276,6 +276,147 @@ class GCSArtifactDownloader(ArtifactDownloader):
                 raise PermissionError(f"Access denied to GCS object: {source_url}")
             else:
                 raise RuntimeError(f"GCS download error: {e}")
+
+
+class TOSArtifactDownloader(ArtifactDownloader):
+    """Download artifacts from Volcengine TOS."""
+
+    async def download(
+        self, source_url: str, local_path: str, credentials: Optional[Dict] = None
+    ) -> str:
+        """
+        Download from TOS.
+
+        Credentials dict should contain:
+        - ak: Access key
+        - sk: Secret key
+        - session_key: Session key (optional)
+        - endpoint: TOS endpoint (optional)
+        - region: TOS region (optional)
+        - enable_crc: Whether to enable CRC check (optional)
+        """
+        try:
+            import tos
+            from tos.exceptions import TosClientError, TosServerError
+        except ImportError:
+            raise ImportError(
+                "tos is required for TOS downloads. Install with: pip install tos"
+            )
+
+        parsed = urlparse(source_url)
+        bucket_name = parsed.netloc
+        object_key = parsed.path.lstrip("/")
+
+        if not bucket_name or not object_key:
+            raise ValueError(f"Invalid TOS URL: {source_url}")
+
+        if not credentials:
+            raise ValueError("TOS credentials are required in credentials dict.")
+
+        ak = credentials.get("TOS_ACCESS_KEY")
+        sk = credentials.get("TOS_SECRET_KEY")
+        session_key = credentials.get("TOS_SESSION_KEY", None)
+        if not ak or not sk:
+            raise ValueError(
+                "TOS access key/secret key must be provided in credentials dict., the name should be TOS_ACCESS_KEY, TOS_SECRET_KEY"
+            )
+
+        endpoint = (
+            credentials.get("endpoint")
+            or credentials.get("tos_endpoint")
+            # for more endpoint, please refer to https://www.volcengine.com/docs/6349/107356?lang=en
+            or os.getenv("TOS_ENDPOINT", "tos-cn-beijing.volces.com")
+        )
+        region = (
+            credentials.get("region")
+            or credentials.get("tos_region")
+            # for more region, please refer to https://www.volcengine.com/docs/6349/107356?lang=en
+            or os.getenv("TOS_REGION", "cn-beijing")
+        )
+        enable_crc_value = credentials.get("enable_crc") or credentials.get(
+            "tos_enable_crc"
+        )
+        enable_crc = (
+            str(enable_crc_value).strip().lower()
+            in {"1", "true", "t", "yes", "y", "on"}
+            if enable_crc_value is not None
+            else False
+        )
+
+        client = tos.TosClientV2(
+            ak=ak,
+            sk=sk,
+            security_token=session_key,
+            endpoint=endpoint,
+            region=region,
+            enable_crc=enable_crc,
+        )
+
+        self._ensure_directory(local_path)
+
+        try:
+            if object_key.endswith("/"):
+                await asyncio.to_thread(
+                    self._download_tos_directory,
+                    client,
+                    bucket_name,
+                    object_key,
+                    local_path,
+                )
+            else:
+                destination_file = os.path.join(
+                    local_path, os.path.basename(object_key)
+                )
+                tmp_file = destination_file + ".part"
+                await asyncio.to_thread(
+                    client.download_file,
+                    bucket=bucket_name,
+                    key=object_key,
+                    file_path=tmp_file,
+                )
+                os.replace(tmp_file, destination_file)
+                logger.info(f"Downloaded TOS file to {destination_file}")
+
+            return local_path
+
+        except (TosClientError, TosServerError) as e:
+            logger.error(f"TOS download error: {e}")
+            status_code = getattr(e, "status_code", None)
+            if status_code == 404 or "404" in str(e):
+                raise FileNotFoundError(f"TOS object not found: {source_url}")
+            if status_code == 403 or "403" in str(e):
+                raise PermissionError(f"Access denied to TOS object: {source_url}")
+            raise RuntimeError(f"TOS download error: {e}")
+
+    def _download_tos_directory(
+        self, client, bucket_name: str, prefix: str, local_path: str
+    ) -> None:
+        # NOTE: list_objects_type2 may paginate results (e.g., resp.is_truncated / continuation token).
+        # We currently only fetch the first page. This is OK for small model artifacts, but may miss objects
+        # if the prefix contains many keys.
+        resp = client.list_objects_type2(bucket_name, prefix=prefix)
+        for obj in getattr(resp, "contents", []) or []:
+            key = getattr(obj, "key", None)
+            if not key or key == prefix:
+                continue
+            relative_path = key[len(prefix) :]
+            if not relative_path:
+                continue
+
+            if key.endswith("/") or relative_path.endswith("/"):
+                dir_path = os.path.join(local_path, relative_path.rstrip("/"))
+                if dir_path:
+                    os.makedirs(dir_path, exist_ok=True)
+                continue
+
+            local_file_path = os.path.join(local_path, relative_path)
+            os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+
+            tmp_file = local_file_path + ".part"
+            client.download_file(bucket=bucket_name, key=key, file_path=tmp_file)
+            os.replace(tmp_file, local_file_path)
+
+        logger.info(f"Downloaded TOS directory {prefix} to {local_path}")
 
 
 class HuggingFaceArtifactDownloader(ArtifactDownloader):
@@ -428,6 +569,7 @@ def get_downloader(source_url: str) -> ArtifactDownloader:
     downloader_map = {
         "s3": S3ArtifactDownloader(),
         "gcs": GCSArtifactDownloader(),
+        "tos": TOSArtifactDownloader(),
         "huggingface": HuggingFaceArtifactDownloader(),
         "http": HTTPArtifactDownloader(),
         "https": HTTPArtifactDownloader(),
