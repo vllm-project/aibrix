@@ -1586,18 +1586,33 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         aligned_num_tokens = num_tokens - num_tokens % self.block_ntokens
         num_chunks = -(-aligned_num_tokens // self._chunk_size)
         chunk_start = prefix_len
+        aligned_end = prefix_len + aligned_num_tokens
         for _ in range(num_chunks):
-            chunk_end = chunk_start + self._chunk_size
-            next_chunk_end = chunk_end + self._chunk_size
+            # Ensure we don't exceed aligned_num_tokens
+            chunk_end = min(chunk_start + self._chunk_size, aligned_end)
+            if chunk_end <= chunk_start:
+                break
+            next_chunk_end = min(chunk_end + self._chunk_size, aligned_end)
             yield (
                 all[:chunk_start],
                 all[chunk_start:chunk_end],
                 all[chunk_end:next_chunk_end]
-                if next_chunk_end < len(all)
+                if next_chunk_end < aligned_end
                 else None,
                 all,
             )
             chunk_start += self._chunk_size
+
+        # Handle remaining unaligned tokens (if any)
+        remaining_start = prefix_len + aligned_num_tokens
+        if remaining_start < len(all):
+            remaining_tokens = all[remaining_start:]
+            yield (
+                all[:remaining_start],
+                remaining_tokens,
+                None,
+                all,
+            )
 
 
 class GroupAwareKVCacheManager(BaseKVCacheManager):
