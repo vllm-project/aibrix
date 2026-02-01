@@ -4020,6 +4020,17 @@ spec:
                         type: string
                     type: object
                 type: object
+              topologyPolicy:
+                properties:
+                  key:
+                    type: string
+                  scope:
+                    enum:
+                    - StormService
+                    - RoleSet
+                    - Role
+                    type: string
+                type: object
               updateStrategy:
                 default: Sequential
                 enum:
