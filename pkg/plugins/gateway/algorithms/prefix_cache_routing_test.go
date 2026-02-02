@@ -22,40 +22,44 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/vllm-project/aibrix/pkg/cache"
-	"github.com/vllm-project/aibrix/pkg/metrics"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 )
 
 // TestGetTargetPodOnLoadImbalance tests load imbalance detection and pod selection
 func TestGetTargetPodOnLoadImbalance(t *testing.T) {
 	tests := []struct {
-		name            string
-		podCount        int
-		requestCounts   map[string]int // pod name -> request count
-		imbalanceCount  int            // threshold value
-		expectImbalance bool
-		expectPodPrefix string // Expected pod name prefix (e.g., "pod-0" for min count pod)
-		description     string // Test description
+		name             string
+		podCount         int
+		targetPodListLen int
+		requestCounts    map[string]int // pod name -> request count
+		imbalanceCount   int            // threshold value
+		expectImbalance  bool
+		expectPodPrefix  string // Expected pod name prefix (e.g., "pod-0" for min count pod)
+		description      string // Test description
 	}{
 		{
-			name:            "no_imbalance_identical_counts",
-			podCount:        4,
-			requestCounts:   map[string]int{"pod-0": 10, "pod-1": 10, "pod-2": 10, "pod-3": 10},
-			imbalanceCount:  8,
-			expectImbalance: false,
-			expectPodPrefix: "",
-			description:     "Identical request counts should show no imbalance",
+			name:             "no_imbalance_identical_counts",
+			podCount:         4,
+			targetPodListLen: 4,
+			requestCounts:    map[string]int{"pod-0": 10, "pod-1": 10, "pod-2": 10, "pod-3": 10},
+			imbalanceCount:   8,
+			expectImbalance:  false,
+			expectPodPrefix:  "",
+			description:      "Identical request counts should show no imbalance",
 		},
 		{
-			name:            "imbalance_detected_single_min",
-			podCount:        3,
-			requestCounts:   map[string]int{"pod-0": 0, "pod-1": 10, "pod-2": 20},
-			imbalanceCount:  8,
-			expectImbalance: true,
-			expectPodPrefix: "pod-0",
-			description:     "Clear imbalance should select single minimum pod",
+			name:             "imbalance_detected_single_min",
+			podCount:         3,
+			targetPodListLen: 1,
+			requestCounts:    map[string]int{"pod-0": 0, "pod-1": 10, "pod-2": 20},
+			imbalanceCount:   8,
+			expectImbalance:  true,
+			expectPodPrefix:  "pod-0",
+			description:      "Clear imbalance should select single minimum pod",
 		},
 		{
 			name:            "imbalance_multiple_min_pods",
@@ -67,76 +71,84 @@ func TestGetTargetPodOnLoadImbalance(t *testing.T) {
 			description:     "Multiple minimum pods should select one of them",
 		},
 		{
-			name:            "exactly_at_threshold",
-			podCount:        2,
-			requestCounts:   map[string]int{"pod-0": 0, "pod-1": 8},
-			imbalanceCount:  8,
-			expectImbalance: false,
-			expectPodPrefix: "",
-			description:     "Difference exactly at threshold should show no imbalance",
+			name:             "exactly_at_threshold",
+			podCount:         2,
+			targetPodListLen: 1,
+			requestCounts:    map[string]int{"pod-0": 0, "pod-1": 8},
+			imbalanceCount:   8,
+			expectImbalance:  false,
+			expectPodPrefix:  "",
+			description:      "Difference exactly at threshold should show no imbalance",
 		},
 		{
-			name:            "just_above_threshold",
-			podCount:        2,
-			requestCounts:   map[string]int{"pod-0": 0, "pod-1": 9},
-			imbalanceCount:  8,
-			expectImbalance: true,
-			expectPodPrefix: "pod-0",
-			description:     "Difference just above threshold should trigger imbalance",
+			name:             "just_above_threshold",
+			podCount:         2,
+			targetPodListLen: 1,
+			requestCounts:    map[string]int{"pod-0": 0, "pod-1": 9},
+			imbalanceCount:   8,
+			expectImbalance:  true,
+			expectPodPrefix:  "pod-0",
+			description:      "Difference just above threshold should trigger imbalance",
 		},
 		{
-			name:            "empty_pods_list",
-			podCount:        0,
-			requestCounts:   map[string]int{},
-			imbalanceCount:  8,
-			expectImbalance: false,
-			expectPodPrefix: "",
-			description:     "Empty pods list should show no imbalance",
+			name:             "empty_pods_list",
+			podCount:         0,
+			targetPodListLen: 0,
+			requestCounts:    map[string]int{},
+			imbalanceCount:   8,
+			expectImbalance:  false,
+			expectPodPrefix:  "",
+			description:      "Empty pods list should show no imbalance",
 		},
 		{
-			name:            "single_pod_no_imbalance",
-			podCount:        1,
-			requestCounts:   map[string]int{"pod-0": 10},
-			imbalanceCount:  8,
-			expectImbalance: false,
-			expectPodPrefix: "",
-			description:     "Single pod should never show imbalance",
+			name:             "single_pod_no_imbalance",
+			podCount:         1,
+			targetPodListLen: 1,
+			requestCounts:    map[string]int{"pod-0": 10},
+			imbalanceCount:   8,
+			expectImbalance:  false,
+			expectPodPrefix:  "",
+			description:      "Single pod should never show imbalance",
 		},
 		{
-			name:            "all_zero_counts",
-			podCount:        3,
-			requestCounts:   map[string]int{"pod-0": 0, "pod-1": 0, "pod-2": 0},
-			imbalanceCount:  8,
-			expectImbalance: false,
-			expectPodPrefix: "",
-			description:     "All zero counts should show no imbalance",
+			name:             "all_zero_counts",
+			podCount:         3,
+			targetPodListLen: 3,
+			requestCounts:    map[string]int{"pod-0": 0, "pod-1": 0, "pod-2": 0},
+			imbalanceCount:   8,
+			expectImbalance:  false,
+			expectPodPrefix:  "",
+			description:      "All zero counts should show no imbalance",
 		},
 		{
-			name:            "large_imbalance",
-			podCount:        4,
-			requestCounts:   map[string]int{"pod-0": 0, "pod-1": 5, "pod-2": 50, "pod-3": 100},
-			imbalanceCount:  8,
-			expectImbalance: true,
-			expectPodPrefix: "pod-0",
-			description:     "Large spread in request counts should trigger imbalance and select minimum",
+			name:             "large_imbalance",
+			podCount:         4,
+			targetPodListLen: 1,
+			requestCounts:    map[string]int{"pod-0": 0, "pod-1": 5, "pod-2": 50, "pod-3": 100},
+			imbalanceCount:   8,
+			expectImbalance:  true,
+			expectPodPrefix:  "pod-0",
+			description:      "Large spread in request counts should trigger imbalance and select minimum",
 		},
 		{
-			name:            "default_threshold_value_no_imbalance",
-			podCount:        4,
-			requestCounts:   map[string]int{"pod-0": 1, "pod-1": 2, "pod-2": 3, "pod-3": 9},
-			imbalanceCount:  8, // Default threshold
-			expectImbalance: false,
-			expectPodPrefix: "",
-			description:     "Pod running request count ≤ default abs value of 8 should show no imbalance",
+			name:             "default_threshold_value_no_imbalance",
+			podCount:         4,
+			targetPodListLen: 1,
+			requestCounts:    map[string]int{"pod-0": 1, "pod-1": 2, "pod-2": 3, "pod-3": 9},
+			imbalanceCount:   8, // Default threshold
+			expectImbalance:  false,
+			expectPodPrefix:  "",
+			description:      "Pod running request count ≤ default abs value of 8 should show no imbalance",
 		},
 		{
-			name:            "default_threshold_value_with_imbalance",
-			podCount:        4,
-			requestCounts:   map[string]int{"pod-0": 2, "pod-1": 2, "pod-2": 8, "pod-3": 16},
-			imbalanceCount:  8, // Default threshold
-			expectImbalance: true,
-			expectPodPrefix: "pod-", // Any of pod-0 or pod-1
-			description:     "Pod running request count > default abs value of 8 should trigger imbalance",
+			name:             "default_threshold_value_with_imbalance",
+			podCount:         4,
+			targetPodListLen: 2,
+			requestCounts:    map[string]int{"pod-0": 2, "pod-1": 2, "pod-2": 8, "pod-3": 16},
+			imbalanceCount:   8, // Default threshold
+			expectImbalance:  true,
+			expectPodPrefix:  "pod-", // Any of pod-0 or pod-1
+			description:      "Pod running request count > default abs value of 8 should trigger imbalance",
 		},
 	}
 
@@ -179,24 +191,24 @@ func TestGetTargetPodOnLoadImbalance(t *testing.T) {
 			testCache := cache.NewWithPodsMetricsForTest(pods, "test-model", metricsMap)
 
 			// Execute function
-			targetPod, imbalance := getTargetPodOnLoadImbalance(testCache, pods)
+			targetPodList, imbalance := getTargetPodListOnLoadImbalance(testCache, pods)
 
 			// Verify imbalance detection
 			assert.Equal(t, tt.expectImbalance, imbalance, "Imbalance detection mismatch")
 
 			// Verify target pod selection
 			if tt.expectImbalance {
-				assert.NotNil(t, targetPod, "Expected a target pod when imbalance detected")
-				if tt.expectPodPrefix != "" && targetPod != nil {
-					assert.Contains(t, targetPod.Name, tt.expectPodPrefix, "Unexpected target pod selected")
+				assert.NotNil(t, targetPodList[0], "Expected a target pod when imbalance detected")
+				if tt.expectPodPrefix != "" && len(targetPodList) > 0 {
+					assert.Contains(t, targetPodList[0].Name, tt.expectPodPrefix, "Unexpected target pod selected")
 					// Verify it has minimum count
-					minCount := tt.requestCounts[targetPod.Name]
+					minCount := tt.requestCounts[targetPodList[0].Name]
 					for _, count := range tt.requestCounts {
 						assert.GreaterOrEqual(t, count, minCount, "Selected pod should have minimum request count")
 					}
 				}
 			} else {
-				assert.Nil(t, targetPod, "No target pod expected when no imbalance")
+				assert.Equal(t, tt.targetPodListLen, len(targetPodList), "No target pod expected when no imbalance")
 			}
 		})
 	}
@@ -619,22 +631,24 @@ func TestSelectTargetPodWithLeastRequestCount(t *testing.T) {
 // TestLoadImbalanceEdgeCases tests extreme edge cases for load imbalance detection
 func TestLoadImbalanceEdgeCases(t *testing.T) {
 	tests := []struct {
-		name            string
-		podCount        int
-		requestCounts   map[string]int
-		imbalanceCount  int
-		expectImbalance bool
-		expectPodPrefix string
-		description     string
+		name             string
+		podCount         int
+		targetPodListLen int
+		requestCounts    map[string]int
+		imbalanceCount   int
+		expectImbalance  bool
+		expectPodPrefix  string
+		description      string
 	}{
 		{
-			name:            "max_int_values_no_overflow",
-			podCount:        2,
-			requestCounts:   map[string]int{"pod-0": math.MaxInt32, "pod-1": math.MaxInt32 - 1},
-			imbalanceCount:  8,
-			expectImbalance: false, // Difference = 1, below threshold
-			expectPodPrefix: "",
-			description:     "Should handle MaxInt32 values without overflow",
+			name:             "max_int_values_no_overflow",
+			podCount:         2,
+			targetPodListLen: 1,
+			requestCounts:    map[string]int{"pod-0": math.MaxInt32, "pod-1": math.MaxInt32 - 1},
+			imbalanceCount:   8,
+			expectImbalance:  false, // Difference = 1, below threshold
+			expectPodPrefix:  "",
+			description:      "Should handle MaxInt32 values without overflow",
 		},
 		{
 			name:            "max_int_imbalance_detected",
@@ -673,13 +687,14 @@ func TestLoadImbalanceEdgeCases(t *testing.T) {
 			description:     "Negative threshold should not prevent imbalance detection",
 		},
 		{
-			name:            "all_pods_same_max_value",
-			podCount:        3,
-			requestCounts:   map[string]int{"pod-0": math.MaxInt32, "pod-1": math.MaxInt32, "pod-2": math.MaxInt32},
-			imbalanceCount:  8,
-			expectImbalance: false, // No difference
-			expectPodPrefix: "",
-			description:     "Identical MaxInt32 values should show no imbalance",
+			name:             "all_pods_same_max_value",
+			targetPodListLen: 3,
+			podCount:         3,
+			requestCounts:    map[string]int{"pod-0": math.MaxInt32, "pod-1": math.MaxInt32, "pod-2": math.MaxInt32},
+			imbalanceCount:   8,
+			expectImbalance:  false, // No difference
+			expectPodPrefix:  "",
+			description:      "Identical MaxInt32 values should show no imbalance",
 		},
 		{
 			name:            "mixed_extreme_values",
@@ -731,24 +746,24 @@ func TestLoadImbalanceEdgeCases(t *testing.T) {
 			testCache := cache.NewWithPodsMetricsForTest(pods, "test-model", metricsMap)
 
 			// Execute function
-			targetPod, imbalance := getTargetPodOnLoadImbalance(testCache, pods)
+			targetPodList, imbalance := getTargetPodListOnLoadImbalance(testCache, pods)
 
 			// Verify imbalance detection
 			assert.Equal(t, tt.expectImbalance, imbalance, "Imbalance detection mismatch: %s", tt.description)
 
 			// Verify target pod selection
 			if tt.expectImbalance {
-				assert.NotNil(t, targetPod, "Expected a target pod when imbalance detected: %s", tt.description)
-				if tt.expectPodPrefix != "" && targetPod != nil {
-					assert.Contains(t, targetPod.Name, tt.expectPodPrefix, "Unexpected target pod selected: %s", tt.description)
+				assert.NotNil(t, targetPodList[0], "Expected a target pod when imbalance detected: %s", tt.description)
+				if tt.expectPodPrefix != "" && len(targetPodList) > 0 {
+					assert.Contains(t, targetPodList[0].Name, tt.expectPodPrefix, "Unexpected target pod selected: %s", tt.description)
 					// Verify it has minimum count
-					minCount := tt.requestCounts[targetPod.Name]
+					minCount := tt.requestCounts[targetPodList[0].Name]
 					for _, count := range tt.requestCounts {
 						assert.GreaterOrEqual(t, count, minCount, "Selected pod should have minimum request count: %s", tt.description)
 					}
 				}
 			} else {
-				assert.Nil(t, targetPod, "No target pod expected when no imbalance: %s", tt.description)
+				assert.Equal(t, tt.targetPodListLen, len(targetPodList), "No target pod expected when no imbalance: %s", tt.description)
 			}
 		})
 	}
@@ -1031,7 +1046,7 @@ func TestKVSyncPodKeyHandlingEdgeCases(t *testing.T) {
 }
 
 // TestSelectPodWithLeastRequestCountEdgeCases tests edge cases for KV sync fallback selection
-func TestSelectPodWithLeastRequestCountEdgeCases(t *testing.T) {
+func TestSelectTargetPodWithLeastRequestCountEdgeCases(t *testing.T) {
 	tests := []struct {
 		name         string
 		podMetrics   map[string]int
@@ -1099,7 +1114,7 @@ func TestSelectPodWithLeastRequestCountEdgeCases(t *testing.T) {
 			testCache := cache.NewWithPodsMetricsForTest(pods, "test-model", metricsMap)
 
 			// Test function
-			result := selectPodWithLeastRequestCount(testCache, pods)
+			result := selectTargetPodWithLeastRequestCount(testCache, pods)
 
 			if tt.expectNil {
 				assert.Nil(t, result, tt.description)

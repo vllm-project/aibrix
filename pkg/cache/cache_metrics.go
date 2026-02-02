@@ -227,7 +227,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			if shouldSkipMetric(pod.Name, metricName) {
 				continue
 			}
-			c.emitMetricToPrometheus(metricName, metricValue, podLabelNames, podLabelValues)
+			metrics.EmitMetricToPrometheus(metricName, metricValue, podLabelNames, podLabelValues)
 		}
 
 		for metricName, metricValue := range result.ModelMetrics {
@@ -273,7 +273,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 				}
 			}
 
-			c.emitMetricToPrometheus(metric, metricValue, labelNames, labelValues)
+			metrics.EmitMetricToPrometheus(metric, metricValue, labelNames, labelValues)
 		}
 		// Update pod metrics using typed results
 		c.updatePodMetricsFromTypedResult(pod, result)
@@ -313,54 +313,6 @@ func (c *Store) worker(jobs <-chan *Pod) {
 
 		cancel()
 	}
-}
-
-func (c *Store) emitMetricToPrometheus(metricName string, metricValue metrics.MetricValue, labelNames []string, labelValues []string) {
-	metricDef, exists := metrics.Metrics[metricName]
-	if !exists {
-		return
-	}
-
-	switch metricDef.MetricType.Raw {
-	case metrics.Gauge:
-		metrics.SetGaugeMetric(metricName, metrics.GetMetricHelp(metricName), metricValue.GetSimpleValue(), labelNames, labelValues...)
-	case metrics.Counter:
-		c.emitCounterValue(metricName, metricValue.GetSimpleValue(), labelNames, labelValues...)
-	default:
-		if hv := metricValue.GetHistogramValue(); hv != nil {
-			metrics.SetHistogramMetric(metricName, metrics.GetMetricHelp(metricName), hv, labelNames, labelValues...)
-			p50, _ := hv.GetPercentile(50)
-			metrics.SetGaugeMetric(metricName+"_p50", metrics.GetMetricHelp(metricName), p50, labelNames, labelValues...)
-			p90, _ := hv.GetPercentile(90)
-			metrics.SetGaugeMetric(metricName+"_p90", metrics.GetMetricHelp(metricName), p90, labelNames, labelValues...)
-			p99, _ := hv.GetPercentile(99)
-			metrics.SetGaugeMetric(metricName+"_p99", metrics.GetMetricHelp(metricName), p99, labelNames, labelValues...)
-		}
-	}
-}
-
-func (c *Store) emitCounterValue(metricName string, currentValue float64, labelNames []string, labelValues ...string) {
-	if strings.HasSuffix(metricName, "_total") {
-		key := metricName + "|" + strings.Join(labelValues, "|")
-		lastAny, ok := lastCounterValues.Load(key)
-		if !ok {
-			lastCounterValues.Store(key, currentValue)
-			return
-		}
-		last, ok := lastAny.(float64)
-		if !ok {
-			lastCounterValues.Store(key, currentValue)
-			return
-		}
-		delta := currentValue - last
-		lastCounterValues.Store(key, currentValue)
-		if delta > 0 {
-			metrics.IncrementCounterMetric(metricName, metrics.GetMetricHelp(metricName), delta, labelNames, labelValues...)
-		}
-		return
-	}
-
-	metrics.SetGaugeMetric(metricName, metrics.GetMetricHelp(metricName), currentValue, labelNames, labelValues...)
 }
 
 func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
