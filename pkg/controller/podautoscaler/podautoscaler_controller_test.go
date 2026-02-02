@@ -283,7 +283,13 @@ func TestComputeMetricBasedReplicas_StormService_FiltersIndex0(t *testing.T) {
 			ss := buildStormService(ns, ssName, "test-role", tc.podGroupSize)
 
 			cl := fake.NewClientBuilder().WithScheme(sch).
-				WithObjects(p0, p1, p2, pWrongApp, ss).
+				WithObjects(
+					p0.DeepCopy(),
+					p1.DeepCopy(),
+					p2.DeepCopy(),
+					pWrongApp.DeepCopy(),
+					ss,
+				).
 				Build()
 
 			pa := autoscalingv1alpha1.PodAutoscaler{

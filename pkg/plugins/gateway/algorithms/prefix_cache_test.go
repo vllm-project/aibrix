@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -99,7 +100,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	c.AddRequestCount(ctx3, ctx3.RequestID, ctx3.Model)
 	t.Log(targetPod)
 
-	// prefix match, load imbalanced -> select least request pod
+	// prefix match, load imbalanced -> select least request pod, p1 or p2 both are available
 	input = "abcd"
 	// pre_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 2(abcdefgh)]
 	// post_request_count: [p1: 0, p2: 1 (abcd), p3: 1 (wxyz), p4: 2(abcdefgh)]
@@ -125,7 +126,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	c.AddRequestCount(ctx5, ctx5.RequestID, ctx5.Model)
 	t.Log(targetPod)
 
-	// prefix match, load balanced -> selects p2 or p3
+	// prefix match, load balanced -> selects p2 or p4
 	input = "abcdefgh"
 	// pre_request_count: [p1: 0, p2: 2 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
 	// post_request_count: [p1: 0, p2: 3 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
@@ -139,8 +140,8 @@ func Test_PrefixCacheE2E(t *testing.T) {
 
 	// pre prefix match, load imbalance -> select least request pod
 	input = "abcdefgh"
-	// pre_request_count: [p1: 0, p2: 9 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
-	// post_request_count: [p1: 1 (abcdefgh), p2: 9 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
+	// pre_request_count: [p1: 0, p2: 3 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
+	// post_request_count: [p1: 0 , p2: 9 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
 	t.Log(input)
 	for i := 0; i < 6; i++ {
 		ctx := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r7-12", "")
@@ -149,6 +150,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	}
 	ctx7 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r7", "")
 	p1, err := prefixCacheRouter.Route(ctx7, podList)
+	// post_request_count: [p1: 9 (abcdefgh), p2: 0 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
 	t.Log(p2, p3, p4)
 	t.Log(p1)
 	assert.NoError(t, err)

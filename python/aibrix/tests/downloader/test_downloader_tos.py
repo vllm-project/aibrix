@@ -63,7 +63,7 @@ def test_get_downloader_tos_path_not_exist(mock_boto3):
     mock_not_exsit_tos(mock_boto3)
 
     with pytest.raises(ModelNotFoundError) as exception:
-        get_downloader("tos://bucket/not_exsit_path")
+        get_downloader("tos://bucket/not_exist_path")
     assert "Model not found" in str(exception.value)
 
 

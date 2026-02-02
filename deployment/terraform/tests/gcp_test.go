@@ -22,6 +22,7 @@ import (
 	"testing"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/gruntwork-io/terratest/modules/terraform"
 	"github.com/stretchr/testify/assert"
@@ -75,8 +76,11 @@ func TestAIBrixGCPDeployment(t *testing.T) {
 		option.WithMaxRetries(0),
 	)
 
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	// Run a chat completion against the model endpoint
-	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+	chatCompletion, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("What can you tell me about San Francisco?"),
 		}),

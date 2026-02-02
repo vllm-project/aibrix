@@ -26,6 +26,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/yaml"
 )
 
@@ -56,6 +57,12 @@ type FileProvider struct {
 	configPath string
 }
 
+// AddEventHandler implements Provider.
+func (p *FileProvider) AddEventHandler(_ string,
+	_ cache.ResourceEventHandlerFuncs, _ <-chan struct{}) error {
+	return nil
+}
+
 // NewFileProvider creates a new file-based discovery provider.
 func NewFileProvider(configPath string) *FileProvider {
 	return &FileProvider{
@@ -69,7 +76,7 @@ func (p *FileProvider) Type() string {
 }
 
 // Load reads the config file and returns all endpoints as synthetic pods.
-func (p *FileProvider) Load() ([]*v1.Pod, error) {
+func (p *FileProvider) Load() ([]any, error) {
 	data, err := os.ReadFile(p.configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -80,7 +87,7 @@ func (p *FileProvider) Load() ([]*v1.Pod, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	var pods []*v1.Pod
+	var pods []any
 	for _, model := range config.Models {
 		for i, ep := range model.Endpoints {
 			pod, err := endpointToPod(model.Name, i, ep)
@@ -167,3 +174,5 @@ func sanitizeName(name string) string {
 	name = strings.TrimRight(name, "-")
 	return name
 }
+
+var _ Provider = (*FileProvider)(nil)

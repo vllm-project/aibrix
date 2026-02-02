@@ -14,6 +14,8 @@
 
 """Artifact downloaders for different storage backends."""
 
+import asyncio
+import functools
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -57,6 +59,18 @@ class S3ArtifactDownloader(ArtifactDownloader):
     """Download artifacts from AWS S3."""
 
     async def download(
+        self, source_url: str, local_path: str, credentials: Optional[Dict] = None
+    ) -> str:
+        """
+        Download from S3 (Async wrapper).
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            functools.partial(self._download_sync, source_url, local_path, credentials),
+        )
+
+    def _download_sync(
         self, source_url: str, local_path: str, credentials: Optional[Dict] = None
     ) -> str:
         """
@@ -154,7 +168,7 @@ class S3ArtifactDownloader(ArtifactDownloader):
                 local_file_path = os.path.join(local_path, relative_path)
 
                 # Ensure directory exists
-                os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+                self._ensure_directory(os.path.dirname(local_file_path))
 
                 # Download file
                 s3_client.download_file(bucket_name, key, local_file_path)
@@ -167,6 +181,18 @@ class GCSArtifactDownloader(ArtifactDownloader):
     """Download artifacts from Google Cloud Storage."""
 
     async def download(
+        self, source_url: str, local_path: str, credentials: Optional[Dict] = None
+    ) -> str:
+        """
+        Download from GCS (Async wrapper).
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            functools.partial(self._download_sync, source_url, local_path, credentials),
+        )
+
+    def _download_sync(
         self, source_url: str, local_path: str, credentials: Optional[Dict] = None
     ) -> str:
         """
@@ -227,7 +253,7 @@ class GCSArtifactDownloader(ArtifactDownloader):
                     local_file_path = os.path.join(local_path, relative_path)
 
                     # Ensure directory exists
-                    os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+                    self._ensure_directory(os.path.dirname(local_file_path))
 
                     # Download file
                     blob.download_to_filename(local_file_path)
@@ -256,6 +282,18 @@ class HuggingFaceArtifactDownloader(ArtifactDownloader):
     """Download artifacts from HuggingFace Hub."""
 
     async def download(
+        self, source_url: str, local_path: str, credentials: Optional[Dict] = None
+    ) -> str:
+        """
+        Download from HuggingFace Hub (Async wrapper).
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            functools.partial(self._download_sync, source_url, local_path, credentials),
+        )
+
+    def _download_sync(
         self, source_url: str, local_path: str, credentials: Optional[Dict] = None
     ) -> str:
         """

@@ -27,9 +27,11 @@ import (
 	"github.com/redis/go-redis/v9"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/cache/discovery"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -333,7 +335,7 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		// Initialize service discovery
 		if opts.DiscoveryProvider != nil {
 			// Use custom discovery provider (e.g., file-based for standalone mode)
-			if err := initDiscoveryProvider(store, opts.DiscoveryProvider); err != nil {
+			if err := initDiscoveryProvider(store, opts.DiscoveryProvider, stopCh); err != nil {
 				klog.Fatalf("Failed to initialize discovery provider: %v", err)
 			}
 			klog.InfoS("Using custom discovery provider", "type", opts.DiscoveryProvider.Type())
@@ -396,14 +398,40 @@ func initMetricsCache(store *Store, stopCh <-chan struct{}) {
 }
 
 // initDiscoveryProvider initializes the cache using a custom discovery provider.
-func initDiscoveryProvider(store *Store, provider discovery.Provider) error {
-	pods, err := provider.Load()
+func initDiscoveryProvider(store *Store, provider discovery.Provider, stopCh <-chan struct{}) error {
+	objs, err := provider.Load()
 	if err != nil {
 		return err
 	}
 
-	for _, pod := range pods {
-		store.addPod(pod)
+	// add all resources during initialization
+	for _, o := range objs {
+		switch obj := o.(type) {
+		case *v1.Pod:
+			store.addPod(obj)
+		case *modelv1alpha1.ModelAdapter:
+			store.addModelAdapter(obj)
+		default:
+			klog.Warningf("Discovery provider returned unknown object type: %T", o)
+		}
+	}
+
+	// Watch for updates
+	if err := provider.AddEventHandler("Pod",
+		cache.ResourceEventHandlerFuncs{
+			AddFunc:    store.addPod,
+			UpdateFunc: store.updatePod,
+			DeleteFunc: store.deletePod,
+		}, stopCh); err != nil {
+		return err
+	}
+	if err := provider.AddEventHandler("ModelAdapter",
+		cache.ResourceEventHandlerFuncs{
+			AddFunc:    store.addModelAdapter,
+			UpdateFunc: store.updateModelAdapter,
+			DeleteFunc: store.deleteModelAdapter,
+		}, stopCh); err != nil {
+		return err
 	}
 
 	return nil

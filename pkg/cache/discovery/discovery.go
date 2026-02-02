@@ -24,13 +24,18 @@ limitations under the License.
 package discovery
 
 import (
-	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/cache"
 )
 
 // Provider defines the interface for service discovery backends.
 type Provider interface {
-	// Load returns all endpoints as synthetic pods.
-	Load() ([]*v1.Pod, error)
+	// Load returns all k8s like Resources, can be *v1.Pod, *modelv1alpha1.ModelAdapter
+	Load() ([]any, error)
+
+	// Process Resource add/update/delete events. kind is the resource type, "Pod", "ModelAdapter", etc
+	AddEventHandler(kind string,
+		handler cache.ResourceEventHandlerFuncs,
+		stopCh <-chan struct{}) error
 
 	// Type returns a string identifier for the provider type.
 	Type() string
