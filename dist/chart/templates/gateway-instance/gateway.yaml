@@ -118,7 +118,7 @@ spec:
             cluster: original_destination_cluster
             timeout: {{ .Values.gateway.envoyPatchPolicy.route.timeout }}
           typed_per_filter_config:
-            "envoy.filters.http.ext_proc/envoyextensionpolicy/{{ .Release.Namespace }}/aibrix-gateway-plugins-extension-policy/extproc/0":
+            "envoy.filters.http.ext_proc/envoyextensionpolicy/{{ .Release.Namespace }}/{{ include "aibrix.fullname" . }}-gateway-plugins-extension-policy/extproc/0":
               "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
               config: {}
     - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
