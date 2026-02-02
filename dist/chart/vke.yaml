@@ -65,6 +65,14 @@ gatewayPlugin:
       host: aibrix-redis-master
       port: 6379
   messageTimeout: "60s"
+  extProc:
+    backendSettings:
+      circuitBreaker:
+        maxConnections: 1024
+        maxParallelRequests: 1024
+        maxPendingRequests: 1024
+        maxParallelRetries: 1024
+        maxRequestsPerConnection: 1024
   tolerations: []
 
 gpuOptimizer:
@@ -133,10 +141,27 @@ gateway:
   clientTrafficPolicy:
     connection:
       bufferLimit: 4194304  # 4MiB
+      connectionLimit:
+        value: 1024
+    http2:
+      maxConcurrentStreams: 1024
+  backendTrafficPolicy:
+    circuitBreaker:
+      maxConnections: 1024
+      maxParallelRequests: 1024
+      maxParallelRetries: 1024
+      maxPendingRequests: 1024
+      maxRequestsPerConnection: 1024
+    http2:
+      maxConcurrentStreams: 1024
   envoyPatchPolicy:
     route:
       timeout: 120s          # e.g., "120s" or "2m"
       connectTimeout: 6s     # e.g., "6s"
+    circuitBreakers:
+      maxConnections: 1024
+      maxRequests: 1024
+      maxPendingRequests: 1024
 
 
 metadata:

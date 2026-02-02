@@ -85,6 +85,31 @@ spec:
       name: {{ include "aibrix.fullname" . }}-eg
   connection:
     bufferLimit: {{ .Values.gateway.clientTrafficPolicy.connection.bufferLimit }}
+    connectionLimit:
+      value: {{ .Values.gateway.clientTrafficPolicy.connection.connectionLimit.value }}
+  http2:
+    maxConcurrentStreams: {{ .Values.gateway.clientTrafficPolicy.http2.maxConcurrentStreams }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ include "aibrix.fullname" . }}-backend-connection-policy
+  labels:
+    {{- include "aibrix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gateway
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ include "aibrix.fullname" . }}-eg
+  circuitBreaker:
+    maxConnections: {{ .Values.gateway.backendTrafficPolicy.circuitBreaker.maxConnections }}
+    maxParallelRequests: {{ .Values.gateway.backendTrafficPolicy.circuitBreaker.maxParallelRequests }}
+    maxParallelRetries: {{ .Values.gateway.backendTrafficPolicy.circuitBreaker.maxParallelRetries }}
+    maxPendingRequests: {{ .Values.gateway.backendTrafficPolicy.circuitBreaker.maxPendingRequests }}
+    maxRequestsPerConnection: {{ .Values.gateway.backendTrafficPolicy.circuitBreaker.maxRequestsPerConnection }}
+  http2:
+    maxConcurrentStreams: {{ .Values.gateway.backendTrafficPolicy.http2.maxConcurrentStreams }}
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyPatchPolicy
@@ -135,4 +160,10 @@ spec:
           connect_timeout: {{ .Values.gateway.envoyPatchPolicy.route.connectTimeout }}
           lb_policy: CLUSTER_PROVIDED
           dns_lookup_family: V4_ONLY
+          circuit_breakers:
+            thresholds:
+              - priority: DEFAULT
+                max_connections: {{ .Values.gateway.envoyPatchPolicy.circuitBreakers.maxConnections }}
+                max_requests: {{ .Values.gateway.envoyPatchPolicy.circuitBreakers.maxRequests }}
+                max_pending_requests: {{ .Values.gateway.envoyPatchPolicy.circuitBreakers.maxPendingRequests }}
 {{- end }}
