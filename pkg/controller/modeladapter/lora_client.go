@@ -18,7 +18,6 @@ package modeladapter
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,8 +30,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 )
 
@@ -53,16 +50,6 @@ const (
 	UnloadLoraAdapterSGLangAPIPath = "/unload_lora_adapter"
 )
 
-func NewLoraClientWithK8sClient(runtimeConfig config.RuntimeConfig, k8sClient kubernetes.Interface) *loraClient {
-	return &loraClient{
-		runtimeConfig: runtimeConfig,
-		httpClient: &http.Client{
-			Timeout: time.Duration(HTTPTimeoutSeconds) * time.Second,
-		},
-		k8sClient: k8sClient,
-	}
-}
-
 func NewLoraClient(runtimeConfig config.RuntimeConfig) *loraClient {
 	return &loraClient{
 		runtimeConfig: runtimeConfig,
@@ -75,11 +62,10 @@ func NewLoraClient(runtimeConfig config.RuntimeConfig) *loraClient {
 type loraClient struct {
 	runtimeConfig config.RuntimeConfig
 	httpClient    *http.Client
-	k8sClient     kubernetes.Interface
 }
 
 // LoadAdapter loads the loras in inference engines
-func (c *loraClient) LoadAdapter(ctx context.Context, instance *modelv1alpha1.ModelAdapter, targetPod *corev1.Pod) (loaded bool, exists bool, err error) {
+func (c *loraClient) LoadAdapter(instance *modelv1alpha1.ModelAdapter, targetPod *corev1.Pod) (loaded bool, exists bool, err error) {
 	// Determine whether to use runtime sidecar:
 	// - If global flag is disabled, always use direct engine API
 	// - If global flag is enabled, detect if pod has sidecar container
@@ -100,7 +86,7 @@ func (c *loraClient) LoadAdapter(ctx context.Context, instance *modelv1alpha1.Mo
 		return false, true, nil
 	}
 
-	err = c.loadAdapterCall(ctx, urls.LoadAdapterURL, instance, useSidecar)
+	err = c.loadAdapterCall(urls.LoadAdapterURL, instance, useSidecar)
 	if err != nil {
 		return false, false, err
 	}
@@ -198,7 +184,7 @@ func (c *loraClient) getModels(url string, instance *modelv1alpha1.ModelAdapter)
 }
 
 // Separate method to load the LoRA adapter
-func (c *loraClient) loadAdapterCall(ctx context.Context, url string, instance *modelv1alpha1.ModelAdapter, useSidecar bool) error {
+func (c *loraClient) loadAdapterCall(url string, instance *modelv1alpha1.ModelAdapter, useSidecar bool) error {
 	var payloadBytes []byte
 	var err error
 
@@ -210,20 +196,9 @@ func (c *loraClient) loadAdapterCall(ctx context.Context, url string, instance *
 			"artifact_url": instance.Spec.ArtifactURL, // Send original URL unchanged
 		}
 
-		// Add credentials if provided
-		if instance.Spec.CredentialsSecretRef != nil && c.k8sClient != nil {
-			secret, err := c.k8sClient.CoreV1().Secrets(instance.Namespace).Get(ctx, instance.Spec.CredentialsSecretRef.Name, metav1.GetOptions{})
-			if err != nil {
-				klog.ErrorS(err, "Failed to get credentials secret", "secret", instance.Spec.CredentialsSecretRef.Name, "namespace", instance.Namespace)
-				return err
-			}
-
-			// Convert secret data to string map
-			credentials := make(map[string]string)
-			for k, v := range secret.Data {
-				credentials[k] = string(v)
-			}
-			payload["credentials"] = credentials
+		// Add credentials secret reference if provided
+		if instance.Spec.CredentialsSecretRef != nil {
+			payload["credentials_secret"] = instance.Spec.CredentialsSecretRef.Name
 		}
 
 		// Add additional config if provided
@@ -271,7 +246,7 @@ func (c *loraClient) loadAdapterCall(ctx context.Context, url string, instance *
 	}
 
 	// Send HTTP request
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payloadBytes))
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return err
 	}

@@ -36,7 +36,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	toolscache "k8s.io/client-go/tools/cache"
@@ -169,11 +168,6 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		return nil, err
 	}
 
-	k8sClientset, err := kubernetes.NewForConfig(mgr.GetConfig())
-	if err != nil {
-		return nil, err
-	}
-
 	reconciler := &ModelAdapterReconciler{
 		Client:              mgr.GetClient(),
 		Scheme:              mgr.GetScheme(),
@@ -185,7 +179,7 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		RuntimeConfig:       runtimeConfig,
 		resyncInterval:      DefaultResyncInterval,
 		eventCh:             make(chan event.GenericEvent),
-		loraClient:          NewLoraClientWithK8sClient(runtimeConfig, k8sClientset),
+		loraClient:          NewLoraClient(runtimeConfig),
 	}
 	return reconciler, nil
 }
@@ -1060,7 +1054,7 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 	// Update retry info
 	r.updateRetryInfo(instance, pod.Name, retryCount+1)
 
-	_, exists, err := r.loraClient.LoadAdapter(ctx, instance, pod)
+	_, exists, err := r.loraClient.LoadAdapter(instance, pod)
 
 	if err != nil {
 		if r.isRetriableError(err) {
