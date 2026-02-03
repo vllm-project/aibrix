@@ -21,7 +21,9 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -37,7 +39,10 @@ import (
 )
 
 // https://cookbook.openai.com/examples/how_to_count_tokens_with_tiktoken
-const encoding = "cl100k_base"
+const (
+	encoding         = "cl100k_base"
+	DefaultLLMEngine = "vllm"
+)
 
 var tke *tiktoken.Tiktoken
 
@@ -161,6 +166,14 @@ func LoadEnvDuration(key string, defaultValue time.Duration) time.Duration {
 	}
 	klog.Infof("set %s: %v, using default value", key, defaultValue)
 	return defaultValue
+}
+
+func GetLLMEngine(pod *v1.Pod, labelName string, defaultValue string) string {
+	labelTarget, ok := pod.Labels[labelName]
+	if !ok {
+		return defaultValue
+	}
+	return labelTarget
 }
 
 // GetPortsForPod returns all ports for a pod based on its configuration.
@@ -299,4 +312,29 @@ func CryptoShuffle[T any](slice []T) {
 		j := int(jBig.Int64())
 		slice[i], slice[j] = slice[j], slice[i]
 	}
+}
+
+func PrintMapTableAligned(message, podname string, m map[string]interface{}) {
+	// Collect keys
+	keys := make([]string, 0, len(m))
+	maxKeyLen := 0
+	for k := range m {
+		keys = append(keys, k)
+		if len(k) > maxKeyLen {
+			maxKeyLen = len(k)
+		}
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s pod: %s\n", message, podname)
+	fmt.Fprintf(&b, "%-*s | %s\n", maxKeyLen, "metric_name", "value")
+	fmt.Fprintln(&b, strings.Repeat("-", maxKeyLen+3+20))
+
+	for _, k := range keys {
+		fmt.Fprintf(&b, "%-*s | %12.4f\n", maxKeyLen, k, m[k].(float64))
+	}
+
+	klog.Info(b.String())
+	fmt.Printf("\n")
 }

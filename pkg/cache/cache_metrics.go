@@ -300,7 +300,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 
 			if shouldLog {
 				metricsSnapshotLogLast.Store(pod.Name, now)
-				printMapTableAligned("server_metrics", pod.Name, metricsSnapshot)
+				utils.PrintMapTableAligned("server_metrics", pod.Name, metricsSnapshot)
 			}
 		}
 
