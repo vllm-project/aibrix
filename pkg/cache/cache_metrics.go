@@ -109,11 +109,7 @@ var (
 		metrics.WaitingLoraAdapters,
 		metrics.RunningLoraAdapters,
 	}
-	podMetricRefreshInterval   = time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
-	metricsSnapshotLogInterval = time.Duration(utils.LoadEnvInt("AIBRIX_METRICS_SNAPSHOT_LOG_INTERVAL_S", defaultMetricsSnapshotLogInterval)) * time.Second
-
-	metricsSnapshotLogLast sync.Map
-	lastCounterValues      sync.Map
+	podMetricRefreshInterval = time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
 )
 
 // MetricSnapshot represents a metric value at a specific timestamp
@@ -205,23 +201,6 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			continue
 		}
 
-		// to log periodic trace information
-		metricsSnapshot := make(map[string]interface{})
-		selectedGauges := map[string]bool{
-			metrics.NumRequestsRunning:              true,
-			metrics.NumRequestsWaiting:              true,
-			metrics.AvgPromptThroughputToksPerS:     true,
-			metrics.AvgGenerationThroughputToksPerS: true,
-		}
-		selectedHistograms := map[string]bool{
-			metrics.TimeToFirstTokenSeconds:   true,
-			metrics.RequestPrefillTimeSeconds: true,
-			metrics.RequestPromptTokens:       true,
-			metrics.TimePerOutputTokenSeconds: true,
-			metrics.RequestDecodeTimeSeconds:  true,
-			metrics.RequestGenerationTokens:   true,
-		}
-
 		podLabelNames, podLabelValues := buildMetricLabels(pod, engineType, "")
 		for metricName, metricValue := range result.Metrics {
 			if shouldSkipMetric(pod.Name, metricName) {
@@ -260,19 +239,6 @@ func (c *Store) worker(jobs <-chan *Pod) {
 				}
 			}
 
-			// Collect into metricsSnapshot
-			if selectedGauges[metric] {
-				metricsSnapshot[fmt.Sprintf("%s_%s", metric, model)] = metricValue.GetSimpleValue()
-			}
-			if selectedHistograms[metric] {
-				if hv := metricValue.GetHistogramValue(); hv != nil {
-					for _, p := range []float64{50, 90, 99} {
-						v, _ := hv.GetPercentile(p)
-						metricsSnapshot[fmt.Sprintf("%s_p%.0f_%s", metric, p, model)] = v
-					}
-				}
-			}
-
 			metrics.EmitMetricToPrometheus(metric, metricValue, labelNames, labelValues)
 		}
 		// Update pod metrics using typed results
@@ -283,25 +249,6 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			c.updateMetricFromPromQL(ctx, pod)
 		} else {
 			klog.V(4).InfoS("Prometheus API not initialized, skipping PromQL metrics", "pod", pod.Name)
-		}
-
-		// log trace information per min
-		if len(metricsSnapshot) > 0 {
-			now := time.Now()
-			shouldLog := false
-
-			if last, ok := metricsSnapshotLogLast.Load(pod.Name); ok {
-				if t, ok2 := last.(time.Time); ok2 && now.Sub(t) >= metricsSnapshotLogInterval {
-					shouldLog = true
-				}
-			} else {
-				shouldLog = true
-			}
-
-			if shouldLog {
-				metricsSnapshotLogLast.Store(pod.Name, now)
-				utils.PrintMapTableAligned("server_metrics", pod.Name, metricsSnapshot)
-			}
 		}
 
 		// Log successful processing
