@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc/codes"
@@ -64,6 +65,23 @@ type Server struct {
 	shutdownCh <-chan struct{}
 }
 
+type processState struct {
+	ctx              context.Context
+	requestID        string
+	user             utils.User
+	rpm              int64
+	traceTerm        int64
+	respErrorCode    int
+	model            string
+	metricLabel      string
+	routerCtx        *types.RoutingContext
+	lastRespHeaders  []*configPb.HeaderValueOption
+	stream           bool
+	isRespError      bool
+	isGatewayRspDone bool
+	completed        bool
+}
+
 func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient gatewayapi.Interface) *Server {
 	c, err := cache.Get()
 	if err != nil {
@@ -86,177 +104,211 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 }
 
 func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
-	var user utils.User
-	var rpm, traceTerm int64
-	var respErrorCode int
-	var model, metricLabel string
-	var routerCtx *types.RoutingContext
-	var stream, isRespError, isGatewayRspDone bool
-	ctx := srv.Context()
-	requestID := uuid.New().String()
-	completed := false
-	resp := &extProcPb.ProcessingResponse{}
+	st := &processState{
+		ctx:       srv.Context(),
+		requestID: uuid.New().String(),
+	}
 
-	klog.InfoS("processing request", "requestID", requestID)
+	klog.InfoS("processing request", "requestID", st.requestID)
 
 	for {
-		select {
-		case <-s.shutdownCh:
-			// Always emit a server-shutdown metric; use "unknown" if model not yet parsed
-			modelTag := GetModelTag(model)
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "aibrix_gateway_server_shutdown", "503")
-			klog.InfoS("server shutdown requested; draining request", "request_id", requestID, "model", model)
-			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
-			return status.Error(codes.Unavailable, "server shutdown in progress")
-
-		case <-ctx.Done():
-			// Client canceled or deadline exceeded; use fallback "unknown"
-			modelTag := GetModelTag(model)
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "context_cancelled", "499")
-			klog.ErrorS(ctx.Err(), "context cancelled", "request_id", requestID, "model", model)
-			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
-			return ctx.Err()
-		default:
-		}
-
-		req, err := srv.Recv()
-		if err == io.EOF {
-			select {
-			// check for shutdown
-			case <-s.shutdownCh:
-				modelTag := GetModelTag(model)
-				s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "aibrix_gateway_server_shutdown", "503")
-				klog.InfoS("server shutdown requested; stream closed (EOF) during shutdown drain", "requestID", requestID, "model", model)
-				s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
-				return status.Error(codes.Unavailable, "server shutdown in progress")
-			default:
-			}
-
-			// EOF at completion is normal
-			if completed {
-				if model != "" {
-					s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, model, "gateway_request_success", "200")
-				}
-				klog.V(2).InfoS("stream closed (EOF): completed", "requestID", requestID, "model", model)
-				s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
-				return nil
-			}
-
-			// client closed stream (EOF)
-			if model != "" {
-				s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, model, "client_cancelled_eof", "499")
-			}
-			klog.ErrorS(nil, "client closed stream (EOF) before completion", "requestID", requestID, "model", model)
-			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
-			return io.EOF
-		}
-		if err != nil {
-			// Normal stream closure by envoy proxy
-			st, ok := status.FromError(err)
-			if ok && st.Code() == codes.Canceled {
-				if model != "" {
-					s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, model, "gateway_request_success", "200")
-				}
-				s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
-				return status.Error(codes.Canceled, "request canceled")
-			}
-
-			// Record failed request metric for other gRPC errors
-			if ok {
-				if model != "" {
-					s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, model, "gateway_request_fail", fmt.Sprintf("%d", st.Code()))
-				}
-				klog.ErrorS(err, "error receiving stream from Envoy extproc", "requestID", requestID, "model", model, "grpc_code", st.Code(), "grpc_message", st.Message())
-				s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
-				return st.Err()
-			}
-			// Not a gRPC status error; fallback with context
-			klog.ErrorS(err, "error receiving stream from Envoy extproc (non-gRPC)", "requestID", requestID)
-			return status.Errorf(codes.Unknown, "recv stream error: %v", err)
-		}
-
-		resp = nil
-		switch v := req.Request.(type) {
-
-		case *extProcPb.ProcessingRequest_RequestHeaders:
-			resp, user, rpm, routerCtx = s.HandleRequestHeaders(ctx, requestID, req)
-			if routerCtx != nil {
-				ctx = routerCtx
-				model = routerCtx.Model
-			}
-			metricLabel = "gateway_req_headers"
-
-		case *extProcPb.ProcessingRequest_RequestBody:
-			resp, model, routerCtx, stream, traceTerm = s.HandleRequestBody(ctx, requestID, req, user)
-			metricLabel = gatewayReqBody
-
-		case *extProcPb.ProcessingRequest_ResponseHeaders:
-			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, requestID, model, req)
-			if isRespError {
-				switch respErrorCode {
-				case 500:
-					// for error code 500, ProcessingRequest_ResponseBody is not invoked
-					resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID, "Internal server error")
-				case 401:
-					// Early return due to unauthorized or canceled context we noticed.
-					resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID, "Incorrect API key provided")
-				}
-			}
-			metricLabel = gatewayRespHeaders
-
-		case *extProcPb.ProcessingRequest_ResponseBody:
-			if isRespError {
-				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID,
-					string(req.Request.(*extProcPb.ProcessingRequest_ResponseBody).ResponseBody.GetBody()))
-			} else {
-				resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, stream, traceTerm, completed)
-			}
-			metricLabel = gatewayRespBody
-
-		default:
-			klog.Infof("Unknown Request type %+v\n", v)
-		}
-
-		if resp == nil {
-			klog.ErrorS(nil, "no ProcessingResponse generated for message", "requestID", requestID, "msg_type", fmt.Sprintf("%T", req.Request))
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, model, "no_response_err", "500")
-			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
-			return status.Errorf(codes.Internal, "no response generated for %T", req.Request)
-		}
-
-		if model != "" && resp.GetImmediateResponse() == nil {
-			if model != "" && resp.GetImmediateResponse() == nil {
-				if metricLabel != gatewayRespBody {
-					s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, model, metricLabel+"_success", "200")
-				}
-				if metricLabel == gatewayRespBody && completed && !isGatewayRspDone {
-					isGatewayRspDone = true
-					s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, model, metricLabel+"_success", "200")
-				}
-			}
-		}
-
-		if model != "" && resp.GetImmediateResponse() != nil {
-			statusCode := fmt.Sprintf("%d", int(resp.GetImmediateResponse().Status.GetCode()))
-			metricFail := getMetricErr(resp.GetImmediateResponse(), metricLabel)
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, model, metricFail+"_fail", statusCode)
-		}
-
-		if err := srv.Send(resp); err != nil && len(model) > 0 {
-			klog.ErrorS(err, "gateway fail to send response to envoy-proxy", "requestID", requestID)
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, model, "send_envoy_proxy", "499")
-			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
-			if routerCtx != nil {
-				routerCtx.Delete()
-			}
-
-			// Optional: if it's context or connection-related, don’t retry
-			if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "EOF") {
-				klog.Warning("Stream already closed by client", "requestID", requestID)
-			}
+		if err := s.processOnce(srv, st); err != nil {
 			return err
 		}
 	}
+}
+
+func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *processState) error {
+	if err := s.preRecvCheck(st); err != nil {
+		return err
+	}
+
+	req, err := srv.Recv()
+	if err != nil {
+		return s.handleRecvError(st, err)
+	}
+
+	resp, err := s.handleProcessingRequest(st, req)
+	if err != nil {
+		return err
+	}
+
+	s.emitProcessMetrics(st, resp)
+	return s.sendProcessingResponse(srv, st, resp)
+}
+
+func (s *Server) preRecvCheck(st *processState) error {
+	select {
+	case <-s.shutdownCh:
+		modelTag := GetModelTag(st.model)
+		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "aibrix_gateway_server_shutdown", "503")
+		klog.InfoS("server shutdown requested; draining request", "request_id", st.requestID, "model", st.model)
+		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		return status.Error(codes.Unavailable, "server shutdown in progress")
+	case <-st.ctx.Done():
+		modelTag := GetModelTag(st.model)
+		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "context_cancelled", "499")
+		klog.ErrorS(st.ctx.Err(), "context cancelled", "request_id", st.requestID, "model", st.model)
+		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		return st.ctx.Err()
+	default:
+		return nil
+	}
+}
+
+func (s *Server) handleRecvError(st *processState, err error) error {
+	if err == io.EOF {
+		return s.handleEOF(st)
+	}
+	return s.handleNonEOFRecvError(st, err)
+}
+
+func (s *Server) handleEOF(st *processState) error {
+	select {
+	case <-s.shutdownCh:
+		modelTag := GetModelTag(st.model)
+		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "aibrix_gateway_server_shutdown", "503")
+		klog.InfoS("server shutdown requested; stream closed (EOF) during shutdown drain", "requestID", st.requestID, "model", st.model)
+		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		return status.Error(codes.Unavailable, "server shutdown in progress")
+	default:
+	}
+
+	if st.completed {
+		if st.model != "" {
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
+		}
+		klog.V(2).InfoS("stream closed (EOF): completed", "requestID", st.requestID, "model", st.model)
+		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		return nil
+	}
+
+	if st.model != "" {
+		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "client_cancelled_eof", "499")
+	}
+	klog.ErrorS(nil, "client closed stream (EOF) before completion", "requestID", st.requestID, "model", st.model)
+	s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+	return io.EOF
+}
+
+func (s *Server) handleNonEOFRecvError(st *processState, err error) error {
+	stErr, ok := status.FromError(err)
+	if ok && stErr.Code() == codes.Canceled {
+		if st.model != "" {
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
+		}
+		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		return status.Error(codes.Canceled, "request canceled")
+	}
+
+	if ok {
+		if st.model != "" {
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "gateway_request_fail", fmt.Sprintf("%d", stErr.Code()))
+		}
+		klog.ErrorS(err, "error receiving stream from Envoy extproc", "requestID", st.requestID, "model", st.model, "grpc_code", stErr.Code(), "grpc_message", stErr.Message())
+		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		return stErr.Err()
+	}
+
+	klog.ErrorS(err, "error receiving stream from Envoy extproc (non-gRPC)", "requestID", st.requestID)
+	return status.Errorf(codes.Unknown, "recv stream error: %v", err)
+}
+
+func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, error) {
+	var resp *extProcPb.ProcessingResponse
+
+	switch req.Request.(type) {
+	case *extProcPb.ProcessingRequest_RequestHeaders:
+		resp, st.user, st.rpm, st.routerCtx = s.HandleRequestHeaders(st.ctx, st.requestID, req)
+		if st.routerCtx != nil {
+			st.ctx = st.routerCtx
+			st.model = st.routerCtx.Model
+		}
+		st.metricLabel = "gateway_req_headers"
+
+	case *extProcPb.ProcessingRequest_RequestBody:
+		resp, st.model, st.routerCtx, st.stream, st.traceTerm = s.HandleRequestBody(st.ctx, st.requestID, req, st.user)
+		st.metricLabel = gatewayReqBody
+
+	case *extProcPb.ProcessingRequest_ResponseHeaders:
+		resp, st.isRespError, st.respErrorCode = s.HandleResponseHeaders(st.ctx, st.requestID, st.model, req)
+		st.lastRespHeaders = resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
+		if st.isRespError {
+			resp = s.responseForResponseHeaderError(st, resp)
+		}
+		st.metricLabel = gatewayRespHeaders
+
+	case *extProcPb.ProcessingRequest_ResponseBody:
+		if st.isRespError {
+			body := string(req.Request.(*extProcPb.ProcessingRequest_ResponseBody).ResponseBody.GetBody())
+			resp = s.responseErrorProcessingWithHeaders(st.ctx, st.lastRespHeaders, st.respErrorCode, st.model, st.requestID, body)
+		} else {
+			resp, st.completed = s.HandleResponseBody(st.ctx, st.requestID, req, st.user, st.rpm, st.model, st.stream, st.traceTerm, st.completed)
+		}
+		st.metricLabel = gatewayRespBody
+
+	default:
+		klog.InfoS("unknown request type", "requestID", st.requestID, "msg_type", fmt.Sprintf("%T", req.Request))
+	}
+
+	if resp == nil {
+		klog.ErrorS(nil, "no ProcessingResponse generated for message", "requestID", st.requestID, "msg_type", fmt.Sprintf("%T", req.Request))
+		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "no_response_err", "500")
+		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		return nil, status.Errorf(codes.Internal, "no response generated for %T", req.Request)
+	}
+
+	return resp, nil
+}
+
+func (s *Server) responseForResponseHeaderError(st *processState, resp *extProcPb.ProcessingResponse) *extProcPb.ProcessingResponse {
+	switch st.respErrorCode {
+	case 500:
+		return s.responseErrorProcessing(st.ctx, resp, st.respErrorCode, st.model, st.requestID, "Internal server error")
+	case 401:
+		return s.responseErrorProcessing(st.ctx, resp, st.respErrorCode, st.model, st.requestID, "Incorrect API key provided")
+	default:
+		return resp
+	}
+}
+
+func (s *Server) emitProcessMetrics(st *processState, resp *extProcPb.ProcessingResponse) {
+	if st.model == "" {
+		return
+	}
+
+	if resp.GetImmediateResponse() == nil {
+		if st.metricLabel != gatewayRespBody {
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", "200")
+			return
+		}
+		if st.completed && !st.isGatewayRspDone {
+			st.isGatewayRspDone = true
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", "200")
+		}
+		return
+	}
+
+	statusCode := fmt.Sprintf("%d", int(resp.GetImmediateResponse().Status.GetCode()))
+	metricFail := getMetricErr(resp.GetImmediateResponse(), st.metricLabel)
+	s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, metricFail+"_fail", statusCode)
+}
+
+func (s *Server) sendProcessingResponse(srv extProcPb.ExternalProcessor_ProcessServer, st *processState, resp *extProcPb.ProcessingResponse) error {
+	if err := srv.Send(resp); err != nil && len(st.model) > 0 {
+		klog.ErrorS(err, "gateway fail to send response to envoy-proxy", "requestID", st.requestID)
+		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "send_envoy_proxy", "499")
+		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		if st.routerCtx != nil {
+			st.routerCtx.Delete()
+		}
+
+		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "EOF") {
+			klog.Warning("Stream already closed by client", "requestID", st.requestID)
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList, externalFilterExpr string) (string, error) {
@@ -347,6 +399,12 @@ func (s *Server) Shutdown() {
 
 func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.ProcessingResponse, respErrorCode int,
 	model, requestID, errMsg string) *extProcPb.ProcessingResponse {
+	headers := resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
+	return s.responseErrorProcessingWithHeaders(ctx, headers, respErrorCode, model, requestID, errMsg)
+}
+
+func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, headers []*configPb.HeaderValueOption, respErrorCode int,
+	model, requestID, errMsg string) *extProcPb.ProcessingResponse {
 	var httprouteErr error
 	routingCtx, ok := ctx.(*types.RoutingContext)
 	// if use pd route Algorithm, we don't check httproute status
@@ -370,7 +428,7 @@ func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.Pr
 
 	return generateErrorResponse(
 		envoyTypePb.StatusCode(respErrorCode),
-		resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders(),
+		headers,
 		errMsg, errorCode, "")
 }
 
