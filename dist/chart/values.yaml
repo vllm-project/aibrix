@@ -87,6 +87,19 @@ gatewayPlugin:
       host: "" # aibrix-redis-master
       port: 6379
   messageTimeout: "60s"
+  extProc:
+    backendSettings:
+      circuitBreaker:
+        # The maximum number of connections that Envoy will establish to the external processing service.
+        maxConnections: 1024
+        # The maximum number of parallel requests that Envoy will make to the external processing service.
+        maxParallelRequests: 1024
+        # The maximum number of pending requests that Envoy will allow to the external processing service.
+        maxPendingRequests: 1024
+        # The maximum number of parallel retries that Envoy will allow to the external processing service.
+        maxParallelRetries: 1024
+        # The maximum number of requests that can be served through one connection to the external processing service.
+        maxRequestsPerConnection: 1024
   serviceAccount:
     create: true
     annotations: {}
@@ -164,10 +177,36 @@ gateway:
   clientTrafficPolicy:
     connection:
       bufferLimit: 4194304  # 4MiB
+      connectionLimit:
+        value: 1024
+    http2:
+      maxConcurrentStreams: 1024
+  backendTrafficPolicy:
+    circuitBreaker:
+      # The maximum number of connections to a backend pod.
+      maxConnections: 1024
+      # The maximum number of parallel requests to a backend pod.
+      maxParallelRequests: 1024
+      # The maximum number of parallel retries to a backend pod.
+      maxParallelRetries: 1024
+      # The maximum number of pending requests to a backend pod.
+      maxPendingRequests: 1024
+      # The maximum number of requests that can be served through one connection to a backend pod.
+      maxRequestsPerConnection: 1024
+    http2:
+      # The maximum number of concurrent streams for an HTTP/2 connection to a backend pod.
+      maxConcurrentStreams: 1024
   envoyPatchPolicy:
     route:
       timeout: 120s          # e.g., "120s" or "2m"
       connectTimeout: 6s     # e.g., "6s"
+    circuitBreakers:
+      # The maximum number of connections for the original destination cluster.
+      maxConnections: 1024
+      # The maximum number of requests that can be outstanding to the original destination cluster.
+      maxRequests: 1024
+      # The maximum number of pending requests to the original destination cluster.
+      maxPendingRequests: 1024
 
 metadata:
   serviceAccount:
