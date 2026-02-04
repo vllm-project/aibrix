@@ -81,6 +81,7 @@ func TestPDRouter_Route(t *testing.T) {
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            &http.Client{},
+		selectionCounts:       map[string]int64{},
 	}
 
 	for _, tt := range tests {
