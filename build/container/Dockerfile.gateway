@@ -45,6 +45,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /workspace/gateway-plugins .
+COPY --from=builder /workspace/deps /gateway-plugins-lib
 RUN groupadd --gid 65532 nonroot && useradd --system --uid 65532 --gid 65532 nonroot
 USER 65532:65532
 
