@@ -17,6 +17,7 @@ limitations under the License.
 package modeladapter
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -177,7 +178,7 @@ func TestLoadAdapter(t *testing.T) {
 				},
 			)
 
-			loaded, exists, err := loraClient.LoadAdapter(tt.ma, tt.pod) // test
+			loaded, exists, err := loraClient.LoadAdapter(context.Background(), tt.ma, tt.pod) // test
 
 			if tt.wantErr {
 				assert.Error(t, err)
