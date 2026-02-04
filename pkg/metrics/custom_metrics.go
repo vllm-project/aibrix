@@ -74,12 +74,24 @@ func IncrementCounterMetric(name string, help string, value float64, labelNames 
 }
 
 func EmitGaugeMetric(routingCtx *types.RoutingContext, pod *v1.Pod, name string, value float64, extras map[string]string) {
-	labelNames, labelValues := buildMetricLabels(pod, routingCtx.Model, extras)
+	var model string
+	if routingCtx == nil {
+		model = ""
+	} else {
+		model = routingCtx.Model
+	}
+	labelNames, labelValues := buildMetricLabels(pod, model, extras)
 	SetGaugeMetricFnForTest(name, GetMetricHelp(name), value, labelNames, labelValues...)
 }
 
 func EmitCounterMetric(routingCtx *types.RoutingContext, pod *v1.Pod, name string, value float64, extras map[string]string) {
-	labelNames, labelValues := buildMetricLabels(pod, routingCtx.Model, extras)
+	var model string
+	if routingCtx == nil {
+		model = ""
+	} else {
+		model = routingCtx.Model
+	}
+	labelNames, labelValues := buildMetricLabels(pod, model, extras)
 	IncrementCounterMetricFnForTest(name, GetMetricHelp(name), value, labelNames, labelValues...)
 }
 
