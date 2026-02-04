@@ -699,7 +699,7 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
-		status, code := metrics.HttpFailureStatusCode(ctx, err, nil)
+		status, code := metrics.HttpFailureStatusCode(ctx, nil, resp)
 		metrics.EmitCounterMetric(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
 			map[string]string{
 				"status":      status,

@@ -316,7 +316,7 @@ func tokenBucketLabel(n int64) string {
 	return fmt.Sprintf("%d+", low)
 }
 
-// Add duration bucketizer: ms buckets [0-10), [10-20), [20-50), [50-100), [100-200), [200-500), [500-1000), [1000-2000), [2000-5000), [5000+}
+// Add duration bucketizer: ms buckets [0-1), [1-2), [2-5), [5-10), [20-50), [50-100), [100-200), [200-500), [500-1000), [1000-2000), [2000-5000), [5000+}
 func durationBucketLabel(d time.Duration) string {
 	ms := d.Milliseconds()
 	if ms < 0 {
