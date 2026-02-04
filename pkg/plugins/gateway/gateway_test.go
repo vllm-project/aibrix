@@ -18,12 +18,15 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"testing"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/vllm-project/aibrix/pkg/cache"
@@ -677,6 +680,65 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:  "httproute get returns error",
+			model: "get-failed",
+			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
+				gw.On("GatewayV1").Return(gwv1)
+				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				http.On("Get", mock.Anything, "get-failed-router", mock.Anything).Return((*gatewayv1.HTTPRoute)(nil), errors.New("boom"))
+			},
+			wantErr:     true,
+			errContains: "boom",
+		},
+		{
+			name:  "no valid status conditions",
+			model: "no-conditions",
+			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
+				gw.On("GatewayV1").Return(gwv1)
+				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				route := &gatewayv1.HTTPRoute{
+					Status: gatewayv1.HTTPRouteStatus{
+						RouteStatus: gatewayv1.RouteStatus{
+							Parents: []gatewayv1.RouteParentStatus{{
+								Conditions: []metav1.Condition{},
+							}},
+						},
+					},
+				}
+				http.On("Get", mock.Anything, "no-conditions-router", mock.Anything).Return(route, nil)
+			},
+			wantErr:     true,
+			errContains: "does not have valid status",
+		},
+		{
+			name:  "resolved refs not resolved",
+			model: "refs-not-resolved",
+			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
+				gw.On("GatewayV1").Return(gwv1)
+				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				route := &gatewayv1.HTTPRoute{
+					Status: gatewayv1.HTTPRouteStatus{
+						RouteStatus: gatewayv1.RouteStatus{
+							Parents: []gatewayv1.RouteParentStatus{{
+								Conditions: []metav1.Condition{{
+									Type:   string(gatewayv1.RouteConditionAccepted),
+									Reason: string(gatewayv1.RouteReasonAccepted),
+									Status: metav1.ConditionTrue,
+								}, {
+									Type:   string(gatewayv1.RouteConditionResolvedRefs),
+									Reason: "InvalidRef",
+									Status: metav1.ConditionFalse,
+								}},
+							}},
+						},
+					},
+				}
+				http.On("Get", mock.Anything, "refs-not-resolved-router", mock.Anything).Return(route, nil)
+			},
+			wantErr:     true,
+			errContains: "object references are not resolved",
+		},
+		{
 			name:  "invalid route status",
 			model: "invalid-model",
 			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
@@ -732,4 +794,117 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 			mockHTTP.AssertExpectations(t)
 		})
 	}
+}
+
+func TestValidateHTTPRouteStatus_StandaloneModeSkipsValidation(t *testing.T) {
+	s := &Server{gatewayClient: nil}
+	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "any-model"))
+}
+
+func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
+	baseResp := &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_ResponseHeaders{
+			ResponseHeaders: &extProcPb.HeadersResponse{
+				Response: &extProcPb.CommonResponse{
+					HeaderMutation: &extProcPb.HeaderMutation{
+						SetHeaders: []*configPb.HeaderValueOption{
+							{Header: &configPb.HeaderValue{Key: "x-test", RawValue: []byte("1")}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	t.Run("401 maps to invalid_api_key and appends httproute error", func(t *testing.T) {
+		mockGW := &MockGatewayClient{}
+		mockGWV1 := &MockGatewayV1Client{}
+		mockHTTP := &MockHTTPRouteClient{}
+		mockGW.On("GatewayV1").Return(mockGWV1)
+		mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP)
+		mockHTTP.On("Get", mock.Anything, "m-router", mock.Anything).Return((*gatewayv1.HTTPRoute)(nil), errors.New("httproute boom"))
+
+		s := &Server{gatewayClient: mockGW}
+		out := s.responseErrorProcessing(context.Background(), baseResp, 401, "m", "rid", "Incorrect API key provided")
+		ir := out.GetImmediateResponse()
+		if assert.NotNil(t, ir) {
+			assert.Equal(t, envoyTypePb.StatusCode(401), ir.GetStatus().GetCode())
+			var parsed map[string]any
+			assert.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
+			errObj := parsed["error"].(map[string]any)
+			assert.Equal(t, ErrorTypeAuthentication, errObj["type"])
+			assert.Equal(t, ErrorCodeInvalidAPIKey, errObj["code"])
+			assert.Contains(t, errObj["message"].(string), "Incorrect API key provided")
+			assert.Contains(t, errObj["message"].(string), "httproute boom")
+			assert.Len(t, ir.GetHeaders().GetSetHeaders(), 2)
+		}
+
+		mockGW.AssertExpectations(t)
+		mockGWV1.AssertExpectations(t)
+		mockHTTP.AssertExpectations(t)
+	})
+
+	t.Run("503 maps to service_unavailable", func(t *testing.T) {
+		s := &Server{gatewayClient: nil}
+		out := s.responseErrorProcessing(context.Background(), baseResp, 503, "m", "rid", "server shutdown")
+		ir := out.GetImmediateResponse()
+		if assert.NotNil(t, ir) {
+			assert.Equal(t, envoyTypePb.StatusCode(503), ir.GetStatus().GetCode())
+			var parsed map[string]any
+			assert.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
+			errObj := parsed["error"].(map[string]any)
+			assert.Equal(t, ErrorTypeOverloaded, errObj["type"])
+			assert.Equal(t, ErrorCodeServiceUnavailable, errObj["code"])
+		}
+	})
+
+	t.Run("500 keeps code null", func(t *testing.T) {
+		s := &Server{gatewayClient: nil}
+		out := s.responseErrorProcessing(context.Background(), baseResp, 500, "m", "rid", "internal error")
+		ir := out.GetImmediateResponse()
+		if assert.NotNil(t, ir) {
+			assert.Equal(t, envoyTypePb.StatusCode(500), ir.GetStatus().GetCode())
+			var parsed map[string]any
+			assert.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
+			errObj := parsed["error"].(map[string]any)
+			_, hasCode := errObj["code"]
+			assert.True(t, hasCode)
+			assert.Nil(t, errObj["code"])
+		}
+	})
+}
+
+func Test_getMetricErr(t *testing.T) {
+	t.Run("uses Header.Value when present", func(t *testing.T) {
+		ir := &extProcPb.ImmediateResponse{
+			Headers: &extProcPb.HeaderMutation{
+				SetHeaders: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: metricHeaderErr, Value: "bad"}},
+				},
+			},
+		}
+		assert.Equal(t, "gateway_req_headers_bad", getMetricErr(ir, "gateway_req_headers"))
+	})
+
+	t.Run("uses Header.RawValue when Value empty", func(t *testing.T) {
+		ir := &extProcPb.ImmediateResponse{
+			Headers: &extProcPb.HeaderMutation{
+				SetHeaders: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: metricHeaderErr, RawValue: []byte("oops")}},
+				},
+			},
+		}
+		assert.Equal(t, "gateway_rsp_headers_oops", getMetricErr(ir, "gateway_rsp_headers"))
+	})
+
+	t.Run("returns label underscore when header missing", func(t *testing.T) {
+		ir := &extProcPb.ImmediateResponse{
+			Headers: &extProcPb.HeaderMutation{
+				SetHeaders: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: "x-other", RawValue: []byte("1")}},
+				},
+			},
+		}
+		assert.Equal(t, "gateway_rsp_body", getMetricErr(ir, "gateway_rsp_body"))
+	})
 }

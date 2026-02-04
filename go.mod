@@ -6,6 +6,7 @@ toolchain go1.22.6
 
 require (
 	github.com/buraksezer/consistent v0.10.0
+	github.com/bytedance/sonic v1.14.2
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/envoyproxy/go-control-plane v0.12.0
 	github.com/google/go-cmp v0.6.0
@@ -42,13 +43,13 @@ require (
 	sigs.k8s.io/gateway-api v1.0.0
 	sigs.k8s.io/scheduler-plugins v0.31.8
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1
+	sigs.k8s.io/yaml v1.4.0
 	volcano.sh/apis v1.11.2
 )
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
-	github.com/bytedance/sonic v1.14.2 // indirect
 	github.com/bytedance/sonic/loader v0.4.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/cncf/xds/go v0.0.0-20240423153145-555b57ec207b // indirect
@@ -122,7 +123,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/gengo/v2 v2.0.0-20240228010128-51d4e06bde70 // indirect
 	sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd // indirect
-	sigs.k8s.io/yaml v1.4.0 // indirect
 )
 
 replace github.com/imdario/mergo v1.0.0 => dario.cat/mergo v0.3.16
