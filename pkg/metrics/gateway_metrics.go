@@ -85,6 +85,7 @@ var (
 			},
 			Description: "Total number of failed requests received by the gateway for each model",
 		},
+
 		GatewayPrefillRequestSuccessTotal: {
 			MetricScope:  PodMetricScope,
 			MetricSource: PodRawMetrics,
@@ -101,6 +102,7 @@ var (
 			},
 			Description: "Total number of failed prefill requests received by the gateway",
 		},
+
 		GatewayPrefillOutstandingRequests: {
 			MetricScope:  PodMetricScope,
 			MetricSource: PodRawMetrics,
@@ -117,6 +119,7 @@ var (
 			},
 			Description: "Total number of outstanding decode requests received by the gateway",
 		},
+
 		GatewayE2EDuration: {
 			MetricScope:  PodMetricScope,
 			MetricSource: PodRawMetrics,
@@ -125,6 +128,7 @@ var (
 			},
 			Description: "End-to-end latency distribution of requests received by the gateway",
 		},
+
 		GatewayInFlight: {
 			MetricScope:  PodMetricScope,
 			MetricSource: PodRawMetrics,

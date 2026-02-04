@@ -24,6 +24,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"os"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -35,6 +36,10 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/utils"
+)
+
+var (
+	POD_NAME = os.Getenv("POD_NAME")
 )
 
 // validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
@@ -582,4 +587,27 @@ func validateTokenInputs(tokenArrays [][]int64) error {
 	}
 
 	return nil
+}
+
+func buildGatewayPodMetricLabels(model, status, statusCode string) ([]string, []string) {
+	labelNames := []string{
+		"model",
+		"status",
+		"status_code",
+		"pod_name",
+	}
+	labelValues := []string{
+		model,
+		status,
+		statusCode,
+		POD_NAME,
+	}
+	return labelNames, labelValues
+}
+
+func GetModelTag(model string) string {
+	if model == "" {
+		return "unknown"
+	}
+	return model
 }
