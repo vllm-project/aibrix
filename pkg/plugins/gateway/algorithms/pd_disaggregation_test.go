@@ -276,6 +276,7 @@ func TestFilterPrefillDecodePods(t *testing.T) {
 		tokenizer:             tokenizer.NewCharacterTokenizer(),
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
+		selectionCounts:       map[string]int64{},
 	}
 
 	for _, tt := range tests {
@@ -1386,6 +1387,7 @@ func TestFilterPrefillDecodePods_SelectCorrectBucketPods(t *testing.T) {
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            &http.Client{},
+		selectionCounts:       map[string]int64{},
 	}
 
 	prefillOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill", PromptMinLength: "0", PromptMaxLength: "1000000"}}}
@@ -1498,6 +1500,7 @@ func TestFilterPrefillDecodePods_CombinedPickImbalance(t *testing.T) {
 				prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 				prefillRequestTracker: NewPrefillRequestTracker(),
 				httpClient:            &http.Client{},
+				selectionCounts:       map[string]int64{},
 			}
 
 			ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "short", "req-combined-pick", "user")
