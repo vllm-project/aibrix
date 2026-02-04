@@ -42,7 +42,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /
 COPY --from=builder /workspace/gateway-plugins .
-RUN useradd -u 65532 -m nonroot
+RUN groupadd --gid 65532 nonroot && useradd --system --uid 65532 --gid 65532 nonroot
 USER 65532:65532
 
 ENTRYPOINT ["/gateway-plugins"]
