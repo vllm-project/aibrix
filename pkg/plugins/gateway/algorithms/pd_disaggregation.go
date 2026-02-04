@@ -61,6 +61,12 @@ const (
 	defaultMaxTokenThroughputDiff       float64 = 2048
 	defaultRequestRateHighLoadThreshold         = 1.0
 	defaultRequestRateLowLoadThreshold          = 0.25
+
+	pdRouteValidateLLMEngineFail        = "pd-validate-llm-engine-fail"
+	pdRouteFilterPrefillDecodePodsFail  = "pd-filter-prefill-decode-pods-fail"
+	pdRoutePrefillRequestError          = "pd-do-prefill-request-error"
+	pdRoutePrefillRequestSuccess        = "pd-prefill-request-success"
+	pdRoutePrefillEmptyKVTransferParams = "pd-prefill-empty-kv-transfer-params"
 )
 
 var (
@@ -145,20 +151,14 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 	llmEngine, err := validateAndGetLLMEngine(readyPodList.All())
 	if err != nil {
 		metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
-			map[string]string{
-				"status":      "pd_route_validate_llm_engine",
-				"status_code": "400",
-			})
+			map[string]string{"status": pdRouteValidateLLMEngineFail, "status_code": "400"})
 		return "", fmt.Errorf("engine validation failed for request %s: %w", ctx.RequestID, err)
 	}
 
 	prefillPod, decodePod, err := r.filterPrefillDecodePods(ctx, readyPodList.All())
 	if err != nil {
 		metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
-			map[string]string{
-				"status":      "filter_prefill_decode_pods",
-				"status_code": "400",
-			})
+			map[string]string{"status": pdRouteFilterPrefillDecodePodsFail, "status_code": "400"})
 		return "", fmt.Errorf("failed to filter prefill/decode pods for request %s: %w", ctx.RequestID, err)
 	}
 
@@ -167,18 +167,12 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		err = r.doPrefillRequest(ctx, prefillPod, llmEngine)
 		if err != nil {
 			metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
-				map[string]string{
-					"status":      "do_prefill_request_error",
-					"status_code": "500",
-				})
-			klog.ErrorS(err, "prefill request failed", "request_id", ctx.RequestID)
+				map[string]string{"status": pdRoutePrefillRequestError, "status_code": "500"})
+			klog.ErrorS(err, pdRoutePrefillRequestError, "request_id", ctx.RequestID)
 			return "", fmt.Errorf("prefill request failed for request %s: %w", ctx.RequestID, err)
 		}
 		metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestSuccessTotal, 1.0,
-			map[string]string{
-				"status":      "prefill_request_success",
-				"status_code": "200",
-			})
+			map[string]string{"status": pdRoutePrefillRequestSuccess, "status_code": "200"})
 	}
 
 	ctx.SetTargetPod(decodePod)
@@ -681,10 +675,7 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 	if err != nil {
 		status, code := metrics.HttpFailureStatusCode(ctx, err, nil)
 		metrics.EmitCounterMetric(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
-			map[string]string{
-				"status":      status,
-				"status_code": code,
-			})
+			map[string]string{"status": status, "status_code": code})
 		return nil, fmt.Errorf("failed to execute http prefill request: %w", err)
 	}
 	defer func() {
@@ -701,10 +692,7 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 	if resp.StatusCode != http.StatusOK {
 		status, code := metrics.HttpFailureStatusCode(ctx, nil, resp)
 		metrics.EmitCounterMetric(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
-			map[string]string{
-				"status":      status,
-				"status_code": code,
-			})
+			map[string]string{"status": status, "status_code": code})
 		return nil, fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -738,10 +726,7 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 	kvTransferParamsMap, ok := kvTransferParams.(map[string]any)
 	if !ok {
 		metrics.EmitCounterMetric(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
-			map[string]string{
-				"status":      "prefill_empty_kv_transfer_params",
-				"status_code": "500",
-			})
+			map[string]string{"status": pdRoutePrefillEmptyKVTransferParams, "status_code": "500"})
 		return fmt.Errorf("kv_transfer_params has unexpected type %T, expected map[string]any", kvTransferParams)
 	}
 	kvTransferParamsMap["remote_host"] = prefillPod.Status.PodIP
