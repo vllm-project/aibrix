@@ -17,12 +17,18 @@ limitations under the License.
 package metrics
 
 import (
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
 )
 
 var (
@@ -65,6 +71,16 @@ func defaultSetGaugeMetric(name string, help string, value float64, labelNames [
 
 func IncrementCounterMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
 	IncrementCounterMetricFnForTest(name, help, value, labelNames, labelValues...)
+}
+
+func EmitGaugeMetric(routingCtx *types.RoutingContext, pod *v1.Pod, name string, value float64, extras map[string]string) {
+	labelNames, labelValues := buildMetricLabels(pod, routingCtx.Model, extras)
+	SetGaugeMetricFnForTest(name, GetMetricHelp(name), value, labelNames, labelValues...)
+}
+
+func EmitCounterMetric(routingCtx *types.RoutingContext, pod *v1.Pod, name string, value float64, extras map[string]string) {
+	labelNames, labelValues := buildMetricLabels(pod, routingCtx.Model, extras)
+	IncrementCounterMetricFnForTest(name, GetMetricHelp(name), value, labelNames, labelValues...)
 }
 
 func defaultIncrementCounterMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
@@ -261,4 +277,55 @@ func EmitMetricToPrometheus(metricName string, metricValue MetricValue, labelNam
 			SetGaugeMetric(metricName+"_p99", GetMetricHelp(metricName), p99, labelNames, labelValues...)
 		}
 	}
+}
+
+func buildMetricLabels(pod *v1.Pod, model string, extras map[string]string) ([]string, []string) {
+	labelNames, labelValues := generateDefaultMetricLabelsMap(pod, model)
+	if len(extras) > 0 {
+		keys := make([]string, 0, len(extras))
+		for k := range extras {
+			if k != "" {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			labelNames = append(labelNames, k)
+			labelValues = append(labelValues, extras[k])
+		}
+	}
+	return labelNames, labelValues
+}
+
+func generateDefaultMetricLabelsMap(pod *v1.Pod, model string) (labelNames []string, labelValues []string) {
+	labelNames = []string{
+		"namespace",
+		"pod",
+		"model",
+		"engine_type",
+		"roleset",
+		"role",
+		"role_replica_index",
+		"gateway_pod",
+	}
+	var namespace, podName, engineType, roleset, role, roleReplica string
+	if pod != nil {
+		namespace = pod.Namespace
+		podName = pod.Name
+		engineType = utils.GetLLMEngine(pod, constants.ModelLabelEngine, utils.DefaultLLMEngine)
+		roleset = utils.GetPodEnv(pod, "ROLESET_NAME", "")
+		role = utils.GetPodEnv(pod, "ROLE_NAME", "")
+		roleReplica = utils.GetPodEnv(pod, "ROLE_REPLICA_INDEX", "")
+	}
+	labelValues = []string{
+		namespace,
+		podName,
+		model,
+		engineType,
+		roleset,
+		role,
+		roleReplica,
+		os.Getenv("POD_NAME"), // gateway-plugin pod
+	}
+	return labelNames, labelValues
 }
