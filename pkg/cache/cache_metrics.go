@@ -26,6 +26,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -38,7 +39,6 @@ const (
 	defaultEngineLabelValue             = "vllm"
 	defaultPodMetricRefreshIntervalInMS = 50
 	defaultPodMetricsWorkerCount        = 10
-	defaultMetricsSnapshotLogInterval   = 60
 )
 
 var (
@@ -306,6 +306,7 @@ func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Met
 	// Querying metrics
 	result, warnings, err := c.prometheusApi.Query(ctx, query, time.Now())
 	if err != nil {
+		metrics.EmitCounterMetric(&types.RoutingContext{Model: modelName}, pod.Pod, metrics.PrometheusQueryFail, 1.0, nil)
 		// Skip this model fetching if an error is thrown
 		return fmt.Errorf("error executing query: %v", err)
 	}

@@ -8,6 +8,8 @@ WORKDIR /workspace
 RUN apt-get update && apt-get install -y \
     libkrb5-dev libzmq3-dev
 
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
 # Copy the Go Modules manifests
 COPY go.mod go.mod
 COPY go.sum go.sum
@@ -41,6 +43,7 @@ RUN apt-get update && apt-get install -y \
     libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /workspace/gateway-plugins .
 RUN groupadd --gid 65532 nonroot && useradd --system --uid 65532 --gid 65532 nonroot
 USER 65532:65532
