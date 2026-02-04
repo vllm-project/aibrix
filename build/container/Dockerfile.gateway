@@ -36,18 +36,12 @@ RUN ldd /workspace/gateway-plugins | awk '{if ($3 ~ /^\//) print $3}' | xargs -I
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y \
-    libzmq5 \
-    libkrb5-3 \
-    libstdc++6 \
-    && rm -rf /var/lib/apt/lists/*
+FROM gcr.io/distroless/base-debian12:nonroot
 WORKDIR /
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /workspace/gateway-plugins .
 COPY --from=builder /workspace/deps /gateway-plugins-lib
 ENV LD_LIBRARY_PATH=/gateway-plugins-lib
-RUN groupadd --gid 65532 nonroot && useradd --system --uid 65532 --gid 65532 nonroot
 USER 65532:65532
 
 ENTRYPOINT ["/gateway-plugins"]
