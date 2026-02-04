@@ -38,7 +38,6 @@ const (
 	defaultEngineLabelValue             = "vllm"
 	defaultPodMetricRefreshIntervalInMS = 50
 	defaultPodMetricsWorkerCount        = 10
-	defaultMetricsSnapshotLogInterval   = 60
 )
 
 var (
@@ -306,6 +305,7 @@ func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Met
 	// Querying metrics
 	result, warnings, err := c.prometheusApi.Query(ctx, query, time.Now())
 	if err != nil {
+		metrics.EmitCounterMetric(nil, nil, metrics.PrometheusQueryFail, 1.0, nil)
 		// Skip this model fetching if an error is thrown
 		return fmt.Errorf("error executing query: %v", err)
 	}

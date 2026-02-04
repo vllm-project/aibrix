@@ -355,6 +355,7 @@ func (ef *EngineMetricsFetcher) fetchAllMetricsFromURL(ctx context.Context, url 
 
 	resp, err := ef.client.Do(req)
 	if err != nil {
+		EmitCounterMetric(nil, nil, LLMEngineMetricsQueryFail, 1.0, nil)
 		return nil, fmt.Errorf("failed to fetch metrics from %s: %v", url, err)
 	}
 	defer func() {
