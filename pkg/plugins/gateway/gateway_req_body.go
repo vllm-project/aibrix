@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -101,7 +102,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, err.Error(), ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
 		}
 		headers = buildEnvoyProxyHeaders(headers, HeaderModel, model)
-		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream)
+		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream)
 	} else {
 		externalFilter := routingCtx.ReqHeaders[HeaderExternalFilter]
 		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr, externalFilter)
@@ -126,10 +127,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			targetNamespace = routingCtx.TargetPod().Namespace
 			request_count = getRunningRequestsByPod(s, targetPodName, targetNamespace)
 		}
-		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream, "routingAlgorithm", routingAlgorithm,
-			"targetPodName", targetPodName, "targetPodIP", targetPodIP, "outstandingRequests", request_count, "routingDuration", routingCtx.GetRoutingDelay())
+		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream, "routing_strategy", routingAlgorithm,
+			"target_pod", targetPodName, "target_pod_ip", targetPodIP, "outstanding_requests", request_count, "routing_duration", routingCtx.GetRoutingDelay())
 	}
 
+	routingCtx.RequestEndTime = time.Now()
 	term = s.cache.AddRequestCount(routingCtx, requestID, model)
 
 	return &extProcPb.ProcessingResponse{
