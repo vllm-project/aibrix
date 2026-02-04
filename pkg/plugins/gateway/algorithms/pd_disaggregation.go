@@ -530,6 +530,9 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name),
 	}
 	klog.InfoS("prefill_request_start", fields...)
+	if len(fields) >= 2 {
+		fields = fields[:len(fields)-2]
+	}
 
 	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name)
 	routingCtx.PrefillStartTime = time.Now()
