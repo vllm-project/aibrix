@@ -36,6 +36,8 @@ const (
 	// Example: "model.aibrix.ai/port": "8080"
 	ModelLabelPort = "model.aibrix.ai/port"
 
+	ModelLabelRoutingStrategy = "model.aibrix.ai/routing-strategy"
+
 	// ModelLabelAdapterEnabled is the label for enabling or disabling adapter dynamic registration
 	// Example: "adapter.model.aibrix.ai/enabled": "true"
 	ModelLabelAdapterEnabled = "adapter.model.aibrix.ai/enabled"

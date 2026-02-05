@@ -26,7 +26,6 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 
-	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -61,18 +60,9 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			reqHeaders[n.Key] = string(n.RawValue)
 		case contentTypeKey:
 			reqHeaders[n.Key] = string(n.RawValue)
+		case HeaderRoutingStrategy:
+			reqHeaders[n.Key] = string(n.RawValue)
 		}
-	}
-
-	routingStrategy, routingStrategyEnabled := getRoutingStrategy(h.RequestHeaders.Headers.Headers)
-	routingAlgorithm, ok := routing.Validate(routingStrategy)
-	if routingStrategyEnabled && !ok {
-		klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", routingStrategy)
-		return generateErrorResponse(
-			envoyTypePb.StatusCode_BadRequest,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderErrorInvalidRouting, RawValue: []byte(routingStrategy),
-			}}}, "incorrect routing strategy", "", "routing-strategy"), utils.User{}, rpm, routingCtx
 	}
 
 	if username != "" {
@@ -94,7 +84,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		}
 	}
 
-	routingCtx = types.NewRoutingContext(ctx, routingAlgorithm, "", "", requestID, user.Name)
+	routingCtx = types.NewRoutingContext(ctx, "", "", "", requestID, user.Name)
 	routingCtx.ReqPath = requestPath
 	routingCtx.ReqHeaders = reqHeaders
 

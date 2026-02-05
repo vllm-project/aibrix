@@ -33,8 +33,11 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -318,17 +321,29 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 
 var defaultRoutingStrategy, defaultRoutingStrategyEnabled = utils.LookupEnv(EnvRoutingAlgorithm)
 
-// getRoutingStrategy retrieves the routing strategy from the headers or environment variable
-// It returns the routing strategy value and whether custom routing strategy is enabled.
-func getRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
-	// Check headers for routing strategy
-	for _, header := range headers {
-		if strings.ToLower(header.Key) == HeaderRoutingStrategy {
-			return string(header.RawValue), true
+// deriveRoutingStrategy retrieves the routing strategy from request headers or pod labels, falling back to environment defaults.
+// It returns the routing strategy value and whether a custom routing strategy is enabled.
+func deriveRoutingStrategy(headers *types.RoutingContext, pod *v1.Pod) (string, bool) {
+	// Check request headers (case-insensitive key match)
+	if headers != nil && headers.ReqHeaders != nil {
+		for k, v := range headers.ReqHeaders {
+			if strings.ToLower(k) == HeaderRoutingStrategy {
+				if strings.TrimSpace(v) != "" {
+					return v, true
+				}
+				break
+			}
 		}
 	}
 
-	// If header not set, use default routing strategy from environment variable
+	// Fallback to pod label: model.aibrix.ai/routing-strategy
+	if pod != nil && pod.Labels != nil {
+		if v, ok := pod.Labels[constants.ModelLabelRoutingStrategy]; ok && strings.TrimSpace(v) != "" {
+			return v, true
+		}
+	}
+
+	// Fallback to environment default
 	return defaultRoutingStrategy, defaultRoutingStrategyEnabled
 }
 

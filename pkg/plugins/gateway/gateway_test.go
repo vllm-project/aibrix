@@ -133,7 +133,14 @@ func TestGetRoutingStrategy(t *testing.T) {
 		// refresh default values, the process won't modify this environment variable during normal running
 		defaultRoutingStrategy, defaultRoutingStrategyEnabled = utils.LookupEnv(EnvRoutingAlgorithm)
 
-		routingStrategy, enabled := getRoutingStrategy(tt.headers)
+		// Build a RoutingContext with request headers and derive strategy (header -> pod label -> env)
+		routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request", "")
+		reqHeaders := map[string]string{}
+		for _, h := range tt.headers {
+			reqHeaders[h.Key] = string(h.RawValue)
+		}
+		routingCtx.ReqHeaders = reqHeaders
+		routingStrategy, enabled := deriveRoutingStrategy(routingCtx, nil)
 		assert.Equal(t, tt.expectedStrategy, routingStrategy, tt.message)
 		assert.Equal(t, tt.expectedEnabled, enabled, tt.message)
 

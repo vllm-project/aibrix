@@ -88,6 +88,20 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			fmt.Sprintf("error on getting pods for model %s", model), ErrorCodeServiceUnavailable, ""), model, routingCtx, stream, term
 	}
 
+	// Derive routing strategy: header -> pod label -> environment default
+	routingStrategy, routingStrategyEnabled := deriveRoutingStrategy(routingCtx, podsArr.All()[0])
+	if routingStrategyEnabled {
+		var ok bool
+		routingAlgorithm, ok = routing.Validate(routingStrategy)
+		if !ok {
+			klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", routingStrategy)
+			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
+				fmt.Sprintf("incorrect routing strategy %s", routingStrategy), "",
+				"", HeaderErrorInvalidRouting, "true"), model, routingCtx, stream, term
+		}
+		routingCtx.Algorithm = routingAlgorithm
+	}
+
 	headers := []*configPb.HeaderValueOption{}
 
 	// Path rewriting for image/video generation based on engine type
