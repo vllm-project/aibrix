@@ -30,6 +30,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -83,6 +84,7 @@ func TestGetRoutingStrategy(t *testing.T) {
 		headers               []*configPb.HeaderValue
 		setEnvRoutingStrategy bool
 		envRoutingStrategy    string
+		pod                   *v1.Pod
 		expectedStrategy      string
 		expectedEnabled       bool
 		message               string
@@ -121,6 +123,51 @@ func TestGetRoutingStrategy(t *testing.T) {
 			expectedEnabled:       true,
 			message:               "header routing strategy takes priority over environment variable",
 		},
+		{
+			message:               "routing strategy from pod label",
+			headers:               []*configPb.HeaderValue{},
+			setEnvRoutingStrategy: false,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.ModelLabelRoutingStrategy: "pod-strategy",
+					},
+				},
+			},
+			expectedStrategy: "pod-strategy",
+			expectedEnabled:  true,
+		},
+		{
+			message: "header takes precedence over pod label",
+			headers: []*configPb.HeaderValue{
+				{Key: "routing-strategy", RawValue: []byte("header-strategy")},
+			},
+			setEnvRoutingStrategy: false,
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.ModelLabelRoutingStrategy: "pod-strategy",
+					},
+				},
+			},
+			expectedStrategy: "header-strategy",
+			expectedEnabled:  true,
+		},
+		{
+			message:               "pod label takes precedence over env var",
+			headers:               []*configPb.HeaderValue{},
+			setEnvRoutingStrategy: true,
+			envRoutingStrategy:    "env-strategy",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.ModelLabelRoutingStrategy: "pod-strategy",
+					},
+				},
+			},
+			expectedStrategy: "pod-strategy",
+			expectedEnabled:  true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -140,7 +187,7 @@ func TestGetRoutingStrategy(t *testing.T) {
 			reqHeaders[h.Key] = string(h.RawValue)
 		}
 		routingCtx.ReqHeaders = reqHeaders
-		routingStrategy, enabled := deriveRoutingStrategy(routingCtx, nil)
+		routingStrategy, enabled := deriveRoutingStrategy(routingCtx, tt.pod)
 		assert.Equal(t, tt.expectedStrategy, routingStrategy, tt.message)
 		assert.Equal(t, tt.expectedEnabled, enabled, tt.message)
 

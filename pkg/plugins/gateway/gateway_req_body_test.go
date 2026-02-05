@@ -700,3 +700,116 @@ func Test_handleRequestBody(t *testing.T) {
 		})
 	}
 }
+
+func Test_handleRequestBody_DeriveRoutingStrategy(t *testing.T) {
+	// Initialize routing algorithms
+	routingalgorithms.Init()
+
+	tests := []struct {
+		name        string
+		reqHeaders  map[string]string
+		strategy    string
+		statusCode  envoyTypePb.StatusCode
+		expectError bool
+	}{
+		{
+			name:       "routing strategy from header (random)",
+			reqHeaders: map[string]string{HeaderRoutingStrategy: "random"},
+			strategy:   "random",
+			statusCode: envoyTypePb.StatusCode_OK,
+		},
+		{
+			name:        "invalid routing strategy header returns 400",
+			reqHeaders:  map[string]string{HeaderRoutingStrategy: "not-found-strategy"},
+			strategy:    "not-found-strategy",
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Cache and pods setup
+			mockCache := &MockCache{Cache: cache.NewForTest()}
+			mockCache.On("HasModel", "test-model").Return(true)
+			podList := &utils.PodArray{Pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "default"}, Status: v1.PodStatus{PodIP: "1.2.3.4", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "p2", Namespace: "default"}, Status: v1.PodStatus{PodIP: "5.6.7.8", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
+			}}
+			mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+			if !tt.expectError {
+				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
+				mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, metrics.RealtimeNumRequestsRunning).Return(&metrics.SimpleMetricValue{Value: 0}, nil)
+			}
+
+			// Gateway client mocks for route status
+			mockGW := &MockGatewayClient{}
+			mockGWv1 := &MockGatewayV1Client{}
+			mockHTTP := &MockHTTPRouteClient{}
+			mockGW.On("GatewayV1").Return(mockGWv1)
+			mockGWv1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP)
+			route := &gatewayv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{},
+				Spec:       gatewayv1.HTTPRouteSpec{},
+				Status: gatewayv1.HTTPRouteStatus{
+					RouteStatus: gatewayv1.RouteStatus{
+						Parents: []gatewayv1.RouteParentStatus{{
+							Conditions: []metav1.Condition{{
+								Type:   string(gatewayv1.RouteConditionAccepted),
+								Reason: string(gatewayv1.RouteReasonAccepted),
+								Status: metav1.ConditionTrue,
+							}, {
+								Type:   string(gatewayv1.RouteConditionResolvedRefs),
+								Reason: string(gatewayv1.RouteReasonResolvedRefs),
+								Status: metav1.ConditionTrue,
+							}},
+						}},
+					},
+				},
+			}
+			mockHTTP.On("Get", mock.Anything, "test-model-router", mock.Anything).Return(route, nil)
+
+			server := &Server{cache: mockCache, gatewayClient: mockGW}
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_RequestBody{
+					RequestBody: &extProcPb.HttpBody{Body: []byte(`{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`)},
+				},
+			}
+
+			routingCtx := types.NewRoutingContext(context.Background(), "", "test-model", "", "test-request-id", "test-user")
+			routingCtx.ReqPath = "/v1/chat/completions"
+			routingCtx.ReqHeaders = tt.reqHeaders
+
+			resp, model, routingCtx, stream, term := server.HandleRequestBody(routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+			if tt.expectError {
+				assert.Equal(t, tt.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				// HeaderErrorInvalidRouting should be set
+				found := false
+				for _, h := range resp.GetImmediateResponse().GetHeaders().GetSetHeaders() {
+					if h.Header.Key == HeaderErrorInvalidRouting {
+						found = true
+						break
+					}
+				}
+				assert.True(t, found, "expected invalid routing header")
+			} else {
+				assert.Equal(t, tt.statusCode, envoyTypePb.StatusCode_OK)
+				assert.Equal(t, "test-model", model)
+				assert.False(t, stream)
+				assert.NotNil(t, routingCtx)
+				// Expect routing strategy header to reflect derived value
+				hasStrategy := false
+				for _, h := range resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+					if h.Header.Key == HeaderRoutingStrategy {
+						hasStrategy = true
+						assert.Equal(t, tt.strategy, string(h.Header.RawValue))
+					}
+				}
+				assert.True(t, hasStrategy, "routing-strategy header missing")
+				_ = term // ensure term is returned
+			}
+		})
+	}
+}

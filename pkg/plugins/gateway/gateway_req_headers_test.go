@@ -59,37 +59,6 @@ func Test_handleRequestHeaders(t *testing.T) {
 	// Define test cases for different routing and error scenarios
 	tests := []testCase{
 		{
-			name: "not found strategy - should return error",
-			requestHeaders: []*configPb.HeaderValue{
-				{
-					Key:      HeaderRoutingStrategy,
-					RawValue: []byte("not-found-strategy"),
-				},
-			},
-			expected: testResponse{
-				statusCode: envoyTypePb.StatusCode_BadRequest,
-				headers: []*configPb.HeaderValueOption{
-					{Header: &configPb.HeaderValue{Key: HeaderErrorInvalidRouting, RawValue: []byte("not-found-strategy")}},
-					{Header: &configPb.HeaderValue{Key: "Content-Type", Value: "application/json"}},
-				},
-				routingCtx: nil,
-				user:       utils.User{},
-				rpm:        0,
-			},
-			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, user utils.User, routingCtx *types.RoutingContext, rpm int64) {
-				// Validate request headers info
-				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
-				assert.Equal(t, tt.expected.headers, resp.GetImmediateResponse().GetHeaders().GetSetHeaders())
-				assert.Equal(t, tt.expected.user, user)
-				assert.Nil(t, routingCtx)
-				assert.Equal(t, tt.expected.rpm, rpm)
-				// Verify no special headers are set
-				for _, header := range resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders() {
-					assert.NotEqual(t, HeaderWentIntoReqHeaders, header.Header.Key)
-				}
-			},
-		},
-		{
 			name: "not found user in redis cache - should return error",
 			requestHeaders: []*configPb.HeaderValue{
 				{
@@ -151,7 +120,7 @@ func Test_handleRequestHeaders(t *testing.T) {
 				},
 				routingCtx: &types.RoutingContext{
 					ReqPath:    "test-path",
-					ReqHeaders: map[string]string{authorizationKey: "token:test-token"},
+					ReqHeaders: map[string]string{authorizationKey: "token:test-token", HeaderRoutingStrategy: "random"},
 				},
 				user: utils.User{},
 				rpm:  0,
