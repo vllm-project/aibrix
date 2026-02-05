@@ -28,13 +28,23 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/ssestream"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+)
+
+const (
+	defaultTTFTThreshold = 1
+)
+
+var (
+	ttftThreshold = time.Duration(utils.LoadEnvInt("AIBRIX_TTFT_THRESHOLD_S", defaultTTFTThreshold)) * time.Second
 )
 
 type OpenAIResponse struct {
@@ -49,6 +59,7 @@ type OpenAIResponse struct {
 
 func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
+	arrival := time.Now()
 
 	var processingRes *extProcPb.ProcessingResponse
 	var promptTokens, completionTokens, totalTokens int64
@@ -102,7 +113,6 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 		}
 	}
 
-	var requestEnd string
 	if totalTokens != 0 {
 		complete = true
 
@@ -118,44 +128,19 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 					err.Error(), "", ""), complete
 			}
 
-			headers = append(headers,
-				&configPb.HeaderValueOption{
-					Header: &configPb.HeaderValue{
-						Key:      HeaderUpdateRPM,
-						RawValue: []byte(fmt.Sprintf("%d", rpm)),
-					},
-				},
-				&configPb.HeaderValueOption{
-					Header: &configPb.HeaderValue{
-						Key:      HeaderUpdateTPM,
-						RawValue: []byte(fmt.Sprintf("%d", tpm)),
-					},
-				},
-			)
-			requestEnd = fmt.Sprintf(requestEnd+"rpm: %d, tpm: %d, ", rpm, tpm)
+			headers = buildEnvoyProxyHeaders(headers,
+				HeaderUpdateRPM, fmt.Sprintf("%d", rpm),
+				HeaderUpdateTPM, fmt.Sprintf("%d", tpm))
 		}
 
+		var targetPod *v1.Pod
+		headers = buildEnvoyProxyHeaders(headers, HeaderRequestID, routerCtx.RequestID)
 		if routerCtx != nil && routerCtx.HasRouted() {
-			targetPodIP := routerCtx.TargetAddress()
-			headers = append(headers,
-				&configPb.HeaderValueOption{
-					Header: &configPb.HeaderValue{
-						Key:      HeaderTargetPod,
-						RawValue: []byte(targetPodIP),
-					},
-				},
-				&configPb.HeaderValueOption{
-					Header: &configPb.HeaderValue{
-						Key:      HeaderRequestID,
-						RawValue: []byte(requestID),
-					},
-				},
-			)
-			requestEnd = fmt.Sprintf(requestEnd+"targetPod: %s", targetPodIP)
+			targetPod = routerCtx.TargetPod()
+			headers = buildEnvoyProxyHeaders(headers, HeaderTargetPod, routerCtx.TargetAddress())
 		}
-
-		klog.Infof("request end, requestID: %s - %s, elapsed: %v", requestID, requestEnd,
-			routerCtx.Elapsed(time.Now()))
+		fields := s.requestEndHelper(routerCtx, targetPod, arrival, promptTokens, completionTokens, totalTokens)
+		klog.InfoS("request_end", fields...)
 	} else if b.ResponseBody.EndOfStream {
 		complete = true
 	}
@@ -247,4 +232,103 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 		totalTokens = res.Usage.TotalTokens
 	}
 	return
+}
+
+func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, targetPod *v1.Pod, arrival time.Time,
+	promptTokens, completionTokens, totalTokens int64) []interface{} {
+	requestID := routingCtx.RequestID
+	model := routingCtx.Model
+
+	fields := []interface{}{
+		"request_id", requestID,
+		"model_name", model,
+		"prompt_tokens", promptTokens,
+		"completion_tokens", completionTokens,
+		"total_tokens", totalTokens,
+	}
+	pBucket := tokenBucketLabel(promptTokens)
+	cBucket := tokenBucketLabel(completionTokens)
+	metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayPromptTokenBucketTotal, 1.0, map[string]string{"bucket": pBucket})
+	metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayCompletionTokenBucketTotal, 1.0, map[string]string{"bucket": cBucket})
+
+	if targetPod != nil {
+		fields = append(fields,
+			"target_pod", targetPod.Name,
+			"outstanding_request_count", getRunningRequestsByPod(s, targetPod.Name, targetPod.Namespace))
+	}
+
+	ttft := arrival.Sub(routingCtx.RequestTime)
+	if routingCtx.Stream {
+		ttftBucket := durationBucketLabel(ttft)
+		metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayTTFTBucketTotal, 1.0, map[string]string{"bucket": ttftBucket})
+	}
+
+	if routingCtx.Algorithm == "pd" {
+		routingTime := routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime)
+		prefillTime := routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime)
+		kvTransferTime := ttft - routingCtx.PrefillEndTime.Sub(routingCtx.RequestTime)
+		decodeTime := time.Since(routingCtx.PrefillEndTime)
+		fields = append(fields,
+			"routing_time_taken", routingTime,
+			"prefill_time_taken", prefillTime,
+			"kv_transfer_time_taken", kvTransferTime,
+			"ttft", ttft,
+			"decode_time_taken", decodeTime,
+		)
+		metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayRoutingTimeBucketTotal, 1.0, map[string]string{"bucket": durationBucketLabel(routingTime)})
+		metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayPrefillTimeBucketTotal, 1.0, map[string]string{"bucket": durationBucketLabel(prefillTime)})
+		metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayKVTransferTimeBucketTotal, 1.0, map[string]string{"bucket": durationBucketLabel(kvTransferTime)})
+		metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayDecodeTimeBucketTotal, 1.0, map[string]string{"bucket": durationBucketLabel(decodeTime)})
+		if ttft > ttftThreshold {
+			metrics.EmitCounterMetric(routingCtx, nil, metrics.GatewayFirstTokenDelayOver1sTotal, 1.0, map[string]string{
+				"request_id": requestID,
+				"p_bucket":   pBucket, "c_bucket": cBucket,
+				"routing_time_taken":     fmt.Sprintf("%v", routingTime),
+				"prefill_time_taken":     fmt.Sprintf("%v", prefillTime),
+				"kv_transfer_time_taken": fmt.Sprintf("%v", kvTransferTime),
+				"ttft":                   fmt.Sprintf("%v", ttft),
+				"decode_time_taken":      fmt.Sprintf("%v", decodeTime),
+			})
+		}
+	} else {
+		fields = append(fields,
+			"routing_time_taken", routingCtx.RequestEndTime.Sub(routingCtx.RequestTime),
+		)
+	}
+	fields = append(fields, "total_time_taken", routingCtx.Elapsed(time.Now()))
+	metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayTotalTimeBucketTotal, 1.0, map[string]string{
+		"bucket": durationBucketLabel(routingCtx.Elapsed(time.Now())),
+	})
+	return fields
+}
+
+// tokenBucketLabel returns a human-readable bucket label for token counts.
+// Buckets: [0-256), [256-512), [512-1024), [1024-2048), [2048-4096), [4096-8192), [8192-16384), [16384-32768), [32768+]
+func tokenBucketLabel(n int64) string {
+	bounds := []int64{256, 512, 1024, 2048, 4096, 8192, 16384, 32768}
+	low := int64(0)
+	for _, b := range bounds {
+		if n < b {
+			return fmt.Sprintf("%d-%d", low, b)
+		}
+		low = b
+	}
+	return fmt.Sprintf("%d+", low)
+}
+
+// Add duration bucketizer: ms buckets [0-1), [1-2), [2-5), [5-10), [20-50), [50-100), [100-200), [200-500), [500-1000), [1000-2000), [2000-5000), [5000+}
+func durationBucketLabel(d time.Duration) string {
+	ms := d.Milliseconds()
+	if ms < 0 {
+		ms = 0
+	}
+	bounds := []int64{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000}
+	low := int64(0)
+	for _, b := range bounds {
+		if ms < b {
+			return fmt.Sprintf("%d-%dms", low, b)
+		}
+		low = b
+	}
+	return fmt.Sprintf("%dms+", low)
 }

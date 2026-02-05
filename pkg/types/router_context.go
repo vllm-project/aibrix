@@ -48,19 +48,24 @@ type RoutingAlgorithm string
 // It can be extended with more fields as needed in the future.
 type RoutingContext struct {
 	context.Context
-	Algorithm   RoutingAlgorithm
-	Model       string
-	Message     string
-	RequestID   string
-	User        *string
-	RequestTime time.Time // Time when the routing context is created.
-	PendingLoad float64   // Normalized pending load of request, available after AddRequestCount call. See cache.PendingLoadProvider
-	TraceTerm   int64     // Trace term identifier, available after AddRequestCount call.
-	RoutedTime  time.Time // Time consumed during routing.
+	Algorithm      RoutingAlgorithm
+	Model          string
+	Stream         bool
+	Message        string
+	RequestID      string
+	User           *string
+	RequestTime    time.Time // Time when the routing context is created.
+	RequestEndTime time.Time // Time when the routing is done and sent to inference engine.
+	PendingLoad    float64   // Normalized pending load of request, available after AddRequestCount call. See cache.PendingLoadProvider
+	TraceTerm      int64     // Trace term identifier, available after AddRequestCount call.
+	RoutedTime     time.Time // Time consumed during routing.
 
 	ReqHeaders map[string]string
 	ReqBody    []byte
 	ReqPath    string
+
+	PrefillStartTime time.Time // Time when prefill request is started.
+	PrefillEndTime   time.Time // Time consumed during prefill.
 
 	// RespHeaders holds response headers that the router intends to set.
 	// These are typically used to propagate control information back to the client,
@@ -286,6 +291,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Context = ctx
 	r.Algorithm = algorithms
 	r.Model = model
+	r.Stream = false
 	r.Message = message
 	r.RequestID = requestID
 	if user != "" {
@@ -294,12 +300,15 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 		r.User = nil
 	}
 	r.RequestTime = time.Now()
+	r.RequestEndTime = time.Time{}
 	r.PendingLoad = 0
 	r.TraceTerm = 0
 
 	r.ReqHeaders = map[string]string{}
 	r.ReqPath = ""
 	r.ReqBody = []byte{}
+	r.PrefillStartTime = time.Time{}
+	r.PrefillEndTime = time.Time{}
 	// RoutedTime will not be reset, it must before ReqeustTime at this time.
 
 	r.RespHeaders = map[string]string{}

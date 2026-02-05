@@ -18,9 +18,12 @@ package metrics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -250,4 +253,47 @@ func GetEngineType(pod v1.Pod) string {
 		return engineType
 	}
 	return "vllm" // Default to vllm for backward compatibility
+}
+
+func HttpFailureStatusCode(ctx context.Context, err error, resp *http.Response) (string, string) {
+	// 1. HTTP response status code
+	if resp != nil {
+		return "http_error", strconv.Itoa(resp.StatusCode)
+	}
+
+	// 2. No error and no response (should not happen, but be safe)
+	if err == nil {
+		return "ok", "200"
+	}
+
+	// 3. Context always wins
+	if ctx != nil {
+		switch ctx.Err() {
+		case context.Canceled:
+			return "context_canceled", "499"
+		case context.DeadlineExceeded:
+			return "deadline_exceeded", "504"
+		}
+	}
+
+	// 4. Unwrap url.Error if present
+	if urlErr, ok := err.(*url.Error); ok {
+		err = urlErr.Err
+	}
+
+	// 5. Error-level classification
+	if errors.Is(err, context.Canceled) {
+		return "context_canceled", "499"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline_exceeded", "504"
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout", "504"
+	}
+
+	// 6. Fallback
+	return "error", "502"
 }
