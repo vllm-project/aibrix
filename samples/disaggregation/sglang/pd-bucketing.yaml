@@ -29,6 +29,7 @@ spec:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
+                model.aibrix.ai/routing-strategy: "pd"
                 model.aibrix.ai/engine: sglang
                 prompt-min-length: "0"
                 prompt-max-length: "2048"
@@ -159,6 +160,7 @@ spec:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
+                model.aibrix.ai/routing-strategy: "pd"
                 model.aibrix.ai/engine: sglang
                 prompt-min-length: "0"
                 prompt-max-length: "2048"
@@ -308,6 +310,7 @@ spec:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
+                model.aibrix.ai/routing-strategy: "pd"
                 model.aibrix.ai/engine: sglang
                 prompt-min-length: "2049"
                 prompt-max-length: "4096"
@@ -438,6 +441,7 @@ spec:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
+                model.aibrix.ai/routing-strategy: "pd"
                 model.aibrix.ai/engine: sglang
                 prompt-min-length: "2049"
                 prompt-max-length: "4096"
@@ -588,6 +592,7 @@ spec:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
+                model.aibrix.ai/routing-strategy: "pd"
                 model.aibrix.ai/engine: sglang
                 prompt-min-length: "0"
                 model.aibrix.ai/combined: "true"
