@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
@@ -109,6 +110,28 @@ func podNames(pods []corev1.Pod) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func buildStormService(ns, name, roleName string, podGroupSize *int32) *orchestrationv1alpha1.StormService {
+	ss := &orchestrationv1alpha1.StormService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+		},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+				Spec: &orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{
+						{
+							Name:         roleName,
+							PodGroupSize: podGroupSize,
+						},
+					},
+				},
+			},
+		},
+	}
+	return ss
 }
 
 // ---- tests ----
@@ -196,54 +219,131 @@ func TestComputeMetricBasedReplicas_StormService_FiltersIndex0(t *testing.T) {
 	_ = autoscalingv1alpha1.AddToScheme(sch)
 	_ = orchestrationv1alpha1.AddToScheme(sch)
 
+	ssName := "ss-1"
+
 	p0 := buildPod(ns, "p-0", map[string]string{
-		"app":                           "foo",
-		constants.PodGroupIndexLabelKey: "0",
+		constants.StormServiceNameLabelKey: ssName,
+		constants.RoleReplicaIndexLabelKey: "0",
+		constants.RoleNameLabelKey:         "test-role",
+		constants.PodGroupIndexLabelKey:    "0",
 	})
 	p1 := buildPod(ns, "p-1", map[string]string{
-		"app":                           "foo",
-		constants.PodGroupIndexLabelKey: "1",
+		constants.StormServiceNameLabelKey: ssName,
+		constants.RoleReplicaIndexLabelKey: "0",
+		constants.RoleNameLabelKey:         "test-role",
+		constants.PodGroupIndexLabelKey:    "1",
 	})
 	pWrongApp := buildPod(ns, "p-other-app", map[string]string{
-		"app":                           "bar",
-		constants.PodGroupIndexLabelKey: "0",
+		constants.StormServiceNameLabelKey: "ss-2",
+		constants.RoleReplicaIndexLabelKey: "0",
+		constants.PodGroupIndexLabelKey:    "0",
 	})
 
-	cl := fake.NewClientBuilder().WithScheme(sch).
-		WithObjects(p0, p1, pWrongApp).
-		Build()
+	p2 := buildPod(ns, "p-2", map[string]string{
+		constants.StormServiceNameLabelKey: ssName,
+		constants.RoleReplicaIndexLabelKey: "0",
+		constants.PodGroupIndexLabelKey:    "0",
+	})
 
-	pa := autoscalingv1alpha1.PodAutoscaler{}
-	pa.Namespace = ns
-
-	// Scale target is a StormService; this should add the index=0 requirement.
-	scaleObj := buildScaleObject(orchestrationv1alpha1.GroupVersion.String(), StormService, ns, "ss-1")
-
-	wlc := &fakeWorkloadScaleClient{}
-	as := &fakeAutoScaler{}
-
-	r := &PodAutoscalerReconciler{
-		Client:              cl,
-		workloadScaleClient: wlc,
-		autoScaler:          as,
+	tests := []struct {
+		name         string
+		podGroupSize *int32 // nil, 1, 2
+		wantPodNames []string
+		roleName     string
+	}{
+		{
+			name:         "Size=2 (Should filter, keep only index 0)",
+			podGroupSize: ptr.To(int32(2)),
+			wantPodNames: []string{"p-0"},
+			roleName:     "test-role",
+		},
+		{
+			name:         "Size=1 (Should NOT filter, keep all)",
+			podGroupSize: ptr.To(int32(1)),
+			wantPodNames: []string{"p-0", "p-1"},
+			roleName:     "test-role",
+		},
+		{
+			name:         "Size=nil (Should NOT filter, keep all with roleName)",
+			podGroupSize: nil,
+			wantPodNames: []string{"p-0", "p-1"},
+			roleName:     "test-role",
+		},
+		{
+			name:         "Size=nil (Should NOT filter, keep all)",
+			podGroupSize: nil,
+			wantPodNames: []string{"p-0", "p-1", "p-2"},
+		},
 	}
-	scalingCtx := scalingctx.NewBaseScalingContext()
 
-	res, err := r.computeMetricBasedReplicas(ctx, pa, scalingCtx, scaleObj, 3)
-	if err != nil {
-		t.Fatalf("computeMetricBasedReplicas returned error: %v", err)
-	}
-	if res == nil {
-		t.Fatalf("expected non-nil result")
-	}
-	if as.lastRequest == nil {
-		t.Fatalf("autoscaler did not receive request")
-	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	got := podNames(as.lastRequest.Pods)
-	want := []string{"p-0"} // only index=0 with app=foo
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("filtered pods mismatch, got=%v want=%v", got, want)
+			ss := buildStormService(ns, ssName, "test-role", tc.podGroupSize)
+
+			cl := fake.NewClientBuilder().WithScheme(sch).
+				WithObjects(
+					p0.DeepCopy(),
+					p1.DeepCopy(),
+					p2.DeepCopy(),
+					pWrongApp.DeepCopy(),
+					ss,
+				).
+				Build()
+
+			pa := autoscalingv1alpha1.PodAutoscaler{
+				ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "test-pa"},
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						APIVersion: "orchestration.aibrix.ai/v1alpha1",
+						Kind:       "stormservices",
+						Namespace:  ns,
+						Name:       ssName,
+					},
+				},
+			}
+			if tc.roleName != "" {
+				pa.Spec.SubTargetSelector = &autoscalingv1alpha1.SubTargetSelector{
+					RoleName: tc.roleName,
+				}
+			}
+
+			scaleObj := buildScaleObject(orchestrationv1alpha1.GroupVersion.String(), StormService, ns, ssName)
+
+			wlc := NewWorkloadScale(cl, nil)
+			as := &fakeAutoScaler{} // reset fakeAutoScaler
+
+			r := &PodAutoscalerReconciler{
+				Client:              cl,
+				workloadScaleClient: wlc,
+				autoScaler:          as,
+			}
+
+			scalingCtx := scalingctx.NewBaseScalingContext()
+
+			res, err := r.computeMetricBasedReplicas(ctx, pa, scalingCtx, scaleObj, 3)
+			if err != nil {
+				t.Fatalf("computeMetricBasedReplicas error: %v", err)
+			}
+			if res == nil {
+				t.Fatal("expected non-nil result")
+			}
+
+			if as.lastRequest == nil {
+				t.Fatal("autoscaler did not receive request")
+			}
+
+			// sort result
+			got := podNames(as.lastRequest.Pods)
+			sort.Strings(got)
+			sort.Strings(tc.wantPodNames)
+
+			if !reflect.DeepEqual(got, tc.wantPodNames) {
+				t.Errorf("Mismatch for PodGroupSize %v.\nGot:  %v\nWant: %v",
+					tc.podGroupSize, got, tc.wantPodNames)
+			}
+		})
 	}
 }
 
