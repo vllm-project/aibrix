@@ -523,7 +523,11 @@ class KVCacheManager(ABC):
 
     @overload
     def cache_chunk_keys(
-        self, prefix: TokenListView | None, query: TokenListView
+        self,
+        prefix: TokenListView | None,
+        query: TokenListView,
+        *,
+        include_unaligned: bool = False,
     ) -> Iterator[
         Tuple[
             TokenListView,
@@ -536,6 +540,8 @@ class KVCacheManager(ABC):
         Args:
             prefix: The prefix tokens of the kv tensors.
             query: The query tokens of the kv tensors.
+            include_unaligned: If True, always yield the remaining unaligned
+                tokens as a separate chunk. If False (default), may or may not.
         Returns:
             chunk prefix tokens, chunk query tokens, next chunk query tokens,
             and all tokens
@@ -544,7 +550,11 @@ class KVCacheManager(ABC):
 
     @overload
     def cache_chunk_keys(
-        self, prefix: BlockHashes | None, query: BlockHashes
+        self,
+        prefix: BlockHashes | None,
+        query: BlockHashes,
+        *,
+        include_unaligned: bool = False,
     ) -> Iterator[
         Tuple[
             BlockHashes,
@@ -557,6 +567,8 @@ class KVCacheManager(ABC):
         Args:
             prefix: The prefix blocks of the kv tensors.
             query: The query blocks of the kv tensors.
+            include_unaligned: If True, always yield the remaining unaligned
+                tokens as a separate chunk. If False (default), may or may not.
         Returns:
             chunk prefix blocks, chunk query blocks, next chunk query blocks,
             and all blocks
@@ -565,7 +577,11 @@ class KVCacheManager(ABC):
 
     @abstractmethod
     def cache_chunk_keys(
-        self, prefix: KVCacheKeyTypes | None, query: KVCacheKeyTypes
+        self,
+        prefix: KVCacheKeyTypes | None,
+        query: KVCacheKeyTypes,
+        *,
+        include_unaligned: bool = False,
     ) -> Iterator[
         Tuple[
             KVCacheKeyTypes,
@@ -1566,7 +1582,11 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         return Status.ok()
 
     def cache_chunk_keys(  # type: ignore
-        self, prefix: KVCacheKeyTypes | None, query: KVCacheKeyTypes
+        self,
+        prefix: KVCacheKeyTypes | None,
+        query: KVCacheKeyTypes,
+        *,
+        include_unaligned: bool = False,
     ) -> Iterator[
         Tuple[
             KVCacheKeyTypes,
@@ -1586,18 +1606,50 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         aligned_num_tokens = num_tokens - num_tokens % self.block_ntokens
         num_chunks = -(-aligned_num_tokens // self._chunk_size)
         chunk_start = prefix_len
-        for _ in range(num_chunks):
-            chunk_end = chunk_start + self._chunk_size
-            next_chunk_end = chunk_end + self._chunk_size
-            yield (
-                all[:chunk_start],
-                all[chunk_start:chunk_end],
-                all[chunk_end:next_chunk_end]
-                if next_chunk_end < len(all)
-                else None,
-                all,
-            )
-            chunk_start += self._chunk_size
+
+        if include_unaligned:
+            # Only yield aligned, then yield remaining unaligned separately
+            aligned_end = prefix_len + aligned_num_tokens
+            for _ in range(num_chunks):
+                # Ensure we don't exceed aligned_num_tokens
+                chunk_end = min(chunk_start + self._chunk_size, aligned_end)
+                if chunk_end <= chunk_start:
+                    break
+                next_chunk_end = min(chunk_end + self._chunk_size, aligned_end)
+                yield (
+                    all[:chunk_start],
+                    all[chunk_start:chunk_end],
+                    all[chunk_end:next_chunk_end]
+                    if next_chunk_end < aligned_end
+                    else None,
+                    all,
+                )
+                chunk_start += self._chunk_size
+
+            # Handle remaining unaligned tokens
+            remaining_start = prefix_len + aligned_num_tokens
+            if remaining_start < len(all):
+                remaining_tokens = all[remaining_start:]
+                yield (
+                    all[:remaining_start],
+                    remaining_tokens,
+                    None,
+                    all,
+                )
+        else:
+            # Yield chunks without restricting to aligned_num_tokens
+            for _ in range(num_chunks):
+                chunk_end = chunk_start + self._chunk_size
+                next_chunk_end = chunk_end + self._chunk_size
+                yield (
+                    all[:chunk_start],
+                    all[chunk_start:chunk_end],
+                    all[chunk_end:next_chunk_end]
+                    if next_chunk_end < len(all)
+                    else None,
+                    all,
+                )
+                chunk_start += self._chunk_size
 
 
 class GroupAwareKVCacheManager(BaseKVCacheManager):
