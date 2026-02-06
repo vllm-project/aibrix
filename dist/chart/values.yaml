@@ -86,6 +86,8 @@ gatewayPlugin:
     redis:
       host: "" # aibrix-redis-master
       port: 6379
+  service:
+    type: ClusterIP
   messageTimeout: "60s"
   failOpen: false
   extProc:
