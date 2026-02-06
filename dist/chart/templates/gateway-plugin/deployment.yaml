@@ -127,14 +127,14 @@ spec:
                 --drain-strategy immediate \
                 --drain-time-s 60
           volumeMounts:
-            - name: envoy-config
+            - name: {{ include "aibrix.fullname" . }}-envoy-config
               mountPath: /etc/envoy
 {{- end }}
 {{- if .Values.gateway.envoyAsSideCar }}
       volumes:
-        - name: envoy-config
+        - name: {{ include "aibrix.fullname" . }}-envoy-config
           configMap:
-            name: envoy-config
+            name: {{ include "aibrix.fullname" . }}-envoy-config
             items:
               - key: envoy.yaml
                 path: envoy.yaml

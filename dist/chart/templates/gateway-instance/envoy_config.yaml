@@ -8,7 +8,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: envoy-config
+  name: {{ include "aibrix.fullname" . }}-envoy-config
   namespace: aibrix-system
 data:
   envoy.yaml: |
@@ -30,43 +30,8 @@ data:
         address:
           socket_address:
             address: '0.0.0.0'
-            port_value: 10080
+            port_value: {{ .Values.gateway.envoySideCar.ports.http | default 10080 }}
             protocol: TCP
-        access_log:
-        - filter:
-            response_flag_filter:
-              flags:
-              - "NR"
-          name: envoy.access_loggers.file
-          typed_config:
-            "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
-            path: "/dev/stdout"
-            log_format:
-              json_format:
-                ":authority": "%REQ(:AUTHORITY)%"
-                "bytes_received": "%BYTES_RECEIVED%"
-                "bytes_sent": "%BYTES_SENT%"
-                "connection_termination_details": "%CONNECTION_TERMINATION_DETAILS%"
-                "downstream_local_address": "%DOWNSTREAM_LOCAL_ADDRESS%"
-                "downstream_remote_address": "%DOWNSTREAM_REMOTE_ADDRESS%"
-                "duration": "%DURATION%"
-                "method": "%REQ(:METHOD)%"
-                "protocol": "%PROTOCOL%"
-                "requested_server_name": "%REQUESTED_SERVER_NAME%"
-                "response_code": "%RESPONSE_CODE%"
-                "response_code_details": "%RESPONSE_CODE_DETAILS%"
-                "response_flags": "%RESPONSE_FLAGS%"
-                "route_name": "%ROUTE_NAME%"
-                "start_time": "%START_TIME%"
-                "upstream_cluster": "%UPSTREAM_CLUSTER%"
-                "upstream_host": "%UPSTREAM_HOST%"
-                "upstream_local_address": "%UPSTREAM_LOCAL_ADDRESS%"
-                "upstream_transport_failure_reason": "%UPSTREAM_TRANSPORT_FAILURE_REASON%"
-                "user-agent": "%REQ(USER-AGENT)%"
-                "x-envoy-origin-path": "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
-                "x-envoy-upstream-service-time": "%RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)%"
-                "x-forwarded-for": "%REQ(X-FORWARDED-FOR)%"
-                "x-request-id": "%REQ(X-REQUEST-ID)%"
         per_connection_buffer_limit_bytes: 4194304
         filter_chains:
         - filters:
