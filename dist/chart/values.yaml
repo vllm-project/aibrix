@@ -144,6 +144,9 @@ gateway:
   # | true           | true                | INVALID: Do not enable both. Values must be opposite. |
   enable: true
   envoyAsSideCar: false
+  envoySideCar:
+    ports:
+      http: 10080
   envoyProxy:
     replicas: 1
     imagePullSecrets: []
