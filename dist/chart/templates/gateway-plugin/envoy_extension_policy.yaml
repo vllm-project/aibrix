@@ -1,5 +1,5 @@
 # templates/envoy-extension-policy.yaml
-{{- if .Values.gateway.enable }}
+{{- if and .Values.gateway.enable (not .Values.gateway.envoyAsSideCar) }}
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
 metadata:

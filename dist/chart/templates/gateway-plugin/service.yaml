@@ -1,4 +1,4 @@
-{{- if .Values.gateway.enable }}
+{{- if or .Values.gateway.enable (.Values.gateway.envoyAsSideCar) }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -11,6 +11,11 @@ metadata:
     prometheus.io/port: "8080"
     prometheus.io/path: "/metrics"
 spec:
+{{- if .Values.gateway.envoyAsSideCar }}
+  type: LoadBalancer
+{{- else }}
+  type: {{ .Values.gatewayPlugin.service.type | default "ClusterIP" }}
+{{- end }}
   selector:
     {{- include "aibrix.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway-plugin
@@ -24,4 +29,9 @@ spec:
     - name: metrics
       port: 8080
       targetPort: 8080
+    {{- if .Values.gateway.envoyAsSideCar }}
+    - name: envoy-http
+      port: 10080
+      targetPort: 10080
+    {{- end }}
 {{- end }}

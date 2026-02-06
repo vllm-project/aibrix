@@ -1,4 +1,4 @@
-{{- if .Values.gateway.enable }}
+{{- if or .Values.gateway.enable .Values.gateway.envoyAsSideCar }}
 ---
 apiVersion: v1
 kind: ServiceAccount
