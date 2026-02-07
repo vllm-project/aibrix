@@ -174,7 +174,7 @@ gateway:
           requests:
             cpu: 10m
             memory: 32Mi
-    service: {}
+    service: null
   clientTrafficPolicy:
     connection:
       bufferLimit: 4194304  # 4MiB
