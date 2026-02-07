@@ -8,6 +8,8 @@ WORKDIR /workspace
 RUN apt-get update && apt-get install -y \
     libkrb5-dev libzmq3-dev
 
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
 # Copy the Go Modules manifests
 COPY go.mod go.mod
 COPY go.sum go.sum
@@ -34,8 +36,9 @@ RUN ldd /workspace/gateway-plugins | awk '{if ($3 ~ /^\//) print $3}' | xargs -I
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/base:nonroot
+FROM gcr.io/distroless/base-debian12:nonroot
 WORKDIR /
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /workspace/gateway-plugins .
 COPY --from=builder /workspace/deps /gateway-plugins-lib
 ENV LD_LIBRARY_PATH=/gateway-plugins-lib

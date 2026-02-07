@@ -207,6 +207,23 @@ func TestAPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			},
 			expected: 2,
 		},
+		{
+			name:            "division_by_zero",
+			currentPodCount: 1.0,
+			context: &mockScalingContext{
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 0.0,
+					},
+				},
+				CurrentUsePerPod:         10.0,
+				UpFluctuationTolerance:   0.1,
+				MaxScaleUpRate:           1000.0,
+				DownFluctuationTolerance: 0.1,
+				MaxScaleDownRate:         2.0,
+			},
+			expected: 1,
+		},
 	}
 
 	for _, tt := range tests {

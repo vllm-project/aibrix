@@ -61,6 +61,12 @@ const (
 	defaultMaxTokenThroughputDiff       float64 = 2048
 	defaultRequestRateHighLoadThreshold         = 1.0
 	defaultRequestRateLowLoadThreshold          = 0.25
+
+	pdRouteValidateLLMEngineFail        = "pd-validate-llm-engine-fail"
+	pdRouteFilterPrefillDecodePodsFail  = "pd-filter-prefill-decode-pods-fail"
+	pdRoutePrefillRequestError          = "pd-do-prefill-request-error"
+	pdRoutePrefillRequestSuccess        = "pd-prefill-request-success"
+	pdRoutePrefillEmptyKVTransferParams = "pd-prefill-empty-kv-transfer-params"
 )
 
 var (
@@ -80,6 +86,9 @@ type pdRouter struct {
 	prefixCacheIndexer    *prefixcacheindexer.PrefixHashTable
 	prefillRequestTracker *PrefillRequestTracker
 	httpClient            *http.Client
+	prefixUpdateCh        chan prefixUpdateJob
+	countersMu            sync.RWMutex
+	selectionCounts       map[string]int64
 }
 
 // PrefillRequestTracker manages prefill-specific request counts
@@ -115,13 +124,18 @@ func NewPDRouter() (types.Router, error) {
 		},
 	}
 
-	return pdRouter{
+	pdRouter := pdRouter{
 		cache:                 c,
 		tokenizer:             tokenizerObj,
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            httpClient,
-	}, nil
+		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
+		selectionCounts:       make(map[string]int64),
+	}
+
+	pdRouter.startPrefixUpdater()
+	return &pdRouter, nil
 }
 
 // NewPrefillRequestTracker creates a new prefill request tracker
@@ -132,15 +146,19 @@ func NewPrefillRequestTracker() *PrefillRequestTracker {
 	}
 }
 
-func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	// Validate engine consistency across all prefill pods
 	llmEngine, err := validateAndGetLLMEngine(readyPodList.All())
 	if err != nil {
+		metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+			map[string]string{"status": pdRouteValidateLLMEngineFail, "status_code": "400"})
 		return "", fmt.Errorf("engine validation failed for request %s: %w", ctx.RequestID, err)
 	}
 
 	prefillPod, decodePod, err := r.filterPrefillDecodePods(ctx, readyPodList.All())
 	if err != nil {
+		metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+			map[string]string{"status": pdRouteFilterPrefillDecodePodsFail, "status_code": "400"})
 		return "", fmt.Errorf("failed to filter prefill/decode pods for request %s: %w", ctx.RequestID, err)
 	}
 
@@ -148,9 +166,13 @@ func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (
 		klog.InfoS("selected prefill/decode pods", "request_id", ctx.RequestID, "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)
 		err = r.doPrefillRequest(ctx, prefillPod, llmEngine)
 		if err != nil {
-			klog.ErrorS(err, "prefill request failed", "request_id", ctx.RequestID)
+			metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+				map[string]string{"status": pdRoutePrefillRequestError, "status_code": "500"})
+			klog.ErrorS(err, pdRoutePrefillRequestError, "request_id", ctx.RequestID)
 			return "", fmt.Errorf("prefill request failed for request %s: %w", ctx.RequestID, err)
 		}
+		metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestSuccessTotal, 1.0,
+			map[string]string{"status": pdRoutePrefillRequestSuccess, "status_code": "200"})
 	}
 
 	ctx.SetTargetPod(decodePod)
@@ -348,7 +370,6 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 	readyPodsMap := map[string]struct{}{}
 	podRequestCount := r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods)
 
-	// klog.InfoS("prefill_pod_request_count", "request_id", routingCtx.RequestID, "pod_request_count", podRequestCount)
 	for _, cnt := range podRequestCount {
 		countFloat := float64(cnt)
 		requestCount = append(requestCount, countFloat)
@@ -466,18 +487,23 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 		)
 	}
 
-	defer func() {
-		if len(prefixHashes) > 0 {
-			r.prefixCacheIndexer.AddPrefix(prefixHashes, routingCtx.Model, targetPrefillPod.Name)
-		}
-	}()
-
 	if targetPrefillPod == nil {
 		return nil, nil, fmt.Errorf("target prefill pod is nil")
 	}
 	if targetDecodePod == nil {
 		return nil, nil, fmt.Errorf("target decode pod is nil")
 	}
+	if len(prefixHashes) > 0 && targetPrefillPod != nil {
+		r.enqueuePrefixUpdate(prefixHashes, routingCtx.Model, targetPrefillPod.Name)
+	}
+
+	r.countersMu.Lock()
+	r.selectionCounts[targetPrefillPod.Name]++
+	r.selectionCounts[targetDecodePod.Name]++
+	r.countersMu.Unlock()
+
+	metrics.EmitCounterMetric(routingCtx, targetPrefillPod, metrics.PDSelectedPrefillPodTotal, 1.0, nil)
+	metrics.EmitCounterMetric(routingCtx, targetDecodePod, metrics.PDSelectedDecodePodTotal, 1.0, nil)
 
 	return targetPrefillPod, targetDecodePod, nil
 }
@@ -495,21 +521,31 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		utils.GetModelPortForPod(routingCtx.RequestID, prefillPod),
 		routingCtx.ReqPath)
 
-	klog.InfoS("start_prefill_request",
+	fields := []interface{}{
 		"request_id", routingCtx.RequestID,
 		"llm_engine", llmEngine,
+		"model_name", routingCtx.Model,
 		"prefill_pod", prefillPod.Name,
-		"prefill_url", apiURL)
+		"prefill_url", apiURL,
+		"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name),
+	}
+	klog.InfoS("prefill_request_start", fields...)
+	if len(fields) >= 2 {
+		fields = fields[:len(fields)-2]
+	}
 
 	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name)
+	routingCtx.PrefillStartTime = time.Now()
+
 	switch llmEngine {
 	case SGLangEngine:
 		// For SGLang, use async prefill - the bootstrap mechanism (bootstrap_host/port/room)
 		// coordinates between prefill and decode pods, so we don't need to wait
 		go func() {
 			defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+
 			if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
-				klog.ErrorS(err, "async prefill request failed",
+				klog.ErrorS(err, "prefill_request_failed",
 					"request_id", routingCtx.RequestID,
 					"llm_engine", llmEngine,
 					"prefill_pod", prefillPod.Name,
@@ -517,17 +553,27 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 					"elapsed", routingCtx.Elapsed(time.Now()))
 				return
 			}
-			klog.InfoS("prefill_request_complete",
-				"request_id", routingCtx.RequestID,
-				"llm_engine", llmEngine,
-				"prefill_pod", prefillPod.Name)
+
+			routingCtx.PrefillEndTime = time.Now()
+			fields = append(fields,
+				"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
+				"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
+				"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
+			klog.InfoS("prefill_request_end", fields...)
 		}()
+
 	case VLLMEngine:
 		defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
 
 		// For vLLM, wait synchronously to get KV transfer params from response
 		responseData, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
 		if err != nil {
+			klog.ErrorS(err, "prefill_request_failed",
+				"request_id", routingCtx.RequestID,
+				"llm_engine", llmEngine,
+				"prefill_pod", prefillPod.Name,
+				"prefill_pod_ip", prefillPod.Status.PodIP,
+				"elapsed", routingCtx.Elapsed(time.Now()))
 			return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
 		}
 
@@ -536,25 +582,32 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 			return fmt.Errorf("failed to update routing context with KV transfer params for request %s: %w", routingCtx.RequestID, err)
 		}
 
-		klog.InfoS("prefill_request_complete",
-			"request_id", routingCtx.RequestID,
-			"llm_engine", llmEngine,
-			"prefill_pod", prefillPod.Name,
-			"prefill_pod_ip", prefillPod.Status.PodIP,
-			"elapsed", routingCtx.Elapsed(time.Now()))
+		routingCtx.PrefillEndTime = time.Now()
+		fields = append(fields,
+			"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
+			"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
+			"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
+		klog.InfoS("prefill_request_end", fields...)
+
 	default:
 		defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
 
 		// For unknown engines, use synchronous approach as a safe default
 		if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
+			klog.ErrorS(err, "prefill_request_failed",
+				"request_id", routingCtx.RequestID,
+				"llm_engine", llmEngine,
+				"prefill_pod", prefillPod.Name,
+				"prefill_pod_ip", prefillPod.Status.PodIP,
+				"elapsed", routingCtx.Elapsed(time.Now()))
 			return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
 		}
-		klog.InfoS("prefill_request_complete",
-			"request_id", routingCtx.RequestID,
-			"llm_engine", llmEngine,
-			"prefill_pod", prefillPod.Name,
-			"prefill_pod_ip", prefillPod.Status.PodIP,
-			"elapsed", routingCtx.Elapsed(time.Now()))
+		routingCtx.PrefillEndTime = time.Now()
+		fields = append(fields,
+			"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
+			"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
+			"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
+		klog.InfoS("prefill_request_end", fields...)
 	}
 
 	return nil
@@ -623,6 +676,9 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 	// Use shared HTTP client with connection pooling
 	resp, err := r.httpClient.Do(req)
 	if err != nil {
+		status, code := metrics.HttpFailureStatusCode(ctx, err, nil)
+		metrics.EmitCounterMetric(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+			map[string]string{"status": status, "status_code": code})
 		return nil, fmt.Errorf("failed to execute http prefill request: %w", err)
 	}
 	defer func() {
@@ -637,6 +693,9 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
+		status, code := metrics.HttpFailureStatusCode(ctx, nil, resp)
+		metrics.EmitCounterMetric(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+			map[string]string{"status": status, "status_code": code})
 		return nil, fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -669,6 +728,8 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 	// Add prefill host information
 	kvTransferParamsMap, ok := kvTransferParams.(map[string]any)
 	if !ok {
+		metrics.EmitCounterMetric(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+			map[string]string{"status": pdRoutePrefillEmptyKVTransferParams, "status_code": "500"})
 		return fmt.Errorf("kv_transfer_params has unexpected type %T, expected map[string]any", kvTransferParams)
 	}
 	kvTransferParamsMap["remote_host"] = prefillPod.Status.PodIP
@@ -691,6 +752,37 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 
 func (r *pdRouter) SubscribedMetrics() []string {
 	return []string{}
+}
+
+type prefixUpdateJob struct {
+	prefixHashes []uint64
+	model        string
+	pod          string
+}
+
+func (r *pdRouter) startPrefixUpdater() {
+	// single worker to serialize updates, minimizing lock contention in the indexer
+	go func() {
+		for job := range r.prefixUpdateCh {
+			r.prefixCacheIndexer.AddPrefix(job.prefixHashes, job.model, job.pod)
+		}
+	}()
+}
+
+func (r *pdRouter) enqueuePrefixUpdate(prefixHashes []uint64, model, pod string) {
+	// copy slice to avoid data races if caller reuses the backing array
+	copyHashes := append([]uint64(nil), prefixHashes...)
+	select {
+	case r.prefixUpdateCh <- prefixUpdateJob{
+		prefixHashes: copyHashes,
+		model:        model,
+		pod:          pod,
+	}:
+		// enqueued
+	default:
+		// channel full; drop to keep routing path non-blocking
+		klog.Warningf("Prefix update channel full, dropping update for model %s on pod %s", model, pod)
+	}
 }
 
 func getLLMEngine(pod *v1.Pod, labelName string, defaultValue string) string {
@@ -800,6 +892,14 @@ func (t *PrefillRequestTracker) GetPrefillRequestCountsForPods(pods []*v1.Pod) m
 		}
 	}
 	return counts
+}
+
+func (t *PrefillRequestTracker) GetPrefillRequestCountsForPod(podname string) int {
+	countInterface, exists := t.podRequestCounts.Load(podname)
+	if !exists {
+		return 0
+	}
+	return int(countInterface.(*atomic.Int32).Load())
 }
 
 func (r *pdRouter) isPodSuitableForPromptLength(pod *v1.Pod, promptLength int) bool {
