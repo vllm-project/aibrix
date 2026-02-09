@@ -70,6 +70,10 @@ spec:
                     - name: shutdown-manager
                       image: {{ .Values.gateway.envoyProxy.container.shutdownManager.image }}
                       resources: {{ toYaml .Values.gateway.envoyProxy.container.shutdownManager.resources | nindent 24 }}
+      {{- with .Values.gateway.envoyProxy.service }}
+      envoyService:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: ClientTrafficPolicy
