@@ -86,6 +86,10 @@ const (
 	RealtimeNumRequestsRunning = "realtime_num_requests_running"
 	RealtimeNormalizedPendings = "realtime_normalized_pendings"
 
+	// error to read metrics from backend
+	PrometheusQueryFail       = "prometheus_query_fail"
+	LLMEngineMetricsQueryFail = "llm_engine_metrics_query_fail"
+
 	// Deprecated metrics
 	NumRequestsSwapped              = "num_requests_swapped"
 	AvgPromptThroughputToksPerS     = "avg_prompt_throughput_toks_per_s"
@@ -738,6 +742,22 @@ var (
 				Raw: Gauge,
 			},
 			Description: "Current adaptive bucket size used by VTC algorithm for token normalization",
+		},
+		PrometheusQueryFail: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of Prometheus query failures",
+		},
+		LLMEngineMetricsQueryFail: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of LLM engine metrics query failures",
 		},
 	}
 )
