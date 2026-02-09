@@ -157,6 +157,10 @@
                   }
                 }
               }
+            },
+            "service": {
+              "$ref": "#/$defs/kubernetesServiceSpec",
+              "description": "Kubernetes Service configuration for envoy proxy"
             }
           }
         },
@@ -442,6 +446,67 @@
         }
       },
       "required": ["host", "port"]
+    },
+    "kubernetesServiceSpec": {
+      "type": "object",
+      "description": "Defines the desired state of the Kubernetes Service resource.",
+      "properties": {
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Annotations that should be appended to the service"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["ClusterIP", "LoadBalancer", "NodePort"],
+          "description": "Determines how the Service is exposed"
+        },
+        "loadBalancerClass": {
+          "type": "string",
+          "description": "When specified, allows for choosing the LoadBalancer provider implementation"
+        },
+        "allocateLoadBalancerNodePorts": {
+          "type": "boolean",
+          "description": "Defines if NodePorts will be automatically allocated for services with type LoadBalancer"
+        },
+        "loadBalancerSourceRanges": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Defines a list of allowed IP addresses which will be configured as firewall rules on the platform providers load balancer"
+        },
+        "loadBalancerIP": {
+          "type": "string",
+          "description": "Defines the IP Address of the underlying load balancer (deprecated)"
+        },
+        "externalTrafficPolicy": {
+          "type": "string",
+          "enum": ["Cluster", "Local"],
+          "description": "Determines the external traffic policy for the Envoy Service"
+        },
+        "patch": {
+          "type": "object",
+          "description": "Patch defines how to perform the patch operation to the service",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["StrategicMerge", "JSONMerge"],
+              "description": "The type of merge operation to perform"
+            },
+            "value": {
+              "type": "object",
+              "description": "The raw configuration for merged objects"
+            }
+          }
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the service. If not set, the default name will be used"
+        }
+      }
     }
   }
 }
