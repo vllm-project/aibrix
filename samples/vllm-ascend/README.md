@@ -12,7 +12,7 @@
 ### Environment Preparation
 Make sure you have already installed aibrix: [Quickstart](https://aibrix.readthedocs.io/latest/getting_started/quickstart.html)
 
-Deploy MindCluster: [MindCluster Deployment Guide](https://www.hiascend.com/document/detail/zh/mindcluster/72rc1/deployer/deployerug/deployer_0001.html)
+Deploy MindCluster: [MindCluster Deployment Guide](https://www.hiascend.com/document/detail/zh/mindcluster/72rc1/deployer/deployerug/deployer_0001.html) (Note: This document is in Chinese)
 
 Download image: [vllm-ascend:v0.11.0rc1-a3](https://quay.io/repository/ascend/vllm-ascend?tab=tags&tag=v0.11.0rc1-a3)
 
@@ -29,7 +29,7 @@ kubectl apply -f job.yaml
 ```
 
 ### Service Invocation
-Invoke the model endpoint using gateway API: [AIBrix Quickstart](http://aibrix.readthedocs.io/latest/getting_started/quickstart.html#invoke-the-model-endpoint-using-gateway-api)
+Invoke the model endpoint using gateway API: [AIBrix Quickstart](https://aibrix.readthedocs.io/latest/getting_started/quickstart.html#invoke-the-model-endpoint-using-gateway-api)
 
 completion api
 ```
