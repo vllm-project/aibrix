@@ -14,7 +14,9 @@ spec:
     name: {{ include "aibrix.fullname" . }}-reserved-router
   extProc:
     - backendRefs:
-        - name: {{ include "aibrix.fullname" . }}-gateway-plugins
+        - group: ''
+          kind: Service
+          name: {{ include "aibrix.fullname" . }}-gateway-plugins
           port: 50052
       processingMode:
         request:
@@ -29,6 +31,7 @@ spec:
           maxPendingRequests: {{ .Values.gatewayPlugin.extProc.backendSettings.circuitBreaker.maxPendingRequests }}
           maxParallelRetries: {{ .Values.gatewayPlugin.extProc.backendSettings.circuitBreaker.maxParallelRetries }}
           maxRequestsPerConnection: {{ .Values.gatewayPlugin.extProc.backendSettings.circuitBreaker.maxRequestsPerConnection }}
+      failOpen: false
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
