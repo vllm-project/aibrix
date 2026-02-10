@@ -24,6 +24,7 @@ spec:
         response:
           body: Streamed
       messageTimeout: {{ .Values.gatewayPlugin.messageTimeout }}
+      failOpen: {{ .Values.gatewayPlugin.failOpen }}
       backendSettings:
         circuitBreaker:
           maxConnections: {{ .Values.gatewayPlugin.extProc.backendSettings.circuitBreaker.maxConnections }}
@@ -31,7 +32,6 @@ spec:
           maxPendingRequests: {{ .Values.gatewayPlugin.extProc.backendSettings.circuitBreaker.maxPendingRequests }}
           maxParallelRetries: {{ .Values.gatewayPlugin.extProc.backendSettings.circuitBreaker.maxParallelRetries }}
           maxRequestsPerConnection: {{ .Values.gatewayPlugin.extProc.backendSettings.circuitBreaker.maxRequestsPerConnection }}
-      failOpen: false
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
