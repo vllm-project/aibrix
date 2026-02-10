@@ -87,6 +87,7 @@ gatewayPlugin:
       host: "" # aibrix-redis-master
       port: 6379
   messageTimeout: "60s"
+  failOpen: false
   extProc:
     backendSettings:
       circuitBreaker:

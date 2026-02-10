@@ -196,14 +196,13 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	}
 
 	prefillPods, decodePods, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods := r.collectAndBucketPods(readyPods, promptLength)
-	if len(prefillPods) == 0 {
+	combinedAvailable := aibrixPromptLengthBucketing && len(combinedPods) > 0
+	if len(prefillPods) == 0 && !combinedAvailable {
 		return nil, nil, fmt.Errorf("prefill pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
 	}
-	if len(decodePods) == 0 {
+	if len(decodePods) == 0 && !combinedAvailable {
 		return nil, nil, fmt.Errorf("decode pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
 	}
-
-	combinedAvailable := aibrixPromptLengthBucketing && len(combinedPods) > 0
 	if combinedAvailable {
 		if len(promptLengthBucketingPrefillPods) == 0 || len(promptLengthBucketingDecodePods) == 0 {
 			klog.InfoS("routing to combined pod", "requestId", routingCtx.RequestID, "promptLength", promptLength)
@@ -507,7 +506,6 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 
 	return targetPrefillPod, targetDecodePod, nil
 }
-
 func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod *v1.Pod, llmEngine string) error {
 	// Prepare prefill request payload
 	payload, err := r.preparePrefillPayload(routingCtx, prefillPod, llmEngine)
