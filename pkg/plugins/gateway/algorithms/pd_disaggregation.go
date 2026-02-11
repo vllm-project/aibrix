@@ -127,7 +127,7 @@ func NewPDRouter() (types.Router, error) {
 	pdRouter := pdRouter{
 		cache:                 c,
 		tokenizer:             tokenizerObj,
-		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefixCacheIndexer:    prefixcacheindexer.GetSharedPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            httpClient,
 		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),

@@ -285,7 +285,7 @@ func NewPrefixCacheRouter() (types.Router, error) {
 	router := prefixCacheRouter{
 		cache:              c,
 		tokenizer:          tokenizerObj,
-		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+		prefixCacheIndexer: prefixcacheindexer.GetSharedPrefixHashTable(),
 		// Only assign tokenizerPool if it's not nil to avoid interface nil issues
 	}
 
