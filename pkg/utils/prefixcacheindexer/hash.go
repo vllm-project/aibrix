@@ -42,6 +42,18 @@ var (
 	prefixCacheEvictionDuration = time.Duration(utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS", defaultPrefixCacheEvictionDurationInMins)) * time.Minute
 )
 
+var (
+	sharedOnce     sync.Once
+	sharedInstance *PrefixHashTable
+)
+
+func GetSharedPrefixHashTable() *PrefixHashTable {
+	sharedOnce.Do(func() {
+		sharedInstance = NewPrefixHashTable()
+	})
+	return sharedInstance
+}
+
 type PrefixHashTable struct {
 	mu    sync.RWMutex
 	seed  uint64
