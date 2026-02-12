@@ -1,11 +1,10 @@
 # build gateway plugins
 ARG BUILDER_IMAGE=golang:1.22
 ARG RUNTIME_IMAGE=gcr.io/distroless/base-debian12:nonroot
+FROM ${BUILDER_IMAGE} AS builder
 
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
-
-FROM --platform=${TARGETOS}/${TARGETARCH} ${BUILDER_IMAGE} AS builder
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /workspace
 
@@ -55,7 +54,7 @@ RUN set -eux; \
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM --platform=${TARGETOS}/${TARGETARCH} ${RUNTIME_IMAGE}
+FROM ${RUNTIME_IMAGE}
 WORKDIR /
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /workspace/gateway-plugins .
