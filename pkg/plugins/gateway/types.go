@@ -50,7 +50,7 @@ const (
 	HeaderRequestID          = "request-id"
 	HeaderModel              = "model"
 	HeaderExternalFilter     = "external-filter"
-	HeaderConfigProfile      = "x-aibrix-config-profile"
+	HeaderConfigProfile      = "config-profile"
 
 	// RPM & TPM Update Errors
 	HeaderUpdateTPM        = "x-update-tpm"

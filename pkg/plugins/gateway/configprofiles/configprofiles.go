@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Package configprofiles parses the model.aibrix.ai/config annotation (or ConfigMap)
-// and supports multiple named profiles selectable at runtime via x-aibrix-config-profile header.
+// and supports multiple named profiles selectable at runtime via config-profile header.
 // See docs/source/designs/model-config-profiles.rst for the design.
 package configprofiles
 
@@ -70,9 +70,9 @@ func (c *ModelConfigProfiles) GetProfile(name string) *ModelConfigProfile {
 }
 
 // ResolveProfile resolves the model config from pods (annotation),
-// then returns the profile selected by headerProfile (from x-aibrix-config-profile).
+// then returns the profile selected by headerProfile (from config-profile).
 // configMapGetter can be nil; it is checked first when provided.
-func ResolveProfile(model string, pods []*v1.Pod, headerProfile string) *ModelConfigProfile {
+func ResolveProfile(pods []*v1.Pod, headerProfile string) *ModelConfigProfile {
 	for _, pod := range pods {
 		if p := ResolveProfileFromPod(pod, headerProfile); p != nil {
 			return p

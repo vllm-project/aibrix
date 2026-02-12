@@ -320,11 +320,11 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 
 // applyConfigProfile resolves the model config from pod annotation (model.aibrix.ai/config)
 // and applies the selected profile: sets ConfigProfile on routingCtx.
-// - If the client provides x-aibrix-config-profile, use that profile name.
+// - If the client provides config-profile, use that profile name.
 // - If not provided or not found, fall back to defaultProfile (or "default") in the JSON.
-func applyConfigProfile(routingCtx *types.RoutingContext, model string, pods []*v1.Pod) {
+func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 	headerProfile := routingCtx.ReqConfigProfile
-	profile := configprofiles.ResolveProfile(model, pods, headerProfile)
+	profile := configprofiles.ResolveProfile(pods, headerProfile)
 	if profile == nil {
 		return
 	}

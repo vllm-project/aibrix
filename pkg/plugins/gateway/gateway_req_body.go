@@ -89,7 +89,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	}
 
 	// Resolve model config profile from annotation and apply overrides
-	applyConfigProfile(routingCtx, model, podsArr.All())
+	applyConfigProfile(routingCtx, podsArr.All())
 
 	// Derive and validate routing strategy (headers -> profile -> env); return 400 on invalid
 	if strategy, enabled := deriveRoutingStrategyFromContext(routingCtx); enabled {

@@ -47,7 +47,7 @@ const (
 	ModelAnnoRouterCustomPath = "model.aibrix.ai/model-router-custom-paths"
 
 	// ModelAnnoConfig is the annotation holding JSON model config with multiple profiles.
-	// Client selects profile at runtime via x-aibrix-config-profile header or defaultProfile is selected.
+	// Client selects profile at runtime via config-profile header or defaultProfile is selected.
 	// See docs/source/designs/model-config-profiles.rst for schema.
 	ModelAnnoConfig = "model.aibrix.ai/config"
 )

@@ -42,7 +42,7 @@ const (
 type RequestFeatures []float64
 
 // ResolvedConfigProfile holds the resolved model config profile for a request.
-// Populated from model.aibrix.ai/config annotation based on x-aibrix-config-profile header or defaultProfile.
+// Populated from model.aibrix.ai/config annotation based on config-profile header or defaultProfile.
 // Nil when no config is present;
 type ResolvedConfigProfile struct {
 	RoutingStrategy string
@@ -87,7 +87,7 @@ type RoutingContext struct {
 
 	// ConfigProfile holds the resolved model config profile for this request.
 	// Set in HandleRequestBody from model.aibrix.ai/config (annotation)
-	// based on x-aibrix-config-profile header. Nil when no config is present.
+	// based on config-profile header. Nil when no config is present.
 	ConfigProfile *ResolvedConfigProfile
 
 	targetPodSet chan struct{}

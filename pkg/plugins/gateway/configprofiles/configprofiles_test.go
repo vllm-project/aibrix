@@ -221,7 +221,7 @@ func TestResolveProfile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := ResolveProfile("m1", tt.pods, tt.headerProfile)
+			p := ResolveProfile(tt.pods, tt.headerProfile)
 			if tt.wantProfile == "" {
 				if p != nil {
 					t.Errorf("ResolveProfile() = %v, want nil", p)
