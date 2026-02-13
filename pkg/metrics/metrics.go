@@ -70,7 +70,7 @@ const (
 	AvgTPOT5mPod                         = "avg_tpot_pod_5m"
 	AvgPromptToksPerReq                  = "avg_prompt_toks_per_req"
 	AvgGenerationToksPerReq              = "avg_generation_toks_per_req"
-	GPUCacheUsagePerc                    = "gpu_cache_usage_perc"
+	GPUCacheUsagePerc                    = "kv_cache_usage_perc"
 	GPUBusyTimeRatio                     = "gpu_busy_time_ratio"
 	CPUCacheUsagePerc                    = "cpu_cache_usage_perc"
 	EngineUtilization                    = "engine_utilization"
@@ -401,7 +401,7 @@ var (
 				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:gpu_cache_usage_perc",
+				"vllm":   "vllm:kv_cache_usage_perc",
 				"sglang": "sglang:token_usage", // Based on https://github.com/sgl-project/sglang/issues/5979
 				"xllm":   "kv_cache_utilization",
 			},
