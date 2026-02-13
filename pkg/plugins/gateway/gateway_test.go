@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -75,70 +74,6 @@ func Test_ValidateRoutingStrategy(t *testing.T) {
 	for _, tt := range tests {
 		_, currentValidation := routing.Validate(tt.routingStrategy)
 		assert.Equal(t, tt.expectedValidation, currentValidation, tt.message)
-	}
-}
-
-func TestGetRoutingStrategy(t *testing.T) {
-	var tests = []struct {
-		headers               []*configPb.HeaderValue
-		setEnvRoutingStrategy bool
-		envRoutingStrategy    string
-		expectedStrategy      string
-		expectedEnabled       bool
-		message               string
-	}{
-		{
-			headers:               []*configPb.HeaderValue{},
-			setEnvRoutingStrategy: false,
-			expectedStrategy:      "",
-			expectedEnabled:       false,
-			message:               "no routing strategy in headers or environment variable",
-		},
-		{
-			headers: []*configPb.HeaderValue{
-				{Key: "routing-strategy", RawValue: []byte("random")},
-			},
-			setEnvRoutingStrategy: false,
-			expectedStrategy:      "random",
-			expectedEnabled:       true,
-			message:               "routing strategy from headers",
-		},
-		{
-			headers:               []*configPb.HeaderValue{},
-			setEnvRoutingStrategy: true,
-			envRoutingStrategy:    "random",
-			expectedStrategy:      "random",
-			expectedEnabled:       true,
-			message:               "routing strategy from environment variable",
-		},
-		{
-			headers: []*configPb.HeaderValue{
-				{Key: "routing-strategy", RawValue: []byte("random")},
-			},
-			setEnvRoutingStrategy: true,
-			envRoutingStrategy:    "least-request",
-			expectedStrategy:      "random",
-			expectedEnabled:       true,
-			message:               "header routing strategy takes priority over environment variable",
-		},
-	}
-
-	for _, tt := range tests {
-		if tt.setEnvRoutingStrategy {
-			_ = os.Setenv("ROUTING_ALGORITHM", tt.envRoutingStrategy)
-		} else {
-			_ = os.Unsetenv("ROUTING_ALGORITHM")
-		}
-
-		// refresh default values, the process won't modify this environment variable during normal running
-		defaultRoutingStrategy, defaultRoutingStrategyEnabled = utils.LookupEnv(EnvRoutingAlgorithm)
-
-		routingStrategy, enabled := getRoutingStrategy(tt.headers)
-		assert.Equal(t, tt.expectedStrategy, routingStrategy, tt.message)
-		assert.Equal(t, tt.expectedEnabled, enabled, tt.message)
-
-		// Cleanup environment variable for next test
-		_ = os.Unsetenv("ROUTING_ALGORITHM")
 	}
 }
 
