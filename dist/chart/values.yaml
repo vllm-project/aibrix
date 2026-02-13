@@ -86,6 +86,8 @@ gatewayPlugin:
     redis:
       host: "" # aibrix-redis-master
       port: 6379
+  service:
+    type: ClusterIP
   messageTimeout: "60s"
   failOpen: false
   extProc:
@@ -133,7 +135,18 @@ gpuOptimizer:
   affinity: {}
 
 gateway:
+  # Mode Selection (mutually exclusive; values must be opposite)
+  # | gateway.enable | envoyAsSideCar | Notes |
+  # | -------------- | ------------------- | ----- |
+  # | true           | false               | Envoy managed by Envoy Gateway (data plane). Installs Gateway, GatewayClass, EnvoyProxy, and gateway-plugins. |
+  # | false          | true                | Envoy runs as a sidecar with aibrix-gateway within your workload (no Gateway data plane). Renders only the sidecar Envoy ConfigMap. |
+  # | false          | false               | Disables both. No gateway and no sidecar. Useful when using an external gateway or for CRD-only installs. |
+  # | true           | true                | INVALID: Do not enable both. Values must be opposite. |
   enable: true
+  envoyAsSideCar: false
+  envoySideCar:
+    ports:
+      http: 10080
   envoyProxy:
     replicas: 1
     imagePullSecrets: []
