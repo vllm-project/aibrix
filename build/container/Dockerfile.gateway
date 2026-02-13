@@ -1,49 +1,54 @@
 # build gateway plugins
 ARG BUILDER_IMAGE=golang:1.22
 ARG RUNTIME_IMAGE=gcr.io/distroless/base-debian12:nonroot
-FROM ${BUILDER_IMAGE} AS builder
+ARG TARGETPLATFORM
 
+# Build the manager binary
+FROM ${BUILDER_IMAGE} AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
 WORKDIR /workspace
 
-ENV CGO_ENABLED=1 \
-    GOMODCACHE=/go/pkg/mod \
-    GOCACHE=/root/.cache/go-build
+RUN apt-get update && apt-get install -y \
+    libkrb5-dev libzmq3-dev
 
-# OS deps (with apt cache mounts)
-RUN --mount=type=cache,target=/var/cache/apt \
-    --mount=type=cache,target=/var/lib/apt \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates \
-      pkg-config \
-      libkrb5-dev \
-      libzmq3-dev \
-      libsodium-dev \
-      build-essential \
+    ca-certificates \
+    pkg-config \
+    libkrb5-dev \
+    libzmq3-dev \
+    libsodium-dev \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Go deps first (stable layer)
-COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
+# Copy the Go Modules manifests
+COPY go.mod go.mod
+COPY go.sum go.sum
+# cache deps before building and copying source so that we don't need to re-download as much
+# and so that source changes don't invalidate our downloaded layer
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
     go mod download
 
-# Source (more frequently changed)
+# Copy the go source
 COPY cmd/ cmd/
 COPY api/ api/
 COPY pkg/ pkg/
 
-# IMPORTANT: remove -a (full rebuild killer)
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-    go build -x -trimpath -tags=zmq \
-      -ldflags="-s -w -linkmode=external -extldflags '-lzmq -lsodium -lpthread -lm -lstdc++'" \
-      -o /workspace/gateway-plugins ./cmd/plugins
+ENV CGO_ENABLED=1
+ENV CGO_LDFLAGS="-lzmq -lsodium -lpthread -lm -lstdc++"
 
-# Collect runtime shared libs
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
+    GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath -tags=zmq \
+    -ldflags="-s -w -linkmode=external -extldflags '${CGO_LDFLAGS}'" \
+    -o gateway-plugins ./cmd/plugins
+
+# Gather shared libs
 RUN set -eux; \
     mkdir -p /workspace/deps; \
     ldd /workspace/gateway-plugins \
