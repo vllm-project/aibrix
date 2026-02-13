@@ -925,8 +925,8 @@ func TestUpdateRoutingContextNIXLMode(t *testing.T) {
 			"total_tokens":      33,
 		},
 		"kv_transfer_params": map[string]any{
-			"kv_connector":     "NixlConnector",
-			"remote_engine_id": "neuron-engine-abc123",
+			"kv_connector":      "NixlConnector",
+			"remote_engine_id":  "neuron-engine-abc123",
 			"do_remote_decode":  true,
 			"do_remote_prefill": false,
 		},
