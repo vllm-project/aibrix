@@ -125,7 +125,7 @@ func TestWithIPPods(t *testing.T) {
 	// two case:
 	// case 1: pod ready
 	// case 2: pod ready & terminating -> we can send request at this moment.
-	model := ""
+	model := "test-model"
 	c := cache.NewWithPodsMetricsForTest(
 		[]*v1.Pod{
 			{
