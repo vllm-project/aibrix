@@ -41,7 +41,7 @@ spec:
                 kubernetes.io/hostname: 192.168.0.7
               containers:
                 - name: vllm-engine
-                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.10.2-aibrix-v0.5.0.pdr-nixl-0.7.1-20251219
+                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.10.2-aibrix-v0.5.0.pdr.unalign-nixl-0.7.1-20260216
                   command: ["sh", "-c"]
                   args:
                     - |
