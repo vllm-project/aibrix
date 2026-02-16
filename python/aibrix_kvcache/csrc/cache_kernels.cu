@@ -52,15 +52,23 @@ torch::Tensor get_device_ptrs(const std::vector<TTensor> &tensors) {
   return gpu_data_ptrs;
 }
 
-__device__ __forceinline__ int64_t
-get_kv_cache_offset(const int64_t kv_type, const int64_t num_blocks,
-                    const int64_t block_size, const int64_t embed_dim,
-                    const int64_t slot_idx, const int64_t scalar_offset) {
+__device__ __forceinline__ int64_t get_kv_cache_offset(
+    const int64_t kv_type, bool kv_layout_blocks_first,
+    const int64_t num_blocks, const int64_t block_size, const int64_t embed_dim,
+    const int64_t slot_idx, const int64_t scalar_offset) {
   const int64_t block_idx = slot_idx / block_size;
   const int64_t block_offset = slot_idx % block_size;
-  return kv_type * num_blocks * block_size * embed_dim +
-         block_idx * block_size * embed_dim + block_offset * embed_dim +
-         scalar_offset;
+  if (kv_layout_blocks_first) {
+    // [num_blocks, kv_type, block_size, num_heads, head_size]
+    return block_idx * 2 * block_size * embed_dim +
+           kv_type * block_size * embed_dim + block_offset * embed_dim +
+           scalar_offset;
+  } else {
+    // [kv_type, num_blocks, block_size, num_heads, head_size]
+    return kv_type * num_blocks * block_size * embed_dim +
+           block_idx * block_size * embed_dim + block_offset * embed_dim +
+           scalar_offset;
+  }
 }
 
 __device__ __forceinline__ int64_t get_offload_kv_cache_offset_lcnd(
@@ -96,9 +104,10 @@ enum class KVCacheOffloadLayout {
  * - offload_kv_cache: Supports LCND and NCLD layouts.
  *                     LCND: [num_blocks, num_layers, 2, block_size, dim]
  *                     NCLD: [num_blocks, block_size, 2, num_layers, dim]
- * - kv_cache: Supports both [num_layers, 2, num_blocks, block_size, num_heads,
- * head_size] and [num_layers, 2, num_blocks, block_size * num_heads *
- * head_size]
+ * - kv_cache: Supports [num_layers, 2, num_blocks, block_size, num_heads,
+ * head_size], [num_layers, 2, num_blocks, block_size * num_heads *
+ * head_size], [num_layers, num_blocks, 2, block_size, num_heads, head_size],
+ * and [num_layers, num_blocks, 2, block_size * num_heads * head_size]
  * - slot_mapping: [num_tokens]
  */
 template <typename scalar_t, typename cache_t, vllm::Fp8KVCacheDataType kv_dt,
@@ -106,9 +115,9 @@ template <typename scalar_t, typename cache_t, vllm::Fp8KVCacheDataType kv_dt,
 __global__ void reshape_and_cache_multi_layer_kernel(
     scalar_t **__restrict__ offload_kv_cache,
     const int64_t offload_kv_cache_block_size, cache_t **__restrict__ kv_cache,
-    const int64_t kv_cache_block_size, const int64_t kv_cache_num_blocks,
-    const int64_t *__restrict__ slot_mapping, const int64_t num_layers,
-    const int64_t embed_dim,
+    bool kv_layout_blocks_first, const int64_t kv_cache_block_size,
+    const int64_t kv_cache_num_blocks, const int64_t *__restrict__ slot_mapping,
+    const int64_t num_layers, const int64_t embed_dim,
     const float **k_scales, // Scaling factor for keys
     const float **v_scales  // Scaling factor for values
 ) {
@@ -144,9 +153,9 @@ __global__ void reshape_and_cache_multi_layer_kernel(
           embed_dim, token_idx, i);
     }
 
-    int64_t kv_cache_offset =
-        get_kv_cache_offset(kv_type, kv_cache_num_blocks, kv_cache_block_size,
-                            embed_dim, slot_idx, i);
+    int64_t kv_cache_offset = get_kv_cache_offset(
+        kv_type, kv_layout_blocks_first, kv_cache_num_blocks,
+        kv_cache_block_size, embed_dim, slot_idx, i);
 
     if (TOnload) { // true: offload_kv_cache to kv_cache
       kv_cache_layer[kv_cache_offset] =
@@ -170,18 +179,19 @@ __global__ void reshape_and_cache_multi_layer_kernel(
  * - offload_kv_cache: Supports LCND and NCLD layouts.
  *                     LCND: [num_blocks, num_layers, 2, block_size, dim]
  *                     NCLD: [num_blocks, block_size, 2, num_layers, dim]
- * - kv_cache: Supports both [num_layers, 2, num_blocks, block_size, num_heads,
- * head_size] and [num_layers, 2, num_blocks, block_size * num_heads *
- * head_size]
+ * - kv_cache: Supports [num_layers, 2, num_blocks, block_size, num_heads,
+ * head_size], [num_layers, 2, num_blocks, block_size * num_heads *
+ * head_size], [num_layers, num_blocks, 2, block_size, num_heads, head_size],
+ * and [num_layers, num_blocks, 2, block_size * num_heads * head_size]
  * - slot_mapping: [num_tokens]
  */
 template <typename vec_t, bool TOnload, KVCacheOffloadLayout TLayout>
 __global__ void reshape_and_cache_multi_layer_vec_kernel(
     vec_t **__restrict__ offload_kv_cache,
     const int64_t offload_kv_cache_block_size, vec_t **__restrict__ kv_cache,
-    const int64_t kv_cache_block_size, const int64_t kv_cache_num_blocks,
-    const int64_t *__restrict__ slot_mapping, const int64_t num_layers,
-    const int64_t num_vecs) {
+    bool kv_layout_blocks_first, const int64_t kv_cache_block_size,
+    const int64_t kv_cache_num_blocks, const int64_t *__restrict__ slot_mapping,
+    const int64_t num_layers, const int64_t num_vecs) {
   const int64_t token_idx = blockIdx.x;
   const int64_t layer_idx = blockIdx.y;
   const int64_t kv_type = blockIdx.z;
@@ -211,9 +221,9 @@ __global__ void reshape_and_cache_multi_layer_vec_kernel(
           token_idx, i);
     }
 
-    int64_t kv_cache_offset =
-        get_kv_cache_offset(kv_type, kv_cache_num_blocks, kv_cache_block_size,
-                            num_vecs, slot_idx, i);
+    int64_t kv_cache_offset = get_kv_cache_offset(
+        kv_type, kv_layout_blocks_first, kv_cache_num_blocks,
+        kv_cache_block_size, num_vecs, slot_idx, i);
 
     if (TOnload) { // true: offload_kv_cache to kv_cache
       kv_cache_layer[kv_cache_offset] =
@@ -236,9 +246,9 @@ __global__ void reshape_and_cache_multi_layer_vec_kernel(
       <<<grid, block, 0, stream>>>(                                            \
           reinterpret_cast<KV_T **>(offload_kv_cache_ptrs.data_ptr()),         \
           offload_kv_cache_block_size,                                         \
-          reinterpret_cast<CACHE_T **>(kv_cache_ptrs.data_ptr()), block_size,  \
-          kv_cache_num_blocks, slot_mapping.data_ptr<int64_t>(), num_layers,   \
-          embed_dim,                                                           \
+          reinterpret_cast<CACHE_T **>(kv_cache_ptrs.data_ptr()),              \
+          kv_layout_blocks_first, block_size, kv_cache_num_blocks,             \
+          slot_mapping.data_ptr<int64_t>(), num_layers, embed_dim,             \
           reinterpret_cast<const float **>(k_scale_ptrs.data_ptr()),           \
           reinterpret_cast<const float **>(v_scale_ptrs.data_ptr()));
 
@@ -247,9 +257,9 @@ __global__ void reshape_and_cache_multi_layer_vec_kernel(
       <<<grid, block, 0, stream>>>(                                            \
           reinterpret_cast<vec_t **>(offload_kv_cache_ptrs.data_ptr()),        \
           offload_kv_cache_block_size,                                         \
-          reinterpret_cast<vec_t **>(kv_cache_ptrs.data_ptr()), block_size,    \
-          kv_cache_num_blocks, slot_mapping.data_ptr<int64_t>(), num_layers,   \
-          num_vecs);
+          reinterpret_cast<vec_t **>(kv_cache_ptrs.data_ptr()),                \
+          kv_layout_blocks_first, block_size, kv_cache_num_blocks,             \
+          slot_mapping.data_ptr<int64_t>(), num_layers, num_vecs);
 
 #define DISPATCH_RESHAPE_AND_CACHE_MULTI_LAYER_BY_KV_CACHE_DTYPE               \
   DISPATCH_BY_KV_CACHE_DTYPE(kv_caches[0].dtype(), kv_cache_dtype,             \
@@ -280,7 +290,7 @@ __global__ void reshape_and_cache_multi_layer_vec_kernel(
 void reshape_and_cache_multi_layer_impl(
     const std::vector<torch::Tensor> &offload_kv_cache_blocks, // [num_blocks]
     const std::vector<torch::Tensor> &kv_caches,               // [num_layers]
-    torch::Tensor &slot_mapping,                               // [num_tokens]
+    bool kv_layout_blocks_first, torch::Tensor &slot_mapping,  // [num_tokens]
     const int64_t block_size, const std::string &kv_cache_dtype,
     const std::vector<torch::Tensor> &k_scales,
     const std::vector<torch::Tensor> &v_scales, bool onload,
@@ -291,12 +301,15 @@ void reshape_and_cache_multi_layer_impl(
   const int64_t num_tokens = slot_mapping.size(0);
   torch::IntArrayRef kv_cache_shape = kv_caches[0].sizes();
   int64_t embed_dim;
+
   if (kv_cache_shape.size() == 3) {
     // [2, num_blocks, block_size * num_heads * head_size]
+    // or [num_blocks, 2, block_size * num_heads * head_size]
     const int64_t block_dim = kv_caches[0].stride(1);
     embed_dim = block_dim / block_size;
   } else {
     // [2, num_blocks, block_size, num_heads, head_size]
+    // or [num_blocks, 2, block_size, num_heads, head_size]
     embed_dim = kv_caches[0].stride(2);
   }
 
@@ -322,7 +335,8 @@ void reshape_and_cache_multi_layer_impl(
     TORCH_CHECK(kv_cache_shape == kv_caches[i].sizes());
   }
 
-  const int64_t kv_cache_num_blocks = kv_cache_shape[1];
+  const int64_t kv_cache_num_blocks =
+      kv_layout_blocks_first ? kv_cache_shape[0] : kv_cache_shape[1];
 
   torch::Tensor offload_kv_cache_ptrs =
       aibrix::get_device_ptrs(offload_kv_cache_blocks);
@@ -353,23 +367,23 @@ void reshape_and_cache_multi_layer_impl(
 void reshape_and_cache_multi_layer(
     const std::vector<torch::Tensor> &offload_kv_cache_blocks, // [num_blocks]
     const std::vector<torch::Tensor> &kv_caches,               // [num_layers]
-    torch::Tensor &slot_mapping,                               // [num_tokens]
+    bool kv_layout_blocks_first, torch::Tensor &slot_mapping,  // [num_tokens]
     const int64_t block_size, const std::string &kv_cache_dtype,
     const std::vector<torch::Tensor> &k_scales,
     const std::vector<torch::Tensor> &v_scales, const std::string &layout_str) {
   aibrix::reshape_and_cache_multi_layer_impl(
-      offload_kv_cache_blocks, kv_caches, slot_mapping, block_size,
-      kv_cache_dtype, k_scales, v_scales, true, layout_str);
+      offload_kv_cache_blocks, kv_caches, kv_layout_blocks_first, slot_mapping,
+      block_size, kv_cache_dtype, k_scales, v_scales, true, layout_str);
 }
 
 void reshape_and_offload_multi_layer(
     const std::vector<torch::Tensor> &offload_kv_cache_blocks, // [num_blocks]
     const std::vector<torch::Tensor> &kv_caches,               // [num_layers]
-    torch::Tensor &slot_mapping,                               // [num_tokens]
+    bool kv_layout_blocks_first, torch::Tensor &slot_mapping,  // [num_tokens]
     const int64_t block_size, const std::string &kv_cache_dtype,
     const std::vector<torch::Tensor> &k_scales,
     const std::vector<torch::Tensor> &v_scales, const std::string &layout_str) {
   aibrix::reshape_and_cache_multi_layer_impl(
-      offload_kv_cache_blocks, kv_caches, slot_mapping, block_size,
-      kv_cache_dtype, k_scales, v_scales, false, layout_str);
+      offload_kv_cache_blocks, kv_caches, kv_layout_blocks_first, slot_mapping,
+      block_size, kv_cache_dtype, k_scales, v_scales, false, layout_str);
 }

@@ -33,10 +33,12 @@ def reshape_and_cache_multi_layer(
     k_scales: list[torch.Tensor],
     v_scales: list[torch.Tensor],
     layout: str,
+    kv_layout_blocks_first: bool = False,
 ) -> None:
     torch.ops._aibrix_C_cache_ops.reshape_and_cache_multi_layer(
         offload_kv_cache_blocks,
         kv_caches,
+        kv_layout_blocks_first,
         slot_mapping,
         block_size,
         kv_cache_dtype,
@@ -55,10 +57,12 @@ def reshape_and_offload_multi_layer(
     k_scales: list[torch.Tensor],
     v_scales: list[torch.Tensor],
     layout: str,
+    kv_layout_blocks_first: bool = False,
 ) -> None:
     torch.ops._aibrix_C_cache_ops.reshape_and_offload_multi_layer(
         offload_kv_cache_blocks,
         kv_caches,
+        kv_layout_blocks_first,
         slot_mapping,
         block_size,
         kv_cache_dtype,
