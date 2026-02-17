@@ -144,12 +144,12 @@ var (
 
 func initPrometheusAPI(kubeConfig *rest.Config) prometheusv1.API {
 	prometheusEndpoint := utils.LoadEnv("PROMETHEUS_ENDPOINT", "")
-	prometheusBasicAuthUsername, prometheusBasicAuthPassword := loadPrometheusBasicAuth(kubeConfig)
+	loadPrometheusBasicAuth(kubeConfig)
 
 	// Initialize Prometheus API
 	var prometheusApi prometheusv1.API
 	if prometheusEndpoint != "" {
-		api, err := metrics.InitializePrometheusAPI(prometheusEndpoint, prometheusBasicAuthUsername, prometheusBasicAuthPassword)
+		api, err := metrics.InitializePrometheusAPI(prometheusEndpoint, prometheusBasicAuthUser, prometheusBasicAuthPass)
 		if err != nil {
 			klog.Errorf("Error initializing Prometheus API: %v", err)
 		} else {
@@ -160,7 +160,10 @@ func initPrometheusAPI(kubeConfig *rest.Config) prometheusv1.API {
 	return prometheusApi
 }
 
-func loadPrometheusBasicAuth(kubeConfig *rest.Config) (string, string) {
+// loadPrometheusBasicAuth initializes Prometheus basic auth credentials exactly once (via sync.Once).
+// It loads from a Kubernetes Secret when PROMETHEUS_BASIC_AUTH_SECRET_NAME is set; otherwise it falls back to env vars.
+// The resulting values are stored in package-level variables prometheusBasicAuthUser/prometheusBasicAuthPass.
+func loadPrometheusBasicAuth(kubeConfig *rest.Config) {
 	prometheusBasicAuthOnce.Do(func() {
 		secretName := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_SECRET_NAME", "")
 		if secretName == "" {
@@ -196,8 +199,6 @@ func loadPrometheusBasicAuth(kubeConfig *rest.Config) (string, string) {
 			prometheusBasicAuthPass = strings.TrimSpace(string(b))
 		}
 	})
-
-	return prometheusBasicAuthUser, prometheusBasicAuthPass
 }
 
 func (c *Store) getPodMetricImpl(podName string, metricStore *utils.SyncMap[string, metrics.MetricValue], metricName string) (metrics.MetricValue, error) {

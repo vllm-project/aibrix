@@ -216,9 +216,9 @@ func TestLoadPrometheusBasicAuth_FromEnv(t *testing.T) {
 	t.Setenv("PROMETHEUS_BASIC_AUTH_USERNAME", "u1")
 	t.Setenv("PROMETHEUS_BASIC_AUTH_PASSWORD", "p1")
 
-	user, pass := loadPrometheusBasicAuth(nil)
-	require.Equal(t, "u1", user)
-	require.Equal(t, "p1", pass)
+	loadPrometheusBasicAuth(nil)
+	require.Equal(t, "u1", prometheusBasicAuthUser)
+	require.Equal(t, "p1", prometheusBasicAuthPass)
 }
 
 func TestLoadPrometheusBasicAuth_FromSecretNilKubeConfig(t *testing.T) {
@@ -229,9 +229,9 @@ func TestLoadPrometheusBasicAuth_FromSecretNilKubeConfig(t *testing.T) {
 	t.Setenv("PROMETHEUS_BASIC_AUTH_SECRET_NAME", "prom-basic-auth")
 	t.Setenv("PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE", "ns1")
 
-	user, pass := loadPrometheusBasicAuth(nil)
-	require.Equal(t, "", user)
-	require.Equal(t, "", pass)
+	loadPrometheusBasicAuth(nil)
+	require.Equal(t, "", prometheusBasicAuthUser)
+	require.Equal(t, "", prometheusBasicAuthPass)
 }
 
 func TestLoadPrometheusBasicAuth_FromSecret(t *testing.T) {
@@ -266,9 +266,9 @@ func TestLoadPrometheusBasicAuth_FromSecret(t *testing.T) {
 	t.Setenv("PROMETHEUS_BASIC_AUTH_USERNAME_KEY", usernameKey)
 	t.Setenv("PROMETHEUS_BASIC_AUTH_PASSWORD_KEY", passwordKey)
 
-	user, pass := loadPrometheusBasicAuth(&rest.Config{Host: server.URL})
-	require.Equal(t, username, user)
-	require.Equal(t, password, pass)
+	loadPrometheusBasicAuth(&rest.Config{Host: server.URL})
+	require.Equal(t, username, prometheusBasicAuthUser)
+	require.Equal(t, password, prometheusBasicAuthPass)
 }
 
 func TestInitPrometheusAPI_EndpointEmpty(t *testing.T) {
