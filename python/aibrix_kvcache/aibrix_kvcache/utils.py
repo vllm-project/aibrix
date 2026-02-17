@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ctypes
 import os
 import time
 from contextlib import contextmanager
@@ -37,6 +38,13 @@ def tensor_to_bytes(tensor: torch.Tensor) -> bytes:
 def bytes_to_tensor(data: bytes) -> torch.Tensor:
     """Convert raw bytes to a PyTorch tensor."""
     return torch.frombuffer(data, dtype=torch.uint8)
+
+
+def buffer_to_tensor(addr: int, length: int) -> torch.Tensor:
+    """Convert a buffer to a PyTorch tensor."""
+    buffer = (ctypes.c_char * length).from_address(addr)
+    tensor = torch.frombuffer(buffer, dtype=torch.uint8)
+    return tensor
 
 
 @contextmanager

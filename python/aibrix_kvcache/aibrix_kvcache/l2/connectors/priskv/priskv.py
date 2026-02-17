@@ -14,7 +14,7 @@
 
 from concurrent.futures import Executor
 from dataclasses import dataclass
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple, cast
 
 import priskv
 import torch
@@ -22,9 +22,17 @@ from priskv.priskv_client import PriskvClient
 
 from .... import envs
 from ....common import AsyncBase
+from ....common.absl_logging import getLogger
 from ....memory import MemoryRegion
 from ....status import Status, StatusCodes
-from .. import Connector, ConnectorFeature, ConnectorRegisterDescriptor
+from .. import (
+    Connector,
+    ConnectorFeature,
+    ConnectorRegisterDescriptor,
+    ConnectorZeroCopyMemoryRegion,
+)
+
+logger = getLogger(__name__)
 
 
 @dataclass
@@ -48,6 +56,22 @@ class PrisKVRegisterDescriptor(ConnectorRegisterDescriptor):
     reg_buf: int
 
 
+class PrisKVZeroCopyMemoryRegion(ConnectorZeroCopyMemoryRegion):
+    """PrisKV zero copy memory region."""
+
+    def __init__(self, key: str, mr: priskv.MemoryRegion):
+        self._key = key
+        self._handle = mr
+
+    @property
+    def addr(self) -> int:
+        return self._handle.addr
+
+    @property
+    def length(self) -> int:
+        return self._handle.length
+
+
 @AsyncBase.async_wrap(
     exists="_exists",
     get="_get",
@@ -55,6 +79,11 @@ class PrisKVRegisterDescriptor(ConnectorRegisterDescriptor):
     delete="_delete",
     mget="_mget",
     mput="_mput",
+    allocate="_allocate",
+    seal="_seal",
+    drop="_drop",
+    acquire="_acquire",
+    release="_release",
 )
 class PrisKVConnector(Connector[bytes, torch.Tensor], AsyncBase):
     """PrisKV connector."""
@@ -99,6 +128,7 @@ class PrisKVConnector(Connector[bytes, torch.Tensor], AsyncBase):
         feature = ConnectorFeature(
             rdma=True,
             mput_mget=envs.AIBRIX_KV_CACHE_OL_PRISKV_USE_MPUT_MGET,
+            zero_copy=envs.AIBRIX_KV_CACHE_OL_PRISKV_USE_ZERO_COPY,
         )
         return feature
 
@@ -279,3 +309,74 @@ class PrisKVConnector(Connector[bytes, torch.Tensor], AsyncBase):
         assert self.conn is not None
         self.conn.delete(self._key(key))
         return Status.ok()
+
+    @Status.capture_exception
+    def _allocate(
+        self, key: bytes, size: int
+    ) -> Status[ConnectorZeroCopyMemoryRegion]:
+        """Allocate a memory region for write."""
+        assert self.conn is not None
+        priskv_key = self._key(key)
+        status, priskv_mr = self.conn.alloc(priskv_key, size)
+        if status != priskv.PRISKV_STATUS.PRISKV_STATUS_OK:
+            logger.error(
+                "Failed to allocate memory region %s with status %s",
+                priskv_key,
+                status,
+            )
+            return Status(StatusCodes.ERROR)
+        return Status.ok(PrisKVZeroCopyMemoryRegion(priskv_key, priskv_mr))
+
+    @Status.capture_exception
+    def _seal(self, mr: ConnectorZeroCopyMemoryRegion) -> None:
+        """Seal an allocated memory region."""
+        assert self.conn is not None
+        zc_mr = cast(PrisKVZeroCopyMemoryRegion, mr)
+        status = self.conn.seal(zc_mr._key, zc_mr._handle)
+        if status != priskv.PRISKV_STATUS.PRISKV_STATUS_OK:
+            logger.error(
+                "Failed to seal memory region %s with status %s",
+                zc_mr._key,
+                status,
+            )
+
+    @Status.capture_exception
+    def _drop(self, mr: ConnectorZeroCopyMemoryRegion) -> None:
+        """Drop an allocated memory region."""
+        assert self.conn is not None
+        zc_mr = cast(PrisKVZeroCopyMemoryRegion, mr)
+        status = self.conn.drop(zc_mr._key, zc_mr._handle)
+        if status != priskv.PRISKV_STATUS.PRISKV_STATUS_OK:
+            logger.error(
+                "Failed to drop memory region %s with status %s",
+                zc_mr._key,
+                status,
+            )
+
+    @Status.capture_exception
+    def _acquire(self, key: bytes) -> Status[ConnectorZeroCopyMemoryRegion]:
+        """Acquire a memory region for read."""
+        assert self.conn is not None
+        priskv_key = self._key(key)
+        status, priskv_mr = self.conn.acquire(priskv_key)
+        if status != priskv.PRISKV_STATUS.PRISKV_STATUS_OK:
+            logger.error(
+                "Failed to acquire memory region %s with status %s",
+                priskv_key,
+                status,
+            )
+            return Status(StatusCodes.ERROR)
+        return Status.ok(PrisKVZeroCopyMemoryRegion(priskv_key, priskv_mr))
+
+    @Status.capture_exception
+    def _release(self, mr: ConnectorZeroCopyMemoryRegion) -> None:
+        """Release a memory region."""
+        assert self.conn is not None
+        zc_mr = cast(PrisKVZeroCopyMemoryRegion, mr)
+        status = self.conn.release(zc_mr._key, zc_mr._handle)
+        if status != priskv.PRISKV_STATUS.PRISKV_STATUS_OK:
+            logger.error(
+                "Failed to release memory region %s with status %s",
+                zc_mr._key,
+                status,
+            )

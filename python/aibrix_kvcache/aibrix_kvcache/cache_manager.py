@@ -808,7 +808,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             status = self._l2_cache.open()
             status.raise_if_not_ok()
 
-            if self._l2_cache._backend.feature.rdma:
+            if self._l2_cache.feature.rdma:
                 reg_status = self._l2_cache.register_slabs(
                     self._allocator.slabs
                 )
@@ -850,10 +850,10 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         feature = KVCacheFeature()
         if self._l1_cache is not None:
             return feature
-        if self._l2_cache is not None and self._l2_cache._backend is not None:
-            if self._l2_cache._backend.feature.gdr_get:
+        if self._l2_cache is not None:
+            if self._l2_cache.feature.gdr_get:
                 feature.gdr_get = True
-            if self._l2_cache._backend.feature.gdr_put:
+            if self._l2_cache.feature.gdr_put:
                 feature.gdr_put = True
         return feature
 
@@ -909,6 +909,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         if self._l2_cache is not None:
             self._l2_cache.close()
             del self._l2_cache
+
+    def _l2_cache_has_zero_copy(self) -> bool:
+        return self._l2_cache is not None and self._l2_cache.feature.zero_copy
 
     def _l2_ingestion_callback(
         self,
@@ -1265,6 +1268,10 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         if num_blocks == 0:
             return Status(StatusCodes.NOT_FOUND)
 
+        # Bypass L1 if L2 cache is enabled with zero copy
+        if output_mrs is None and self._l2_cache_has_zero_copy():
+            return self._l2_acquire_impl(prefix, query)
+
         fetched_mrs: List[MemoryRegion] = []
         num_fetched_blocks = 0
         num_missing_blocks = num_blocks
@@ -1390,6 +1397,53 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             if not future.done():
                 future.cancel()
 
+    def _l2_acquire_impl(
+        self,
+        prefix: KVCacheKeyTypes | None,
+        query: KVCacheKeyTypes,
+    ) -> (
+        Status[Sequence[MemoryRegion]]
+        | Status[Sequence[Sequence[MemoryRegion]]]
+    ):
+        """Get kv tensors from the kv cache service.
+
+        Args:
+            prefix: The prefix tokens/block hashes of the kv cache.
+            query: The query tokens/block hashes of the kv cache.
+        Returns:
+            The memory regions corresponding to the tokens.
+        """
+        num_missing_blocks = len(query) // self.block_ntokens
+        timeout_s = (
+            num_missing_blocks
+            * self.block_ntokens
+            * self._l2_cache_per_token_timeout_ms
+        ) / 1000
+        future = asyncio.run_coroutine_threadsafe(
+            self._l2_cache.acquire(prefix, query),  # type: ignore
+            self._event_loop,  # type: ignore
+        )
+        try:
+            acquire_status = future.result(timeout=timeout_s)
+            if not acquire_status.is_ok():
+                return acquire_status
+
+            l2_acuqired_mrs = acquire_status.get()
+
+            return Status.ok(l2_acuqired_mrs)  # type: ignore
+        except asyncio.CancelledError:
+            # cancelled
+            return Status(StatusCodes.CANCELLED)
+        except asyncio.TimeoutError:
+            # timed out
+            return Status(StatusCodes.TIMEOUT)
+        except Exception as e:
+            # other exceptions
+            return Status(StatusCodes.ERROR, e)
+        finally:
+            if not future.done():
+                future.cancel()
+
     def _use_double_get(
         self, num_missing_blocks: int, num_total_blocks: int
     ) -> bool:
@@ -1432,6 +1486,10 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
     def allocate_for(self, *args, **kwargs) -> Status[KVCacheHandle]:
         prefix, query, _ = parse_kvcache_api_args(*args, **kwargs)
 
+        # Bypass L1 if L2 cache is enabled with zero copy
+        if self._l2_cache_has_zero_copy():
+            return self._l2_allocate_for(prefix, query)
+
         if not MemoryRegion.use_compact_layout():
             key_pairs = list(
                 L1Cache.cache_block_keys(prefix, query, self.block_ntokens)
@@ -1459,6 +1517,29 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         for mr in mrs:
             mr.block_nbytes = self.block_nbytes  # type: ignore
 
+        return Status.ok(
+            MemoryRegionKVCacheHandle(self.block_dtype, self.block_shape, mrs)
+        )
+
+    def _l2_allocate_for(
+        self, prefix: KVCacheKeyTypes | None, query: KVCacheKeyTypes
+    ) -> Status[KVCacheHandle]:
+        nblocks = len(query) // self.block_ntokens
+        sizes = tuple(self.block_nbytes for _ in range(nblocks))
+
+        assert self._event_loop is not None
+        future = asyncio.run_coroutine_threadsafe(
+            self._l2_cache.allocate(  # type: ignore
+                prefix=prefix, query=query, sizes=sizes
+            ),
+            self._event_loop,
+        )
+        status = future.result()
+
+        if not status.is_ok():
+            return Status(status)
+
+        mrs = status.get()
         return Status.ok(
             MemoryRegionKVCacheHandle(self.block_dtype, self.block_shape, mrs)
         )
@@ -1505,6 +1586,12 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         if isinstance(kv_tensors, GDRKVCacheHandle):
             assert self.feature.gdr_put, "Does not support GDR put"
 
+        if self._l2_cache_has_zero_copy():
+            ret = len(kv_tensors) * self.block_ntokens
+            # release will trigger async seals on allocated MRs
+            kv_tensors.release()
+            return Status.ok(ret)
+
         # If L1Cache is enabled, we put kv tensors to L1Cache and leverage its
         # eviction policy to asynchronously ingest kv tensors to L2Cache.
         # Otherwise, we ingest kv tensors to L2Cache directly.
@@ -1550,6 +1637,10 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
     @nvtx_range("flush", "KVCacheManager")
     def flush(self) -> Status:
+        if self._l2_cache_has_zero_copy():
+            self._l2_cache.flush()  # type: ignore
+            return Status.ok()
+        
         if self._infight_cv is None:
             return Status.ok()
 
