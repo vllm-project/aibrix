@@ -22,6 +22,9 @@ import (
 	"time"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -133,13 +136,15 @@ var (
 		maxAge:   5 * time.Minute, // Keep 5 minutes of history
 		maxCount: 20,              // Keep max 20 snapshots per metric
 	}
+
+	prometheusBasicAuthOnce sync.Once
+	prometheusBasicAuthUser string
+	prometheusBasicAuthPass string
 )
 
-func initPrometheusAPI() prometheusv1.API {
-	// Load environment variables
+func initPrometheusAPI(kubeConfig *rest.Config) prometheusv1.API {
 	prometheusEndpoint := utils.LoadEnv("PROMETHEUS_ENDPOINT", "")
-	prometheusBasicAuthUsername := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_USERNAME", "")
-	prometheusBasicAuthPassword := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_PASSWORD", "")
+	prometheusBasicAuthUsername, prometheusBasicAuthPassword := loadPrometheusBasicAuth(kubeConfig)
 
 	// Initialize Prometheus API
 	var prometheusApi prometheusv1.API
@@ -153,6 +158,46 @@ func initPrometheusAPI() prometheusv1.API {
 		}
 	}
 	return prometheusApi
+}
+
+func loadPrometheusBasicAuth(kubeConfig *rest.Config) (string, string) {
+	prometheusBasicAuthOnce.Do(func() {
+		secretName := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_SECRET_NAME", "")
+		if secretName == "" {
+			prometheusBasicAuthUser = utils.LoadEnv("PROMETHEUS_BASIC_AUTH_USERNAME", "")
+			prometheusBasicAuthPass = utils.LoadEnv("PROMETHEUS_BASIC_AUTH_PASSWORD", "")
+			return
+		}
+
+		secretNamespace := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE", utils.NAMESPACE)
+		// Default to "username" and "password" if keys are not specified
+		usernameKey := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_USERNAME_KEY", "username")
+		passwordKey := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_PASSWORD_KEY", "password")
+
+		if kubeConfig == nil {
+			klog.Warningf("Prometheus basic auth secret %s/%s is not loaded due to nil kubeConfig", secretNamespace, secretName)
+			return
+		}
+		clientset, err := kubernetes.NewForConfig(kubeConfig)
+		if err != nil {
+			klog.ErrorS(err, "Failed to create Kubernetes client for Prometheus basic auth secret")
+			return
+		}
+
+		secret, err := clientset.CoreV1().Secrets(secretNamespace).Get(context.Background(), secretName, metav1.GetOptions{})
+		if err != nil {
+			klog.ErrorS(err, "Failed to read Prometheus basic auth secret", "namespace", secretNamespace, "name", secretName)
+			return
+		}
+		if b, ok := secret.Data[usernameKey]; ok {
+			prometheusBasicAuthUser = strings.TrimSpace(string(b))
+		}
+		if b, ok := secret.Data[passwordKey]; ok {
+			prometheusBasicAuthPass = strings.TrimSpace(string(b))
+		}
+	})
+
+	return prometheusBasicAuthUser, prometheusBasicAuthPass
 }
 
 func (c *Store) getPodMetricImpl(podName string, metricStore *utils.SyncMap[string, metrics.MetricValue], metricName string) (metrics.MetricValue, error) {
