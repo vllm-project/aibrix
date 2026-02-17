@@ -35,7 +35,6 @@ import (
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
-	"github.com/vllm-project/aibrix/pkg/controller/constants"
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/monitor"
@@ -1082,17 +1081,6 @@ func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(
 	labelsSelector, err := r.workloadScaleClient.GetPodSelectorFromScale(ctx, &pa, scaleObject)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod selector: %w", err)
-	}
-	// Stormservice only fetch metrics from pod group index 0 (rank 0)
-	if scaleObject.GetAPIVersion() == orchestrationv1alpha1.GroupVersion.String() && scaleObject.GetKind() == StormService {
-		requirement, err := labels.NewRequirement(constants.PodGroupIndexLabelKey, selection.Equals, []string{"0"})
-		if err != nil {
-			return nil, fmt.Errorf(
-				"failed to add %s=0 requirement to label selector: %w",
-				constants.PodGroupIndexLabelKey, err,
-			)
-		}
-		labelsSelector = labelsSelector.Add(*requirement)
 	}
 
 	// Append ray head worker requirement for label selector if needed
