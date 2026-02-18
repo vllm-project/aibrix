@@ -159,6 +159,11 @@ Below are routing strategies gateway supports:
 * ``prefix-cache-preble``: routes request considering both prefix cache hits and pod load, implementation is based of Preble: Efficient Distributed Prompt Scheduling for LLM Serving: https://arxiv.org/abs/2407.00023.
 * ``vtc-basic``: routes request using a hybrid score balancing fairness (user token count) and pod utilization. It is a simple variant of Virtual Token Counter (VTC) algorithm.  See more details at https://github.com/Ying1123/VTC-artifact
 
+Prometheus-backed Metrics
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Some routing strategies rely on metrics queried from the Prometheus HTTP API (PromQL). Configure the API endpoint and optional Basic Auth via environment variables (including Secret-based credential loading). See :ref:`prometheus-api-access` for the full list and examples.
+
 .. code-block:: bash
 
     curl -v http://${ENDPOINT}/v1/chat/completions \
@@ -205,7 +210,7 @@ How session affinity works:
   - This is especially useful for **multi-turn chat applications** where maintaining context on the same backend instance improves performance and consistency.
 
 .. note::
-The x-session-id header is not a security token—it only encodes network location. Do not rely on it for authentication or authorization.
+    The x-session-id header is not a security token—it only encodes network location. Do not rely on it for authentication or authorization.
 
 Rate Limiting
 -------------
@@ -233,7 +238,7 @@ To set up rate limiting, add the user header in the request, like this:
 
 
 External Filter
-===============
+---------------
 The ``external-filter`` header is evaluated **before** the routing strategy selects the optimal target pod. allows users to dynamically restrict the target Pods using Kubernetes ``labelSelector`` expressions.
 
 The header value follows the Kubernetes label selector syntax:
@@ -261,7 +266,7 @@ https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
 
 .. note::
     1. Filtering happens **before** the routing strategy. It never changes which Pods are considered “optimal” by the routing strategy.
-    2. The ``external-filter`` only takes effect when a ``routing-strategy``` is set.
+    2. The ``external-filter`` only takes effect when a ``routing-strategy`` is set.
     3. It only reduces the Pod selected by `model.aibrix.ai/name` and set by applying extra label constraints.
     4. Same as `no target pod`, If the filter eliminates all Pods, the request will fail with ``no ready pods for routing``.
     5. ``external-filter`` is optional. When omitted, no extra filtering is applied.
