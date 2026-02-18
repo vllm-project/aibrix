@@ -45,6 +45,7 @@ const (
 
 	// Request & Target Headers
 	HeaderWentIntoReqHeaders = "x-went-into-req-headers"
+	HeaderTargetPodIP        = "target-pod-ip"
 	HeaderTargetPod          = "target-pod"
 	HeaderRoutingStrategy    = "routing-strategy"
 	HeaderRequestID          = "request-id"

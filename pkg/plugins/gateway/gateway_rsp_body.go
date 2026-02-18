@@ -137,7 +137,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 		headers = buildEnvoyProxyHeaders(headers, HeaderRequestID, routerCtx.RequestID)
 		if routerCtx != nil && routerCtx.HasRouted() {
 			targetPod = routerCtx.TargetPod()
-			headers = buildEnvoyProxyHeaders(headers, HeaderTargetPod, routerCtx.TargetAddress())
+			headers = buildEnvoyProxyHeaders(headers,
+				HeaderTargetPod, routerCtx.TargetPod().Name,
+				HeaderTargetPodIP, routerCtx.TargetAddress())
 		}
 		fields := s.requestEndHelper(routerCtx, targetPod, arrival, promptTokens, completionTokens, totalTokens)
 		klog.InfoS("request_end", fields...)

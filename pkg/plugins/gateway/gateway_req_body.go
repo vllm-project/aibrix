@@ -128,8 +128,12 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			HeaderTargetPod, targetPodIP,
 			"content-length", strconv.Itoa(len(routingCtx.ReqBody)),
 			"X-Request-Id", routingCtx.RequestID)
-		var targetPodName string
-		var targetNamespace string
+		if routingCtx.RespHeaders == nil {
+			routingCtx.RespHeaders = make(map[string]string)
+		}
+		routingCtx.RespHeaders[HeaderRoutingStrategy] = string(routingAlgorithm)
+
+		var targetPodName, targetNamespace string
 		var request_count float64
 		if routingCtx.HasRouted() && routingCtx.TargetPod() != nil {
 			targetPodName = routingCtx.TargetPod().Name

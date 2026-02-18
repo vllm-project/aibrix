@@ -41,11 +41,12 @@ import (
 )
 
 const (
-	gatewayURL = "http://localhost:8888"
-	engineURL  = "http://localhost:8000"
-	apiKey     = "test-key-1234567890"
-	modelName  = "llama2-7b"
-	namespace  = "aibrix-system"
+	gatewayURL     = "http://localhost:8888"
+	engineURL      = "http://localhost:8000"
+	apiKey         = "test-key-1234567890"
+	modelName      = "llama2-7b"
+	modelNameQwen3 = "qwen3-8b"
+	namespace      = "aibrix-system"
 )
 
 func initializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset, *v1alpha1.Clientset) {
@@ -127,6 +128,36 @@ func createOpenAIClientWithRoutingStrategy(baseURL, apiKey, routingStrategy stri
 		option.WithMaxRetries(0),
 		respOpt,
 	)
+}
+
+// createOpenAIClientWithConfigProfile creates a client that sends config-profile header.
+// The gateway plugin selects routing-strategy from the model's config profile (model.aibrix.ai/config)
+// based on this header, rather than from the routing-strategy header.
+func createOpenAIClientWithConfigProfile(baseURL, apiKey, configProfile string,
+	respOpt option.RequestOption) openai.Client {
+	transport := &http.Transport{
+		DisableKeepAlives: true,
+		MaxIdleConns:      0,
+	}
+
+	opts := []option.RequestOption{
+		option.WithBaseURL(baseURL),
+		option.WithAPIKey(apiKey),
+		option.WithHTTPClient(&http.Client{Transport: transport}),
+		option.WithMiddleware(func(r *http.Request, mn option.MiddlewareNext) (*http.Response, error) {
+			r.URL.Path = "/v1" + r.URL.Path
+			return mn(r)
+		}),
+		option.WithMaxRetries(0),
+	}
+	if configProfile != "" {
+		opts = append(opts, option.WithHeader("config-profile", configProfile))
+	}
+	if respOpt != nil {
+		opts = append(opts, respOpt)
+	}
+
+	return openai.NewClient(opts...)
 }
 
 func validateInference(t *testing.T, modelName string) {
