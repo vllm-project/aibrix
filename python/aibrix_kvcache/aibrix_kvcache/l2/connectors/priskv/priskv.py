@@ -360,6 +360,8 @@ class PrisKVConnector(Connector[bytes, torch.Tensor], AsyncBase):
         priskv_key = self._key(key)
         status, priskv_mr = self.conn.acquire(priskv_key)
         if status != priskv.PRISKV_STATUS.PRISKV_STATUS_OK:
+            if status == priskv.PRISKV_STATUS.PRISKV_STATUS_NO_SUCH_KEY:
+                return Status(StatusCodes.NOT_FOUND)
             logger.error(
                 "Failed to acquire memory region %s with status %s",
                 priskv_key,

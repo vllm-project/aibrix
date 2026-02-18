@@ -1640,7 +1640,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         if self._l2_cache_has_zero_copy():
             self._l2_cache.flush()  # type: ignore
             return Status.ok()
-        
+
         if self._infight_cv is None:
             return Status.ok()
 
