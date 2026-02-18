@@ -914,7 +914,7 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						ScaleTargetRefWithKind("StormService", "orchestration.aibrix.ai/v1alpha1", "test-stormservice-role").
 						SubTargetSelector("prefill"). // Only scale "prefill" role
 						MetricSource(wrapper.MakeMetricSourcePod(
-							autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.7")).
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "kv_cache_usage_perc", "0.7")).
 						Obj()
 				},
 				updates: []*update{
@@ -956,7 +956,7 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						ScaleTargetRefWithKind("StormService", "orchestration.aibrix.ai/v1alpha1", "test-stormservice-conflict").
 						SubTargetSelector("prefill"). // Same role as PA1
 						MetricSource(wrapper.MakeMetricSourcePod(
-							autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.7")).
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "kv_cache_usage_perc", "0.7")).
 						Obj()
 				},
 				updates: []*update{
@@ -1011,7 +1011,7 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 								ScaleTargetRefWithKind("StormService", "orchestration.aibrix.ai/v1alpha1", "test-stormservice-conflict").
 								SubTargetSelector("prefill"). // Same role
 								MetricSource(wrapper.MakeMetricSourcePod(
-									autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.7")).
+									autoscalingv1alpha1.HTTP, "8080", "/metrics", "kv_cache_usage_perc", "0.7")).
 								Obj()
 							gomega.Expect(k8sClient.Create(ctx, pa1)).To(gomega.Succeed())
 							time.Sleep(time.Second * 2)
@@ -1053,7 +1053,7 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						Annotations(annotations).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "cooldown-deployment").
 						MetricSource(wrapper.MakeMetricSourcePod(
-							autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.5")).
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "kv_cache_usage_perc", "0.5")).
 						Obj()
 				},
 				updates: []*update{
@@ -1089,7 +1089,7 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						Annotations(annotations).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "delay-deployment").
 						MetricSource(wrapper.MakeMetricSourcePod(
-							autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.5")).
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "kv_cache_usage_perc", "0.5")).
 						Obj()
 				},
 				updates: []*update{
@@ -1129,7 +1129,7 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						Annotations(annotations).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "annotations-deployment").
 						MetricSource(wrapper.MakeMetricSourcePod(
-							autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.5")).
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "kv_cache_usage_perc", "0.5")).
 						Obj()
 				},
 				updates: []*update{

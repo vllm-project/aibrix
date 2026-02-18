@@ -85,7 +85,7 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 					MaxReplicas(10).
 					ScaleTargetRefWithKind("Deployment", "apps/v1", "test").
 					MetricSource(wrapper.MakeMetricSourcePod(autoscalingapi.HTTP,
-						"8080", "/metrics", "gpu_cache_usage_perc", "0.5")).
+						"8080", "/metrics", "kv_cache_usage_perc", "0.5")).
 					Obj()
 			},
 			failed: false,
@@ -99,7 +99,7 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 					MaxReplicas(3).
 					ScaleTargetRefWithKind("Deployment", "apps/v1", "test-ss").
 					MetricSource(wrapper.MakeMetricSourceExternal(autoscalingapi.HTTP,
-						"monitoring.example.com", "/metrics", "gpu_cache_usage_perc", "0.5")).
+						"monitoring.example.com", "/metrics", "kv_cache_usage_perc", "0.5")).
 					Obj()
 			},
 			failed: false,

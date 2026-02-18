@@ -33,9 +33,9 @@ class TestMultiEngineMetricsSupport:
         assert isinstance(rules["vllm:num_requests_waiting"], RenameStandardRule)
         assert rules["vllm:num_requests_waiting"].new_name == "aibrix:queue_size"
 
-        assert "vllm:gpu_cache_usage_perc" in rules
+        assert "vllm:kv_cache_usage_perc" in rules
         assert (
-            rules["vllm:gpu_cache_usage_perc"].new_name == "aibrix:gpu_cache_usage_perc"
+            rules["vllm:kv_cache_usage_perc"].new_name == "aibrix:kv_cache_usage_perc"
         )
 
         # Check token processing metrics exist
@@ -307,7 +307,7 @@ class TestHybridMappingStrategy:
         # Essential metrics should be renamed
         essential_mapped = [
             "vllm:num_requests_waiting",
-            "vllm:gpu_cache_usage_perc",
+            "vllm:kv_cache_usage_perc",
             "vllm:prompt_tokens_total",
             "vllm:generation_tokens_total",
             "vllm:time_to_first_token_seconds",
