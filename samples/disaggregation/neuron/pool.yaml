@@ -1,0 +1,148 @@
+# StormService for Neuron/Trainium2 Disaggregated Inference with DRA
+# Uses Dynamic Resource Allocation (DRA) for Neuron + EFA devices
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: neuron-pd-pool
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: neuron-pd-pool
+  template:
+    metadata:
+      labels:
+        app: neuron-pd-pool
+    spec:
+      roles:
+        - name: prefill
+          replicas: 2
+          stateful: true
+          template:
+            metadata:
+              labels:
+                role-name: prefill
+                roleset-name: default
+                model.aibrix.ai/name: <model-name>
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+              annotations:
+                model.aibrix.ai/name: <model-name>
+            spec:
+              nodeSelector:
+                eks.amazonaws.com/nodegroup: <nodegroup-name>
+              resourceClaims:
+                - name: neuron-efa
+                  resourceClaimTemplateName: <resource-claim-template-name>
+              containers:
+                - name: vllm
+                  image: <your-vllm-neuron-image>
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      python3 -m vllm.entrypoints.openai.api_server \
+                        --host "0.0.0.0" \
+                        --port "8000" \
+                        --model <model-path> \
+                        --served-model-name <model-name> \
+                        --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+                  ports:
+                    - containerPort: 8000
+                    - containerPort: 5558  # NIXL side channel port
+                  env:
+                    - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+                      value: "0.0.0.0"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+                      value: "5558"
+                    - name: NIXL_LOG_LEVEL
+                      value: "info"
+                    - name: VLLM_NEURON_FRAMEWORK
+                      value: "neuronx-distributed-inference"
+                  volumeMounts:
+                    - name: model-vol
+                      mountPath: /var/mdl
+                      readOnly: true
+                    - name: shared-mem
+                      mountPath: /dev/shm
+                  resources:
+                    claims:
+                      - name: neuron-efa
+                    requests:
+                      cpu: "90"
+                    limits:
+                      cpu: "90"
+              volumes:
+                - name: model-vol
+                  persistentVolumeClaim:
+                    claimName: <model-pvc-name>
+                - name: shared-mem
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 128Gi
+        - name: decode
+          replicas: 4
+          stateful: true
+          template:
+            metadata:
+              labels:
+                role-name: decode
+                roleset-name: default
+                model.aibrix.ai/name: <model-name>
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+              annotations:
+                model.aibrix.ai/name: <model-name>
+            spec:
+              nodeSelector:
+                eks.amazonaws.com/nodegroup: <nodegroup-name>
+              resourceClaims:
+                - name: neuron-efa
+                  resourceClaimTemplateName: <resource-claim-template-name>
+              containers:
+                - name: vllm
+                  image: <your-vllm-neuron-image>
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      python3 -m vllm.entrypoints.openai.api_server \
+                        --host "0.0.0.0" \
+                        --port "8000" \
+                        --model <model-path> \
+                        --served-model-name <model-name> \
+                        --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+                  ports:
+                    - containerPort: 8000
+                    - containerPort: 5558  # NIXL side channel port
+                  env:
+                    - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+                      value: "0.0.0.0"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+                      value: "5558"
+                    - name: NIXL_LOG_LEVEL
+                      value: "info"
+                    - name: VLLM_NEURON_FRAMEWORK
+                      value: "neuronx-distributed-inference"
+                  volumeMounts:
+                    - name: model-vol
+                      mountPath: /var/mdl
+                      readOnly: true
+                    - name: shared-mem
+                      mountPath: /dev/shm
+                  resources:
+                    claims:
+                      - name: neuron-efa
+                    requests:
+                      cpu: "90"
+                    limits:
+                      cpu: "90"
+              volumes:
+                - name: model-vol
+                  persistentVolumeClaim:
+                    claimName: <model-pvc-name>
+                - name: shared-mem
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 128Gi

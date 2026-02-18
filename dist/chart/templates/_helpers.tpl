@@ -125,3 +125,9 @@ Create the name of the metadata service service account
 {{- .Values.metadata.serviceAccount.name | default "default" -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "aibrix.validateValues" -}}
+{{- if and .Values.gateway.enable .Values.gateway.envoyAsSideCar -}}
+{{- fail "gateway.enable and gateway.envoyAsSideCar are mutually exclusive and cannot both be true." -}}
+{{- end -}}
+{{- end -}}
