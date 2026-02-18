@@ -834,7 +834,7 @@ func TestPrefixCacheRouterModelExtraction(t *testing.T) {
 
 	c := cache.NewWithPodsMetricsForTest(
 		readyPods,
-		"", // Empty model in cache
+		"llama-2-7b", // Use the same model as the pod label
 		map[string]map[string]metrics.MetricValue{
 			"pod1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
 		})
