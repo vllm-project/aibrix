@@ -66,7 +66,7 @@ var (
 		metrics.GenerationTokenTotal,
 		metrics.AvgPromptThroughputToksPerS,
 		metrics.AvgGenerationThroughputToksPerS,
-		metrics.GPUCacheUsagePerc,
+		metrics.KVCacheUsagePerc,
 		metrics.CPUCacheUsagePerc,
 		metrics.EngineUtilization,
 	}

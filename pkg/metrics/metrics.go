@@ -70,7 +70,6 @@ const (
 	AvgTPOT5mPod                         = "avg_tpot_pod_5m"
 	AvgPromptToksPerReq                  = "avg_prompt_toks_per_req"
 	AvgGenerationToksPerReq              = "avg_generation_toks_per_req"
-	GPUCacheUsagePerc                    = "kv_cache_usage_perc"
 	GPUBusyTimeRatio                     = "gpu_busy_time_ratio"
 	CPUCacheUsagePerc                    = "cpu_cache_usage_perc"
 	EngineUtilization                    = "engine_utilization"
@@ -393,19 +392,6 @@ var (
 				"vllm": "vllm:request_time_per_output_token_seconds",
 			},
 			Description: "Time per output token in seconds",
-		},
-		GPUCacheUsagePerc: {
-			MetricScope:  PodModelMetricScope,
-			MetricSource: PodRawMetrics,
-			MetricType: MetricType{
-				Raw: Gauge,
-			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:kv_cache_usage_perc",
-				"sglang": "sglang:token_usage", // Based on https://github.com/sgl-project/sglang/issues/5979
-				"xllm":   "kv_cache_utilization",
-			},
-			Description: "GPU cache usage percentage",
 		},
 		EngineUtilization: {
 			MetricScope:  PodModelMetricScope,

@@ -57,7 +57,7 @@ func (r leastKvCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.
 		// Due to metric refactor (pull/543) to better support lora and multi models,
 		// we change to use PodModelMetrics instead of PodMetrics in some scenarios.
 		// This works but doesn't look very promising, we can revisit this part later.
-		gpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.GPUCacheUsagePerc)
+		gpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc)
 		if err != nil {
 			klog.Error(err)
 			continue
