@@ -330,7 +330,7 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		}
 
 		// Create store with provided dependencies
-		store = New(opts.RedisClient, initPrometheusAPI(), opts.ModelRouterProvider)
+		store = New(opts.RedisClient, initPrometheusAPI(config), opts.ModelRouterProvider)
 
 		// Initialize service discovery
 		if opts.DiscoveryProvider != nil {

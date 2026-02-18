@@ -15,6 +15,11 @@ limitations under the License.
 package cache
 
 import (
+	"encoding/base64"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +28,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 )
 
 func TestCleanupOldSnapshots(t *testing.T) {
@@ -199,4 +205,92 @@ func TestEmitMetricToPrometheus_HistogramAlsoEmitsQuantiles(t *testing.T) {
 		}
 	}
 	require.True(t, found)
+}
+
+func TestLoadPrometheusBasicAuth_FromEnv(t *testing.T) {
+	prometheusBasicAuthOnce = sync.Once{}
+	prometheusBasicAuthUser = ""
+	prometheusBasicAuthPass = ""
+
+	t.Setenv("PROMETHEUS_BASIC_AUTH_SECRET_NAME", "")
+	t.Setenv("PROMETHEUS_BASIC_AUTH_USERNAME", "u1")
+	t.Setenv("PROMETHEUS_BASIC_AUTH_PASSWORD", "p1")
+
+	loadPrometheusBasicAuth(nil)
+	require.Equal(t, "u1", prometheusBasicAuthUser)
+	require.Equal(t, "p1", prometheusBasicAuthPass)
+}
+
+func TestLoadPrometheusBasicAuth_FromSecretNilKubeConfig(t *testing.T) {
+	prometheusBasicAuthOnce = sync.Once{}
+	prometheusBasicAuthUser = ""
+	prometheusBasicAuthPass = ""
+
+	t.Setenv("PROMETHEUS_BASIC_AUTH_SECRET_NAME", "prom-basic-auth")
+	t.Setenv("PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE", "ns1")
+
+	loadPrometheusBasicAuth(nil)
+	require.Equal(t, "", prometheusBasicAuthUser)
+	require.Equal(t, "", prometheusBasicAuthPass)
+}
+
+func TestLoadPrometheusBasicAuth_FromSecret(t *testing.T) {
+	prometheusBasicAuthOnce = sync.Once{}
+	prometheusBasicAuthUser = ""
+	prometheusBasicAuthPass = ""
+
+	ns := "ns1"
+	name := "prom-basic-auth"
+	usernameKey := "username"
+	passwordKey := "password"
+	username := "u2"
+	password := "p2"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expectedPath := fmt.Sprintf("/api/v1/namespaces/%s/secrets/%s", ns, name)
+		if r.Method != http.MethodGet || r.URL.Path != expectedPath {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"apiVersion":"v1","kind":"Secret","metadata":{"name":%q,"namespace":%q},"data":{%q:%q,%q:%q}}`,
+			name, ns,
+			usernameKey, base64.StdEncoding.EncodeToString([]byte(username)),
+			passwordKey, base64.StdEncoding.EncodeToString([]byte(password)),
+		)
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv("PROMETHEUS_BASIC_AUTH_SECRET_NAME", name)
+	t.Setenv("PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE", ns)
+	t.Setenv("PROMETHEUS_BASIC_AUTH_USERNAME_KEY", usernameKey)
+	t.Setenv("PROMETHEUS_BASIC_AUTH_PASSWORD_KEY", passwordKey)
+
+	loadPrometheusBasicAuth(&rest.Config{Host: server.URL})
+	require.Equal(t, username, prometheusBasicAuthUser)
+	require.Equal(t, password, prometheusBasicAuthPass)
+}
+
+func TestInitPrometheusAPI_EndpointEmpty(t *testing.T) {
+	prometheusBasicAuthOnce = sync.Once{}
+	prometheusBasicAuthUser = ""
+	prometheusBasicAuthPass = ""
+
+	t.Setenv("PROMETHEUS_ENDPOINT", "")
+	api := initPrometheusAPI(nil)
+	require.Nil(t, api)
+}
+
+func TestInitPrometheusAPI_EndpointSet(t *testing.T) {
+	prometheusBasicAuthOnce = sync.Once{}
+	prometheusBasicAuthUser = ""
+	prometheusBasicAuthPass = ""
+
+	t.Setenv("PROMETHEUS_ENDPOINT", "http://example.com")
+	t.Setenv("PROMETHEUS_BASIC_AUTH_SECRET_NAME", "")
+	t.Setenv("PROMETHEUS_BASIC_AUTH_USERNAME", "u3")
+	t.Setenv("PROMETHEUS_BASIC_AUTH_PASSWORD", "p3")
+
+	api := initPrometheusAPI(nil)
+	require.NotNil(t, api)
 }
