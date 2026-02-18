@@ -1,4 +1,4 @@
-{{- if .Values.gateway.enable }}
+{{- if or .Values.gateway.enable .Values.gateway.envoyAsSideCar }}
 {{- $redisHost := default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.gatewayPlugin.dependencies.redis.host }}
 ---
 apiVersion: apps/v1
@@ -100,6 +100,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+{{- if and .Values.gateway.envoyAsSideCar (not (hasKey .Values.gatewayPlugin.container.envs "ROUTING_ALGORITHM")) }}
+            - name: ROUTING_ALGORITHM
+              value: "random"
+{{- end }}
 {{- range $key, $val := .Values.gatewayPlugin.container.envs }}
             - name: {{ $key }}
               value: "{{ $val }}"
@@ -109,5 +113,31 @@ spec:
             {{- toYaml .Values.gatewayPlugin.container.probes.liveness | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.gatewayPlugin.container.probes.readiness | nindent 12 }}
+{{- if .Values.gateway.envoyAsSideCar }}
+        - name: envoy
+          image: {{ .Values.gateway.envoyProxy.container.envoy.image }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              exec /usr/local/bin/envoy \
+                -c /etc/envoy/envoy.yaml \
+                --service-cluster envoy-sidecar \
+                --log-level warn \
+                --cpuset-threads \
+                --drain-strategy immediate \
+                --drain-time-s 60
+          volumeMounts:
+            - name: {{ include "aibrix.fullname" . }}-envoy-config
+              mountPath: /etc/envoy
+{{- end }}
+{{- if .Values.gateway.envoyAsSideCar }}
+      volumes:
+        - name: {{ include "aibrix.fullname" . }}-envoy-config
+          configMap:
+            name: {{ include "aibrix.fullname" . }}-envoy-config
+            items:
+              - key: envoy.yaml
+                path: envoy.yaml
+{{- end }}
       serviceAccountName: {{ include "aibrix.gatewayPlugin.serviceAccountName" . }}
 {{- end }}
