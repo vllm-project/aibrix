@@ -649,7 +649,7 @@ func Test_handleRequestBody(t *testing.T) {
 
 			// Call HandleRequestBody and validate the response
 			routingCtx := types.NewRoutingContext(context.Background(), tt.routingAlgo, tt.expected.model, "", "test-request-id", tt.user.Name)
-			routingCtx.ReqPath = "/v1/chat/completions"
+			routingCtx.ReqPath = PathChatCompletions
 			if tt.reqPath != "" {
 				routingCtx.ReqPath = tt.reqPath
 			}

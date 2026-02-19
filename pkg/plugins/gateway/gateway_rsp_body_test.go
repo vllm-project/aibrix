@@ -296,7 +296,7 @@ func TestHandleResponseBody_NonStreamNoTokens(t *testing.T) {
 	}
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
-	routerCtx.ReqPath = "/v1/chat/completions"
+	routerCtx.ReqPath = PathChatCompletions
 	routerCtx.RequestTime = time.Now()
 
 	req := &extProcPb.ProcessingRequest{
@@ -330,7 +330,7 @@ func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
 
 	requestID := "test-req-tpm-" + time.Now().Format("150405.000")
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "test-user")
-	routerCtx.ReqPath = "/v1/chat/completions"
+	routerCtx.ReqPath = PathChatCompletions
 	routerCtx.RequestTime = time.Now()
 
 	req := &extProcPb.ProcessingRequest{
@@ -408,7 +408,7 @@ func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {
 	}
 
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
-	routerCtx.ReqPath = "/v1/chat/completions"
+	routerCtx.ReqPath = PathChatCompletions
 	routerCtx.RequestTime = time.Now()
 
 	req := &extProcPb.ProcessingRequest{
@@ -439,7 +439,7 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 
 	requestID := "test-req-tpm-err-" + time.Now().Format("150405.000")
 	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "test-user")
-	routerCtx.ReqPath = "/v1/chat/completions"
+	routerCtx.ReqPath = PathChatCompletions
 	routerCtx.RequestTime = time.Now()
 
 	req := &extProcPb.ProcessingRequest{
