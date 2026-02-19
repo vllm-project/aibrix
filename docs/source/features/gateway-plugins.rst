@@ -159,10 +159,7 @@ Below are routing strategies gateway supports:
 * ``prefix-cache-preble``: routes request considering both prefix cache hits and pod load, implementation is based of Preble: Efficient Distributed Prompt Scheduling for LLM Serving: https://arxiv.org/abs/2407.00023.
 * ``vtc-basic``: routes request using a hybrid score balancing fairness (user token count) and pod utilization. It is a simple variant of Virtual Token Counter (VTC) algorithm.  See more details at https://github.com/Ying1123/VTC-artifact
 
-Prometheus-backed Metrics
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Some routing strategies rely on metrics queried from the Prometheus HTTP API (PromQL). Configure the API endpoint and optional Basic Auth via environment variables (including Secret-based credential loading). See :ref:`prometheus-api-access` for the full list and examples.
+Some routing strategies rely on metrics queried from the Prometheus HTTP API (PromQL). See :ref:`prometheus-api-access` for configuration.
 
 .. code-block:: bash
 
@@ -435,3 +432,69 @@ Below are starting pointers to help debug.
     aibrix-redis-master-7d6b77c794-bcqxc        1/1     Running            0          22m
 
     kubectl logs aibrix-gateway-plugins-6bd9fcd5b9-2bwpr -n aibrix-system
+
+.. _prometheus-api-access:
+
+Prometheus API Access
+---------------------
+
+Some routing strategies rely on metrics queried from the Prometheus HTTP API (PromQL). Configure the API endpoint and optional Basic Auth with the following environment variables.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 18 60
+
+   * - Environment Variable
+     - Default
+     - Description
+   * - ``PROMETHEUS_ENDPOINT``
+     - (empty)
+     - Prometheus HTTP API base URL (for example: ``http://prometheus-operated.prometheus.svc:9090``). If empty, PromQL-based metrics are skipped.
+   * - ``PROMETHEUS_BASIC_AUTH_SECRET_NAME``
+     - (empty)
+     - Kubernetes Secret name that stores the Basic Auth credentials. When set, it takes precedence over the plaintext env vars below.
+   * - ``PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE``
+     - ``aibrix-system``
+     - Namespace of the Secret specified by ``PROMETHEUS_BASIC_AUTH_SECRET_NAME``.
+   * - ``PROMETHEUS_BASIC_AUTH_USERNAME_KEY``
+     - ``username``
+     - Key in ``Secret.data`` used as the Basic Auth username.
+   * - ``PROMETHEUS_BASIC_AUTH_PASSWORD_KEY``
+     - ``password``
+     - Key in ``Secret.data`` used as the Basic Auth password.
+   * - ``PROMETHEUS_BASIC_AUTH_USERNAME``
+     - (empty)
+     - Basic Auth username, used only when ``PROMETHEUS_BASIC_AUTH_SECRET_NAME`` is not set.
+   * - ``PROMETHEUS_BASIC_AUTH_PASSWORD``
+     - (empty)
+     - Basic Auth password, used only when ``PROMETHEUS_BASIC_AUTH_SECRET_NAME`` is not set.
+
+Example (plaintext env vars)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+   export PROMETHEUS_ENDPOINT="http://prometheus-operated.prometheus.svc:9090"
+   export PROMETHEUS_BASIC_AUTH_USERNAME="prom_user"
+   export PROMETHEUS_BASIC_AUTH_PASSWORD="prom_pass"
+
+Example (Kubernetes Secret)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: yaml
+
+   apiVersion: v1
+   kind: Secret
+   metadata:
+     name: prometheus-basic-auth
+     namespace: aibrix-system
+   type: Opaque
+   stringData:
+     username: prom_user
+     password: prom_pass
+
+.. code-block:: bash
+
+   export PROMETHEUS_ENDPOINT="http://prometheus-operated.prometheus.svc:9090"
+   export PROMETHEUS_BASIC_AUTH_SECRET_NAME="prometheus-basic-auth"
+   export PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE="aibrix-system"
