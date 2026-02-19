@@ -56,7 +56,7 @@ export function ProjectDetailPage() {
     project?.instructions || ""
   );
   const [files, setFiles] = useState<ProjectFile[]>(project?.files || []);
-  const [selectedModel, setSelectedModel] = useState("GPT-4o Mini");
+  const [selectedModel, setSelectedModel] = useState("Sonnet 4.6");
   const [extendedThinking, setExtendedThinking] = useState(true);
 
   const filesMenuRef = useRef<HTMLDivElement>(null);

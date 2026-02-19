@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Image as ImageIcon,
   Video,
@@ -65,6 +65,29 @@ export function AICreationPage() {
 
   const models = mode === "image" ? imageModels : videoModels;
 
+  // Close dropdowns on outside click
+  useEffect(() => {
+    if (!showModelDropdown && !showRatioDropdown) return;
+
+    function handleClickOutside(event: MouseEvent) {
+      if (
+        modelDropdownRef.current &&
+        !modelDropdownRef.current.contains(event.target as Node)
+      ) {
+        setShowModelDropdown(false);
+      }
+      if (
+        ratioDropdownRef.current &&
+        !ratioDropdownRef.current.contains(event.target as Node)
+      ) {
+        setShowRatioDropdown(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showModelDropdown, showRatioDropdown]);
+
   // Switch model default when mode changes
   const handleModeChange = (newMode: CreationMode) => {
     setMode(newMode);
@@ -81,7 +104,7 @@ export function AICreationPage() {
       if (!files) return;
 
       const newFiles: UploadedFile[] = Array.from(files).map((file) => ({
-        id: Date.now().toString() + Math.random().toString(36).slice(2),
+        id: crypto.randomUUID(),
         name: file.name,
         url: URL.createObjectURL(file),
         type: file.type,

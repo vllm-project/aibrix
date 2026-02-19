@@ -18,7 +18,7 @@ export function QuickActions() {
         <button
           key={action.label}
           onClick={() => {
-            if ("path" in action && action.path) navigate(action.path);
+            if (action.path) navigate(action.path);
           }}
           className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full border border-border hover:bg-accent text-sm text-foreground/70 hover:text-foreground transition-colors ${
             "path" in action && action.path ? "border-amber-500/30 hover:border-amber-500/50" : ""

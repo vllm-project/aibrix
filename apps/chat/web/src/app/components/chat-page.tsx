@@ -49,7 +49,7 @@ export function ChatPage() {
 
   const handleSend = (content: string) => {
     const userMsg: Message = {
-      id: Date.now().toString(),
+      id: crypto.randomUUID(),
       role: "user",
       content,
     };
@@ -57,7 +57,7 @@ export function ChatPage() {
       ...prev,
       userMsg,
       {
-        id: (Date.now() + 1).toString(),
+        id: crypto.randomUUID(),
         role: "assistant",
         content: "I'm a demo interface. Connect your own model API to enable real responses! This UI is ready to be connected to any LLM backend.",
       },

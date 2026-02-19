@@ -65,7 +65,7 @@ export function ChatInput({
         reader.onload = (e) => {
           const dataUrl = e.target?.result as string;
           const newImg: AttachedImage = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            id: crypto.randomUUID(),
             dataUrl,
             file,
             uploading: true,

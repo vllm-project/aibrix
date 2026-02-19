@@ -18,7 +18,7 @@ export function HomeWrapper() {
         onClose={() => setShowCreateProject(false)}
         onCreate={(name, description) => {
           setShowCreateProject(false);
-          navigate("/projects/new");
+          navigate(`/projects/${encodeURIComponent(name)}`);
         }}
       />
     </>
