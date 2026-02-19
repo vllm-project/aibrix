@@ -9,12 +9,17 @@ import {
   Upload,
   FileText,
   Github,
-  AudioLines,
 } from "lucide-react";
-import { ModelSelector } from "./model-selector";
-import { PlusMenu } from "./plus-menu";
+import { ChatInput } from "./chat-input";
 import { SetInstructionsModal } from "./set-instructions-modal";
 import { AddTextContentModal } from "./add-text-content-modal";
+import {
+  getProject,
+  updateProject,
+  createConversation,
+  notifyConversationsChanged,
+  type Project,
+} from "@/api/client";
 
 interface ProjectFile {
   id: string;
@@ -22,44 +27,34 @@ interface ProjectFile {
   type: "text" | "file";
 }
 
-const projectData: Record<
-  string,
-  {
-    name: string;
-    instructions: string;
-    files: ProjectFile[];
-  }
-> = {
-  "1": {
-    name: "AIBrix",
-    instructions:
-      'You are working inside the **AIBrix** codebase. Treat this as the project\'s standing engineering instructions for all chats in this repo.\n\n# What AIBrix is (project context)\nAIBrix is an open-source, Kubernetes-native LLM inference infrastructure stack ("bricks for AI Infra") that helps teams turn large models into scalable, cost-efficient APIs on K8s. Key themes:\n- Multi-engine serving (e.g., vLLM / SGLang / TensorRT-LLM) via a consistent control-plane abstraction.\n- Production-grade orchestration via CRDs + controllers (controller-runtime): deployments, rollouts, upgrades, status, and autoscaling.\n- LLM-specific capabilities: high-density LoRA management (load/unload, scheduling, isolation), fast cold start & model loading, routing strategies, and KV-cache offloading.\n- Prefill/Decode (P/D) disaggregation orchestration (e.g., replica mode and pooled mode) with role-aware routing.',
-    files: [],
-  },
-  "2": {
-    name: "How to use AIBrix Chat",
-    instructions:
-      "This is an example project that shows how to use AIBrix Chat effectively. It includes tips on prompting, conversation management, and getting the most out of AI assistants.",
-    files: [],
-  },
-};
-
 export function ProjectDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const project = id ? projectData[id] : null;
 
+  const [project, setProject] = useState<Project | null>(null);
+  const [loading, setLoading] = useState(true);
   const [showInstructionsModal, setShowInstructionsModal] = useState(false);
   const [showAddTextModal, setShowAddTextModal] = useState(false);
   const [showFilesMenu, setShowFilesMenu] = useState(false);
-  const [instructions, setInstructions] = useState(
-    project?.instructions || ""
-  );
-  const [files, setFiles] = useState<ProjectFile[]>(project?.files || []);
-  const [selectedModel, setSelectedModel] = useState("Sonnet 4.6");
-  const [extendedThinking, setExtendedThinking] = useState(true);
+  const [instructions, setInstructions] = useState("");
+  const [files, setFiles] = useState<ProjectFile[]>([]);
 
   const filesMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    setLoading(true);
+    getProject(id).then((p) => {
+      if (cancelled) return;
+      setProject(p);
+      setInstructions(p.instructions);
+      setLoading(false);
+    }).catch(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [id]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -73,6 +68,37 @@ export function ProjectDetailPage() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  const handleSaveInstructions = async (newInstructions: string) => {
+    setInstructions(newInstructions);
+    if (id) {
+      try {
+        await updateProject(id, { instructions: newInstructions });
+      } catch (err) {
+        console.error("Failed to save instructions:", err);
+      }
+    }
+  };
+
+  const handleSend = async (message: string, model: string) => {
+    try {
+      const conv = await createConversation(model || undefined, undefined, id);
+      notifyConversationsChanged();
+      navigate(`/chat/${conv.id}`, {
+        state: { firstMessage: message, model },
+      });
+    } catch (err) {
+      console.error("Failed to create conversation:", err);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-muted-foreground">
+        Loading...
+      </div>
+    );
+  }
 
   if (!project) {
     return (
@@ -106,40 +132,16 @@ export function ProjectDetailPage() {
           </button>
         </div>
 
-        {/* Chat input area */}
-        <div className="max-w-[620px] mx-auto w-full mb-6">
-          <div className="bg-card border border-border rounded-2xl overflow-hidden">
-            <div className="px-4 pt-4 pb-2">
-              <textarea
-                placeholder="Reply..."
-                rows={1}
-                className="w-full bg-transparent text-foreground placeholder-foreground/30 resize-none outline-none text-[15px]"
-                style={{ minHeight: "24px" }}
-              />
+        {/* Centered chat input area — flex-1 so it fills remaining space */}
+        <div className="flex-1 flex flex-col items-center justify-center pb-12">
+          <ChatInput onSend={handleSend} placeholder="Reply..." />
+          <div className="mt-5 max-w-[680px] w-full">
+            <div className="bg-card/50 border border-border rounded-xl p-4 text-center">
+              <p className="text-sm text-muted-foreground">
+                Start a chat to keep conversations organized and re-use project
+                knowledge.
+              </p>
             </div>
-            <div className="flex items-center justify-between px-3 pb-3">
-              <PlusMenu />
-              <div className="flex items-center gap-3">
-                <ModelSelector
-                  selectedModel={selectedModel}
-                  extendedThinking={extendedThinking}
-                  onModelChange={setSelectedModel}
-                  onExtendedThinkingChange={setExtendedThinking}
-                />
-                <button className="p-1.5 rounded-lg hover:bg-accent text-foreground/50 hover:text-foreground transition-colors">
-                  <AudioLines size={20} />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="max-w-[620px] mx-auto w-full">
-          <div className="bg-card/50 border border-border rounded-xl p-4 text-center">
-            <p className="text-sm text-muted-foreground">
-              Start a chat to keep conversations organized and re-use project
-              knowledge.
-            </p>
           </div>
         </div>
       </div>
@@ -248,7 +250,7 @@ export function ProjectDetailPage() {
       <SetInstructionsModal
         isOpen={showInstructionsModal}
         onClose={() => setShowInstructionsModal(false)}
-        onSave={setInstructions}
+        onSave={handleSaveInstructions}
         projectName={project.name}
         initialInstructions={instructions}
       />
@@ -256,7 +258,7 @@ export function ProjectDetailPage() {
       <AddTextContentModal
         isOpen={showAddTextModal}
         onClose={() => setShowAddTextModal(false)}
-        onAdd={(title, content) => {
+        onAdd={(title) => {
           setFiles((prev) => [
             ...prev,
             { id: Date.now().toString(), name: title, type: "text" },

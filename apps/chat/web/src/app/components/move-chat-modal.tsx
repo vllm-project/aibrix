@@ -1,32 +1,37 @@
-import { useState } from "react";
-import { X, Search, Folder, Users } from "lucide-react";
-
-interface ProjectOption {
-  id: string;
-  name: string;
-  shared?: boolean;
-}
-
-const defaultProjects: ProjectOption[] = [
-  { id: "2", name: "How to use AIBrix Chat", shared: true },
-  { id: "1", name: "AIBrix" },
-];
+import { useState, useEffect } from "react";
+import { X, Search, Folder, Loader2 } from "lucide-react";
+import { listProjects, type ProjectSummary } from "@/api/client";
 
 interface MoveChatModalProps {
   isOpen: boolean;
   onClose: () => void;
   onMove: (projectId: string) => void;
-  projects?: ProjectOption[];
 }
 
 export function MoveChatModal({
   isOpen,
   onClose,
   onMove,
-  projects = defaultProjects,
 }: MoveChatModalProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [isMoving, setIsMoving] = useState(false);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  // Fetch projects from API when modal opens
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    setLoading(true);
+    listProjects()
+      .then((data) => {
+        if (!cancelled) setProjects(data);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -36,7 +41,6 @@ export function MoveChatModal({
 
   const handleMove = (projectId: string) => {
     setIsMoving(true);
-    // Simulate a brief moving state
     setTimeout(() => {
       onMove(projectId);
       setIsMoving(false);
@@ -91,6 +95,11 @@ export function MoveChatModal({
                   <Folder size={32} className="mb-2 animate-pulse" />
                   <span className="text-sm">Moving...</span>
                 </div>
+              ) : loading ? (
+                <div className="flex flex-col items-center justify-center py-12 text-foreground/30">
+                  <Loader2 size={24} className="mb-2 animate-spin" />
+                  <span className="text-sm">Loading projects...</span>
+                </div>
               ) : filtered.length > 0 ? (
                 filtered.map((project) => (
                   <button
@@ -102,12 +111,6 @@ export function MoveChatModal({
                     <span className="flex-1 text-left truncate">
                       {project.name}
                     </span>
-                    {project.shared && (
-                      <span className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-accent text-xs text-foreground/50">
-                        <Users size={11} />
-                        Shared
-                      </span>
-                    )}
                   </button>
                 ))
               ) : (
