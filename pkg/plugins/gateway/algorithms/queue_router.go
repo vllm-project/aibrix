@@ -25,6 +25,13 @@ import (
 	"k8s.io/klog/v2"
 )
 
+const (
+	// routeTriggerChanSize is the buffer size for chRouteTrigger so concurrent Route() callers can send without blocking.
+	routeTriggerChanSize = 64
+	// maxWaitWhenQueued is the max time serve() blocks on the trigger channel when the queue has items but no new request arrived.
+	maxWaitWhenQueued = 10 * time.Millisecond
+)
+
 // queueRouter implements a request routing algorithm that uses a queue-based approach.
 // It accepts a backend stateless Router and a RouterQueue as inputs.
 // It manages incoming requests by:
@@ -63,8 +70,8 @@ func NewQueueRouter(backend types.Router, queue types.RouterQueue[*types.Routing
 		router:            backend,
 		queue:             queue,
 		cache:             c,
-		chRouteTrigger:    make(chan types.PodList, 1), // One buffer is needed for thread safety.
-		maxWaitWhenQueued: 10 * time.Millisecond,
+		chRouteTrigger:    make(chan types.PodList, routeTriggerChanSize),
+		maxWaitWhenQueued: maxWaitWhenQueued,
 	}
 
 	go router.serve()
