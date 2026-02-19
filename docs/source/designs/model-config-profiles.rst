@@ -1,8 +1,8 @@
 .. _model_config_profiles:
 
-=============================
+=========================
 Model Config and Profiles
-=============================
+=========================
 
 This design describes how to supply **model/gateway configuration** (routing strategy, PD bucket bounds, combined mode, etc.) via a **single annotation** (or ConfigMap), with support for **multiple named profiles** selectable at **runtime** by the client.
 
@@ -33,8 +33,8 @@ Root object:
 Profile object (``ModelConfigProfile``):
 
 * ``routingStrategy`` (string): e.g. ``random``, ``pd``, ``least-latency``.
-* ``promptMinLength`` (int, optional): Lower bound for PD bucketing. Default: ``0``. If negative, normalized to ``0``.
-* ``promptMaxLength`` (int, optional): Upper bound for PD bucketing. Default: ``math.MaxInt32`` when ``0`` or omitted.
+* ``promptMinLength`` (int, optional): Lower bound for bucketing. Default: ``0``. If negative, normalized to ``0``.
+* ``promptMaxLength`` (int, optional): Upper bound for bucketing. Default: ``math.MaxInt32`` when ``0`` or omitted.
 * ``combined`` (bool, optional): When true, indicates combined prefill/decode pod for PD routing.
 
 Single profile (backward compatible):
