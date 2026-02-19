@@ -159,6 +159,8 @@ Below are routing strategies gateway supports:
 * ``prefix-cache-preble``: routes request considering both prefix cache hits and pod load, implementation is based of Preble: Efficient Distributed Prompt Scheduling for LLM Serving: https://arxiv.org/abs/2407.00023.
 * ``vtc-basic``: routes request using a hybrid score balancing fairness (user token count) and pod utilization. It is a simple variant of Virtual Token Counter (VTC) algorithm.  See more details at https://github.com/Ying1123/VTC-artifact
 
+Some routing strategies rely on metrics queried from the Prometheus HTTP API (PromQL). See :ref:`prometheus-api-access` for configuration.
+
 .. code-block:: bash
 
     curl -v http://${ENDPOINT}/v1/chat/completions \
@@ -205,7 +207,7 @@ How session affinity works:
   - This is especially useful for **multi-turn chat applications** where maintaining context on the same backend instance improves performance and consistency.
 
 .. note::
-The x-session-id header is not a security token—it only encodes network location. Do not rely on it for authentication or authorization.
+    The x-session-id header is not a security token—it only encodes network location. Do not rely on it for authentication or authorization.
 
 Rate Limiting
 -------------
@@ -233,7 +235,7 @@ To set up rate limiting, add the user header in the request, like this:
 
 
 External Filter
-===============
+---------------
 The ``external-filter`` header is evaluated **before** the routing strategy selects the optimal target pod. allows users to dynamically restrict the target Pods using Kubernetes ``labelSelector`` expressions.
 
 The header value follows the Kubernetes label selector syntax:
@@ -261,7 +263,7 @@ https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
 
 .. note::
     1. Filtering happens **before** the routing strategy. It never changes which Pods are considered “optimal” by the routing strategy.
-    2. The ``external-filter`` only takes effect when a ``routing-strategy``` is set.
+    2. The ``external-filter`` only takes effect when a ``routing-strategy`` is set.
     3. It only reduces the Pod selected by `model.aibrix.ai/name` and set by applying extra label constraints.
     4. Same as `no target pod`, If the filter eliminates all Pods, the request will fail with ``no ready pods for routing``.
     5. ``external-filter`` is optional. When omitted, no extra filtering is applied.
@@ -430,3 +432,69 @@ Below are starting pointers to help debug.
     aibrix-redis-master-7d6b77c794-bcqxc        1/1     Running            0          22m
 
     kubectl logs aibrix-gateway-plugins-6bd9fcd5b9-2bwpr -n aibrix-system
+
+.. _prometheus-api-access:
+
+Prometheus API Access
+---------------------
+
+Some routing strategies rely on metrics queried from the Prometheus HTTP API (PromQL). Configure the API endpoint and optional Basic Auth with the following environment variables.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 18 60
+
+   * - Environment Variable
+     - Default
+     - Description
+   * - ``PROMETHEUS_ENDPOINT``
+     - (empty)
+     - Prometheus HTTP API base URL (for example: ``http://prometheus-operated.prometheus.svc:9090``). If empty, PromQL-based metrics are skipped.
+   * - ``PROMETHEUS_BASIC_AUTH_SECRET_NAME``
+     - (empty)
+     - Kubernetes Secret name that stores the Basic Auth credentials. When set, it takes precedence over the plaintext env vars below.
+   * - ``PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE``
+     - ``aibrix-system``
+     - Namespace of the Secret specified by ``PROMETHEUS_BASIC_AUTH_SECRET_NAME``.
+   * - ``PROMETHEUS_BASIC_AUTH_USERNAME_KEY``
+     - ``username``
+     - Key in ``Secret.data`` used as the Basic Auth username.
+   * - ``PROMETHEUS_BASIC_AUTH_PASSWORD_KEY``
+     - ``password``
+     - Key in ``Secret.data`` used as the Basic Auth password.
+   * - ``PROMETHEUS_BASIC_AUTH_USERNAME``
+     - (empty)
+     - Basic Auth username, used only when ``PROMETHEUS_BASIC_AUTH_SECRET_NAME`` is not set.
+   * - ``PROMETHEUS_BASIC_AUTH_PASSWORD``
+     - (empty)
+     - Basic Auth password, used only when ``PROMETHEUS_BASIC_AUTH_SECRET_NAME`` is not set.
+
+Example (plaintext env vars)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+   export PROMETHEUS_ENDPOINT="http://prometheus-operated.prometheus.svc:9090"
+   export PROMETHEUS_BASIC_AUTH_USERNAME="prom_user"
+   export PROMETHEUS_BASIC_AUTH_PASSWORD="prom_pass"
+
+Example (Kubernetes Secret)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: yaml
+
+   apiVersion: v1
+   kind: Secret
+   metadata:
+     name: prometheus-basic-auth
+     namespace: aibrix-system
+   type: Opaque
+   stringData:
+     username: prom_user
+     password: prom_pass
+
+.. code-block:: bash
+
+   export PROMETHEUS_ENDPOINT="http://prometheus-operated.prometheus.svc:9090"
+   export PROMETHEUS_BASIC_AUTH_SECRET_NAME="prometheus-basic-auth"
+   export PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE="aibrix-system"
