@@ -40,12 +40,12 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 	routingCtx, _ := ctx.(*types.RoutingContext)
 	requestPath := routingCtx.ReqPath
-	routingAlgorithm := routingCtx.Algorithm
 
 	body := req.Request.(*extProcPb.ProcessingRequest_RequestBody)
 
 	var model, message string
 	var stream bool
+	var routingAlgorithm types.RoutingAlgorithm
 	var errRes *extProcPb.ProcessingResponse
 
 	// Check if this is a multipart request (audio endpoints)
@@ -88,6 +88,19 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			fmt.Sprintf("error on getting pods for model %s", model), ErrorCodeServiceUnavailable, ""), model, routingCtx, stream, term
 	}
 
+	// Resolve model config profile from annotation and apply overrides
+	applyConfigProfile(routingCtx, podsArr.All())
+
+	// Derive and validate routing strategy (headers -> profile -> env); return 400 on invalid
+	if strategy, enabled := deriveRoutingStrategyFromContext(routingCtx); enabled {
+		var ok bool
+		if routingAlgorithm, ok = routing.Validate(strategy); !ok {
+			klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", strategy)
+			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategy %s", strategy), "", "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
+		}
+		routingCtx.Algorithm = routingAlgorithm
+	}
+
 	headers := []*configPb.HeaderValueOption{}
 
 	// Path rewriting for image/video generation based on engine type
@@ -108,19 +121,15 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr, externalFilter)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingAlgorithm, "model", model, "routingDuration", routingCtx.GetRoutingDelay())
-			return generateErrorResponse(
-				envoyTypePb.StatusCode_ServiceUnavailable,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderErrorRouting, RawValue: []byte("true")}}},
-				"error on selecting target pod", ErrorCodeServiceUnavailable, ""), model, routingCtx, stream, term
+			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, "error on selecting target pod", ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
 		}
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
 			HeaderTargetPod, targetPodIP,
 			"content-length", strconv.Itoa(len(routingCtx.ReqBody)),
 			"X-Request-Id", routingCtx.RequestID)
-		var targetPodName string
-		var targetNamespace string
+
+		var targetPodName, targetNamespace string
 		var request_count float64
 		if routingCtx.HasRouted() && routingCtx.TargetPod() != nil {
 			targetPodName = routingCtx.TargetPod().Name

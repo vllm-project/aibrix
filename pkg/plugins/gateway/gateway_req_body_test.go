@@ -32,7 +32,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
-	"github.com/vllm-project/aibrix/pkg/metrics"
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -269,7 +268,7 @@ func Test_handleRequestBody(t *testing.T) {
 			},
 		},
 		{
-			name:        "invalid routing strategy - should fallback to random router",
+			name:        "invalid routing strategy - should return 400 BadRequest",
 			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
 			user: utils.User{
 				Name: "test-user",
@@ -285,64 +284,34 @@ func Test_handleRequestBody(t *testing.T) {
 								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
 							},
 						},
-						{
-							Status: v1.PodStatus{
-								PodIP:      "5.6.7.8",
-								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
-							},
-						},
 					},
 				}
 				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
-				mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, metrics.RealtimeNumRequestsRunning).Return(&metrics.SimpleMetricValue{Value: 0}, nil)
-				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
 			},
 			expected: testResponse{
-				statusCode: envoyTypePb.StatusCode_OK,
-				headers: []*configPb.HeaderValueOption{
-					{
-						Header: &configPb.HeaderValue{
-							Key:      HeaderRoutingStrategy,
-							RawValue: []byte("invalid-router"),
-						},
-					},
-					{
-						Header: &configPb.HeaderValue{
-							Key:      HeaderTargetPod,
-							RawValue: []byte("1.2.3.4:8000"),
-						},
-					},
-				},
+				statusCode: envoyTypePb.StatusCode_BadRequest,
 				model:      "test-model",
 				stream:     false,
-				term:       1,
+				term:       0,
 				routingCtx: &types.RoutingContext{},
 			},
 			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
-				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
+				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				// buildErrorResponse returns x-error-routing: true (no Content-Type in headers)
+				headers := resp.GetImmediateResponse().GetHeaders().GetSetHeaders()
+				assert.GreaterOrEqual(t, len(headers), 1)
+				foundErrorRouting := false
+				for _, h := range headers {
+					if h.Header.Key == HeaderErrorRouting && string(h.Header.RawValue) == "true" {
+						foundErrorRouting = true
+						break
+					}
+				}
+				assert.True(t, foundErrorRouting, "expected x-error-routing header")
 				assert.Equal(t, tt.expected.model, model)
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
 				assert.NotNil(t, routingCtx)
-				assert.Equal(t, tt.expected.model, routingCtx.Model)
-				assert.Equal(t, tt.routingAlgo, routingCtx.Algorithm)
-				// Verify both routing headers are set
-				foundRoutingStrategy := false
-				foundTargetPod := false
-				for _, header := range resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
-					if header.Header.Key == HeaderRoutingStrategy {
-						foundRoutingStrategy = true
-						assert.Equal(t, "invalid-router", string(header.Header.RawValue))
-					}
-					if header.Header.Key == HeaderTargetPod {
-						foundTargetPod = true
-						// Since this is a random router, accept either valid pod IP from the mock setup
-						targetPodIP := string(header.Header.RawValue)
-						assert.Contains(t, []string{"1.2.3.4:8000", "5.6.7.8:8000"}, targetPodIP, "Target pod IP should be one of the pod IPs from the mock setup")
-					}
-				}
-				assert.True(t, foundRoutingStrategy, "HeaderRoutingStrategy not found")
-				assert.True(t, foundTargetPod, "HeaderTargetPod not found")
 			},
 		},
 		{
@@ -680,9 +649,16 @@ func Test_handleRequestBody(t *testing.T) {
 
 			// Call HandleRequestBody and validate the response
 			routingCtx := types.NewRoutingContext(context.Background(), tt.routingAlgo, tt.expected.model, "", "test-request-id", tt.user.Name)
-			routingCtx.ReqPath = "/v1/chat/completions"
+			routingCtx.ReqPath = PathChatCompletions
 			if tt.reqPath != "" {
 				routingCtx.ReqPath = tt.reqPath
+			}
+			// deriveRoutingStrategyFromContext reads from ReqHeaders, not Algorithm
+			if tt.routingAlgo != "" {
+				if routingCtx.ReqHeaders == nil {
+					routingCtx.ReqHeaders = make(map[string]string)
+				}
+				routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(tt.routingAlgo)
 			}
 			resp, model, routingCtx, stream, term := server.HandleRequestBody(
 				routingCtx,

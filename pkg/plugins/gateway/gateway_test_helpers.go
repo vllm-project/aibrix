@@ -71,8 +71,8 @@ func (m *MockCache) DoneRequestCount(ctx *types.RoutingContext, requestID string
 	m.Called(ctx, requestID, model, term)
 }
 
-func (m *MockCache) DoneRequestTrace(ctx *types.RoutingContext, requestID string, model string, term int64, inputTokens int64, outputTokens int64) {
-	m.Called(ctx, requestID, model, term, inputTokens, outputTokens)
+func (m *MockCache) DoneRequestTrace(ctx *types.RoutingContext, requestID string, model string, inputTokens int64, outputTokens int64, traceTerm int64) {
+	m.Called(ctx, requestID, model, inputTokens, outputTokens, traceTerm)
 }
 
 func (m *MockCache) AddSubscriber(subscriber metrics.MetricSubscriber) {

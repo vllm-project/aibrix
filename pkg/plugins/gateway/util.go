@@ -33,9 +33,11 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
-	"k8s.io/klog/v2"
-
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 var (
@@ -316,19 +318,47 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 	return nil
 }
 
+// applyConfigProfile resolves the model config from pod annotation (model.aibrix.ai/config)
+// and applies the selected profile: sets ConfigProfile on routingCtx.
+// - If the client provides config-profile, use that profile name.
+// - If not provided or not found, fall back to defaultProfile (or "default") in the JSON.
+func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
+	headerProfile := routingCtx.ReqConfigProfile
+	profile := configprofiles.ResolveProfile(pods, headerProfile)
+	if profile == nil {
+		return
+	}
+	routingCtx.ConfigProfile = &types.ResolvedConfigProfile{
+		RoutingStrategy: profile.RoutingStrategy,
+		PromptMinLength: profile.PromptMinLength,
+		PromptMaxLength: profile.PromptMaxLength,
+		Combined:        profile.Combined,
+	}
+}
+
 var defaultRoutingStrategy, defaultRoutingStrategyEnabled = utils.LookupEnv(EnvRoutingAlgorithm)
 
-// getRoutingStrategy retrieves the routing strategy from the headers or environment variable
-// It returns the routing strategy value and whether custom routing strategy is enabled.
-func getRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
-	// Check headers for routing strategy
-	for _, header := range headers {
-		if strings.ToLower(header.Key) == HeaderRoutingStrategy {
-			return string(header.RawValue), true
+// deriveRoutingStrategyFromContext retrieves routing strategy from headers or resolved profile, falling back to env defaults.
+func deriveRoutingStrategyFromContext(routingCtx *types.RoutingContext) (string, bool) {
+	// Check request headers (case-insensitive key match)
+	if routingCtx != nil && routingCtx.ReqHeaders != nil {
+		for k, v := range routingCtx.ReqHeaders {
+			if strings.ToLower(k) == HeaderRoutingStrategy {
+				if strings.TrimSpace(v) != "" {
+					return v, true
+				}
+				break
+			}
 		}
 	}
-
-	// If header not set, use default routing strategy from environment variable
+	// Fallback to resolved profile on routing context
+	if routingCtx != nil && routingCtx.ConfigProfile != nil {
+		s := strings.TrimSpace(routingCtx.ConfigProfile.RoutingStrategy)
+		if s != "" {
+			return s, true
+		}
+	}
+	// Fallback to environment default
 	return defaultRoutingStrategy, defaultRoutingStrategyEnabled
 }
 

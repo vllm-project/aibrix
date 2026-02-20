@@ -84,7 +84,9 @@ func Test_HandleResponseHeaders(t *testing.T) {
 				headers: []*configPb.HeaderValueOption{
 					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
 					{Header: &configPb.HeaderValue{Key: HeaderRequestID, RawValue: []byte("test-req-id")}},
-					{Header: &configPb.HeaderValue{Key: HeaderTargetPod, RawValue: []byte("10.0.0.1:8000")}},
+					{Header: &configPb.HeaderValue{Key: "routing-strategy", RawValue: []byte("random")}},
+					{Header: &configPb.HeaderValue{Key: HeaderTargetPod, RawValue: []byte("test-pod")}},
+					{Header: &configPb.HeaderValue{Key: HeaderTargetPodIP, RawValue: []byte("10.0.0.1:8000")}},
 					{Header: &configPb.HeaderValue{Key: "X-Custom", RawValue: []byte("value")}},
 					{Header: &configPb.HeaderValue{Key: ":status", RawValue: []byte("200")}},
 				},
@@ -100,7 +102,9 @@ func Test_HandleResponseHeaders(t *testing.T) {
 				headers: []*configPb.HeaderValueOption{
 					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
 					{Header: &configPb.HeaderValue{Key: HeaderRequestID, RawValue: []byte("test-req-id")}},
-					{Header: &configPb.HeaderValue{Key: HeaderTargetPod, RawValue: []byte("10.0.0.1:8000")}},
+					{Header: &configPb.HeaderValue{Key: "routing-strategy", RawValue: []byte("random")}},
+					{Header: &configPb.HeaderValue{Key: HeaderTargetPod, RawValue: []byte("test-pod")}},
+					{Header: &configPb.HeaderValue{Key: HeaderTargetPodIP, RawValue: []byte("10.0.0.1:8000")}},
 					{Header: &configPb.HeaderValue{Key: ":status", RawValue: []byte("500")}},
 				},
 			},
