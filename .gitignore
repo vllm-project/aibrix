@@ -30,6 +30,9 @@ __pycache__
 *.xml
 .*.pid
 
+# Node.js
+node_modules/
+dist/
 # Python virtual environment directory
 .venv
 
