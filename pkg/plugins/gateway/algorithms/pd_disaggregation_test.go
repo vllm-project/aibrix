@@ -1337,12 +1337,12 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 				"pod1": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 5},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
+					metrics.KVCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 7},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 120},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.6},
+					metrics.KVCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.6},
 				},
 			},
 			expectTargetPod:        "",
@@ -1364,17 +1364,17 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 				"pod1": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 2},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.3},
+					metrics.KVCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.3},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 40},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 120},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.8},
+					metrics.KVCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.8},
 				},
 				"pod3": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 35},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 110},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.7},
+					metrics.KVCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.7},
 				},
 			},
 			expectTargetPod:        "pod1",
@@ -1395,12 +1395,12 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 				"pod1": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 10},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 50},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.4},
+					metrics.KVCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.4},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 12},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 3000},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
+					metrics.KVCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
 				},
 			},
 			expectTargetPod:        "pod1",
@@ -1421,12 +1421,12 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 				"pod1": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 0},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.2},
+					metrics.KVCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.2},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 5},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 120},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.3},
+					metrics.KVCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.3},
 				},
 			},
 			expectTargetPod:        "pod1",
@@ -1463,12 +1463,12 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 				"pod1": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 5},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.95},
+					metrics.KVCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.95},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 7},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 120},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 1.0},
+					metrics.KVCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 1.0},
 				},
 			},
 			expectTargetPod:        "",
@@ -1741,7 +1741,7 @@ func TestFilterPrefillDecodePods_CombinedPickImbalance(t *testing.T) {
 				metrics.DrainRate1m:                     &metrics.PrometheusMetricValue{Result: &drain100},
 				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 1},
 				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
-				metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
+				metrics.KVCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
 			}
 			metricsMap[combined.Name] = map[string]metrics.MetricValue{
 				metrics.NumRequestsWaiting:          &metrics.SimpleMetricValue{Value: tt.combinedWait},

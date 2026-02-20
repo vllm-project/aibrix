@@ -329,7 +329,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		}
 		maxThroughput = math.Max(maxThroughput, throughput)
 
-		gpuUsage, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.GPUCacheUsagePerc)
+		gpuUsage, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc)
 		if err != nil {
 			gpuUsage = &metrics.SimpleMetricValue{Value: 0}
 		}

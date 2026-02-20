@@ -120,7 +120,7 @@ check its logs in this way.
 
     kubectl logs <aibrix-controller-manager-podname> -n aibrix-system -f
 
-Expected log output. You can see the current metric is gpu_cache_usage_perc. You can check each pod's current metric value.
+Expected log output. You can see the current metric is kv_cache_usage_perc. You can check each pod's current metric value.
 
 .. image:: ../../assets/images/autoscaler/aibrix-controller-manager-output.png
    :alt: AiBrix controller manager output

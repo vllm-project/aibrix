@@ -15,7 +15,7 @@ spec:
       protocolType: http
       port: '8000'
       path: /metrics
-      targetMetric: gpu_cache_usage_perc
+      targetMetric: kv_cache_usage_perc
       targetValue: '50'
   scaleTargetRef:
     apiVersion: apps/v1

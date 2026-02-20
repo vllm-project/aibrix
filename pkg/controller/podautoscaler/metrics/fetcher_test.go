@@ -48,7 +48,7 @@ func TestRestMetricsFetcher_FetchPodMetrics(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, err := expfmt.MetricFamilyToText(w, &dto.MetricFamily{
-			Name: ptr.To("vllm:gpu_cache_usage_perc"),
+			Name: ptr.To("vllm:kv_cache_usage_perc"),
 			Type: dto.MetricType_GAUGE.Enum(),
 			Metric: []*dto.Metric{
 				{
@@ -84,7 +84,7 @@ func TestRestMetricsFetcher_FetchPodMetrics(t *testing.T) {
 	}
 	source := autoscalingv1alpha1.MetricSource{
 		MetricSourceType: autoscalingv1alpha1.POD,
-		TargetMetric:     "gpu_cache_usage_perc",
+		TargetMetric:     "kv_cache_usage_perc",
 		Port:             port,
 	}
 
