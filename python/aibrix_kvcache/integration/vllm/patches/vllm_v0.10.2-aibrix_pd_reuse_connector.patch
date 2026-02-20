@@ -13,10 +13,10 @@ index bc81d5b04..2f64fc0e9 100644
 +    ".aibrix_pd_reuse_connector", "AIBrixPDReuseConnector")
 diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_pd_reuse_connector.py b/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_pd_reuse_connector.py
 new file mode 100644
-index 000000000..9eee4985b
+index 000000000..a7f4553bd
 --- /dev/null
 +++ b/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_pd_reuse_connector.py
-@@ -0,0 +1,1226 @@
+@@ -0,0 +1,1387 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""
@@ -132,20 +132,60 @@ index 000000000..9eee4985b
 +    context_slot_mapping: Optional[torch.Tensor] = None
 +    context_slot_mapping_offset: int = 0
 +
-+    def __init__(self, prompt_len: int) -> None:
-+        self.context_tokens = np.empty(prompt_len, dtype=np.int32)
-+        self.context_slot_mapping = torch.empty(
-+            prompt_len,
++    # For unaligned tail support
++    cache_block_ntokens: int = 0
++    padding_token_id: int = -1
++
++    def __init__(
++        self, prompt_len: int, cache_block_ntokens: int = 0
++    ) -> None:
++        assert cache_block_ntokens > 0, (
++            "cache_block_ntokens must be > 0 to pre-allocate aligned size"
++        )
++
++        aligned_prompt_len = round_up(prompt_len, cache_block_ntokens)
++
++        self.context_tokens = np.empty(aligned_prompt_len, dtype=np.int32)
++        self.context_slot_mapping = torch.full(
++            (aligned_prompt_len,),
++            -1,
 +            dtype=torch.long,
 +            device="cuda",
 +        )
++        self.cache_block_ntokens = cache_block_ntokens
++        self.padding_token_id = -1
 +
 +    def get_context_tokens(self) -> list[int]:
 +        return self.context_tokens[:self.context_tokens_offset]
 +
 +    def get_context_tokens_view(self) -> TokenListView:
++        """
++        Get context tokens view, aligned to block boundary.
++
++        Returns:
++            TokenListView: May contain padding tokens if tail is unaligned.
++        """
++        actual_len = self.context_tokens_offset
++
++        aligned_len = round_up(actual_len, self.cache_block_ntokens)
++
++        if actual_len == aligned_len:
++            tokens_to_view = self.context_tokens[:actual_len]
++        else:
++            assert aligned_len <= len(self.context_tokens), (
++                f"Aligned length exceeds pre-allocated size: "
++                f"aligned_len={aligned_len}, "
++                f"allocated_size={len(self.context_tokens)}. "
++            )
++
++            self.context_tokens[actual_len:aligned_len] = (
++                self.padding_token_id
++            )
++
++            tokens_to_view = self.context_tokens[:aligned_len]
++
 +        if self.context_tokens_view is None:
-+            self.context_tokens_view = TokenListView(self.get_context_tokens())
++            self.context_tokens_view = TokenListView(list(tokens_to_view))
 +        return self.context_tokens_view
 +
 +    def extend(
@@ -156,8 +196,16 @@ index 000000000..9eee4985b
 +        if tokens:
 +            offset = tokens[0]
 +            length = len(tokens[1])
++            new_offset = offset + length
++
++            assert new_offset <= len(self.context_tokens), (
++                f"Data exceeds pre-allocated size: new_offset={new_offset}, "
++                f"allocated_size={len(self.context_tokens)}. "
++                f"This should not happen if __init__ pre-allocated correctly."
++            )
++
 +            self.context_tokens[offset:offset + length] = tokens[1]
-+            self.context_tokens_offset = offset + length
++            self.context_tokens_offset = new_offset
 +            self.context_tokens_view = None
 +
 +        if slot_mapping is None:
@@ -760,12 +808,17 @@ index 000000000..9eee4985b
 +        for req_id, meta in metadata.items():
 +            if req_id not in self._meta_cache:
 +                self._meta_cache[req_id] = AIBrixPDReuseConnectorCachedMeta(
-+                    meta.prompt_len)
++                    meta.prompt_len,
++                    cache_block_ntokens=self.cache_block_ntokens
++                )
 +            elif meta.resumed_from_preemption:
 +                self._meta_cache[req_id].context_slot_mapping_offset = 0
 +                self._meta_cache[req_id].context_slot_mapping.zero_()
 +
 +            seq_meta_cache = self._meta_cache[req_id]
++            assert seq_meta_cache.cache_block_ntokens > 0, (
++                "cache_block_ntokens should be set in __init__"
++            )
 +            seq_meta_cache.extend(meta.seq_token_ids, meta.seq_slot_mapping)
 +
 +    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]) -> None:
@@ -833,11 +886,18 @@ index 000000000..9eee4985b
 +        for seq_request_id, num_fetched_tokens in stats.items():
 +            seq_request_meta = metadata[seq_request_id]
 +            # Update seq_request_meta
-+            seq_request_meta.query_len -= num_fetched_tokens
-+            seq_request_meta.context_len += num_fetched_tokens
++            # Cap num_fetched_tokens to query_len to prevent negative query_len.
++            original_query_len = seq_request_meta.query_len
++            actual_fetched_tokens = min(num_fetched_tokens, original_query_len)
++
++            seq_request_meta.query_len -= actual_fetched_tokens
++            seq_request_meta.context_len += actual_fetched_tokens
 +            seq_request_meta.state = (
 +                AIBrixPDReuseConnectorRequestState.WAITING_FOR_SEND
 +            )
++
++            # Update stats to reflect the actual fetched tokens
++            stats[seq_request_id] = actual_fetched_tokens
 +
 +        return stats
 +
@@ -851,6 +911,8 @@ index 000000000..9eee4985b
 +        """
 +        seq_request_id = seq_request_meta.req_id
 +        seq_cached_meta = self._meta_cache[seq_request_id]
++
++        # Aligned view
 +        seq_all_tokens = seq_cached_meta.get_context_tokens_view()
 +        assert seq_all_tokens is not None, "seq_all_tokens is None"
 +        seq_context_len = seq_request_meta.context_len
@@ -864,14 +926,23 @@ index 000000000..9eee4985b
 +            self.cache_block_ntokens
 +        )
 +        actual_query_len = seq_context_len + query_len - aligned_context_len
-+        aligned_query_len = round_down(
-+            actual_query_len,
-+            self.cache_block_ntokens
-+        )
++
++        actual_prompt_len = prompt_len
++        aligned_prompt_len = round_up(prompt_len, self.cache_block_ntokens)
++        has_unaligned_tail = (actual_prompt_len < aligned_prompt_len)
++
++        # Calculate query length to load (including unaligned tail if exists)
++        if has_unaligned_tail:
++            aligned_query_len = aligned_prompt_len - aligned_context_len
++        else:
++            aligned_query_len = round_down(
++                actual_query_len, self.cache_block_ntokens
++            )
++
 +        shift_len = seq_context_len - aligned_context_len
 +
-+        assert prompt_len >= aligned_context_len + aligned_query_len, \
-+            f"{prompt_len}<{aligned_context_len}+{aligned_query_len}"
++        assert aligned_prompt_len >= aligned_context_len + aligned_query_len, \
++            f"{aligned_prompt_len}<{aligned_context_len}+{aligned_query_len}"
 +
 +        prefix = seq_all_tokens[:aligned_context_len]
 +        tokens = seq_all_tokens[
@@ -902,14 +973,10 @@ index 000000000..9eee4985b
 +            ):
 +                return 0  # Skip loading, decoder will handle it
 +        elif is_decoder_with_remote_prefill:
-+            # Decoder: Always try to load from SHFS if exists (this is the main
-+            # path for PD disaggregation)
-+            if (
-+                exists_status.is_ok() and
-+                num_existing_tokens >= aligned_query_len
-+            ):
-+                # Continue to acquire (will load from SHFS)
-+                pass
++            # Decoder: Always try to load from SHFS if exists (this is the
++            # main path for PD disaggregation)
++            # Continue to acquire (will load from SHFS) if cache exists
++            pass
 +        else:
 +            # KV cache reuse only (no PD disaggregation): Use threshold to
 +            # avoid loading very small chunks
@@ -920,12 +987,6 @@ index 000000000..9eee4985b
 +            if aligned_query_len < threshold:
 +                return 0
 +            # For kvcache reuse, proceed to load if exists
-+            if (
-+                exists_status.is_ok() and
-+                num_existing_tokens >= aligned_query_len
-+            ):
-+                # KV cache reuse, entire cache exists
-+                pass
 +
 +        seq_recv_len = 0
 +        for (
@@ -957,11 +1018,49 @@ index 000000000..9eee4985b
 +            num_fetched_tokens, handle = status.value
 +            kv_blocks = handle.to_tensors()
 +
-+            offset = len(chunk_prefix)
-+            length = num_fetched_tokens
++            # Relative to aligned_context_len, not the length of chunk_prefix
++            offset = len(chunk_prefix) - aligned_context_len
++
++            chunk_start_in_prompt = aligned_context_len + offset
++            chunk_end_in_prompt = chunk_start_in_prompt + num_fetched_tokens
++
++            if chunk_end_in_prompt > actual_prompt_len:
++                actual_chunk_len = actual_prompt_len - chunk_start_in_prompt
++                padding_len = num_fetched_tokens - actual_chunk_len
++            else:
++                actual_chunk_len = num_fetched_tokens
++                padding_len = 0
++
++            slot_mapping_end = chunk_start_in_prompt + num_fetched_tokens
 +
 +            chunk_slot_mapping = seq_cached_meta.context_slot_mapping[
-+                offset:offset + length]
++                chunk_start_in_prompt:slot_mapping_end
++            ]
++
++            # Verify padding slots are set correctly (beyond actual_prompt_len)
++            actual_slot_mapping_end = min(
++                chunk_start_in_prompt + actual_chunk_len,
++                slot_mapping_end
++            )
++            if actual_slot_mapping_end < slot_mapping_end:
++                padding_start_idx = (
++                    actual_slot_mapping_end - chunk_start_in_prompt
++                )
++                if padding_start_idx < len(chunk_slot_mapping):
++                    chunk_slot_mapping[padding_start_idx:].fill_(-1)
++
++            if len(chunk_slot_mapping) > 0:
++                num_valid_slots = (chunk_slot_mapping >= 0).sum().item()
++                if num_valid_slots == 0:
++                    # Skip kernel call
++                    increment = num_fetched_tokens - shift_len
++                    seq_recv_len += increment
++                    shift_len = 0
++                    handle.release()
++                    if num_fetched_tokens < len(chunk_tokens):
++                        # Didn't receive all tokens for current chunk, break
++                        break
++                    continue
 +
 +            with perf_timer() as get_kernel_onload_dur_ms:
 +                reshape_and_cache_multi_layer(
@@ -976,7 +1075,8 @@ index 000000000..9eee4985b
 +                )
 +
 +            # Update recv_len
-+            seq_recv_len += num_fetched_tokens - shift_len
++            increment = num_fetched_tokens - shift_len
++            seq_recv_len += increment
 +            # Reset shift_len
 +            shift_len = 0
 +
@@ -1029,6 +1129,8 @@ index 000000000..9eee4985b
 +        seq_request_id = seq_request_meta.req_id
 +        seq_context_len = seq_request_meta.context_len
 +        seq_cached_meta = self._meta_cache[seq_request_id]
++
++        # Aligned view
 +        seq_all_tokens = seq_cached_meta.get_context_tokens_view()
 +        assert seq_all_tokens is not None, "seq_all_tokens is None"
 +        prompt_len = seq_request_meta.prompt_len
@@ -1040,13 +1142,21 @@ index 000000000..9eee4985b
 +            self.cache_block_ntokens
 +        )
 +        actual_query_len = seq_context_len + query_len - aligned_context_len
-+        aligned_query_len = round_down(
-+            actual_query_len,
-+            self.cache_block_ntokens
-+        )
 +
-+        assert prompt_len >= aligned_context_len + aligned_query_len, \
-+            f"{prompt_len}<{aligned_context_len}+{aligned_query_len}"
++        actual_prompt_len = prompt_len
++        aligned_prompt_len = round_up(prompt_len, self.cache_block_ntokens)
++        has_unaligned_tail = (actual_prompt_len < aligned_prompt_len)
++
++        # Calculate query length to save (including unaligned tail if exists)
++        if has_unaligned_tail:
++            aligned_query_len = aligned_prompt_len - aligned_context_len
++        else:
++            aligned_query_len = round_down(
++                actual_query_len, self.cache_block_ntokens
++            )
++
++        assert aligned_prompt_len >= aligned_context_len + aligned_query_len, \
++            f"{aligned_prompt_len}<{aligned_context_len}+{aligned_query_len}"
 +
 +        prefix = seq_all_tokens[:aligned_context_len]
 +        tokens = seq_all_tokens[
@@ -1061,8 +1171,19 @@ index 000000000..9eee4985b
 +                all,
 +        ) in self.cache.cache_chunk_keys(prefix, tokens):
 +            chunk_size = len(chunk_tokens)
-+            offset = len(chunk_prefix)
++            # Relative to aligned_context_len, not the length of chunk_prefix
++            offset = len(chunk_prefix) - aligned_context_len
 +            length = chunk_size
++
++            chunk_start_in_prompt = aligned_context_len + offset
++            chunk_end_in_prompt = chunk_start_in_prompt + chunk_size
++
++            if chunk_end_in_prompt > actual_prompt_len:
++                actual_chunk_len = actual_prompt_len - chunk_start_in_prompt
++                padding_len = chunk_size - actual_chunk_len
++            else:
++                actual_chunk_len = chunk_size
++                padding_len = 0
 +
 +            # Check if already exists in cache
 +            exists_status = self.cache.exists(chunk_prefix, chunk_tokens)
@@ -1070,17 +1191,26 @@ index 000000000..9eee4985b
 +                num_existing_tokens = exists_status.value
 +                if chunk_size - num_existing_tokens < self.cache_block_ntokens:
 +                    continue
-+                else:
-+                    # Partially exists
-+                    offset += num_existing_tokens
-+                    length -= num_existing_tokens
-+                    new_chunk_prefix_len = (
-+                        len(chunk_prefix) + num_existing_tokens
++
++                # Partially exists
++                offset += num_existing_tokens
++                actual_chunk_len -= num_existing_tokens
++                # Recalculate padding_len after partial exists
++                new_chunk_size = chunk_size - num_existing_tokens
++                if padding_len > 0:
++                    # Recalculate padding_len for remaining chunk
++                    remaining_in_prompt = (
++                        actual_prompt_len - chunk_start_in_prompt -
++                        num_existing_tokens
 +                    )
-+                    chunk_prefix = all[:new_chunk_prefix_len]
-+                    chunk_tokens = all[
-+                        new_chunk_prefix_len:new_chunk_prefix_len + length
-+                    ]
++                    padding_len = new_chunk_size - remaining_in_prompt
++                    actual_chunk_len = remaining_in_prompt
++                new_chunk_prefix_len = len(chunk_prefix) + num_existing_tokens
++                chunk_prefix = all[:new_chunk_prefix_len]
++                chunk_tokens = all[
++                    new_chunk_prefix_len:new_chunk_prefix_len + new_chunk_size
++                ]
++                chunk_size = new_chunk_size
 +
 +            # Allocate space for KV caches
 +            status = self.cache.allocate_for(chunk_prefix, chunk_tokens)
@@ -1090,10 +1220,39 @@ index 000000000..9eee4985b
 +                break
 +            handle = status.value
 +            tensors = handle.to_tensors()
-+            length = len(tensors) * self.cache_block_ntokens
++            allocated_length = len(tensors) * self.cache_block_ntokens
++
++            actual_chunk_start = aligned_context_len + offset
++            slot_mapping_end = actual_chunk_start + allocated_length
 +
 +            chunk_slot_mapping = seq_cached_meta.context_slot_mapping[
-+                offset:offset + length]
++                actual_chunk_start:slot_mapping_end
++            ]
++
++            # Verify padding slots are set correctly (beyond actual_prompt_len)
++            actual_slot_mapping_end = min(
++                actual_chunk_start + actual_chunk_len,
++                slot_mapping_end
++            )
++            if actual_slot_mapping_end < slot_mapping_end:
++                padding_start_idx = actual_slot_mapping_end - actual_chunk_start
++                if padding_start_idx < len(chunk_slot_mapping):
++                    chunk_slot_mapping[padding_start_idx:].fill_(-1)
++
++            if len(chunk_slot_mapping) > 0:
++                num_valid_slots = (chunk_slot_mapping >= 0).sum().item()
++                if num_valid_slots == 0:
++                    # Skip kernel call
++                    status = self.cache.put(
++                        chunk_prefix, chunk_tokens[:allocated_length], handle
++                    )
++                    if not status.is_ok():
++                        log_every_n_seconds(
++                            logger, logging.ERROR,
++                            f"Failed to put empty chunk to cache: %s", 3,
++                            str(status)
++                        )
++                    continue
 +
 +            with perf_timer() as get_kernel_offload_dur_ms:
 +                reshape_and_offload_multi_layer(
@@ -1108,7 +1267,9 @@ index 000000000..9eee4985b
 +                )
 +
 +            # Put KV caches to KVCacheManager (L2 cache, e.g., SHFS)
-+            status = self.cache.put(chunk_prefix, chunk_tokens[:length], handle)
++            status = self.cache.put(
++                chunk_prefix, chunk_tokens[:allocated_length], handle
++            )
 +            if not status.is_ok():
 +                log_every_n_seconds(logger, logging.ERROR,
 +                                    f"Failed to put to KVCacheManager: %s",
@@ -1117,7 +1278,7 @@ index 000000000..9eee4985b
 +
 +            put_ntokens = status.get()
 +            total_sent += put_ntokens
-+            if put_ntokens != length:
++            if put_ntokens != allocated_length:
 +                break
 +
 +
