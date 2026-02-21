@@ -43,10 +43,10 @@ For example,
 There are two plots that you can plot.
 
 ### Generating report
-`python <aibrix_root_repo>/benchmarks/plot/plot-everything.py <experiment_home_dir>`
+`python plot-everything.py <experiment_home_dir>`
 
 For example, 
-`python <aibrix_root_repo>/benchmarks/plot/plot-everything.py experiment_results/25min_test`
+`python plot-everything.py experiment_results/25min_test`
 
 The directories should look like
 ```bash
