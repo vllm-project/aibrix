@@ -262,7 +262,7 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 
 	annotations := map[string]string{
 		"prometheus.io/scrape": "true",
-		"prometheus.io/port":   strconv.Itoa(params.AdminPort),
+		"prometheus.io/port":   strconv.Itoa(2112),
 		"prometheus.io/path":   "/metrics",
 	}
 	rdmaKey := corev1.ResourceName("vke.volcengine.com/rdma")
@@ -284,6 +284,8 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 		"-v", "$AIBRIX_KVCACHE_BLOCK_SIZE_IN_BYTES",
 		"-b", "$AIBRIX_KVCACHE_BLOCK_COUNT",
 		"--acl", "any",
+		"-A", "$AIBRIX_KVCACHE_RDMA_IP",
+		"-P", "$AIBRIX_KVCACHE_ADMIN_PORT",
 	}
 	kvCacheServerArgsStr := strings.Join(kvCacheServerArgs, " ")
 	privileged := false // let's use fine-grained permission
@@ -357,6 +359,28 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 									MountPath: "/dev/shm",
 								},
 							},
+						},
+						{
+							Name:            "kvcache-hpkv-monitor-agent",
+							Image:           kvCache.Spec.HpkvMonitorAgent.Image,
+							ImagePullPolicy: corev1.PullPolicy(kvCache.Spec.HpkvMonitorAgent.ImagePullPolicy),
+							Command: []string{
+								"/bin/bash",
+								"-c",
+								`
+								RDMA_IP=$(ip addr show dev eth1 | grep 'inet ' | awk '{print $2}' | awk -F/ '{print $1}')
+								echo "Using RDMA IP: $RDMA_IP"
+								./monitor_agent --hpkvAddr=$RDMA_IP
+								`,
+							},
+							Ports: []corev1.ContainerPort{
+								{
+									Name:          "hpkv",
+									ContainerPort: int32(2112),
+									Protocol:      corev1.ProtocolTCP,
+								},
+							},
+							Resources: kvCache.Spec.HpkvMonitorAgent.Resources,
 						},
 					},
 					Volumes: []corev1.Volume{
