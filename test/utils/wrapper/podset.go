@@ -187,3 +187,9 @@ func (w *PodSetWrapper) ProgressingCondition(status corev1.ConditionStatus, reas
 	}
 	return w.AddCondition(condition)
 }
+
+// AddPodSetSchedulingStrategy sets the SchedulingStrategy of the podSet
+func (w *PodSetWrapper) AddPodSetSchedulingStrategy(ss *orchestrationapi.SchedulingStrategy) *PodSetWrapper {
+	w.podSet.Spec.SchedulingStrategy = ss
+	return w
+}
