@@ -490,3 +490,179 @@ func TestSortRolesByUpgradeOrder(t *testing.T) {
 		})
 	}
 }
+
+func TestIsRoleDependenciesReady(t *testing.T) {
+	tests := []struct {
+		name     string
+		roleSet  *orchestrationv1alpha1.RoleSet
+		role     *orchestrationv1alpha1.RoleSpec
+		expected bool
+	}{
+		{
+			name: "no dependencies",
+			role: &orchestrationv1alpha1.RoleSpec{
+				Name: "A",
+			},
+			roleSet:  &orchestrationv1alpha1.RoleSet{},
+			expected: true,
+		},
+		{
+			name: "dependency ready (explicit replicas=2, ready=2)",
+			role: &orchestrationv1alpha1.RoleSpec{
+				Name:         "B",
+				Dependencies: []string{"A"},
+			},
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				Spec: orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{
+						{Name: "A", Replicas: int32Ptr(2)},
+					},
+				},
+				Status: orchestrationv1alpha1.RoleSetStatus{
+					Roles: []orchestrationv1alpha1.RoleStatus{
+						{Name: "A", ReadyReplicas: 2},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "dependency not ready (replicas=2, ready=1)",
+			role: &orchestrationv1alpha1.RoleSpec{
+				Name:         "B",
+				Dependencies: []string{"A"},
+			},
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				Spec: orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{
+						{Name: "A", Replicas: int32Ptr(2)},
+					},
+				},
+				Status: orchestrationv1alpha1.RoleSetStatus{
+					Roles: []orchestrationv1alpha1.RoleStatus{
+						{Name: "A", ReadyReplicas: 1},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "dependency with nil Replicas (defaults to 1), ready=1",
+			role: &orchestrationv1alpha1.RoleSpec{
+				Name:         "B",
+				Dependencies: []string{"A"},
+			},
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				Spec: orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{
+						{Name: "A"}, // Replicas is nil
+					},
+				},
+				Status: orchestrationv1alpha1.RoleSetStatus{
+					Roles: []orchestrationv1alpha1.RoleStatus{
+						{Name: "A", ReadyReplicas: 1},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "dependency with nil Replicas, ready=0",
+			role: &orchestrationv1alpha1.RoleSpec{
+				Name:         "B",
+				Dependencies: []string{"A"},
+			},
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				Spec: orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{
+						{Name: "A"},
+					},
+				},
+				Status: orchestrationv1alpha1.RoleSetStatus{
+					Roles: []orchestrationv1alpha1.RoleStatus{
+						{Name: "A", ReadyReplicas: 0},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "dependency missing in status (treated as 0 ready)",
+			role: &orchestrationv1alpha1.RoleSpec{
+				Name:         "B",
+				Dependencies: []string{"A"},
+			},
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				Spec: orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{
+						{Name: "A", Replicas: int32Ptr(1)},
+						{Name: "B"},
+					},
+				},
+				Status: orchestrationv1alpha1.RoleSetStatus{
+					Roles: []orchestrationv1alpha1.RoleStatus{
+						// A is missing in status!
+						{Name: "B", ReadyReplicas: 1},
+					},
+				},
+			},
+			expected: false, // because A's ready = 0 (not in status)
+		},
+		{
+			name: "multiple dependencies, all ready",
+			role: &orchestrationv1alpha1.RoleSpec{
+				Name:         "C",
+				Dependencies: []string{"A", "B"},
+			},
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				Spec: orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{
+						{Name: "A", Replicas: int32Ptr(1)},
+						{Name: "B", Replicas: int32Ptr(3)},
+						{Name: "C"},
+					},
+				},
+				Status: orchestrationv1alpha1.RoleSetStatus{
+					Roles: []orchestrationv1alpha1.RoleStatus{
+						{Name: "A", ReadyReplicas: 1},
+						{Name: "B", ReadyReplicas: 3},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "multiple dependencies, one not ready",
+			role: &orchestrationv1alpha1.RoleSpec{
+				Name:         "C",
+				Dependencies: []string{"A", "B"},
+			},
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				Spec: orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{
+						{Name: "A", Replicas: int32Ptr(1)},
+						{Name: "B", Replicas: int32Ptr(3)},
+						{Name: "C"},
+					},
+				},
+				Status: orchestrationv1alpha1.RoleSetStatus{
+					Roles: []orchestrationv1alpha1.RoleStatus{
+						{Name: "A", ReadyReplicas: 1},
+						{Name: "B", ReadyReplicas: 2}, // only 2/3 ready
+					},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isRoleDependenciesReady(tt.roleSet, tt.role)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// Helper
+func int32Ptr(i int32) *int32 { return &i }

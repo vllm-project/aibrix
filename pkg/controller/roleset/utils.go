@@ -436,3 +436,35 @@ func sortRolesByUpgradeOrder(roles []orchestrationv1alpha1.RoleSpec) []orchestra
 	})
 	return sortedRoles
 }
+
+func isRoleDependenciesReady(roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) bool {
+	if len(role.Dependencies) == 0 {
+		return true
+	}
+
+	// Initialize all roles to 0
+	roleStatusMap := make(map[string]int32)
+	for _, r := range roleSet.Spec.Roles {
+		roleStatusMap[r.Name] = 0
+	}
+	for _, rs := range roleSet.Status.Roles {
+		roleStatusMap[rs.Name] = rs.ReadyReplicas
+	}
+
+	for _, depName := range role.Dependencies {
+		depReady := roleStatusMap[depName]
+		expected := int32(1)
+		for _, r := range roleSet.Spec.Roles {
+			if r.Name == depName && r.Replicas != nil {
+				expected = *r.Replicas
+				break
+			}
+		}
+		if depReady < expected {
+			klog.V(4).Infof("Role %s depends on %s, "+
+				"but only %d/%d ready", role.Name, depName, depReady, expected)
+			return false
+		}
+	}
+	return true
+}

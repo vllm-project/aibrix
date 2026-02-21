@@ -150,6 +150,30 @@ type RoleSpec struct {
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// Dependencies specifies the list of role names that must be ready before this role starts or is updated.
+	// This is used to define a dependency graph between different roles, ensuring correct ordering during
+	// both initial scale-up and rolling updates. Each element in the slice should correspond to the name
+	// of another role defined within the same StormService specification.
+	//
+	// For example, if RoleA depends on RoleB and RoleC, then RoleA's Dependencies would look like:
+	// Dependencies: []string{"RoleB", "RoleC"}
+	//
+	// - **During scale-up (initial startup or scaling from zero):**
+	//   RoleA will not begin creating Pods until all its dependencies (e.g., RoleB and RoleC) have reached
+	//   their desired number of ready replicas.
+	//
+	// - **During rolling updates:**
+	//   RoleA will not proceed to update its existing Pods if any of its dependencies are not currently ready.
+	//   This includes cases where a dependency is failing, has zero ready replicas, or is itself undergoing an update.
+	//   Note: Controller  **does not automatically trigger updates** on dependent roles (e.g., RoleB or RoleC).
+	//   It only checks whether they are currently ready. You must explicitly update dependencies if needed.
+	//
+	// In both cases, if a dependency becomes unready at any time, RoleA’s scale-up or rollout will be paused
+	// until all dependencies are satisfied again.
+	//
+	// +optional
+	Dependencies []string `json:"dependencies,omitempty"`
+
 	// UpgradeOrder specifies the order in which this role should be upgraded.
 	// Lower values are upgraded first. If not specified, roles upgrade after all explicitly ordered roles.
 	// +optional
