@@ -105,14 +105,15 @@ func buildEngineLabel(metricValue metrics.MetricValue) ([]string, []string) {
 func mergeLabelPairs(primaryNames, primaryValues, secondaryNames, secondaryValues []string) ([]string, []string) {
 	pLen := len(primaryNames)
 	if len(primaryValues) < pLen {
+		klog.Warningf("primary labels length mismatch: names=%d, values=%d", pLen, len(primaryValues))
 		pLen = len(primaryValues)
 	}
 	sLen := len(secondaryNames)
 	if len(secondaryValues) < sLen {
+		klog.Warningf("secondary labels length mismatch: names=%d, values=%d", sLen, len(secondaryValues))
 		sLen = len(secondaryValues)
 	}
 
-	// secondary last-wins，同时记录“首次出现顺序”用于稳定输出
 	secondaryMap := make(map[string]string, sLen)
 	secondaryOrder := make([]string, 0, sLen)
 	for i := 0; i < sLen; i++ {
