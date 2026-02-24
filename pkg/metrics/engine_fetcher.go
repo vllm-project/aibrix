@@ -295,11 +295,11 @@ func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto
 	if metric.MetricType.IsRawMetric() {
 		switch metric.MetricType.Raw {
 		case Gauge, Counter:
-			value, err := GetCounterGaugeValue(firstMetric, metricFamily.GetType())
+			simpleValue, err := GetCounterGaugeValue(firstMetric, metricFamily.GetType())
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse counter/gauge metric %s: %v", rawMetricName, err)
 			}
-			return &SimpleMetricValue{Value: value}, nil
+			return simpleValue, nil
 
 		case Histogram:
 			histValue, err := GetHistogramValue(firstMetric)

@@ -19,6 +19,7 @@ package cache
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -74,6 +75,93 @@ func buildMetricLabels(pod *Pod, engineType string, model string) ([]string, []s
 		os.Getenv("POD_NAME"),
 	}
 	return labelNames, labelValues
+}
+
+func buildEngineLabel(metricValue metrics.MetricValue) ([]string, []string) {
+	if metricValue == nil {
+		return nil, nil
+	}
+
+	labelValueMap := metricValue.GetLabelValues()
+	if len(labelValueMap) == 0 {
+		return nil, nil
+	}
+
+	keys := make([]string, 0, len(labelValueMap))
+	for k := range labelValueMap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	engineLabelName := make([]string, 0, len(keys))
+	engineLabelValue := make([]string, 0, len(keys))
+	for _, k := range keys {
+		engineLabelName = append(engineLabelName, k)
+		engineLabelValue = append(engineLabelValue, labelValueMap[k])
+	}
+	return engineLabelName, engineLabelValue
+}
+
+func mergeLabelPairs(primaryNames, primaryValues, secondaryNames, secondaryValues []string) ([]string, []string) {
+	pLen := len(primaryNames)
+	if len(primaryValues) < pLen {
+		pLen = len(primaryValues)
+	}
+	sLen := len(secondaryNames)
+	if len(secondaryValues) < sLen {
+		sLen = len(secondaryValues)
+	}
+
+	// secondary last-wins，同时记录“首次出现顺序”用于稳定输出
+	secondaryMap := make(map[string]string, sLen)
+	secondaryOrder := make([]string, 0, sLen)
+	for i := 0; i < sLen; i++ {
+		n := secondaryNames[i]
+		if n == "" {
+			continue
+		}
+		if _, exists := secondaryMap[n]; !exists {
+			secondaryOrder = append(secondaryOrder, n)
+		}
+		secondaryMap[n] = secondaryValues[i] // last-wins
+	}
+
+	outNames := make([]string, 0, pLen+len(secondaryOrder))
+	outValues := make([]string, 0, pLen+len(secondaryOrder))
+	seen := make(map[string]struct{}, pLen+len(secondaryOrder))
+
+	// primary first, but allow secondary override
+	for i := 0; i < pLen; i++ {
+		n := primaryNames[i]
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		v := primaryValues[i]
+		if sv, ok := secondaryMap[n]; ok {
+			v = sv
+		}
+		outNames = append(outNames, n)
+		outValues = append(outValues, v)
+	}
+
+	// then add secondary-only labels (use map value to respect last-wins)
+	for _, n := range secondaryOrder {
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		outNames = append(outNames, n)
+		outValues = append(outValues, secondaryMap[n])
+	}
+
+	return outNames, outValues
 }
 
 func shouldSkipMetric(podName string, metricName string) bool {

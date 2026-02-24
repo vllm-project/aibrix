@@ -82,6 +82,7 @@ var (
 		metrics.RequestDecodeTimeSeconds,
 		metrics.RequestPrefillTimeSeconds,
 		metrics.HTTPRequestDurationSeconds,
+		metrics.PerStageReqLatencySeconds,
 		metrics.HTTPRequestDurationHighRSeconds,
 		metrics.RequestPromptTokens,
 		metrics.RequestGenerationTokens,
@@ -284,8 +285,9 @@ func (c *Store) worker(jobs <-chan *Pod) {
 					klog.V(4).InfoS("get metric per sec rate", "metric", rateMetricName, "raw_value", metricValue.GetSimpleValue(), "per_sec_rate", rateValue.GetSimpleValue())
 				}
 			}
-
-			metrics.EmitMetricToPrometheus(metric, metricValue, labelNames, labelValues)
+			engineLabelNames, engineLabelValues := buildEngineLabel(metricValue)
+			mergedNames, mergedValues := mergeLabelPairs(engineLabelNames, engineLabelValues, labelNames, labelValues)
+			metrics.EmitMetricToPrometheus(metric, metricValue, mergedNames, mergedValues)
 		}
 		// Update pod metrics using typed results
 		c.updatePodMetricsFromTypedResult(pod, result)
