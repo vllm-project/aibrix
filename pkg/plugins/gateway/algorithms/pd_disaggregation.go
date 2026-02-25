@@ -73,6 +73,9 @@ const (
 	// KV connector types for different backends
 	KVConnectorTypeSHFS = "shfs" // Default - AIBrix SHFS/KVCacheManager (GPU)
 	KVConnectorTypeNIXL = "nixl" // NIXL for Neuron (uses disagg_prefill_resp wrapper)
+
+	HeaderPrefillTargetPodIP = "prefill-target-pod-ip"
+	HeaderPrefillTargetPod   = "prefill-target-pod"
 )
 
 var (
@@ -172,6 +175,11 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 
 	if prefillPod != nil {
 		klog.InfoS("selected prefill/decode pods", "request_id", ctx.RequestID, "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)
+		if ctx.RespHeaders == nil {
+			ctx.RespHeaders = make(map[string]string)
+		}
+		ctx.RespHeaders[HeaderPrefillTargetPod] = prefillPod.Name
+		ctx.RespHeaders[HeaderPrefillTargetPodIP] = prefillPod.Status.PodIP
 		err = r.doPrefillRequest(ctx, prefillPod, llmEngine)
 		if err != nil {
 			metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
