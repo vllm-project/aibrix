@@ -324,7 +324,8 @@ void reshape_and_cache_multi_layer_impl(
           ? offload_kv_cache_block_shape[0]
           : offload_kv_cache_block_shape[2];
 
-  TORCH_CHECK(num_tokens ==
+  // offload_kv_cache_blocks may have padding tokens.
+  TORCH_CHECK(num_tokens <=
               offload_kv_cache_blocks.size() * offload_kv_cache_block_size);
 
   const int64_t num_layers = kv_caches.size();
