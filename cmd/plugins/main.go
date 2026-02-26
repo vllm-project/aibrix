@@ -36,7 +36,9 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/redissync"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"google.golang.org/grpc/health"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 	"sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
@@ -127,6 +129,14 @@ func main() {
 
 	gatewayServer := gateway.NewServer(redisClient, k8sClient, gatewayK8sClient)
 
+	redissyncEnabled := utils.LoadEnvBool("AIBRIX_REDISSYNC_ENABLED", false)
+	var redissyncManager *redissync.Manager
+	if redissyncEnabled {
+		redissyncManager = redissync.NewManager(redisClient)
+		redissyncManager.Register(prefixcacheindexer.NewPrefixHashTableSyncable(prefixcacheindexer.GetSharedPrefixHashTable()))
+		redissyncManager.Start()
+	}
+
 	if err := gatewayServer.StartMetricsServer(metricsAddr); err != nil {
 		klog.Fatalf("Failed to start metrics server: %v", err)
 	}
@@ -152,6 +162,9 @@ func main() {
 	go func() {
 		sig := <-gracefulStop
 		klog.Warningf("signal received: %v, initiating graceful shutdown...", sig)
+		if redissyncManager != nil {
+			redissyncManager.Stop()
+		}
 		gatewayServer.Shutdown()
 		s.GracefulStop()
 		os.Exit(0)

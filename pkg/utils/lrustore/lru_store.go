@@ -17,8 +17,12 @@ limitations under the License.
 package cache
 
 import (
+	"fmt"
 	"sync"
 	"time"
+
+	"github.com/vllm-project/aibrix/pkg/utils"
+	"k8s.io/klog/v2"
 )
 
 type getCurrentTime func() time.Time
@@ -52,6 +56,9 @@ func NewLRUStore[K comparable, V any](cap int, ttl, interval time.Duration, f ge
 	store.lruList.tail.prev = store.lruList.head
 
 	go store.startEviction()
+	if dumpInterval := utils.LoadEnvInt("AIBRIX_LRU_STORE_DEBUG_DUMP_INTERVAL_SECONDS", 30); dumpInterval > 0 {
+		go store.startDebugDump(time.Duration(dumpInterval) * time.Second)
+	}
 	return store
 }
 
@@ -61,6 +68,24 @@ func (e *LRUStore[K, V]) startEviction() {
 	for range ticker.C {
 		e.evict(e.getCurrentTime())
 	}
+}
+
+func (e *LRUStore[K, V]) startDebugDump(d time.Duration) {
+	ticker := time.NewTicker(d)
+	defer ticker.Stop()
+	for range ticker.C {
+		e.debugDump()
+	}
+}
+
+func (e *LRUStore[K, V]) debugDump() {
+	e.RLock()
+	defer e.RUnlock()
+	klog.InfoS("lru_store_dump_begin", "size", len(e.freeTable))
+	for k, ent := range e.freeTable {
+		klog.V(4).InfoS("lru_store_entry", "key", k, "value_str", fmt.Sprintf("%+v", ent.Value))
+	}
+	klog.InfoS("lru_store_dump_end", "size", len(e.freeTable))
 }
 
 func (e *LRUStore[K, V]) Put(key K, value V) bool {
@@ -103,6 +128,17 @@ func (e *LRUStore[K, V]) Len() int {
 	e.RLock()
 	defer e.RUnlock()
 	return len(e.freeTable)
+}
+
+// Range calls f for each key-value pair in the store; iteration stops if f returns false.
+func (e *LRUStore[K, V]) Range(f func(key K, value V) bool) {
+	e.RLock()
+	defer e.RUnlock()
+	for k, ent := range e.freeTable {
+		if !f(k, ent.Value) {
+			return
+		}
+	}
 }
 
 func (e *LRUStore[K, V]) evict(now time.Time) {
