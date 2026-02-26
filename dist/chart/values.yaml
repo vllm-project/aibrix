@@ -82,6 +82,7 @@ gatewayPlugin:
       AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT: "16"
       AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: "2"
       AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
+      AIBRIX_REDISSYNC_ENABLED: "false"
   dependencies:
     redis:
       host: "" # aibrix-redis-master
