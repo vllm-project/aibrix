@@ -248,12 +248,11 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			continue
 		}
 
-		podLabelNames, podLabelValues := buildMetricLabels(pod, engineType, "")
 		for metricName, metricValue := range result.Metrics {
 			if shouldSkipMetric(pod.Name, metricName) {
 				continue
 			}
-			metrics.EmitMetricToPrometheus(metricName, metricValue, podLabelNames, podLabelValues)
+			metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod.Pod, metricName, metricValue, metricValue.GetLabelValues())
 		}
 
 		for metricName, metricValue := range result.ModelMetrics {
@@ -268,8 +267,6 @@ func (c *Store) worker(jobs <-chan *Pod) {
 				continue
 			}
 
-			labelNames, labelValues := buildMetricLabels(pod, engineType, model)
-
 			var rateMetricName string
 			if strings.Contains(pod.Name, "prefill") && metric == metrics.PromptTokenTotal {
 				rateMetricName = metrics.AvgPromptThroughputToksPerS
@@ -280,14 +277,12 @@ func (c *Store) worker(jobs <-chan *Pod) {
 				perSecRate := c.calculatePerSecondRate(pod, model, metric, metricValue.GetSimpleValue())
 				if perSecRate >= 0 {
 					rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
-					metrics.SetGaugeMetric(rateMetricName, metrics.GetMetricHelp(rateMetricName), rateValue.GetSimpleValue(), labelNames, labelValues...)
+					metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, rateMetricName, rateValue, metricValue.GetLabelValues())
 					_ = c.updatePodRecord(pod, model, rateMetricName, metrics.PodModelMetricScope, rateValue)
 					klog.V(4).InfoS("get metric per sec rate", "metric", rateMetricName, "raw_value", metricValue.GetSimpleValue(), "per_sec_rate", rateValue.GetSimpleValue())
 				}
 			}
-			engineLabelNames, engineLabelValues := buildEngineLabel(metricValue)
-			mergedNames, mergedValues := mergeLabelPairs(engineLabelNames, engineLabelValues, labelNames, labelValues)
-			metrics.EmitMetricToPrometheus(metric, metricValue, mergedNames, mergedValues)
+			metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, metric, metricValue, metricValue.GetLabelValues())
 		}
 		// Update pod metrics using typed results
 		c.updatePodMetricsFromTypedResult(pod, result)
@@ -354,7 +349,7 @@ func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Met
 	// Querying metrics
 	result, warnings, err := c.prometheusApi.Query(ctx, query, time.Now())
 	if err != nil {
-		metrics.EmitCounterMetric(&types.RoutingContext{Model: modelName}, pod.Pod, metrics.PrometheusQueryFail, 1.0, nil)
+		metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: modelName}, pod.Pod, metrics.PrometheusQueryFail, &metrics.SimpleMetricValue{Value: 1.0}, nil)
 		// Skip this model fetching if an error is thrown
 		return fmt.Errorf("error executing query: %v", err)
 	}

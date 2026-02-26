@@ -136,8 +136,6 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 		return err
 	}
 
-	emitGatewayRequestTotalMetric(resp, st.model)
-
 	s.emitProcessMetrics(st, resp)
 	return s.sendProcessingResponse(srv, st, resp)
 }
@@ -278,6 +276,7 @@ func (s *Server) responseForResponseHeaderError(st *processState, resp *extProcP
 }
 
 func (s *Server) emitProcessMetrics(st *processState, resp *extProcPb.ProcessingResponse) {
+	s.emitGatewayRequestTotalMetric(resp, st.model)
 	if st.model == "" {
 		return
 	}
@@ -438,19 +437,17 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, headers
 }
 
 func (s *Server) emitMetricsCounterHelper(metricName, model, status, statusCode string) {
-	labelNames, labelValues := buildGatewayPodMetricLabels(model, status, statusCode)
-	metrics.IncrementCounterMetric(metricName, metrics.GetMetricHelp(metricName), 1.0, labelNames, labelValues...)
+	labels := buildGatewayPodMetricLabels(model, status, statusCode)
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, nil, metricName, &metrics.SimpleMetricValue{Value: 1.0}, labels)
 }
 
-func emitGatewayRequestTotalMetric(resp *extProcPb.ProcessingResponse, model string) {
+func (s *Server) emitGatewayRequestTotalMetric(resp *extProcPb.ProcessingResponse, model string) {
 	statusCode := "200"
 	if resp.GetImmediateResponse() != nil {
 		statusCode = fmt.Sprintf("%d", int(resp.GetImmediateResponse().Status.GetCode()))
 	}
-	if model == "" {
-		model = "unknown"
-	}
-	metrics.IncrementCounterMetric(metrics.GatewayRequestTotal, metrics.GetMetricHelp(metrics.GatewayRequestTotal), 1.0, []string{"pod_name", "code", "model"}, podName, statusCode, model)
+	labels := buildGatewayPodMetricLabels(model, "gateway_request_handled", statusCode)
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, nil, metrics.GatewayRequestTotal, &metrics.SimpleMetricValue{Value: 1.0}, labels)
 }
 
 func getMetricErr(resp *extProcPb.ImmediateResponse, metricLabel string) string {

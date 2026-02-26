@@ -589,20 +589,13 @@ func validateTokenInputs(tokenArrays [][]int64) error {
 	return nil
 }
 
-func buildGatewayPodMetricLabels(model, status, statusCode string) ([]string, []string) {
-	labelNames := []string{
-		"model",
-		"status",
-		"status_code",
-		"pod_name",
+func buildGatewayPodMetricLabels(model, status, statusCode string) map[string]string {
+	return map[string]string{
+		"model":       GetModelTag(model),
+		"status":      status,
+		"status_code": statusCode,
+		"pod_name":    POD_NAME,
 	}
-	labelValues := []string{
-		model,
-		status,
-		statusCode,
-		POD_NAME,
-	}
-	return labelNames, labelValues
 }
 
 func GetModelTag(model string) string {

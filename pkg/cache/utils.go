@@ -19,7 +19,6 @@ package cache
 import (
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -75,31 +74,6 @@ func buildMetricLabels(pod *Pod, engineType string, model string) ([]string, []s
 		os.Getenv("POD_NAME"),
 	}
 	return labelNames, labelValues
-}
-
-func buildEngineLabel(metricValue metrics.MetricValue) ([]string, []string) {
-	if metricValue == nil {
-		return nil, nil
-	}
-
-	labelValueMap := metricValue.GetLabelValues()
-	if len(labelValueMap) == 0 {
-		return nil, nil
-	}
-
-	keys := make([]string, 0, len(labelValueMap))
-	for k := range labelValueMap {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	engineLabelName := make([]string, 0, len(keys))
-	engineLabelValue := make([]string, 0, len(keys))
-	for _, k := range keys {
-		engineLabelName = append(engineLabelName, k)
-		engineLabelValue = append(engineLabelValue, labelValueMap[k])
-	}
-	return engineLabelName, engineLabelValue
 }
 
 func mergeLabelPairs(primaryNames, primaryValues, secondaryNames, secondaryValues []string) ([]string, []string) {

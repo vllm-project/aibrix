@@ -248,8 +248,8 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, targetPod *v
 	}
 	pBucket := tokenBucketLabel(promptTokens)
 	cBucket := tokenBucketLabel(completionTokens)
-	metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayPromptTokenBucketTotal, 1.0, map[string]string{"bucket": pBucket})
-	metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayCompletionTokenBucketTotal, 1.0, map[string]string{"bucket": cBucket})
+	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayPromptTokenBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": pBucket})
+	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayCompletionTokenBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": cBucket})
 
 	if targetPod != nil {
 		fields = append(fields,
@@ -260,7 +260,7 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, targetPod *v
 	ttft := arrival.Sub(routingCtx.RequestTime)
 	if routingCtx.Stream {
 		ttftBucket := durationBucketLabel(ttft)
-		metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayTTFTBucketTotal, 1.0, map[string]string{"bucket": ttftBucket})
+		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTTFTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": ttftBucket})
 	}
 
 	if routingCtx.Algorithm == "pd" {
@@ -275,12 +275,12 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, targetPod *v
 			"ttft", ttft,
 			"decode_time_taken", decodeTime,
 		)
-		metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayRoutingTimeBucketTotal, 1.0, map[string]string{"bucket": durationBucketLabel(routingTime)})
-		metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayPrefillTimeBucketTotal, 1.0, map[string]string{"bucket": durationBucketLabel(prefillTime)})
-		metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayKVTransferTimeBucketTotal, 1.0, map[string]string{"bucket": durationBucketLabel(kvTransferTime)})
-		metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayDecodeTimeBucketTotal, 1.0, map[string]string{"bucket": durationBucketLabel(decodeTime)})
+		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayRoutingTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(routingTime)})
+		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayPrefillTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(prefillTime)})
+		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayKVTransferTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(kvTransferTime)})
+		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayDecodeTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(decodeTime)})
 		if ttft > ttftThreshold {
-			metrics.EmitCounterMetric(routingCtx, nil, metrics.GatewayFirstTokenDelayOver1sTotal, 1.0, map[string]string{
+			metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayFirstTokenDelayOver1sTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{
 				"request_id": requestID,
 				"p_bucket":   pBucket, "c_bucket": cBucket,
 				"routing_time_taken":     fmt.Sprintf("%v", routingTime),
@@ -296,7 +296,7 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, targetPod *v
 		)
 	}
 	fields = append(fields, "total_time_taken", routingCtx.Elapsed(time.Now()))
-	metrics.EmitCounterMetric(routingCtx, targetPod, metrics.GatewayTotalTimeBucketTotal, 1.0, map[string]string{
+	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTotalTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{
 		"bucket": durationBucketLabel(routingCtx.Elapsed(time.Now())),
 	})
 	return fields

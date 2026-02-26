@@ -25,7 +25,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -38,6 +37,7 @@ var (
 	customCountersMu   sync.RWMutex
 	customHistograms   = make(map[string]*histogramCollector)
 	customHistogramsMu sync.RWMutex
+	gatewayPodName     = os.Getenv("POD_NAME")
 
 	// Function variables that can be overridden for testing
 	SetGaugeMetricFnForTest         = defaultSetGaugeMetric
@@ -73,7 +73,7 @@ func IncrementCounterMetric(name string, help string, value float64, labelNames 
 	IncrementCounterMetricFnForTest(name, help, value, labelNames, labelValues...)
 }
 
-func EmitGaugeMetric(routingCtx *types.RoutingContext, pod *v1.Pod, name string, value float64, extras map[string]string) {
+func emitGaugeMetric(routingCtx *types.RoutingContext, pod *v1.Pod, name string, value float64, extras map[string]string) {
 	var model string
 	if routingCtx == nil {
 		model = ""
@@ -81,10 +81,10 @@ func EmitGaugeMetric(routingCtx *types.RoutingContext, pod *v1.Pod, name string,
 		model = routingCtx.Model
 	}
 	labelNames, labelValues := buildMetricLabels(pod, model, extras)
-	SetGaugeMetricFnForTest(name, GetMetricHelp(name), value, labelNames, labelValues...)
+	SetGaugeMetric(name, GetMetricHelp(name), value, labelNames, labelValues...)
 }
 
-func EmitCounterMetric(routingCtx *types.RoutingContext, pod *v1.Pod, name string, value float64, extras map[string]string) {
+func emitCounterMetric(routingCtx *types.RoutingContext, pod *v1.Pod, name string, value float64, extras map[string]string) {
 	var model string
 	if routingCtx == nil {
 		model = ""
@@ -267,18 +267,23 @@ func SetupCounterMetricsForTest(metricName string, labelNames []string) (*promet
 	return testCounter, func() { IncrementCounterMetricFnForTest = originalFn }
 }
 
-func EmitMetricToPrometheus(metricName string, metricValue MetricValue, labelNames []string, labelValues []string) {
+func EmitMetricToPrometheus(routingCtx *types.RoutingContext, pod *v1.Pod, metricName string, metricValue MetricValue, extra map[string]string) {
 	metricDef, exists := Metrics[metricName]
 	if !exists {
 		return
 	}
+	var model string
+	if routingCtx != nil {
+		model = routingCtx.Model
+	}
 
 	switch metricDef.MetricType.Raw {
 	case Gauge:
-		SetGaugeMetric(metricName, GetMetricHelp(metricName), metricValue.GetSimpleValue(), labelNames, labelValues...)
+		emitGaugeMetric(routingCtx, pod, metricName, metricValue.GetSimpleValue(), extra)
 	case Counter:
-		SetGaugeMetric(metricName, GetMetricHelp(metricName), metricValue.GetSimpleValue(), labelNames, labelValues...)
+		emitCounterMetric(routingCtx, pod, metricName, metricValue.GetSimpleValue(), extra)
 	default:
+		labelNames, labelValues := buildMetricLabels(pod, model, extra)
 		if hv := metricValue.GetHistogramValue(); hv != nil {
 			SetHistogramMetric(metricName, GetMetricHelp(metricName), hv, labelNames, labelValues...)
 			p50, _ := hv.GetPercentile(50)
@@ -292,13 +297,24 @@ func EmitMetricToPrometheus(metricName string, metricValue MetricValue, labelNam
 }
 
 func buildMetricLabels(pod *v1.Pod, model string, extras map[string]string) ([]string, []string) {
-	labelNames, labelValues := generateDefaultMetricLabelsMap(pod, model)
+	defaultLabelMap := generateDefaultMetricLabelsMap(pod, model)
+	labelNames := make([]string, 0, len(defaultLabelMap)+len(extras))
+	labelValues := make([]string, 0, len(defaultLabelMap)+len(extras))
+	for k, v := range defaultLabelMap {
+		labelNames = append(labelNames, k)
+		labelValues = append(labelValues, v)
+	}
+
 	if len(extras) > 0 {
 		keys := make([]string, 0, len(extras))
 		for k := range extras {
-			if k != "" {
-				keys = append(keys, k)
+			if k == "" {
+				continue
 			}
+			if _, exist := defaultLabelMap[k]; exist {
+				continue
+			}
+			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
@@ -309,35 +325,21 @@ func buildMetricLabels(pod *v1.Pod, model string, extras map[string]string) ([]s
 	return labelNames, labelValues
 }
 
-func generateDefaultMetricLabelsMap(pod *v1.Pod, model string) (labelNames []string, labelValues []string) {
-	labelNames = []string{
-		"namespace",
-		"pod",
-		"model",
-		"engine_type",
-		"roleset",
-		"role",
-		"role_replica_index",
-		"gateway_pod",
+func generateDefaultMetricLabelsMap(pod *v1.Pod, model string) map[string]string {
+	if pod == nil {
+		return map[string]string{
+			"model":       model,
+			"gateway_pod": gatewayPodName,
+		}
 	}
-	var namespace, podName, engineType, roleset, role, roleReplica string
-	if pod != nil {
-		namespace = pod.Namespace
-		podName = pod.Name
-		engineType = utils.GetLLMEngine(pod, constants.ModelLabelEngine, utils.DefaultLLMEngine)
-		roleset = utils.GetPodEnv(pod, "ROLESET_NAME", "")
-		role = utils.GetPodEnv(pod, "ROLE_NAME", "")
-		roleReplica = utils.GetPodEnv(pod, "ROLE_REPLICA_INDEX", "")
+	return map[string]string{
+		"namespace":          pod.Namespace,
+		"pod":                pod.Name,
+		"model":              model,
+		"engine_type":        GetEngineType(*pod),
+		"roleset":            utils.GetPodEnv(pod, "ROLESET_NAME", ""),
+		"role":               utils.GetPodEnv(pod, "ROLE_NAME", ""),
+		"role_replica_index": utils.GetPodEnv(pod, "ROLE_REPLICA_INDEX", ""),
+		"gateway_pod":        gatewayPodName,
 	}
-	labelValues = []string{
-		namespace,
-		podName,
-		model,
-		engineType,
-		roleset,
-		role,
-		roleReplica,
-		os.Getenv("POD_NAME"), // gateway-plugin pod
-	}
-	return labelNames, labelValues
 }

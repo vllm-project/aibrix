@@ -158,14 +158,14 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 	// Validate engine consistency across all prefill pods
 	llmEngine, err := validateAndGetLLMEngine(readyPodList.All())
 	if err != nil {
-		metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRouteValidateLLMEngineFail, "status_code": "400"})
 		return "", fmt.Errorf("engine validation failed for request %s: %w", ctx.RequestID, err)
 	}
 
 	prefillPod, decodePod, err := r.filterPrefillDecodePods(ctx, readyPodList.All())
 	if err != nil {
-		metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRouteFilterPrefillDecodePodsFail, "status_code": "400"})
 		return "", fmt.Errorf("failed to filter prefill/decode pods for request %s: %w", ctx.RequestID, err)
 	}
@@ -174,12 +174,12 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		klog.InfoS("selected prefill/decode pods", "request_id", ctx.RequestID, "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)
 		err = r.doPrefillRequest(ctx, prefillPod, llmEngine)
 		if err != nil {
-			metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+			metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 				map[string]string{"status": pdRoutePrefillRequestError, "status_code": "500"})
 			klog.ErrorS(err, pdRoutePrefillRequestError, "request_id", ctx.RequestID)
 			return "", fmt.Errorf("prefill request failed for request %s: %w", ctx.RequestID, err)
 		}
-		metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestSuccessTotal, 1.0,
+		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestSuccessTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRoutePrefillRequestSuccess, "status_code": "200"})
 	}
 
@@ -509,8 +509,8 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	r.selectionCounts[targetDecodePod.Name]++
 	r.countersMu.Unlock()
 
-	metrics.EmitCounterMetric(routingCtx, targetPrefillPod, metrics.PDSelectedPrefillPodTotal, 1.0, nil)
-	metrics.EmitCounterMetric(routingCtx, targetDecodePod, metrics.PDSelectedDecodePodTotal, 1.0, nil)
+	metrics.EmitMetricToPrometheus(routingCtx, targetPrefillPod, metrics.PDSelectedPrefillPodTotal, &metrics.SimpleMetricValue{Value: 1.0}, nil)
+	metrics.EmitMetricToPrometheus(routingCtx, targetDecodePod, metrics.PDSelectedDecodePodTotal, &metrics.SimpleMetricValue{Value: 1.0}, nil)
 
 	return targetPrefillPod, targetDecodePod, nil
 }
@@ -684,7 +684,7 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 	resp, err := r.httpClient.Do(req)
 	if err != nil {
 		status, code := metrics.HttpFailureStatusCode(ctx, err, nil)
-		metrics.EmitCounterMetric(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+		metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": status, "status_code": code})
 		return nil, fmt.Errorf("failed to execute http prefill request: %w", err)
 	}
@@ -701,7 +701,7 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
 		status, code := metrics.HttpFailureStatusCode(ctx, nil, resp)
-		metrics.EmitCounterMetric(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+		metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": status, "status_code": code})
 		return nil, fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
 	}
