@@ -1607,7 +1607,7 @@ func pdConfigAnnotation(minLen, maxLen int, combined bool) string {
 	if combined {
 		combinedStr = "true"
 	}
-	return `{"defaultProfile":"pd","profiles":{"pd":{"routingStrategy":"pd","promptMinLength":` + strconv.Itoa(minLen) + `,"promptMaxLength":` + strconv.Itoa(maxLen) + `,"combined":` + combinedStr + `}}}`
+	return `{"defaultProfile":"pd","profiles":{"pd":{"routingStrategy":"pd","promptLenBucketMinLength":` + strconv.Itoa(minLen) + `,"promptLenBucketMaxLength":` + strconv.Itoa(maxLen) + `,"combined":` + combinedStr + `}}}`
 }
 
 func TestFilterPrefillDecodePods_SelectCorrectBucketPods(t *testing.T) {

@@ -31,8 +31,8 @@ spec:
                     "profiles": {
                       "pd": {
                         "routingStrategy": "pd",
-                        "promptMinLength": 0,
-                        "promptMaxLength": 2048
+                        "promptLenBucketMinLength": 0,
+                        "promptLenBucketMaxLength": 2048
                       }
                     }
                   }
@@ -170,8 +170,8 @@ spec:
                     "profiles": {
                       "pd": {
                         "routingStrategy": "pd",
-                        "promptMinLength": 0,
-                        "promptMaxLength": 2048
+                        "promptLenBucketMinLength": 0,
+                        "promptLenBucketMaxLength": 2048
                       }
                     }
                   }
@@ -328,8 +328,8 @@ spec:
                     "profiles": {
                       "pd": {
                         "routingStrategy": "pd",
-                        "promptMinLength": 2049,
-                        "promptMaxLength": 4096
+                        "promptLenBucketMinLength": 2049,
+                        "promptLenBucketMaxLength": 4096
                       }
                     }
                   }
@@ -467,8 +467,8 @@ spec:
                     "profiles": {
                       "pd": {
                         "routingStrategy": "pd",
-                        "promptMinLength": 2049,
-                        "promptMaxLength": 4096
+                        "promptLenBucketMinLength": 2049,
+                        "promptLenBucketMaxLength": 4096
                       }
                     }
                   }
@@ -626,7 +626,7 @@ spec:
                     "profiles": {
                       "pd": {
                         "routingStrategy": "pd",
-                        "promptMinLength": 0,
+                        "promptLenBucketMinLength": 0,
                         "combined": true
                       }
                     }

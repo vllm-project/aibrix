@@ -38,15 +38,15 @@ func TestParseModelConfig(t *testing.T) {
 		},
 		{
 			name: "single profile",
-			json: `{"profiles":{"default":{"routingStrategy":"pd","promptMinLength":0,"promptMaxLength":2048}}}`,
+			json: `{"profiles":{"default":{"routingStrategy":"pd","promptLenBucketMinLength":0,"promptLenBucketMaxLength":2048}}}`,
 		},
 		{
 			name: "multiple profiles with defaultProfile",
-			json: `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random","promptMinLength":0,"promptMaxLength":4096},"pd":{"routingStrategy":"pd","promptMinLength":0,"promptMaxLength":2048}}}`,
+			json: `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random","promptLenBucketMinLength":0,"promptLenBucketMaxLength":4096},"pd":{"routingStrategy":"pd","promptLenBucketMinLength":0,"promptLenBucketMaxLength":2048}}}`,
 		},
 		{
 			name: "with combined field",
-			json: `{"profiles":{"default":{"routingStrategy":"pd","promptMinLength":0,"promptMaxLength":2048,"combined":true}}}`,
+			json: `{"profiles":{"default":{"routingStrategy":"pd","promptLenBucketMinLength":0,"promptLenBucketMaxLength":2048,"combined":true}}}`,
 		},
 		{
 			name:    "invalid json",
@@ -80,9 +80,9 @@ func TestParseModelConfig(t *testing.T) {
 }
 
 func TestParseModelConfig_DefaultValues(t *testing.T) {
-	// promptMinLength negative → normalized to 0
-	// promptMaxLength 0 or omitted → MaxInt32
-	json := `{"profiles":{"p1":{"routingStrategy":"pd","promptMinLength":-5,"promptMaxLength":0},"p2":{"routingStrategy":"random"}}}`
+	// promptLenBucketMinLength negative → normalized to 0
+	// promptLenBucketMaxLength 0 or omitted → MaxInt32
+	json := `{"profiles":{"p1":{"routingStrategy":"pd","promptLenBucketMinLength":-5,"promptLenBucketMaxLength":0},"p2":{"routingStrategy":"random"}}}`
 
 	cfg, err := ParseModelConfig(json)
 	if err != nil || cfg == nil {
@@ -93,24 +93,24 @@ func TestParseModelConfig_DefaultValues(t *testing.T) {
 	if p1 == nil {
 		t.Fatal("GetProfile(p1) = nil")
 	}
-	if p1.PromptMinLength != 0 {
-		t.Errorf("promptMinLength -5 should be normalized to 0, got %d", p1.PromptMinLength)
+	if p1.PromptLenBucketMinLength != 0 {
+		t.Errorf("promptLenBucketMinLength -5 should be normalized to 0, got %d", p1.PromptLenBucketMinLength)
 	}
-	if p1.PromptMaxLength != math.MaxInt32 {
-		t.Errorf("promptMaxLength 0 should become MaxInt32, got %d", p1.PromptMaxLength)
+	if p1.PromptLenBucketMaxLength != math.MaxInt32 {
+		t.Errorf("promptLenBucketMaxLength 0 should become MaxInt32, got %d", p1.PromptLenBucketMaxLength)
 	}
 
 	p2 := cfg.GetProfile("p2")
 	if p2 == nil {
 		t.Fatal("GetProfile(p2) = nil")
 	}
-	if p2.PromptMaxLength != math.MaxInt32 {
-		t.Errorf("omitted promptMaxLength should become MaxInt32, got %d", p2.PromptMaxLength)
+	if p2.PromptLenBucketMaxLength != math.MaxInt32 {
+		t.Errorf("omitted promptLenBucketMaxLength should become MaxInt32, got %d", p2.PromptLenBucketMaxLength)
 	}
 }
 
 func TestGetProfile(t *testing.T) {
-	json := `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random","promptMinLength":0,"promptMaxLength":4096},"pd":{"routingStrategy":"pd","promptMinLength":0,"promptMaxLength":2048}}}`
+	json := `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random","promptLenBucketMinLength":0,"promptLenBucketMaxLength":4096},"pd":{"routingStrategy":"pd","promptLenBucketMinLength":0,"promptLenBucketMaxLength":2048}}}`
 
 	cfg, err := ParseModelConfig(json)
 	if err != nil || cfg == nil {
@@ -148,7 +148,7 @@ func TestGetProfile_NoDefault(t *testing.T) {
 }
 
 func TestResolveProfileFromPod(t *testing.T) {
-	configJSON := `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random"},"pd":{"routingStrategy":"pd","promptMaxLength":2048}}}`
+	configJSON := `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random"},"pd":{"routingStrategy":"pd","promptLenBucketMaxLength":2048}}}`
 
 	podWithAnno := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -194,7 +194,7 @@ func TestResolveProfileFromPod(t *testing.T) {
 }
 
 func TestResolveProfile(t *testing.T) {
-	configJSON := `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random","promptMinLength":0,"promptMaxLength":4096},"pd":{"routingStrategy":"pd","promptMinLength":0,"promptMaxLength":2048}}}`
+	configJSON := `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random","promptLenBucketMinLength":0,"promptLenBucketMaxLength":4096},"pd":{"routingStrategy":"pd","promptLenBucketMinLength":0,"promptLenBucketMaxLength":2048}}}`
 
 	podWithAnno := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

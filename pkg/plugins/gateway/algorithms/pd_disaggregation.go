@@ -53,8 +53,8 @@ const (
 	PDRoleIdentifier              string                 = "role-name"
 	RoleReplicaIndex              string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	PodGroupIndex                 string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
-	PromptMinLength               string                 = "prompt-min-length"
-	PromptMaxLength               string                 = "prompt-max-length"
+	PromptLenBucketMinLength      string                 = "prompt-len-bucket-min-length"
+	PromptLenBucketMaxLength      string                 = "prompt-len-bucket-max-length"
 	defaultPrefillRequestTimeout  int                    = 30
 
 	defaultMaxRequest                   float64 = 32
@@ -945,7 +945,7 @@ func (r *pdRouter) isPodSuitableForPromptLength(routingCtx *types.RoutingContext
 	if profile == nil {
 		return false
 	}
-	minLength, maxLength := profile.PromptMinLength, profile.PromptMaxLength
+	minLength, maxLength := profile.PromptLenBucketMinLength, profile.PromptLenBucketMaxLength
 
 	if minLength > maxLength {
 		return false

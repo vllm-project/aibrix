@@ -17,7 +17,7 @@ Today, options are encoded as many pod labels (e.g. ``model.aibrix.ai/name``, ``
 Overview
 --------
 
-* **Annotation** (on the pod): ``model.aibrix.ai/config`` holds a JSON object with a ``profiles`` map. Each profile is a set of gateway options: ``routingStrategy``, ``promptMinLength``, ``promptMaxLength``, ``combined``.
+* **Annotation** (on the pod): ``model.aibrix.ai/config`` holds a JSON object with a ``profiles`` map. Each profile is a set of gateway options: ``routingStrategy``, ``promptLenBucketMinLength``, ``promptLenBucketMaxLength``, ``combined``.
 * **Runtime selection**: Client sends header ``config-profile: <profile-name>`` (e.g. ``pd``, ``low-latency``). If omitted, the ``defaultProfile`` (or ``"default"``) is used.
 
 JSON Schema (Implementation)
@@ -33,8 +33,8 @@ Root object:
 Profile object (``ModelConfigProfile``):
 
 * ``routingStrategy`` (string): e.g. ``random``, ``pd``, ``least-latency``.
-* ``promptMinLength`` (int, optional): Lower bound for bucketing. Default: ``0``. If negative, normalized to ``0``.
-* ``promptMaxLength`` (int, optional): Upper bound for bucketing. Default: ``math.MaxInt32`` when ``0`` or omitted.
+* ``promptLenBucketMinLength`` (int, optional): Lower bound for bucketing. Default: ``0``. If negative, normalized to ``0``.
+* ``promptLenBucketMaxLength`` (int, optional): Upper bound for bucketing. Default: ``math.MaxInt32`` when ``0`` or omitted.
 * ``combined`` (bool, optional): When true, indicates combined prefill/decode pod for PD routing.
 
 Single profile (backward compatible):
@@ -45,8 +45,8 @@ Single profile (backward compatible):
     "profiles": {
       "default": {
         "routingStrategy": "pd",
-        "promptMinLength": 0,
-        "promptMaxLength": 2048
+        "promptLenBucketMinLength": 0,
+        "promptLenBucketMaxLength": 2048
       }
     }
   }
@@ -60,18 +60,18 @@ Multiple profiles with default:
     "profiles": {
       "default": {
         "routingStrategy": "random",
-        "promptMinLength": 0,
-        "promptMaxLength": 4096
+        "promptLenBucketMinLength": 0,
+        "promptLenBucketMaxLength": 4096
       },
       "pd": {
         "routingStrategy": "pd",
-        "promptMinLength": 0,
-        "promptMaxLength": 2048
+        "promptLenBucketMinLength": 0,
+        "promptLenBucketMaxLength": 2048
       },
       "low-latency": {
         "routingStrategy": "least-latency",
-        "promptMinLength": 0,
-        "promptMaxLength": 2048
+        "promptLenBucketMinLength": 0,
+        "promptLenBucketMaxLength": 2048
       }
     }
   }
@@ -106,13 +106,13 @@ Annotation Example (StormService pod template)
             "profiles": {
               "default": {
                 "routingStrategy": "random",
-                "promptMinLength": 0,
-                "promptMaxLength": 4096
+                "promptLenBucketMinLength": 0,
+                "promptLenBucketMaxLength": 4096
               },
               "pd": {
                 "routingStrategy": "pd",
-                "promptMinLength": 0,
-                "promptMaxLength": 2048
+                "promptLenBucketMinLength": 0,
+                "promptLenBucketMaxLength": 2048
               }
             }
           }
@@ -128,13 +128,13 @@ Implementation
 
 Package: ``pkg/plugins/gateway/configprofiles/``
 
-* ``ModelConfigProfile``: struct with ``RoutingStrategy``, ``PromptMinLength``, ``PromptMaxLength``, ``Combined``.
+* ``ModelConfigProfile``: struct with ``RoutingStrategy``, ``PromptLenBucketMinLength``, ``PromptLenBucketMaxLength``, ``Combined``.
 * ``ModelConfigProfiles``: struct with ``DefaultProfile``, ``Profiles map[string]ModelConfigProfile``.
-* ``ParseModelConfig(jsonStr)``: parses JSON; normalizes ``promptMinLength`` (≥0) and ``promptMaxLength`` (0→MaxInt32).
+* ``ParseModelConfig(jsonStr)``: parses JSON; normalizes ``promptLenBucketMinLength`` (≥0) and ``promptLenBucketMaxLength`` (0→MaxInt32).
 * ``GetProfile(name)``: returns profile by name; falls back to ``defaultProfile`` then ``"default"``.
 * ``ResolveProfile(pods, headerProfile)``: iterates pods, returns first non-nil from ``ResolveProfileFromPod``.
 * ``ResolveProfileFromPod(pod, headerProfile)``: reads ``model.aibrix.ai/config`` from pod, parses, returns ``GetProfile(headerProfile)``.
-* Prompt length bounds normalization occurs in ``ParseModelConfig``: ``promptMinLength`` (<0 → 0), ``promptMaxLength`` (0 → ``math.MaxInt32``).
+* Prompt length bounds normalization occurs in ``ParseModelConfig``: ``promptLenBucketMinLength`` (<0 → 0), ``promptLenBucketMaxLength`` (0 → ``math.MaxInt32``).
 
 Constants: ``ModelAnnoConfig`` (pkg/constants/model.go), ``HeaderConfigProfile`` (pkg/plugins/gateway/types.go).
 
@@ -142,11 +142,11 @@ Gateway flow:
 
 * ``HandleRequestHeaders``: captures ``config-profile`` into ``ReqConfigProfile``.
 * ``HandleRequestBody``: calls ``applyConfigProfile`` which resolves config from pod annotation, sets ``routingCtx.ConfigProfile``, and provides routing strategy to ``deriveRoutingStrategyFromContext``.
-* ``deriveRoutingStrategyFromContext``: headers → ``ConfigProfile.RoutingStrategy`` → env.
+* ``deriveRoutingStrategyFromContext``: chooses the routing strategy for the request using this precedence: (1) request header ``routing-strategy`` if present and non-empty; (2) ``routingCtx.ConfigProfile.RoutingStrategy`` from the resolved profile (config-profile + pod annotation); (3) environment default. Returns the strategy and whether it was explicitly set (used to validate and set ``routingCtx.Algorithm`` in ``HandleRequestBody``).
 
 PD router:
 
-* ``isPodSuitableForPromptLength(routingCtx, pod, promptLength)``: uses ``ResolveProfileFromPod(pod, routingCtx.ReqConfigProfile)`` for ``promptMinLength``/``promptMaxLength``.
+* ``isPodSuitableForPromptLength(routingCtx, pod, promptLength)``: uses ``ResolveProfileFromPod(pod, routingCtx.ReqConfigProfile)`` for ``promptLenBucketMinLength``/``promptLenBucketMaxLength``.
 * ``isCombinedPod(routingCtx, pod)``: uses ``ResolveProfileFromPod(pod, routingCtx.ReqConfigProfile)`` for ``combined``.
 
 Backward Compatibility
