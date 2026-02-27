@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -81,6 +82,8 @@ type processState struct {
 	isGatewayRspDone bool
 	completed        bool
 }
+
+var podName = os.Getenv("POD_NAME")
 
 func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient gatewayapi.Interface) *Server {
 	c, err := cache.Get()
@@ -273,6 +276,7 @@ func (s *Server) responseForResponseHeaderError(st *processState, resp *extProcP
 }
 
 func (s *Server) emitProcessMetrics(st *processState, resp *extProcPb.ProcessingResponse) {
+	s.emitGatewayRequestTotalMetric(resp, st.model)
 	if st.model == "" {
 		return
 	}
@@ -433,8 +437,17 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, headers
 }
 
 func (s *Server) emitMetricsCounterHelper(metricName, model, status, statusCode string) {
-	labelNames, labelValues := buildGatewayPodMetricLabels(model, status, statusCode)
-	metrics.EmitMetricToPrometheus(metricName, &metrics.SimpleMetricValue{Value: 1.0}, labelNames, labelValues)
+	labels := buildGatewayPodMetricLabels(model, status, statusCode)
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, nil, metricName, &metrics.SimpleMetricValue{Value: 1.0}, labels)
+}
+
+func (s *Server) emitGatewayRequestTotalMetric(resp *extProcPb.ProcessingResponse, model string) {
+	statusCode := "200"
+	if resp.GetImmediateResponse() != nil {
+		statusCode = fmt.Sprintf("%d", int(resp.GetImmediateResponse().Status.GetCode()))
+	}
+	labels := buildGatewayPodMetricLabels(model, "gateway_request_handled", statusCode)
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, nil, metrics.GatewayRequestTotal, &metrics.SimpleMetricValue{Value: 1.0}, labels)
 }
 
 func getMetricErr(resp *extProcPb.ImmediateResponse, metricLabel string) string {

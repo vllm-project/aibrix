@@ -29,6 +29,7 @@ const (
 	E2ERequestLatencySeconds        = "e2e_request_latency_seconds"
 	RequestQueueTimeSeconds         = "request_queue_time_seconds"
 	RequestInferenceTimeSeconds     = "request_inference_time_seconds"
+	PerStageReqLatencySeconds       = "per_stage_req_latency_seconds"
 	HTTPRequestDurationSeconds      = "http_request_duration_seconds"
 	HTTPRequestDurationHighRSeconds = "http_request_duration_highr_seconds"
 
@@ -236,6 +237,17 @@ var (
 				"vllm": "vllm:request_inference_time_seconds",
 			},
 			Description: "Request inference time in seconds",
+		},
+		PerStageReqLatencySeconds: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Histogram,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"sglang": "sglang:per_stage_req_latency_seconds",
+			},
+			Description: "Per-stage request latency in seconds",
 		},
 		HTTPRequestDurationSeconds: {
 			MetricScope:  PodMetricScope,

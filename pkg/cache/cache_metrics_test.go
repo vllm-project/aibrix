@@ -26,6 +26,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
@@ -153,10 +154,13 @@ func TestEmitMetricToPrometheus_GaugeAndCounter(t *testing.T) {
 		}{name: name, value: value})
 	}
 
-	labels := []string{"pod"}
-	values := []string{"p1"}
-
-	metrics.EmitMetricToPrometheus(metrics.NumRequestsRunning, &metrics.SimpleMetricValue{Value: 3}, labels, values)
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "p1",
+			Namespace: "ns1",
+		},
+	}
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod, metrics.NumRequestsRunning, &metrics.SimpleMetricValue{Value: 3}, nil)
 	require.Len(t, gaugeCalls, 1)
 	require.Equal(t, metrics.NumRequestsRunning, gaugeCalls[0].name)
 	require.Equal(t, 3.0, gaugeCalls[0].value)
@@ -189,7 +193,13 @@ func TestEmitMetricToPrometheus_HistogramAlsoEmitsQuantiles(t *testing.T) {
 			"+Inf":     2,
 		},
 	}
-	metrics.EmitMetricToPrometheus(metrics.TimeToFirstTokenSeconds, hv, []string{"pod"}, []string{"p1"})
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "p1",
+			Namespace: "ns1",
+		},
+	}
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod, metrics.TimeToFirstTokenSeconds, hv, nil)
 
 	require.Contains(t, gaugeMetricNames, metrics.TimeToFirstTokenSeconds+"_p50")
 	require.Contains(t, gaugeMetricNames, metrics.TimeToFirstTokenSeconds+"_p90")
