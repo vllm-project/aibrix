@@ -42,6 +42,8 @@ const (
 	defaultEngineLabelValue             = "vllm"
 	defaultPodMetricRefreshIntervalInMS = 50
 	defaultPodMetricsWorkerCount        = 10
+	defaultPromQueryIntervalInMS        = 200
+	defaultPromQueryTimeoutInMS         = 2000
 )
 
 var (
@@ -114,6 +116,8 @@ var (
 		metrics.RunningLoraAdapters,
 	}
 	podMetricRefreshInterval = time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
+	promQueryInterval        = time.Duration(utils.LoadEnvInt("AIBRIX_PROMETHEUS_QUERY_INTERVAL_MS", defaultPromQueryIntervalInMS)) * time.Millisecond
+	promQueryTimeout         = time.Duration(utils.LoadEnvInt("AIBRIX_PROMETHEUS_QUERY_TIMEOUT_MS", defaultPromQueryTimeoutInMS)) * time.Millisecond
 )
 
 // MetricSnapshot represents a metric value at a specific timestamp
@@ -289,7 +293,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 
 		// Handle Prometheus-based metrics separately (these require PromQL queries)
 		if c.prometheusApi != nil {
-			c.updateMetricFromPromQL(ctx, pod)
+			c.enqueuePromQL(pod)
 		} else {
 			klog.V(4).InfoS("Prometheus API not initialized, skipping PromQL metrics", "pod", pod.Name)
 		}
@@ -305,7 +309,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 	}
 }
 
-func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
+func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) (queryErr error) {
 	podName := pod.Name
 	podMetricPort := getPodMetricPort(pod)
 	for _, metricName := range prometheusMetricNames {
@@ -322,6 +326,9 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 			err := c.queryUpdatePromQLMetrics(ctx, metric, queryLabels, pod, "", metricName, podMetricPort)
 			if err != nil {
 				klog.V(4).Infof("Failed to query and update PromQL metrics: %v", err)
+				if queryErr == nil {
+					queryErr = err
+				}
 				continue
 			}
 		} else if scope == metrics.PodModelMetricScope {
@@ -331,6 +338,9 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 					err := c.queryUpdatePromQLMetrics(ctx, metric, queryLabels, pod, modelName, metricName, podMetricPort)
 					if err != nil {
 						klog.V(4).Infof("Failed to query and update PromQL metrics: %v", err)
+						if queryErr == nil {
+							queryErr = err
+						}
 						continue
 					}
 				}
@@ -341,6 +351,7 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 			klog.V(4).Infof("Scope %v is not supported", scope)
 		}
 	}
+	return queryErr
 }
 
 func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Metric, queryLabels map[string]string, pod *Pod, modelName string, metricName string, podMetricPort int) error {
