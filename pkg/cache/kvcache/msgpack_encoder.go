@@ -72,13 +72,9 @@ func encodeEvent(event KVEvent) ([]interface{}, error) {
 			blockSize = n / 4
 		}
 
-		// Note: BlockHashes is [][]byte which supports both:
-		// - Legacy format: 8-byte big-endian int64
-		// - New format: 32-byte SHA-256 hash
-		// The msgpack encoder will serialize it as-is.
 		arr := []interface{}{
 			string(e.Type),    // tag
-			e.BlockHashes,     // block_hashes ([][]byte)
+			e.BlockHashes,     // block_hashes
 			e.ParentBlockHash, // parent_block_hash (nullable *[]byte)
 			tokenIDs,          // flat token IDs
 			blockSize,         // block_size
@@ -86,10 +82,9 @@ func encodeEvent(event KVEvent) ([]interface{}, error) {
 		return arr, nil
 
 	case *BlockRemovedEvent:
-		// Note: BlockHashes is [][]byte which supports both legacy and new formats
 		arr := []interface{}{
 			string(e.Type),
-			e.BlockHashes, // [][]byte
+			e.BlockHashes,
 		}
 		return arr, nil
 

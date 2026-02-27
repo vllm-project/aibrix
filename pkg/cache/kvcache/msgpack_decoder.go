@@ -219,6 +219,19 @@ func toBlockHashSlice(v any) ([]int64, error) {
 	return out, nil
 }
 
+// bytesToInt64 converts a byte array to int64 using big-endian encoding.
+// If the byte array is shorter than 8 bytes, it pads with leading zeros.
+func bytesToInt64(b []byte) int64 {
+	if len(b) >= 8 {
+		// Use first 8 bytes for both 8-byte and 32-byte formats
+		return int64(binary.BigEndian.Uint64(b[:8]))
+	}
+	// Unexpected short byte array: pad with leading zeros for big-endian
+	padded := make([]byte, 8)
+	copy(padded[8-len(b):], b)
+	return int64(binary.BigEndian.Uint64(padded))
+}
+
 // parseBlockHashToInt64 parses a single block hash and converts it to int64.
 // Supports:
 // 1. int64 types (legacy format from old vLLM) → used directly
@@ -234,25 +247,11 @@ func toBlockHashSlice(v any) ([]int64, error) {
 func parseBlockHashToInt64(v any) (int64, error) {
 	switch x := v.(type) {
 	case []byte:
-		// New format: bytes from vLLM
-		if len(x) >= 8 {
-			// Use first 8 bytes for both 8-byte and 32-byte formats
-			return int64(binary.BigEndian.Uint64(x[:8])), nil
-		}
-		// Unexpected short byte array: pad with zeros
-		padded := make([]byte, 8)
-		copy(padded, x)
-		return int64(binary.BigEndian.Uint64(padded)), nil
+		return bytesToInt64(x), nil
 
 	case string:
 		// msgpack may decode bytes as string
-		b := []byte(x)
-		if len(b) >= 8 {
-			return int64(binary.BigEndian.Uint64(b[:8])), nil
-		}
-		padded := make([]byte, 8)
-		copy(padded, b)
-		return int64(binary.BigEndian.Uint64(padded)), nil
+		return bytesToInt64([]byte(x)), nil
 
 	// Legacy format: integer types → convert to int64
 	case int64:
