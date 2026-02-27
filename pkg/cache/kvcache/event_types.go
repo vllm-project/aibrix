@@ -122,7 +122,7 @@ func (e *BlockStoredEvent) setPodName(name string)    { e.PodName = name }
 type BlockRemovedEvent struct {
 	_           struct{}  `msgpack:",array"`
 	Type        EventType `msgpack:"-"`
-	BlockHashes []int64 // Decoded from vLLM, supports both old and new formats
+	BlockHashes []int64   // Decoded from vLLM, supports both old and new formats
 
 	// NOTE: These are NOT part of msgpack
 	Timestamp time.Time `msgpack:"-"`

@@ -250,13 +250,13 @@ func TestBlockHashesAsBytesInDecodeEventBatch(t *testing.T) {
 	eventArray := []interface{}{
 		"BlockStored",
 		[]interface{}{hash1, hash2}, // block_hashes as [][]byte
-		parentHash,                   // parent_block_hash as []byte
+		parentHash,                  // parent_block_hash as []byte
 		[]interface{}{uint32(1), uint32(2), uint32(3), uint32(4)}, // token_ids
 		int(2), // block_size
 	}
 
 	batch := []interface{}{
-		float64(ts.Unix()), // timestamp as float64
+		float64(ts.Unix()),        // timestamp as float64
 		[]interface{}{eventArray}, // events
 	}
 
@@ -312,10 +312,10 @@ func TestBlockHashesAsSHA256BytesInDecodeEventBatch(t *testing.T) {
 
 	eventArray := []interface{}{
 		"BlockStored",
-		[]interface{}{sha256Hash}, // 32-byte hash
-		nil,                        // no parent
+		[]interface{}{sha256Hash},           // 32-byte hash
+		nil,                                 // no parent
 		[]interface{}{uint32(1), uint32(2)}, // token_ids
-		int(2), // block_size
+		int(2),                              // block_size
 	}
 
 	batch := []interface{}{
