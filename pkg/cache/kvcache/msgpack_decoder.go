@@ -284,6 +284,26 @@ func parseBlockHashToInt64(v any) (int64, error) {
 	case uint32:
 		return int64(x), nil
 
+	// Floating-point types (for backward compatibility with msgpack decoding)
+	case float32:
+		f := float64(x)
+		if f < math.MinInt64 || f > math.MaxInt64 {
+			return 0, fmt.Errorf("float32 out of int64 range: %f", f)
+		}
+		if f != math.Trunc(f) {
+			return 0, fmt.Errorf("float32 has fractional part: %f", f)
+		}
+		return int64(f), nil
+
+	case float64:
+		if x < math.MinInt64 || x > math.MaxInt64 {
+			return 0, fmt.Errorf("float64 out of int64 range: %f", x)
+		}
+		if x != math.Trunc(x) {
+			return 0, fmt.Errorf("float64 has fractional part: %f", x)
+		}
+		return int64(x), nil
+
 	default:
 		return 0, fmt.Errorf("unsupported block hash type: %T", v)
 	}
