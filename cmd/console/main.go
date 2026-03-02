@@ -27,41 +27,52 @@ import (
 
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/apps/console/api/config"
 	"github.com/vllm-project/aibrix/apps/console/api/server"
 )
 
-var (
-	grpcAddr        string
-	httpAddr        string
-	gatewayEndpoint string
-)
-
 func main() {
-	flag.StringVar(&grpcAddr, "grpc-addr", ":50060", "The address the gRPC server binds to.")
-	flag.StringVar(&httpAddr, "http-addr", ":8090", "The address the HTTP gateway binds to.")
-	flag.StringVar(&gatewayEndpoint, "gateway-endpoint", "http://localhost:8888",
-		"AIBrix gateway endpoint for playground proxy.")
+	// Allow CLI flags to override env vars
+	grpcAddr := flag.String("grpc-addr", "", "gRPC server address (overrides GRPC_ADDR env)")
+	httpAddr := flag.String("http-addr", "", "HTTP gateway address (overrides HTTP_ADDR env)")
+	gatewayEndpoint := flag.String("gateway-endpoint", "",
+		"AIBrix gateway endpoint (overrides GATEWAY_ENDPOINT env)")
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
 	flag.Parse()
 
-	srv := server.New(gatewayEndpoint)
+	// Load configuration from environment
+	cfg := config.Load()
+
+	// Apply CLI flag overrides
+	if *grpcAddr != "" {
+		cfg.GRPCAddr = *grpcAddr
+	}
+	if *httpAddr != "" {
+		cfg.HTTPAddr = *httpAddr
+	}
+	if *gatewayEndpoint != "" {
+		cfg.GatewayEndpoint = *gatewayEndpoint
+	}
+
+	srv := server.New(cfg)
 
 	// Start gRPC server
 	go func() {
-		if err := srv.StartGRPC(grpcAddr); err != nil {
+		if err := srv.StartGRPC(cfg.GRPCAddr); err != nil {
 			klog.Fatalf("Failed to start gRPC server: %v", err)
 		}
 	}()
 
 	// Start HTTP gateway (connects to the gRPC server)
 	go func() {
-		if err := srv.StartHTTP(httpAddr, grpcAddr); err != nil && err != http.ErrServerClosed {
+		if err := srv.StartHTTP(cfg.HTTPAddr, cfg.GRPCAddr); err != nil && err != http.ErrServerClosed {
 			klog.Fatalf("Failed to start HTTP gateway: %v", err)
 		}
 	}()
 
-	klog.Infof("AIBrix Console started: gRPC=%s HTTP=%s gateway=%s", grpcAddr, httpAddr, gatewayEndpoint)
+	klog.Infof("AIBrix Console started: gRPC=%s HTTP=%s store=%s auth=%s",
+		cfg.GRPCAddr, cfg.HTTPAddr, cfg.StoreType, cfg.AuthMode)
 
 	// Graceful shutdown
 	stop := make(chan os.Signal, 1)

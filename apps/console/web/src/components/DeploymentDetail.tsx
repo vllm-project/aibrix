@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { ChevronLeft, Copy, ExternalLink } from 'lucide-react';
-import { mockDeployments } from '../data/mockData';
+import { getDeployment } from '../utils/api';
+import type { Deployment } from '../data/mockData';
 
 interface DeploymentDetailProps {
   deploymentId: string | null;
@@ -8,9 +9,37 @@ interface DeploymentDetailProps {
 }
 
 export function DeploymentDetail({ deploymentId, onBack }: DeploymentDetailProps) {
-  const deployment = mockDeployments.find(d => d.id === deploymentId);
+  const [deployment, setDeployment] = useState<Deployment | null>(null);
+  const [loading, setLoading] = useState(true);
   const [selectedLanguage, setSelectedLanguage] = useState<'python' | 'typescript' | 'java' | 'go' | 'shell' | 'chat' | 'completion'>('python');
-  
+
+  useEffect(() => {
+    if (!deploymentId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    getDeployment(deploymentId)
+      .then(d => setDeployment(d))
+      .catch(err => {
+        console.error('Failed to fetch deployment:', err);
+        setDeployment(null);
+      })
+      .finally(() => setLoading(false));
+  }, [deploymentId]);
+
+  if (loading) {
+    return (
+      <div className="p-8">
+        <button onClick={onBack} className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-4">
+          <ChevronLeft className="w-4 h-4" />
+          Back
+        </button>
+        <p className="text-sm text-gray-400">Loading deployment...</p>
+      </div>
+    );
+  }
+
   if (!deployment) {
     return (
       <div className="p-8">
@@ -39,7 +68,7 @@ payload = {
           <ChevronLeft className="w-4 h-4" />
           Accounts / <span className="text-gray-400">seedjeffwan-2hvzrk1</span> / <span className="text-gray-400">DeployedModels</span> / <span className="text-gray-400">{deployment.baseModel.toLowerCase().replace(/\s+/g, '-')}-or1ddd6b</span>
         </button>
-        
+
         <div className="flex items-center justify-between mb-4">
           <div>
             <h1 className="text-2xl mb-2">{deployment.baseModel.toLowerCase().replace(/\s+/g, '-')}-or1...</h1>
@@ -55,7 +84,7 @@ payload = {
               </span>
             </div>
           </div>
-          
+
           <button className="px-4 py-2 border border-gray-200 rounded-lg text-sm hover:bg-gray-50 flex items-center gap-2">
             Open in Playground
             <ExternalLink className="w-4 h-4" />
@@ -78,7 +107,7 @@ payload = {
             </p>
 
             <h3 className="mb-3">API Examples</h3>
-            
+
             <div className="mb-4">
               <div className="flex items-center gap-2 overflow-x-auto pb-2">
                 {['Python', 'Typescript', 'Java', 'Go', 'Shell', 'Chat', 'Completion'].map((lang) => (
@@ -134,7 +163,7 @@ payload = {
         <div className="space-y-6">
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <h2 className="text-lg mb-4">Deployed Model Details</h2>
-            
+
             <div className="space-y-3 text-sm">
               <div>
                 <div className="text-gray-500 mb-1">Status</div>
@@ -142,17 +171,17 @@ payload = {
                   Deployed
                 </span>
               </div>
-              
+
               <div>
                 <div className="text-gray-500 mb-1">Deployed by</div>
                 <div className="text-gray-900">{deployment.createdBy}</div>
               </div>
-              
+
               <div>
                 <div className="text-gray-500 mb-1">Deployment time</div>
                 <div className="text-gray-900">Sunday, January 18, 2026 at 11:53:06 PM UTC</div>
               </div>
-              
+
               <div>
                 <div className="text-gray-500 mb-1">Model name</div>
                 <div className="flex items-center gap-2">
@@ -161,7 +190,7 @@ payload = {
                   </code>
                 </div>
               </div>
-              
+
               <div>
                 <div className="text-gray-500 mb-1">Deployment</div>
                 <div className="flex items-center gap-2">

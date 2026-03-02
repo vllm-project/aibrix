@@ -9,6 +9,7 @@ require (
 	github.com/bytedance/sonic v1.14.2
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/envoyproxy/go-control-plane v0.12.0
+	github.com/go-sql-driver/mysql v1.9.3
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.20.0
@@ -50,6 +51,7 @@ require (
 )
 
 require (
+	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic/loader v0.4.0 // indirect

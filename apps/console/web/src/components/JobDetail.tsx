@@ -1,5 +1,7 @@
+import { useState, useEffect } from 'react';
 import { ChevronLeft, Copy, Download, Trash2, CheckCircle, XCircle } from 'lucide-react';
-import { mockJobs } from '../data/mockData';
+import { getJob } from '../utils/api';
+import { Job } from '../data/mockData';
 
 interface JobDetailProps {
   jobId: string | null;
@@ -7,8 +9,30 @@ interface JobDetailProps {
 }
 
 export function JobDetail({ jobId, onBack }: JobDetailProps) {
-  const job = mockJobs.find(j => j.id === jobId);
-  
+  const [job, setJob] = useState<Job | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!jobId) return;
+    setLoading(true);
+    getJob(jobId)
+      .then(j => setJob(j))
+      .catch(err => console.error('Failed to fetch job:', err))
+      .finally(() => setLoading(false));
+  }, [jobId]);
+
+  if (loading) {
+    return (
+      <div className="p-8">
+        <button onClick={onBack} className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-4">
+          <ChevronLeft className="w-4 h-4" />
+          Back
+        </button>
+        <p className="text-sm text-gray-500">Loading...</p>
+      </div>
+    );
+  }
+
   if (!job) {
     return (
       <div className="p-8">
@@ -30,7 +54,7 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
           <ChevronLeft className="w-4 h-4" />
           Batch Inference / <span className="text-gray-400">{job.inferenceId}</span>
         </button>
-        
+
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl mb-2">{job.name}</h1>
@@ -54,7 +78,7 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
               </span>
             </div>
           </div>
-          
+
           <button className="w-10 h-10 rounded-lg border border-gray-200 flex items-center justify-center hover:bg-gray-50">
             <Trash2 className="w-4 h-4 text-red-500" />
           </button>
@@ -69,14 +93,14 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                 <div className="w-5 h-5 rounded-full border-2 border-gray-300 border-t-teal-600 animate-spin"></div>
                 <span className="text-sm">Validating</span>
               </div>
-              
+
               <div className="relative">
                 <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
                   <div className="h-full bg-teal-500 rounded-full" style={{ width: '0%' }}></div>
                 </div>
                 <div className="text-center mt-2 text-sm text-gray-500">0%</div>
               </div>
-              
+
               <p className="text-center text-sm text-gray-500 mt-4">Batch inference is in progress.</p>
             </div>
           )}
@@ -85,11 +109,11 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
             <>
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                 <h2 className="text-lg mb-4">Processing Summary</h2>
-                
+
                 <div className="mb-6">
                   <div className="text-sm text-gray-500 mb-2">Total processed input rows</div>
                   <div className="text-3xl">1,000</div>
-                  
+
                   <div className="grid grid-cols-2 gap-4 mt-4">
                     <div className="flex items-start gap-2">
                       <CheckCircle className="w-5 h-5 text-emerald-500 mt-1" />
@@ -99,7 +123,7 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                         <div className="text-sm text-emerald-600">100.00%</div>
                       </div>
                     </div>
-                    
+
                     <div className="flex items-start gap-2">
                       <XCircle className="w-5 h-5 text-red-500 mt-1" />
                       <div>
@@ -109,7 +133,7 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                     </div>
                   </div>
                 </div>
-                
+
                 <div className="border-t border-gray-100 pt-6">
                   <div className="text-sm text-gray-500 mb-2">Successfully output rows</div>
                   <div className="text-3xl">1,000</div>
@@ -118,18 +142,18 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
 
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                 <h2 className="text-lg mb-4">Token Used</h2>
-                
+
                 <div className="grid grid-cols-3 gap-6">
                   <div>
                     <div className="text-sm text-gray-500 mb-2">Total tokens</div>
                     <div className="text-2xl">493,354</div>
                   </div>
-                  
+
                   <div>
                     <div className="text-sm text-gray-500 mb-2">Prompt tokens</div>
                     <div className="text-2xl">476,498</div>
                   </div>
-                  
+
                   <div>
                     <div className="text-sm text-gray-500 mb-2">Completion tokens</div>
                     <div className="text-2xl">16,856</div>
@@ -143,23 +167,23 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
         <div className="space-y-6">
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <h2 className="text-lg mb-4">Info</h2>
-            
+
             <div className="space-y-3 text-sm">
               <div>
                 <div className="text-gray-500 mb-1">Created By</div>
                 <div className="text-gray-900">{job.createdBy}</div>
               </div>
-              
+
               <div>
                 <div className="text-gray-500 mb-1">Created On</div>
                 <div className="text-gray-900">{isCompleted ? '17 minutes ago' : '0 minute ago'}</div>
               </div>
-              
+
               <div>
                 <div className="text-gray-500 mb-1">Last Updated</div>
                 <div className="text-gray-900">{isCompleted ? '7 minutes ago' : '0 minute ago'}</div>
               </div>
-              
+
               <div>
                 <div className="text-gray-500 mb-1">Display Name</div>
                 <div className="text-gray-900">{job.name}</div>
@@ -169,7 +193,7 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
 
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <h2 className="text-lg mb-4">Model and Datasets</h2>
-            
+
             <div className="space-y-3 text-sm">
               <div>
                 <div className="text-gray-500 mb-1">Model</div>
@@ -180,7 +204,7 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                   </button>
                 </div>
               </div>
-              
+
               <div>
                 <div className="text-gray-500 mb-1">Input Dataset</div>
                 <div className="flex items-center gap-2">
@@ -190,7 +214,7 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                   </button>
                 </div>
               </div>
-              
+
               {isCompleted && (
                 <div>
                   <div className="text-gray-500 mb-1">Output Dataset</div>
@@ -210,28 +234,28 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
 
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <h2 className="text-lg mb-4">Inference Parameters</h2>
-            
+
             <div className="space-y-3 text-sm">
               <div className="flex justify-between">
                 <span className="text-gray-500">Max Tokens</span>
                 <span className="text-gray-900">100</span>
               </div>
-              
+
               <div className="flex justify-between">
                 <span className="text-gray-500">Temperature</span>
                 <span className="text-gray-900">Not set</span>
               </div>
-              
+
               <div className="flex justify-between">
                 <span className="text-gray-500">Top P</span>
                 <span className="text-gray-900">Not set</span>
               </div>
-              
+
               <div className="flex justify-between">
                 <span className="text-gray-500">N</span>
                 <span className="text-gray-900">Not set</span>
               </div>
-              
+
               <div className="flex justify-between">
                 <span className="text-gray-500">Top K</span>
                 <span className="text-gray-900">Not set</span>

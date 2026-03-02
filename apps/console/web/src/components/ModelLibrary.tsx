@@ -1,6 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Search, Zap, Monitor, AudioLines, ImageIcon, Eye, Grid3X3, Link2, X, Video } from 'lucide-react';
-import { mockModels } from '../data/mockData';
+import { listModels } from '../utils/api';
 import type { ModelCategory, Model } from '../data/mockData';
 
 type FilterTab = 'Featured' | 'All' | ModelCategory;
@@ -93,23 +93,21 @@ function CategoryBadge({ category }: { category: string }) {
 export function ModelLibrary({ onSelectModel }: ModelLibraryProps) {
   const [activeTab, setActiveTab] = useState<FilterTab>('Featured');
   const [searchQuery, setSearchQuery] = useState('');
+  const [models, setModels] = useState<Model[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    const category = (activeTab !== 'Featured' && activeTab !== 'All') ? activeTab : undefined;
+    listModels(searchQuery || undefined, category)
+      .then(m => setModels(m))
+      .catch(err => console.error('Failed to fetch models:', err))
+      .finally(() => setLoading(false));
+  }, [searchQuery, activeTab]);
 
   const filteredModels = useMemo(() => {
-    let models = mockModels;
-
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      models = models.filter(m =>
-        m.name.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q)
-      );
-    }
-
-    if (activeTab !== 'Featured' && activeTab !== 'All') {
-      models = models.filter(m => m.categories.includes(activeTab as ModelCategory));
-    }
-
     return models;
-  }, [activeTab, searchQuery]);
+  }, [models]);
 
   // For Featured view, group by category
   const featuredGroups = useMemo(() => {
@@ -206,86 +204,94 @@ export function ModelLibrary({ onSelectModel }: ModelLibraryProps) {
         </div>
       )}
 
-      {/* Featured Grid View */}
-      {activeTab === 'Featured' && (
-        <div className="space-y-8">
-          {Object.entries(featuredGroups).map(([category, models]) => (
-            <div key={category}>
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg">{category}</h2>
-                <button
-                  onClick={() => setActiveTab(category as FilterTab)}
-                  className="text-sm text-gray-400 hover:text-gray-600"
-                >
-                  View All
-                </button>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {models.map((model) => (
+      {loading ? (
+        <div className="p-8 text-center text-gray-400 text-sm">
+          Loading models...
+        </div>
+      ) : (
+        <>
+          {/* Featured Grid View */}
+          {activeTab === 'Featured' && (
+            <div className="space-y-8">
+              {Object.entries(featuredGroups).map(([category, models]) => (
+                <div key={category}>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-lg">{category}</h2>
+                    <button
+                      onClick={() => setActiveTab(category as FilterTab)}
+                      className="text-sm text-gray-400 hover:text-gray-600"
+                    >
+                      View All
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    {models.map((model) => (
+                      <div
+                        key={model.id}
+                        onClick={() => onSelectModel(model.id)}
+                        className="bg-white rounded-xl shadow-sm border border-gray-100 p-5 cursor-pointer hover:shadow-md hover:border-gray-200 transition-all group"
+                      >
+                        <div className="flex items-start justify-between mb-3">
+                          <ModelIcon model={model} />
+                          {model.isNew && (
+                            <span className="px-2 py-0.5 bg-teal-500 text-white text-xs rounded-full">
+                              NEW
+                            </span>
+                          )}
+                        </div>
+                        <h3 className="text-sm mb-2 group-hover:text-teal-700 transition-colors">
+                          {model.name}
+                        </h3>
+                        <p className="text-xs text-gray-400 line-clamp-2">
+                          {getPricingSummary(model)}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* List View (category-specific or All) */}
+          {activeTab !== 'Featured' && (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden divide-y divide-gray-50">
+              {filteredModels.length === 0 ? (
+                <div className="p-8 text-center text-gray-400 text-sm">
+                  No models found matching your criteria.
+                </div>
+              ) : (
+                filteredModels.map((model) => (
                   <div
                     key={model.id}
                     onClick={() => onSelectModel(model.id)}
-                    className="bg-white rounded-xl shadow-sm border border-gray-100 p-5 cursor-pointer hover:shadow-md hover:border-gray-200 transition-all group"
+                    className="flex items-center gap-4 px-6 py-4 hover:bg-gray-50/50 cursor-pointer transition-colors"
                   >
-                    <div className="flex items-start justify-between mb-3">
-                      <ModelIcon model={model} />
+                    <ModelIcon model={model} size="sm" />
+                    <div className="flex-1 min-w-0 flex items-center gap-4">
+                      <span className="text-sm min-w-[180px] max-w-[260px] truncate">
+                        {model.name}
+                      </span>
                       {model.isNew && (
-                        <span className="px-2 py-0.5 bg-teal-500 text-white text-xs rounded-full">
+                        <span className="px-2 py-0.5 bg-teal-500 text-white text-xs rounded-full flex-shrink-0">
                           NEW
                         </span>
                       )}
+                      <span className="text-sm text-gray-400 truncate flex-1">
+                        {getPricingSummary(model)}
+                      </span>
                     </div>
-                    <h3 className="text-sm mb-2 group-hover:text-teal-700 transition-colors">
-                      {model.name}
-                    </h3>
-                    <p className="text-xs text-gray-400 line-clamp-2">
-                      {getPricingSummary(model)}
-                    </p>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      {model.categories.map((cat) => (
+                        <CategoryBadge key={cat} category={cat} />
+                      ))}
+                    </div>
                   </div>
-                ))}
-              </div>
+                ))
+              )}
             </div>
-          ))}
-        </div>
-      )}
-
-      {/* List View (category-specific or All) */}
-      {activeTab !== 'Featured' && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden divide-y divide-gray-50">
-          {filteredModels.length === 0 ? (
-            <div className="p-8 text-center text-gray-400 text-sm">
-              No models found matching your criteria.
-            </div>
-          ) : (
-            filteredModels.map((model) => (
-              <div
-                key={model.id}
-                onClick={() => onSelectModel(model.id)}
-                className="flex items-center gap-4 px-6 py-4 hover:bg-gray-50/50 cursor-pointer transition-colors"
-              >
-                <ModelIcon model={model} size="sm" />
-                <div className="flex-1 min-w-0 flex items-center gap-4">
-                  <span className="text-sm min-w-[180px] max-w-[260px] truncate">
-                    {model.name}
-                  </span>
-                  {model.isNew && (
-                    <span className="px-2 py-0.5 bg-teal-500 text-white text-xs rounded-full flex-shrink-0">
-                      NEW
-                    </span>
-                  )}
-                  <span className="text-sm text-gray-400 truncate flex-1">
-                    {getPricingSummary(model)}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  {model.categories.map((cat) => (
-                    <CategoryBadge key={cat} category={cat} />
-                  ))}
-                </div>
-              </div>
-            ))
           )}
-        </div>
+        </>
       )}
     </div>
   );

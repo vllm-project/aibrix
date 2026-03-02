@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Search, MoreVertical } from 'lucide-react';
-import { mockDeployments } from '../data/mockData';
+import { listDeployments } from '../utils/api';
+import type { Deployment } from '../data/mockData';
 import { DeleteDeploymentModal } from './DeleteDeploymentModal';
 
 interface DeploymentsProps {
@@ -12,6 +13,21 @@ export function Deployments({ onSelectDeployment, onCreateDeployment }: Deployme
   const [selectedTab, setSelectedTab] = useState<'on-demand' | 'lora'>('on-demand');
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deploymentToDelete, setDeploymentToDelete] = useState<string | null>(null);
+  const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const fetchDeployments = useCallback(() => {
+    setLoading(true);
+    listDeployments(searchQuery || undefined)
+      .then(d => setDeployments(d))
+      .catch(err => console.error('Failed to fetch deployments:', err))
+      .finally(() => setLoading(false));
+  }, [searchQuery]);
+
+  useEffect(() => {
+    fetchDeployments();
+  }, [fetchDeployments]);
 
   const handleDelete = (deploymentId: string) => {
     setDeploymentToDelete(deploymentId);
@@ -42,10 +58,12 @@ export function Deployments({ onSelectDeployment, onCreateDeployment }: Deployme
           <input
             type="text"
             placeholder="Search by name, model, or created by"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 bg-white"
           />
         </div>
-        
+
         <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
           <button
             onClick={() => setSelectedTab('on-demand')}
@@ -87,7 +105,20 @@ export function Deployments({ onSelectDeployment, onCreateDeployment }: Deployme
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {mockDeployments.map((deployment) => (
+              {loading ? (
+                <tr>
+                  <td colSpan={9} className="px-6 py-8 text-center text-sm text-gray-400">
+                    Loading deployments...
+                  </td>
+                </tr>
+              ) : deployments.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="px-6 py-8 text-center text-sm text-gray-400">
+                    No deployments found.
+                  </td>
+                </tr>
+              ) : (
+                deployments.map((deployment) => (
                 <tr
                   key={deployment.id}
                   className="hover:bg-gray-50/50 cursor-pointer transition-colors"
@@ -128,7 +159,7 @@ export function Deployments({ onSelectDeployment, onCreateDeployment }: Deployme
                     </button>
                   </td>
                 </tr>
-              ))}
+              )))}
             </tbody>
           </table>
         </div>
@@ -140,6 +171,7 @@ export function Deployments({ onSelectDeployment, onCreateDeployment }: Deployme
           onClose={() => {
             setDeleteModalOpen(false);
             setDeploymentToDelete(null);
+            fetchDeployments();
           }}
         />
       )}

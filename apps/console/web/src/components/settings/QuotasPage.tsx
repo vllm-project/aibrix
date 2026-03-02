@@ -1,82 +1,22 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Search, Copy, MoreVertical } from 'lucide-react';
-
-interface Quota {
-  id: string;
-  name: string;
-  quotaId: string;
-  currentUsage: number;
-  usagePercentage: number;
-  quota: number;
-}
+import { listQuotas } from '../../utils/api';
+import type { Quota } from '../../utils/api';
 
 export function QuotasPage() {
   const [searchQuery, setSearchQuery] = useState('');
+  const [quotas, setQuotas] = useState<Quota[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const quotas: Quota[] = [
-    {
-      id: '1',
-      name: 'Deployed Model Count',
-      quotaId: 'deployed-model-count',
-      currentUsage: 0,
-      usagePercentage: 0,
-      quota: 100,
-    },
-    {
-      id: '2',
-      name: 'Eval Protocol Free Daily Credits',
-      quotaId: 'eval-protocol-free-daily-credits',
-      currentUsage: 0,
-      usagePercentage: 0,
-      quota: 0,
-    },
-    {
-      id: '3',
-      name: 'GLOBAL - A100 Count',
-      quotaId: 'global--a100-count',
-      currentUsage: 0,
-      usagePercentage: 0,
-      quota: 16,
-    },
-    {
-      id: '4',
-      name: 'GLOBAL - B200 Count',
-      quotaId: 'global--b200-count',
-      currentUsage: 0,
-      usagePercentage: 0,
-      quota: 16,
-    },
-    {
-      id: '5',
-      name: 'GLOBAL - H100 Count',
-      quotaId: 'global--h100-count',
-      currentUsage: 1,
-      usagePercentage: 6.25,
-      quota: 16,
-    },
-    {
-      id: '6',
-      name: 'GLOBAL - H200 Count',
-      quotaId: 'global--h200-count',
-      currentUsage: 0,
-      usagePercentage: 0,
-      quota: 16,
-    },
-    {
-      id: '7',
-      name: 'Job Submission Count',
-      quotaId: 'job-submission-count',
-      currentUsage: 0,
-      usagePercentage: 0,
-      quota: 8,
-    },
-  ];
+  useEffect(() => {
+    setLoading(true);
+    listQuotas(searchQuery || undefined)
+      .then(q => setQuotas(q))
+      .catch(err => console.error('Failed to fetch quotas:', err))
+      .finally(() => setLoading(false));
+  }, [searchQuery]);
 
-  const filteredQuotas = quotas.filter(
-    (q) =>
-      q.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      q.quotaId.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredQuotas = quotas;
 
   return (
     <div className="p-8">
@@ -135,7 +75,20 @@ export function QuotasPage() {
             </tr>
           </thead>
           <tbody>
-            {filteredQuotas.map((quota) => (
+            {loading ? (
+              <tr>
+                <td colSpan={5} className="px-6 py-8 text-center text-sm text-gray-400">
+                  Loading quotas...
+                </td>
+              </tr>
+            ) : filteredQuotas.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="px-6 py-8 text-center text-sm text-gray-400">
+                  No quotas found
+                </td>
+              </tr>
+            ) : (
+              filteredQuotas.map((quota) => (
               <tr key={quota.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
                 <td className="px-6 py-4">
                   <div className="text-sm">{quota.name}</div>
@@ -147,7 +100,7 @@ export function QuotasPage() {
                   </div>
                 </td>
                 <td className="px-6 py-4">
-                  <span className={`text-sm ${quota.quotaId === 'eval-protocol-free-daily-credits' && quota.currentUsage === 0 ? 'text-red-500' : ''}`}>
+                  <span className="text-sm">
                     {quota.currentUsage}
                   </span>
                 </td>
@@ -175,14 +128,7 @@ export function QuotasPage() {
                   </button>
                 </td>
               </tr>
-            ))}
-            {filteredQuotas.length === 0 && (
-              <tr>
-                <td colSpan={5} className="px-6 py-8 text-center text-sm text-gray-400">
-                  No quotas found
-                </td>
-              </tr>
-            )}
+            )))}
           </tbody>
         </table>
       </div>
