@@ -87,7 +87,7 @@ type baseScalingContext struct {
 	// Panic mode state
 	InPanicMode bool
 	// MetricTargets used to store multiple metrics
-	MetricTargets map[string]MetricTarget // key: metric name (e.g., "cpu", "gpu_cache_usage_perc")
+	MetricTargets map[string]MetricTarget // key: metric name (e.g., "cpu", "kv_cache_usage_perc")
 }
 
 type MetricTarget struct {

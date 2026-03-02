@@ -45,7 +45,7 @@ func TestComputeDesiredReplicas(t *testing.T) {
 			metricsSources: []autoscalingv1alpha1.MetricSource{
 				{
 					MetricSourceType: autoscalingv1alpha1.POD,
-					TargetMetric:     "gpu_cache_usage_perc",
+					TargetMetric:     "kv_cache_usage_perc",
 					TargetValue:      "50",
 				},
 			},
@@ -56,7 +56,7 @@ func TestComputeDesiredReplicas(t *testing.T) {
 			metricsSources: []autoscalingv1alpha1.MetricSource{
 				{
 					MetricSourceType: autoscalingv1alpha1.POD,
-					TargetMetric:     "gpu_cache_usage_perc",
+					TargetMetric:     "kv_cache_usage_perc",
 					TargetValue:      "50",
 				},
 				{

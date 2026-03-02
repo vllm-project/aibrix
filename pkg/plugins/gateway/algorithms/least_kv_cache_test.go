@@ -53,19 +53,19 @@ func TestLeastKvCache(t *testing.T) {
 			},
 			podMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {
-					metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.2},
+					metrics.KVCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.2},
 					metrics.CPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.3},
 				},
 				"p2": {
-					metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1},
+					metrics.KVCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1},
 					metrics.CPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.5},
 				},
 				"p3": {
-					metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.6},
+					metrics.KVCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.6},
 					metrics.CPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.6},
 				},
 				"p4": {
-					metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.6},
+					metrics.KVCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.6},
 					metrics.CPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.8},
 				},
 			},
@@ -93,15 +93,15 @@ func TestLeastKvCache(t *testing.T) {
 			},
 			podMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {
-					metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.2},
+					metrics.KVCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.2},
 					metrics.CPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.3},
 				},
 				"p2": {
-					metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.5},
+					metrics.KVCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.5},
 					metrics.CPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.5},
 				},
 				"p3": {
-					metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.3},
+					metrics.KVCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.3},
 					metrics.CPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.2},
 				},
 			},
@@ -120,7 +120,7 @@ func TestLeastKvCache(t *testing.T) {
 			},
 			podMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {
-					metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.2},
+					metrics.KVCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.2},
 					metrics.CPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.3},
 				},
 			},

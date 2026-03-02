@@ -55,7 +55,7 @@ func (r leastGpuCacheRouter) Route(ctx *types.RoutingContext, readyPodList types
 	var candidatePods []*v1.Pod
 
 	for _, pod := range readyPodList.All() {
-		gpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.GPUCacheUsagePerc)
+		gpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc)
 		if err != nil {
 			klog.Error(err)
 			continue

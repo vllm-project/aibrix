@@ -26,8 +26,8 @@ VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
     "vllm:num_requests_waiting": RenameStandardRule(
         "vllm:num_requests_waiting", "aibrix:queue_size"
     ),
-    "vllm:gpu_cache_usage_perc": RenameStandardRule(
-        "vllm:gpu_cache_usage_perc", "aibrix:gpu_cache_usage_perc"
+    "vllm:kv_cache_usage_perc": RenameStandardRule(
+        "vllm:kv_cache_usage_perc", "aibrix:kv_cache_usage_perc"
     ),
     # Token processing metrics
     "vllm:prompt_tokens_total": RenameStandardRule(
