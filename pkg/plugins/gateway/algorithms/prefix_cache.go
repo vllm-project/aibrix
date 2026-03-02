@@ -388,14 +388,14 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 		for _, pod := range leastReqPodList {
 			readyPodsMap[pod.Name] = struct{}{}
 		}
-		klog.InfoS("prefix_cache_load_imbalanced",
+		klog.V(4).InfoS("prefix_cache_load_imbalanced",
 			"request_id", ctx.RequestID,
 			"pod_request_count", getRequestCounts(p.cache, readyPods),
 			"target_pod_list", readyPodsMap)
 	}
 	// handle request with readyPodsMap from balanced or imbalanced filter
 	matchedPods, prefixHashes = p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
-	klog.InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
+	klog.V(4).InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
 
 	if len(matchedPods) > 0 {
 		targetPod = getTargetPodFromMatchedPods(p.cache, readyPods, matchedPods)

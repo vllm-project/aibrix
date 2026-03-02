@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -133,9 +134,8 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				HeaderUpdateTPM, fmt.Sprintf("%d", tpm))
 		}
 
-		var targetPod *v1.Pod
 		headers = buildEnvoyProxyHeaders(headers, HeaderRequestID, routerCtx.RequestID)
-		fields := s.requestEndHelper(routerCtx, targetPod, arrival, promptTokens, completionTokens, totalTokens)
+		fields := s.requestEndHelper(routerCtx, arrival, promptTokens, completionTokens, totalTokens)
 		klog.InfoS("request_end", fields...)
 	} else if b.ResponseBody.EndOfStream {
 		complete = true
@@ -230,10 +230,14 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 	return
 }
 
-func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, targetPod *v1.Pod, arrival time.Time,
+func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time.Time,
 	promptTokens, completionTokens, totalTokens int64) []interface{} {
 	requestID := routingCtx.RequestID
 	model := routingCtx.Model
+	var targetPod *v1.Pod
+	if routingCtx.HasRouted() {
+		targetPod = routingCtx.TargetPod()
+	}
 
 	fields := []interface{}{
 		"request_id", requestID,
@@ -248,9 +252,10 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, targetPod *v
 	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayCompletionTokenBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": cBucket})
 
 	if targetPod != nil {
+		outstandingRequestCount := math.Max(0, getRunningRequestsByPod(s, targetPod.Name, targetPod.Namespace)-1)
 		fields = append(fields,
 			"target_pod", targetPod.Name,
-			"outstanding_request_count", getRunningRequestsByPod(s, targetPod.Name, targetPod.Namespace))
+			"outstanding_request_count", outstandingRequestCount)
 	}
 
 	ttft := arrival.Sub(routingCtx.RequestTime)
@@ -286,15 +291,11 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, targetPod *v
 				"decode_time_taken":      fmt.Sprintf("%v", decodeTime),
 			})
 		}
-	} else {
-		fields = append(fields,
-			"routing_time_taken", routingCtx.RequestEndTime.Sub(routingCtx.RequestTime),
-		)
+	} else if routingCtx.Algorithm != "" {
+		fields = append(fields, "routing_time_taken", routingCtx.GetRoutingDelay())
 	}
 	fields = append(fields, "total_time_taken", routingCtx.Elapsed(time.Now()))
-	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTotalTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{
-		"bucket": durationBucketLabel(routingCtx.Elapsed(time.Now())),
-	})
+	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTotalTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(routingCtx.Elapsed(time.Now()))})
 	return fields
 }
 

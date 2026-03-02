@@ -339,6 +339,7 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList, 
 		ctx.SetTargetPod(readyPods[0])
 		return ctx.TargetAddress(), nil
 	}
+	utils.CryptoShuffle(readyPods)
 
 	return router.Route(ctx, &utils.PodArray{Pods: readyPods})
 }
