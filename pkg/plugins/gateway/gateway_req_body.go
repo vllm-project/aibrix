@@ -137,7 +137,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			request_count = getRunningRequestsByPod(s, targetPodName, targetNamespace)
 		}
 		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream, "routing_strategy", routingAlgorithm,
-			"target_pod", targetPodName, "target_pod_ip", targetPodIP, "outstanding_requests", request_count, "routing_duration", routingCtx.GetRoutingDelay())
+			"target_pod", targetPodName, "target_pod_ip", targetPodIP, "outstanding_requests", request_count, "routing_time_taken", routingCtx.GetRoutingDelay())
 	}
 
 	routingCtx.RequestEndTime = time.Now()
