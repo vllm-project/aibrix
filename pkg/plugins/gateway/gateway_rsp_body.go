@@ -29,6 +29,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/ssestream"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -233,7 +234,10 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 	promptTokens, completionTokens, totalTokens int64) []interface{} {
 	requestID := routingCtx.RequestID
 	model := routingCtx.Model
-	targetPod := routingCtx.TargetPod()
+	var targetPod *v1.Pod
+	if routingCtx.HasRouted() {
+		targetPod = routingCtx.TargetPod()
+	}
 
 	fields := []interface{}{
 		"request_id", requestID,
