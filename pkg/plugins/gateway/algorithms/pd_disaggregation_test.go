@@ -19,9 +19,11 @@ package routingalgorithms
 import (
 	"context"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -1524,88 +1526,62 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 func TestIsPodSuitableForPromptLength(t *testing.T) {
 	tests := []struct {
 		name         string
-		podLabels    map[string]string
+		minLen       int
+		maxLen       int
 		promptLength int
 		expected     bool
 	}{
 		{
-			name: "no prompt length range configured",
-			podLabels: map[string]string{
-				"roleset-name": "test",
-				"role-name":    "prefill",
-			},
+			name:         "no prompt length range configured",
+			minLen:       0,
+			maxLen:       math.MaxInt32,
 			promptLength: 1000,
 			expected:     true,
 		},
 		{
-			name: "prompt length exactly at min",
-			podLabels: map[string]string{
-				"roleset-name":      "test",
-				"role-name":         "prefill",
-				"prompt-min-length": "1000",
-				"prompt-max-length": "2000",
-			},
+			name:         "prompt length exactly at min",
+			minLen:       1000,
+			maxLen:       2000,
 			promptLength: 1000,
 			expected:     true,
 		},
 		{
-			name: "prompt length exactly at max",
-			podLabels: map[string]string{
-				"roleset-name":      "test",
-				"role-name":         "prefill",
-				"prompt-min-length": "1000",
-				"prompt-max-length": "2000",
-			},
+			name:         "prompt length exactly at max",
+			minLen:       1000,
+			maxLen:       2000,
 			promptLength: 2000,
 			expected:     true,
 		},
 		{
-			name: "prompt length in middle of range",
-			podLabels: map[string]string{
-				"roleset-name":      "test",
-				"role-name":         "prefill",
-				"prompt-min-length": "1000",
-				"prompt-max-length": "2000",
-			},
+			name:         "prompt length in middle of range",
+			minLen:       1000,
+			maxLen:       2000,
 			promptLength: 1500,
 			expected:     true,
 		},
 		{
-			name: "prompt length below min",
-			podLabels: map[string]string{
-				"roleset-name":      "test",
-				"role-name":         "prefill",
-				"prompt-min-length": "1000",
-				"prompt-max-length": "2000",
-			},
+			name:         "prompt length below min",
+			minLen:       1000,
+			maxLen:       2000,
 			promptLength: 900,
 			expected:     false,
 		},
 		{
-			name: "prompt length above max",
-			podLabels: map[string]string{
-				"roleset-name":      "test",
-				"role-name":         "prefill",
-				"prompt-min-length": "1000",
-				"prompt-max-length": "2000",
-			},
+			name:         "prompt length above max",
+			minLen:       1000,
+			maxLen:       2000,
 			promptLength: 2100,
 			expected:     false,
 		},
 		{
-			name: "prompt length min larger than max",
-			podLabels: map[string]string{
-				"roleset-name":      "test",
-				"role-name":         "prefill",
-				"prompt-min-length": "2000",
-				"prompt-max-length": "1000",
-			},
+			name:         "prompt length min larger than max",
+			minLen:       2000,
+			maxLen:       1000,
 			promptLength: 1000,
 			expected:     false,
 		},
 	}
 
-	// Create a router instance
 	router := &pdRouter{
 		cache:                 cache.NewForTest(),
 		tokenizer:             tokenizer.NewCharacterTokenizer(),
@@ -1613,26 +1589,25 @@ func TestIsPodSuitableForPromptLength(t *testing.T) {
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            &http.Client{},
 	}
+	ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", "req", "user")
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create test pod
-			pod := &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "test-pod",
-					Labels: tt.podLabels,
-				},
-				Status: v1.PodStatus{
-					Conditions: []v1.PodCondition{
-						{Type: v1.PodReady, Status: v1.ConditionTrue},
-					},
-				},
-			}
-
-			result := router.isPodSuitableForPromptLength(pod, tt.promptLength)
+			config := pdConfigAnnotation(tt.minLen, tt.maxLen, false)
+			pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Annotations: map[string]string{constants.ModelAnnoConfig: config}}}
+			result := router.isPodSuitableForPromptLength(ctx, pod, tt.promptLength)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// pdConfigAnnotation returns model.aibrix.ai/config annotation JSON for prompt length bucketing.
+func pdConfigAnnotation(minLen, maxLen int, combined bool) string {
+	combinedStr := "false"
+	if combined {
+		combinedStr = "true"
+	}
+	return `{"defaultProfile":"pd","profiles":{"pd":{"routingStrategy":"pd","promptLenBucketMinLength":` + strconv.Itoa(minLen) + `,"promptLenBucketMaxLength":` + strconv.Itoa(maxLen) + `,"combined":` + combinedStr + `}}}`
 }
 
 func TestFilterPrefillDecodePods_SelectCorrectBucketPods(t *testing.T) {
@@ -1647,10 +1622,13 @@ func TestFilterPrefillDecodePods_SelectCorrectBucketPods(t *testing.T) {
 		selectionCounts:       map[string]int64{},
 	}
 
-	prefillOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill", PromptMinLength: "0", PromptMaxLength: "1000000"}}}
-	prefillBlocked := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-blocked", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill", PromptMinLength: "1000000", PromptMaxLength: "2000000"}}}
-	decodeOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode", PromptMinLength: "0", PromptMaxLength: "1000000"}}}
-	decodeBlocked := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-blocked", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode", PromptMinLength: "1000000", PromptMaxLength: "2000000"}}}
+	// Pods use model.aibrix.ai/config annotation (not labels) for prompt length bucketing.
+	configOK := pdConfigAnnotation(0, 1000000, false)
+	configBlocked := pdConfigAnnotation(1000000, 2000000, false)
+	prefillOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill"}, Annotations: map[string]string{constants.ModelAnnoConfig: configOK}}}
+	prefillBlocked := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-blocked", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill"}, Annotations: map[string]string{constants.ModelAnnoConfig: configBlocked}}}
+	decodeOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode"}, Annotations: map[string]string{constants.ModelAnnoConfig: configOK}}}
+	decodeBlocked := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-blocked", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode"}, Annotations: map[string]string{constants.ModelAnnoConfig: configBlocked}}}
 
 	ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "short", "req-bucket", "user")
 	prefill, decode, err := r.filterPrefillDecodePods(ctx, []*v1.Pod{prefillOK, prefillBlocked, decodeOK, decodeBlocked})
@@ -1662,7 +1640,6 @@ func TestFilterPrefillDecodePods_SelectCorrectBucketPods(t *testing.T) {
 }
 
 func TestFilterPrefillDecodePods_CombinedFallbackBucketing(t *testing.T) {
-	// os.Setenv("AIBRIX_PROMPT_LENGTH_BUCKETING", "true")
 	aibrixPromptLengthBucketing = true
 
 	r := pdRouter{
@@ -1671,11 +1648,16 @@ func TestFilterPrefillDecodePods_CombinedFallbackBucketing(t *testing.T) {
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            &http.Client{},
+		selectionCounts:       map[string]int64{},
 	}
 
-	combined := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "combined-1", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "combined", CombinedIdentifier: "true", PromptMinLength: "0", PromptMaxLength: "1000000"}}}
-	prefillOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill", PromptMinLength: "0", PromptMaxLength: "1"}}}
-	decodeOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode", PromptMinLength: "0", PromptMaxLength: "1"}}}
+	// prefill/decode with 0-1 range: blocked for "say test" (prompt length > 1)
+	// combined with 0-1000000 + combined:true: suitable for fallback
+	configBlocked := pdConfigAnnotation(0, 1, false)
+	configCombined := pdConfigAnnotation(0, 1000000, true)
+	combined := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "combined-1", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "combined"}, Annotations: map[string]string{constants.ModelAnnoConfig: configCombined}}}
+	prefillOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill"}, Annotations: map[string]string{constants.ModelAnnoConfig: configBlocked}}}
+	decodeOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode"}, Annotations: map[string]string{constants.ModelAnnoConfig: configBlocked}}}
 
 	ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "say test", "req-combined", "user")
 	prefill, decode, err := r.filterPrefillDecodePods(ctx, []*v1.Pod{prefillOK, decodeOK, combined})
@@ -1716,11 +1698,14 @@ func TestFilterPrefillDecodePods_CombinedPickImbalance(t *testing.T) {
 		},
 	}
 
+	configPrefillDecode := pdConfigAnnotation(0, 1000000, false)
+	configCombined := pdConfigAnnotation(0, 1000000, true)
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			prefill := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-high", Namespace: "default", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill", constants.ModelLabelName: "test-model", PromptMinLength: "0", PromptMaxLength: "1000000"}}}
-			decode := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-mid", Namespace: "default", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode", constants.ModelLabelName: "test-model", PromptMinLength: "0", PromptMaxLength: "1000000"}}}
-			combined := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "combined-low", Namespace: "default", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "combined", constants.ModelLabelName: "test-model", CombinedIdentifier: "true", PromptMinLength: "0", PromptMaxLength: "1000000"}}}
+			prefill := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-high", Namespace: "default", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill", constants.ModelLabelName: "test-model"}, Annotations: map[string]string{constants.ModelAnnoConfig: configPrefillDecode}}}
+			decode := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-mid", Namespace: "default", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode", constants.ModelLabelName: "test-model"}, Annotations: map[string]string{constants.ModelAnnoConfig: configPrefillDecode}}}
+			combined := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "combined-low", Namespace: "default", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "combined", constants.ModelLabelName: "test-model"}, Annotations: map[string]string{constants.ModelAnnoConfig: configCombined}}}
 
 			metricsMap := map[string]map[string]metrics.MetricValue{}
 			vecDrain100 := model.Vector{&model.Sample{Metric: model.Metric{"__name__": "drain_rate_1m"}, Value: model.SampleValue(100)}}

@@ -181,18 +181,25 @@ func GetLabelValueForKey(metric *dto.Metric, key string) (string, error) {
 	return "", fmt.Errorf("Label %s not found", key)
 }
 
-func GetCounterGaugeValue(metric *dto.Metric, metricType dto.MetricType) (float64, error) {
-	if metricType == dto.MetricType_COUNTER {
-		return metric.GetCounter().GetValue(), nil
-	} else if metricType == dto.MetricType_GAUGE {
-		return metric.GetGauge().GetValue(), nil
+func GetCounterGaugeValue(metric *dto.Metric, metricType dto.MetricType) (*SimpleMetricValue, error) {
+	labels := make(map[string]string)
+	for _, labelPair := range metric.Label {
+		labels[labelPair.GetName()] = labelPair.GetValue()
 	}
-	return 0, fmt.Errorf("Metric type not supported: %v", metricType)
+	switch metricType {
+	case dto.MetricType_COUNTER:
+		return &SimpleMetricValue{Value: metric.GetCounter().GetValue(), Labels: labels}, nil
+	case dto.MetricType_GAUGE:
+		return &SimpleMetricValue{Value: metric.GetGauge().GetValue(), Labels: labels}, nil
+	default:
+		return nil, fmt.Errorf("Metric type not supported: %v", metricType)
+	}
 }
 
 func GetHistogramValue(metric *dto.Metric) (*HistogramMetricValue, error) {
 	histogram := &HistogramMetricValue{
 		Buckets: make(map[string]float64),
+		Labels:  make(map[string]string),
 	}
 	histogramMetric := metric.GetHistogram()
 	if histogramMetric == nil {
@@ -204,6 +211,9 @@ func GetHistogramValue(metric *dto.Metric) (*HistogramMetricValue, error) {
 	for _, bucket := range histogramMetric.GetBucket() {
 		bound := fmt.Sprintf("%f", bucket.GetUpperBound())
 		histogram.Buckets[bound] = float64(bucket.GetCumulativeCount())
+	}
+	for _, labelPair := range metric.Label {
+		histogram.Labels[labelPair.GetName()] = labelPair.GetValue()
 	}
 	return histogram, nil
 }

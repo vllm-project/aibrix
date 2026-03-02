@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-qwen3-8b
+  labels:
+    model.aibrix.ai/name: "qwen3-8b"
+    model.aibrix.ai/port: "8000"
+    adapter.model.aibrix.ai/enabled: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      adapter.model.aibrix.ai/enabled: "true"
+      model.aibrix.ai/name: "qwen3-8b"
+      app: "mock-qwen3-8b"
+  template:
+    metadata:
+      labels:
+        adapter.model.aibrix.ai/enabled: "true"
+        model.aibrix.ai/name: "qwen3-8b"
+        app: "mock-qwen3-8b"
+      annotations:
+        model.aibrix.ai/config: |
+          {
+            "defaultProfile": "least-request",
+            "profiles": {
+              "least-request": {
+                "routingStrategy": "least-request"
+              },
+              "throughput": {
+                "routingStrategy": "throughput"
+              }
+            }
+          }
+    spec:
+      serviceAccountName: mocked-app-sa
+      containers:
+        - name: llm-engine
+          image: aibrix/vllm-mock:nightly
+          command:
+            - python3
+            - app.py
+            - --api_key
+            - test-key-1234567890

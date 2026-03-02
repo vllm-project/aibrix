@@ -33,6 +33,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -50,11 +51,10 @@ const (
 	LLMEngineIdentifier           string                 = constants.ModelLabelEngine
 	PDRoleSetIdentifier           string                 = "roleset-name"
 	PDRoleIdentifier              string                 = "role-name"
-	CombinedIdentifier            string                 = "model.aibrix.ai/combined"
 	RoleReplicaIndex              string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	PodGroupIndex                 string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
-	PromptMinLength               string                 = "prompt-min-length"
-	PromptMaxLength               string                 = "prompt-max-length"
+	PromptLenBucketMinLength      string                 = "prompt-len-bucket-min-length"
+	PromptLenBucketMaxLength      string                 = "prompt-len-bucket-max-length"
 	defaultPrefillRequestTimeout  int                    = 30
 
 	defaultMaxRequest                   float64 = 32
@@ -73,6 +73,9 @@ const (
 	// KV connector types for different backends
 	KVConnectorTypeSHFS = "shfs" // Default - AIBrix SHFS/KVCacheManager (GPU)
 	KVConnectorTypeNIXL = "nixl" // NIXL for Neuron (uses disagg_prefill_resp wrapper)
+
+	HeaderPrefillTargetPodIP = "prefill-target-pod-ip"
+	HeaderPrefillTargetPod   = "prefill-target-pod"
 )
 
 var (
@@ -158,28 +161,33 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 	// Validate engine consistency across all prefill pods
 	llmEngine, err := validateAndGetLLMEngine(readyPodList.All())
 	if err != nil {
-		metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRouteValidateLLMEngineFail, "status_code": "400"})
 		return "", fmt.Errorf("engine validation failed for request %s: %w", ctx.RequestID, err)
 	}
 
 	prefillPod, decodePod, err := r.filterPrefillDecodePods(ctx, readyPodList.All())
 	if err != nil {
-		metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRouteFilterPrefillDecodePodsFail, "status_code": "400"})
 		return "", fmt.Errorf("failed to filter prefill/decode pods for request %s: %w", ctx.RequestID, err)
 	}
 
 	if prefillPod != nil {
 		klog.InfoS("selected prefill/decode pods", "request_id", ctx.RequestID, "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)
+		if ctx.RespHeaders == nil {
+			ctx.RespHeaders = make(map[string]string)
+		}
+		ctx.RespHeaders[HeaderPrefillTargetPod] = prefillPod.Name
+		ctx.RespHeaders[HeaderPrefillTargetPodIP] = prefillPod.Status.PodIP
 		err = r.doPrefillRequest(ctx, prefillPod, llmEngine)
 		if err != nil {
-			metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+			metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 				map[string]string{"status": pdRoutePrefillRequestError, "status_code": "500"})
 			klog.ErrorS(err, pdRoutePrefillRequestError, "request_id", ctx.RequestID)
 			return "", fmt.Errorf("prefill request failed for request %s: %w", ctx.RequestID, err)
 		}
-		metrics.EmitCounterMetric(ctx, nil, metrics.GatewayPrefillRequestSuccessTotal, 1.0,
+		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestSuccessTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRoutePrefillRequestSuccess, "status_code": "200"})
 	}
 
@@ -203,7 +211,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		klog.V(4).InfoS("prompt length based filtering enabled", "request_id", routingCtx.RequestID, "prompt_length", promptLength)
 	}
 
-	prefillPods, decodePods, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods := r.collectAndBucketPods(readyPods, promptLength)
+	prefillPods, decodePods, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods := r.collectAndBucketPods(routingCtx, readyPods, promptLength)
 	combinedAvailable := aibrixPromptLengthBucketing && len(combinedPods) > 0
 	if len(prefillPods) == 0 && !combinedAvailable {
 		return nil, nil, fmt.Errorf("prefill pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
@@ -509,8 +517,8 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	r.selectionCounts[targetDecodePod.Name]++
 	r.countersMu.Unlock()
 
-	metrics.EmitCounterMetric(routingCtx, targetPrefillPod, metrics.PDSelectedPrefillPodTotal, 1.0, nil)
-	metrics.EmitCounterMetric(routingCtx, targetDecodePod, metrics.PDSelectedDecodePodTotal, 1.0, nil)
+	metrics.EmitMetricToPrometheus(routingCtx, targetPrefillPod, metrics.PDSelectedPrefillPodTotal, &metrics.SimpleMetricValue{Value: 1.0}, nil)
+	metrics.EmitMetricToPrometheus(routingCtx, targetDecodePod, metrics.PDSelectedDecodePodTotal, &metrics.SimpleMetricValue{Value: 1.0}, nil)
 
 	return targetPrefillPod, targetDecodePod, nil
 }
@@ -684,7 +692,7 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 	resp, err := r.httpClient.Do(req)
 	if err != nil {
 		status, code := metrics.HttpFailureStatusCode(ctx, err, nil)
-		metrics.EmitCounterMetric(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+		metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": status, "status_code": code})
 		return nil, fmt.Errorf("failed to execute http prefill request: %w", err)
 	}
@@ -701,7 +709,7 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
 		status, code := metrics.HttpFailureStatusCode(ctx, nil, resp)
-		metrics.EmitCounterMetric(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
+		metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": status, "status_code": code})
 		return nil, fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
 	}
@@ -932,8 +940,12 @@ func (t *PrefillRequestTracker) GetPrefillRequestCountsForPod(podname string) in
 	return int(countInterface.(*atomic.Int32).Load())
 }
 
-func (r *pdRouter) isPodSuitableForPromptLength(pod *v1.Pod, promptLength int) bool {
-	minLength, maxLength := r.getPodPromptRange(pod)
+func (r *pdRouter) isPodSuitableForPromptLength(routingCtx *types.RoutingContext, pod *v1.Pod, promptLength int) bool {
+	profile := configprofiles.ResolveProfileFromPod(pod, routingCtx.ReqConfigProfile)
+	if profile == nil {
+		return false
+	}
+	minLength, maxLength := profile.PromptLenBucketMinLength, profile.PromptLenBucketMaxLength
 
 	if minLength > maxLength {
 		return false
@@ -946,31 +958,15 @@ func (r *pdRouter) isPodSuitableForPromptLength(pod *v1.Pod, promptLength int) b
 	return promptLength >= minLength && promptLength <= maxLength
 }
 
-// getPodPromptRange retrieves the minimum and maximum prompt lengths from pod labels.
-func (r *pdRouter) getPodPromptRange(pod *v1.Pod) (int, int) {
-	minLength := 0
-	maxLength := math.MaxInt32
-
-	if val, ok := pod.Labels[PromptMinLength]; ok {
-		if parsed, err := strconv.Atoi(val); err == nil {
-			minLength = parsed
-		}
+func isCombinedPod(routingCtx *types.RoutingContext, pod *v1.Pod) bool {
+	profile := configprofiles.ResolveProfileFromPod(pod, routingCtx.ReqConfigProfile)
+	if profile == nil {
+		return false
 	}
-
-	if val, ok := pod.Labels[PromptMaxLength]; ok {
-		if parsed, err := strconv.Atoi(val); err == nil {
-			maxLength = parsed
-		}
-	}
-
-	return minLength, maxLength
+	return profile.Combined
 }
 
-func isCombinedPod(pod *v1.Pod) bool {
-	return pod != nil && pod.Labels[CombinedIdentifier] == "true"
-}
-
-func (r *pdRouter) collectAndBucketPods(readyPods []*v1.Pod, promptLength int) ([]*v1.Pod, []*v1.Pod, []*v1.Pod, []*v1.Pod, []*v1.Pod) {
+func (r *pdRouter) collectAndBucketPods(routingCtx *types.RoutingContext, readyPods []*v1.Pod, promptLength int) ([]*v1.Pod, []*v1.Pod, []*v1.Pod, []*v1.Pod, []*v1.Pod) {
 	prefillPods, decodePods := []*v1.Pod{}, []*v1.Pod{}
 	promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, promptLengthBucketingCombinedPods := []*v1.Pod{}, []*v1.Pod{}, []*v1.Pod{}
 
@@ -991,16 +987,16 @@ func (r *pdRouter) collectAndBucketPods(readyPods []*v1.Pod, promptLength int) (
 		switch pod.Labels[PDRoleIdentifier] {
 		case "prefill":
 			prefillPods = append(prefillPods, pod)
-			if aibrixPromptLengthBucketing && r.isPodSuitableForPromptLength(pod, promptLength) {
+			if aibrixPromptLengthBucketing && r.isPodSuitableForPromptLength(routingCtx, pod, promptLength) {
 				promptLengthBucketingPrefillPods = append(promptLengthBucketingPrefillPods, pod)
 			}
 		case "decode":
 			decodePods = append(decodePods, pod)
-			if aibrixPromptLengthBucketing && r.isPodSuitableForPromptLength(pod, promptLength) {
+			if aibrixPromptLengthBucketing && r.isPodSuitableForPromptLength(routingCtx, pod, promptLength) {
 				promptLengthBucketingDecodePods = append(promptLengthBucketingDecodePods, pod)
 			}
 		default:
-			if aibrixPromptLengthBucketing && isCombinedPod(pod) && r.isPodSuitableForPromptLength(pod, promptLength) {
+			if aibrixPromptLengthBucketing && isCombinedPod(routingCtx, pod) && r.isPodSuitableForPromptLength(routingCtx, pod, promptLength) {
 				promptLengthBucketingCombinedPods = append(promptLengthBucketingCombinedPods, pod)
 			}
 		}

@@ -25,13 +25,22 @@ spec:
                 prometheus.io/scrape: "true"
                 prometheus.io/port: "30000"
                 prometheus.io/path: "/metrics"
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "promptLenBucketMinLength": 0,
+                        "promptLenBucketMaxLength": 2048
+                      }
+                    }
+                  }
               labels:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
-                prompt-min-length: "0"
-                prompt-max-length: "2048"
             spec:
               nodeSelector:
                 kubernetes.io/hostname: 10.0.151.187
@@ -155,13 +164,22 @@ spec:
                 prometheus.io/scrape: "true"
                 prometheus.io/port: "30000"
                 prometheus.io/path: "/metrics"
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "promptLenBucketMinLength": 0,
+                        "promptLenBucketMaxLength": 2048
+                      }
+                    }
+                  }
               labels:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
-                prompt-min-length: "0"
-                prompt-max-length: "2048"
             spec:
               nodeSelector:
                 kubernetes.io/hostname: 10.0.151.187
@@ -304,13 +322,22 @@ spec:
                 prometheus.io/scrape: "true"
                 prometheus.io/port: "30000"
                 prometheus.io/path: "/metrics"
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "promptLenBucketMinLength": 2049,
+                        "promptLenBucketMaxLength": 4096
+                      }
+                    }
+                  }
               labels:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
-                prompt-min-length: "2049"
-                prompt-max-length: "4096"
             spec:
               nodeSelector:
                 kubernetes.io/hostname: 10.0.151.187
@@ -434,13 +461,22 @@ spec:
                 prometheus.io/scrape: "true"
                 prometheus.io/port: "30000"
                 prometheus.io/path: "/metrics"
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "promptLenBucketMinLength": 2049,
+                        "promptLenBucketMaxLength": 4096
+                      }
+                    }
+                  }
               labels:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
-                prompt-min-length: "2049"
-                prompt-max-length: "4096"
             spec:
               nodeSelector:
                 kubernetes.io/hostname: 10.0.151.187
@@ -584,13 +620,22 @@ spec:
                 prometheus.io/scrape: "true"
                 prometheus.io/port: "30000"
                 prometheus.io/path: "/metrics"
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "promptLenBucketMinLength": 0,
+                        "combined": true
+                      }
+                    }
+                  }
               labels:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
-                prompt-min-length: "0"
-                model.aibrix.ai/combined: "true"
             spec:
               nodeSelector:
                 kubernetes.io/hostname: 10.1.9.155

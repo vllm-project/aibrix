@@ -295,11 +295,11 @@ func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto
 	if metric.MetricType.IsRawMetric() {
 		switch metric.MetricType.Raw {
 		case Gauge, Counter:
-			value, err := GetCounterGaugeValue(firstMetric, metricFamily.GetType())
+			simpleValue, err := GetCounterGaugeValue(firstMetric, metricFamily.GetType())
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse counter/gauge metric %s: %v", rawMetricName, err)
 			}
-			return &SimpleMetricValue{Value: value}, nil
+			return simpleValue, nil
 
 		case Histogram:
 			histValue, err := GetHistogramValue(firstMetric)
@@ -355,7 +355,7 @@ func (ef *EngineMetricsFetcher) fetchAllMetricsFromURL(ctx context.Context, url 
 
 	resp, err := ef.client.Do(req)
 	if err != nil {
-		EmitCounterMetric(nil, nil, LLMEngineMetricsQueryFail, 1.0, nil)
+		EmitMetricToPrometheus(nil, nil, LLMEngineMetricsQueryFail, &SimpleMetricValue{Value: 1.0}, nil)
 		return nil, fmt.Errorf("failed to fetch metrics from %s: %v", url, err)
 	}
 	defer func() {

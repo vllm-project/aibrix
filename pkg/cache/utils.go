@@ -76,6 +76,69 @@ func buildMetricLabels(pod *Pod, engineType string, model string) ([]string, []s
 	return labelNames, labelValues
 }
 
+func mergeLabelPairs(primaryNames, primaryValues, secondaryNames, secondaryValues []string) ([]string, []string) {
+	pLen := len(primaryNames)
+	if len(primaryValues) < pLen {
+		klog.Warningf("primary labels length mismatch: names=%d, values=%d", pLen, len(primaryValues))
+		pLen = len(primaryValues)
+	}
+	sLen := len(secondaryNames)
+	if len(secondaryValues) < sLen {
+		klog.Warningf("secondary labels length mismatch: names=%d, values=%d", sLen, len(secondaryValues))
+		sLen = len(secondaryValues)
+	}
+
+	secondaryMap := make(map[string]string, sLen)
+	secondaryOrder := make([]string, 0, sLen)
+	for i := 0; i < sLen; i++ {
+		n := secondaryNames[i]
+		if n == "" {
+			continue
+		}
+		if _, exists := secondaryMap[n]; !exists {
+			secondaryOrder = append(secondaryOrder, n)
+		}
+		secondaryMap[n] = secondaryValues[i] // last-wins
+	}
+
+	outNames := make([]string, 0, pLen+len(secondaryOrder))
+	outValues := make([]string, 0, pLen+len(secondaryOrder))
+	seen := make(map[string]struct{}, pLen+len(secondaryOrder))
+
+	// primary first, but allow secondary override
+	for i := 0; i < pLen; i++ {
+		n := primaryNames[i]
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		v := primaryValues[i]
+		if sv, ok := secondaryMap[n]; ok {
+			v = sv
+		}
+		outNames = append(outNames, n)
+		outValues = append(outValues, v)
+	}
+
+	// then add secondary-only labels (use map value to respect last-wins)
+	for _, n := range secondaryOrder {
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		outNames = append(outNames, n)
+		outValues = append(outValues, secondaryMap[n])
+	}
+
+	return outNames, outValues
+}
+
 func shouldSkipMetric(podName string, metricName string) bool {
 	if strings.Contains(podName, "prefill") && isDecodeOnlyMetric(metricName) {
 		return true

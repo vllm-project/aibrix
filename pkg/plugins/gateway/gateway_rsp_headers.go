@@ -44,7 +44,10 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, mo
 	headers := []*configPb.HeaderValueOption{}
 	headers = buildEnvoyProxyHeaders(headers, HeaderWentIntoReqHeaders, "true", HeaderRequestID, requestID)
 	if routerCtx != nil && routerCtx.HasRouted() {
-		headers = buildEnvoyProxyHeaders(headers, HeaderTargetPod, routerCtx.TargetAddress())
+		headers = buildEnvoyProxyHeaders(headers,
+			HeaderRoutingStrategy, string(routerCtx.Algorithm),
+			HeaderTargetPod, routerCtx.TargetPod().Name,
+			HeaderTargetPodIP, routerCtx.TargetAddress())
 	}
 
 	if routerCtx != nil && routerCtx.RespHeaders != nil {

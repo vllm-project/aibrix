@@ -1,6 +1,7 @@
 resources:
   - ../templates/deployment
   - components.yaml
+  - config-profile.yaml
 
 # enable following patch when we test lora + api-key
 patches:
