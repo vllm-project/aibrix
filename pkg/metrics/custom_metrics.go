@@ -82,11 +82,6 @@ func defaultSetGaugeMetric(name string, help string, value float64, labelNames [
 		customGaugesMu.Unlock()
 	}
 
-	if len(canonicalNames) == 0 {
-		gauge.WithLabelValues(labelValues...).Set(value)
-		return
-	}
-
 	orderedValues := make([]string, len(canonicalNames))
 	for i, ln := range canonicalNames {
 		orderedValues[i] = labelValueMap[ln]
@@ -150,11 +145,6 @@ func defaultIncrementCounterMetric(name string, help string, value float64, labe
 			canonicalNames = namesCopy
 		}
 		customCountersMu.Unlock()
-	}
-
-	if len(canonicalNames) == 0 {
-		counter.WithLabelValues(labelValues...).Add(value)
-		return
 	}
 
 	orderedValues := make([]string, len(canonicalNames))
