@@ -103,7 +103,21 @@ func (r *DeploymentCustomDefaulter) injectAIBrixRuntime(deployment *appsv1.Deplo
 	}
 
 	// Ensure the artifacts download path is shared with the sidecar container
-	if !utils.HasVolume(podSpec.Volumes, DefaultAdapterVolumeName) {
+	foundEmptyDirVolume := false
+	for i := range podSpec.Volumes {
+		v := &podSpec.Volumes[i]
+		if v.Name == DefaultAdapterVolumeName {
+			if v.EmptyDir == nil {
+				// Volume with same name exists but is not EmptyDir. Overwrite to ensure correct type.
+				v.VolumeSource = corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				}
+			}
+			foundEmptyDirVolume = true
+			break
+		}
+	}
+	if !foundEmptyDirVolume {
 		podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
 			Name: DefaultAdapterVolumeName,
 			VolumeSource: corev1.VolumeSource{

@@ -561,6 +561,13 @@ The runtime sidecar:
 3. Kubernetes secrets configured with storage credentials
 4. Shared volume between runtime and engine containers
 
+.. note::
+
+    When the AIBrix sidecar injection webhook is enabled, AIBrix injects a shared volume named
+    ``adapter-storage`` mounted at ``/tmp/aibrix/adapters`` into both the runtime and engine containers.
+    The runtime downloads LoRA adapter artifacts into this directory by default. See
+    ``DefaultAdapterVolumeName`` and ``DefaultAdapterMountPath`` in ``pkg/webhook/sidecar_injection.go``.
+
 Setup: AWS S3 Storage
 """"""""""""""""""""""
 

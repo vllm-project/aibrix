@@ -108,7 +108,21 @@ func (r *StormServiceCustomDefaulter) injectAIBrixRuntime(stormService *orchestr
 		}
 
 		// Ensure the artifacts download path is shared with the sidecar container
-		if !utils.HasVolume(role.Template.Spec.Volumes, DefaultAdapterVolumeName) {
+		foundEmptyDirVolume := false
+		for i := range role.Template.Spec.Volumes {
+			v := &role.Template.Spec.Volumes[i]
+			if v.Name == DefaultAdapterVolumeName {
+				if v.EmptyDir == nil {
+					// Volume with same name exists but is not EmptyDir. Overwrite to ensure correct type.
+					v.VolumeSource = corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					}
+				}
+				foundEmptyDirVolume = true
+				break
+			}
+		}
+		if !foundEmptyDirVolume {
 			role.Template.Spec.Volumes = append(role.Template.Spec.Volumes, corev1.Volume{
 				Name: DefaultAdapterVolumeName,
 				VolumeSource: corev1.VolumeSource{
