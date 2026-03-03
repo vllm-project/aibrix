@@ -213,7 +213,9 @@ type Scores struct {
 // Pods without PodGroupIndex label are also included for backward compatibility.
 func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, int, *v1.Pod, error) {
 	// Reset isMultiPort flag to ensure it's based on current pod set
-	r.prefillRequestTracker.isMultiPort = false
+	if r.prefillRequestTracker != nil {
+		r.prefillRequestTracker.isMultiPort = false
+	}
 
 	var promptLength int
 	if aibrixPromptLengthBucketing {
@@ -245,15 +247,21 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		}
 	}
 
-	for _, pod := range prefillPods {
-		if _, exsit := pod.Labels[dpSizeIdentifier]; exsit {
-			r.prefillRequestTracker.isMultiPort = true
-			break
+	if r.prefillRequestTracker != nil {
+		for _, pod := range prefillPods {
+			if _, exsit := pod.Labels[dpSizeIdentifier]; exsit {
+				r.prefillRequestTracker.isMultiPort = true
+				break
+			}
 		}
 	}
 
 	// check for prefill and decode imbalance
-	targetPod, targetPort, isImbalanced := r.loadImbalanceSelectPrefillPod(prefillPods, r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods))
+	podRequestCount := make(map[string]int32)
+	if r.prefillRequestTracker != nil {
+		podRequestCount = r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods)
+	}
+	targetPod, targetPort, isImbalanced := r.loadImbalanceSelectPrefillPod(prefillPods, podRequestCount)
 	if isImbalanced {
 		klog.InfoS("load imbalance detected, selecting least-loaded prefill pod", "request_id", routingCtx.RequestID, "selected_prefill_pod", targetPod.Name, "port", targetPort)
 		prefillPods = []*v1.Pod{targetPod}
@@ -304,7 +312,11 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 	}
 
 	if maxValue-minValue > 32 && len(targetPods) > 0 {
-		if r.prefillRequestTracker.isMultiPort {
+		isMultiPort := false
+		if r.prefillRequestTracker != nil {
+			isMultiPort = r.prefillRequestTracker.isMultiPort
+		}
+		if isMultiPort {
 			targetPod, targetPort, _ = utils.FilterPodByPodNameWithPort(targetPods[rand.Intn(len(targetPods))], readyPods)
 		} else {
 			targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
@@ -426,16 +438,21 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 	for _, pod := range prefillPods {
 		var reqCnt float64
 		var bestPort int
-		ports := r.prefillRequestTracker.getMultiPortsFromPod(pod)
+		ports := []int{}
+		isMultiPort := false
+		if r.prefillRequestTracker != nil {
+			ports = r.prefillRequestTracker.getMultiPortsFromPod(pod)
+			isMultiPort = r.prefillRequestTracker.isMultiPort
+		}
 		// For multi-port scenario, select port with least request count
-		if r.prefillRequestTracker.isMultiPort && len(ports) > 0 {
+		if isMultiPort && len(ports) > 0 {
 			bestPort = ports[0]
 			minReqCnt := float64(math.MaxFloat64)
 			for _, port := range ports {
 				// For multi-port scenario, use pod:port as key
 				key := pod.Name + ":" + strconv.Itoa(port)
 				portReqCnt := float64(podRequestCount[key])
-
+				
 				if portReqCnt < minReqCnt {
 					minReqCnt = portReqCnt
 					bestPort = port
@@ -588,6 +605,10 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		prefillPort,
 		routingCtx.ReqPath)
 
+	outstandingRequests := 0
+	if r.prefillRequestTracker != nil {
+		outstandingRequests = r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)
+	}
 	fields := []interface{}{
 		"request_id", routingCtx.RequestID,
 		"llm_engine", llmEngine,
@@ -595,14 +616,16 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		"prefill_pod", prefillPod.Name,
 		"prefill_port", prefillPort,
 		"prefill_url", apiURL,
-		"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name),
+		"outstanding_prefill_requests", outstandingRequests,
 	}
 	klog.InfoS("prefill_request_start", fields...)
 	if len(fields) >= 2 {
 		fields = fields[:len(fields)-2]
 	}
 
-	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name, prefillPort)
+	if r.prefillRequestTracker != nil {
+		r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name, prefillPort)
+	}
 	routingCtx.PrefillStartTime = time.Now()
 
 	switch llmEngine {
@@ -610,7 +633,9 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		// For SGLang, use async prefill - the bootstrap mechanism (bootstrap_host/port/room)
 		// coordinates between prefill and decode pods, so we don't need to wait
 		go func() {
-			defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+			if r.prefillRequestTracker != nil {
+				defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+			}
 
 			if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
 				klog.ErrorS(err, "prefill_request_failed",
@@ -624,15 +649,21 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 			}
 
 			routingCtx.PrefillEndTime = time.Now()
+			endOutstandingRequests := 0
+			if r.prefillRequestTracker != nil {
+				endOutstandingRequests = r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name) - 1
+			}
 			fields = append(fields,
 				"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
 				"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
-				"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
+				"outstanding_prefill_requests", endOutstandingRequests)
 			klog.InfoS("prefill_request_end", fields...)
 		}()
 
 	case VLLMEngine:
-		defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+		if r.prefillRequestTracker != nil {
+			defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+		}
 
 		// For vLLM, wait synchronously to get KV transfer params from response
 		responseData, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
@@ -653,14 +684,20 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		}
 
 		routingCtx.PrefillEndTime = time.Now()
+		endOutstandingRequests := 0
+		if r.prefillRequestTracker != nil {
+			endOutstandingRequests = r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name) - 1
+		}
 		fields = append(fields,
 			"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
 			"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
-			"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
+			"outstanding_prefill_requests", endOutstandingRequests)
 		klog.InfoS("prefill_request_end", fields...)
 
 	default:
-		defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+		if r.prefillRequestTracker != nil {
+			defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+		}
 
 		// For unknown engines, use synchronous approach as a safe default
 		if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
@@ -673,10 +710,14 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 			return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
 		}
 		routingCtx.PrefillEndTime = time.Now()
+		endOutstandingRequests := 0
+		if r.prefillRequestTracker != nil {
+			endOutstandingRequests = r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name) - 1
+		}
 		fields = append(fields,
 			"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
 			"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
-			"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
+			"outstanding_prefill_requests", endOutstandingRequests)
 		klog.InfoS("prefill_request_end", fields...)
 	}
 
