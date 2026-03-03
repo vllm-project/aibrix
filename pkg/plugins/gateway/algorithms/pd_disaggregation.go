@@ -69,8 +69,8 @@ const (
 	pdRoutePrefillRequestSuccess        = "pd-prefill-request-success"
 	pdRoutePrefillEmptyKVTransferParams = "pd-prefill-empty-kv-transfer-params"
 
-	dpSizeIdentifier           string                 = "model.aibrix.ai/dp-size"
-	dpPortsIdentifier          string                 = "model.aibrix.ai/dp-ports"
+	dpSizeIdentifier  string = "model.aibrix.ai/dp-size"
+	dpPortsIdentifier string = "model.aibrix.ai/dp-ports"
 )
 
 const (
@@ -214,7 +214,7 @@ type Scores struct {
 func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, int, *v1.Pod, error) {
 	// Reset isMultiPort flag to ensure it's based on current pod set
 	r.prefillRequestTracker.isMultiPort = false
-	
+
 	var promptLength int
 	if aibrixPromptLengthBucketing {
 		promptLength, _ = routingCtx.PromptLength()
@@ -433,13 +433,13 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 			minReqCnt := float64(math.MaxFloat64)
 			for _, port := range ports {
 				// For multi-port scenario, use pod:port as key
-                key := pod.Name + ":" + strconv.Itoa(port)
-                portReqCnt := float64(podRequestCount[key])
-                
-                if portReqCnt < minReqCnt {
-                    minReqCnt = portReqCnt
-                    bestPort = port
-                }
+				key := pod.Name + ":" + strconv.Itoa(port)
+				portReqCnt := float64(podRequestCount[key])
+
+				if portReqCnt < minReqCnt {
+					minReqCnt = portReqCnt
+					bestPort = port
+				}
 			}
 
 			reqCnt = minReqCnt

@@ -272,14 +272,14 @@ func ParsePodNameAndPort(podNameWithPort string) (string, int, bool) {
 	if len(parts) != 2 {
 		return podNameWithPort, 0, false
 	}
-	
+
 	podName := parts[0]
 	portStr := parts[1]
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		return podNameWithPort, 0, false
 	}
-	
+
 	return podName, port, true
 }
 
@@ -292,7 +292,7 @@ func FilterPodByPodNameWithPort(podNameWithPort string, pods []*v1.Pod) (*v1.Pod
 		pod, found := FilterPodByName(podNameWithPort, pods)
 		return pod, 0, found
 	}
-	
+
 	pod, found := FilterPodByName(podName, pods)
 	return pod, port, found
 }
