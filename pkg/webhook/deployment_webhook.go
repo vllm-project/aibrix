@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 // SetupDeploymentWebhookWithManager registers the webhook for Deployment in the manager.
@@ -99,6 +100,28 @@ func (r *DeploymentCustomDefaulter) injectAIBrixRuntime(deployment *appsv1.Deplo
 	// Infer engine type from primary containers if not set
 	if engineType == "" {
 		engineType = inferEngineType(podSpec.Containers)
+	}
+
+	// Ensure the artifacts download path is shared with the sidecar container
+	if !utils.HasVolume(podSpec.Volumes, DefaultAdapterVolumeName) {
+		podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
+			Name: DefaultAdapterVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
+	}
+	for ci := range podSpec.Containers {
+		container := &podSpec.Containers[ci]
+		if container.Name == SidecarName {
+			continue
+		}
+		if !utils.HasVolumeMount(container.VolumeMounts, DefaultAdapterVolumeName, DefaultAdapterMountPath) {
+			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+				Name:      DefaultAdapterVolumeName,
+				MountPath: DefaultAdapterMountPath,
+			})
+		}
 	}
 
 	// Build the sidecar container using shared logic
