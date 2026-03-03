@@ -1598,6 +1598,7 @@ def metrics():
     gpu_cache_usage_perc = overrides.get(
         "gpu_cache_usage_perc", min(100.0, (running / max_running_capacity) * 100)
     )
+    kv_cache_usage_perc = gpu_cache_usage_perc
     cpu_cache_usage_perc = overrides.get(
         "cpu_cache_usage_perc", min(100.0, (cpu_running / max_running_capacity) * 100)
     )
@@ -1659,6 +1660,12 @@ def metrics():
             "type": "gauge",
             "description": "GPU KV-cache usage. 1 means 100 percent usage.",
             "value": overrides.get("gpu_cache_usage_perc", gpu_cache_usage_perc),
+        },
+        {
+            "name": "kv_cache_usage_perc",
+            "type": "gauge",
+            "description": "KV-cache usage. 1 means 100 percent usage.",
+            "value": overrides.get("kv_cache_usage_perc", kv_cache_usage_perc),
         },
         {
             "name": "cpu_cache_usage_perc",
