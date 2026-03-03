@@ -31,13 +31,15 @@ import (
 )
 
 var (
-	customGauges       = make(map[string]*prometheus.GaugeVec)
-	customGaugesMu     sync.RWMutex
-	customCounters     = make(map[string]*prometheus.CounterVec)
-	customCountersMu   sync.RWMutex
-	customHistograms   = make(map[string]*histogramCollector)
-	customHistogramsMu sync.RWMutex
-	gatewayPodName     = os.Getenv("POD_NAME")
+	customGauges            = make(map[string]*prometheus.GaugeVec)
+	customGaugeLabelNames   = make(map[string][]string)
+	customGaugesMu          sync.RWMutex
+	customCounters          = make(map[string]*prometheus.CounterVec)
+	customCounterLabelNames = make(map[string][]string)
+	customCountersMu        sync.RWMutex
+	customHistograms        = make(map[string]*histogramCollector)
+	customHistogramsMu      sync.RWMutex
+	gatewayPodName          = os.Getenv("POD_NAME")
 
 	// Function variables that can be overridden for testing
 	SetGaugeMetricFnForTest         = defaultSetGaugeMetric
@@ -49,24 +51,47 @@ func SetGaugeMetric(name string, help string, value float64, labelNames []string
 }
 
 func defaultSetGaugeMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
+	if len(labelNames) != len(labelValues) {
+		return
+	}
+
+	labelValueMap := make(map[string]string, len(labelNames))
+	for i, ln := range labelNames {
+		labelValueMap[ln] = labelValues[i]
+	}
+
 	customGaugesMu.RLock()
 	gauge, ok := customGauges[name]
+	canonicalNames := customGaugeLabelNames[name]
 	customGaugesMu.RUnlock()
 
 	if !ok {
 		customGaugesMu.Lock()
 		gauge, ok = customGauges[name]
+		canonicalNames = customGaugeLabelNames[name]
 		if !ok {
+			namesCopy := append([]string(nil), labelNames...)
 			gauge = promauto.NewGaugeVec(
 				prometheus.GaugeOpts{Name: name, Help: help},
-				labelNames,
+				namesCopy,
 			)
 			customGauges[name] = gauge
+			customGaugeLabelNames[name] = namesCopy
+			canonicalNames = namesCopy
 		}
 		customGaugesMu.Unlock()
 	}
 
-	gauge.WithLabelValues(labelValues...).Set(value)
+	if len(canonicalNames) == 0 {
+		gauge.WithLabelValues(labelValues...).Set(value)
+		return
+	}
+
+	orderedValues := make([]string, len(canonicalNames))
+	for i, ln := range canonicalNames {
+		orderedValues[i] = labelValueMap[ln]
+	}
+	gauge.WithLabelValues(orderedValues...).Set(value)
 }
 
 func IncrementCounterMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
@@ -96,24 +121,47 @@ func emitCounterMetric(routingCtx *types.RoutingContext, pod *v1.Pod, name strin
 }
 
 func defaultIncrementCounterMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
+	if len(labelNames) != len(labelValues) {
+		return
+	}
+
+	labelValueMap := make(map[string]string, len(labelNames))
+	for i, ln := range labelNames {
+		labelValueMap[ln] = labelValues[i]
+	}
+
 	customCountersMu.RLock()
 	counter, ok := customCounters[name]
+	canonicalNames := customCounterLabelNames[name]
 	customCountersMu.RUnlock()
 
 	if !ok {
 		customCountersMu.Lock()
 		counter, ok = customCounters[name]
+		canonicalNames = customCounterLabelNames[name]
 		if !ok {
+			namesCopy := append([]string(nil), labelNames...)
 			counter = promauto.NewCounterVec(
 				prometheus.CounterOpts{Name: name, Help: help},
-				labelNames,
+				namesCopy,
 			)
 			customCounters[name] = counter
+			customCounterLabelNames[name] = namesCopy
+			canonicalNames = namesCopy
 		}
 		customCountersMu.Unlock()
 	}
 
-	counter.WithLabelValues(labelValues...).Add(value)
+	if len(canonicalNames) == 0 {
+		counter.WithLabelValues(labelValues...).Add(value)
+		return
+	}
+
+	orderedValues := make([]string, len(canonicalNames))
+	for i, ln := range canonicalNames {
+		orderedValues[i] = labelValueMap[ln]
+	}
+	counter.WithLabelValues(orderedValues...).Add(value)
 }
 
 func SetHistogramMetric(name string, help string, value *HistogramMetricValue, labelNames []string, labelValues ...string) {
@@ -300,9 +348,15 @@ func buildMetricLabels(pod *v1.Pod, model string, extras map[string]string) ([]s
 	defaultLabelMap := generateDefaultMetricLabelsMap(pod, model)
 	labelNames := make([]string, 0, len(defaultLabelMap)+len(extras))
 	labelValues := make([]string, 0, len(defaultLabelMap)+len(extras))
-	for k, v := range defaultLabelMap {
+
+	defaultKeys := make([]string, 0, len(defaultLabelMap))
+	for k := range defaultLabelMap {
+		defaultKeys = append(defaultKeys, k)
+	}
+	sort.Strings(defaultKeys)
+	for _, k := range defaultKeys {
 		labelNames = append(labelNames, k)
-		labelValues = append(labelValues, v)
+		labelValues = append(labelValues, defaultLabelMap[k])
 	}
 
 	if len(extras) > 0 {
