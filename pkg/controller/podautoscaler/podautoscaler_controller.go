@@ -80,6 +80,7 @@ const (
 	ConditionConflict      = "MultiPodAutoscalerConflict"
 	ConditionScalingActive = "ScalingActive"
 	ConditionAbleToScale   = "AbleToScale"
+	ConditionCircuitBreaker = "CircuitBreakerTriggered"
 
 	ReasonAsExpected                = "AsExpected"
 	ReasonReconcilingScaleDiff      = "ReconcilingScaleDiff"
@@ -741,6 +742,16 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	}
 	r.monitor.RecordScaleAction(pa.Namespace, pa.Name, scaleDecision.Algorithm, scaleDecision.Reason, scaleDecision.DesiredReplicas)
 
+	// Update circuit breaker condition based on scaling decision
+	if scaleDecision.Algorithm == "circuit-breaker" {
+		setCondition(&pa, ConditionCircuitBreaker, metav1.ConditionTrue, "CircuitBreakerTriggered", scaleDecision.Reason)
+	} else {
+		// Remove circuit breaker condition if it was previously set
+		if cond := apimeta.FindStatusCondition(pa.Status.Conditions, ConditionCircuitBreaker); cond != nil {
+			apimeta.RemoveStatusCondition(&pa.Status.Conditions, ConditionCircuitBreaker)
+		}
+	}
+
 	// Only emit event if we should scale
 	if scaleDecision.ShouldScale {
 		r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "AlgorithmRun",
@@ -1019,6 +1030,16 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 
 	metricDesiredReplicas := replicaResult.DesiredReplicas
 	metricName := replicaResult.Algorithm
+
+	// Check if circuit breaker was triggered during metric computation
+	if replicaResult.Algorithm == "circuit-breaker" {
+		return &ScaleDecision{
+			DesiredReplicas: replicaResult.DesiredReplicas,
+			ShouldScale:     replicaResult.DesiredReplicas != currentReplicas,
+			Reason:          replicaResult.Reason,
+			Algorithm:       "circuit-breaker",
+		}, nil
+	}
 
 	// Apply cooldown window for KPA/APA (not for HPA which is managed by K8s)
 	desiredReplicas := metricDesiredReplicas

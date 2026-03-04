@@ -81,6 +81,12 @@ type PodAutoscalerSpec struct {
 	// ScalingStrategy defines the strategy to use for scaling.
 	// +kubebuilder:validation:Enum={HPA,KPA,APA}
 	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`
+
+	// CircuitBreaker defines the circuit breaker configuration for handling invalid or abnormal metrics.
+	// When enabled, the circuit breaker detects bad metrics (NaN, negative, infinite values) and
+	// applies a protective action (freeze current replicas or scale to maximum).
+	// +optional
+	CircuitBreaker *CircuitBreakerConfig `json:"circuitBreaker,omitempty"`
 }
 
 // SubTargetSelector identifies a sub-component within the scale target
@@ -103,6 +109,28 @@ const (
 	// APA represents the AiBrix Pod Autoscaling Algorithm
 	APA ScalingStrategyType = "APA"
 )
+
+// CircuitBreakerAction defines actions when circuit breaker is triggered.
+type CircuitBreakerAction string
+
+const (
+	// CircuitBreakerActionFreeze keeps the current replica count unchanged until metrics recover.
+	CircuitBreakerActionFreeze CircuitBreakerAction = "freeze"
+	// CircuitBreakerActionMax scales target replicas to the maximum defined in spec and holds there until metrics recover.
+	CircuitBreakerActionMax CircuitBreakerAction = "max"
+)
+
+// CircuitBreakerConfig defines the circuit breaker configuration for handling invalid or abnormal metrics.
+type CircuitBreakerConfig struct {
+	// Enabled indicates whether the circuit breaker is active.
+	// +optional
+	Enabled bool `json:"enabled"`
+
+	// Action defines what to do when the circuit breaker is triggered.
+	// +kubebuilder:validation:Enum={freeze,max}
+	// +optional
+	Action CircuitBreakerAction `json:"action,omitempty"`
+}
 
 type MetricSourceType string
 
