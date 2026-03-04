@@ -45,6 +45,61 @@ MAX_BATCH_REQUESTS = 50000  # Maximum number of requests per batch
 REQUIRED_FIELDS = ["custom_id", "method", "url", "body"]
 VALID_HTTP_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH"}
 
+# Endpoint-specific required body fields
+# These define the minimum required fields in the request body for each endpoint type
+ENDPOINT_REQUIRED_BODY_FIELDS: dict[str, list[str]] = {
+    BatchJobEndpoint.CHAT_COMPLETIONS.value: ["model", "messages"],
+    BatchJobEndpoint.COMPLETIONS.value: ["model", "prompt"],
+    BatchJobEndpoint.EMBEDDINGS.value: ["model", "input"],
+    BatchJobEndpoint.RERANK.value: ["model", "query", "documents"],
+}
+
+
+def _validate_request_body_for_endpoint(
+    body: dict, endpoint: str, line_num: int
+) -> Optional[str]:
+    """Validate request body fields are appropriate for the given endpoint.
+
+    Args:
+        body: The request body dictionary
+        endpoint: The API endpoint string (e.g., "/v1/chat/completions")
+        line_num: Line number for error reporting
+
+    Returns:
+        Error message string if validation fails, None if valid
+    """
+    required_fields = ENDPOINT_REQUIRED_BODY_FIELDS.get(endpoint)
+    if required_fields is None:
+        # Unknown endpoint, skip body validation
+        return None
+
+    for field in required_fields:
+        if field not in body:
+            return (
+                f"Line {line_num}: Request body for endpoint '{endpoint}' "
+                f"is missing required field '{field}'"
+            )
+
+    # Endpoint-specific type validation
+    if endpoint == BatchJobEndpoint.CHAT_COMPLETIONS.value:
+        if not isinstance(body.get("messages"), list):
+            return f"Line {line_num}: 'messages' must be an array for {endpoint}"
+    elif endpoint == BatchJobEndpoint.COMPLETIONS.value:
+        prompt = body.get("prompt")
+        if not isinstance(prompt, (str, list)):
+            return f"Line {line_num}: 'prompt' must be a string or array for {endpoint}"
+    elif endpoint == BatchJobEndpoint.EMBEDDINGS.value:
+        input_val = body.get("input")
+        if not isinstance(input_val, (str, list)):
+            return f"Line {line_num}: 'input' must be a string or array for {endpoint}"
+    elif endpoint == BatchJobEndpoint.RERANK.value:
+        if not isinstance(body.get("query"), str):
+            return f"Line {line_num}: 'query' must be a string for {endpoint}"
+        if not isinstance(body.get("documents"), list):
+            return f"Line {line_num}: 'documents' must be an array for {endpoint}"
+
+    return None
+
 
 async def _validate_batch_input_file(
     storage: BaseStorage, file_id: str, endpoint: str
@@ -135,6 +190,13 @@ async def _validate_batch_input_file(
                     f"Line {line_num}: Request URL '{request_url}' does not match "
                     f"batch endpoint '{endpoint}'",
                 )
+
+            # Validate request body has required fields for the endpoint
+            body_error = _validate_request_body_for_endpoint(
+                request["body"], request_url, line_num
+            )
+            if body_error:
+                return 0, body_error
 
         # Check if file was empty
         if request_count == 0:
