@@ -62,9 +62,8 @@ spec:
           image: aibrix-public-release-cn-beijing.cr.volces.com/vllm/vllm-openai:0.11.0
           imagePullPolicy: Always
           command:
-            - python3
-            - -m
-            - vllm.entrypoints.openai.api_server
+            - vllm
+            - serve
             - --port
             - "8000"
             - --uvicorn-log-level

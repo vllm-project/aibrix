@@ -12,7 +12,7 @@ You can enable EIC KVCache offload with the official interface, such as
 ```bash
 export AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND="EIC"
 
-python3 -m vllm.entrypoints.openai.api_server \
+vllm serve \
   ... \
   --kv-transfer-config '{"kv_connector":"AIBrixOffloadingConnectorV1Type3", "kv_role":"kv_both"}'
 ```
