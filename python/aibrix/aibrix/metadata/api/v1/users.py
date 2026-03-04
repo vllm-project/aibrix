@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
 from typing import Optional
 
 import redis.asyncio as redis
@@ -22,6 +23,9 @@ from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 router = APIRouter()
+
+# Legacy router for backward compatibility with old POST-based endpoints
+legacy_router = APIRouter()
 
 
 class User(BaseModel):
@@ -77,7 +81,10 @@ async def _get_redis_client(request: Request) -> redis.Redis:
     return request.app.state.redis_client
 
 
-@router.post("/CreateUser")
+# ==================== RESTful API Endpoints ====================
+
+
+@router.post("/users")
 async def create_user(request: Request, user: User) -> UserResponse:
     """Create a new user with rate limits.
 
@@ -106,13 +113,13 @@ async def create_user(request: Request, user: User) -> UserResponse:
     return UserResponse(message=f"Created User: {user.name}", user=user)
 
 
-@router.post("/ReadUser")
-async def read_user(request: Request, user: User) -> UserResponse:
-    """Read user information.
+@router.get("/users/{name}")
+async def get_user(request: Request, name: str) -> UserResponse:
+    """Read user information by name.
 
     Args:
         request: FastAPI request
-        user: User with name to look up
+        name: User name to look up
 
     Returns:
         UserResponse with user data
@@ -121,11 +128,11 @@ async def read_user(request: Request, user: User) -> UserResponse:
         HTTPException: 404 if user not found
     """
     redis_client = await _get_redis_client(request)
-    key = _gen_key(user.name)
+    key = _gen_key(name)
 
     data = await redis_client.get(key)
     if not data:
-        logger.warning(f"User not found: {user.name}")
+        logger.warning(f"User not found: {name}")
         raise HTTPException(status_code=404, detail="user does not exist")
 
     # Parse JSON data
@@ -135,12 +142,13 @@ async def read_user(request: Request, user: User) -> UserResponse:
     return UserResponse(message=f"User: {stored_user.name}", user=stored_user)
 
 
-@router.post("/UpdateUser")
-async def update_user(request: Request, user: User) -> UserResponse:
+@router.put("/users/{name}")
+async def update_user(request: Request, name: str, user: User) -> UserResponse:
     """Update user information.
 
     Args:
         request: FastAPI request
+        name: User name in the URL path
         user: Updated user data
 
     Returns:
@@ -150,28 +158,31 @@ async def update_user(request: Request, user: User) -> UserResponse:
         HTTPException: 404 if user not found
     """
     redis_client = await _get_redis_client(request)
-    key = _gen_key(user.name)
+    key = _gen_key(name)
 
     # Check if user exists
     exists = await redis_client.exists(key)
     if not exists:
-        logger.warning(f"Cannot update non-existent user: {user.name}")
-        raise HTTPException(status_code=404, detail=f"User: {user.name} does not exist")
+        logger.warning(f"Cannot update non-existent user: {name}")
+        raise HTTPException(
+            status_code=404, detail=f"User: {name} does not exist"
+        )
 
-    # Update user
+    # Use the name from URL path, override body if different
+    user.name = name
     await redis_client.set(key, user.model_dump_json())
 
     logger.info(f"Updated user: {user.name}, rpm={user.rpm}, tpm={user.tpm}")
     return UserResponse(message=f"Updated User: {user.name}", user=user)
 
 
-@router.post("/DeleteUser")
-async def delete_user(request: Request, user: User) -> UserResponse:
+@router.delete("/users/{name}")
+async def delete_user(request: Request, name: str) -> UserResponse:
     """Delete a user.
 
     Args:
         request: FastAPI request
-        user: User with name to delete
+        name: User name to delete
 
     Returns:
         UserResponse with deletion status
@@ -180,16 +191,67 @@ async def delete_user(request: Request, user: User) -> UserResponse:
         HTTPException: 404 if user not found
     """
     redis_client = await _get_redis_client(request)
-    key = _gen_key(user.name)
+    key = _gen_key(name)
 
     # Check if user exists
     exists = await redis_client.exists(key)
     if not exists:
-        logger.warning(f"Cannot delete non-existent user: {user.name}")
-        raise HTTPException(status_code=404, detail=f"User: {user.name} does not exist")
+        logger.warning(f"Cannot delete non-existent user: {name}")
+        raise HTTPException(
+            status_code=404, detail=f"User: {name} does not exist"
+        )
 
     # Delete user
     await redis_client.delete(key)
 
-    logger.info(f"Deleted user: {user.name}")
-    return UserResponse(message=f"Deleted User: {user.name}", user=user)
+    logger.info(f"Deleted user: {name}")
+    return UserResponse(message=f"Deleted User: {name}", user=None)
+
+
+# ==================== Legacy API Endpoints (Deprecated) ====================
+# These endpoints are kept for backward compatibility.
+# Use the RESTful endpoints above (/users, /users/{name}) instead.
+
+
+@legacy_router.post("/CreateUser")
+async def legacy_create_user(request: Request, user: User) -> UserResponse:
+    """Create a new user. Deprecated: use POST /users instead."""
+    warnings.warn(
+        "POST /CreateUser is deprecated, use POST /users instead",
+        DeprecationWarning,
+        stacklevel=1,
+    )
+    return await create_user(request, user)
+
+
+@legacy_router.post("/ReadUser")
+async def legacy_read_user(request: Request, user: User) -> UserResponse:
+    """Read user information. Deprecated: use GET /users/{name} instead."""
+    warnings.warn(
+        "POST /ReadUser is deprecated, use GET /users/{name} instead",
+        DeprecationWarning,
+        stacklevel=1,
+    )
+    return await get_user(request, user.name)
+
+
+@legacy_router.post("/UpdateUser")
+async def legacy_update_user(request: Request, user: User) -> UserResponse:
+    """Update user information. Deprecated: use PUT /users/{name} instead."""
+    warnings.warn(
+        "POST /UpdateUser is deprecated, use PUT /users/{name} instead",
+        DeprecationWarning,
+        stacklevel=1,
+    )
+    return await update_user(request, user.name, user)
+
+
+@legacy_router.post("/DeleteUser")
+async def legacy_delete_user(request: Request, user: User) -> UserResponse:
+    """Delete a user. Deprecated: use DELETE /users/{name} instead."""
+    warnings.warn(
+        "POST /DeleteUser is deprecated, use DELETE /users/{name} instead",
+        DeprecationWarning,
+        stacklevel=1,
+    )
+    return await delete_user(request, user.name)

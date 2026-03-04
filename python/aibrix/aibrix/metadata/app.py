@@ -151,9 +151,11 @@ def build_app(args: argparse.Namespace, params={}):
     )
     logger.info("Models API mounted at /v1/models")
 
-    # Initialize user CRUD API
+    # Initialize user CRUD API (RESTful endpoints)
     app.include_router(users.router, tags=["users"])
-    logger.info("User CRUD API mounted")
+    # Mount legacy endpoints for backward compatibility (deprecated)
+    app.include_router(users.legacy_router, tags=["users-legacy"])
+    logger.info("User CRUD API mounted (RESTful + legacy endpoints)")
 
     # Initialize batches API
     if not args.disable_batch_api:
