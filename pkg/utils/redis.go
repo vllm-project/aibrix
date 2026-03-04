@@ -41,3 +41,30 @@ func GetRedisClient() *redis.Client {
 	klog.Infof("Connected to Redis: %s", pong)
 	return client
 }
+
+// TryGetRedisClient attempts to connect to Redis and returns the client if successful.
+// Returns nil if Redis is not configured or connection fails, instead of fatally crashing.
+func TryGetRedisClient() *redis.Client {
+	redisHost := LoadEnv("REDIS_HOST", "")
+	if redisHost == "" {
+		klog.Info("REDIS_HOST is not set, Redis client will not be initialized")
+		return nil
+	}
+
+	redisPort := LoadEnv("REDIS_PORT", "6379")
+	redisPassword := LoadEnv("REDIS_PASSWORD", "")
+	client := redis.NewClient(&redis.Options{
+		Addr:     redisHost + ":" + redisPort,
+		Password: redisPassword,
+		DB:       0,
+	})
+
+	pong, err := client.Ping(context.Background()).Result()
+	if err != nil {
+		klog.Warningf("Failed to connect to Redis at %s:%s: %v. Rate limiting will be disabled.", redisHost, redisPort, err)
+		client.Close()
+		return nil
+	}
+	klog.Infof("Connected to Redis: %s", pong)
+	return client
+}
