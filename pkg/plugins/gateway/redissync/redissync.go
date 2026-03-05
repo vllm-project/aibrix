@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Aibrix Team.
+Copyright 2026 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -45,32 +45,32 @@ import (
 )
 
 const (
-	defaultKeyPrefix         = "aibrix"
-	defaultSyncPeriod        = 10 * time.Second
-	recordTTL                = 5 * time.Minute // TTL per record (each entity key); record expires if not written within this window
-	setexChunkSize           = 25             // batch size for pipeline SETEX (ByteCloud suggests ~20-30)
-	mgetBatchSize            = 25             // batch size for MGET when pulling
-	scanCount                = 100            // SCAN COUNT hint per iteration
-	opTimeout                = 30 * time.Second
-	maxBackoff               = 2 * time.Minute
-	snapshotWarnFields       = 10000          // warn when full snapshot exceeds this many fields
-	snapshotWarnBytesPerField = 512 * 1024    // warn when total snapshot size/fields exceeds this (512KB per field avg)
+	defaultKeyPrefix          = "aibrix"
+	defaultSyncPeriod         = 10 * time.Second
+	recordTTL                 = 2 * time.Minute // TTL per record (each entity key); record expires if not written within this window
+	setexChunkSize            = 25              // batch size for pipeline SETEX (ByteCloud suggests ~20-30)
+	mgetBatchSize             = 200             // batch size for MGET when pulling
+	scanCount                 = 500             // SCAN COUNT hint per iteration
+	opTimeout                 = 30 * time.Second
+	maxBackoff                = 1 * time.Minute
+	snapshotWarnFields        = 10000      // warn when full snapshot exceeds this many fields
+	snapshotWarnBytesPerField = 512 * 1024 // warn when total snapshot size/fields exceeds this (512KB per field avg)
 )
 
 // RedisSync stores one Redis key per entity with per-record TTL. Key format
 // aibrix:{namespace}:e:{entityId} so {namespace} is the hash tag for ByteCloud.
 type RedisSync struct {
-	client        *redis.Client
-	keyPrefix     string
-	syncPeriod    time.Duration
-	opTimeout     time.Duration
-	syncables     []syncable.Syncable
-	started       bool
-	startedMu     sync.Mutex
+	client         *redis.Client
+	keyPrefix      string
+	syncPeriod     time.Duration
+	opTimeout      time.Duration
+	syncables      []syncable.Syncable
+	started        bool
+	startedMu      sync.Mutex
 	setexChunkSize int
 	mgetBatchSize  int
-	stopCh        chan struct{}
-	stopOnce      sync.Once
+	stopCh         chan struct{}
+	stopOnce       sync.Once
 }
 
 // Option configures RedisSync.
@@ -112,7 +112,7 @@ func New(client *redis.Client, opts ...Option) *RedisSync {
 	r := &RedisSync{
 		client:     client,
 		keyPrefix:  defaultKeyPrefix,
-		syncPeriod:  defaultSyncPeriod,
+		syncPeriod: defaultSyncPeriod,
 		opTimeout:  opTimeout,
 		syncables:  nil,
 		stopCh:     make(chan struct{}),
@@ -120,8 +120,6 @@ func New(client *redis.Client, opts ...Option) *RedisSync {
 	for _, o := range opts {
 		o(r)
 	}
-	// Seed RNG for jitter/backoff randomness
-	rand.Seed(time.Now().UnixNano())
 	return r
 }
 
@@ -206,26 +204,16 @@ func (r *RedisSync) Pull(ctx context.Context, s syncable.Syncable) error {
 	if namespace == "" {
 		return fmt.Errorf("redissync pull: empty namespace")
 	}
-	pattern := r.redisScanPattern(namespace)
-	var keys []string
-	iter := r.client.Scan(ctx, 0, pattern, scanCount).Iterator()
-	for iter.Next(ctx) {
-		keys = append(keys, iter.Val())
-	}
-	if err := iter.Err(); err != nil {
-		return fmt.Errorf("redissync pull Scan %s: %w", namespace, err)
-	}
 
 	batchSize := r.mgetBatchSize
 	if batchSize <= 0 {
 		batchSize = mgetBatchSize
 	}
-	for i := 0; i < len(keys); i += batchSize {
-		end := i + batchSize
-		if end > len(keys) {
-			end = len(keys)
-		}
-		batch := keys[i:end]
+
+	ts, hasTombstone := s.(syncable.TombstoneSupport)
+	sp, hasStalePolicy := s.(syncable.StalePolicy)
+
+	applyBatch := func(batch []string) error {
 		vals, err := r.client.MGet(ctx, batch...).Result()
 		if err != nil {
 			return fmt.Errorf("redissync pull MGet %s: %w", namespace, err)
@@ -246,13 +234,13 @@ func (r *RedisSync) Pull(ctx context.Context, s syncable.Syncable) error {
 			if entityID == "" {
 				continue
 			}
-			if ts, ok := s.(syncable.TombstoneSupport); ok {
+			if hasTombstone {
 				if ts.IsTombstone(ctx, entityID, []byte(sv)) {
 					_ = ts.DeleteLocal(ctx, entityID)
 					continue
 				}
 			}
-			if sp, ok := s.(syncable.StalePolicy); ok {
+			if hasStalePolicy {
 				if sp.IsStale(ctx, entityID, []byte(sv)) {
 					_ = r.client.Del(ctx, key).Err()
 					continue
@@ -262,7 +250,34 @@ func (r *RedisSync) Pull(ctx context.Context, s syncable.Syncable) error {
 				klog.V(4).InfoS("redissync ApplyRemote error", "namespace", namespace, "id", entityID, "err", err)
 			}
 		}
+		return nil
 	}
+
+	pattern := r.redisScanPattern(namespace)
+	batch := make([]string, 0, batchSize)
+	pullStart := time.Now()
+	totalKeys := 0
+	iter := r.client.Scan(ctx, 0, pattern, scanCount).Iterator()
+	for iter.Next(ctx) {
+		batch = append(batch, iter.Val())
+		if len(batch) >= batchSize {
+			if err := applyBatch(batch); err != nil {
+				return err
+			}
+			totalKeys += len(batch)
+			batch = batch[:0]
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("redissync pull Scan %s: %w", namespace, err)
+	}
+	if len(batch) > 0 {
+		totalKeys += len(batch)
+		if err := applyBatch(batch); err != nil {
+			return err
+		}
+	}
+	klog.V(4).InfoS("redissync pull complete", "namespace", namespace, "keys", totalKeys, "duration", time.Since(pullStart))
 	return nil
 }
 
@@ -320,25 +335,43 @@ func (r *RedisSync) pushDelta(ctx context.Context, namespace string, s syncable.
 		}
 	}
 	if nDeleted > 0 {
+		chunkSize := r.setexChunkSize
+		if chunkSize <= 0 {
+			chunkSize = setexChunkSize
+		}
+		ts, hasTombstone := s.(syncable.TombstoneSupport)
+		pipe := r.client.Pipeline()
+		n := 0
+		flushPipe := func() {
+			if n == 0 {
+				return
+			}
+			if _, err := pipe.Exec(ctx); err != nil {
+				klog.V(4).InfoS("redissync pipeline exec error (deletions)", "namespace", namespace, "err", err)
+			}
+			pipe = r.client.Pipeline()
+			n = 0
+		}
 		for _, id := range deleted {
 			key := r.redisKeyForEntity(namespace, id)
-			if ts, ok := s.(syncable.TombstoneSupport); ok {
+			if hasTombstone {
 				payload := ts.MakeTombstone(ctx, id)
-				if err := r.client.SetEx(ctx, key, payload, recordTTL).Err(); err != nil {
-					klog.V(4).InfoS("redissync SetEx tombstone error", "key", key, "err", err)
-				}
-				continue
+				pipe.SetEx(ctx, key, payload, recordTTL)
+			} else {
+				pipe.Del(ctx, key)
 			}
-			if err := r.client.Del(ctx, key).Err(); err != nil {
-				klog.V(4).InfoS("redissync Del error", "key", key, "err", err)
+			n++
+			if n >= chunkSize {
+				flushPipe()
 			}
 		}
+		flushPipe()
 	}
 	if nUpdated > 0 || nDeleted > 0 {
 		klog.InfoS("redissync pushed delta only", "namespace", namespace, "updated", nUpdated, "deleted", nDeleted)
-	}
-	if err := s.ClearDirty(ctx); err != nil {
-		klog.V(4).InfoS("redissync ClearDirty error", "namespace", namespace, "err", err)
+		if err := s.ClearDirty(ctx); err != nil {
+			klog.V(4).InfoS("redissync ClearDirty error", "namespace", namespace, "err", err)
+		}
 	}
 	return nil
 }
@@ -403,7 +436,10 @@ func (r *RedisSync) syncLoop() {
 	for {
 		// Next run after period + jitter (±20%), or backoff on error.
 		interval := backoff
-		jitter := time.Duration(rand.Int63n(int64(r.syncPeriod)/5)) - r.syncPeriod/10
+		var jitter time.Duration
+		if jitterRange := int64(r.syncPeriod) / 5; jitterRange > 0 {
+			jitter = time.Duration(rand.Int63n(jitterRange)) - r.syncPeriod/10
+		}
 		interval += jitter
 		if interval < r.syncPeriod/2 {
 			interval = r.syncPeriod / 2
