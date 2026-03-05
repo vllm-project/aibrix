@@ -13,43 +13,15 @@ import {
   FolderInput,
   X,
   Info,
+  Loader2,
 } from "lucide-react";
 import { MoveChatModal } from "./move-chat-modal";
-
-interface ChatEntry {
-  id: string;
-  title: string;
-  lastMessage: string;
-}
-
-const initialChats: ChatEntry[] = [
-  {
-    id: "2",
-    title: "Casual greeting",
-    lastMessage: "3 hours ago",
-  },
-  {
-    id: "1",
-    title:
-      "Multi-modality AI application with aibrix orchestration",
-    lastMessage: "3 hours ago",
-  },
-  {
-    id: "3",
-    title: "LLM Inference Infrastructure",
-    lastMessage: "5 hours ago",
-  },
-  {
-    id: "4",
-    title: "React performance optimization",
-    lastMessage: "1 day ago",
-  },
-  {
-    id: "5",
-    title: "Kubernetes deployment strategy",
-    lastMessage: "2 days ago",
-  },
-];
+import {
+  listConversations,
+  deleteConversation,
+  notifyConversationsChanged,
+  type ConversationSummary,
+} from "@/api/client";
 
 /* ── Toast ─────────────────────────────────────────────── */
 function Toast({
@@ -169,10 +141,22 @@ function Checkbox({
   );
 }
 
+function timeAgo(isoString: string): string {
+  const diff = Date.now() - new Date(isoString).getTime();
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 /* ── Main Page ─────────────────────────────────────────── */
 export function ChatsPage() {
   const navigate = useNavigate();
-  const [chats, setChats] = useState<ChatEntry[]>(initialChats);
+  const [chats, setChats] = useState<ConversationSummary[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(
@@ -181,6 +165,24 @@ export function ChatsPage() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+
+  const loadChats = useCallback(async () => {
+    try {
+      const conversations = await listConversations();
+      setChats(conversations);
+    } catch {
+      // Keep current state on error
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadChats();
+    const handler = () => loadChats();
+    window.addEventListener("conversations-changed", handler);
+    return () => window.removeEventListener("conversations-changed", handler);
+  }, [loadChats]);
 
   const filteredChats = useMemo(
     () =>
@@ -212,9 +214,16 @@ export function ChatsPage() {
     setSelected(new Set());
   };
 
-  const handleBulkDelete = () => {
-    const count = selected.size;
-    setChats((prev) => prev.filter((c) => !selected.has(c.id)));
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selected);
+    const count = ids.length;
+    try {
+      await Promise.all(ids.map((id) => deleteConversation(id)));
+      setChats((prev) => prev.filter((c) => !selected.has(c.id)));
+      notifyConversationsChanged();
+    } catch {
+      // partial failure is ok
+    }
     setSelected(new Set());
     setSelectMode(false);
     setShowDeleteModal(false);
@@ -283,15 +292,17 @@ export function ChatsPage() {
               {filteredChats.length} chat
               {filteredChats.length !== 1 ? "s" : ""} with AIBrix Chat
             </span>
-            <button
-              onClick={() => setSelectMode(true)}
-              className="text-sm text-blue-400 hover:text-blue-300 underline underline-offset-2 transition-colors"
-            >
-              Select
-            </button>
+            {filteredChats.length > 0 && (
+              <button
+                onClick={() => setSelectMode(true)}
+                className="text-sm text-blue-400 hover:text-blue-300 underline underline-offset-2 transition-colors"
+              >
+                Select
+              </button>
+            )}
           </div>
         ) : (
-          /* ── Select‑mode toolbar ── */
+          /* ── Select-mode toolbar ── */
           <div className="flex items-center gap-3 mb-1 px-1">
             <Checkbox
               checked={allSelected}
@@ -343,7 +354,12 @@ export function ChatsPage() {
 
         {/* Chat list */}
         <div>
-          {filteredChats.length === 0 ? (
+          {loading ? (
+            <div className="py-12 flex items-center justify-center text-muted-foreground text-sm">
+              <Loader2 size={16} className="animate-spin mr-2" />
+              Loading chats...
+            </div>
+          ) : filteredChats.length === 0 ? (
             <div className="py-12 text-center text-muted-foreground text-sm">
               No chats found
             </div>
@@ -377,7 +393,9 @@ export function ChatsPage() {
                         {chat.title}
                       </p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        Last message {chat.lastMessage}
+                        {chat.message_count} message{chat.message_count !== 1 ? "s" : ""}
+                        {" · "}
+                        {timeAgo(chat.updated_at)}
                       </p>
                     </div>
                   </button>

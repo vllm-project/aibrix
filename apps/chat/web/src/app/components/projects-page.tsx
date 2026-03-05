@@ -1,44 +1,40 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
 import { Search, Plus, ChevronDown } from "lucide-react";
+import { listProjects, type ProjectSummary } from "@/api/client";
 
-interface Project {
-  id: string;
-  name: string;
-  description: string;
-  updatedAt: string;
-  isExample?: boolean;
+function timeAgo(isoDate: string): string {
+  const now = Date.now();
+  const then = new Date(isoDate).getTime();
+  const diffSec = Math.floor((now - then) / 1000);
+  if (diffSec < 60) return "Updated just now";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `Updated ${diffMin} minute${diffMin > 1 ? "s" : ""} ago`;
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `Updated ${diffHour} hour${diffHour > 1 ? "s" : ""} ago`;
+  const diffDay = Math.floor(diffHour / 24);
+  return `Updated ${diffDay} day${diffDay > 1 ? "s" : ""} ago`;
 }
-
-const initialProjects: Project[] = [
-  {
-    id: "1",
-    name: "AIBrix",
-    description: "",
-    updatedAt: "Updated 9 minutes ago",
-  },
-  {
-    id: "2",
-    name: "How to use AIBrix Chat",
-    description:
-      "An example project that also doubles as a how-to guide for using AIBrix Chat. Chat with it to learn more about how to get the most out of chatting with AI!",
-    updatedAt: "Updated 6 months ago",
-    isExample: true,
-  },
-];
 
 interface ProjectsPageProps {
   onNewProject: () => void;
-  projects?: Project[];
 }
 
-export function ProjectsPage({ onNewProject, projects }: ProjectsPageProps) {
+export function ProjectsPage({ onNewProject }: ProjectsPageProps) {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState("Activity");
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
 
-  const allProjects = projects || initialProjects;
-  const filtered = allProjects.filter((p) =>
+  useEffect(() => {
+    let cancelled = false;
+    listProjects().then((data) => {
+      if (!cancelled) setProjects(data);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const filtered = projects.filter((p) =>
     p.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
@@ -95,11 +91,6 @@ export function ProjectsPage({ onNewProject, projects }: ProjectsPageProps) {
             >
               <div className="flex items-start gap-2 mb-2">
                 <h3 className="text-sm">{project.name}</h3>
-                {project.isExample && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent text-muted-foreground whitespace-nowrap">
-                    Example project
-                  </span>
-                )}
               </div>
               {project.description && (
                 <p className="text-xs text-muted-foreground mb-3 line-clamp-2">
@@ -108,7 +99,7 @@ export function ProjectsPage({ onNewProject, projects }: ProjectsPageProps) {
               )}
               <div className="flex-1" />
               <p className="text-xs text-muted-foreground/60 mt-auto pt-4">
-                {project.updatedAt}
+                {timeAgo(project.updated_at)}
               </p>
             </button>
           ))}

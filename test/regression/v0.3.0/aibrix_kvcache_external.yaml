@@ -78,9 +78,8 @@ spec:
           image: aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-20250520
           imagePullPolicy: IfNotPresent
           command:
-            - python3
-            - -m
-            - vllm.entrypoints.openai.api_server
+            - vllm
+            - serve
             - --port
             - "8000"
             - --uvicorn-log-level
