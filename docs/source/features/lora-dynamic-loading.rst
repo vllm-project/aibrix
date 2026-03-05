@@ -476,7 +476,7 @@ User may pass in the argument ``--api-key`` or environment variable ``VLLM_API_K
 
 .. code-block:: bash
 
-    python3 -m vllm.entrypoints.openai.api_server --api-key sk-kFJ12nKsFakefVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BFake
+    vllm serve --api-key sk-kFJ12nKsFakefVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BFake
 
 We already have an example and you can ``kubectl apply -f samples/adapter/adapter-with-key.yaml``.
 
