@@ -35,7 +35,7 @@ controllerManager:
   affinity: {}
 
 gatewayPlugin:
-  replicaCount: 2
+  replicaCount: 3
   imagePullSecrets: []
   initContainer:
     image:
