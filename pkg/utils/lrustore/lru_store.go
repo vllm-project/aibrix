@@ -17,7 +17,6 @@ limitations under the License.
 package cache
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
@@ -91,13 +90,13 @@ func (e *LRUStore[K, V]) startDebugDump(d time.Duration) {
 }
 
 func (e *LRUStore[K, V]) debugDump() {
-	e.RLock()
-	defer e.RUnlock()
-	klog.V(4).InfoS("lru_store_dump_begin", "size", len(e.freeTable))
-	for k, ent := range e.freeTable {
-		klog.V(4).InfoS("lru_store_entry", "key", k, "value_str", fmt.Sprintf("%+v", ent.Value))
+	if !klog.V(4).Enabled() {
+		return
 	}
-	klog.V(4).InfoS("lru_store_dump_end", "size", len(e.freeTable))
+	e.RLock()
+	size := len(e.freeTable)
+	e.RUnlock()
+	klog.V(4).InfoS("lru_store_dump", "size", size)
 }
 
 func (e *LRUStore[K, V]) Put(key K, value V) bool {

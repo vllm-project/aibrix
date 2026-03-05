@@ -429,7 +429,15 @@ func (r *RedisSync) StartWithContext(ctx context.Context) {
 // syncLoop runs: initial random delay, one immediate Pull (and optional Push),
 // then periodic Pull-first and optional Push with jitter and backoff on errors.
 func (r *RedisSync) syncLoop() {
-	// Immediate initial sync: Pull-first then optional Push.
+	// Initial random delay to spread out load on startup across replicas.
+	if jitterRange := int64(r.syncPeriod) / 2; jitterRange > 0 {
+		select {
+		case <-r.stopCh:
+			return
+		case <-time.After(time.Duration(rand.Int63n(jitterRange))):
+		}
+	}
+	// Initial sync: Pull-first then optional Push.
 	backoff := r.syncPeriod
 	if err := r.runOneSyncCycle(); err != nil && backoff < maxBackoff {
 		backoff *= 2
