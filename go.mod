@@ -5,6 +5,7 @@ go 1.22.5
 toolchain go1.22.6
 
 require (
+	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/buraksezer/consistent v0.10.0
 	github.com/bytedance/sonic v1.14.2
 	github.com/cespare/xxhash/v2 v2.3.0
@@ -52,7 +53,6 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
-	github.com/alicebob/miniredis/v2 v2.37.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic/loader v0.4.0 // indirect
