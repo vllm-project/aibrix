@@ -1,6 +1,6 @@
 # redissync
 
-Generic Redis-backed state sync for multiple gateway (or other) replicas. Uses **per-entity keys** with `SETEX` (per-record TTL), `MGET` (batched), and `SCAN`/`ISCAN` (enumeration). Keys are tagged with the namespace (`aibrix:{namespace}:e:{id}`) to stay on a single shard in ByteCloud. No PUB/SUB or cross-shard multi-key operations.
+Generic Redis-backed state sync for multiple gateway (or other) replicas. Uses **per-entity keys** with `SETEX` (per-record TTL), `MGET` (batched), and `SCAN`/`ISCAN` (enumeration). Keys are tagged with the namespace (`aibrix:{namespace}:e:{id}`) to stay on a single shard. No PUB/SUB or cross-shard multi-key operations.
 
 - **Periodic sync**: Each replica runs **Pull first** (load from Redis), then **Push** (delta or full) every sync period.
 - **Write-through**: After local updates, call `Put`/`Delete` so other replicas see changes on the next pull.

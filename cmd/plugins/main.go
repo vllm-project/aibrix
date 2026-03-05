@@ -164,7 +164,8 @@ func main() {
 	var redissyncManager *redissync.Manager
 	if redissyncEnabled {
 		redissyncManager = redissync.NewManager(redisClient)
-		redissyncManager.Register(prefixcacheindexer.NewPrefixHashTableSyncable(prefixcacheindexer.GetSharedPrefixHashTable()))
+		redissyncManager.Register(prefixcacheindexer.NewPrefixHashTableSyncable(
+			prefixcacheindexer.GetSharedPrefixHashTable()))
 		redissyncManager.Start()
 	}
 

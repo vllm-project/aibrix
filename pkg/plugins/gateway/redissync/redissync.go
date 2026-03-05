@@ -17,8 +17,7 @@ limitations under the License.
 // Package redissync provides a generic Redis-backed state sync layer for use
 // across multiple gateway (or other) replicas. State is stored as one Redis
 // key per entity (aibrix:{namespace}:e:{entityId}) with per-record TTL so each
-// record expires independently. Uses SET/SETEX, GET, DEL, and SCAN (or ISCAN
-// on ByteCloud). No PUB/SUB.
+// record expires independently. Uses SET/SETEX, GET, DEL, and SCAN (or ISCAN). No PUB/SUB.
 //
 // Usage:
 //
@@ -48,7 +47,7 @@ const (
 	defaultKeyPrefix          = "aibrix"
 	defaultSyncPeriod         = 10 * time.Second
 	recordTTL                 = 2 * time.Minute // TTL per record (each entity key); record expires if not written within this window
-	setexChunkSize            = 25              // batch size for pipeline SETEX (ByteCloud suggests ~20-30)
+	setexChunkSize            = 25              // batch size for pipeline SETEX (~20-30)
 	mgetBatchSize             = 200             // batch size for MGET when pulling
 	scanCount                 = 500             // SCAN COUNT hint per iteration
 	opTimeout                 = 30 * time.Second
@@ -58,7 +57,7 @@ const (
 )
 
 // RedisSync stores one Redis key per entity with per-record TTL. Key format
-// aibrix:{namespace}:e:{entityId} so {namespace} is the hash tag for ByteCloud.
+// aibrix:{namespace}:e:{entityId} so {namespace} is the hash tag for same-shard routing.
 type RedisSync struct {
 	client         *redis.Client
 	keyPrefix      string
@@ -139,7 +138,7 @@ func (r *RedisSync) Register(s syncable.Syncable) {
 	r.syncables = append(r.syncables, s)
 }
 
-// redisKeyForEntity returns the Redis key for one entity (hash tag = namespace for ByteCloud).
+// redisKeyForEntity returns the Redis key for one entity (hash tag = namespace for same-shard routing).
 func (r *RedisSync) redisKeyForEntity(namespace, entityID string) string {
 	if namespace == "" {
 		klog.Warning("redissync: empty namespace when building entity key")
@@ -185,7 +184,7 @@ func (r *RedisSync) Delete(ctx context.Context, namespace, id string) error {
 	return nil
 }
 
-// Pull loads all entity keys for the namespace via SCAN (ByteCloud requires ISCAN—replace
+// Pull loads all entity keys for the namespace via SCAN (use ISCAN—replace
 // client.Scan with client.Do(ctx, "ISCAN", ...) if needed), then MGET in batches and
 // ApplyRemote for each. Each record has its own TTL; expired keys are not returned by Redis.
 func (r *RedisSync) Pull(ctx context.Context, s syncable.Syncable) error {
@@ -431,8 +430,13 @@ func (r *RedisSync) StartWithContext(ctx context.Context) {
 // then periodic Pull-first and optional Push with jitter and backoff on errors.
 func (r *RedisSync) syncLoop() {
 	// Immediate initial sync: Pull-first then optional Push.
-	r.runOneSyncCycle()
 	backoff := r.syncPeriod
+	if err := r.runOneSyncCycle(); err != nil && backoff < maxBackoff {
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
 	for {
 		// Next run after period + jitter (±20%), or backoff on error.
 		interval := backoff
