@@ -1,8 +1,10 @@
 import { useState, useRef, useCallback } from "react";
-import { AudioLines, ArrowUp, X, Loader2 } from "lucide-react";
+import { AudioLines, ArrowUp, X, Loader2, Square } from "lucide-react";
 import { ModelSelector } from "./model-selector";
 import { PlusMenu } from "./plus-menu";
 import { Tooltip } from "./tooltip";
+import { useAudioRecording } from "../hooks/use-audio-recording";
+import { transcribeAudio } from "../../api/client";
 
 interface AttachedImage {
   id: string;
@@ -14,23 +16,65 @@ interface AttachedImage {
 
 interface ChatInputProps {
   placeholder?: string;
-  onSend?: (message: string, images?: AttachedImage[]) => void;
+  disabled?: boolean;
+  onSend?: (message: string, model: string, images?: AttachedImage[]) => void;
   onStartNewProject?: () => void;
 }
 
 export function ChatInput({
   placeholder = "How can I help you today?",
+  disabled = false,
   onSend,
   onStartNewProject,
 }: ChatInputProps) {
   const [message, setMessage] = useState("");
-  const [selectedModel, setSelectedModel] = useState("Sonnet 4.6");
-  const [extendedThinking, setExtendedThinking] = useState(true);
+  const [selectedModel, setSelectedModel] = useState("");
   const [images, setImages] = useState<AttachedImage[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [audioError, setAudioError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const { isRecording, duration, start, stop, cancel } = useAudioRecording();
+
   const hasContent = message.trim().length > 0 || images.some((i) => !i.uploading);
+
+  const formatDuration = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
+  const handleAudioClick = async () => {
+    setAudioError(null);
+    try {
+      await start();
+    } catch {
+      setAudioError("Microphone access denied");
+    }
+  };
+
+  const handleAudioStop = async () => {
+    setIsTranscribing(true);
+    setAudioError(null);
+    try {
+      const file = await stop();
+      const result = await transcribeAudio(file);
+      setMessage((prev) => (prev ? prev + " " + result.text : result.text));
+      textareaRef.current?.focus();
+    } catch (err) {
+      setAudioError(
+        err instanceof Error ? err.message : "Transcription failed"
+      );
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
+
+  const handleAudioCancel = () => {
+    cancel();
+    setAudioError(null);
+  };
 
   const simulateUpload = useCallback((img: AttachedImage) => {
     const duration = 800 + Math.random() * 600;
@@ -120,8 +164,8 @@ export function ChatInput({
   };
 
   const handleSubmit = () => {
-    if (!hasContent) return;
-    onSend?.(message, images.filter((i) => !i.uploading));
+    if (!hasContent || disabled) return;
+    onSend?.(message, selectedModel, images.filter((i) => !i.uploading));
     setMessage("");
     setImages([]);
   };
@@ -192,8 +236,9 @@ export function ChatInput({
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={placeholder}
+            disabled={disabled || isRecording || isTranscribing}
             rows={1}
-            className="w-full bg-transparent text-foreground placeholder-foreground/30 resize-none outline-none text-[15px]"
+            className="w-full bg-transparent text-foreground placeholder-foreground/30 resize-none outline-none text-[15px] disabled:opacity-50"
             style={{ minHeight: "24px", maxHeight: "200px" }}
             onInput={(e) => {
               const target = e.target as HTMLTextAreaElement;
@@ -207,26 +252,65 @@ export function ChatInput({
           <div className="flex items-center gap-3">
             <ModelSelector
               selectedModel={selectedModel}
-              extendedThinking={extendedThinking}
               onModelChange={setSelectedModel}
-              onExtendedThinkingChange={setExtendedThinking}
             />
-            {hasContent ? (
+
+            {/* Recording mode */}
+            {isRecording ? (
+              <div className="flex items-center gap-2">
+                <span className="flex items-center gap-1.5 text-sm text-red-500">
+                  <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                  {formatDuration(duration)}
+                </span>
+                <Tooltip content="Cancel recording">
+                  <button
+                    onClick={handleAudioCancel}
+                    className="p-1.5 rounded-lg hover:bg-accent text-foreground/50 hover:text-foreground transition-colors"
+                  >
+                    <X size={18} />
+                  </button>
+                </Tooltip>
+                <Tooltip content="Stop and transcribe">
+                  <button
+                    onClick={handleAudioStop}
+                    className="w-8 h-8 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center transition-colors"
+                  >
+                    <Square size={14} fill="currentColor" />
+                  </button>
+                </Tooltip>
+              </div>
+            ) : isTranscribing ? (
+              <div className="flex items-center gap-2 text-sm text-foreground/50">
+                <Loader2 size={16} className="animate-spin" />
+                <span>Transcribing...</span>
+              </div>
+            ) : hasContent ? (
               <button
                 onClick={handleSubmit}
-                className="w-8 h-8 rounded-full bg-amber-700 hover:bg-amber-600 text-white flex items-center justify-center transition-colors"
+                disabled={disabled}
+                className="w-8 h-8 rounded-full bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-white flex items-center justify-center transition-colors"
               >
                 <ArrowUp size={18} />
               </button>
             ) : (
               <Tooltip content="Use voice mode">
-                <button className="p-1.5 rounded-lg hover:bg-accent text-foreground/50 hover:text-foreground transition-colors">
+                <button
+                  onClick={handleAudioClick}
+                  className="p-1.5 rounded-lg hover:bg-accent text-foreground/50 hover:text-foreground transition-colors"
+                >
                   <AudioLines size={20} />
                 </button>
               </Tooltip>
             )}
           </div>
         </div>
+
+        {/* Audio error message */}
+        {audioError && (
+          <div className="px-4 pb-3">
+            <p className="text-xs text-red-500">{audioError}</p>
+          </div>
+        )}
       </div>
     </div>
   );

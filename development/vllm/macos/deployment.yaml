@@ -29,9 +29,8 @@ spec:
           ports:
             - containerPort: 8000
           command:
-            - python3
-            - -m
-            - vllm.entrypoints.openai.api_server
+            - vllm
+            - serve
             - --host
             - "0.0.0.0"
             - --port

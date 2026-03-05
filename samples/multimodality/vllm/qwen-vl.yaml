@@ -59,9 +59,8 @@ spec:
           image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm/vllm-openai:v0.9.2
           imagePullPolicy: IfNotPresent
           command:
-            - python3
-            - -m
-            - vllm.entrypoints.openai.api_server
+            - vllm
+            - serve
             - --port
             - "8000"
             - --uvicorn-log-level

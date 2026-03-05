@@ -61,7 +61,7 @@ spec:
             - -c
             - |
               python3 -m pip install --no-cache-dir "vllm[audio]" && \
-              python3 -m vllm.entrypoints.openai.api_server \
+              vllm serve \
                 --port 8000 \
                 --uvicorn-log-level warning \
                 --model /models/Qwen2-Audio-7B-Instruct/ \
