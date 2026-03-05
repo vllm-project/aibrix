@@ -26,13 +26,13 @@ import (
 
 // Manager coordinates Redis-backed sync for multiple Syncables: registration,
 // periodic pull, and write-through (Put/Delete). Use this when running
-// multiple gateway replicas that share state via Redis (ByteCloud-compatible).
+// multiple gateway replicas that share state via Redis.
 type Manager struct {
 	sync *RedisSync
 }
 
 // NewManager creates a Manager that uses per-entity keys with SETEX/MGET and SCAN/ISCAN
-// (ByteCloud-safe single-key operations; namespace tag ensures same-shard routing).
+// (single-key operations; namespace tag ensures same-shard routing).
 func NewManager(client *redis.Client, opts ...Option) *Manager {
 	return &Manager{sync: New(client, opts...)}
 }
