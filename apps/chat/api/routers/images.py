@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+import httpx
 
 from models.schemas import ImageGenerateRequest, ImageGenerateResponse
 from services.providers import get_image_provider
