@@ -88,25 +88,36 @@ spec:
               containers:
                 - name: vllm
                   image: aibrix-public-release-cn-beijing.cr.volces.com/vllm/vllm-openai:0.11.0
-                  command: ["sh", "-c"]
-                  args:
-                    - |
-                      python3 -m vllm.entrypoints.openai.api_server \
-                        --host 0.0.0.0 \
-                        --port 8000 \
-                        --model /models/Qwen2.5-7B-Instruct/ \
-                        --served-model-name qwen2.5-7b \
-                        --tensor-parallel-size 2 \
-                        --distributed-executor-backend mp \
-                        --gpu-memory-utilization 0.75 \
-                        --max-model-len 4096 \
-                        --max-num-seqs 16 \
-                        --max-num-batched-tokens 4096 \
-                        --enable-lora \
-                        --max-loras 2 \
-                        --max-lora-rank 64 \
-                        --max-cpu-loras 4 \
-                        --fully-sharded-loras
+                  command:
+                    - "vllm"
+                    - "serve"
+                    - "/models/Qwen2.5-7B-Instruct/"
+                    - "--host"
+                    - "0.0.0.0"
+                    - "--port"
+                    - "8000"
+                    - "--served-model-name"
+                    - "qwen2.5-7b"
+                    - "--tensor-parallel-size"
+                    - "2"
+                    - "--distributed-executor-backend"
+                    - "mp"
+                    - "--gpu-memory-utilization"
+                    - "0.75"
+                    - "--max-model-len"
+                    - "4096"
+                    - "--max-num-seqs"
+                    - "16"
+                    - "--max-num-batched-tokens"
+                    - "4096"
+                    - "--enable-lora"
+                    - "--max-loras"
+                    - "2"
+                    - "--max-lora-rank"
+                    - "64"
+                    - "--max-cpu-loras"
+                    - "4"
+                    - "--fully-sharded-loras"
                   env:
                     - name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
                       value: "True"
