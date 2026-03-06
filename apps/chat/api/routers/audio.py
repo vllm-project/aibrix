@@ -6,6 +6,7 @@ import logging
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
+import httpx
 
 from models.schemas import AudioSpeechRequest, AudioTranscribeResponse
 from services.providers import get_audio_provider
