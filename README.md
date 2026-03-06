@@ -10,7 +10,7 @@ Welcome to AIBrix, an open-source initiative designed to provide essential build
 ## Latest News
 
 ### Releases
-
+- **[2026-03-05]** AIBrix v0.6.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.6.0) and [Blog Post](https://aibrix.github.io/posts/2026-03-03-v0.6.0-release/) for more details.
 - **[2025-11-10]** AIBrix v0.5.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.5.0) and [Blog Post](https://aibrix.github.io/posts/2025-11-10-v0.5.0-release/) for more details.
 - **[2025-08-05]** AIBrix v0.4.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.4.0) and [Blog Post](https://aibrix.github.io/posts/2025-08-04-v0.4.0-release/) for more details.
 - **[2025-05-21]** AIBrix v0.3.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.3.0) and [Blog Post](https://aibrix.github.io/posts/2025-05-21-v0.3.0-release/) for more details.
