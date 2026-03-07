@@ -6,7 +6,7 @@ import { Tooltip } from "./tooltip";
 import { useAudioRecording } from "../hooks/use-audio-recording";
 import { transcribeAudio } from "../../api/client";
 
-interface Attachment {
+export interface Attachment {
   id: string;
   name: string;
   type: string;
@@ -20,7 +20,7 @@ interface Attachment {
 interface ChatInputProps {
   placeholder?: string;
   disabled?: boolean;
-  onSend?: (message: string, model: string, images?: Attachment[]) => void;
+  onSend?: (message: string, model: string, attachments?: Attachment[]) => void;
   onStartNewProject?: () => void;
 }
 

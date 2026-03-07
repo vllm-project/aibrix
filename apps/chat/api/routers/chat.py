@@ -57,7 +57,7 @@ async def chat_completions(
         conv.model = req.model
 
     # Store the user message
-    user_msg = Message(role="user", content=req.message)
+    user_msg = Message(role="user", content=req.message,attachments=req.attachments,)
     store.add_message(conversation_id, user_msg)
 
     # Resolve system prompt: explicit request > project instructions > None
