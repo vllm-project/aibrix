@@ -69,6 +69,7 @@ export function ChatPage() {
   const { id } = useParams();
   const location = useLocation();
   const [messages, setMessages] = useState<Message[]>([]);
+  const [selectedModel, setSelectedModel] = useState("gpt-4-0613");
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [loading, setLoading] = useState(true);
   const [streaming, setStreaming] = useState(false);
@@ -326,6 +327,7 @@ export function ChatPage() {
       mode?: "image" | "video";
       ratio?: string;
     };
+    setSelectedModel(model);
 
     // Read non-serializable data from module-level store (set by AICreationPage)
     const referenceFile = pendingCreation.file;
@@ -425,6 +427,7 @@ export function ChatPage() {
         }));
 
       lastModelRef.current = model;
+      setSelectedModel(model);
       const userMsg: Message = {
         id: crypto.randomUUID(),
         role: "user",
@@ -983,6 +986,8 @@ export function ChatPage() {
         <ChatInput
           placeholder="Reply..."
           disabled={streaming}
+          selectedModel={selectedModel}
+          onModelChange={setSelectedModel}
           onSend={handleSend}
         />
       </div>
