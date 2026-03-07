@@ -20,6 +20,8 @@ export interface Attachment {
 interface ChatInputProps {
   placeholder?: string;
   disabled?: boolean;
+  selectedModel?: string;
+  onModelChange?: (model: string) => void;
   onSend?: (message: string, model: string, attachments?: Attachment[]) => void;
   onStartNewProject?: () => void;
 }
@@ -27,11 +29,15 @@ interface ChatInputProps {
 export function ChatInput({
   placeholder = "How can I help you today?",
   disabled = false,
+  selectedModel,
+  onModelChange,
   onSend,
   onStartNewProject,
 }: ChatInputProps) {
   const [message, setMessage] = useState("");
-  const [selectedModel, setSelectedModel] = useState("");
+  const [internalSelectedModel, setInternalSelectedModel] = useState("");
+  const currentModel = selectedModel ?? internalSelectedModel;
+  const handleModelChange = onModelChange ?? setInternalSelectedModel;
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -194,7 +200,7 @@ export function ChatInput({
 
   const handleSubmit = () => {
     if (!hasContent || disabled) return;
-    onSend?.(message, selectedModel, attachments.filter((a) => !a.uploading));
+    onSend?.(message, currentModel, attachments.filter((a) => !a.uploading));
     setMessage("");
     setAttachments([]);
   };
@@ -290,8 +296,8 @@ export function ChatInput({
           />
           <div className="flex items-center gap-3">
             <ModelSelector
-              selectedModel={selectedModel}
-              onModelChange={setSelectedModel}
+              selectedModel={currentModel}
+              onModelChange={handleModelChange}
             />
 
             {/* Recording mode */}

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useLayoutEffect } from "react";
 import { Check, ChevronDown, Loader2 } from "lucide-react";
 import { fetchModels, type ModelInfo } from "@/api/client";
 
@@ -12,9 +12,11 @@ export function ModelSelector({
   onModelChange,
 }: ModelSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [openUpward, setOpenUpward] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // Fetch models from API on mount
   useEffect(() => {
@@ -60,6 +62,32 @@ export function ModelSelector({
     };
   }, [isOpen, closeMenu]);
 
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+
+    const updatePlacement = () => {
+      const triggerEl = dropdownRef.current;
+      const menuEl = menuRef.current;
+      if (!triggerEl || !menuEl) return;
+
+      const triggerRect = triggerEl.getBoundingClientRect();
+      const menuHeight = menuEl.offsetHeight;
+      const spaceBelow = window.innerHeight - triggerRect.bottom;
+      const spaceAbove = triggerRect.top;
+
+      setOpenUpward(spaceBelow < menuHeight + 8 && spaceAbove > spaceBelow);
+    };
+
+    updatePlacement();
+    window.addEventListener("resize", updatePlacement);
+    window.addEventListener("scroll", updatePlacement, true);
+
+    return () => {
+      window.removeEventListener("resize", updatePlacement);
+      window.removeEventListener("scroll", updatePlacement, true);
+    };
+  }, [isOpen, models.length, loading]);
+
   const displayName = selectedModel || "Select model";
 
   return (
@@ -77,7 +105,12 @@ export function ModelSelector({
       </button>
 
       {isOpen && (
-        <div className="absolute top-full mt-2 right-0 w-[260px] bg-popover border border-border rounded-xl shadow-xl z-50">
+        <div
+          ref={menuRef}
+          className={`absolute right-0 w-[260px] bg-popover border border-border rounded-xl shadow-xl z-50 ${
+            openUpward ? "bottom-full mb-2" : "top-full mt-2"
+          }`}
+        >
           <div className="p-1.5 max-h-[320px] overflow-y-auto">
             {loading ? (
               <div className="flex items-center justify-center py-4 text-sm text-muted-foreground">
