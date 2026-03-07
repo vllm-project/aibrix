@@ -70,6 +70,14 @@ export interface Conversation {
   updated_at: string;
 }
 
+export interface ChatAttachmentPayload {
+  id: string;
+  name: string;
+  type: string;
+  kind: "image" | "file";
+  previewUrl?: string;
+}
+
 export interface StreamCallbacks {
   onDelta: (text: string) => void;
   onDone: () => void;
@@ -198,6 +206,7 @@ export function streamCompletion(
   conversationId: string,
   message: string,
   model: string,
+  attachments: ChatAttachmentPayload[] | undefined,
   callbacks: StreamCallbacks,
   opts?: { temperature?: number; maxTokens?: number; systemPrompt?: string }
 ): AbortController {
@@ -206,6 +215,7 @@ export function streamCompletion(
   const body = {
     message,
     model,
+    attachments: attachments ?? [],
     stream: true,
     temperature: opts?.temperature ?? 0.7,
     max_tokens: opts?.maxTokens ?? 2048,

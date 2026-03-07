@@ -1,9 +1,10 @@
 import { ChatInput } from "./chat-input";
+import type { Attachment } from "./chat-input";
 import { QuickActions } from "./quick-actions";
 
 interface HomePageProps {
   userName?: string;
-  onSend?: (message: string, model: string) => void;
+  onSend?: (message: string, model: string, attachments?: Attachment[]) => void;
   onStartNewProject?: () => void;
 }
 
@@ -15,7 +16,7 @@ export function HomePage({
   const getGreeting = () => {
     const hour = new Date().getHours();
     if (hour < 12) return "Good morning";
-    if (hour < 18) return "Good afternoon";
+    if (hour < 18) return "Good afternoon"; 
     return "Good evening";
   };
 
