@@ -13,7 +13,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useParams, useLocation } from "react-router";
-import { ChatInput } from "./chat-input";
+import { ChatInput,type Attachment } from "./chat-input";
 import { Tooltip } from "./tooltip";
 import { MarkdownContent } from "./markdown-content";
 import {
@@ -30,6 +30,7 @@ import {
   type Conversation,
   type ImageData,
   type VideoJobResponse,
+  type ChatAttachmentPayload,
 } from "@/api/client";
 import {
   pendingCreation,
@@ -53,6 +54,7 @@ interface Message {
   content: string;
   model?: string;
   streaming?: boolean;
+  attachments?: Attachment[];
   // AI Creation fields
   mode?: "image" | "video";
   ratio?: string;
@@ -122,6 +124,7 @@ export function ChatPage() {
               role: m.role as "user" | "assistant",
               content: m.content as string,
               model: m.model ?? undefined,
+              attachments:m.attachments ?? []
             }));
           // Prepend cached creation messages (image/video) before
           // backend messages (text). The backend only stores text
@@ -316,9 +319,10 @@ export function ChatPage() {
 
     processedFirstMsg.current = true;
     loadedConvId.current = id;
-    const { firstMessage, model, mode, ratio } = location.state as {
+    const { firstMessage, model, mode, ratio, attachments } = location.state as {
       firstMessage: string;
       model: string;
+      attachments?: Attachment[];
       mode?: "image" | "video";
       ratio?: string;
     };
@@ -343,7 +347,7 @@ export function ChatPage() {
     } else if (mode === "video") {
       handleVideoGeneration(firstMessage, model, ratio ?? "1:1");
     } else {
-      sendMessage(firstMessage, model);
+      sendMessage(firstMessage, model, attachments);
     }
   }, [id, loading, location.state]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -369,7 +373,7 @@ export function ChatPage() {
       setMessages((prev) => [...prev, assistantMsg]);
       setStreaming(true);
 
-      controllerRef.current = streamCompletion(id, content, model, {
+      controllerRef.current = streamCompletion(id, content, model, undefined, {
         onDelta: (delta) => {
           setMessages((prev) =>
             prev.map((m) =>
@@ -408,14 +412,24 @@ export function ChatPage() {
   );
 
   const sendMessage = useCallback(
-    (content: string, model: string) => {
+    (content: string, model: string, attachments?: Attachment[]) => {
       if (!id || streaming) return;
+
+      const attachmentPayload: ChatAttachmentPayload[] | undefined = 
+        attachments?.map((attachment) => ({
+          id: attachment.id,
+          name: attachment.name,
+          type: attachment.type,
+          kind: attachment.kind,
+          previewUrl: attachment.previewUrl,
+        }));
 
       lastModelRef.current = model;
       const userMsg: Message = {
         id: crypto.randomUUID(),
         role: "user",
         content,
+        attachments,
       };
       const assistantId = crypto.randomUUID();
       const assistantMsg: Message = {
@@ -429,7 +443,7 @@ export function ChatPage() {
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
       setStreaming(true);
 
-      controllerRef.current = streamCompletion(id, content, model, {
+      controllerRef.current = streamCompletion(id, content, model, attachmentPayload, {
         onDelta: (delta) => {
           setMessages((prev) =>
             prev.map((m) =>
@@ -516,8 +530,8 @@ export function ChatPage() {
     }
   }, [playingMessageId]);
 
-  const handleSend = (content: string, model: string) => {
-    sendMessage(content, model);
+  const handleSend = (content: string, model: string,attachments?: Attachment[]) => {
+    sendMessage(content, model,attachments);
   };
 
   // ── Edit handlers ──────────────────────────────────────
@@ -617,6 +631,36 @@ export function ChatPage() {
     </div>
   );
 
+  const renderUserAttachments = (attachments?: Attachment[]) => {
+    if (!attachments || attachments.length === 0) return null;
+
+    return (
+      <div className="mt-3 flex flex-wrap gap-2">
+        {attachments.map((attachment) => (
+          <div
+            key={attachment.id}
+            className="w-[120px] rounded-xl overflow-hidden border border-border bg-accent/50"
+          >
+            {attachment.kind === "image" && attachment.previewUrl ? (
+              <img
+                src={attachment.previewUrl}
+                alt={attachment.name}
+                className="w-full h-[90px] object-cover"
+              />
+            ) : (
+              <div className="h-[90px] flex flex-col items-center justify-center px-2 text-center">
+                <div className="text-xs text-foreground/50 mb-1">FILE</div>
+                <div className="text-xs text-foreground/80 line-clamp-2 break-all">
+                  {attachment.name}
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  };
+  
   const renderCreationAssistantMessage = (msg: Message) => (
     <div className="flex-1 min-w-0">
       <p className="text-xs text-muted-foreground mb-1">AI Assistant</p>
@@ -833,9 +877,14 @@ export function ChatPage() {
                             </div>
                           </div>
                         ) : (
-                          <div className="text-sm text-foreground/90 whitespace-pre-wrap leading-relaxed">
-                            {msg.content}
-                          </div>
+                          <>
+                            {msg.content ? (
+                              <div className="text-sm text-foreground/90 whitespace-pre-wrap leading-relaxed">
+                                {msg.content}
+                              </div>
+                            ) : null}
+                            {renderUserAttachments(msg.attachments)}
+                          </>
                         )}
                         {/* Edit button — visible on hover, hidden while streaming or editing */}
                         {!streaming && editingId !== msg.id && (

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -19,6 +19,15 @@ class MessageContent(BaseModel):
     text: str | None = None
     image_url: dict[str, str] | None = None
 
+class ChatAttachment(BaseModel):
+    """Serializable attachment metadata for images or files in chat."""
+
+    id: str
+    name: str
+    type: str
+    kind: Literal["image", "file"]
+    previewUrl: str | None = None
+
 
 class Message(BaseModel):
     """Stored message in a conversation."""
@@ -28,6 +37,7 @@ class Message(BaseModel):
     content: str | list[MessageContent]
     parent_id: str | None = None
     model: str | None = None
+    attachments: list[ChatAttachment] = Field(default_factory=list)
     created_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -72,6 +82,7 @@ class CompletionRequest(BaseModel):
 
     message: str | list[MessageContent]
     model: str
+    attachments: list[ChatAttachment] = Field(default_factory=list)
     temperature: float = Field(0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(2048, ge=1, le=32768)
     stream: bool = True
