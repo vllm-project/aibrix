@@ -90,9 +90,12 @@ class ConversationStore:
         if not image_blocks:
             return {"role": msg.role, "content": msg.content}
 
-        content_blocks: list[dict] = []
-        if isinstance(msg.content, str) and msg.content.strip():
-            content_blocks.append({"type": "text", "text": msg.content})
+        if isinstance(msg.content, list):
+            content_blocks = list(msg.content)
+        else:
+            content_blocks = []
+            if isinstance(msg.content, str) and msg.content.strip():
+                content_blocks.append({"type": "text", "text": msg.content})
 
         content_blocks.extend(image_blocks)
         return {"role": msg.role, "content": content_blocks}
