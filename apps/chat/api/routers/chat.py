@@ -57,7 +57,7 @@ async def chat_completions(
         conv.model = req.model
 
     # Store the user message
-    user_msg = Message(role="user", content=req.message,attachments=req.attachments,)
+    user_msg = Message(role="user", content=req.message, attachments=req.attachments)
     store.add_message(conversation_id, user_msg)
 
     # Resolve system prompt: explicit request > project instructions > None
@@ -72,7 +72,7 @@ async def chat_completions(
     messages = store.get_messages_for_gateway(
         conversation_id, system_prompt=system_prompt
     )
-
+    
     if req.stream:
         return EventSourceResponse(_stream_response(
             conversation_id=conversation_id,
