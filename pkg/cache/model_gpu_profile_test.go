@@ -43,4 +43,22 @@ var _ = Describe("ModelGPUProfile", func() {
 		Expect(err).To(BeNil())
 		Expect(signatures).To(Equal([]int{0, 4}))
 	})
+
+	It("should GetSignature find exact match in the middle of a large index", func() {
+		signatures, err := profile.GetSignature(64, 256)
+		Expect(err).To(BeNil())
+		Expect(signatures).To(Equal([]int{4, 1}))
+	})
+
+	It("should GetSignature find value near the end of a large index", func() {
+		signatures, err := profile.GetSignature(256, 128)
+		Expect(err).To(BeNil())
+		Expect(signatures).To(Equal([]int{6, 0}))
+	})
+
+	It("should GetSignature find value near the start of a large index", func() {
+		signatures, err := profile.GetSignature(8, 128)
+		Expect(err).To(BeNil())
+		Expect(signatures).To(Equal([]int{1, 0}))
+	})
 })
