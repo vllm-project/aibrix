@@ -13,7 +13,7 @@ export interface Attachment {
   file: File;
   uploading: boolean;
   progress: number;
-  previewUrl?: string;
+  blob_url?: string;
   kind: "image" | "file";
 }
 
@@ -132,14 +132,10 @@ export function ChatInput({
         };
 
         if (isImage) {
-          const reader = new FileReader();
-          reader.onload = (e) => {
-            const previewUrl = e.target?.result as string;
-            const attachment: Attachment = { ...base, previewUrl };
-            setAttachments((prev) => [...prev, attachment]);
-            simulateUpload(attachment);
-          };
-          reader.readAsDataURL(file);
+          const blob_url = URL.createObjectURL(file);
+          const attachment: Attachment = { ...base, blob_url };
+          setAttachments((prev) => [...prev, attachment]);
+          simulateUpload(attachment);
         } else {
           setAttachments((prev) => [...prev, base]);
           simulateUpload(base);
@@ -241,12 +237,12 @@ export function ChatInput({
                         />
                       </div>
                     </div>
-                  ) : attachment.kind === "image" && attachment.previewUrl ? (
+                  ) : attachment.kind === "image" && attachment.blob_url ? (
                     <img
-                      src={attachment.previewUrl}
+                      src={attachment.blob_url}
                       alt={attachment.name}
                       className="w-full h-full object-cover"
-                    />
+                    /> 
                   ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center px-2 text-center">
                       <div className="text-xs text-foreground/50 mb-1">FILE</div>

@@ -13,7 +13,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useParams, useLocation } from "react-router";
-import { ChatInput,type Attachment } from "./chat-input";
+import { ChatInput,type Attachment as InputAttachment } from "./chat-input";
 import { Tooltip } from "./tooltip";
 import { MarkdownContent } from "./markdown-content";
 import {
@@ -54,7 +54,7 @@ interface Message {
   content: string;
   model?: string;
   streaming?: boolean;
-  attachments?: Attachment[];
+  attachments?: MessageAttachment[];
   // AI Creation fields
   mode?: "image" | "video";
   ratio?: string;
@@ -63,6 +63,16 @@ interface Message {
   videoJob?: VideoJobResponse;
   loading?: boolean;
   error?: string;
+}
+
+interface MessageAttachment {
+  id: string;
+  name: string;
+  type: string;
+  kind: "image" | "file";
+  blob_url?: string;
+  preview_url?: string;
+  file?: File;
 }
 
 export function ChatPage() {
@@ -125,7 +135,10 @@ export function ChatPage() {
               role: m.role as "user" | "assistant",
               content: m.content as string,
               model: m.model ?? undefined,
-              attachments:m.attachments ?? []
+              attachments: (m.attachments ?? []).map((attachment) => ({
+                ...attachment,
+                blob_url: attachment.blob_url ?? attachment.preview_url,
+              })),
             }));
           // Prepend cached creation messages (image/video) before
           // backend messages (text). The backend only stores text
@@ -323,7 +336,7 @@ export function ChatPage() {
     const { firstMessage, model, mode, ratio, attachments } = location.state as {
       firstMessage: string;
       model: string;
-      attachments?: Attachment[];
+      attachments?: InputAttachment[];
       mode?: "image" | "video";
       ratio?: string;
     };
@@ -414,7 +427,7 @@ export function ChatPage() {
   );
 
   const sendMessage = useCallback(
-    (content: string, model: string, attachments?: Attachment[]) => {
+    (content: string, model: string, attachments?: InputAttachment[]) => {
       if (!id || streaming) return;
 
       const attachmentPayload: ChatAttachmentPayload[] | undefined = 
@@ -423,7 +436,7 @@ export function ChatPage() {
           name: attachment.name,
           type: attachment.type,
           kind: attachment.kind,
-          previewUrl: attachment.previewUrl,
+          file: attachment.file,
         }));
 
       lastModelRef.current = model;
@@ -533,7 +546,7 @@ export function ChatPage() {
     }
   }, [playingMessageId]);
 
-  const handleSend = (content: string, model: string,attachments?: Attachment[]) => {
+  const handleSend = (content: string, model: string,attachments?: InputAttachment[]) => {
     sendMessage(content, model,attachments);
   };
 
@@ -634,7 +647,7 @@ export function ChatPage() {
     </div>
   );
 
-  const renderUserAttachments = (attachments?: Attachment[]) => {
+  const renderUserAttachments = (attachments?: MessageAttachment[]) => {
     if (!attachments || attachments.length === 0) return null;
 
     return (
@@ -644,9 +657,9 @@ export function ChatPage() {
             key={attachment.id}
             className="w-[120px] rounded-xl overflow-hidden border border-border bg-accent/50"
           >
-            {attachment.kind === "image" && attachment.previewUrl ? (
+            {attachment.kind === "image" && attachment.blob_url ? (
               <img
-                src={attachment.previewUrl}
+                src={attachment.blob_url}
                 alt={attachment.name}
                 className="w-full h-[90px] object-cover"
               />

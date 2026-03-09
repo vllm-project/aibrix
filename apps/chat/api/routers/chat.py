@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import json
 import logging
+import base64
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, File, Form, UploadFile
 
 logger = logging.getLogger(__name__)
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from middleware.auth import get_current_user
-from models.schemas import CompletionRequest, CompletionResponse, Message, User
+from models.schemas import CompletionResponse, Message, User, ChatAttachment
 from services.conversation import store
 from services import gateway
 import httpx
@@ -39,7 +40,14 @@ def _auto_title(conversation_id: str) -> None:
 @router.post("/api/conversations/{conversation_id}/completions")
 async def chat_completions(
     conversation_id: str,
-    req: CompletionRequest,
+    message: str = Form(""),
+    model: str = Form(...),
+    stream: bool = Form(True),
+    temperature: float = Form(0.7),
+    max_tokens: int = Form(2048),
+    system_prompt: str | None = Form(None),
+    files: list[UploadFile] = File(default=[]),
+    attachments_meta: list[str] = Form(default=[]),
     user: User = Depends(get_current_user),
 ):
     """Send a message and get a response. Streams via SSE when stream=True.
@@ -52,42 +60,68 @@ async def chat_completions(
     if conv is None or (conv.user_id and conv.user_id != user.id):
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    attachments: list[ChatAttachment] = []
+
+    for idx, meta_raw in enumerate(attachments_meta):
+        meta = json.loads(meta_raw)
+        preview_url = None
+
+        if idx < len(files):
+            upload = files[idx]
+            file_bytes = await upload.read()
+
+            if meta.get("kind") == "image":
+                content_type = upload.content_type or meta.get("type") or "image/png"
+                b64 = base64.b64encode(file_bytes).decode("utf-8")
+                preview_url = f"data:{content_type};base64,{b64}"
+
+        attachments.append(
+            ChatAttachment(
+                id=meta["id"],
+                name=meta["name"],
+                type=meta["type"],
+                kind=meta["kind"],
+                preview_url=preview_url,
+            )
+        )
+
+
     # Update conversation model if changed
-    if conv.model != req.model:
-        conv.model = req.model
+    if conv.model != model:
+        conv.model = model
 
     # Store the user message
-    user_msg = Message(role="user", content=req.message, attachments=req.attachments)
+    user_msg = Message(role="user", content=message, attachments=attachments)
     store.add_message(conversation_id, user_msg)
 
     # Resolve system prompt: explicit request > project instructions > None
-    system_prompt = req.system_prompt
-    if not system_prompt and conv.project_id:
+    resolved_system_prompt = system_prompt
+    if not resolved_system_prompt and conv.project_id:
         from services.project import project_store
         project = project_store.get(conv.project_id)
         if project and project.instructions:
-            system_prompt = project.instructions
+            resolved_system_prompt = project.instructions
 
     # Build full message history for the gateway
     messages = store.get_messages_for_gateway(
-        conversation_id, system_prompt=system_prompt
+        conversation_id, system_prompt=resolved_system_prompt
     )
     
-    if req.stream:
+    if stream:
         return EventSourceResponse(_stream_response(
             conversation_id=conversation_id,
             messages=messages,
-            model=req.model,
-            temperature=req.temperature,
-            max_tokens=req.max_tokens,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
         ))
     else:
         return await _non_stream_response(
             conversation_id=conversation_id,
             messages=messages,
-            model=req.model,
-            temperature=req.temperature,
-            max_tokens=req.max_tokens,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
 
 

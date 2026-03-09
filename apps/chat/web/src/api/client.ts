@@ -75,7 +75,7 @@ export interface ChatAttachmentPayload {
   name: string;
   type: string;
   kind: "image" | "file";
-  previewUrl?: string;
+  file: File;
 }
 
 export interface StreamCallbacks {
@@ -212,20 +212,31 @@ export function streamCompletion(
 ): AbortController {
   const controller = new AbortController();
 
-  const body = {
-    message,
-    model,
-    attachments: attachments ?? [],
-    stream: true,
-    temperature: opts?.temperature ?? 0.7,
-    max_tokens: opts?.maxTokens ?? 2048,
-    system_prompt: opts?.systemPrompt ?? null,
-  };
+  const form = new FormData();
+  form.append("message", message);
+  form.append("model", model);
+  form.append("stream", "true");
+  form.append("temperature", String(opts?.temperature ?? 0.7));
+  form.append("max_tokens", String(opts?.maxTokens ?? 2048));
+  form.append("system_prompt", opts?.systemPrompt ?? "");
+
+  attachments?.forEach((attachment) => {
+    form.append("files", attachment.file);
+    form.append(
+      "attachments_meta",
+      JSON.stringify({
+        id: attachment.id,
+        name: attachment.name,
+        type: attachment.type,
+        kind: attachment.kind,
+      })
+    );
+  });
 
   fetch(`/api/conversations/${conversationId}/completions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify(body),
+    headers: { ...authHeaders() },
+    body: form,
     signal: controller.signal,
   })
     .then(async (res) => {

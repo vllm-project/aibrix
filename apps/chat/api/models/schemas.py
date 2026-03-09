@@ -26,7 +26,7 @@ class ChatAttachment(BaseModel):
     name: str
     type: str
     kind: Literal["image", "file"]
-    previewUrl: str | None = None
+    preview_url: str | None = None
 
 
 class Message(BaseModel):
