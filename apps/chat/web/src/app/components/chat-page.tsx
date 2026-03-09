@@ -327,7 +327,7 @@ export function ChatPage() {
       !id ||
       loading ||
       processedFirstMsg.current ||
-      !location.state?.firstMessage
+      !location.state
     )
       return;
 
