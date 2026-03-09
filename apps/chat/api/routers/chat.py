@@ -15,6 +15,7 @@ from middleware.auth import get_current_user
 from models.schemas import CompletionRequest, CompletionResponse, Message, User
 from services.conversation import store
 from services import gateway
+import httpx
 
 router = APIRouter(tags=["chat"])
 

@@ -6,6 +6,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
+import httpx
 
 from models.schemas import VideoGenerateRequest, VideoJobResponse
 from services.providers import get_video_provider
