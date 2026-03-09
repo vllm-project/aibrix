@@ -70,11 +70,11 @@ class ConversationStore:
         return message
 
     def _attachment_to_content_block(self, attachment: ChatAttachment) -> dict | None:
-        if attachment.kind != "image" or not attachment.previewUrl:
+        if attachment.kind != "image" or not attachment.preview_url:
             return None
         return {
             "type": "image_url",
-            "image_url": {"url": attachment.previewUrl},
+            "image_url": {"url": attachment.preview_url},
         }
 
     def _message_to_gateway_dict(self, msg: Message) -> dict:
