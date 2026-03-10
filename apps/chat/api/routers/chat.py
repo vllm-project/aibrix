@@ -47,7 +47,6 @@ async def chat_completions(
     max_tokens: int = Form(2048),
     system_prompt: str | None = Form(None),
     files: list[UploadFile] = File(default=[]),
-    attachments_meta: list[str] = Form(default=[]),
     user: User = Depends(get_current_user),
 ):
     """Send a message and get a response. Streams via SSE when stream=True.
@@ -62,25 +61,22 @@ async def chat_completions(
 
     attachments: list[ChatAttachment] = []
 
-    for idx, meta_raw in enumerate(attachments_meta):
-        meta = json.loads(meta_raw)
+    for upload in files:
+        file_bytes = await upload.read()
+        name = upload.filename or "file"
+        file_type = upload.content_type or "application/octet-stream"
+        kind = "image" if file_type.startswith("image/") else "file"
+
         preview_url = None
-
-        if idx < len(files):
-            upload = files[idx]
-            file_bytes = await upload.read()
-
-            if meta.get("kind") == "image":
-                content_type = upload.content_type or meta.get("type") or "image/png"
-                b64 = base64.b64encode(file_bytes).decode("utf-8")
-                preview_url = f"data:{content_type};base64,{b64}"
+        if kind == "image":
+            b64 = base64.b64encode(file_bytes).decode("utf-8")
+            preview_url = f"data:{file_type};base64,{b64}"
 
         attachments.append(
             ChatAttachment(
-                id=meta["id"],
-                name=meta["name"],
-                type=meta["type"],
-                kind=meta["kind"],
+                name=name,
+                type=file_type,
+                kind=kind,
                 preview_url=preview_url,
             )
         )
