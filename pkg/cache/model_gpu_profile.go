@@ -135,8 +135,8 @@ func (pf *ModelGPUProfile) GetSignature(features ...float64) ([]int, error) {
 				} else {
 					ret[i] = mid
 					found = true
+					break
 				}
-				break
 			}
 			if !found {
 				if value < indexes[i][left]+(indexes[i][right]-indexes[i][left])*SignatureTolerance {
