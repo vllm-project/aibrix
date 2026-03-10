@@ -222,15 +222,6 @@ export function streamCompletion(
 
   attachments?.forEach((attachment) => {
     form.append("files", attachment.file);
-    form.append(
-      "attachments_meta",
-      JSON.stringify({
-        id: attachment.id,
-        name: attachment.name,
-        type: attachment.type,
-        kind: attachment.kind,
-      })
-    );
   });
 
   fetch(`/api/conversations/${conversationId}/completions`, {

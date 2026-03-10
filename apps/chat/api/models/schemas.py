@@ -22,7 +22,7 @@ class MessageContent(BaseModel):
 class ChatAttachment(BaseModel):
     """Serializable attachment metadata for images or files in chat."""
 
-    id: str
+    id: str | None = None
     name: str
     type: str
     kind: Literal["image", "file"]
