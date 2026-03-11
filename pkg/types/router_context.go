@@ -73,6 +73,9 @@ type RoutingContext struct {
 	Message        string // Deprecated for chat completions, use Messages instead
 	Messages       []ChatMessage // For chat completions API, preserves original message structure
 	RequestID      string
+	// vLLM-specific chat template parameters
+	AddGenerationPrompt *bool // If true, adds generation prompt to chat template (vLLM default: true)
+	AddSpecialTokens    *bool // If true, adds special tokens on top of chat template (vLLM default: false for chat)
 	User           *string
 	RequestTime    time.Time // Time when the routing context is created.
 	RequestEndTime time.Time // Time when the routing is done and sent to inference engine.

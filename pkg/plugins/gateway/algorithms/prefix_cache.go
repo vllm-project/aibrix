@@ -376,10 +376,22 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 		if extTokenizer, ok := tokenizerToUse.(interface {
 			TokenizeWithOptions(context.Context, tokenizer.TokenizeInput) (*tokenizer.TokenizeResult, error)
 		}); ok {
+			// Use parameters from request, or vLLM defaults if not specified
+			// vLLM defaults: add_generation_prompt=true, add_special_tokens=false for chat
+			addGenPrompt := true // vLLM default
+			if ctx.AddGenerationPrompt != nil {
+				addGenPrompt = *ctx.AddGenerationPrompt
+			}
+			addSpecialToks := false // vLLM default for chat (template adds them)
+			if ctx.AddSpecialTokens != nil {
+				addSpecialToks = *ctx.AddSpecialTokens
+			}
+
 			input := tokenizer.TokenizeInput{
-				Type:             tokenizer.ChatInput,
-				Messages:         convertToTokenizerMessages(ctx.Messages),
-				AddSpecialTokens: true,
+				Type:                tokenizer.ChatInput,
+				Messages:            convertToTokenizerMessages(ctx.Messages),
+				AddSpecialTokens:    addSpecialToks,
+				AddGenerationPrompt: addGenPrompt,
 			}
 			result, err := extTokenizer.TokenizeWithOptions(context.Background(), input)
 			if err != nil {

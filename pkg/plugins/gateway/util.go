@@ -46,7 +46,7 @@ var (
 
 // validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
 // nolint:nakedret
-func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, messages []types.ChatMessage, stream bool, errRes *extProcPb.ProcessingResponse) {
+func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, messages []types.ChatMessage, stream bool, addGenerationPrompt, addSpecialTokens *bool, errRes *extProcPb.ProcessingResponse) {
 	var streamOptions openai.ChatCompletionStreamOptionsParam
 	var jsonMap map[string]json.RawMessage
 	if err := sonic.Unmarshal(requestBody, &jsonMap); err != nil {
@@ -71,6 +71,19 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		// Keep backward compatibility - also extract flattened message string
 		if message, errRes = getChatCompletionsMessage(requestID, chatCompletionObj); errRes != nil {
 			return
+		}
+		// Parse vLLM-specific parameters from jsonMap
+		if addGenPromptRaw, ok := jsonMap["add_generation_prompt"]; ok {
+			var val bool
+			if err := sonic.Unmarshal(addGenPromptRaw, &val); err == nil {
+				addGenerationPrompt = &val
+			}
+		}
+		if addSpecialToksRaw, ok := jsonMap["add_special_tokens"]; ok {
+			var val bool
+			if err := sonic.Unmarshal(addSpecialToksRaw, &val); err == nil {
+				addSpecialTokens = &val
+			}
 		}
 		if errRes = validateStreamOptions(requestID, user, &stream, streamOptions, jsonMap); errRes != nil {
 			return

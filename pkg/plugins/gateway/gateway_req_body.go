@@ -60,7 +60,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	} else {
 		// Use existing JSON validation for other endpoints
 		var messages []types.ChatMessage
-		model, message, messages, stream, errRes = validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)
+		var addGenerationPrompt, addSpecialTokens *bool
+		model, message, messages, stream, addGenerationPrompt, addSpecialTokens, errRes = validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)
 		if errRes != nil {
 			return errRes, model, routingCtx, stream, term
 		}
@@ -68,6 +69,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		if len(messages) > 0 {
 			routingCtx.Messages = messages
 		}
+		// Store vLLM-specific parameters if present
+		routingCtx.AddGenerationPrompt = addGenerationPrompt
+		routingCtx.AddSpecialTokens = addSpecialTokens
 	}
 
 	routingCtx.Model = model
