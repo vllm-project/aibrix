@@ -62,7 +62,10 @@ async def chat_completions(
     attachments: list[ChatAttachment] = []
 
     for upload in files:
-        file_bytes = await upload.read()
+        MAX_FILE_SIZE = 20 * 1024 * 1024
+        file_bytes = await upload.read(MAX_FILE_SIZE + 1)
+        if len(file_bytes) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail="File too large")
         name = upload.filename or "file"
         file_type = upload.content_type or "application/octet-stream"
         kind = "image" if file_type.startswith("image/") else "file"
