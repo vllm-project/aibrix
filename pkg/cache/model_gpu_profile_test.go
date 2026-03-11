@@ -17,6 +17,7 @@ package cache
 
 import (
 	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/extensions/table"
 	. "github.com/onsi/gomega"
 )
 
@@ -38,27 +39,20 @@ var _ = Describe("ModelGPUProfile", func() {
 		Expect(profile.Indexes).To(Equal([][]float64{{2, 3, 4, 5, 6, 7, 8, 9}, {7, 8, 9, 10, 11}}))
 	})
 
-	It("should GetSignature return correct signatures", func() {
-		signatures, err := profile.GetSignature(0, 2049)
-		Expect(err).To(BeNil())
-		Expect(signatures).To(Equal([]int{0, 4}))
-	})
-
-	It("should GetSignature find exact match in the middle of a large index", func() {
-		signatures, err := profile.GetSignature(64, 256)
-		Expect(err).To(BeNil())
-		Expect(signatures).To(Equal([]int{4, 1}))
-	})
-
-	It("should GetSignature find value near the end of a large index", func() {
-		signatures, err := profile.GetSignature(256, 128)
-		Expect(err).To(BeNil())
-		Expect(signatures).To(Equal([]int{6, 0}))
-	})
-
-	It("should GetSignature find value near the start of a large index", func() {
-		signatures, err := profile.GetSignature(8, 128)
-		Expect(err).To(BeNil())
-		Expect(signatures).To(Equal([]int{1, 0}))
-	})
+	DescribeTable("GetSignature",
+		func(features []float64, expectedSignatures []int, expectError bool) {
+			signatures, err := profile.GetSignature(features...)
+			if expectError {
+				Expect(err).To(HaveOccurred())
+			} else {
+				Expect(err).To(BeNil())
+				Expect(signatures).To(Equal(expectedSignatures))
+			}
+		},
+		Entry("should GetSignature return correct signatures", []float64{0, 2049}, []int{0, 4}, false),
+		Entry("should find exact match in the middle of a large index", []float64{64, 256}, []int{4, 1}, false),
+		Entry("should find value near the end of a large index", []float64{256, 128}, []int{6, 0}, false),
+		Entry("should find value near the start of a large index", []float64{8, 128}, []int{1, 0}, false),
+		Entry("should return error for negative feature", []float64{-1.0, 128}, nil, true),
+	)
 })
