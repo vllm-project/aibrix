@@ -40,14 +40,19 @@ var _ = Describe("ModelGPUProfile", func() {
 	})
 
 	DescribeTable("GetSignature",
-		func(features []float64, expectedSignatures []int) {
+		func(features []float64, expectedSignatures []int, expectError bool) {
 			signatures, err := profile.GetSignature(features...)
-			Expect(err).To(BeNil())
-			Expect(signatures).To(Equal(expectedSignatures))
+			if expectError {
+				Expect(err).To(HaveOccurred())
+			} else {
+				Expect(err).To(BeNil())
+				Expect(signatures).To(Equal(expectedSignatures))
+			}
 		},
-		Entry("should GetSignature return correct signatures", []float64{0, 2049}, []int{0, 4}),
-		Entry("should find exact match in the middle of a large index", []float64{64, 256}, []int{4, 1}),
-		Entry("should find value near the end of a large index", []float64{256, 128}, []int{6, 0}),
-		Entry("should find value near the start of a large index", []float64{8, 128}, []int{1, 0}),
+		Entry("should GetSignature return correct signatures", []float64{0, 2049}, []int{0, 4}, false),
+		Entry("should find exact match in the middle of a large index", []float64{64, 256}, []int{4, 1}, false),
+		Entry("should find value near the end of a large index", []float64{256, 128}, []int{6, 0}, false),
+		Entry("should find value near the start of a large index", []float64{8, 128}, []int{1, 0}, false),
+		Entry("should return error for negative feature", []float64{-1.0, 128}, nil, true),
 	)
 })
