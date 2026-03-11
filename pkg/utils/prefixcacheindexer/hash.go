@@ -19,6 +19,7 @@ package prefixcacheindexer
 import (
 	"encoding/binary"
 	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 
@@ -55,9 +56,10 @@ func GetSharedPrefixHashTable() *PrefixHashTable {
 }
 
 type PrefixHashTable struct {
-	mu    sync.RWMutex
-	seed  uint64
-	store lrustore.Store[uint64, Block]
+	mu       sync.RWMutex
+	seed     uint64
+	store    lrustore.Store[uint64, Block]
+	dirtyIds map[string]struct{} // block hash as string, for delta sync
 }
 
 type Block struct {
@@ -73,11 +75,9 @@ func NewPrefixHashTable() *PrefixHashTable {
 		"prefix_cache_block_eviction_interval_seconds", prefixCacheEvictionInterval,
 		"prefix_cache_block_eviction_duration_minutes", prefixCacheEvictionDuration)
 	instance := &PrefixHashTable{
-		seed: seed,
-		store: lrustore.NewLRUStore[uint64, Block](prefixCacheBlockNumber,
-			prefixCacheEvictionDuration,
-			prefixCacheEvictionInterval,
-			func() time.Time { return time.Now() }),
+		seed:     seed,
+		store:    lrustore.NewLRUStore[uint64, Block](prefixCacheBlockNumber, prefixCacheEvictionDuration, prefixCacheEvictionInterval, func() time.Time { return time.Now() }),
+		dirtyIds: make(map[string]struct{}),
 	}
 	return instance
 }
@@ -135,6 +135,7 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 		}
 
 		c.store.Put(prefixHash, block)
+		c.dirtyIds[strconv.FormatUint(prefixHash, 10)] = struct{}{}
 	}
 }
 
