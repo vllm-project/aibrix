@@ -113,6 +113,8 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	}
 
 	klog.InfoS("processing request", "requestID", st.requestID)
+	labels := map[string]string{"pod_name": podName}
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{}, nil, metrics.GatewayRequestTotal, &metrics.SimpleMetricValue{Value: 1.0}, labels)
 
 	for {
 		if err := s.processOnce(srv, st); err != nil {
@@ -136,24 +138,27 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 		return err
 	}
 
-	s.emitProcessMetrics(st, resp)
 	return s.sendProcessingResponse(srv, st, resp)
 }
 
 func (s *Server) preRecvCheck(st *processState) error {
 	select {
+	// Always emit a server-shutdown metric
 	case <-s.shutdownCh:
 		modelTag := GetModelTag(st.model)
 		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "aibrix_gateway_server_shutdown", "503")
-		klog.InfoS("server shutdown requested; draining request", "request_id", st.requestID, "model", st.model)
+		klog.ErrorS(nil, "server shutdown requested; draining request", "request_id", st.requestID, "model", st.model)
 		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
 		return status.Error(codes.Unavailable, "server shutdown in progress")
+
+	// Client cancelled or deadline exceeded
 	case <-st.ctx.Done():
 		modelTag := GetModelTag(st.model)
 		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "context_cancelled", "499")
 		klog.ErrorS(st.ctx.Err(), "context cancelled", "request_id", st.requestID, "model", st.model)
 		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
 		return st.ctx.Err()
+
 	default:
 		return nil
 	}
@@ -161,40 +166,38 @@ func (s *Server) preRecvCheck(st *processState) error {
 
 func (s *Server) handleRecvError(st *processState, err error) error {
 	if err == io.EOF {
-		return s.handleEOF(st)
-	}
-	return s.handleNonEOFRecvError(st, err)
-}
+		select {
+		// check for shutdown
+		case <-s.shutdownCh:
+			modelTag := GetModelTag(st.model)
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "aibrix_gateway_server_shutdown", "503")
+			klog.ErrorS(nil, "server shutdown requested; stream closed (EOF) during shutdown drain", "requestID", st.requestID, "model", st.model)
+			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			return status.Error(codes.Unavailable, "server shutdown in progress")
 
-func (s *Server) handleEOF(st *processState) error {
-	select {
-	case <-s.shutdownCh:
-		modelTag := GetModelTag(st.model)
-		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "aibrix_gateway_server_shutdown", "503")
-		klog.InfoS("server shutdown requested; stream closed (EOF) during shutdown drain", "requestID", st.requestID, "model", st.model)
-		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
-		return status.Error(codes.Unavailable, "server shutdown in progress")
-	default:
-	}
-
-	if st.completed {
-		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
+		default:
 		}
-		klog.V(2).InfoS("stream closed (EOF): completed", "requestID", st.requestID, "model", st.model)
+
+		// EOF at completion is normal
+		if st.completed {
+			if st.model != "" {
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
+			}
+			klog.V(2).InfoS("stream closed (EOF): completed", "requestID", st.requestID, "model", st.model)
+			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			return nil
+		}
+
+		// client closed stream (EOF)
+		if st.model != "" {
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "client_cancelled_eof", "499")
+		}
+		klog.ErrorS(nil, "client closed stream (EOF) before completion", "requestID", st.requestID, "model", st.model)
 		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
-		return nil
+		return io.EOF
 	}
 
-	if st.model != "" {
-		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "client_cancelled_eof", "499")
-	}
-	klog.ErrorS(nil, "client closed stream (EOF) before completion", "requestID", st.requestID, "model", st.model)
-	s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
-	return io.EOF
-}
-
-func (s *Server) handleNonEOFRecvError(st *processState, err error) error {
+	// Normal stream closure by envoy proxy
 	stErr, ok := status.FromError(err)
 	if ok && stErr.Code() == codes.Canceled {
 		if st.model != "" {
@@ -204,6 +207,7 @@ func (s *Server) handleNonEOFRecvError(st *processState, err error) error {
 		return status.Error(codes.Canceled, "request canceled")
 	}
 
+	// Record failed request metric for other gRPC errors
 	if ok {
 		if st.model != "" {
 			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "gateway_request_fail", fmt.Sprintf("%d", stErr.Code()))
@@ -261,6 +265,26 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		return nil, status.Errorf(codes.Internal, "no response generated for %T", req.Request)
 	}
 
+	if st.model == "" {
+		return resp, nil
+	}
+
+	if resp.GetImmediateResponse() == nil {
+		if st.metricLabel != gatewayRespBody {
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", "200")
+			return resp, nil
+		}
+		if st.completed && !st.isGatewayRspDone {
+			st.isGatewayRspDone = true
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", "200")
+		}
+		return resp, nil
+	}
+
+	statusCode := fmt.Sprintf("%d", int(resp.GetImmediateResponse().Status.GetCode()))
+	metricFail := getMetricErr(resp.GetImmediateResponse(), st.metricLabel)
+	s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, metricFail+"_fail", statusCode)
+
 	return resp, nil
 }
 
@@ -273,29 +297,6 @@ func (s *Server) responseForResponseHeaderError(st *processState, resp *extProcP
 	default:
 		return resp
 	}
-}
-
-func (s *Server) emitProcessMetrics(st *processState, resp *extProcPb.ProcessingResponse) {
-	s.emitGatewayRequestTotalMetric(resp, st.model)
-	if st.model == "" {
-		return
-	}
-
-	if resp.GetImmediateResponse() == nil {
-		if st.metricLabel != gatewayRespBody {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", "200")
-			return
-		}
-		if st.completed && !st.isGatewayRspDone {
-			st.isGatewayRspDone = true
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", "200")
-		}
-		return
-	}
-
-	statusCode := fmt.Sprintf("%d", int(resp.GetImmediateResponse().Status.GetCode()))
-	metricFail := getMetricErr(resp.GetImmediateResponse(), st.metricLabel)
-	s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, metricFail+"_fail", statusCode)
 }
 
 func (s *Server) sendProcessingResponse(srv extProcPb.ExternalProcessor_ProcessServer, st *processState, resp *extProcPb.ProcessingResponse) error {
@@ -440,15 +441,6 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, headers
 func (s *Server) emitMetricsCounterHelper(metricName, model, status, statusCode string) {
 	labels := buildGatewayPodMetricLabels(model, status, statusCode)
 	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, nil, metricName, &metrics.SimpleMetricValue{Value: 1.0}, labels)
-}
-
-func (s *Server) emitGatewayRequestTotalMetric(resp *extProcPb.ProcessingResponse, model string) {
-	statusCode := "200"
-	if resp.GetImmediateResponse() != nil {
-		statusCode = fmt.Sprintf("%d", int(resp.GetImmediateResponse().Status.GetCode()))
-	}
-	labels := buildGatewayPodMetricLabels(model, "gateway_request_handled", statusCode)
-	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, nil, metrics.GatewayRequestTotal, &metrics.SimpleMetricValue{Value: 1.0}, labels)
 }
 
 func getMetricErr(resp *extProcPb.ImmediateResponse, metricLabel string) string {

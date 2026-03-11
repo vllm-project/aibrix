@@ -1,38 +1,98 @@
-import { useState, useRef, useCallback } from "react";
-import { AudioLines, ArrowUp, X, Loader2 } from "lucide-react";
+import { useState, useRef, useCallback, useEffect } from "react";
+import { AudioLines, ArrowUp, X, Loader2, Square } from "lucide-react";
 import { ModelSelector } from "./model-selector";
 import { PlusMenu } from "./plus-menu";
 import { Tooltip } from "./tooltip";
+import { useAudioRecording } from "../hooks/use-audio-recording";
+import { transcribeAudio } from "../../api/client";
 
-interface AttachedImage {
+export interface Attachment {
   id: string;
-  dataUrl: string;
+  name: string;
+  type: string;
   file: File;
   uploading: boolean;
   progress: number;
+  blob_url?: string;
+  kind: "image" | "file";
 }
 
 interface ChatInputProps {
   placeholder?: string;
-  onSend?: (message: string, images?: AttachedImage[]) => void;
+  disabled?: boolean;
+  selectedModel?: string;
+  onModelChange?: (model: string) => void;
+  onSend?: (message: string, model: string, attachments?: Attachment[]) => void;
   onStartNewProject?: () => void;
 }
 
 export function ChatInput({
   placeholder = "How can I help you today?",
+  disabled = false,
+  selectedModel,
+  onModelChange,
   onSend,
   onStartNewProject,
 }: ChatInputProps) {
   const [message, setMessage] = useState("");
-  const [selectedModel, setSelectedModel] = useState("Sonnet 4.6");
-  const [extendedThinking, setExtendedThinking] = useState(true);
-  const [images, setImages] = useState<AttachedImage[]>([]);
+  const [internalSelectedModel, setInternalSelectedModel] = useState("");
+  const currentModel = selectedModel ?? internalSelectedModel;
+  const handleModelChange = onModelChange ?? setInternalSelectedModel;
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [audioError, setAudioError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const hasContent = message.trim().length > 0 || images.some((i) => !i.uploading);
+  const { isRecording, duration, start, stop, cancel } = useAudioRecording();
 
-  const simulateUpload = useCallback((img: AttachedImage) => {
+  const hasContent = message.trim().length > 0 || attachments.some((a) => !a.uploading);
+
+  const formatDuration = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
+  const handleAddFilesOrPhotos = useCallback(() => {
+  fileInputRef.current?.click();
+  }, []);
+
+  
+
+  const handleAudioClick = async () => {
+    setAudioError(null);
+    try {
+      await start();
+    } catch {
+      setAudioError("Microphone access denied");
+    }
+  };
+
+  const handleAudioStop = async () => {
+    setIsTranscribing(true);
+    setAudioError(null);
+    try {
+      const file = await stop();
+      const result = await transcribeAudio(file);
+      setMessage((prev) => (prev ? prev + " " + result.text : result.text));
+      textareaRef.current?.focus();
+    } catch (err) {
+      setAudioError(
+        err instanceof Error ? err.message : "Transcription failed"
+      );
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
+
+  const handleAudioCancel = () => {
+    cancel();
+    setAudioError(null);
+  };
+
+  const simulateUpload = useCallback((img: Attachment) => {
     const duration = 800 + Math.random() * 600;
     const steps = 12;
     const stepTime = duration / steps;
@@ -41,14 +101,14 @@ export function ChatInput({
     const interval = setInterval(() => {
       step++;
       const progress = Math.min((step / steps) * 100, 100);
-      setImages((prev) =>
+      setAttachments((prev) =>
         prev.map((i) =>
           i.id === img.id ? { ...i, progress } : i
         )
       );
       if (step >= steps) {
         clearInterval(interval);
-        setImages((prev) =>
+        setAttachments((prev) =>
           prev.map((i) =>
             i.id === img.id ? { ...i, uploading: false, progress: 100 } : i
           )
@@ -57,28 +117,43 @@ export function ChatInput({
     }, stepTime);
   }, []);
 
-  const addImageFiles = useCallback(
+  const addFiles = useCallback(
     (files: File[]) => {
-      const imageFiles = files.filter((f) => f.type.startsWith("image/"));
-      imageFiles.forEach((file) => {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          const dataUrl = e.target?.result as string;
-          const newImg: AttachedImage = {
-            id: crypto.randomUUID(),
-            dataUrl,
-            file,
-            uploading: true,
-            progress: 0,
-          };
-          setImages((prev) => [...prev, newImg]);
-          simulateUpload(newImg);
+      files.forEach((file) => {
+        const isImage = file.type.startsWith("image/");
+        const base: Attachment = {
+          id: crypto.randomUUID(),
+          name: file.name,
+          type: file.type,
+          file,
+          uploading: true,
+          progress: 0,
+          kind: isImage ? "image" : "file",
         };
-        reader.readAsDataURL(file);
+
+        if (isImage) {
+          const blob_url = URL.createObjectURL(file);
+          const attachment: Attachment = { ...base, blob_url };
+          setAttachments((prev) => [...prev, attachment]);
+          simulateUpload(attachment);
+        } else {
+          setAttachments((prev) => [...prev, base]);
+          simulateUpload(base);
+        }
       });
     },
     [simulateUpload]
   );
+
+  const handleFileInputChange = useCallback(
+  (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
+    addFiles(files);
+    e.target.value = "";
+  },
+  [addFiles]
+);
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
@@ -89,10 +164,10 @@ export function ChatInput({
         const files = imageItems
           .map((item) => item.getAsFile())
           .filter(Boolean) as File[];
-        addImageFiles(files);
+        addFiles(files);
       }
     },
-    [addImageFiles]
+    [addFiles]
   );
 
   const handleDrop = useCallback(
@@ -100,9 +175,9 @@ export function ChatInput({
       e.preventDefault();
       setIsDragOver(false);
       const files = Array.from(e.dataTransfer.files);
-      addImageFiles(files);
+      addFiles(files);
     },
-    [addImageFiles]
+    [addFiles]
   );
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -115,15 +190,34 @@ export function ChatInput({
     setIsDragOver(false);
   }, []);
 
-  const removeImage = (id: string) => {
-    setImages((prev) => prev.filter((i) => i.id !== id));
+  const removeAttachment = (id: string) => {
+    setAttachments((prev) => {
+      const attachmentToRemove = prev.find((a) => a.id === id);
+      if (attachmentToRemove?.blob_url?.startsWith("blob:")) {
+        URL.revokeObjectURL(attachmentToRemove.blob_url);
+      }
+      return prev.filter((a) => a.id !== id);
+    });
   };
 
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+
+  useEffect(() => {
+    return () => {
+      attachmentsRef.current.forEach((a) => {
+        if (a.blob_url?.startsWith("blob:")) {
+          URL.revokeObjectURL(a.blob_url);
+        }
+      });
+    };
+  }, []);
+
   const handleSubmit = () => {
-    if (!hasContent) return;
-    onSend?.(message, images.filter((i) => !i.uploading));
+    if (!hasContent || disabled) return;
+    onSend?.(message, currentModel, attachments.filter((a) => !a.uploading));
     setMessage("");
-    setImages([]);
+    setAttachments([]);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -143,13 +237,13 @@ export function ChatInput({
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
       >
-        {/* Image previews */}
-        {images.length > 0 && (
+        {/* Attachment previews */}
+        {attachments.length > 0 && (
           <div className="flex flex-wrap gap-2 px-4 pt-3">
-            {images.map((img) => (
-              <div key={img.id} className="relative group/img">
+            {attachments.map((attachment) => (
+              <div key={attachment.id} className="relative group/attachment">
                 <div className="w-[120px] h-[90px] rounded-xl overflow-hidden border border-border bg-accent/50">
-                  {img.uploading ? (
+                  {attachment.uploading ? (
                     <div className="w-full h-full flex flex-col items-center justify-center gap-2">
                       <Loader2
                         size={20}
@@ -158,23 +252,30 @@ export function ChatInput({
                       <div className="w-16 h-1 rounded-full bg-foreground/10 overflow-hidden">
                         <div
                           className="h-full bg-foreground/40 rounded-full transition-all duration-150"
-                          style={{ width: `${img.progress}%` }}
+                          style={{ width: `${attachment.progress}%` }}
                         />
                       </div>
                     </div>
-                  ) : (
+                  ) : attachment.kind === "image" && attachment.blob_url ? (
                     <img
-                      src={img.dataUrl}
-                      alt="Attached"
+                      src={attachment.blob_url}
+                      alt={attachment.name}
                       className="w-full h-full object-cover"
-                    />
+                    /> 
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center px-2 text-center">
+                      <div className="text-xs text-foreground/50 mb-1">FILE</div>
+                      <div className="text-xs text-foreground/80 line-clamp-2 break-all">
+                        {attachment.name}
+                      </div>
+                    </div>
                   )}
                 </div>
-                {/* Remove button */}
-                {!img.uploading && (
+
+                {!attachment.uploading && (
                   <button
-                    onClick={() => removeImage(img.id)}
-                    className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-foreground/80 text-background flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity"
+                    onClick={() => removeAttachment(attachment.id)}
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-foreground/80 text-background flex items-center justify-center opacity-0 group-hover/attachment:opacity-100 transition-opacity"
                   >
                     <X size={12} />
                   </button>
@@ -192,8 +293,9 @@ export function ChatInput({
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={placeholder}
+            disabled={disabled || isRecording || isTranscribing}
             rows={1}
-            className="w-full bg-transparent text-foreground placeholder-foreground/30 resize-none outline-none text-[15px]"
+            className="w-full bg-transparent text-foreground placeholder-foreground/30 resize-none outline-none text-[15px] disabled:opacity-50"
             style={{ minHeight: "24px", maxHeight: "200px" }}
             onInput={(e) => {
               const target = e.target as HTMLTextAreaElement;
@@ -203,31 +305,81 @@ export function ChatInput({
           />
         </div>
         <div className="flex items-center justify-between px-3 pb-3">
-          <PlusMenu onStartNewProject={onStartNewProject} />
+          <PlusMenu 
+            onStartNewProject={onStartNewProject} 
+            onAddFilesOrPhotos={handleAddFilesOrPhotos}
+          />
           <div className="flex items-center gap-3">
             <ModelSelector
-              selectedModel={selectedModel}
-              extendedThinking={extendedThinking}
-              onModelChange={setSelectedModel}
-              onExtendedThinkingChange={setExtendedThinking}
+              selectedModel={currentModel}
+              onModelChange={handleModelChange}
             />
-            {hasContent ? (
+
+            {/* Recording mode */}
+            {isRecording ? (
+              <div className="flex items-center gap-2">
+                <span className="flex items-center gap-1.5 text-sm text-red-500">
+                  <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                  {formatDuration(duration)}
+                </span>
+                <Tooltip content="Cancel recording">
+                  <button
+                    onClick={handleAudioCancel}
+                    className="p-1.5 rounded-lg hover:bg-accent text-foreground/50 hover:text-foreground transition-colors"
+                  >
+                    <X size={18} />
+                  </button>
+                </Tooltip>
+                <Tooltip content="Stop and transcribe">
+                  <button
+                    onClick={handleAudioStop}
+                    className="w-8 h-8 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center transition-colors"
+                  >
+                    <Square size={14} fill="currentColor" />
+                  </button>
+                </Tooltip>
+              </div>
+            ) : isTranscribing ? (
+              <div className="flex items-center gap-2 text-sm text-foreground/50">
+                <Loader2 size={16} className="animate-spin" />
+                <span>Transcribing...</span>
+              </div>
+            ) : hasContent ? (
               <button
                 onClick={handleSubmit}
-                className="w-8 h-8 rounded-full bg-amber-700 hover:bg-amber-600 text-white flex items-center justify-center transition-colors"
+                disabled={disabled}
+                className="w-8 h-8 rounded-full bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-white flex items-center justify-center transition-colors"
               >
                 <ArrowUp size={18} />
               </button>
             ) : (
               <Tooltip content="Use voice mode">
-                <button className="p-1.5 rounded-lg hover:bg-accent text-foreground/50 hover:text-foreground transition-colors">
+                <button
+                  onClick={handleAudioClick}
+                  className="p-1.5 rounded-lg hover:bg-accent text-foreground/50 hover:text-foreground transition-colors"
+                >
                   <AudioLines size={20} />
                 </button>
               </Tooltip>
             )}
           </div>
         </div>
+
+        {/* Audio error message */}
+        {audioError && (
+          <div className="px-4 pb-3">
+            <p className="text-xs text-red-500">{audioError}</p>
+          </div>
+        )}
       </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*,.pdf,.txt,.doc,.docx,.md"
+        multiple
+        className="hidden"
+        onChange={handleFileInputChange}
+      />
     </div>
   );
 }

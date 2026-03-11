@@ -13,6 +13,7 @@ import {
   Check,
   ExternalLink,
 } from "lucide-react";
+import { useAuth } from "@/app/context/auth-context";
 
 type Language = "en" | "zh";
 
@@ -42,10 +43,11 @@ const learnMoreLinks: LearnMoreItem[] = [
 ];
 
 export function UserMenu({
-  userName = "Test User",
-  userEmail = "test@aibrix.ai",
-  planName = "Test Plan",
+  userName = "User",
+  userEmail = "",
+  planName = "",
 }: UserMenuProps) {
+  const { logout: authLogout } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [activeSubmenu, setActiveSubmenu] = useState<
     "language" | "learnMore" | null
@@ -247,7 +249,10 @@ export function UserMenu({
               <MenuItem
                 icon={<LogOut size={16} />}
                 label="Log out"
-                onClick={closeMenu}
+                onClick={() => {
+                  closeMenu();
+                  authLogout();
+                }}
                 onMouseEnter={() => setActiveSubmenu(null)}
               />
             </div>

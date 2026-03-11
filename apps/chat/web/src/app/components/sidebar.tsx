@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router";
 import {
   Plus,
@@ -10,11 +10,17 @@ import {
   PanelLeft,
   Sparkles,
 } from "lucide-react";
+import { useAuth } from "@/app/context/auth-context";
 import { UserMenu } from "./user-menu";
 import { ChatItem, type ChatItemData } from "./chat-item";
 import { RenameChatModal } from "./rename-chat-modal";
 import { MoveChatModal } from "./move-chat-modal";
 import { DeleteChatModal } from "./delete-chat-modal";
+import {
+  listConversations,
+  renameConversation,
+  deleteConversation,
+} from "@/api/client";
 
 const navItems = [
   { icon: MessageSquare, label: "Chats", path: "/chats" },
@@ -22,14 +28,6 @@ const navItems = [
   { icon: FolderKanban, label: "Projects", path: "/projects" },
   { icon: Blocks, label: "Artifacts", path: "/artifacts" },
   { icon: Code, label: "Code", path: "/code" },
-];
-
-const initialChats: ChatItemData[] = [
-  { id: "1", title: "Multi-modality AI application with ...", starred: true },
-  { id: "2", title: "Casual greeting", starred: false },
-  { id: "3", title: "LLM Inference Infrastructure", starred: false },
-  { id: "4", title: "React performance optimization", starred: false },
-  { id: "5", title: "Kubernetes deployment strategy", starred: false },
 ];
 
 interface SidebarProps {
@@ -40,12 +38,42 @@ interface SidebarProps {
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
-  const [chats, setChats] = useState<ChatItemData[]>(initialChats);
+  const { user } = useAuth();
+  const [chats, setChats] = useState<ChatItemData[]>([]);
 
   // Modal state
   const [renameTarget, setRenameTarget] = useState<ChatItemData | null>(null);
   const [moveTarget, setMoveTarget] = useState<ChatItemData | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ChatItemData | null>(null);
+
+  // Fetch conversations from API
+  const loadChats = useCallback(async () => {
+    try {
+      const conversations = await listConversations();
+      setChats(
+        conversations.map((c) => ({
+          id: c.id,
+          title: c.title,
+          starred: false,
+        }))
+      );
+    } catch {
+      // Keep current state on error
+    }
+  }, []);
+
+  // Load on mount and listen for updates
+  useEffect(() => {
+    loadChats();
+    const handler = () => loadChats();
+    window.addEventListener("conversations-changed", handler);
+    return () => window.removeEventListener("conversations-changed", handler);
+  }, [loadChats]);
+
+  // Re-fetch when navigating (e.g. after creating a chat)
+  useEffect(() => {
+    loadChats();
+  }, [location.pathname, loadChats]);
 
   const starredChats = chats.filter((c) => c.starred);
   const recentChats = chats.filter((c) => !c.starred);
@@ -63,13 +91,18 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     if (chat) setRenameTarget(chat);
   };
 
-  const handleRenameConfirm = (newTitle: string) => {
+  const handleRenameConfirm = async (newTitle: string) => {
     if (renameTarget) {
-      setChats((prev) =>
-        prev.map((c) =>
-          c.id === renameTarget.id ? { ...c, title: newTitle } : c
-        )
-      );
+      try {
+        await renameConversation(renameTarget.id, newTitle);
+        setChats((prev) =>
+          prev.map((c) =>
+            c.id === renameTarget.id ? { ...c, title: newTitle } : c
+          )
+        );
+      } catch {
+        // Ignore rename errors
+      }
     }
     setRenameTarget(null);
   };
@@ -82,7 +115,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const handleMoveConfirm = (projectId: string) => {
     if (moveTarget) {
       console.log(`Moved "${moveTarget.title}" to project ${projectId}`);
-      // In a real app you'd persist this — for now just log
     }
     setMoveTarget(null);
   };
@@ -92,11 +124,16 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     if (chat) setDeleteTarget(chat);
   };
 
-  const handleDeleteConfirm = () => {
+  const handleDeleteConfirm = async () => {
     if (deleteTarget) {
-      setChats((prev) => prev.filter((c) => c.id !== deleteTarget.id));
-      if (location.pathname === `/chat/${deleteTarget.id}`) {
-        navigate("/");
+      try {
+        await deleteConversation(deleteTarget.id);
+        setChats((prev) => prev.filter((c) => c.id !== deleteTarget.id));
+        if (location.pathname === `/chat/${deleteTarget.id}`) {
+          navigate("/");
+        }
+      } catch {
+        // Ignore delete errors
       }
     }
     setDeleteTarget(null);
@@ -152,7 +189,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
         <nav className="flex flex-col gap-0.5 px-3 mt-1">
           {navItems.map((item) => {
-            const isActive = location.pathname === item.path;
+            const isActive =
+              location.pathname === item.path ||
+              location.pathname.startsWith(item.path + "/");
             return (
               <button
                 key={item.path}
@@ -201,9 +240,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </div>
 
         <UserMenu
-          userName="Test User"
-          userEmail="test@aibrix.ai"
-          planName="Test Plan"
+          userName={user?.name ?? "User"}
+          userEmail=""
+          planName=""
         />
       </div>
 
