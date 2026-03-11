@@ -26,11 +26,12 @@ const existingProjects: Project[] = [
 ];
 
 interface PlusMenuProps {
+  onAddFilesOrPhotos?: () => void;
   onAddToProject?: (projectId: string) => void;
   onStartNewProject?: () => void;
 }
 
-export function PlusMenu({ onAddToProject, onStartNewProject }: PlusMenuProps) {
+export function PlusMenu({ onAddFilesOrPhotos, onAddToProject, onStartNewProject }: PlusMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeSubmenu, setActiveSubmenu] = useState<
     "project" | "style" | null
@@ -86,7 +87,10 @@ export function PlusMenu({ onAddToProject, onStartNewProject }: PlusMenuProps) {
             <MenuItem
               icon={<Paperclip size={16} />}
               label="Add files or photos"
-              onClick={closeMenu}
+              onClick={() => {
+                closeMenu();
+                setTimeout(() => onAddFilesOrPhotos?.(), 0);
+              }}
               onMouseEnter={() => setActiveSubmenu(null)}
             />
             <MenuItem
