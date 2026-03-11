@@ -17,6 +17,8 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -364,9 +366,49 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 
 	// Use helper method to get the appropriate tokenizer
 	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
-	if err != nil {
-		return "", err
+
+	// Tokenize with proper chat template support
+	var tokens []byte
+	var err error
+	if len(ctx.Messages) > 0 && ctx.ReqPath == "/v1/chat/completions" {
+		// For chat completions, try to use TokenizeWithOptions with ChatInput type if available
+		// This ensures proper chat template application
+		if extTokenizer, ok := tokenizerToUse.(interface {
+			TokenizeWithOptions(context.Context, tokenizer.TokenizeInput) (*tokenizer.TokenizeResult, error)
+		}); ok {
+			input := tokenizer.TokenizeInput{
+				Type:             tokenizer.ChatInput,
+				Messages:         convertToTokenizerMessages(ctx.Messages),
+				AddSpecialTokens: true,
+			}
+			result, err := extTokenizer.TokenizeWithOptions(context.Background(), input)
+			if err != nil {
+				klog.V(4).InfoS("chat tokenization failed, falling back to text tokenization",
+					"request_id", ctx.RequestID,
+					"error", err)
+				// Fallback to text tokenization if chat tokenization fails
+				tokens, err = tokenizerToUse.TokenizeInputText(ctx.Message)
+				if err != nil {
+					return "", err
+				}
+			} else {
+				tokens = intToByteArray(result.Tokens)
+			}
+		} else {
+			// Tokenizer doesn't support advanced features, fallback to text
+			klog.V(4).InfoS("tokenizer doesn't support TokenizeWithOptions, using text tokenization",
+				"request_id", ctx.RequestID)
+			tokens, err = tokenizerToUse.TokenizeInputText(ctx.Message)
+			if err != nil {
+				return "", err
+			}
+		}
+	} else {
+		// For completion API or when messages are not available, use text tokenization
+		tokens, err = tokenizerToUse.TokenizeInputText(ctx.Message)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	readyPods := readyPodList.All()
@@ -777,4 +819,28 @@ func recordRoutingDecision(model string, matchPercent int, usingKVSync bool) {
 	}
 
 	metrics.prefixCacheRoutingDecisions.WithLabelValues(model, bucket, strconv.FormatBool(usingKVSync)).Inc()
+}
+
+// convertToTokenizerMessages converts types.ChatMessage to tokenizer.ChatMessage
+func convertToTokenizerMessages(messages []types.ChatMessage) []tokenizer.ChatMessage {
+	result := make([]tokenizer.ChatMessage, len(messages))
+	for i, msg := range messages {
+		result[i] = tokenizer.ChatMessage{
+			Role:    msg.Role,
+			Content: msg.Content, // json.RawMessage can be directly assigned
+		}
+	}
+	return result
+}
+
+// intToByteArray converts []int to []byte in BigEndian int32 format
+func intToByteArray(tokens []int) []byte {
+	if len(tokens) == 0 {
+		return nil
+	}
+	result := make([]byte, len(tokens)*4)
+	for i, token := range tokens {
+		binary.BigEndian.PutUint32(result[i*4:(i+1)*4], uint32(token))
+	}
+	return result
 }

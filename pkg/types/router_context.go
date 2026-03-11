@@ -18,6 +18,7 @@ package types
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -41,6 +42,14 @@ const (
 
 type RequestFeatures []float64
 
+// ChatMessage represents a single message in a chat conversation.
+// This structure matches the OpenAI chat completions API format.
+// Content can be either a string (simple text) or a structured array (multimodal).
+type ChatMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"` // Can be string or array for multimodal
+}
+
 // ResolvedConfigProfile holds the resolved model config profile for a request.
 // Populated from model.aibrix.ai/config annotation based on config-profile header or defaultProfile.
 // Nil when no config is present;
@@ -61,7 +70,8 @@ type RoutingContext struct {
 	Algorithm      RoutingAlgorithm
 	Model          string
 	Stream         bool
-	Message        string
+	Message        string // Deprecated for chat completions, use Messages instead
+	Messages       []ChatMessage // For chat completions API, preserves original message structure
 	RequestID      string
 	User           *string
 	RequestTime    time.Time // Time when the routing context is created.
@@ -309,6 +319,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Model = model
 	r.Stream = false
 	r.Message = message
+	r.Messages = nil // Reset messages slice
 	r.RequestID = requestID
 	if user != "" {
 		r.User = &user

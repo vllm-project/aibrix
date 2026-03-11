@@ -59,9 +59,14 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		message = "" // Audio requests don't have a text message for token counting
 	} else {
 		// Use existing JSON validation for other endpoints
-		model, message, stream, errRes = validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)
+		var messages []types.ChatMessage
+		model, message, messages, stream, errRes = validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)
 		if errRes != nil {
 			return errRes, model, routingCtx, stream, term
+		}
+		// Store chat messages if present (for chat completions)
+		if len(messages) > 0 {
+			routingCtx.Messages = messages
 		}
 	}
 
