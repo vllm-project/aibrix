@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { AudioLines, ArrowUp, X, Loader2, Square } from "lucide-react";
 import { ModelSelector } from "./model-selector";
 import { PlusMenu } from "./plus-menu";
@@ -191,8 +191,27 @@ export function ChatInput({
   }, []);
 
   const removeAttachment = (id: string) => {
-    setAttachments((prev) => prev.filter((a) => a.id !== id));
+    setAttachments((prev) => {
+      const attachmentToRemove = prev.find((a) => a.id === id);
+      if (attachmentToRemove?.blob_url?.startsWith("blob:")) {
+        URL.revokeObjectURL(attachmentToRemove.blob_url);
+      }
+      return prev.filter((a) => a.id !== id);
+    });
   };
+
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+
+  useEffect(() => {
+    return () => {
+      attachmentsRef.current.forEach((a) => {
+        if (a.blob_url?.startsWith("blob:")) {
+          URL.revokeObjectURL(a.blob_url);
+        }
+      });
+    };
+  }, []);
 
   const handleSubmit = () => {
     if (!hasContent || disabled) return;

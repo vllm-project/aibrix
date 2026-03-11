@@ -94,6 +94,21 @@ export function ChatPage() {
   const lastModelRef = useRef<string>("default");
   const loadedConvId = useRef<string | null>(null);
 
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
+  useEffect(() => {
+    return () => {
+      messagesRef.current.forEach((msg) => {
+        msg.attachments?.forEach((attachment) => {
+          if (attachment.blob_url?.startsWith("blob:")) {
+            URL.revokeObjectURL(attachment.blob_url);
+          }
+        });
+      });
+    };
+  }, []);
+  
   // Scroll to bottom on new messages
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
