@@ -151,7 +151,7 @@ func (s *Server) preRecvCheck(st *processState) error {
 		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
 		return status.Error(codes.Unavailable, "server shutdown in progress")
 
-	// Client canceled or deadline exceeded
+	// Client cancelled or deadline exceeded
 	case <-st.ctx.Done():
 		modelTag := GetModelTag(st.model)
 		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "context_cancelled", "499")
