@@ -370,6 +370,13 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	// Tokenize with proper chat template support
 	var tokens []byte
 	var err error
+
+	// Helper function to perform text tokenization fallback
+	fallbackToTextTokenization := func() error {
+		tokens, err = tokenizerToUse.TokenizeInputText(ctx.Message)
+		return err
+	}
+
 	if len(ctx.Messages) > 0 && ctx.ReqPath == "/v1/chat/completions" {
 		// For chat completions, try to use TokenizeWithOptions with ChatInput type if available
 		// This ensures proper chat template application
@@ -399,8 +406,7 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 					"request_id", ctx.RequestID,
 					"error", err)
 				// Fallback to text tokenization if chat tokenization fails
-				tokens, err = tokenizerToUse.TokenizeInputText(ctx.Message)
-				if err != nil {
+				if err := fallbackToTextTokenization(); err != nil {
 					return "", err
 				}
 			} else {
@@ -410,15 +416,13 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 			// Tokenizer doesn't support advanced features, fallback to text
 			klog.V(4).InfoS("tokenizer doesn't support TokenizeWithOptions, using text tokenization",
 				"request_id", ctx.RequestID)
-			tokens, err = tokenizerToUse.TokenizeInputText(ctx.Message)
-			if err != nil {
+			if err := fallbackToTextTokenization(); err != nil {
 				return "", err
 			}
 		}
 	} else {
 		// For completion API or when messages are not available, use text tokenization
-		tokens, err = tokenizerToUse.TokenizeInputText(ctx.Message)
-		if err != nil {
+		if err := fallbackToTextTokenization(); err != nil {
 			return "", err
 		}
 	}
