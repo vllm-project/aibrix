@@ -25,8 +25,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
+
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 var (
@@ -67,21 +68,21 @@ type RoutingAlgorithm string
 // It can be extended with more fields as needed in the future.
 type RoutingContext struct {
 	context.Context
-	Algorithm      RoutingAlgorithm
-	Model          string
-	Stream         bool
-	Message        string // Deprecated for chat completions, use Messages instead
-	Messages       []ChatMessage // For chat completions API, preserves original message structure
-	RequestID      string
+	Algorithm RoutingAlgorithm
+	Model     string
+	Stream    bool
+	Message   string        // Deprecated for chat completions, use Messages instead
+	Messages  []ChatMessage // For chat completions API, preserves original message structure
+	RequestID string
 	// vLLM-specific chat template parameters
 	AddGenerationPrompt *bool // If true, adds generation prompt to chat template (vLLM default: true)
 	AddSpecialTokens    *bool // If true, adds special tokens on top of chat template (vLLM default: false for chat)
-	User           *string
-	RequestTime    time.Time // Time when the routing context is created.
-	RequestEndTime time.Time // Time when the routing is done and sent to inference engine.
-	PendingLoad    float64   // Normalized pending load of request, available after AddRequestCount call. See cache.PendingLoadProvider
-	TraceTerm      int64     // Trace term identifier, available after AddRequestCount call.
-	RoutedTime     time.Time // Time consumed during routing.
+	User                *string
+	RequestTime         time.Time // Time when the routing context is created.
+	RequestEndTime      time.Time // Time when the routing is done and sent to inference engine.
+	PendingLoad         float64   // Normalized pending load of request, available after AddRequestCount call. See cache.PendingLoadProvider
+	TraceTerm           int64     // Trace term identifier, available after AddRequestCount call.
+	RoutedTime          time.Time // Time consumed during routing.
 
 	ReqHeaders       map[string]string
 	ReqBody          []byte

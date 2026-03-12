@@ -20,9 +20,12 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
+
+const testModel = "test-model"
 
 func TestExtractChatMessages_SimpleText(t *testing.T) {
 	requestBody := `{
@@ -33,8 +36,8 @@ func TestExtractChatMessages_SimpleText(t *testing.T) {
 	}`
 
 	var chatReq struct {
-		Model    string                      `json:"model"`
-		Messages []map[string]interface{}    `json:"messages"`
+		Model    string           `json:"model"`
+		Messages []map[string]any `json:"messages"`
 	}
 	err := sonic.Unmarshal([]byte(requestBody), &chatReq)
 	if err != nil {
@@ -53,8 +56,8 @@ func TestExtractChatMessages_SimpleText(t *testing.T) {
 		t.Fatalf("validateRequestBody failed: %v", errRes)
 	}
 
-	if model != "test-model" {
-		t.Errorf("Expected model 'test-model', got '%s'", model)
+	if model != testModel {
+		t.Errorf("Expected model %q, got %q", testModel, model)
 	}
 
 	if len(messages) != 1 {
@@ -111,8 +114,8 @@ func TestExtractChatMessages_Multimodal(t *testing.T) {
 		t.Fatalf("validateRequestBody failed: %v", errRes)
 	}
 
-	if model != "test-model" {
-		t.Errorf("Expected model 'test-model', got '%s'", model)
+	if model != testModel {
+		t.Errorf("Expected model %q, got %q", testModel, model)
 	}
 
 	if len(messages) != 1 {
@@ -120,7 +123,7 @@ func TestExtractChatMessages_Multimodal(t *testing.T) {
 	}
 
 	// Verify content is an array
-	var contentArray []interface{}
+	var contentArray []any
 	err := sonic.Unmarshal(messages[0].Content, &contentArray)
 	if err != nil {
 		t.Fatalf("Content should be unmarshallable as array: %v", err)
@@ -163,8 +166,8 @@ func TestExtractChatMessages_Conversation(t *testing.T) {
 		t.Fatalf("validateRequestBody failed: %v", errRes)
 	}
 
-	if model != "test-model" {
-		t.Errorf("Expected model 'test-model', got '%s'", model)
+	if model != testModel {
+		t.Errorf("Expected model %q, got %q", testModel, model)
 	}
 
 	if len(messages) != 4 {
@@ -245,7 +248,7 @@ func TestExtractChatMessages_MixedMultimodal(t *testing.T) {
 	}
 
 	// Second message should have array content
-	var content2 []interface{}
+	var content2 []any
 	err = sonic.Unmarshal(messages[1].Content, &content2)
 	if err != nil {
 		t.Fatalf("Second message should have array content: %v", err)
@@ -262,8 +265,8 @@ func TestExtractChatMessages_MixedMultimodal(t *testing.T) {
 		t.Fatalf("Third message should have string content: %v", err)
 	}
 
-	if model != "test-model" {
-		t.Errorf("Expected model 'test-model', got '%s'", model)
+	if model != testModel {
+		t.Errorf("Expected model %q, got %q", testModel, model)
 	}
 
 	if message == "" {
@@ -311,7 +314,7 @@ func TestExtractChatMessages_AudioMultimodal(t *testing.T) {
 	}
 
 	// Verify content is an array
-	var contentArray []interface{}
+	var contentArray []any
 	err := sonic.Unmarshal(messages[0].Content, &contentArray)
 	if err != nil {
 		t.Fatalf("Content should be unmarshallable as array: %v (Content was: %s)", err, string(messages[0].Content))
@@ -322,7 +325,7 @@ func TestExtractChatMessages_AudioMultimodal(t *testing.T) {
 	}
 
 	// Verify the audio_url structure
-	contentPart := contentArray[0].(map[string]interface{})
+	contentPart := contentArray[0].(map[string]any)
 	if contentPart["type"] != "audio_url" {
 		t.Errorf("Expected type 'audio_url', got '%v'", contentPart["type"])
 	}
@@ -373,7 +376,7 @@ func TestChatMessagesRoundtrip(t *testing.T) {
 	}
 
 	// Verify content is still an array
-	var contentArray []interface{}
+	var contentArray []any
 	err = sonic.Unmarshal(messages2[0].Content, &contentArray)
 	if err != nil {
 		t.Fatalf("Content should still be an array after roundtrip: %v", err)
