@@ -139,7 +139,7 @@ func Test_ValidateRequestBody(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, _, messages, stream, _, _, errRes := validateRequestBody("1", tt.requestPath, tt.requestBody, tt.user)
+		model, message, _, stream, _, _, errRes := validateRequestBody("1", tt.requestPath, tt.requestBody, tt.user)
 
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -152,7 +152,7 @@ func Test_ValidateRequestBody(t *testing.T) {
 			assert.Equal(t, tt.model, model, tt.message, tt.message)
 		}
 		if tt.messages != "" {
-			assert.Equal(t, tt.messages, messages, tt.message, tt.message)
+			assert.Equal(t, tt.messages, message, tt.message, tt.message)
 		}
 		if tt.stream {
 			assert.Equal(t, tt.stream, stream, tt.message, tt.message)
@@ -313,7 +313,7 @@ func Test_ValidateRequestBody_Embeddings(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, _, messages, stream, _, _, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, message, _, stream, _, _, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -326,7 +326,7 @@ func Test_ValidateRequestBody_Embeddings(t *testing.T) {
 			assert.Equal(t, tt.model, model, tt.message)
 		}
 		if tt.messages != "" {
-			assert.Equal(t, tt.messages, messages, tt.message)
+			assert.Equal(t, tt.messages, message, tt.message)
 		}
 		if tt.stream {
 			assert.Equal(t, tt.stream, stream, tt.message)
@@ -386,7 +386,7 @@ func Test_ValidateRequestBody_Rerank(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, _, messages, stream, _, _, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, message, _, stream, _, _, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -399,7 +399,7 @@ func Test_ValidateRequestBody_Rerank(t *testing.T) {
 			assert.Equal(t, tt.model, model, tt.message)
 		}
 		if tt.messages != "" {
-			assert.Equal(t, tt.messages, messages, tt.message)
+			assert.Equal(t, tt.messages, message, tt.message)
 		}
 		if tt.stream {
 			assert.Equal(t, tt.stream, stream, tt.message)
@@ -1107,7 +1107,7 @@ func Test_ValidateRequestBody_Classify(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, _, messages, stream, _, _, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, message, _, stream, _, _, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -1120,7 +1120,7 @@ func Test_ValidateRequestBody_Classify(t *testing.T) {
 			assert.Equal(t, tt.model, model, tt.message)
 		}
 		if tt.messages != "" {
-			assert.Equal(t, tt.messages, messages, tt.message)
+			assert.Equal(t, tt.messages, message, tt.message)
 		}
 		if tt.stream {
 			assert.Equal(t, tt.stream, stream, tt.message)

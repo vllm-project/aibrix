@@ -64,8 +64,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 			return
 		}
 		model, streamOptions = chatCompletionObj.Model, chatCompletionObj.StreamOptions
-		// Extract messages for proper chat template tokenization
-		if messages, errRes = extractChatMessages(requestID, chatCompletionObj); errRes != nil {
+		// Extract messages for proper chat template tokenization (directly from JSON to preserve multimodal content)
+		if messages, errRes = extractChatMessages(requestID, requestBody); errRes != nil {
 			return
 		}
 		// Keep backward compatibility - also extract flattened message string
@@ -380,34 +380,27 @@ func deriveRoutingStrategyFromContext(routingCtx *types.RoutingContext) (string,
 	return defaultRoutingStrategy, defaultRoutingStrategyEnabled
 }
 
-// extractChatMessages extracts chat messages from OpenAI chat completion request
-// and converts them to our internal ChatMessage format for proper tokenization with chat templates.
-func extractChatMessages(requestID string, chatCompletionObj openai.ChatCompletionNewParams) ([]types.ChatMessage, *extProcPb.ProcessingResponse) {
-	if len(chatCompletionObj.Messages) == 0 {
+// extractChatMessages extracts chat messages directly from request body JSON
+// to preserve the original message structure including multimodal content.
+// We can't rely on OpenAI SDK's message types because they don't properly serialize
+// content arrays (multimodal content).
+func extractChatMessages(requestID string, requestBody []byte) ([]types.ChatMessage, *extProcPb.ProcessingResponse) {
+	// Parse the messages array directly from JSON
+	var body struct {
+		Messages []types.ChatMessage `json:"messages"`
+	}
+
+	if err := sonic.Unmarshal(requestBody, &body); err != nil {
+		klog.ErrorS(err, "error unmarshalling messages", "requestID", requestID)
+		return nil, buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing messages", "", "messages", HeaderErrorRequestBodyProcessing, "true")
+	}
+
+	if len(body.Messages) == 0 {
 		klog.ErrorS(nil, "no messages in the request body", "requestID", requestID)
 		return nil, buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", "", "messages", HeaderErrorRequestBodyProcessing, "true")
 	}
 
-	messages := make([]types.ChatMessage, 0, len(chatCompletionObj.Messages))
-	for _, m := range chatCompletionObj.Messages {
-		// Serialize the message to JSON and then deserialize to our ChatMessage type
-		// This handles all the OpenAI SDK complexities
-		jsonBytes, err := sonic.Marshal(m)
-		if err != nil {
-			klog.ErrorS(err, "error marshalling message", "requestID", requestID)
-			return nil, buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing message", "", "messages", HeaderErrorRequestBodyProcessing, "true")
-		}
-
-		var chatMsg types.ChatMessage
-		if err := sonic.Unmarshal(jsonBytes, &chatMsg); err != nil {
-			klog.ErrorS(err, "error unmarshalling message", "requestID", requestID)
-			return nil, buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing message", "", "messages", HeaderErrorRequestBodyProcessing, "true")
-		}
-
-		messages = append(messages, chatMsg)
-	}
-
-	return messages, nil
+	return body.Messages, nil
 }
 
 // getChatCompletionsMessage returns message for chat completions object
