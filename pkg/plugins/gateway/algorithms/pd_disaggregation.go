@@ -579,81 +579,58 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		}()
 
 	case VLLMEngine:
-		defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
-
 		// For vLLM, wait synchronously to get KV transfer params from response
-		responseData, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
-		if err != nil {
-			klog.ErrorS(err, "prefill_request_failed",
-				"request_id", routingCtx.RequestID,
-				"llm_engine", llmEngine,
-				"prefill_pod", prefillPod.Name,
-				"prefill_pod_ip", prefillPod.Status.PodIP,
-				"elapsed", routingCtx.Elapsed(time.Now()))
-			return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
-		}
-
-		// Update routing context with KV transfer params from prefill response
-		if err := r.updateRoutingContextWithKVTransferParams(routingCtx, responseData, prefillPod); err != nil {
-			return fmt.Errorf("failed to update routing context with KV transfer params for request %s: %w", routingCtx.RequestID, err)
-		}
-
-		routingCtx.PrefillEndTime = time.Now()
-		fields = append(fields,
-			"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
-			"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
-			"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
-		klog.InfoS("prefill_request_end", fields...)
+		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, r.updateRoutingContextWithKVTransferParams, "KV transfer params")
 
 	case TensorRTEngine:
-		defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
-
 		// For TensorRT-LLM, wait synchronously to get disaggregated_params from response.
 		// The prefill response contains first_gen_tokens and opaque_state needed by the decode worker.
-		responseData, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
-		if err != nil {
-			klog.ErrorS(err, "prefill_request_failed",
-				"request_id", routingCtx.RequestID,
-				"llm_engine", llmEngine,
-				"prefill_pod", prefillPod.Name,
-				"prefill_pod_ip", prefillPod.Status.PodIP,
-				"elapsed", routingCtx.Elapsed(time.Now()))
-			return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
-		}
-
-		// Update routing context with disaggregated_params from prefill response
-		if err := r.updateRoutingContextWithTRTDisaggParams(routingCtx, responseData, prefillPod); err != nil {
-			return fmt.Errorf("failed to update routing context with TRT disagg params for request %s: %w", routingCtx.RequestID, err)
-		}
-
-		routingCtx.PrefillEndTime = time.Now()
-		fields = append(fields,
-			"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
-			"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
-			"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
-		klog.InfoS("prefill_request_end", fields...)
+		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, r.updateRoutingContextWithTRTDisaggParams, "TRT disagg params")
 
 	default:
-		defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
-
 		// For unknown engines, use synchronous approach as a safe default
-		if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
-			klog.ErrorS(err, "prefill_request_failed",
-				"request_id", routingCtx.RequestID,
-				"llm_engine", llmEngine,
-				"prefill_pod", prefillPod.Name,
-				"prefill_pod_ip", prefillPod.Status.PodIP,
-				"elapsed", routingCtx.Elapsed(time.Now()))
-			return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
-		}
-		routingCtx.PrefillEndTime = time.Now()
-		fields = append(fields,
-			"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
-			"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
-			"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
-		klog.InfoS("prefill_request_end", fields...)
+		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, nil, "")
 	}
 
+	return nil
+}
+
+// handleSyncPrefill executes a synchronous prefill request, optionally calling updateCtxFunc
+// to process the response. Pass nil for updateCtxFunc when no response processing is needed.
+func (r *pdRouter) handleSyncPrefill(
+	routingCtx *types.RoutingContext,
+	prefillPod *v1.Pod,
+	llmEngine, apiURL string,
+	payload []byte,
+	fields []interface{},
+	updateCtxFunc func(*types.RoutingContext, map[string]any, *v1.Pod) error,
+	errorContext string,
+) error {
+	defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+
+	responseData, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
+	if err != nil {
+		klog.ErrorS(err, "prefill_request_failed",
+			"request_id", routingCtx.RequestID,
+			"llm_engine", llmEngine,
+			"prefill_pod", prefillPod.Name,
+			"prefill_pod_ip", prefillPod.Status.PodIP,
+			"elapsed", routingCtx.Elapsed(time.Now()))
+		return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
+	}
+
+	if updateCtxFunc != nil {
+		if err := updateCtxFunc(routingCtx, responseData, prefillPod); err != nil {
+			return fmt.Errorf("failed to update routing context with %s for request %s: %w", errorContext, routingCtx.RequestID, err)
+		}
+	}
+
+	routingCtx.PrefillEndTime = time.Now()
+	fields = append(fields,
+		"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
+		"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
+		"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
+	klog.InfoS("prefill_request_end", fields...)
 	return nil
 }
 

@@ -29,7 +29,7 @@ spec:
             spec:
               containers:
                 - name: prefill
-                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/tensorrt-llm:latest
+                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/tensorrt-llm:1.0.0
                   imagePullPolicy: IfNotPresent
                   command: ["/bin/bash", "-c"]
                   args:

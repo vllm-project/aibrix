@@ -17,11 +17,11 @@ spec:
         app: qwen-llm
         model.aibrix.ai/name: Qwen3-8B
         model.aibrix.ai/port: "8000"
-        model.aibrix.ai/engine: trt
+        model.aibrix.ai/engine: tensorrt
     spec:
       containers:
       - name: tensorrt-llm
-        image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/tensorrt-llm:latest
+        image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/tensorrt-llm:1.0.0
         imagePullPolicy: IfNotPresent
         command: ["/bin/bash", "-c"]
         args:
