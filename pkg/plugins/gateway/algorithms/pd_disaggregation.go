@@ -46,6 +46,7 @@ const (
 	RouterPD                      types.RoutingAlgorithm = "pd"
 	VLLMEngine                    string                 = "vllm"
 	SGLangEngine                  string                 = "sglang"
+	TensorRTEngine                string                 = "tensorrt"
 	SGLangBootstrapPort           int64                  = 8998
 	SGLangBootstrapPortIdentifier string                 = "model.aibrix.ai/sglang-bootstrap-port"
 	LLMEngineIdentifier           string                 = constants.ModelLabelEngine
@@ -522,6 +523,7 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 
 	return targetPrefillPod, targetDecodePod, nil
 }
+
 func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod *v1.Pod, llmEngine string) error {
 	// Prepare prefill request payload
 	payload, err := r.preparePrefillPayload(routingCtx, prefillPod, llmEngine)
@@ -603,6 +605,34 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 			"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
 		klog.InfoS("prefill_request_end", fields...)
 
+	case TensorRTEngine:
+		defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+
+		// For TensorRT-LLM, wait synchronously to get disaggregated_params from response.
+		// The prefill response contains first_gen_tokens and opaque_state needed by the decode worker.
+		responseData, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
+		if err != nil {
+			klog.ErrorS(err, "prefill_request_failed",
+				"request_id", routingCtx.RequestID,
+				"llm_engine", llmEngine,
+				"prefill_pod", prefillPod.Name,
+				"prefill_pod_ip", prefillPod.Status.PodIP,
+				"elapsed", routingCtx.Elapsed(time.Now()))
+			return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
+		}
+
+		// Update routing context with disaggregated_params from prefill response
+		if err := r.updateRoutingContextWithTRTDisaggParams(routingCtx, responseData, prefillPod); err != nil {
+			return fmt.Errorf("failed to update routing context with TRT disagg params for request %s: %w", routingCtx.RequestID, err)
+		}
+
+		routingCtx.PrefillEndTime = time.Now()
+		fields = append(fields,
+			"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
+			"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
+			"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
+		klog.InfoS("prefill_request_end", fields...)
+
 	default:
 		defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
 
@@ -662,9 +692,21 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 		}
 	}
 
+	if llmEngine == TensorRTEngine {
+		// Signal to TensorRT-LLM that this is a context-only (prefill) request.
+		// The prefill response will return disaggregated_params containing
+		// first_gen_tokens and opaque_state, which are injected into the decode request.
+		completionRequest["disaggregated_params"] = map[string]any{
+			"request_type": "context_only",
+		}
+	}
+
 	// Set prefill-specific parameters
 	completionRequest["max_tokens"] = 1
-	completionRequest["max_completion_tokens"] = 1
+	// TensorRT-LLM uses strict schema validation and rejects max_completion_tokens
+	if llmEngine != TensorRTEngine {
+		completionRequest["max_completion_tokens"] = 1
+	}
 	completionRequest["stream"] = false
 	delete(completionRequest, "stream_options")
 
@@ -784,6 +826,61 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 			"prefill_host", prefillPod.Status.PodIP,
 			"kv_connector_type", aibrixKVConnectorType)
 	}
+
+	return nil
+}
+
+func (r *pdRouter) updateRoutingContextWithTRTDisaggParams(routingCtx *types.RoutingContext, responseData map[string]any, prefillPod *v1.Pod) error {
+	// Parse the original request body
+	var originalRequest map[string]any
+	if err := sonic.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
+		return fmt.Errorf("failed to unmarshal original request body: %w", err)
+	}
+
+	// Extract disaggregated_params from prefill response.
+	// TRT-LLM may return it at the top level or inside choices[0].
+	var disaggParams any
+	var exists bool
+
+	disaggParams, exists = responseData["disaggregated_params"]
+	if !exists {
+		// Fallback: check choices[0] (TRT-LLM serializes handler output as a choice)
+		if choices, ok := responseData["choices"].([]any); ok && len(choices) > 0 {
+			if choice, ok := choices[0].(map[string]any); ok {
+				disaggParams, exists = choice["disaggregated_params"]
+			}
+		}
+	}
+
+	if !exists {
+		klog.InfoS("no disaggregated_params in TRT prefill response", "request_id", routingCtx.RequestID)
+		return nil
+	}
+
+	disaggParamsMap, ok := disaggParams.(map[string]any)
+	if !ok {
+		return fmt.Errorf("disaggregated_params has unexpected type %T, expected map[string]any", disaggParams)
+	}
+
+	// Strip Dynamo-internal fields not needed by the TRT-LLM decode engine
+	delete(disaggParamsMap, "worker_id")
+	delete(disaggParamsMap, "_epd_metadata")
+
+	// Override request_type to generation_only for the decode request
+	disaggParamsMap["request_type"] = "generation_only"
+	originalRequest["disaggregated_params"] = disaggParamsMap
+
+	updatedReqBody, err := sonic.Marshal(originalRequest)
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated request body: %w", err)
+	}
+
+	routingCtx.ReqBody = updatedReqBody
+
+	klog.InfoS("updated routing context with disaggregated_params (TensorRT-LLM)",
+		"request_id", routingCtx.RequestID,
+		"prefill_pod", prefillPod.Name,
+		"prefill_host", prefillPod.Status.PodIP)
 
 	return nil
 }
