@@ -393,7 +393,7 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 				AddSpecialTokens:    addSpecialToks,
 				AddGenerationPrompt: addGenPrompt,
 			}
-			result, err := extTokenizer.TokenizeWithOptions(context.Background(), input)
+			result, err := extTokenizer.TokenizeWithOptions(ctx, input)
 			if err != nil {
 				klog.V(4).InfoS("chat tokenization failed, falling back to text tokenization",
 					"request_id", ctx.RequestID,
