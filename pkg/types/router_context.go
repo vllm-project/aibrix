@@ -283,7 +283,11 @@ func (r *RoutingContext) CanAddTrace() bool {
 }
 
 // GetRoutingDelay returns the time duration used for routing the request.
+// Returns 0 if routing did not complete (e.g., prefill failure before SetTargetPod was called).
 func (r *RoutingContext) GetRoutingDelay() time.Duration {
+	if r.RoutedTime.IsZero() {
+		return 0
+	}
 	return r.RoutedTime.Sub(r.RequestTime)
 }
 

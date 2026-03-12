@@ -1361,11 +1361,11 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 						"message": map[string]any{"content": ""},
 					}},
 					"disaggregated_params": map[string]any{
-						"request_type":  "context_only",
+						"request_type":     "context_only",
 						"first_gen_tokens": []int{42},
-						"opaque_state":  "dGVzdC1zdGF0ZQ==",
-						"worker_id":     "worker-0",
-						"_epd_metadata": map[string]any{"key": "val"},
+						"opaque_state":     "dGVzdC1zdGF0ZQ==",
+						"worker_id":        "worker-0",
+						"_epd_metadata":    map[string]any{"key": "val"},
 					},
 				}
 				respBytes, _ := sonic.Marshal(response)

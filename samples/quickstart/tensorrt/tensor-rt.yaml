@@ -17,11 +17,11 @@ spec:
         app: qwen-llm
         model.aibrix.ai/name: Qwen3-8B
         model.aibrix.ai/port: "8000"
-        model.aibrix.ai/engine: tensorrt
+        model.aibrix.ai/engine: trtllm
     spec:
       containers:
       - name: tensorrt-llm
-        image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/tensorrt-llm:1.0.0
+        image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/tensorrt-llm:1.2.0
         imagePullPolicy: IfNotPresent
         command: ["/bin/bash", "-c"]
         args:
@@ -33,7 +33,7 @@ spec:
         - containerPort: 8000
         resources:
           limits:
-            nvidia.com/gpu: 1 # Required for TensorRT-LLM
+            nvidia.com/gpu: 1
           requests:
             nvidia.com/gpu: 1
         volumeMounts:

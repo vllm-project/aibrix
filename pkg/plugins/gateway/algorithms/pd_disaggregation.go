@@ -46,7 +46,7 @@ const (
 	RouterPD                      types.RoutingAlgorithm = "pd"
 	VLLMEngine                    string                 = "vllm"
 	SGLangEngine                  string                 = "sglang"
-	TensorRTEngine                string                 = "tensorrt"
+	TensorRTEngine                string                 = "trtllm"
 	SGLangBootstrapPort           int64                  = 8998
 	SGLangBootstrapPortIdentifier string                 = "model.aibrix.ai/sglang-bootstrap-port"
 	LLMEngineIdentifier           string                 = constants.ModelLabelEngine
@@ -63,11 +63,10 @@ const (
 	defaultRequestRateHighLoadThreshold         = 1.0
 	defaultRequestRateLowLoadThreshold          = 0.25
 
-	pdRouteValidateLLMEngineFail        = "pd-validate-llm-engine-fail"
-	pdRouteFilterPrefillDecodePodsFail  = "pd-filter-prefill-decode-pods-fail"
-	pdRoutePrefillRequestError          = "pd-do-prefill-request-error"
-	pdRoutePrefillRequestSuccess        = "pd-prefill-request-success"
-	pdRoutePrefillEmptyKVTransferParams = "pd-prefill-empty-kv-transfer-params"
+	pdRouteValidateLLMEngineFail       = "pd-validate-llm-engine-fail"
+	pdRouteFilterPrefillDecodePodsFail = "pd-filter-prefill-decode-pods-fail"
+	pdRoutePrefillRequestError         = "pd-do-prefill-request-error"
+	pdRoutePrefillRequestSuccess       = "pd-prefill-request-success"
 )
 
 const (
@@ -680,8 +679,9 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 
 	// Set prefill-specific parameters
 	completionRequest["max_tokens"] = 1
-	// TensorRT-LLM uses strict schema validation and rejects max_completion_tokens
-	if llmEngine != TensorRTEngine {
+	if llmEngine == TensorRTEngine {
+		delete(completionRequest, "max_completion_tokens")
+	} else {
 		completionRequest["max_completion_tokens"] = 1
 	}
 	completionRequest["stream"] = false
