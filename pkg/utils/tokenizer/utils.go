@@ -29,8 +29,3 @@ func IntToByteArray(intArray []int) []byte {
 	}
 	return buf
 }
-
-// intToByteArray is an internal alias for backward compatibility
-func intToByteArray(intArray []int) []byte {
-	return IntToByteArray(intArray)
-}

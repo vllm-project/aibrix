@@ -471,21 +471,16 @@ func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest) (*t
 			return nil, fmt.Errorf("message at index %d has no role", i)
 		}
 
-		// Marshal the entire message to JSON then extract content field
-		msgJSON, err := json.Marshal(msg)
+		// Directly marshal the content to preserve its structure
+		content := msg.GetContent()
+		contentJSON, err := json.Marshal(content.AsAny())
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal message at index %d: %w", i, err)
-		}
-
-		// Parse to extract content field as RawMessage (preserves structure)
-		var msgMap map[string]json.RawMessage
-		if err := json.Unmarshal(msgJSON, &msgMap); err != nil {
-			return nil, fmt.Errorf("failed to parse message at index %d: %w", i, err)
+			return nil, fmt.Errorf("failed to marshal message content at index %d: %w", i, err)
 		}
 
 		messages[i] = tokenizer.ChatMessage{
 			Role:    *role,
-			Content: msgMap["content"], // Preserve as RawMessage
+			Content: contentJSON,
 		}
 	}
 
@@ -512,6 +507,62 @@ func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest) (*t
 		AddGenerationPrompt: addGenerationPrompt,
 		ReturnTokenStrings:  returnTokenStrings,
 	}, nil
+}
+
+// tokenizeChatRequest attempts to tokenize a chat completion request using chat template.
+// Returns the tokenized bytes on success, or nil if tokenization should fall back to text mode.
+// All errors are logged internally at V(4) level.
+func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext, tokenizerToUse tokenizer.Tokenizer) []byte {
+	// Check if tokenizer supports extended features
+	extTokenizer, ok := tokenizerToUse.(tokenizer.ExtendedTokenizer)
+	if !ok {
+		klog.V(4).InfoS("tokenizer does not support ExtendedTokenizer, using text tokenization",
+			"request_id", ctx.RequestID)
+		return nil
+	}
+
+	// Parse request body as ChatCompletionRequest
+	var chatReq types.ChatCompletionRequest
+	if err := json.Unmarshal(ctx.ReqBody, &chatReq); err != nil {
+		klog.V(4).InfoS("failed to parse chat request, falling back to text",
+			"request_id", ctx.RequestID,
+			"error", err)
+		return nil
+	}
+
+	if len(chatReq.Messages) == 0 {
+		klog.V(4).InfoS("no messages in chat request, falling back to text",
+			"request_id", ctx.RequestID)
+		return nil
+	}
+
+	// Build TokenizeInput from request
+	input, err := buildTokenizeInputFromChatRequest(&chatReq)
+	if err != nil {
+		klog.V(4).InfoS("failed to build tokenize input, falling back to text",
+			"request_id", ctx.RequestID,
+			"error", err)
+		return nil
+	}
+
+	// Perform tokenization with chat template
+	result, err := extTokenizer.TokenizeWithOptions(ctx.Context, *input)
+	if err != nil {
+		klog.V(4).InfoS("chat tokenization failed, falling back to text",
+			"request_id", ctx.RequestID,
+			"error", err)
+		return nil
+	}
+
+	// Success - log and return tokens
+	tokens := tokenizer.IntToByteArray(result.Tokens)
+	klog.V(4).InfoS("tokenized using chat template",
+		"request_id", ctx.RequestID,
+		"message_count", len(input.Messages),
+		"token_count", len(result.Tokens),
+		"add_generation_prompt", input.AddGenerationPrompt,
+		"add_special_tokens", input.AddSpecialTokens)
+	return tokens
 }
 
 // Route handles KV sync routing with clean implementation
@@ -548,49 +599,13 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 
 	// Tokenize the input based on endpoint type
 	var tokens []byte
-	var err error
-
 	if ctx.ReqPath == "/v1/chat/completions" {
-		// For chat completions, try to use chat template tokenization
-		if extTokenizer, ok := tokenizerToUse.(tokenizer.ExtendedTokenizer); ok {
-			// Parse request body as ChatCompletionRequest
-			var chatReq types.ChatCompletionRequest
-			if parseErr := json.Unmarshal(ctx.ReqBody, &chatReq); parseErr == nil && len(chatReq.Messages) > 0 {
-				// Build TokenizeInput directly from request
-				input, buildErr := buildTokenizeInputFromChatRequest(&chatReq)
-				if buildErr == nil {
-					result, tokenizeErr := extTokenizer.TokenizeWithOptions(ctx.Context, *input)
-					if tokenizeErr == nil {
-						tokens = tokenizer.IntToByteArray(result.Tokens)
-						klog.V(4).InfoS("tokenized using chat template",
-							"request_id", ctx.RequestID,
-							"message_count", len(input.Messages),
-							"token_count", len(result.Tokens),
-							"add_generation_prompt", input.AddGenerationPrompt,
-							"add_special_tokens", input.AddSpecialTokens)
-					} else {
-						klog.V(4).InfoS("chat tokenization failed, falling back to text",
-							"request_id", ctx.RequestID,
-							"error", tokenizeErr)
-					}
-				} else {
-					klog.V(4).InfoS("failed to build tokenize input, falling back to text",
-						"request_id", ctx.RequestID,
-						"error", buildErr)
-				}
-			} else {
-				klog.V(4).InfoS("failed to parse chat request, falling back to text",
-					"request_id", ctx.RequestID,
-					"error", parseErr)
-			}
-		} else {
-			klog.V(4).InfoS("tokenizer does not support ExtendedTokenizer, using text tokenization",
-				"request_id", ctx.RequestID)
-		}
+		tokens = k.tokenizeChatRequest(ctx, tokenizerToUse)
 	}
 
 	// Fallback to text tokenization if chat tokenization wasn't used or failed
 	if tokens == nil {
+		var err error
 		tokens, err = tokenizerToUse.TokenizeInputText(ctx.Message)
 		if err != nil {
 			return "", err
