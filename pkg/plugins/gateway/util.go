@@ -33,6 +33,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -322,17 +323,31 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 // and applies the selected profile: sets ConfigProfile on routingCtx.
 // - If the client provides config-profile, use that profile name.
 // - If not provided or not found, fall back to defaultProfile (or "default") in the JSON.
+// - If no annotation config exists, check pod label model.aibrix.ai/routing-strategy
+//   as a simpler alternative for setting default routing strategy.
 func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 	headerProfile := routingCtx.ReqConfigProfile
 	profile := configprofiles.ResolveProfile(pods, headerProfile)
-	if profile == nil {
+	if profile != nil {
+		routingCtx.ConfigProfile = &types.ResolvedConfigProfile{
+			RoutingStrategy:          profile.RoutingStrategy,
+			PromptLenBucketMinLength: profile.PromptLenBucketMinLength,
+			PromptLenBucketMaxLength: profile.PromptLenBucketMaxLength,
+			Combined:                 profile.Combined,
+		}
 		return
 	}
-	routingCtx.ConfigProfile = &types.ResolvedConfigProfile{
-		RoutingStrategy:          profile.RoutingStrategy,
-		PromptLenBucketMinLength: profile.PromptLenBucketMinLength,
-		PromptLenBucketMaxLength: profile.PromptLenBucketMaxLength,
-		Combined:                 profile.Combined,
+
+	// Fallback: check pod label model.aibrix.ai/routing-strategy
+	// This provides a simpler way to set default routing strategy without
+	// the full model.aibrix.ai/config annotation.
+	for _, pod := range pods {
+		if strategy, ok := pod.Labels[constants.ModelLabelRoutingStrategy]; ok && strings.TrimSpace(strategy) != "" {
+			routingCtx.ConfigProfile = &types.ResolvedConfigProfile{
+				RoutingStrategy: strings.TrimSpace(strategy),
+			}
+			return
+		}
 	}
 }
 
