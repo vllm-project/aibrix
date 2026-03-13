@@ -26,9 +26,23 @@ spec:
         command: ["/bin/bash", "-c"]
         args:
           - |
+            cat <<'EOF' > /tmp/config.yaml
+            backend: pytorch
+            kv_cache_config:
+              free_gpu_memory_fraction: 0.85
+            max_num_tokens: 8192
+            max_batch_size: 16
+            trust_remote_code: true
+            return_perf_metrics: true
+            enable_iter_perf_stats: true
+            enable_iter_req_stats: true
+            perf_metrics_max_requests: 1000
+            EOF
+
             trtllm-serve serve /models/Qwen3-8B \
-            --host 0.0.0.0 \
-            --port 8000
+              --host 0.0.0.0 \
+              --port 8000 \
+              --extra_llm_api_options /tmp/config.yaml
         ports:
         - containerPort: 8000
         resources:
