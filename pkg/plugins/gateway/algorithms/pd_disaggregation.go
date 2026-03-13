@@ -46,7 +46,7 @@ const (
 	RouterPD                      types.RoutingAlgorithm = "pd"
 	VLLMEngine                    string                 = "vllm"
 	SGLangEngine                  string                 = "sglang"
-	TensorRTEngine                string                 = "trtllm"
+	TensorRTLLM                   string                 = "trtllm"
 	SGLangBootstrapPort           int64                  = 8998
 	SGLangBootstrapPortIdentifier string                 = "model.aibrix.ai/sglang-bootstrap-port"
 	LLMEngineIdentifier           string                 = constants.ModelLabelEngine
@@ -581,7 +581,7 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		// For vLLM, wait synchronously to get KV transfer params from response
 		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, r.updateRoutingContextWithKVTransferParams, "KV transfer params")
 
-	case TensorRTEngine:
+	case TensorRTLLM:
 		// For TensorRT-LLM, wait synchronously to get disaggregated_params from response.
 		// The prefill response contains first_gen_tokens and opaque_state needed by the decode worker.
 		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, r.updateRoutingContextWithTRTDisaggParams, "TRT disagg params")
@@ -667,7 +667,7 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 		}
 	}
 
-	if llmEngine == TensorRTEngine {
+	if llmEngine == TensorRTLLM {
 		// Signal to TensorRT-LLM that this is a context-only (prefill) request.
 		// The prefill response will return disaggregated_params containing
 		// first_gen_tokens and opaque_state, which are injected into the decode request.
@@ -678,7 +678,7 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 
 	// Set prefill-specific parameters
 	completionRequest["max_tokens"] = 1
-	if llmEngine == TensorRTEngine {
+	if llmEngine == TensorRTLLM {
 		delete(completionRequest, "max_completion_tokens")
 	} else {
 		completionRequest["max_completion_tokens"] = 1

@@ -495,14 +495,14 @@ func TestDoPrefillRequest(t *testing.T) {
 		{
 			name:        "sync tensorrt prefill request",
 			serverCode:  http.StatusOK,
-			llmEngine:   TensorRTEngine,
+			llmEngine:   TensorRTLLM,
 			expectError: false,
 		},
 		{
 			name:        "sync tensorrt prefill request - server error",
 			serverCode:  http.StatusInternalServerError,
 			serverResp:  "trt server error",
-			llmEngine:   TensorRTEngine,
+			llmEngine:   TensorRTLLM,
 			expectError: true,
 			errorMsg:    "http prefill request failed with status 500",
 		},
@@ -1116,14 +1116,14 @@ func TestVLLMKVTransferProcessing(t *testing.T) {
 
 func TestTensorRTIntegrationWithTestServer(t *testing.T) {
 	// Integration test: verify TRT prefill request extracts disaggregated_params from test server
-	ts := setupTestServer(t, http.StatusOK, "", TensorRTEngine)
+	ts := setupTestServer(t, http.StatusOK, "", TensorRTLLM)
 	defer ts.Close()
 
 	prefillPods := []*v1.Pod{{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "prefill-trt",
 			Labels: map[string]string{
-				LLMEngineIdentifier: TensorRTEngine,
+				LLMEngineIdentifier: TensorRTLLM,
 				PDRoleIdentifier:    "prefill",
 			},
 		},
@@ -1153,7 +1153,7 @@ func TestTensorRTIntegrationWithTestServer(t *testing.T) {
 		httpClient:            &http.Client{},
 	}
 
-	err := router.doPrefillRequest(routingCtx, prefillPods[0], TensorRTEngine)
+	err := router.doPrefillRequest(routingCtx, prefillPods[0], TensorRTLLM)
 	assert.NoError(t, err)
 
 	// Verify routing context was updated with disaggregated_params from test server
@@ -1277,7 +1277,7 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 
 		assert.Equal(t, float64(1), completionRequest["max_tokens"])
 		// TensorRT-LLM rejects max_completion_tokens; it is omitted from TRT prefill payloads
-		if llmEngine != TensorRTEngine {
+		if llmEngine != TensorRTLLM {
 			assert.Equal(t, float64(1), completionRequest["max_completion_tokens"])
 		}
 		assert.Equal(t, false, completionRequest["stream"])
@@ -1301,7 +1301,7 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 		}
 
 		// Check disaggregated_params for TensorRT-LLM prefill requests
-		if llmEngine == TensorRTEngine {
+		if llmEngine == TensorRTLLM {
 			disaggParams, hasDisagg := completionRequest["disaggregated_params"]
 			assert.True(t, hasDisagg, "TensorRT-LLM should have disaggregated_params in prefill request")
 			if hasDisagg {
@@ -1338,7 +1338,7 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 				}
 				respBytes, _ := sonic.Marshal(response)
 				_, _ = w.Write(respBytes)
-			case TensorRTEngine:
+			case TensorRTLLM:
 				// TRT-LLM prefill response contains disaggregated_params at the top level.
 				response := map[string]any{
 					"choices": []map[string]any{{
