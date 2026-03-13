@@ -603,8 +603,7 @@ func (r *pdRouter) handleSyncPrefill(
 	payload []byte,
 	fields []interface{},
 	updateCtxFunc func(*types.RoutingContext, map[string]any, *v1.Pod) error,
-	errorContext string,
-) error {
+	errorContext string) error {
 	defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
 
 	responseData, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
@@ -838,10 +837,6 @@ func (r *pdRouter) updateRoutingContextWithTRTDisaggParams(routingCtx *types.Rou
 	if !ok {
 		return fmt.Errorf("disaggregated_params has unexpected type %T, expected map[string]any", disaggParams)
 	}
-
-	// Strip Dynamo-internal fields not needed by the TRT-LLM decode engine
-	delete(disaggParamsMap, "worker_id")
-	delete(disaggParamsMap, "_epd_metadata")
 
 	// Override request_type to generation_only for the decode request
 	disaggParamsMap["request_type"] = "generation_only"

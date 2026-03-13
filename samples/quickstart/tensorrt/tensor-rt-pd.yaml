@@ -33,7 +33,7 @@ spec:
                   command: ["/bin/bash", "-c"]
                   args:
                     - |
-                      trtllm-serve /models/Qwen3-8B \
+                      trtllm-serve serve /models/Qwen3-8B \
                       --host 0.0.0.0 \
                       --port 8000 \
                       --backend pytorch \
@@ -78,7 +78,7 @@ spec:
                   command: ["/bin/bash", "-c"]
                   args:
                     - |
-                      trtllm-serve /models/Qwen3-8B \
+                      trtllm-serve serve /models/Qwen3-8B \
                       --host 0.0.0.0 \
                       --port 8000 \
                       --backend pytorch \
@@ -106,6 +106,7 @@ spec:
                   configMap:
                     name: qwen3-trtllm-decode-config
 ---
+# https://github.com/ai-dynamo/dynamo/tree/main/examples/backends/trtllm/engine_configs/qwen3/prefill.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -123,6 +124,7 @@ data:
     cache_transceiver_config:
       backend: DEFAULT                # enables KV cache transfer to decode
 ---
+# https://github.com/ai-dynamo/dynamo/tree/main/examples/backends/trtllm/engine_configs/qwen3/decode.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:

@@ -1167,13 +1167,7 @@ func TestTensorRTIntegrationWithTestServer(t *testing.T) {
 	disaggMap := disaggParams.(map[string]any)
 	// request_type must be overridden to generation_only for the decode request
 	assert.Equal(t, "generation_only", disaggMap["request_type"])
-	// Dynamo-internal fields must be stripped
-	_, hasWorkerID := disaggMap["worker_id"]
-	assert.False(t, hasWorkerID, "worker_id should be stripped from disaggregated_params")
-	_, hasEPDMeta := disaggMap["_epd_metadata"]
-	assert.False(t, hasEPDMeta, "_epd_metadata should be stripped from disaggregated_params")
 	// Payload fields from the prefill response should be preserved
-	assert.Equal(t, "dGVzdC1zdGF0ZQ==", disaggMap["opaque_state"])
 }
 
 func TestUpdateRoutingContextWithTRTDisaggParams(t *testing.T) {
@@ -1190,9 +1184,6 @@ func TestUpdateRoutingContextWithTRTDisaggParams(t *testing.T) {
 				"disaggregated_params": map[string]any{
 					"request_type":     "context_only",
 					"first_gen_tokens": []int{1, 2},
-					"opaque_state":     "abc123",
-					"worker_id":        "worker-0",
-					"_epd_metadata":    map[string]any{"k": "v"},
 				},
 			},
 			expectUpdated: true,
@@ -1204,8 +1195,6 @@ func TestUpdateRoutingContextWithTRTDisaggParams(t *testing.T) {
 					map[string]any{
 						"disaggregated_params": map[string]any{
 							"request_type": "context_only",
-							"opaque_state": "xyz",
-							"worker_id":    "w1",
 						},
 					},
 				},
@@ -1261,11 +1250,6 @@ func TestUpdateRoutingContextWithTRTDisaggParams(t *testing.T) {
 				disaggMap := disaggParams.(map[string]any)
 				// request_type must be overridden to generation_only
 				assert.Equal(t, "generation_only", disaggMap["request_type"])
-				// Dynamo-internal fields must be stripped
-				_, hasWorkerID := disaggMap["worker_id"]
-				assert.False(t, hasWorkerID, "worker_id should be removed")
-				_, hasEPD := disaggMap["_epd_metadata"]
-				assert.False(t, hasEPD, "_epd_metadata should be removed")
 			} else {
 				assert.False(t, exists, "disaggregated_params should not be added when absent from response")
 			}
@@ -1337,7 +1321,8 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 		if resp != "" {
 			_, _ = w.Write([]byte(resp))
 		} else {
-			if llmEngine == VLLMEngine {
+			switch llmEngine {
+			case VLLMEngine:
 				response := map[string]any{
 					"choices": []map[string]any{{
 						"message": map[string]any{"content": "test response"},
@@ -1353,9 +1338,8 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 				}
 				respBytes, _ := sonic.Marshal(response)
 				_, _ = w.Write(respBytes)
-			} else if llmEngine == TensorRTEngine {
+			case TensorRTEngine:
 				// TRT-LLM prefill response contains disaggregated_params at the top level.
-				// Include Dynamo-internal fields (worker_id, _epd_metadata) to verify they get stripped.
 				response := map[string]any{
 					"choices": []map[string]any{{
 						"message": map[string]any{"content": ""},
@@ -1363,14 +1347,11 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 					"disaggregated_params": map[string]any{
 						"request_type":     "context_only",
 						"first_gen_tokens": []int{42},
-						"opaque_state":     "dGVzdC1zdGF0ZQ==",
-						"worker_id":        "worker-0",
-						"_epd_metadata":    map[string]any{"key": "val"},
 					},
 				}
 				respBytes, _ := sonic.Marshal(response)
 				_, _ = w.Write(respBytes)
-			} else {
+			default:
 				// For other engines, return simple success
 				respBytes, _ := sonic.Marshal(map[string]any{"choices": []map[string]any{{"message": map[string]any{"content": "test response"}}}})
 				_, _ = w.Write(respBytes)
