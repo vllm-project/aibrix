@@ -32,6 +32,9 @@ spec:
                 secretKeyRef:
                   name: {{ include "aibrix.fullname" . }}-redis
                   key: redis-password
+          args:
+            - --requirepass
+            - "{{ .Values.metadata.redis.password }}"
           {{- end }}
 ---
 apiVersion: v1
