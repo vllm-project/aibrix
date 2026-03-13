@@ -284,7 +284,7 @@ func TestFilterPrefillDecodePods(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := types.NewRoutingContext(context.Background(), "test", "model", "message", "test-request", "user")
-			prefill, decode, err := r.filterPrefillDecodePods(ctx, tt.pods)
+			prefill, _, decode, err := r.filterPrefillDecodePods(ctx, tt.pods)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -561,7 +561,7 @@ func TestDoPrefillRequest(t *testing.T) {
 			routingCtx := createRoutingCtx()
 			router := createRouter(prefillPods, tt.podMetrics)
 
-			err := router.doPrefillRequest(routingCtx, prefillPods[0], tt.llmEngine)
+			err := router.doPrefillRequest(routingCtx, prefillPods[0], 8000, tt.llmEngine)
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)
@@ -1012,7 +1012,7 @@ func TestVLLMIntegrationWithTestServer(t *testing.T) {
 		httpClient:            &http.Client{},
 	}
 
-	err := router.doPrefillRequest(routingCtx, prefillPods[0], VLLMEngine)
+	err := router.doPrefillRequest(routingCtx, prefillPods[0], 8000, VLLMEngine)
 	assert.NoError(t, err)
 
 	// Verify that routing context was updated with KV transfer params from test server
@@ -1291,7 +1291,7 @@ func TestLoadImbalanceSelectPrefillPod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			targetPod, imbalance := r.loadImbalanceSelectPrefillPod(tt.readyPods, tt.podRequestCount)
+			targetPod, _, imbalance := r.loadImbalanceSelectPrefillPod(tt.readyPods, tt.podRequestCount)
 
 			assert.Equal(t, tt.expectImbalance, imbalance, "imbalance detection should match expected")
 
@@ -1631,7 +1631,7 @@ func TestFilterPrefillDecodePods_SelectCorrectBucketPods(t *testing.T) {
 	decodeBlocked := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-blocked", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode"}, Annotations: map[string]string{constants.ModelAnnoConfig: configBlocked}}}
 
 	ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "short", "req-bucket", "user")
-	prefill, decode, err := r.filterPrefillDecodePods(ctx, []*v1.Pod{prefillOK, prefillBlocked, decodeOK, decodeBlocked})
+	prefill, _, decode, err := r.filterPrefillDecodePods(ctx, []*v1.Pod{prefillOK, prefillBlocked, decodeOK, decodeBlocked})
 	assert.NoError(t, err)
 	assert.NotNil(t, prefill)
 	assert.NotNil(t, decode)
@@ -1660,7 +1660,7 @@ func TestFilterPrefillDecodePods_CombinedFallbackBucketing(t *testing.T) {
 	decodeOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode"}, Annotations: map[string]string{constants.ModelAnnoConfig: configBlocked}}}
 
 	ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "say test", "req-combined", "user")
-	prefill, decode, err := r.filterPrefillDecodePods(ctx, []*v1.Pod{prefillOK, decodeOK, combined})
+	prefill, _, decode, err := r.filterPrefillDecodePods(ctx, []*v1.Pod{prefillOK, decodeOK, combined})
 	assert.NoError(t, err)
 	assert.Nil(t, prefill)
 	assert.NotNil(t, decode)
@@ -1746,7 +1746,7 @@ func TestFilterPrefillDecodePods_CombinedPickImbalance(t *testing.T) {
 			}
 
 			ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "short", "req-combined-pick", "user")
-			p, d, err := r.filterPrefillDecodePods(ctx, []*v1.Pod{prefill, decode, combined})
+			p, _, d, err := r.filterPrefillDecodePods(ctx, []*v1.Pod{prefill, decode, combined})
 			assert.NoError(t, err)
 
 			if tt.expectCombined {

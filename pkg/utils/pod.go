@@ -265,6 +265,38 @@ func FilterPodByName(podname string, pods []*v1.Pod) (*v1.Pod, bool) {
 	return nil, false
 }
 
+// ParsePodNameAndPort parses pod name and port from a string in format "podName:port".
+// It returns podName, port, and a boolean indicating if parsing was successful.
+func ParsePodNameAndPort(podNameWithPort string) (string, int, bool) {
+	parts := strings.Split(podNameWithPort, ":")
+	if len(parts) != 2 {
+		return podNameWithPort, 0, false
+	}
+
+	podName := parts[0]
+	portStr := parts[1]
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return podNameWithPort, 0, false
+	}
+
+	return podName, port, true
+}
+
+// FilterPodByPodNameWithPort returns the pod and port from a string in format "podName:port".
+// It returns pod, port, and a boolean indicating if the pod was found.
+func FilterPodByPodNameWithPort(podNameWithPort string, pods []*v1.Pod) (*v1.Pod, int, bool) {
+	podName, port, parsed := ParsePodNameAndPort(podNameWithPort)
+	if !parsed {
+		// If parsing failed, try to find the pod by name directly
+		pod, found := FilterPodByName(podNameWithPort, pods)
+		return pod, 0, found
+	}
+
+	pod, found := FilterPodByName(podName, pods)
+	return pod, port, found
+}
+
 // FilterPodsByLabel filters pods that have a specific label key-value pair
 func FilterPodsByLabel(pods []*v1.Pod, labelKey, labelValue string) []*v1.Pod {
 	var filtered []*v1.Pod

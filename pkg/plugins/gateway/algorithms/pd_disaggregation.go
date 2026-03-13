@@ -25,6 +25,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -67,6 +68,9 @@ const (
 	pdRoutePrefillRequestError          = "pd-do-prefill-request-error"
 	pdRoutePrefillRequestSuccess        = "pd-prefill-request-success"
 	pdRoutePrefillEmptyKVTransferParams = "pd-prefill-empty-kv-transfer-params"
+
+	dpSizeIdentifier  string = "model.aibrix.ai/dp-size"
+	dpPortsIdentifier string = "model.aibrix.ai/dp-ports"
 )
 
 const (
@@ -108,6 +112,8 @@ type PrefillRequestTracker struct {
 	podRequestCounts sync.Map // map[string]*int32
 	// Map of request ID -> pod name for cleanup
 	requestToPod sync.Map // map[string]string
+	// Flag to track if any pod has multiple ports
+	isMultiPort bool
 }
 
 func NewPDRouter() (types.Router, error) {
@@ -166,7 +172,7 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		return "", fmt.Errorf("engine validation failed for request %s: %w", ctx.RequestID, err)
 	}
 
-	prefillPod, decodePod, err := r.filterPrefillDecodePods(ctx, readyPodList.All())
+	prefillPod, prefillPort, decodePod, err := r.filterPrefillDecodePods(ctx, readyPodList.All())
 	if err != nil {
 		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRouteFilterPrefillDecodePodsFail, "status_code": "400"})
@@ -180,7 +186,7 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		}
 		ctx.RespHeaders[HeaderPrefillTargetPod] = prefillPod.Name
 		ctx.RespHeaders[HeaderPrefillTargetPodIP] = prefillPod.Status.PodIP
-		err = r.doPrefillRequest(ctx, prefillPod, llmEngine)
+		err = r.doPrefillRequest(ctx, prefillPod, prefillPort, llmEngine)
 		if err != nil {
 			metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 				map[string]string{"status": pdRoutePrefillRequestError, "status_code": "500"})
@@ -197,6 +203,7 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 
 type Scores struct {
 	Pod   *v1.Pod
+	Port  int
 	Score float64
 }
 
@@ -204,7 +211,12 @@ type Scores struct {
 // For multi-node tensor parallelism (e.g., TP=16 with node_rank=0 and node_rank=1),
 // only pods with PodGroupIndex="0" (node_rank=0) are selected as they run the HTTP server.
 // Pods without PodGroupIndex label are also included for backward compatibility.
-func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
+func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, int, *v1.Pod, error) {
+	// Reset isMultiPort flag to ensure it's based on current pod set
+	if r.prefillRequestTracker != nil {
+		r.prefillRequestTracker.isMultiPort = false
+	}
+
 	var promptLength int
 	if aibrixPromptLengthBucketing {
 		promptLength, _ = routingCtx.PromptLength()
@@ -214,15 +226,15 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	prefillPods, decodePods, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods := r.collectAndBucketPods(routingCtx, readyPods, promptLength)
 	combinedAvailable := aibrixPromptLengthBucketing && len(combinedPods) > 0
 	if len(prefillPods) == 0 && !combinedAvailable {
-		return nil, nil, fmt.Errorf("prefill pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
+		return nil, 0, nil, fmt.Errorf("prefill pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
 	}
 	if len(decodePods) == 0 && !combinedAvailable {
-		return nil, nil, fmt.Errorf("decode pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
+		return nil, 0, nil, fmt.Errorf("decode pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
 	}
 	if combinedAvailable {
 		if len(promptLengthBucketingPrefillPods) == 0 || len(promptLengthBucketingDecodePods) == 0 {
 			klog.InfoS("routing to combined pod", "requestId", routingCtx.RequestID, "promptLength", promptLength)
-			return nil, combinedPods[rand.Intn(len(combinedPods))], nil
+			return nil, 0, combinedPods[rand.Intn(len(combinedPods))], nil
 		}
 
 		if r.shouldPickCombined(routingCtx, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods) {
@@ -230,15 +242,28 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 			if combinedPod != nil {
 				klog.InfoS("load imbalance detected, selecting combined pod",
 					"requestId", routingCtx.RequestID, "selectedCombinedPod", combinedPod.Name)
-				return nil, combinedPod, nil
+				return nil, 0, combinedPod, nil
+			}
+		}
+	}
+
+	if r.prefillRequestTracker != nil {
+		for _, pod := range prefillPods {
+			if _, exsit := pod.Labels[dpSizeIdentifier]; exsit {
+				r.prefillRequestTracker.isMultiPort = true
+				break
 			}
 		}
 	}
 
 	// check for prefill and decode imbalance
-	targetPod, isImbalanced := r.loadImbalanceSelectPrefillPod(prefillPods, r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods))
+	podRequestCount := make(map[string]int32)
+	if r.prefillRequestTracker != nil {
+		podRequestCount = r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods)
+	}
+	targetPod, targetPort, isImbalanced := r.loadImbalanceSelectPrefillPod(prefillPods, podRequestCount)
 	if isImbalanced {
-		klog.InfoS("load imbalance detected, selecting least-loaded prefill pod", "request_id", routingCtx.RequestID, "selected_prefill_pod", targetPod.Name)
+		klog.InfoS("load imbalance detected, selecting least-loaded prefill pod", "request_id", routingCtx.RequestID, "selected_prefill_pod", targetPod.Name, "port", targetPort)
 		prefillPods = []*v1.Pod{targetPod}
 		decodePods = utils.FilterPodsByLabel(decodePods, PDRoleSetIdentifier, targetPod.Labels[PDRoleSetIdentifier])
 	}
@@ -259,16 +284,17 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 
 // loadImbalanceSelectPrefillPod evaluates if the load is imbalanced based on the abs difference between
 // pods with min and max outstanding request counts
-func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequestCount map[string]int32) (*v1.Pod, bool) {
+func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequestCount map[string]int32) (*v1.Pod, int, bool) {
 	var imbalance bool
 	var targetPod *v1.Pod
+	var targetPort int
 	targetPods := []string{}
 	minValue := int32(math.MaxInt32)
 	maxValue := int32(math.MinInt32)
 	utils.CryptoShuffle(readyPods)
 
 	if len(podRequestCount) == 0 {
-		return targetPod, imbalance
+		return targetPod, targetPort, imbalance
 	}
 
 	for _, value := range podRequestCount {
@@ -286,11 +312,19 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 	}
 
 	if maxValue-minValue > 32 && len(targetPods) > 0 {
-		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
+		isMultiPort := false
+		if r.prefillRequestTracker != nil {
+			isMultiPort = r.prefillRequestTracker.isMultiPort
+		}
+		if isMultiPort {
+			targetPod, targetPort, _ = utils.FilterPodByPodNameWithPort(targetPods[rand.Intn(len(targetPods))], readyPods)
+		} else {
+			targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
+		}
 		imbalance = true
 	}
 
-	return targetPod, imbalance
+	return targetPod, targetPort, imbalance
 }
 
 // loadImbalanceSelectDecodePod identifies imbalance decode pod using abs diff of max/min request counts and max/min throughputs.
@@ -402,8 +436,30 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 
 	maxPrefillScore := float64(1)
 	for _, pod := range prefillPods {
+		var reqCnt float64
+		var bestPort int
+		ports := r.prefillRequestTracker.getMultiPortsFromPod(pod)
+		// For multi-port scenario, select port with least request count
+		if r.prefillRequestTracker.isMultiPort && len(ports) > 0 {
+			bestPort = ports[0]
+			minReqCnt := float64(math.MaxFloat64)
+			for _, port := range ports {
+				// For multi-port scenario, use pod:port as key
+				key := pod.Name + ":" + strconv.Itoa(port)
+				portReqCnt := float64(podRequestCount[key])
+
+				if portReqCnt < minReqCnt {
+					minReqCnt = portReqCnt
+					bestPort = port
+				}
+			}
+
+			reqCnt = minReqCnt
+		} else {
+			reqCnt = float64(podRequestCount[pod.Name])
+		}
+
 		rolesetName := pod.Labels[PDRoleSetIdentifier]
-		reqCnt := float64(podRequestCount[pod.Name])
 		if reqCnt > meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
 			klog.V(4).InfoS("prefill pod request count is higher than mean request count, skipping", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
 				"req_cnt", reqCnt, "mean_req_cnt", meanRequestCount, "std_dev_req_cnt", stdDevRequestCount)
@@ -414,6 +470,7 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 		if existingScore, exists := prefillScores[rolesetName]; !exists || prefillScore < existingScore.Score {
 			prefillScores[rolesetName] = &Scores{
 				Pod:   pod,
+				Port:  bestPort,
 				Score: prefillScore,
 			}
 		}
@@ -422,6 +479,7 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 		}
 
 		klog.V(4).InfoS("prefill_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
+			"port", bestPort,
 			"prefill_score", prefillScore,
 			"score", fmt.Sprintf("(100 - %f) * 0.1 + %f / %f", float64(matchedPods[pod.Name]), reqCnt, maxRequestCount),
 			"prefix_match_percent", float64(matchedPods[pod.Name]),
@@ -472,8 +530,9 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	prefixHashes []uint64,
 	prefillScores map[string]*Scores, maxPrefillScore float64,
 	decodeScores map[string]*Scores, maxDecodeScore float64,
-) (*v1.Pod, *v1.Pod, error) {
+) (*v1.Pod, int, *v1.Pod, error) {
 	var targetPrefillPod, targetDecodePod *v1.Pod
+	var targetPrefillPort int
 	minScore := math.MaxFloat64
 
 	for roleset, prefillScore := range prefillScores {
@@ -489,6 +548,7 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 		if final < minScore {
 			minScore = final
 			targetPrefillPod = prefillScore.Pod
+			targetPrefillPort = prefillScore.Port
 			targetDecodePod = decodeScore.Pod
 		}
 
@@ -499,14 +559,15 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 			"final_score", final,
 			"prefill_score", prefillScore.Score, "normalized_prefill_score", normalizedPrefillScore,
 			"decode_score", decodeScore.Score, "normalized_decode_score", normalizedDecodeScore,
+			"prefill_port", prefillScore.Port,
 		)
 	}
 
 	if targetPrefillPod == nil {
-		return nil, nil, fmt.Errorf("target prefill pod is nil")
+		return nil, 0, nil, fmt.Errorf("target prefill pod is nil")
 	}
 	if targetDecodePod == nil {
-		return nil, nil, fmt.Errorf("target decode pod is nil")
+		return nil, 0, nil, fmt.Errorf("target decode pod is nil")
 	}
 	if len(prefixHashes) > 0 && targetPrefillPod != nil {
 		r.enqueuePrefixUpdate(prefixHashes, routingCtx.Model, targetPrefillPod.Name)
@@ -520,19 +581,23 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	metrics.EmitMetricToPrometheus(routingCtx, targetPrefillPod, metrics.PDSelectedPrefillPodTotal, &metrics.SimpleMetricValue{Value: 1.0}, nil)
 	metrics.EmitMetricToPrometheus(routingCtx, targetDecodePod, metrics.PDSelectedDecodePodTotal, &metrics.SimpleMetricValue{Value: 1.0}, nil)
 
-	return targetPrefillPod, targetDecodePod, nil
+	return targetPrefillPod, targetPrefillPort, targetDecodePod, nil
 }
-func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod *v1.Pod, llmEngine string) error {
+func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod *v1.Pod, prefillPort int, llmEngine string) error {
 	// Prepare prefill request payload
 	payload, err := r.preparePrefillPayload(routingCtx, prefillPod, llmEngine)
 	if err != nil {
 		return fmt.Errorf("failed to prepare prefill payload for request %s: %w", routingCtx.RequestID, err)
 	}
 
+	if prefillPort == 0 {
+		prefillPort = int(utils.GetModelPortForPod(routingCtx.RequestID, prefillPod))
+	}
+
 	// Execute HTTP request
 	apiURL := fmt.Sprintf("http://%s:%d%s",
 		prefillPod.Status.PodIP,
-		utils.GetModelPortForPod(routingCtx.RequestID, prefillPod),
+		prefillPort,
 		routingCtx.ReqPath)
 
 	fields := []interface{}{
@@ -540,6 +605,7 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		"llm_engine", llmEngine,
 		"model_name", routingCtx.Model,
 		"prefill_pod", prefillPod.Name,
+		"prefill_port", prefillPort,
 		"prefill_url", apiURL,
 		"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name),
 	}
@@ -548,7 +614,7 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		fields = fields[:len(fields)-2]
 	}
 
-	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name)
+	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name, prefillPort)
 	routingCtx.PrefillStartTime = time.Now()
 
 	switch llmEngine {
@@ -563,6 +629,7 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 					"request_id", routingCtx.RequestID,
 					"llm_engine", llmEngine,
 					"prefill_pod", prefillPod.Name,
+					"prefill_port", prefillPort,
 					"prefill_pod_ip", prefillPod.Status.PodIP,
 					"elapsed", routingCtx.Elapsed(time.Now()))
 				return
@@ -586,6 +653,7 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 				"request_id", routingCtx.RequestID,
 				"llm_engine", llmEngine,
 				"prefill_pod", prefillPod.Name,
+				"prefill_port", prefillPort,
 				"prefill_pod_ip", prefillPod.Status.PodIP,
 				"elapsed", routingCtx.Elapsed(time.Now()))
 			return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
@@ -874,15 +942,24 @@ func isPodWithHTTPServer(pod *v1.Pod) bool {
 	return podGroupIndex == "0"
 }
 
-func (t *PrefillRequestTracker) AddPrefillRequest(requestID, podName string) {
-	countInterface, _ := t.podRequestCounts.LoadOrStore(podName, &atomic.Int32{})
+func (t *PrefillRequestTracker) AddPrefillRequest(requestID, podName string, port int) {
+	var countInterface any
+	if t.isMultiPort {
+		countInterface, _ = t.podRequestCounts.LoadOrStore(podName+":"+strconv.Itoa(port), &atomic.Int32{})
+	} else {
+		countInterface, _ = t.podRequestCounts.LoadOrStore(podName, &atomic.Int32{})
+	}
 	count := countInterface.(*atomic.Int32)
 
 	// Increment counter
 	newCount := count.Add(1)
 
 	// Track request to pod mapping for cleanup
-	t.requestToPod.Store(requestID, podName)
+	if t.isMultiPort {
+		t.requestToPod.Store(requestID, podName+":"+strconv.Itoa(port))
+	} else {
+		t.requestToPod.Store(requestID, podName)
+	}
 
 	klog.V(4).InfoS("prefill_request_added",
 		"request_id", requestID,
@@ -922,6 +999,30 @@ func (t *PrefillRequestTracker) RemovePrefillRequest(requestID string) {
 func (t *PrefillRequestTracker) GetPrefillRequestCountsForPods(pods []*v1.Pod) map[string]int32 {
 	counts := make(map[string]int32)
 	for _, pod := range pods {
+		if t.isMultiPort {
+			for _, port := range t.getMultiPortsFromPod(pod) {
+				countInterface, exists := t.podRequestCounts.Load(pod.Name + ":" + strconv.Itoa(port))
+				if !exists {
+					counts[pod.Name+":"+strconv.Itoa(port)] = 0
+				} else {
+					counts[pod.Name+":"+strconv.Itoa(port)] = countInterface.(*atomic.Int32).Load()
+				}
+			}
+		} else {
+			countInterface, exists := t.podRequestCounts.Load(pod.Name)
+			if !exists {
+				counts[pod.Name] = 0
+			} else {
+				counts[pod.Name] = countInterface.(*atomic.Int32).Load()
+			}
+		}
+	}
+	return counts
+}
+
+func (t *PrefillRequestTracker) GetPrefillPortRequestCountsForPods(pods []*v1.Pod) map[string]int32 {
+	counts := make(map[string]int32)
+	for _, pod := range pods {
 		countInterface, exists := t.podRequestCounts.Load(pod.Name)
 		if !exists {
 			counts[pod.Name] = 0
@@ -938,6 +1039,23 @@ func (t *PrefillRequestTracker) GetPrefillRequestCountsForPod(podname string) in
 		return 0
 	}
 	return int(countInterface.(*atomic.Int32).Load())
+}
+
+func (t *PrefillRequestTracker) getMultiPortsFromPod(pod *v1.Pod) []int {
+	ports := []int{}
+	if value, exists := pod.Labels[dpPortsIdentifier]; exists {
+		// Parse the port list from the label, e.g., "8000,8001,8002"
+		portStrs := strings.Split(value, ",")
+		for _, portStr := range portStrs {
+			if port, err := strconv.Atoi(strings.TrimSpace(portStr)); err == nil {
+				ports = append(ports, port)
+			} else {
+				klog.Warningf("Invalid port value %q in label %s for pod %s", portStr, dpPortsIdentifier, pod.Name)
+			}
+		}
+	}
+
+	return ports
 }
 
 func (r *pdRouter) isPodSuitableForPromptLength(routingCtx *types.RoutingContext, pod *v1.Pod, promptLength int) bool {
