@@ -20,12 +20,17 @@ import (
 	"encoding/binary"
 )
 
-// intToByteArray converts int array to byte array in BigEndian format
-func intToByteArray(intArray []int) []byte {
+// IntToByteArray converts int array to byte array in BigEndian format
+func IntToByteArray(intArray []int) []byte {
 	// Pre-allocate buffer for better performance
 	buf := make([]byte, len(intArray)*4)
 	for i, num := range intArray {
 		binary.BigEndian.PutUint32(buf[i*4:], uint32(num))
 	}
 	return buf
+}
+
+// intToByteArray is an internal alias for backward compatibility
+func intToByteArray(intArray []int) []byte {
+	return IntToByteArray(intArray)
 }
