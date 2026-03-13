@@ -13,7 +13,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useParams, useLocation } from "react-router";
-import { ChatInput } from "./chat-input";
+import { ChatInput,type Attachment as InputAttachment } from "./chat-input";
 import { Tooltip } from "./tooltip";
 import { MarkdownContent } from "./markdown-content";
 import {
@@ -30,6 +30,7 @@ import {
   type Conversation,
   type ImageData,
   type VideoJobResponse,
+  type ChatAttachmentPayload,
 } from "@/api/client";
 import {
   pendingCreation,
@@ -53,6 +54,7 @@ interface Message {
   content: string;
   model?: string;
   streaming?: boolean;
+  attachments?: MessageAttachment[];
   // AI Creation fields
   mode?: "image" | "video";
   ratio?: string;
@@ -63,10 +65,21 @@ interface Message {
   error?: string;
 }
 
+interface MessageAttachment {
+  id: string;
+  name: string;
+  type: string;
+  kind: "image" | "file";
+  blob_url?: string;
+  preview_url?: string;
+  file?: File;
+}
+
 export function ChatPage() {
   const { id } = useParams();
   const location = useLocation();
   const [messages, setMessages] = useState<Message[]>([]);
+  const [selectedModel, setSelectedModel] = useState("gpt-4-0613");
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [loading, setLoading] = useState(true);
   const [streaming, setStreaming] = useState(false);
@@ -81,6 +94,21 @@ export function ChatPage() {
   const lastModelRef = useRef<string>("default");
   const loadedConvId = useRef<string | null>(null);
 
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
+  useEffect(() => {
+    return () => {
+      messagesRef.current.forEach((msg) => {
+        msg.attachments?.forEach((attachment) => {
+          if (attachment.blob_url?.startsWith("blob:")) {
+            URL.revokeObjectURL(attachment.blob_url);
+          }
+        });
+      });
+    };
+  }, []);
+  
   // Scroll to bottom on new messages
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -122,6 +150,10 @@ export function ChatPage() {
               role: m.role as "user" | "assistant",
               content: m.content as string,
               model: m.model ?? undefined,
+              attachments: (m.attachments ?? []).map((attachment) => ({
+                ...attachment,
+                blob_url: attachment.blob_url ?? attachment.preview_url,
+              })),
             }));
           // Prepend cached creation messages (image/video) before
           // backend messages (text). The backend only stores text
@@ -310,18 +342,20 @@ export function ChatPage() {
       !id ||
       loading ||
       processedFirstMsg.current ||
-      !location.state?.firstMessage
+      !location.state
     )
       return;
 
     processedFirstMsg.current = true;
     loadedConvId.current = id;
-    const { firstMessage, model, mode, ratio } = location.state as {
+    const { firstMessage, model, mode, ratio, attachments } = location.state as {
       firstMessage: string;
       model: string;
+      attachments?: InputAttachment[];
       mode?: "image" | "video";
       ratio?: string;
     };
+    setSelectedModel(model);
 
     // Read non-serializable data from module-level store (set by AICreationPage)
     const referenceFile = pendingCreation.file;
@@ -343,7 +377,7 @@ export function ChatPage() {
     } else if (mode === "video") {
       handleVideoGeneration(firstMessage, model, ratio ?? "1:1");
     } else {
-      sendMessage(firstMessage, model);
+      sendMessage(firstMessage, model, attachments);
     }
   }, [id, loading, location.state]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -369,7 +403,7 @@ export function ChatPage() {
       setMessages((prev) => [...prev, assistantMsg]);
       setStreaming(true);
 
-      controllerRef.current = streamCompletion(id, content, model, {
+      controllerRef.current = streamCompletion(id, content, model, undefined, {
         onDelta: (delta) => {
           setMessages((prev) =>
             prev.map((m) =>
@@ -408,14 +442,25 @@ export function ChatPage() {
   );
 
   const sendMessage = useCallback(
-    (content: string, model: string) => {
+    (content: string, model: string, attachments?: InputAttachment[]) => {
       if (!id || streaming) return;
 
+      const attachmentPayload: ChatAttachmentPayload[] | undefined = 
+        attachments?.map((attachment) => ({
+          id: attachment.id,
+          name: attachment.name,
+          type: attachment.type,
+          kind: attachment.kind,
+          file: attachment.file,
+        }));
+
       lastModelRef.current = model;
+      setSelectedModel(model);
       const userMsg: Message = {
         id: crypto.randomUUID(),
         role: "user",
         content,
+        attachments,
       };
       const assistantId = crypto.randomUUID();
       const assistantMsg: Message = {
@@ -429,7 +474,7 @@ export function ChatPage() {
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
       setStreaming(true);
 
-      controllerRef.current = streamCompletion(id, content, model, {
+      controllerRef.current = streamCompletion(id, content, model, attachmentPayload, {
         onDelta: (delta) => {
           setMessages((prev) =>
             prev.map((m) =>
@@ -516,8 +561,8 @@ export function ChatPage() {
     }
   }, [playingMessageId]);
 
-  const handleSend = (content: string, model: string) => {
-    sendMessage(content, model);
+  const handleSend = (content: string, model: string,attachments?: InputAttachment[]) => {
+    sendMessage(content, model,attachments);
   };
 
   // ── Edit handlers ──────────────────────────────────────
@@ -617,6 +662,36 @@ export function ChatPage() {
     </div>
   );
 
+  const renderUserAttachments = (attachments?: MessageAttachment[]) => {
+    if (!attachments || attachments.length === 0) return null;
+
+    return (
+      <div className="mt-3 flex flex-wrap gap-2">
+        {attachments.map((attachment) => (
+          <div
+            key={attachment.id}
+            className="w-[120px] rounded-xl overflow-hidden border border-border bg-accent/50"
+          >
+            {attachment.kind === "image" && attachment.blob_url ? (
+              <img
+                src={attachment.blob_url}
+                alt={attachment.name}
+                className="w-full h-[90px] object-cover"
+              />
+            ) : (
+              <div className="h-[90px] flex flex-col items-center justify-center px-2 text-center">
+                <div className="text-xs text-foreground/50 mb-1">FILE</div>
+                <div className="text-xs text-foreground/80 line-clamp-2 break-all">
+                  {attachment.name}
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  };
+  
   const renderCreationAssistantMessage = (msg: Message) => (
     <div className="flex-1 min-w-0">
       <p className="text-xs text-muted-foreground mb-1">AI Assistant</p>
@@ -833,9 +908,14 @@ export function ChatPage() {
                             </div>
                           </div>
                         ) : (
-                          <div className="text-sm text-foreground/90 whitespace-pre-wrap leading-relaxed">
-                            {msg.content}
-                          </div>
+                          <>
+                            {msg.content ? (
+                              <div className="text-sm text-foreground/90 whitespace-pre-wrap leading-relaxed">
+                                {msg.content}
+                              </div>
+                            ) : null}
+                            {renderUserAttachments(msg.attachments)}
+                          </>
                         )}
                         {/* Edit button — visible on hover, hidden while streaming or editing */}
                         {!streaming && editingId !== msg.id && (
@@ -934,6 +1014,8 @@ export function ChatPage() {
         <ChatInput
           placeholder="Reply..."
           disabled={streaming}
+          selectedModel={selectedModel}
+          onModelChange={setSelectedModel}
           onSend={handleSend}
         />
       </div>

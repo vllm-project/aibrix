@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from models.schemas import Conversation, ConversationSummary, Message
+from models.schemas import Conversation, ConversationSummary, Message, ChatAttachment
 
 
 class ConversationStore:
@@ -69,6 +69,37 @@ class ConversationStore:
         conv.updated_at = datetime.now(timezone.utc).isoformat()
         return message
 
+    def _attachment_to_content_block(self, attachment: ChatAttachment) -> dict | None:
+        if attachment.kind != "image" or not attachment.preview_url:
+            return None
+        return {
+            "type": "image_url",
+            "image_url": {"url": attachment.preview_url},
+        }
+
+    def _message_to_gateway_dict(self, msg: Message) -> dict:
+        if msg.role != "user":
+            return {"role": msg.role, "content": msg.content}
+
+        image_blocks = [
+            block
+            for attachment in msg.attachments
+            if (block := self._attachment_to_content_block(attachment)) is not None
+        ]
+
+        if not image_blocks:
+            return {"role": msg.role, "content": msg.content}
+
+        if isinstance(msg.content, list):
+            content_blocks = list(msg.content)
+        else:
+            content_blocks = []
+            if isinstance(msg.content, str) and msg.content.strip():
+                content_blocks.append({"type": "text", "text": msg.content})
+
+        content_blocks.extend(image_blocks)
+        return {"role": msg.role, "content": content_blocks}
+
     def get_messages_for_gateway(
         self, conversation_id: str, system_prompt: str | None = None
     ) -> list[dict] | None:
@@ -82,7 +113,7 @@ class ConversationStore:
             messages.append({"role": "system", "content": system_prompt})
 
         for msg in conv.messages:
-            messages.append({"role": msg.role, "content": msg.content})
+            messages.append(self._message_to_gateway_dict(msg))
 
         return messages
 
