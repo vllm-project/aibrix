@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
       - name: tensorrt-llm
-        image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/tensorrt-llm:1.2.0
+        image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/tensorrt-llm:1.1.0
         imagePullPolicy: IfNotPresent
         command: ["/bin/bash", "-c"]
         args:
