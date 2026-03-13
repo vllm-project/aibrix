@@ -493,6 +493,20 @@ func TestDoPrefillRequest(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name:        "sync tensorrt prefill request",
+			serverCode:  http.StatusOK,
+			llmEngine:   TensorRTLLM,
+			expectError: false,
+		},
+		{
+			name:        "sync tensorrt prefill request - server error",
+			serverCode:  http.StatusInternalServerError,
+			serverResp:  "trt server error",
+			llmEngine:   TensorRTLLM,
+			expectError: true,
+			errorMsg:    "http prefill request failed with status 500",
+		},
+		{
 			name:        "async vllm prefill request, with imbalance load request",
 			serverCode:  http.StatusOK,
 			llmEngine:   "vllm",
@@ -1100,6 +1114,149 @@ func TestVLLMKVTransferProcessing(t *testing.T) {
 	}
 }
 
+func TestTensorRTIntegrationWithTestServer(t *testing.T) {
+	// Integration test: verify TRT prefill request extracts disaggregated_params from test server
+	ts := setupTestServer(t, http.StatusOK, "", TensorRTLLM)
+	defer ts.Close()
+
+	prefillPods := []*v1.Pod{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "prefill-trt",
+			Labels: map[string]string{
+				LLMEngineIdentifier: TensorRTLLM,
+				PDRoleIdentifier:    "prefill",
+			},
+		},
+		Status: v1.PodStatus{
+			PodIP: "127.0.0.1",
+			Conditions: []v1.PodCondition{{
+				Type:   v1.PodReady,
+				Status: v1.ConditionTrue,
+			}},
+		},
+	}}
+
+	routingCtx := &types.RoutingContext{
+		RequestID:  "integration-test",
+		Model:      "test-model",
+		ReqPath:    "/v1/chat/completions",
+		ReqBody:    []byte(`{"messages":[{"role":"user","content":"test"}]}`),
+		ReqHeaders: map[string]string{"Authorization": "Bearer test"},
+		Context:    context.Background(),
+	}
+
+	router := &pdRouter{
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		cache:                 cache.NewWithPodsForTest(prefillPods, "test-model"),
+		tokenizer:             tokenizer.NewCharacterTokenizer(),
+		prefillRequestTracker: NewPrefillRequestTracker(),
+		httpClient:            &http.Client{},
+	}
+
+	err := router.doPrefillRequest(routingCtx, prefillPods[0], TensorRTLLM)
+	assert.NoError(t, err)
+
+	// Verify routing context was updated with disaggregated_params from test server
+	var updatedRequest map[string]any
+	err = sonic.Unmarshal(routingCtx.ReqBody, &updatedRequest)
+	assert.NoError(t, err)
+
+	disaggParams, exists := updatedRequest["disaggregated_params"]
+	assert.True(t, exists, "disaggregated_params should be extracted from TRT test server response")
+
+	disaggMap := disaggParams.(map[string]any)
+	// request_type must be overridden to generation_only for the decode request
+	assert.Equal(t, "generation_only", disaggMap["request_type"])
+	// Payload fields from the prefill response should be preserved
+}
+
+func TestUpdateRoutingContextWithTRTDisaggParams(t *testing.T) {
+	tests := []struct {
+		name          string
+		response      map[string]any
+		expectUpdated bool
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name: "disaggregated_params at top level",
+			response: map[string]any{
+				"disaggregated_params": map[string]any{
+					"request_type":     "context_only",
+					"first_gen_tokens": []int{1, 2},
+				},
+			},
+			expectUpdated: true,
+		},
+		{
+			name: "disaggregated_params inside choices[0]",
+			response: map[string]any{
+				"choices": []any{
+					map[string]any{
+						"disaggregated_params": map[string]any{
+							"request_type": "context_only",
+						},
+					},
+				},
+			},
+			expectUpdated: true,
+		},
+		{
+			name: "no disaggregated_params in response",
+			response: map[string]any{
+				"choices": []any{
+					map[string]any{"message": map[string]any{"content": "hello"}},
+				},
+			},
+			expectUpdated: false,
+		},
+		{
+			name: "disaggregated_params has wrong type",
+			response: map[string]any{
+				"disaggregated_params": "not-a-map",
+			},
+			expectError:   true,
+			errorContains: "disaggregated_params has unexpected type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := &pdRouter{}
+			pod := &v1.Pod{Status: v1.PodStatus{PodIP: "10.0.0.1"}}
+			routingCtx := &types.RoutingContext{
+				RequestID: "trt-test",
+				ReqBody:   []byte(`{"messages":[{"role":"user","content":"hello"}]}`),
+				Context:   context.Background(),
+			}
+
+			err := router.updateRoutingContextWithTRTDisaggParams(routingCtx, tt.response, pod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorContains)
+				return
+			}
+
+			assert.NoError(t, err)
+
+			var updatedRequest map[string]any
+			err = sonic.Unmarshal(routingCtx.ReqBody, &updatedRequest)
+			assert.NoError(t, err)
+
+			disaggParams, exists := updatedRequest["disaggregated_params"]
+			if tt.expectUpdated {
+				assert.True(t, exists, "disaggregated_params should be set in updated request body")
+				disaggMap := disaggParams.(map[string]any)
+				// request_type must be overridden to generation_only
+				assert.Equal(t, "generation_only", disaggMap["request_type"])
+			} else {
+				assert.False(t, exists, "disaggregated_params should not be added when absent from response")
+			}
+		})
+	}
+}
+
 // Common test utilities
 func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *httptest.Server {
 	l, err := net.Listen("tcp", "127.0.0.1:8000")
@@ -1119,7 +1276,10 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 		}
 
 		assert.Equal(t, float64(1), completionRequest["max_tokens"])
-		assert.Equal(t, float64(1), completionRequest["max_completion_tokens"])
+		// TensorRT-LLM rejects max_completion_tokens; it is omitted from TRT prefill payloads
+		if llmEngine != TensorRTLLM {
+			assert.Equal(t, float64(1), completionRequest["max_completion_tokens"])
+		}
 		assert.Equal(t, false, completionRequest["stream"])
 		_, exists := completionRequest["stream_options"]
 		assert.False(t, exists, "completionRequest should not have 'stream_options' key")
@@ -1140,6 +1300,16 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 			assert.False(t, hasKV, "non-vLLM engines should not have kv_transfer_params")
 		}
 
+		// Check disaggregated_params for TensorRT-LLM prefill requests
+		if llmEngine == TensorRTLLM {
+			disaggParams, hasDisagg := completionRequest["disaggregated_params"]
+			assert.True(t, hasDisagg, "TensorRT-LLM should have disaggregated_params in prefill request")
+			if hasDisagg {
+				disaggMap := disaggParams.(map[string]any)
+				assert.Equal(t, "context_only", disaggMap["request_type"])
+			}
+		}
+
 		// Check X-Request-Id header is set (should match the request ID from routing context)
 		xRequestId := r.Header.Get("X-Request-Id")
 		assert.NotEmpty(t, xRequestId, "X-Request-Id header should be set")
@@ -1151,7 +1321,8 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 		if resp != "" {
 			_, _ = w.Write([]byte(resp))
 		} else {
-			if llmEngine == VLLMEngine {
+			switch llmEngine {
+			case VLLMEngine:
 				response := map[string]any{
 					"choices": []map[string]any{{
 						"message": map[string]any{"content": "test response"},
@@ -1167,7 +1338,20 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 				}
 				respBytes, _ := sonic.Marshal(response)
 				_, _ = w.Write(respBytes)
-			} else {
+			case TensorRTLLM:
+				// TRT-LLM prefill response contains disaggregated_params at the top level.
+				response := map[string]any{
+					"choices": []map[string]any{{
+						"message": map[string]any{"content": ""},
+					}},
+					"disaggregated_params": map[string]any{
+						"request_type":     "context_only",
+						"first_gen_tokens": []int{42},
+					},
+				}
+				respBytes, _ := sonic.Marshal(response)
+				_, _ = w.Write(respBytes)
+			default:
 				// For other engines, return simple success
 				respBytes, _ := sonic.Marshal(map[string]any{"choices": []map[string]any{{"message": map[string]any{"content": "test response"}}}})
 				_, _ = w.Write(respBytes)

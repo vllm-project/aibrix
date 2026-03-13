@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen-tensorrt-llm
+  labels:
+    app: qwen-llm
+    model.aibrix.ai/name: Qwen3-8B
+    model.aibrix.ai/port: "8000"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qwen-llm
+  template:
+    metadata:
+      labels:
+        app: qwen-llm
+        model.aibrix.ai/name: Qwen3-8B
+        model.aibrix.ai/port: "8000"
+        model.aibrix.ai/engine: trtllm
+    spec:
+      containers:
+      - name: tensorrt-llm
+        image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/tensorrt-llm:1.1.0
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            trtllm-serve serve /models/Qwen3-8B \
+            --host 0.0.0.0 \
+            --port 8000
+        ports:
+        - containerPort: 8000
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+          requests:
+            nvidia.com/gpu: 1
+        volumeMounts:
+          - mountPath: /models
+            name: model-hostpath
+      volumes:
+        - name: model-hostpath
+          hostPath:
+            path: /data01/models
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen-llm-service
+spec:
+  selector:
+    app: qwen-llm
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: ClusterIP

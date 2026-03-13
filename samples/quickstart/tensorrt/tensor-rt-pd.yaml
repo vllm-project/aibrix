@@ -1,0 +1,125 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: qwen-tensorrt-1p1d
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: qwen-tensorrt-1p1d
+  template:
+    metadata:
+      labels:
+        app: qwen-tensorrt-1p1d
+    spec:
+      roles:
+        - name: prefill
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: Qwen3-8B
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: trtllm
+            spec:
+              containers:
+                - name: prefill
+                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/tensorrt-llm:1.1.0
+                  imagePullPolicy: IfNotPresent
+                  command: ["/bin/bash", "-c"]
+                  args:
+                    - |
+                      # https://github.com/ai-dynamo/dynamo/tree/main/examples/backends/trtllm/engine_configs/qwen3/prefill.yaml
+                      cat <<'EOF' > /tmp/prefill.yaml
+                      backend: pytorch
+                      kv_cache_config:
+                        free_gpu_memory_fraction: 0.85
+                      max_num_tokens: 8192
+                      max_batch_size: 16
+                      trust_remote_code: true
+                      enable_chunked_prefill: true
+                      disable_overlap_scheduler: true
+                      cache_transceiver_config:
+                        backend: DEFAULT
+                      EOF
+
+                      trtllm-serve serve /models/Qwen3-8B \
+                        --host 0.0.0.0 \
+                        --port 8000 \
+                        --backend pytorch \
+                        --extra_llm_api_options /tmp/prefill.yaml
+                  resources:
+                    limits:
+                      nvidia.com/gpu: 1
+                    requests:
+                      nvidia.com/gpu: 1
+                  securityContext:
+                    capabilities:
+                      add:
+                        - IPC_LOCK
+                  volumeMounts:
+                    - mountPath: /models
+                      name: model-hostpath
+              volumes:
+                - name: model-hostpath
+                  hostPath:
+                    path: /data01/models
+                    type: DirectoryOrCreate
+
+        - name: decode
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: Qwen3-8B
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: trtllm
+            spec:
+              containers:
+                - name: decode
+                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/tensorrt-llm:1.1.0
+                  imagePullPolicy: IfNotPresent
+                  command: ["/bin/bash", "-c"]
+                  args:
+                    - |
+                      # https://github.com/ai-dynamo/dynamo/tree/main/examples/backends/trtllm/engine_configs/qwen3/decode.yaml
+                      cat <<'EOF' > /tmp/decode.yaml
+                      backend: pytorch
+                      kv_cache_config:
+                        free_gpu_memory_fraction: 0.85
+                      max_num_tokens: 8192
+                      max_batch_size: 16
+                      trust_remote_code: true
+                      enable_chunked_prefill: true
+                      disable_overlap_scheduler: false
+                      cache_transceiver_config:
+                        backend: DEFAULT
+                      EOF
+
+                      trtllm-serve serve /models/Qwen3-8B \
+                        --host 0.0.0.0 \
+                        --port 8000 \
+                        --backend pytorch \
+                        --extra_llm_api_options /tmp/decode.yaml
+                  resources:
+                    limits:
+                      nvidia.com/gpu: 1
+                    requests:
+                      nvidia.com/gpu: 1
+                  securityContext:
+                    capabilities:
+                      add:
+                        - IPC_LOCK
+                  volumeMounts:
+                    - mountPath: /models
+                      name: model-hostpath
+              volumes:
+                - name: model-hostpath
+                  hostPath:
+                    path: /data01/models
+                    type: DirectoryOrCreate
