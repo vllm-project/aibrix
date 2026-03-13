@@ -38,6 +38,10 @@ spec:
               roles:
                 items:
                   properties:
+                    dependencies:
+                      items:
+                        type: string
+                      type: array
                     disruptionTolerance:
                       properties:
                         maxUnavailable:

@@ -33,6 +33,11 @@ import (
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
 
+const (
+	headRoleName   = "head"
+	workerRoleName = "worker"
+)
+
 var _ = ginkgo.Describe("StormService controller test", func() {
 	var ns *corev1.Namespace
 
@@ -184,6 +189,127 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 						checkFunc: func(ctx context.Context, k8sClient client.Client, ss *orchestrationapi.StormService) {
 							// Validate scaling up
 							validation.ValidateStormServiceReplicas(ctx, k8sClient, ss, 6)
+						},
+					},
+				},
+			},
+		),
+		ginkgo.Entry("respect role dependencies in StormService with multiple replicas",
+			&testValidatingCase{
+				makeStormService: func() *orchestrationapi.StormService {
+					matchLabel := map[string]string{"app": "storm-deps-test"}
+					podTemplate := corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: matchLabel,
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "dummy", Image: "alpine:latest", Command: []string{"sleep", "3600"}},
+							},
+						},
+					}
+					int32Ptr := func(i int32) *int32 { return &i }
+
+					roleSetSpec := &orchestrationapi.RoleSetSpec{
+						Roles: []orchestrationapi.RoleSpec{
+							{
+								Name:     headRoleName,
+								Replicas: int32Ptr(1),
+								Template: podTemplate,
+								// No dependencies
+							},
+							{
+								Name:         workerRoleName,
+								Replicas:     int32Ptr(2),
+								Dependencies: []string{headRoleName},
+								Template:     podTemplate,
+							},
+						},
+						UpdateStrategy: orchestrationapi.SequentialRoleSetStrategyType,
+					}
+
+					return wrapper.MakeStormService("stormservice-with-deps").
+						Namespace(ns.Name).
+						Replicas(ptr.To(int32(2))). // ← 2 RoleSets
+						Selector(metav1.SetAsLabelSelector(matchLabel)).
+						UpdateStrategyType(orchestrationapi.InPlaceUpdateStormServiceStrategyType).
+						RoleSetTemplateMeta(metav1.ObjectMeta{Labels: matchLabel}, roleSetSpec).
+						Obj()
+				},
+				updates: []*update{
+					{
+						updateFunc: func(ss *orchestrationapi.StormService) {
+							gomega.Expect(k8sClient.Create(ctx, ss)).To(gomega.Succeed())
+
+							// Wait for 2 RoleSets to be created
+							validation.WaitForRoleSetsCreated(ctx, k8sClient, ns.Name, ss.Name, 2)
+
+							// Initially, only head pods exist: 2 RoleSets × 1 head = 2 pods
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name,
+								constants.StormServiceNameLabelKey, ss.Name, 2)
+
+							// Mark ALL head pods as ready → unblock worker creation in both RoleSets
+							validation.MarkPodsReady(ctx, k8sClient, ns.Name,
+								constants.RoleNameLabelKey, headRoleName)
+						},
+						checkFunc: func(ctx context.Context, k8sClient client.Client, ss *orchestrationapi.StormService) {
+							// Validate: only 'head' roles exist across all RoleSets
+							gomega.Eventually(func(g gomega.Gomega) {
+								roleSets := &orchestrationapi.RoleSetList{}
+								g.Expect(k8sClient.List(ctx, roleSets,
+									client.InNamespace(ns.Name),
+									client.MatchingLabels{constants.StormServiceNameLabelKey: ss.Name})).
+									To(gomega.Succeed())
+
+								g.Expect(roleSets.Items).To(gomega.HaveLen(2))
+								for _, rs := range roleSets.Items {
+									// Each RoleSet should have head=1, worker=0 (not created yet)
+									g.Expect(validation.ValidateRoleStatus(&rs, headRoleName, 1)).To(gomega.Succeed())
+								}
+							}, time.Second*10).Should(gomega.Succeed())
+
+						},
+					},
+					{
+						updateFunc: func(ss *orchestrationapi.StormService) {
+							// After marking head ready, workers should be created
+							// Total pods = 2 RoleSets × (1 head + 2 worker) = 6
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name,
+								constants.StormServiceNameLabelKey, ss.Name, 6)
+
+							// Mark worker pods ready (optional, but completes lifecycle)
+							validation.MarkPodsReady(ctx, k8sClient, ns.Name,
+								constants.RoleNameLabelKey, workerRoleName)
+						},
+						checkFunc: func(ctx context.Context, k8sClient client.Client, ss *orchestrationapi.StormService) {
+							// Validate final RoleStatuses in StormService
+							gomega.Eventually(func(g gomega.Gomega) {
+								latest := &orchestrationapi.StormService{}
+								g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), latest)).To(gomega.Succeed())
+
+								// Aggregate role statuses: head=2, worker=4
+								foundHead := false
+								foundWorker := false
+								for _, rs := range latest.Status.RoleStatuses {
+									if rs.Name == headRoleName {
+										g.Expect(rs.Replicas).To(gomega.Equal(int32(2)))
+										g.Expect(rs.ReadyReplicas).To(gomega.Equal(int32(2)))
+										foundHead = true
+									}
+									if rs.Name == workerRoleName {
+										g.Expect(rs.Replicas).To(gomega.Equal(int32(4)))
+										g.Expect(rs.ReadyReplicas).To(gomega.Equal(int32(4)))
+										foundWorker = true
+									}
+								}
+								g.Expect(foundHead).To(gomega.BeTrue())
+								g.Expect(foundWorker).To(gomega.BeTrue())
+
+								// Validate top-level status
+								g.Expect(latest.Status.Replicas).To(gomega.Equal(int32(2)))      // 2 RoleSets
+								g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(2))) // both ready
+							}, time.Second*15).Should(gomega.Succeed())
+
 						},
 					},
 				},
