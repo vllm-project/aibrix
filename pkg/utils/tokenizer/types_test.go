@@ -88,13 +88,17 @@ func TestChatMessageContentPreservation(t *testing.T) {
 	}
 
 	// Unmarshal to generic interface to verify structure
-	var inputMap, outputMap map[string]interface{}
-	json.Unmarshal([]byte(input), &inputMap)
-	json.Unmarshal(output, &outputMap)
+	var inputMap, outputMap map[string]any
+	if err := json.Unmarshal([]byte(input), &inputMap); err != nil {
+		t.Fatalf("Failed to unmarshal input: %v", err)
+	}
+	if err := json.Unmarshal(output, &outputMap); err != nil {
+		t.Fatalf("Failed to unmarshal output: %v", err)
+	}
 
 	// Check that content is an array in both
-	inputContent, inputOk := inputMap["content"].([]interface{})
-	outputContent, outputOk := outputMap["content"].([]interface{})
+	inputContent, inputOk := inputMap["content"].([]any)
+	outputContent, outputOk := outputMap["content"].([]any)
 
 	if !inputOk || !outputOk {
 		t.Fatal("Content should be an array")
