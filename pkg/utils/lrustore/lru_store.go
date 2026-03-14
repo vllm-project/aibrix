@@ -37,6 +37,7 @@ type LRUStore[K comparable, V any] struct {
 	getCurrentTime
 	interval time.Duration
 	ttl      time.Duration
+	stop     chan struct{}
 }
 
 func NewLRUStore[K comparable, V any](cap int, ttl, interval time.Duration, f getCurrentTime) *LRUStore[K, V] {
@@ -47,6 +48,7 @@ func NewLRUStore[K comparable, V any](cap int, ttl, interval time.Duration, f ge
 		ttl:            ttl,
 		interval:       interval,
 		getCurrentTime: f,
+		stop:           make(chan struct{}),
 	}
 	store.lruList.head.next = store.lruList.tail
 	store.lruList.tail.prev = store.lruList.head
@@ -55,11 +57,21 @@ func NewLRUStore[K comparable, V any](cap int, ttl, interval time.Duration, f ge
 	return store
 }
 
+// Close stops the background eviction goroutine.
+func (e *LRUStore[K, V]) Close() {
+	close(e.stop)
+}
+
 func (e *LRUStore[K, V]) startEviction() {
 	ticker := time.NewTicker(e.interval)
 	defer ticker.Stop()
-	for range ticker.C {
-		e.evict(e.getCurrentTime())
+	for {
+		select {
+		case <-ticker.C:
+			e.evict(e.getCurrentTime())
+		case <-e.stop:
+			return
+		}
 	}
 }
 
@@ -68,13 +80,13 @@ func (e *LRUStore[K, V]) Put(key K, value V) bool {
 	defer e.Unlock()
 
 	if entry, exists := e.freeTable[key]; exists {
-		entry.lastAccessTime = time.Now()
+		entry.lastAccessTime = e.getCurrentTime()
 		entry.Value = value
 		e.lruList.moveToHead(entry)
 		return false
 	}
 
-	entry := &entry[K, V]{Key: key, Value: value, lastAccessTime: time.Now()}
+	entry := &entry[K, V]{Key: key, Value: value, lastAccessTime: e.getCurrentTime()}
 	e.lruList.addToHead(entry)
 	e.freeTable[key] = entry
 	if len(e.freeTable) > e.cap {
