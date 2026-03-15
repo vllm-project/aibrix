@@ -17,6 +17,7 @@ limitations under the License.
 package tokenizer
 
 import (
+	"encoding/json"
 	"time"
 )
 
@@ -49,9 +50,10 @@ type TokenizeResult struct {
 }
 
 // ChatMessage represents a single message in a chat conversation
+// Content can be either a string (simple text) or a structured array (multimodal)
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"` // Can be string or array for multimodal
 }
 
 // RemoteTokenizerConfig represents configuration for a remote tokenizer

@@ -83,7 +83,7 @@ func (t *remoteTokenizerImpl) TokenizeInputText(text string) ([]byte, error) {
 	}
 
 	// Convert tokens to byte array (BigEndian int32 format)
-	return intToByteArray(result.Tokens), nil
+	return IntToByteArray(result.Tokens), nil
 }
 
 // TokenizeWithOptions performs tokenization with advanced options
