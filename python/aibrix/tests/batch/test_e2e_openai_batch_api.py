@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import copy
 import json
 
 import pytest
@@ -20,27 +21,66 @@ from fastapi.testclient import TestClient
 
 from tests.batch.conftest import create_test_app
 
+# ---- Multi-endpoint input data generators ----
 
-def generate_batch_input_data(num_requests: int = 3) -> str:
-    """Generate test batch input data and return the content as string."""
-    base_request = {
-        "custom_id": "request-1",
-        "method": "POST",
-        "url": "/v1/chat/completions",
-        "body": {
-            "model": "gpt-3.5-turbo-0125",
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": "Hello world!"},
-            ],
-            "max_tokens": 1000,
-        },
-    }
+# Sample request bodies for each supported batch endpoint
+ENDPOINT_SAMPLE_BODIES = {
+    "/v1/chat/completions": {
+        "model": "gpt-3.5-turbo-0125",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello world!"},
+        ],
+        "max_tokens": 1000,
+    },
+    "/v1/completions": {
+        "model": "gpt-3.5-turbo-0125",
+        "prompt": "Once upon a time",
+        "max_tokens": 100,
+    },
+    "/v1/embeddings": {
+        "model": "text-embedding-ada-002",
+        "input": "The food was delicious and the waiter was friendly.",
+    },
+    "/v1/rerank": {
+        "model": "reranker-v1",
+        "query": "What is deep learning?",
+        "documents": [
+            "Deep learning is a subset of machine learning.",
+            "The weather is nice today.",
+            "Neural networks are inspired by the brain.",
+        ],
+    },
+}
+
+
+def generate_batch_input_data(
+    num_requests: int = 3, endpoint: str = "/v1/chat/completions"
+) -> str:
+    """Generate test batch input data for any supported endpoint.
+
+    Args:
+        num_requests: Number of requests to generate
+        endpoint: The API endpoint path (e.g., "/v1/chat/completions")
+
+    Returns:
+        JSONL string with batch requests
+    """
+    sample_body = ENDPOINT_SAMPLE_BODIES.get(endpoint)
+    if sample_body is None:
+        raise ValueError(
+            f"No sample body defined for endpoint '{endpoint}'. "
+            f"Supported: {list(ENDPOINT_SAMPLE_BODIES.keys())}"
+        )
 
     lines = []
     for i in range(num_requests):
-        request = base_request.copy()
-        request["custom_id"] = f"request-{i+1}"
+        request = {
+            "custom_id": f"request-{i+1}",
+            "method": "POST",
+            "url": endpoint,
+            "body": copy.deepcopy(sample_body),
+        }
         lines.append(json.dumps(request))
 
     return "\n".join(lines)
@@ -426,6 +466,110 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
             "Job preparation, worker coordination, and finalization working correctly."
         )
         await test_app.state.batch_driver.clear_job(batch_id)
+
+
+# ---- Multi-endpoint parametrized tests ----
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/embeddings",
+        "/v1/rerank",
+    ],
+    ids=["chat_completions", "completions", "embeddings", "rerank"],
+)
+async def test_openai_batch_api_multi_endpoint(endpoint: str):
+    """
+    Test batch API workflow for each supported endpoint type.
+
+    Validates that the batch system correctly accepts, processes,
+    and returns results for all supported OpenAI-compatible endpoints:
+    - /v1/chat/completions
+    - /v1/completions
+    - /v1/embeddings
+    - /v1/rerank
+    """
+    app = create_test_app()
+    num_requests = 3
+
+    with TestClient(app) as client:
+        # Step 1: Upload batch input file for this endpoint
+        input_data = generate_batch_input_data(num_requests, endpoint=endpoint)
+        files = {
+            "file": (
+                f"batch_input_{endpoint.split('/')[-1]}.jsonl",
+                input_data,
+                "application/jsonl",
+            )
+        }
+        data = {"purpose": "batch"}
+
+        upload_response = client.post("/v1/files", files=files, data=data)
+        assert (
+            upload_response.status_code == 200
+        ), f"[{endpoint}] File upload failed: {upload_response.text}"
+
+        input_file_id = upload_response.json()["id"]
+
+        # Step 2: Create batch job for this endpoint
+        batch_request = {
+            "input_file_id": input_file_id,
+            "endpoint": endpoint,
+            "completion_window": "24h",
+        }
+
+        batch_response = client.post("/v1/batches", json=batch_request)
+        assert (
+            batch_response.status_code == 200
+        ), f"[{endpoint}] Batch creation failed: {batch_response.text}"
+
+        batch_result = batch_response.json()
+        assert batch_result["endpoint"] == endpoint
+        batch_id = batch_result["id"]
+
+        # Step 3: Poll until completion
+        max_polls = 10
+        poll_interval = 1
+
+        for attempt in range(max_polls):
+            status_response = client.get(f"/v1/batches/{batch_id}")
+            assert status_response.status_code == 200
+            status_result = status_response.json()
+            current_status = status_result["status"]
+
+            if current_status == "completed":
+                output_file_id = status_result["output_file_id"]
+                assert output_file_id is not None
+                request_counts = status_result.get("request_counts")
+                assert request_counts is not None
+                assert request_counts["total"] == num_requests
+                assert request_counts["completed"] == num_requests
+                break
+            elif current_status in ("failed", "cancelled", "expired"):
+                pytest.fail(f"[{endpoint}] Batch job {current_status}")
+
+            await asyncio.sleep(poll_interval)
+        else:
+            pytest.fail(
+                f"[{endpoint}] Batch job did not complete within "
+                f"{max_polls * poll_interval}s"
+            )
+
+        # Step 4: Download and verify output
+        output_response = client.get(f"/v1/files/{output_file_id}/content")
+        assert output_response.status_code == 200
+
+        output_content = output_response.content.decode("utf-8")
+        assert output_content, f"[{endpoint}] Output file is empty"
+        assert verify_batch_output_content(output_content, num_requests), (
+            f"[{endpoint}] Output verification failed"
+        )
+
+        await app.state.batch_driver.clear_job(batch_id)
 
 
 @pytest.mark.asyncio
