@@ -178,6 +178,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:num_requests_success_total",
 				"sglang": "sglang:num_requests_total",
+				"trtllm": "request_success_total",
 			},
 			Description: "Number of successful requests",
 		},
@@ -213,6 +214,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:e2e_request_latency_seconds",
 				"sglang": "sglang:e2e_request_latency_seconds",
+				"trtllm": "e2e_request_latency_seconds",
 			},
 			Description: "End-to-end request latency in seconds",
 		},
@@ -223,7 +225,8 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_queue_time_seconds",
+				"vllm":   "vllm:request_queue_time_seconds",
+				"trtllm": "request_queue_time_seconds",
 			},
 			Description: "Request queue time in seconds",
 		},
@@ -346,6 +349,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:time_to_first_token_seconds",
 				"sglang": "sglang:time_to_first_token_seconds",
+				"trtllm": "time_to_first_token_seconds",
 			},
 			Description: "Time to first token in seconds",
 		},
@@ -358,6 +362,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:time_per_output_token_seconds",
 				"sglang": "sglang:inter_token_latency_seconds",
+				"trtllm": "time_per_output_token_seconds",
 			},
 			Description: "Time per output token in seconds",
 		},
@@ -370,6 +375,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:inter_token_latency_seconds",
 				"sglang": "sglang:inter_token_latency_seconds",
+				"trtllm": "time_per_output_token_seconds",
 			},
 			Description: "Inter-token latency in seconds",
 		},

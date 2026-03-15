@@ -86,6 +86,15 @@ type EngineMetricsResult struct {
 	Errors       []error                // Any errors encountered during fetching
 }
 
+// metricsPathForEngine returns the Prometheus metrics path for the given engine type.
+// trtllm exposes Prometheus-compatible metrics at /prometheus/metrics, all others use /metrics.
+func metricsPathForEngine(engineType string) string {
+	if engineType == "trtllm" {
+		return "prometheus/metrics"
+	}
+	return "metrics"
+}
+
 // FetchTypedMetric fetches a single typed metric from an engine endpoint
 // Note: if the client needs to fetch multiple metrics, it's better to use FetchAllTypedMetrics
 func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, engineType, identifier, metricName string) (MetricValue, error) {
@@ -106,7 +115,7 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 		return nil, fmt.Errorf("metric %s not supported for engine type %s", metricName, engineType)
 	}
 
-	url := fmt.Sprintf("http://%s/metrics", endpoint)
+	url := fmt.Sprintf("http://%s/%s", endpoint, metricsPathForEngine(engineType))
 
 	// Fetch with retry logic
 	for attempt := 0; attempt <= ef.config.MaxRetries; attempt++ {
@@ -158,7 +167,7 @@ func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoi
 		Errors:       []error{},
 	}
 
-	url := fmt.Sprintf("http://%s/metrics", endpoint)
+	url := fmt.Sprintf("http://%s/%s", endpoint, metricsPathForEngine(engineType))
 
 	// Fetch raw metrics with retry logic
 	var allMetrics map[string]*dto.MetricFamily
