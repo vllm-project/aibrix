@@ -17,6 +17,7 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -455,6 +456,119 @@ func (p *prefixCacheRouter) Cleanup() error {
 	return nil
 }
 
+// buildTokenizeInputFromChatRequest converts ChatCompletionRequest to TokenizeInput
+// preserving multimodal content and vLLM-specific parameters
+func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest) (*tokenizer.TokenizeInput, error) {
+	if len(chatReq.Messages) == 0 {
+		return nil, fmt.Errorf("no messages in chat completion request")
+	}
+
+	// Convert OpenAI messages to tokenizer messages, preserving content structure
+	messages := make([]tokenizer.ChatMessage, len(chatReq.Messages))
+	for i, msg := range chatReq.Messages {
+		role := msg.GetRole()
+		if role == nil {
+			return nil, fmt.Errorf("message at index %d has no role", i)
+		}
+
+		// Directly marshal the content to preserve its structure
+		content := msg.GetContent()
+		contentAny := content.AsAny()
+		if contentAny == nil {
+			return nil, fmt.Errorf("message at index %d has nil content", i)
+		}
+		contentJSON, err := json.Marshal(contentAny)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal message content at index %d: %w", i, err)
+		}
+
+		messages[i] = tokenizer.ChatMessage{
+			Role:    *role,
+			Content: contentJSON,
+		}
+	}
+
+	// Extract vLLM-specific parameters with defaults matching vLLM behavior
+	addSpecialTokens := false
+	if chatReq.AddSpecialTokens != nil {
+		addSpecialTokens = *chatReq.AddSpecialTokens
+	}
+
+	addGenerationPrompt := true
+	if chatReq.AddGenerationPrompt != nil {
+		addGenerationPrompt = *chatReq.AddGenerationPrompt
+	}
+
+	returnTokenStrings := false
+	if chatReq.ReturnTokenStrings != nil {
+		returnTokenStrings = *chatReq.ReturnTokenStrings
+	}
+
+	return &tokenizer.TokenizeInput{
+		Type:                tokenizer.ChatInput,
+		Messages:            messages,
+		AddSpecialTokens:    addSpecialTokens,
+		AddGenerationPrompt: addGenerationPrompt,
+		ReturnTokenStrings:  returnTokenStrings,
+	}, nil
+}
+
+// tokenizeChatRequest attempts to tokenize a chat completion request using chat template.
+// Returns the tokenized bytes on success, or nil if tokenization should fall back to text mode.
+// All errors are logged internally at V(4) level.
+func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext, tokenizerToUse tokenizer.Tokenizer) []byte {
+	// Check if tokenizer supports extended features
+	extTokenizer, ok := tokenizerToUse.(tokenizer.ExtendedTokenizer)
+	if !ok {
+		klog.V(4).InfoS("tokenizer does not support ExtendedTokenizer, using text tokenization",
+			"request_id", ctx.RequestID)
+		return nil
+	}
+
+	// Parse request body as ChatCompletionRequest
+	var chatReq types.ChatCompletionRequest
+	if err := json.Unmarshal(ctx.ReqBody, &chatReq); err != nil {
+		klog.V(4).InfoS("failed to parse chat request, falling back to text",
+			"request_id", ctx.RequestID,
+			"error", err)
+		return nil
+	}
+
+	if len(chatReq.Messages) == 0 {
+		klog.V(4).InfoS("no messages in chat request, falling back to text",
+			"request_id", ctx.RequestID)
+		return nil
+	}
+
+	// Build TokenizeInput from request
+	input, err := buildTokenizeInputFromChatRequest(&chatReq)
+	if err != nil {
+		klog.V(4).InfoS("failed to build tokenize input, falling back to text",
+			"request_id", ctx.RequestID,
+			"error", err)
+		return nil
+	}
+
+	// Perform tokenization with chat template
+	result, err := extTokenizer.TokenizeWithOptions(ctx.Context, *input)
+	if err != nil {
+		klog.V(4).InfoS("chat tokenization failed, falling back to text",
+			"request_id", ctx.RequestID,
+			"error", err)
+		return nil
+	}
+
+	// Success - log and return tokens
+	tokens := tokenizer.IntToByteArray(result.Tokens)
+	klog.V(4).InfoS("tokenized using chat template",
+		"request_id", ctx.RequestID,
+		"message_count", len(input.Messages),
+		"token_count", len(result.Tokens),
+		"add_generation_prompt", input.AddGenerationPrompt,
+		"add_special_tokens", input.AddSpecialTokens)
+	return tokens
+}
+
 // Route handles KV sync routing with clean implementation
 func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	// Start timing for latency metric if metrics are enabled
@@ -487,10 +601,19 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 		return "", fmt.Errorf("TokenizerPool not initialized for KV sync router")
 	}
 
-	// Tokenize the input
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
-	if err != nil {
-		return "", err
+	// Tokenize the input based on endpoint type
+	var tokens []byte
+	if ctx.ReqPath == "/v1/chat/completions" {
+		tokens = k.tokenizeChatRequest(ctx, tokenizerToUse)
+	}
+
+	// Fallback to text tokenization if chat tokenization wasn't used or failed
+	if tokens == nil {
+		var err error
+		tokens, err = tokenizerToUse.TokenizeInputText(ctx.Message)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	readyPods := readyPodList.All()
