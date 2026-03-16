@@ -473,7 +473,11 @@ func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest) (*t
 
 		// Directly marshal the content to preserve its structure
 		content := msg.GetContent()
-		contentJSON, err := json.Marshal(content.AsAny())
+		contentAny := content.AsAny()
+		if contentAny == nil {
+			return nil, fmt.Errorf("message at index %d has nil content", i)
+		}
+		contentJSON, err := json.Marshal(contentAny)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal message content at index %d: %w", i, err)
 		}
