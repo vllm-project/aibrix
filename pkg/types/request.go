@@ -29,17 +29,18 @@ type ChatCompletionRequest struct {
 
 	// AddGenerationPrompt controls whether to add the generation prompt to the chat template.
 	// Default: true (vLLM default)
-	// Reference: protocol.py line 217-224
+	// Reference: https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/chat_completion/protocol.py
 	AddGenerationPrompt *bool `json:"add_generation_prompt,omitempty"`
 
 	// AddSpecialTokens controls whether to add special tokens (e.g. BOS) on top of
 	// what is added by the chat template.
 	// Default: false (vLLM default) - chat template handles special tokens
-	// Reference: protocol.py line 235-244
+	// Reference: https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/chat_completion/protocol.py
 	AddSpecialTokens *bool `json:"add_special_tokens,omitempty"`
 
 	// ReturnTokenStrings controls whether to return token strings in tokenization results.
 	// This is used for debugging and verification purposes.
 	// Default: false
+	// Reference: https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/chat_completion/protocol.py
 	ReturnTokenStrings *bool `json:"return_token_strs,omitempty"`
 }
