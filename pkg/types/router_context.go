@@ -60,6 +60,7 @@ type RoutingContext struct {
 	context.Context
 	Algorithm      RoutingAlgorithm
 	Model          string
+	Engine         string
 	Stream         bool
 	Message        string
 	RequestID      string
@@ -311,6 +312,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Context = ctx
 	r.Algorithm = algorithms
 	r.Model = model
+	r.Engine = ""
 	r.Stream = false
 	r.Message = message
 	r.RequestID = requestID

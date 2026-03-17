@@ -69,23 +69,19 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	routingCtx.Message = message
 	routingCtx.ReqBody = body.RequestBody.GetBody()
 
-	// early reject the request if model doesn't exist.
-	if !s.cache.HasModel(model) {
-		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
-		return generateErrorResponse(envoyTypePb.StatusCode_BadRequest,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderErrorNoModelBackends, RawValue: []byte(model)}}},
-			fmt.Sprintf("model %s does not exist", model), ErrorCodeModelNotFound, "model"), model, routingCtx, stream, term
+	// early reject if model doesn't exist or no pods are ready
+	var podsArr types.PodList
+	podsArr, errRes = s.validateModelAvailability(requestID, model)
+	if errRes != nil {
+		return errRes, model, routingCtx, stream, term
 	}
 
-	// early reject if no pods are ready to accept request for a model
-	podsArr, err := s.cache.ListPodsByModel(model)
-	if err != nil || podsArr == nil || utils.CountRoutablePods(podsArr.All()) == 0 {
-		klog.ErrorS(err, "no ready pod available", "requestID", requestID, "model", model)
-		return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderErrorNoModelBackends, RawValue: []byte("true")}}},
-			fmt.Sprintf("error on getting pods for model %s", model), ErrorCodeServiceUnavailable, ""), model, routingCtx, stream, term
+	// Read engine label from pods and assign to routing context
+	if pods := podsArr.All(); len(pods) > 0 {
+		routingCtx.Engine = pods[0].Labels[constants.ModelLabelEngine]
+		if routingCtx.Engine == "" {
+			routingCtx.Engine = pods[0].Annotations[constants.ModelLabelEngine]
+		}
 	}
 
 	// Resolve model config profile from annotation and apply overrides
@@ -188,6 +184,29 @@ func getEngineBasedPathRewrite(requestPath string, pods []*v1.Pod) string {
 
 	// vllm, vllm-omni, sglang, and other engines use OpenAI-compatible paths
 	return ""
+}
+
+// validateModelAvailability checks that the model exists in cache and has routable pods.
+// Returns the pod list and nil on success, or nil and an error response on failure.
+func (s *Server) validateModelAvailability(requestID, model string) (types.PodList, *extProcPb.ProcessingResponse) {
+	if !s.cache.HasModel(model) {
+		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
+		return nil, generateErrorResponse(envoyTypePb.StatusCode_BadRequest,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorNoModelBackends, RawValue: []byte(model)}}},
+			fmt.Sprintf("model %s does not exist", model), ErrorCodeModelNotFound, "model")
+	}
+
+	podsArr, err := s.cache.ListPodsByModel(model)
+	if err != nil || podsArr == nil || utils.CountRoutablePods(podsArr.All()) == 0 {
+		klog.ErrorS(err, "no ready pod available", "requestID", requestID, "model", model)
+		return nil, generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorNoModelBackends, RawValue: []byte("true")}}},
+			fmt.Sprintf("error on getting pods for model %s", model), ErrorCodeServiceUnavailable, "")
+	}
+
+	return podsArr, nil
 }
 
 // Helper to fetch running requests on a pod with safe zero fallback.
