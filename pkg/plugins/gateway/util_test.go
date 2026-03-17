@@ -25,7 +25,11 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go"
 	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func Test_ValidateRequestBody(t *testing.T) {
@@ -1125,5 +1129,158 @@ func Test_ValidateRequestBody_Classify(t *testing.T) {
 		if tt.stream {
 			assert.Equal(t, tt.stream, stream, tt.message)
 		}
+	}
+}
+
+func TestApplyConfigProfile_PodLabelRoutingStrategy(t *testing.T) {
+	tests := []struct {
+		name                    string
+		pods                    []*v1.Pod
+		headerProfile           string
+		expectedRoutingStrategy string
+		expectProfile           bool
+	}{
+		{
+			name: "pod label sets routing strategy when no annotation config exists",
+			pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.ModelLabelName:            "test-model",
+							constants.ModelLabelRoutingStrategy: "least-request",
+						},
+					},
+				},
+			},
+			expectedRoutingStrategy: "least-request",
+			expectProfile:           true,
+		},
+		{
+			name: "annotation config takes priority over pod label",
+			pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.ModelLabelName:            "test-model",
+							constants.ModelLabelRoutingStrategy: "least-request",
+						},
+						Annotations: map[string]string{
+							constants.ModelAnnoConfig: `{"defaultProfile": "default", "profiles": {"default": {"routingStrategy": "random"}}}`,
+						},
+					},
+				},
+			},
+			expectedRoutingStrategy: "random",
+			expectProfile:           true,
+		},
+		{
+			name: "no label or annotation returns nil profile",
+			pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.ModelLabelName: "test-model",
+						},
+					},
+				},
+			},
+			expectProfile: false,
+		},
+		{
+			name: "empty label value is ignored",
+			pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.ModelLabelName:            "test-model",
+							constants.ModelLabelRoutingStrategy: "",
+						},
+					},
+				},
+			},
+			expectProfile: false,
+		},
+		{
+			name:          "empty pod list returns nil profile",
+			pods:          []*v1.Pod{},
+			expectProfile: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := types.NewRoutingContext(nil, "", "", "", "test-req", "")
+			ctx.ReqConfigProfile = tt.headerProfile
+
+			applyConfigProfile(ctx, tt.pods)
+
+			if tt.expectProfile {
+				assert.NotNil(t, ctx.ConfigProfile, "expected config profile to be set")
+				assert.Equal(t, tt.expectedRoutingStrategy, ctx.ConfigProfile.RoutingStrategy)
+			} else {
+				assert.Nil(t, ctx.ConfigProfile, "expected config profile to be nil")
+			}
+		})
+	}
+}
+
+func TestDeriveRoutingStrategyFromContext_Priority(t *testing.T) {
+	tests := []struct {
+		name             string
+		reqHeaders       map[string]string
+		configProfile    *types.ResolvedConfigProfile
+		expectedStrategy string
+		expectedEnabled  bool
+	}{
+		{
+			name: "header routing strategy takes top priority",
+			reqHeaders: map[string]string{
+				HeaderRoutingStrategy: "round-robin",
+			},
+			configProfile: &types.ResolvedConfigProfile{
+				RoutingStrategy: "least-request",
+			},
+			expectedStrategy: "round-robin",
+			expectedEnabled:  true,
+		},
+		{
+			name:       "config profile used when no header",
+			reqHeaders: map[string]string{},
+			configProfile: &types.ResolvedConfigProfile{
+				RoutingStrategy: "least-request",
+			},
+			expectedStrategy: "least-request",
+			expectedEnabled:  true,
+		},
+		{
+			name: "empty header falls through to config profile",
+			reqHeaders: map[string]string{
+				HeaderRoutingStrategy: "",
+			},
+			configProfile: &types.ResolvedConfigProfile{
+				RoutingStrategy: "least-request",
+			},
+			expectedStrategy: "least-request",
+			expectedEnabled:  true,
+		},
+		{
+			name:             "no header or profile falls to env default",
+			reqHeaders:       map[string]string{},
+			configProfile:    nil,
+			expectedStrategy: defaultRoutingStrategy,
+			expectedEnabled:  defaultRoutingStrategyEnabled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := types.NewRoutingContext(nil, "", "", "", "test-req", "")
+			ctx.ReqHeaders = tt.reqHeaders
+			ctx.ConfigProfile = tt.configProfile
+
+			strategy, enabled := deriveRoutingStrategyFromContext(ctx)
+			assert.Equal(t, tt.expectedStrategy, strategy)
+			assert.Equal(t, tt.expectedEnabled, enabled)
+		})
 	}
 }
