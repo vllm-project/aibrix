@@ -78,8 +78,10 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 	// Read engine label from pods and assign to routing context
 	if pods := podsArr.All(); len(pods) > 0 {
-		engine := pods[0].Labels[constants.ModelLabelEngine]
-		routingCtx.Engine = engine
+		routingCtx.Engine = pods[0].Labels[constants.ModelLabelEngine]
+		if routingCtx.Engine == "" {
+			routingCtx.Engine = pods[0].Annotations[constants.ModelLabelEngine]
+		}
 	}
 
 	// Resolve model config profile from annotation and apply overrides
