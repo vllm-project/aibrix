@@ -227,7 +227,7 @@ func TestPowerOfTwoRouter_getRequestCounts(t *testing.T) {
 	}
 
 	client := setupTestRedis(t)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		t.Skip("Redis not available, skipping test")
@@ -280,7 +280,7 @@ func TestPowerOfTwoRouter_Integration(t *testing.T) {
 	// This test requires a running Redis instance
 	// Skip if Redis is not available
 	client := setupTestRedis(t)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Test connection
 	if err := client.Ping(context.Background()).Err(); err != nil {
