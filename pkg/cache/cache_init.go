@@ -117,6 +117,9 @@ type Store struct {
 
 	// Prometheus event queue
 	promqlJobs chan *Pod
+
+	// List of registered request trackers
+	requestTrackers []RequestTracker
 }
 
 // Get retrieves the cache instance
