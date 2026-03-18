@@ -289,6 +289,11 @@ func (p *PowerOfTwoRouter) getRequestCountRedisKey(ctx *types.RoutingContext) st
 
 // AddRequestCount implements [cache.RequestTracker].
 func (p *PowerOfTwoRouter) AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64) {
+	// Check whether routing is done and target pod is set
+	if ctx.TargetPod() == nil {
+		return 0
+	}
+
 	// Check whether it is called the first time
 	added := ctx.Value(po2RequestCountAddedKey)
 	if added != nil {
@@ -321,6 +326,10 @@ func (p *PowerOfTwoRouter) AddRequestCount(ctx *types.RoutingContext, requestID 
 
 // DoneRequestCount implements [cache.RequestTracker].
 func (p *PowerOfTwoRouter) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
+	// Check whether target pod is set
+	if ctx.TargetPod() == nil {
+		return
+	}
 
 	// avoid duplicate decrement
 	done := ctx.Value(po2RequestCountDoneKey)
