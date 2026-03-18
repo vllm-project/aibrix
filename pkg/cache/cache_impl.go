@@ -350,9 +350,5 @@ func (c *Store) GetRouter(ctx *types.RoutingContext) (types.Router, error) {
 }
 
 func (c *Store) RegisterRequestTracker(tracker RequestTracker) {
-	if c.requestTrackers != nil {
-		c.requestTrackers = append(c.requestTrackers, tracker)
-	} else {
-		c.requestTrackers = []RequestTracker{tracker}
-	}
+	c.requestTrackers = append(c.requestTrackers, tracker)
 }

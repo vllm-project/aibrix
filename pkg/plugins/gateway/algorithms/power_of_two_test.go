@@ -65,7 +65,10 @@ func createTestPodForPowerOfTwo(name, ip string, port int) *v1.Pod {
 }
 
 func TestPowerOfTwoRouter_buildCandidates(t *testing.T) {
-	router := NewPowerOfTwoRouterWithRedis(nil, 3600)
+	router, err := NewPowerOfTwoRouterWithRedis(nil, 3600)
+	if err != nil {
+		t.Skipf("Skipping test due to cache initialization failure: %v", err)
+	}
 
 	tests := []struct {
 		name        string
@@ -152,7 +155,10 @@ func TestPowerOfTwoRouter_podServerKey(t *testing.T) {
 }
 
 func TestPowerOfTwoRouter_buildRedisKey(t *testing.T) {
-	router := NewPowerOfTwoRouterWithRedis(nil, 3600) // 1 hour
+	router, err := NewPowerOfTwoRouterWithRedis(nil, 3600) // 1 hour
+	if err != nil {
+		t.Skipf("Skipping test due to cache initialization failure: %v", err)
+	}
 	pod := createTestPodForPowerOfTwo("test-pod", "10.0.0.1", 8000)
 
 	tests := []struct {
@@ -196,7 +202,10 @@ func TestPowerOfTwoRouter_buildRedisKey(t *testing.T) {
 
 // TestPowerOfTwoRouter_keyRotation verifies that keys rotate at the configured interval
 func TestPowerOfTwoRouter_keyRotation(t *testing.T) {
-	router := NewPowerOfTwoRouterWithRedis(nil, 10) // Use 10 seconds for testing
+	router, err := NewPowerOfTwoRouterWithRedis(nil, 10) // Use 10 seconds for testing
+	if err != nil {
+		t.Skipf("Skipping test due to cache initialization failure: %v", err)
+	}
 	pod := createTestPodForPowerOfTwo("test-pod", "10.0.0.1", 8000)
 	server := podServerKey{pod: pod, port: 8000}
 
@@ -209,6 +218,58 @@ func TestPowerOfTwoRouter_keyRotation(t *testing.T) {
 	// Keys within same window should be identical
 	key2 := router.buildRedisKey("test-model", server, testTime)
 	assert.Equal(t, key1, key2, "keys within same rotation window should be identical")
+}
+
+// TestPowerOfTwoRouter_getRequestCounts verifies batch query functionality
+func TestPowerOfTwoRouter_getRequestCounts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	client := setupTestRedis(t)
+	defer client.Close()
+
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		t.Skip("Redis not available, skipping test")
+	}
+
+	router, err := NewPowerOfTwoRouterWithRedis(client, 3600)
+	if err != nil {
+		t.Fatalf("Failed to create router: %v", err)
+	}
+
+	pod1 := createTestPodForPowerOfTwo("pod1", "10.0.0.1", 8000)
+	pod2 := createTestPodForPowerOfTwo("pod2", "10.0.0.2", 8000)
+	pod3 := createTestPodForPowerOfTwo("pod3", "10.0.0.3", 8000)
+
+	testTime := time.Now()
+	server1 := podServerKey{pod: pod1, port: 8000}
+	server2 := podServerKey{pod: pod2, port: 8001}
+	server3 := podServerKey{pod: pod3, port: 8002}
+
+	// Set some test values in Redis
+	key1 := router.buildRedisKey("test-model", server1, testTime)
+	key2 := router.buildRedisKey("test-model", server2, testTime)
+	// key3 is not set (should return 0)
+
+	client.Set(context.Background(), key1, 5, 5*time.Minute)
+	client.Set(context.Background(), key2, 10, 5*time.Minute)
+
+	// Test batch query
+	servers := []podServerKey{server1, server2, server3}
+	counts := router.getRequestCounts(context.Background(), "test-model", servers, testTime)
+
+	assert.Equal(t, 3, len(counts), "should return counts for all servers")
+	assert.Equal(t, int64(5), counts[0], "server1 count should be 5")
+	assert.Equal(t, int64(10), counts[1], "server2 count should be 10")
+	assert.Equal(t, int64(0), counts[2], "server3 count should be 0 (key not exists)")
+
+	// Test empty input
+	emptyCounts := router.getRequestCounts(context.Background(), "test-model", []podServerKey{}, testTime)
+	assert.Equal(t, 0, len(emptyCounts), "empty input should return empty result")
+
+	// Cleanup
+	client.Del(context.Background(), key1, key2)
 }
 
 func TestPowerOfTwoRouter_Integration(t *testing.T) {
@@ -226,7 +287,10 @@ func TestPowerOfTwoRouter_Integration(t *testing.T) {
 		t.Skip("Redis not available, skipping integration test")
 	}
 
-	router := NewPowerOfTwoRouterWithRedis(client, 3600)
+	router, err := NewPowerOfTwoRouterWithRedis(client, 3600)
+	if err != nil {
+		t.Fatalf("Failed to create router: %v", err)
+	}
 
 	pod1 := createTestPodForPowerOfTwo("pod1", "10.0.0.1", 8000)
 

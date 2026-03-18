@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -38,7 +39,7 @@ func RegisterPowerOfTwoRouter(redisClient *redis.Client) {
 		if redisClient == nil {
 			return nil, fmt.Errorf("power-of-two router requires redis configuration")
 		}
-		return NewPowerOfTwoRouterWithRedis(redisClient), nil
+		return NewPowerOfTwoRouterWithRedis(redisClient)
 	})
 }
 
@@ -49,7 +50,8 @@ type PowerOfTwoRouter struct {
 
 // NewPowerOfTwoRouterWithRedis creates a new Power of Two router with the given Redis client.
 // This is useful for testing or when you want to provide a custom Redis configuration.
-func NewPowerOfTwoRouterWithRedis(redisClient *redis.Client, keyRotationSec ...int64) *PowerOfTwoRouter {
+// Returns error if cache registration fails, as the router cannot function correctly without it.
+func NewPowerOfTwoRouterWithRedis(redisClient *redis.Client, keyRotationSec ...int64) (*PowerOfTwoRouter, error) {
 	if len(keyRotationSec) == 0 {
 		keyRotationSec = []int64{defaultKeyRotationSec}
 	}
@@ -62,12 +64,13 @@ func NewPowerOfTwoRouterWithRedis(redisClient *redis.Client, keyRotationSec ...i
 	}
 	c, err := cache.Get()
 	if err != nil {
-		klog.Errorf("failed to get cache: %v", err)
-	} else {
-		// register request tracker to cache
-		c.RegisterRequestTracker(router)
+		return nil, fmt.Errorf("failed to get cache for RequestTracker registration: %w", err)
 	}
-	return router
+	// Register request tracker to cache
+	// This is critical: without registration, DoneRequestCount will never be called,
+	// causing Redis counters to only increment and never decrement (resource leak)
+	c.RegisterRequestTracker(router)
+	return router, nil
 }
 
 // podServerKey represents a pod with specific port
@@ -114,12 +117,12 @@ func (p *PowerOfTwoRouter) Route(ctx *types.RoutingContext, readyPodList types.P
 		candidate1 := candidates[idx1]
 		candidate2 := candidates[idx2]
 
-		// Get request counts for both candidates
-		// TODO: it's better to fetch two request count in the same redis request
-		count1 := p.getRequestCount(ctx.Context, ctx.Model, candidate1, ctx.RequestTime)
-		count2 := p.getRequestCount(ctx.Context, ctx.Model, candidate2, ctx.RequestTime)
+		// Get request counts for both candidates using batch query (MGET)
+		counts := p.getRequestCounts(ctx.Context, ctx.Model, []podServerKey{candidate1, candidate2}, ctx.RequestTime)
+		count1 := counts[0]
+		count2 := counts[1]
 
-		klog.InfoS("power_of_two_selection",
+		klog.V(4).InfoS("power_of_two_selection",
 			"request_id", ctx.RequestID,
 			"request_time", ctx.RequestTime.Unix(),
 			"candidate1", candidate1.String(),
@@ -177,24 +180,75 @@ func (p *PowerOfTwoRouter) buildCandidates(pods []*v1.Pod, portsMap map[string][
 	return candidates
 }
 
-// getRequestCount retrieves the current request count from Redis
+// getRequestCount retrieves the current request count from Redis for a single server
 func (p *PowerOfTwoRouter) getRequestCount(ctx context.Context, modelName string, server podServerKey, requestTime time.Time) int64 {
-	key := p.buildRedisKey(modelName, server, requestTime)
-
-	val, err := p.redisClient.Get(ctx, key).Int64()
-	if err == redis.Nil {
-		// Key doesn't exist, return 0
-		return 0
+	counts := p.getRequestCounts(ctx, modelName, []podServerKey{server}, requestTime)
+	if len(counts) > 0 {
+		return counts[0]
 	}
+	return 0
+}
+
+// getRequestCounts retrieves request counts from Redis for multiple servers using MGET.
+// Returns a slice of counts with the same length and order as the input servers.
+// This is more efficient than multiple GET calls as it only requires one network roundtrip.
+func (p *PowerOfTwoRouter) getRequestCounts(ctx context.Context, modelName string, servers []podServerKey, requestTime time.Time) []int64 {
+	if len(servers) == 0 {
+		return []int64{}
+	}
+
+	// Build all keys
+	keys := make([]string, len(servers))
+	for i, server := range servers {
+		keys[i] = p.buildRedisKey(modelName, server, requestTime)
+	}
+
+	// Use MGET to fetch all values in one roundtrip
+	vals, err := p.redisClient.MGet(ctx, keys...).Result()
 	if err != nil {
-		klog.V(4).ErrorS(err, "failed to get request count from redis",
-			"key", key,
-			"pod", server.pod.Name,
-			"port", server.port)
-		return 0
+		klog.V(4).ErrorS(err, "failed to batch get request counts from redis",
+			"key_count", len(keys),
+			"servers", len(servers))
+		// Return zeros on error
+		return make([]int64, len(servers))
 	}
 
-	return val
+	// Convert results to int64 slice
+	counts := make([]int64, len(servers))
+	for i, val := range vals {
+		if val == nil {
+			// Key doesn't exist, use 0
+			counts[i] = 0
+			continue
+		}
+
+		// Try to convert to int64
+		switch v := val.(type) {
+		case string:
+			// Redis returns strings for integer values
+			if intVal, err := strconv.ParseInt(v, 10, 64); err == nil {
+				counts[i] = intVal
+			} else {
+				klog.V(4).ErrorS(err, "failed to parse redis value as int64",
+					"key", keys[i],
+					"value", v,
+					"pod", servers[i].pod.Name,
+					"port", servers[i].port)
+				counts[i] = 0
+			}
+		case int64:
+			counts[i] = v
+		default:
+			klog.V(4).InfoS("unexpected redis value type",
+				"key", keys[i],
+				"type", fmt.Sprintf("%T", v),
+				"pod", servers[i].pod.Name,
+				"port", servers[i].port)
+			counts[i] = 0
+		}
+	}
+
+	return counts
 }
 
 // buildRedisKey constructs the redis key for a pod-port combination.
