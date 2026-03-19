@@ -17,15 +17,17 @@
 import os
 import sys
 import types
-from typing import Any
+from typing import Any, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 import aibrix.runtime.artifact_service as artifact_service_module
 from aibrix.runtime.artifact_service import ArtifactDelegationService
 from aibrix.runtime.downloaders import (
     GCSArtifactDownloader,
+    HTTPArtifactDownloader,
     S3ArtifactDownloader,
 )
 
@@ -302,3 +304,214 @@ class TestGCSAtomicWrites:
         assert downloaded == [expected_part]
         assert (tmp_path / "weights.bin").exists()
         assert not (tmp_path / "weights.bin.part").exists()
+
+
+# ---------------------------------------------------------------------------
+# HTTP: atomic writes, ETag / If-Range resumption
+# ---------------------------------------------------------------------------
+
+
+class _FakeStreamResponse:
+    """Minimal async context manager mimicking httpx streaming response."""
+
+    def __init__(
+        self,
+        status_code: int,
+        content: bytes,
+        headers: Optional[dict] = None,
+    ):
+        self.status_code = status_code
+        self._content = content
+        self.headers = httpx.Headers(headers or {})
+        # Capture the request headers sent by the downloader
+        self.captured_request_headers: Optional[dict] = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            req = httpx.Request("GET", "http://example.com/file.bin")
+            resp = httpx.Response(self.status_code, request=req)
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}", request=req, response=resp
+            )
+
+    async def aiter_bytes(self, chunk_size: int = 8192):
+        for i in range(0, len(self._content), chunk_size):
+            yield self._content[i : i + chunk_size]
+
+
+def _patch_httpx_client(monkeypatch, responses: List[_FakeStreamResponse]):
+    """
+    Replace httpx.AsyncClient in the downloaders module so that each call to
+    client.stream() returns the next response in *responses*.  The request
+    headers for each stream() call are stored on the response object so tests
+    can assert on them.
+    """
+    response_iter = iter(responses)
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def stream(self, method, url, headers=None):
+            resp = next(response_iter)
+            resp.captured_request_headers = dict(headers or {})
+            return resp
+
+    # httpx is imported locally inside HTTPArtifactDownloader.download(), so
+    # patching the module-level httpx.AsyncClient is the right hook point.
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+
+class TestHTTPAtomicAndResume:
+    @pytest.mark.asyncio
+    async def test_fresh_download_writes_part_then_renames(self, tmp_path, monkeypatch):
+        """Fresh download: uses .part file then renames to final path."""
+        content = b"model weights data"
+        _patch_httpx_client(
+            monkeypatch,
+            [_FakeStreamResponse(200, content)],
+        )
+
+        downloader = HTTPArtifactDownloader()
+        result = await downloader.download(
+            "http://example.com/weights.bin", str(tmp_path)
+        )
+
+        assert result == str(tmp_path)
+        dest = tmp_path / "weights.bin"
+        assert dest.exists()
+        assert dest.read_bytes() == content
+        assert not (tmp_path / "weights.bin.part").exists()
+
+    @pytest.mark.asyncio
+    async def test_fresh_download_stores_etag(self, tmp_path, monkeypatch):
+        """When server returns an ETag, it is saved to the .part.etag sidecar."""
+        content = b"data"
+        _patch_httpx_client(
+            monkeypatch,
+            [_FakeStreamResponse(200, content, headers={"etag": '"abc123"'})],
+        )
+
+        downloader = HTTPArtifactDownloader()
+        # Simulate an interruption: we patch os.replace to raise so the .part
+        # file stays on disk and we can inspect the .etag sidecar.
+        replaced = []
+        real_replace = os.replace
+
+        def fake_replace(src, dst):
+            replaced.append((src, dst))
+            real_replace(src, dst)
+
+        monkeypatch.setattr(os, "replace", fake_replace)
+
+        await downloader.download("http://example.com/weights.bin", str(tmp_path))
+
+        # ETag sidecar should be cleaned up after successful rename
+        assert not (tmp_path / "weights.bin.part.etag").exists()
+        assert len(replaced) == 1
+
+    @pytest.mark.asyncio
+    async def test_resume_sends_range_and_if_range_headers(
+        self, tmp_path, monkeypatch
+    ):
+        """Resuming a partial download sends Range + If-Range headers."""
+        partial_data = b"partial"
+        remaining_data = b" remainder"
+
+        # Set up a pre-existing partial file and its ETag sidecar
+        part_file = tmp_path / "weights.bin.part"
+        part_file.write_bytes(partial_data)
+        (tmp_path / "weights.bin.part.etag").write_text('"etag-v1"')
+
+        resp_206 = _FakeStreamResponse(206, remaining_data)
+        _patch_httpx_client(monkeypatch, [resp_206])
+
+        downloader = HTTPArtifactDownloader()
+        result = await downloader.download(
+            "http://example.com/weights.bin", str(tmp_path)
+        )
+
+        assert result == str(tmp_path)
+        # Correct range and If-Range headers must have been sent
+        assert resp_206.captured_request_headers["Range"] == f"bytes={len(partial_data)}-"
+        assert resp_206.captured_request_headers["If-Range"] == '"etag-v1"'
+        # Final file should contain the combined content
+        assert (tmp_path / "weights.bin").read_bytes() == partial_data + remaining_data
+        # Sidecar files cleaned up
+        assert not part_file.exists()
+        assert not (tmp_path / "weights.bin.part.etag").exists()
+
+    @pytest.mark.asyncio
+    async def test_resume_when_server_returns_200_restarts_fresh(
+        self, tmp_path, monkeypatch
+    ):
+        """If server returns 200 instead of 206 (file changed), download restarts."""
+        stale_partial = b"stale data from old version"
+        new_content = b"completely new file content"
+
+        part_file = tmp_path / "weights.bin.part"
+        part_file.write_bytes(stale_partial)
+        (tmp_path / "weights.bin.part.etag").write_text('"old-etag"')
+
+        # Server responds 200 (If-Range mismatch — file changed)
+        resp_200 = _FakeStreamResponse(200, new_content, headers={"etag": '"new-etag"'})
+        _patch_httpx_client(monkeypatch, [resp_200])
+
+        downloader = HTTPArtifactDownloader()
+        result = await downloader.download(
+            "http://example.com/weights.bin", str(tmp_path)
+        )
+
+        assert result == str(tmp_path)
+        # Final file should contain only the new content, not the stale partial
+        assert (tmp_path / "weights.bin").read_bytes() == new_content
+        assert not part_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_resume_no_etag_sidecar_omits_if_range(self, tmp_path, monkeypatch):
+        """Resuming without a stored ETag omits the If-Range header."""
+        partial_data = b"partial"
+        remaining_data = b" rest"
+
+        part_file = tmp_path / "weights.bin.part"
+        part_file.write_bytes(partial_data)
+        # No .etag sidecar present
+
+        resp_206 = _FakeStreamResponse(206, remaining_data)
+        _patch_httpx_client(monkeypatch, [resp_206])
+
+        downloader = HTTPArtifactDownloader()
+        await downloader.download("http://example.com/weights.bin", str(tmp_path))
+
+        assert "If-Range" not in resp_206.captured_request_headers
+        assert resp_206.captured_request_headers["Range"] == f"bytes={len(partial_data)}-"
+
+    @pytest.mark.asyncio
+    async def test_404_raises_file_not_found(self, tmp_path, monkeypatch):
+        """HTTP 404 is translated to FileNotFoundError."""
+        _patch_httpx_client(monkeypatch, [_FakeStreamResponse(404, b"")])
+
+        downloader = HTTPArtifactDownloader()
+        with pytest.raises(FileNotFoundError):
+            await downloader.download("http://example.com/missing.bin", str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_403_raises_permission_error(self, tmp_path, monkeypatch):
+        """HTTP 403 is translated to PermissionError."""
+        _patch_httpx_client(monkeypatch, [_FakeStreamResponse(403, b"")])
+
+        downloader = HTTPArtifactDownloader()
+        with pytest.raises(PermissionError):
+            await downloader.download("http://example.com/private.bin", str(tmp_path))

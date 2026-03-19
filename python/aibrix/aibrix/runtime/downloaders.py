@@ -532,6 +532,7 @@ class HTTPArtifactDownloader(ArtifactDownloader):
         filename = os.path.basename(parsed.path) or "downloaded_file"
         destination_file = os.path.join(local_path, filename)
         tmp_file = destination_file + ".part"
+        etag_file = tmp_file + ".etag"
 
         try:
             # Check for an existing partial download to resume
@@ -539,24 +540,42 @@ class HTTPArtifactDownloader(ArtifactDownloader):
             request_headers = dict(headers)
             if existing_size > 0:
                 request_headers["Range"] = f"bytes={existing_size}-"
+                # If-Range ensures the server returns 200 (restart) if the
+                # remote file has changed since the partial download began,
+                # preventing corruption from appending mismatched data.
+                if os.path.exists(etag_file):
+                    with open(etag_file) as f:
+                        stored_etag = f.read().strip()
+                    if stored_etag:
+                        request_headers["If-Range"] = stored_etag
 
             async with httpx.AsyncClient(follow_redirects=True) as client:
                 async with client.stream(
                     "GET", source_url, headers=request_headers
                 ) as response:
                     if existing_size > 0 and response.status_code == 206:
-                        # Server supports range; append to the partial file
+                        # Server confirmed range is valid; append to partial file
                         open_mode = "ab"
                     else:
-                        # Full download (200 or range not supported)
+                        # Full download: either fresh start, server ignored Range,
+                        # or If-Range mismatch (file changed on server)
                         response.raise_for_status()
                         open_mode = "wb"
+                        # Store ETag so a future interrupted download can use If-Range
+                        etag = response.headers.get("etag")
+                        if etag:
+                            with open(etag_file, "w") as f:
+                                f.write(etag)
+                        elif os.path.exists(etag_file):
+                            os.remove(etag_file)
 
                     with open(tmp_file, open_mode) as f:
                         async for chunk in response.aiter_bytes(chunk_size=8192):
                             f.write(chunk)
 
             os.replace(tmp_file, destination_file)
+            if os.path.exists(etag_file):
+                os.remove(etag_file)
             logger.info(f"Downloaded HTTP file to {destination_file}")
             return local_path
 
