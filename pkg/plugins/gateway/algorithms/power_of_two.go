@@ -48,6 +48,8 @@ const (
 	redisKeyPrefix                               = "po2_req_count"
 	defaultRedisKeyExpiry                        = 5 * time.Minute
 	defaultKeyRotationSec                        = 3600 // 1 hour, key rotation interval
+	// if po2 router is not used for a long time, the request tracker will stop counting after 600 seconds to reduce redis pressure and latency
+	defaultTrackerTimeout = time.Minute * 5 // 5 minutes, request tracker timeout
 )
 
 func RegisterPowerOfTwoRouter(redisClient *redis.Client) {
@@ -62,6 +64,10 @@ func RegisterPowerOfTwoRouter(redisClient *redis.Client) {
 type PowerOfTwoRouter struct {
 	redisClient    *redis.Client
 	keyRotationSec int64 // Time interval in seconds for key rotation, default 3600 (1 hour)
+
+	// lastRoutingTime is the timestamp of the last routing of a model. Used to avoid unnecessary redis request
+	lastRoutingTime       map[string]time.Time
+	requestTrackerTimeout time.Duration
 }
 
 // NewPowerOfTwoRouterWithRedis creates a new Power of Two router with the given Redis client.
@@ -75,8 +81,10 @@ func NewPowerOfTwoRouterWithRedis(redisClient *redis.Client, keyRotationSec ...i
 		keyRotationSec[0] = defaultKeyRotationSec
 	}
 	router := &PowerOfTwoRouter{
-		redisClient:    redisClient,
-		keyRotationSec: keyRotationSec[0],
+		redisClient:           redisClient,
+		keyRotationSec:        keyRotationSec[0],
+		requestTrackerTimeout: defaultTrackerTimeout,
+		lastRoutingTime:       make(map[string]time.Time),
 	}
 	c, err := cache.Get()
 	if err != nil {
@@ -166,6 +174,7 @@ func (p *PowerOfTwoRouter) Route(ctx *types.RoutingContext, readyPodList types.P
 	}
 
 	// call immediate after setting target pod to avoid other Route call pick up the same pod
+	p.lastRoutingTime[ctx.Model] = time.Now()
 	p.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
 	return ctx.TargetAddress(), nil
 }
@@ -294,6 +303,12 @@ func (p *PowerOfTwoRouter) AddRequestCount(ctx *types.RoutingContext, requestID 
 		return 0
 	}
 
+	if lastModelRoutingTime, ok := p.lastRoutingTime[ctx.Model]; ok {
+		// avoid counting if it is called too soon after routing
+		if time.Since(lastModelRoutingTime) < p.requestTrackerTimeout {
+			return 0
+		}
+	}
 	// Check whether it is called the first time
 	added := ctx.Value(po2RequestCountAddedKey)
 	if added != nil {
@@ -328,6 +343,12 @@ func (p *PowerOfTwoRouter) AddRequestCount(ctx *types.RoutingContext, requestID 
 func (p *PowerOfTwoRouter) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
 	// Check whether target pod is set
 	if ctx.TargetPod() == nil {
+		return
+	}
+
+	// avoid decreasing if AddRequestCount is not called
+	added := ctx.Value(po2RequestCountAddedKey)
+	if added == nil {
 		return
 	}
 
