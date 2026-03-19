@@ -605,18 +605,18 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		}()
 
 	case VLLMEngine:
-		r.releasePort(prefillPod.Name, port)
+		defer r.releasePort(prefillPod.Name, port)
 		// For vLLM, wait synchronously to get KV transfer params from response
 		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, r.updateRoutingContextWithKVTransferParams, "KV transfer params")
 
 	case TensorRTLLM:
-		r.releasePort(prefillPod.Name, port)
+		defer r.releasePort(prefillPod.Name, port)
 		// For TensorRT-LLM, wait synchronously to get disaggregated_params from response.
 		// The prefill response contains first_gen_tokens and opaque_state needed by the decode worker.
 		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, r.updateRoutingContextWithTRTDisaggParams, "TRT disagg params")
 
 	default:
-		r.releasePort(prefillPod.Name, port)
+		defer r.releasePort(prefillPod.Name, port)
 		// For unknown engines, use synchronous approach as a safe default
 		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, nil, "")
 	}
