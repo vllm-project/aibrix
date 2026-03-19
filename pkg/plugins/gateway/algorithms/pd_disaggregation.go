@@ -25,6 +25,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -100,6 +101,7 @@ type pdRouter struct {
 	prefixUpdateCh        chan prefixUpdateJob
 	countersMu            sync.RWMutex
 	selectionCounts       map[string]int64
+	portsTracker          sync.Map // map[string]*PodPortBalancer (podName -> *PodPortBalancer)
 }
 
 // PrefillRequestTracker manages prefill-specific request counts
@@ -108,6 +110,11 @@ type PrefillRequestTracker struct {
 	podRequestCounts sync.Map // map[string]*int32
 	// Map of request ID -> pod name for cleanup
 	requestToPod sync.Map // map[string]string
+}
+
+type PodPortBalancer struct {
+	mu    	  sync.RWMutex
+	portStats map[int64]*atomic.Int32
 }
 
 func NewPDRouter() (types.Router, error) {
@@ -143,6 +150,7 @@ func NewPDRouter() (types.Router, error) {
 		httpClient:            httpClient,
 		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
 		selectionCounts:       make(map[string]int64),
+		portsTracker:          sync.Map{},
 	}
 
 	pdRouter.startPrefixUpdater()
@@ -154,6 +162,16 @@ func NewPrefillRequestTracker() *PrefillRequestTracker {
 	return &PrefillRequestTracker{
 		podRequestCounts: sync.Map{},
 		requestToPod:     sync.Map{},
+	}
+}
+
+func NewPodPortBalancer(ports []int64) *PodPortBalancer {
+	stats := make(map[int64]*atomic.Int32)
+	for _, p := range ports {
+		stats[p] = &atomic.Int32{}
+	}
+	return &PodPortBalancer{
+		portStats: stats,
 	}
 }
 
@@ -530,10 +548,14 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		return fmt.Errorf("failed to prepare prefill payload for request %s: %w", routingCtx.RequestID, err)
 	}
 
+	// Select an available port from multiple ports with load balancing
+	port := r.getAvailablePortForPod(routingCtx.RequestID, prefillPod)
+	r.acquirePort(prefillPod.Name, port)
+
 	// Execute HTTP request
 	apiURL := fmt.Sprintf("http://%s:%d%s",
 		prefillPod.Status.PodIP,
-		utils.GetModelPortForPod(routingCtx.RequestID, prefillPod),
+		port,
 		routingCtx.ReqPath)
 
 	fields := []interface{}{
@@ -541,6 +563,7 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		"llm_engine", llmEngine,
 		"model_name", routingCtx.Model,
 		"prefill_pod", prefillPod.Name,
+		"prefill_port", port,
 		"prefill_url", apiURL,
 		"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name),
 	}
@@ -557,13 +580,17 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		// For SGLang, use async prefill - the bootstrap mechanism (bootstrap_host/port/room)
 		// coordinates between prefill and decode pods, so we don't need to wait
 		go func() {
-			defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+			defer func() {
+				r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+				r.releasePort(prefillPod.Name, port)
+			}()
 
 			if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
 				klog.ErrorS(err, "prefill_request_failed",
 					"request_id", routingCtx.RequestID,
 					"llm_engine", llmEngine,
 					"prefill_pod", prefillPod.Name,
+					"prefill_port", port,
 					"prefill_pod_ip", prefillPod.Status.PodIP,
 					"elapsed", routingCtx.Elapsed(time.Now()))
 				return
@@ -578,20 +605,113 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		}()
 
 	case VLLMEngine:
+		r.releasePort(prefillPod.Name, port)
 		// For vLLM, wait synchronously to get KV transfer params from response
 		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, r.updateRoutingContextWithKVTransferParams, "KV transfer params")
 
 	case TensorRTLLM:
+		r.releasePort(prefillPod.Name, port)
 		// For TensorRT-LLM, wait synchronously to get disaggregated_params from response.
 		// The prefill response contains first_gen_tokens and opaque_state needed by the decode worker.
 		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, r.updateRoutingContextWithTRTDisaggParams, "TRT disagg params")
 
 	default:
+		r.releasePort(prefillPod.Name, port)
 		// For unknown engines, use synchronous approach as a safe default
 		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, nil, "")
 	}
 
 	return nil
+}
+
+func (r *pdRouter) getAvailablePortForPod(requestID string, pod *v1.Pod) int64 {
+	ports := r.filterAvailablePortForPod(pod)
+	// For single-port pods, no entry exists in portsTracker
+	if len(ports) == 0 {
+		return utils.GetModelPortForPod(requestID, pod)
+	}
+	if len(ports) == 1 {
+		return ports[0]
+	}
+
+	val, _ := r.portsTracker.LoadOrStore(pod.Name, NewPodPortBalancer(ports))
+	lb := val.(*PodPortBalancer)
+
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+
+	var selectedPort int64
+	minLoad := int32(math.MaxInt32)
+	var candidates []int64
+
+	for port, counter := range lb.portStats {
+		load := counter.Load()
+		if load < minLoad {
+			minLoad = load
+			candidates = []int64{port}
+		} else if load == minLoad {
+			candidates = append(candidates, port)
+		}
+	}
+
+	if len(candidates) > 1 {
+		selectedPort = candidates[rand.Intn(len(candidates))]
+	} else {
+		selectedPort = candidates[0]
+	}
+
+	return selectedPort
+}
+
+func (r *pdRouter) filterAvailablePortForPod(pod *v1.Pod) []int64 {
+	// Get all ports from pod containers, excluding RPC ports
+	var ports []int64
+	for _, container := range pod.Spec.Containers {
+		for _, port := range container.Ports {
+			if port.Protocol == v1.ProtocolTCP {
+				portNameLower := strings.ToLower(port.Name)
+				isRPCPort := strings.Contains(portNameLower, "rpc")
+				isDataParallelPort := strings.Contains(portNameLower, "data-parallel")
+
+				if port.Name != "" && (isRPCPort || isDataParallelPort) {
+					continue
+				}
+				ports = append(ports, int64(port.ContainerPort))
+			}
+		}
+	}
+
+	return ports
+}
+
+func (r *pdRouter) acquirePort(podName string, port int64) {
+	val, ok := r.portsTracker.Load(podName)
+	if !ok {
+		return
+	}
+
+	lb := val.(*PodPortBalancer)
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	if counter, exists := lb.portStats[port]; exists {
+		counter.Add(1)
+	}
+}
+
+func (r *pdRouter) releasePort(podName string, port int64) {
+	val, ok := r.portsTracker.Load(podName); 
+	if !ok {
+		return
+	}
+
+	lb := val.(*PodPortBalancer)
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	if counter, exists := lb.portStats[port]; exists {
+		if counter.Add(-1) < 0 {
+			counter.Store(0)
+		}
+	}
 }
 
 // handleSyncPrefill executes a synchronous prefill request, optionally calling updateCtxFunc
@@ -1130,4 +1250,15 @@ func (r *pdRouter) scoreCombinedPods(routingCtx *types.RoutingContext, combinedP
 		}
 	}
 	return bestPod
+}
+
+func (r *pdRouter) OnPodDelete(podName string) {
+    r.portsTracker.Delete(podName)
+    r.prefillRequestTracker.podRequestCounts.Delete(podName)
+
+    r.countersMu.Lock()
+    delete(r.selectionCounts, podName)
+    r.countersMu.Unlock()
+    
+    klog.V(4).InfoS("Successfully cleaned up pod state", "pod", podName)
 }

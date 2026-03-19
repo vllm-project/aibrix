@@ -18,12 +18,14 @@ package routingalgorithms
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -1363,6 +1365,256 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 	ts.Listener = l
 	ts.Start()
 	return ts
+}
+
+func TestGetAvailablePortForPod(t *testing.T) {
+	tests := []struct {
+		name          string
+		pod           *v1.Pod
+		expectedPorts []int64
+		description   string
+	}{
+		{
+			name: "pod with no containers",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod1"},
+				Spec:       v1.PodSpec{Containers: []v1.Container{}},
+			},
+			expectedPorts: []int64{8000}, // Default port
+			description:   "should return default port when pod has no containers",
+		},
+		{
+			name: "pod with container but no ports",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod2"},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{Name: "container1", Ports: []v1.ContainerPort{}},
+					},
+				},
+			},
+			expectedPorts: []int64{8000}, // Default port
+			description:   "should return default port when container has no ports",
+		},
+		{
+			name: "pod with single port",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod3"},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container1",
+							Ports: []v1.ContainerPort{
+								{ContainerPort: 8000, Protocol: v1.ProtocolTCP},
+							},
+						},
+					},
+				},
+			},
+			expectedPorts: []int64{8000},
+			description:   "should return the only available port",
+		},
+		{
+			name: "pod with multiple ports",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod4"},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container1",
+							Ports: []v1.ContainerPort{
+								{ContainerPort: 8000, Protocol: v1.ProtocolTCP},
+								{ContainerPort: 8001, Protocol: v1.ProtocolTCP},
+								{ContainerPort: 8002, Protocol: v1.ProtocolTCP},
+							},
+						},
+					},
+				},
+			},
+			expectedPorts: []int64{8000, 8001, 8002},
+			description:   "should return any of the available ports",
+		},
+		{
+			name: "pod with multiple containers and ports",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod5"},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container1",
+							Ports: []v1.ContainerPort{
+								{ContainerPort: 8000, Protocol: v1.ProtocolTCP},
+							},
+						},
+						{
+							Name: "container2",
+							Ports: []v1.ContainerPort{
+								{ContainerPort: 8001, Protocol: v1.ProtocolTCP},
+								{ContainerPort: 8002, Protocol: v1.ProtocolTCP},
+							},
+						},
+					},
+				},
+			},
+			expectedPorts: []int64{8000, 8001, 8002},
+			description:   "should return port from any container",
+		},
+		{
+			name: "pod with RPC port (should be excluded)",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod6"},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container1",
+							Ports: []v1.ContainerPort{
+								{ContainerPort: 8000, Protocol: v1.ProtocolTCP},
+								{ContainerPort: 8001, Protocol: v1.ProtocolTCP},
+								{ContainerPort: 13345, Name: "rpc-port", Protocol: v1.ProtocolTCP}, // RPC port with name
+							},
+						},
+					},
+				},
+			},
+			expectedPorts: []int64{8000, 8001}, // Should not include 13345
+			description:   "should exclude RPC port by name",
+		},
+		{
+			name: "pod with data parallel port (should be excluded)",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod7"},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container1",
+							Ports: []v1.ContainerPort{
+								{ContainerPort: 8000, Protocol: v1.ProtocolTCP},
+								{ContainerPort: 8001, Protocol: v1.ProtocolTCP},
+								{ContainerPort: 23456, Name: "data-parallel-port", Protocol: v1.ProtocolTCP}, // Data parallel port with name
+							},
+						},
+					},
+				},
+			},
+			expectedPorts: []int64{8000, 8001}, // Should not include 23456
+			description:   "should exclude data parallel port by name",
+		},
+		{
+			name: "pod with unnamed ports (all included)",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod8"},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container1",
+							Ports: []v1.ContainerPort{
+								{ContainerPort: 8000, Protocol: v1.ProtocolTCP},
+								{ContainerPort: 8001, Protocol: v1.ProtocolTCP},
+								{ContainerPort: 13345, Protocol: v1.ProtocolTCP}, // Unnamed port, should be included
+							},
+						},
+					},
+				},
+			},
+			expectedPorts: []int64{8000, 8001, 13345}, // All ports included since none have RPC-related names
+			description:   "should include all ports when no RPC-related names",
+		},
+	}
+
+	router := &pdRouter{
+		portsTracker: sync.Map{},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			port := router.getAvailablePortForPod("test-request", tt.pod)
+			// Check if the returned port is in the expected ports list
+			found := false
+			for _, expectedPort := range tt.expectedPorts {
+				if port == expectedPort {
+					found = true
+					break
+				}
+			}
+			assert.True(t, found, tt.description+" - expected one of %v, got %d", tt.expectedPorts, port)
+		})
+	}
+}
+
+func TestGetAvailablePortForPodLoadBalancing(t *testing.T) {
+	// Test load balancing across multiple ports
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod1"},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Name: "container1",
+					Ports: []v1.ContainerPort{
+						{ContainerPort: 8000, Protocol: v1.ProtocolTCP},
+						{ContainerPort: 8001, Protocol: v1.ProtocolTCP},
+						{ContainerPort: 8002, Protocol: v1.ProtocolTCP},
+					},
+				},
+			},
+		},
+	}
+
+	router := &pdRouter{
+		portsTracker: sync.Map{},
+	}
+
+	// Test that multiple requests return valid ports
+	portCounts := make(map[int64]int)
+	for i := 0; i < 10; i++ {
+		port := router.getAvailablePortForPod(fmt.Sprintf("test-request-%d", i), pod)
+		// Verify port is valid
+		assert.Contains(t, []int64{8000, 8001, 8002}, port, "should return a valid port")
+		portCounts[port]++
+	}
+
+	// Verify that all ports are used (with some tolerance for randomness)
+	assert.Greater(t, len(portCounts), 1, "should use multiple ports for load balancing")
+}
+
+func TestGetAvailablePortForPodLoadBalancingWithLoad(t *testing.T) {
+	// Test that load balancing selects ports with lower load
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod1"},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Name: "container1",
+					Ports: []v1.ContainerPort{
+						{ContainerPort: 8000, Protocol: v1.ProtocolTCP},
+						{ContainerPort: 8001, Protocol: v1.ProtocolTCP},
+					},
+				},
+			},
+		},
+	}
+
+	router := &pdRouter{
+		portsTracker: sync.Map{},
+	}
+
+	// Manually increase load on port 8000
+	podPorts := []int64{8000, 8001}
+	podPortBalancer := NewPodPortBalancer(podPorts)
+	router.portsTracker.Store("pod1", podPortBalancer)
+	
+	// Get the PodPortBalancer and increase load on port 8000
+	if val, ok := router.portsTracker.Load("pod1"); ok {
+		lb := val.(*PodPortBalancer)
+		lb.mu.RLock()
+		if counter, exists := lb.portStats[8000]; exists {
+			counter.Add(5) // Set higher load on port 8000
+		}
+		lb.mu.RUnlock()
+	}
+
+	// First request should select port 8001 (lower load)
+	port := router.getAvailablePortForPod("test-request-1", pod)
+	assert.Equal(t, int64(8001), port, "should select port with lower load")
 }
 
 func TestLoadImbalanceSelectPrefillPod(t *testing.T) {

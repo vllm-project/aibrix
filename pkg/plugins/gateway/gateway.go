@@ -31,17 +31,21 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/client-go/kubernetes"
+	clientcache "k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/informers"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayapi "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
@@ -95,7 +99,7 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 	// Initialize the routers
 	routing.Init()
 
-	return &Server{
+	server := &Server{
 		redisClient:         redisClient,
 		ratelimiter:         r,
 		client:              client,
@@ -104,6 +108,63 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		cache:               c,
 		metricsServer:       nil,
 	}
+
+	server.initPodEventListener()
+	return server
+}
+
+// initPodEventListener initializes the pod event listener to listen for pod deletion events
+func (s *Server) initPodEventListener() {
+    if s.client == nil {
+        klog.Warning("Kubernetes client not provided, skipping pod event listener initialization")
+        return
+    }
+
+	var informerFactory informers.SharedInformerFactory
+	namespace := os.Getenv("AIBRIX_POD_NAMESPACE")
+    if namespace != "" {
+        informerFactory = informers.NewSharedInformerFactoryWithOptions(s.client, 0, informers.WithNamespace(namespace))
+        klog.InfoS("Initialized pod event listener for specific namespace", "namespace", namespace)
+    } else {
+        informerFactory = informers.NewSharedInformerFactory(s.client, 0)
+        klog.Info("Initialized pod event listener for all namespaces")
+    }
+
+    podInformer := informerFactory.Core().V1().Pods().Informer()
+    podInformer.AddEventHandler(clientcache.ResourceEventHandlerFuncs{
+        DeleteFunc: func(obj interface{}) {
+            var pod *corev1.Pod
+            switch t := obj.(type) {
+            case *corev1.Pod:
+                pod = t
+            case clientcache.DeletedFinalStateUnknown:
+                if p, ok := t.Obj.(*corev1.Pod); ok {
+                    pod = p
+                }
+            }
+
+            if pod != nil && hasAibrixLabels(pod) {
+				klog.V(4).InfoS("Triggering router cleanup for Aibrix pod", "pod", pod.Name, "namespace", pod.Namespace)
+				routing.NotifyOnPodDelete(pod.Name)
+            }
+        },
+    })
+
+    go informerFactory.Start(s.shutdownCh)
+    ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+    defer cancel()
+    
+    if !clientcache.WaitForCacheSync(ctx.Done(), podInformer.HasSynced) {
+        klog.Error("Failed to sync pod informer cache before timeout")
+        return
+    }
+}
+
+func hasAibrixLabels(pod *corev1.Pod) bool {
+    _, hasModelLabel := pod.Labels[constants.ModelLabelName]
+    _, hasEngineLabel := pod.Labels[constants.ModelLabelEngine]
+    
+    return hasModelLabel || hasEngineLabel
 }
 
 func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {

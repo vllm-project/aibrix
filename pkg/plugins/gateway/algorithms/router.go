@@ -150,3 +150,28 @@ func (rm *RouterManager) Init() {
 func Init() {
 	defaultRM.Init()
 }
+
+// NotifyOnPodDelete notifies all routers that a pod has been deleted
+func (rm *RouterManager) NotifyOnPodDelete(podName string) {
+	rm.routerMu.RLock()
+	defer rm.routerMu.RUnlock()
+	
+	dummyCtx := &types.RoutingContext{}
+	// It uses a dummy context since most router providers don't depend on context fields
+	for algorithm, provider := range rm.routerFactory {
+		router, err := provider(dummyCtx)
+		if err != nil {
+			klog.Errorf("Failed to get router for %s: %v", algorithm, err)
+			continue
+		}
+		
+		if routerWithOnPodDelete, ok := router.(interface{ OnPodDelete(string) }); ok {
+			routerWithOnPodDelete.OnPodDelete(podName)
+		}
+	}
+}
+
+// NotifyOnPodDelete ensures that all routers can clean up pod-specific state when pods are deleted
+func NotifyOnPodDelete(podName string) {
+	defaultRM.NotifyOnPodDelete(podName)
+}
