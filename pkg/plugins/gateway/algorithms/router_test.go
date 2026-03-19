@@ -19,6 +19,7 @@ package routingalgorithms
 import (
 	"context"
 	"math/rand"
+	"reflect"
 	"testing"
 	"time"
 
@@ -30,6 +31,124 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func TestParseMultiRouterConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		routerStr string
+		want      *MultiRouterConfig
+		wantErr   bool
+	}{
+		{
+			name:      "Single router",
+			routerStr: "prefix-cache",
+			want: &MultiRouterConfig{
+				Items: []RouterItem{
+					{Name: "prefix-cache", Coefficient: 1},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:      "Multiple routers without weight coefficients (defaults to 1)",
+			routerStr: "prefix-cache,least-latency",
+			want: &MultiRouterConfig{
+				Items: []RouterItem{
+					{Name: "prefix-cache", Coefficient: 1},
+					{Name: "least-latency", Coefficient: 1},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:      "Multiple routers with explicit weight coefficients",
+			routerStr: "prefix-cache:6,least-latency:4",
+			want: &MultiRouterConfig{
+				Items: []RouterItem{
+					{Name: "prefix-cache", Coefficient: 6},
+					{Name: "least-latency", Coefficient: 4},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:      "Multiple routers mixed (with and without weight coefficients)",
+			routerStr: "prefix-cache:3,least-latency", // least-latency defaults to 1
+			want: &MultiRouterConfig{
+				Items: []RouterItem{
+					{Name: "prefix-cache", Coefficient: 3},
+					{Name: "least-latency", Coefficient: 1},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:      "Skip router with 0 weight coefficient",
+			routerStr: "prefix-cache:0,least-latency:10",
+			want: &MultiRouterConfig{
+				Items: []RouterItem{
+					{Name: "least-latency", Coefficient: 10},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:      "Empty string",
+			routerStr: "",
+			want:      nil,
+			wantErr:   true,
+		},
+		{
+			name:      "Invalid format - empty item",
+			routerStr: "prefix-cache,,least-latency",
+			want:      nil,
+			wantErr:   true,
+		},
+		{
+			name:      "Invalid format - bad separator",
+			routerStr: "prefix-cache:1:2",
+			want:      nil,
+			wantErr:   true,
+		},
+		{
+			name:      "Invalid weight coefficient - float (Gateway API says int32)",
+			routerStr: "prefix-cache:0.5,least-latency:0.5",
+			want:      nil,
+			wantErr:   true,
+		},
+		{
+			name:      "Invalid weight coefficient - negative",
+			routerStr: "prefix-cache:-1",
+			want:      nil,
+			wantErr:   true,
+		},
+		{
+			name:      "Invalid weight coefficient - out of bounds",
+			routerStr: "prefix-cache:1000001",
+			want:      nil,
+			wantErr:   true,
+		},
+		{
+			name:      "All weight coefficients are 0",
+			routerStr: "prefix-cache:0,least-latency:0",
+			want:      nil,
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseMultiRouterConfig(tt.routerStr)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseMultiRouterConfig() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ParseMultiRouterConfig() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
 
 func podsFromCache(c *cache.Store) *utils.PodArray {
 	return &utils.PodArray{Pods: c.ListPods()}

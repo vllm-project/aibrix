@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +39,77 @@ var (
 	ErrFallbackNotRegistered = errors.New("fallback router not registered")
 	defaultRM                = NewRouterManager()
 )
+
+// RouterItem represents a single routing algorithm and its weight coefficient for multi-router config.
+type RouterItem struct {
+	Name        string
+	Coefficient int // Integer weight coefficient (0 to 1000000)
+}
+
+// MultiRouterConfig holds the parsed routing algorithms and their weight coefficients.
+type MultiRouterConfig struct {
+	Items []RouterItem
+}
+
+// ParseMultiRouterConfig parses a multi-router string into a MultiRouterConfig.
+// Format example: "prefix-cache:2,least-latency:1,least-request"
+// - Weight coefficients must be integers in range [0, 1000000].
+// - Default weight coefficient is 1 if omitted.
+// - Weight coefficient 0 means the routing algorithm should be skipped.
+func ParseMultiRouterConfig(routerStr string) (*MultiRouterConfig, error) {
+	if routerStr == "" {
+		return nil, errors.New("empty routing algorithm")
+	}
+
+	parts := strings.Split(routerStr, ",")
+	if len(parts) == 0 {
+		return nil, errors.New("invalid routing algorithm format")
+	}
+
+	var items []RouterItem
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, errors.New("empty algorithm name")
+		}
+
+		name := part
+		coefInt := 1 // Default weight coefficient is 1
+
+		if strings.Contains(part, ":") {
+			subParts := strings.Split(part, ":")
+			if len(subParts) != 2 {
+				return nil, fmt.Errorf("invalid algorithm format: %s", part)
+			}
+			name = strings.TrimSpace(subParts[0])
+			if name == "" {
+				return nil, fmt.Errorf("empty algorithm name in: %s", part)
+			}
+
+			coefStr := strings.TrimSpace(subParts[1])
+			parsedCoef, err := strconv.Atoi(coefStr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid weight coefficient in: %s (must be an integer)", part)
+			}
+			if parsedCoef < 0 || parsedCoef > 1000000 {
+				return nil, fmt.Errorf("weight coefficient out of bounds [0, 1000000] in: %s", part)
+			}
+			coefInt = parsedCoef
+		}
+
+		// If weight coefficient is 0, we skip this algorithm entirely
+		if coefInt > 0 {
+			items = append(items, RouterItem{Name: name, Coefficient: coefInt})
+		}
+	}
+
+	if len(items) == 0 {
+		return nil, errors.New("no valid algorithms found (all weight coefficients were 0)")
+	}
+
+	return &MultiRouterConfig{Items: items}, nil
+}
 
 type RouterManager struct {
 	routerInited      context.Context
