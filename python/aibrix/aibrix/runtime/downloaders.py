@@ -546,7 +546,7 @@ class HTTPArtifactDownloader(ArtifactDownloader):
                 # remote file has changed since the partial download began,
                 # preventing corruption from appending mismatched data.
                 if os.path.exists(etag_file):
-                    with open(etag_file) as f:
+                    with open(etag_file, encoding="utf-8") as f:
                         stored_etag = f.read().strip()
                     if stored_etag:
                         request_headers["If-Range"] = stored_etag
@@ -566,7 +566,7 @@ class HTTPArtifactDownloader(ArtifactDownloader):
                         # Store ETag so a future interrupted download can use If-Range
                         etag = response.headers.get("etag")
                         if etag:
-                            with open(etag_file, "w") as f:
+                            with open(etag_file, "w", encoding="utf-8") as f:
                                 f.write(etag)
                         elif os.path.exists(etag_file):
                             os.remove(etag_file)

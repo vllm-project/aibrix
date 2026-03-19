@@ -17,8 +17,8 @@
 import os
 import sys
 import types
-from typing import Any, List, Optional
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import List, Optional
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -163,7 +163,7 @@ class TestDownloadArtifactSentinel:
 # ---------------------------------------------------------------------------
 
 
-def _install_fake_boto3(monkeypatch: pytest.MonkeyPatch, downloaded_files: list):
+def _install_fake_boto3(monkeypatch: pytest.MonkeyPatch, downloaded_files: List):
     """Install a fake boto3 module that records download_file calls."""
     fake_boto3 = types.ModuleType("boto3")
     fake_botocore = types.ModuleType("botocore")
@@ -234,7 +234,7 @@ class TestS3AtomicWrites:
 # ---------------------------------------------------------------------------
 
 
-def _install_fake_gcs(monkeypatch: pytest.MonkeyPatch, downloaded_files: list):
+def _install_fake_gcs(monkeypatch: pytest.MonkeyPatch, downloaded_files: List):
     """Install a fake google.cloud.storage module."""
     fake_google = types.ModuleType("google")
     fake_google_cloud = types.ModuleType("google.cloud")
@@ -427,9 +427,7 @@ class TestHTTPAtomicAndResume:
         assert len(replaced) == 1
 
     @pytest.mark.asyncio
-    async def test_resume_sends_range_and_if_range_headers(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_resume_sends_range_and_if_range_headers(self, tmp_path, monkeypatch):
         """Resuming a partial download sends Range + If-Range headers."""
         partial_data = b"partial"
         remaining_data = b" remainder"
@@ -449,7 +447,9 @@ class TestHTTPAtomicAndResume:
 
         assert result == str(tmp_path)
         # Correct range and If-Range headers must have been sent
-        assert resp_206.captured_request_headers["Range"] == f"bytes={len(partial_data)}-"
+        assert (
+            resp_206.captured_request_headers["Range"] == f"bytes={len(partial_data)}-"
+        )
         assert resp_206.captured_request_headers["If-Range"] == '"etag-v1"'
         # Final file should contain the combined content
         assert (tmp_path / "weights.bin").read_bytes() == partial_data + remaining_data
@@ -500,7 +500,9 @@ class TestHTTPAtomicAndResume:
         await downloader.download("http://example.com/weights.bin", str(tmp_path))
 
         assert "If-Range" not in resp_206.captured_request_headers
-        assert resp_206.captured_request_headers["Range"] == f"bytes={len(partial_data)}-"
+        assert (
+            resp_206.captured_request_headers["Range"] == f"bytes={len(partial_data)}-"
+        )
 
     @pytest.mark.asyncio
     async def test_404_raises_file_not_found(self, tmp_path, monkeypatch):
