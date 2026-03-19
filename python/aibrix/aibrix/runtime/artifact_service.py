@@ -35,6 +35,8 @@ from aibrix.runtime.downloaders import get_downloader
 
 logger = init_logger(__name__)
 
+DOWNLOAD_COMPLETE_MARKER = ".aibrix_download_complete"
+
 
 _SAFE_LORA_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -163,7 +165,7 @@ class ArtifactDelegationService:
             Exception: If download fails
         """
         local_path = self._get_local_path_for_adapter(lora_name)
-        marker = os.path.join(local_path, ".aibrix_download_complete")
+        marker = os.path.join(local_path, DOWNLOAD_COMPLETE_MARKER)
 
         # Check if a complete download already exists
         if os.path.exists(marker):

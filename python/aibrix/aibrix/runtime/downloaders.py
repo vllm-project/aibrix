@@ -26,6 +26,8 @@ from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 
+PART_SUFFIX = ".part"
+
 
 class ArtifactDownloader(ABC):
     """Base class for artifact downloaders."""
@@ -130,7 +132,7 @@ class S3ArtifactDownloader(ArtifactDownloader):
                 destination_file = os.path.join(
                     local_path, os.path.basename(object_key)
                 )
-                tmp_file = destination_file + ".part"
+                tmp_file = destination_file + PART_SUFFIX
                 s3_client.download_file(bucket_name, object_key, tmp_file)
                 os.replace(tmp_file, destination_file)
                 logger.info(f"Downloaded S3 file to {destination_file}")
@@ -173,7 +175,7 @@ class S3ArtifactDownloader(ArtifactDownloader):
                 self._ensure_directory(os.path.dirname(local_file_path))
 
                 # Download file atomically
-                tmp_file = local_file_path + ".part"
+                tmp_file = local_file_path + PART_SUFFIX
                 s3_client.download_file(bucket_name, key, tmp_file)
                 os.replace(tmp_file, local_file_path)
                 logger.debug(f"Downloaded {key} to {local_file_path}")
@@ -260,7 +262,7 @@ class GCSArtifactDownloader(ArtifactDownloader):
                     self._ensure_directory(os.path.dirname(local_file_path))
 
                     # Download file atomically
-                    tmp_file = local_file_path + ".part"
+                    tmp_file = local_file_path + PART_SUFFIX
                     blob.download_to_filename(tmp_file)
                     os.replace(tmp_file, local_file_path)
                     logger.debug(f"Downloaded {blob.name} to {local_file_path}")
@@ -270,7 +272,7 @@ class GCSArtifactDownloader(ArtifactDownloader):
                 # Download single file
                 blob = bucket.blob(blob_name)
                 destination_file = os.path.join(local_path, os.path.basename(blob_name))
-                tmp_file = destination_file + ".part"
+                tmp_file = destination_file + PART_SUFFIX
                 blob.download_to_filename(tmp_file)
                 os.replace(tmp_file, destination_file)
                 logger.info(f"Downloaded GCS file to {destination_file}")
@@ -375,7 +377,7 @@ class TOSArtifactDownloader(ArtifactDownloader):
                 destination_file = os.path.join(
                     local_path, os.path.basename(object_key)
                 )
-                tmp_file = destination_file + ".part"
+                tmp_file = destination_file + PART_SUFFIX
                 await asyncio.to_thread(
                     client.download_file,
                     bucket=bucket_name,
@@ -420,7 +422,7 @@ class TOSArtifactDownloader(ArtifactDownloader):
             local_file_path = os.path.join(local_path, relative_path)
             os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
 
-            tmp_file = local_file_path + ".part"
+            tmp_file = local_file_path + PART_SUFFIX
             client.download_file(bucket=bucket_name, key=key, file_path=tmp_file)
             os.replace(tmp_file, local_file_path)
 
@@ -531,7 +533,7 @@ class HTTPArtifactDownloader(ArtifactDownloader):
         parsed = urlparse(source_url)
         filename = os.path.basename(parsed.path) or "downloaded_file"
         destination_file = os.path.join(local_path, filename)
-        tmp_file = destination_file + ".part"
+        tmp_file = destination_file + PART_SUFFIX
         etag_file = tmp_file + ".etag"
 
         try:
