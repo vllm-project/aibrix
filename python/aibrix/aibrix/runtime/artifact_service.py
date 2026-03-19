@@ -143,13 +143,21 @@ class ArtifactDelegationService:
             Exception: If download fails
         """
         local_path = self._get_local_path_for_adapter(lora_name)
+        marker = os.path.join(local_path, ".aibrix_download_complete")
 
-        # Check if already downloaded
-        if os.path.exists(local_path) and os.listdir(local_path):
+        # Check if a complete download already exists
+        if os.path.exists(marker):
             logger.info(
-                f"Artifact already exists locally for {lora_name} at {local_path}"
+                f"Complete download already exists for {lora_name} at {local_path}"
             )
             return local_path
+
+        # Partial download or no download — clean up and start fresh
+        if os.path.exists(local_path):
+            logger.warning(
+                f"Partial download detected for {lora_name}, cleaning up and retrying"
+            )
+            shutil.rmtree(local_path, ignore_errors=True)
 
         logger.info(
             f"Downloading artifact for {lora_name} from {artifact_url} to {local_path}"
@@ -164,6 +172,9 @@ class ArtifactDelegationService:
             downloaded_path = await downloader.download(
                 artifact_url, local_path, credentials_copy
             )
+
+            # Mark download as complete
+            Path(marker).touch()
 
             logger.info(
                 f"Successfully downloaded artifact for {lora_name} to {downloaded_path}"
