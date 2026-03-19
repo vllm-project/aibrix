@@ -24,10 +24,14 @@ import httpx
 import pytest
 
 import aibrix.runtime.artifact_service as artifact_service_module
-from aibrix.runtime.artifact_service import ArtifactDelegationService
+from aibrix.runtime.artifact_service import (
+    DOWNLOAD_COMPLETE_MARKER,
+    ArtifactDelegationService,
+)
 from aibrix.runtime.downloaders import (
     GCSArtifactDownloader,
     HTTPArtifactDownloader,
+    PART_SUFFIX,
     S3ArtifactDownloader,
 )
 
@@ -35,7 +39,7 @@ from aibrix.runtime.downloaders import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-MARKER = ".aibrix_download_complete"
+MARKER = DOWNLOAD_COMPLETE_MARKER
 
 
 def _make_service(tmp_path):
