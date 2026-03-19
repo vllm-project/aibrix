@@ -303,12 +303,18 @@ func (p *PowerOfTwoRouter) AddRequestCount(ctx *types.RoutingContext, requestID 
 		return 0
 	}
 
+	// Skip counting if this model hasn't been routed by this router recently
+	// This avoids counting requests that are handled by other routers (e.g., prefix-cache)
 	if lastModelRoutingTime, ok := p.lastRoutingTime[ctx.Model]; ok {
-		// avoid counting if it is called too soon after routing
-		if time.Since(lastModelRoutingTime) < p.requestTrackerTimeout {
+		// If it's been too long since last routing, skip counting
+		if time.Since(lastModelRoutingTime) > p.requestTrackerTimeout {
 			return 0
 		}
+	} else {
+		// No routing history for this model, skip counting
+		return 0
 	}
+
 	// Check whether it is called the first time
 	added := ctx.Value(po2RequestCountAddedKey)
 	if added != nil {
