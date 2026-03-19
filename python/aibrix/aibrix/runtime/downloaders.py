@@ -537,19 +537,26 @@ class HTTPArtifactDownloader(ArtifactDownloader):
         etag_file = tmp_file + ".etag"
 
         try:
-            # Check for an existing partial download to resume
-            existing_size = os.path.getsize(tmp_file) if os.path.exists(tmp_file) else 0
+            # Check for an existing partial download to resume.
+            # Use try/except rather than exists()+getsize() to avoid TOCTOU races.
+            try:
+                existing_size = os.path.getsize(tmp_file)
+            except FileNotFoundError:
+                existing_size = 0
+
             request_headers = dict(headers)
             if existing_size > 0:
                 request_headers["Range"] = f"bytes={existing_size}-"
                 # If-Range ensures the server returns 200 (restart) if the
                 # remote file has changed since the partial download began,
                 # preventing corruption from appending mismatched data.
-                if os.path.exists(etag_file):
+                try:
                     with open(etag_file, encoding="utf-8") as f:
                         stored_etag = f.read().strip()
                     if stored_etag:
                         request_headers["If-Range"] = stored_etag
+                except FileNotFoundError:
+                    pass
 
             async with httpx.AsyncClient(follow_redirects=True) as client:
                 async with client.stream(
@@ -568,16 +575,21 @@ class HTTPArtifactDownloader(ArtifactDownloader):
                         if etag:
                             with open(etag_file, "w", encoding="utf-8") as f:
                                 f.write(etag)
-                        elif os.path.exists(etag_file):
-                            os.remove(etag_file)
+                        else:
+                            try:
+                                os.remove(etag_file)
+                            except FileNotFoundError:
+                                pass
 
                     with open(tmp_file, open_mode) as f:
                         async for chunk in response.aiter_bytes(chunk_size=8192):
                             f.write(chunk)
 
             os.replace(tmp_file, destination_file)
-            if os.path.exists(etag_file):
+            try:
                 os.remove(etag_file)
+            except FileNotFoundError:
+                pass
             logger.info(f"Downloaded HTTP file to {destination_file}")
             return local_path
 
