@@ -130,7 +130,9 @@ class S3ArtifactDownloader(ArtifactDownloader):
                 destination_file = os.path.join(
                     local_path, os.path.basename(object_key)
                 )
-                s3_client.download_file(bucket_name, object_key, destination_file)
+                tmp_file = destination_file + ".part"
+                s3_client.download_file(bucket_name, object_key, tmp_file)
+                os.replace(tmp_file, destination_file)
                 logger.info(f"Downloaded S3 file to {destination_file}")
 
             return local_path
@@ -170,8 +172,10 @@ class S3ArtifactDownloader(ArtifactDownloader):
                 # Ensure directory exists
                 self._ensure_directory(os.path.dirname(local_file_path))
 
-                # Download file
-                s3_client.download_file(bucket_name, key, local_file_path)
+                # Download file atomically
+                tmp_file = local_file_path + ".part"
+                s3_client.download_file(bucket_name, key, tmp_file)
+                os.replace(tmp_file, local_file_path)
                 logger.debug(f"Downloaded {key} to {local_file_path}")
 
         logger.info(f"Downloaded S3 directory {prefix} to {local_path}")
@@ -255,8 +259,10 @@ class GCSArtifactDownloader(ArtifactDownloader):
                     # Ensure directory exists
                     self._ensure_directory(os.path.dirname(local_file_path))
 
-                    # Download file
-                    blob.download_to_filename(local_file_path)
+                    # Download file atomically
+                    tmp_file = local_file_path + ".part"
+                    blob.download_to_filename(tmp_file)
+                    os.replace(tmp_file, local_file_path)
                     logger.debug(f"Downloaded {blob.name} to {local_file_path}")
 
                 logger.info(f"Downloaded GCS directory {blob_name} to {local_path}")
@@ -264,7 +270,9 @@ class GCSArtifactDownloader(ArtifactDownloader):
                 # Download single file
                 blob = bucket.blob(blob_name)
                 destination_file = os.path.join(local_path, os.path.basename(blob_name))
-                blob.download_to_filename(destination_file)
+                tmp_file = destination_file + ".part"
+                blob.download_to_filename(tmp_file)
+                os.replace(tmp_file, destination_file)
                 logger.info(f"Downloaded GCS file to {destination_file}")
 
             return local_path
@@ -523,19 +531,32 @@ class HTTPArtifactDownloader(ArtifactDownloader):
         parsed = urlparse(source_url)
         filename = os.path.basename(parsed.path) or "downloaded_file"
         destination_file = os.path.join(local_path, filename)
+        tmp_file = destination_file + ".part"
 
         try:
+            # Check for an existing partial download to resume
+            existing_size = os.path.getsize(tmp_file) if os.path.exists(tmp_file) else 0
+            request_headers = dict(headers)
+            if existing_size > 0:
+                request_headers["Range"] = f"bytes={existing_size}-"
+
             async with httpx.AsyncClient(follow_redirects=True) as client:
                 async with client.stream(
-                    "GET", source_url, headers=headers
+                    "GET", source_url, headers=request_headers
                 ) as response:
-                    response.raise_for_status()
+                    if existing_size > 0 and response.status_code == 206:
+                        # Server supports range; append to the partial file
+                        open_mode = "ab"
+                    else:
+                        # Full download (200 or range not supported)
+                        response.raise_for_status()
+                        open_mode = "wb"
 
-                    # Download file
-                    with open(destination_file, "wb") as f:
+                    with open(tmp_file, open_mode) as f:
                         async for chunk in response.aiter_bytes(chunk_size=8192):
                             f.write(chunk)
 
+            os.replace(tmp_file, destination_file)
             logger.info(f"Downloaded HTTP file to {destination_file}")
             return local_path
 
