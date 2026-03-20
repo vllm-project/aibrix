@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -67,6 +68,7 @@ type PowerOfTwoRouter struct {
 
 	// lastRoutingTime is the timestamp of the last routing of a model. Used to avoid unnecessary redis request
 	lastRoutingTime       map[string]time.Time
+	lastRoutingTimeMu     sync.RWMutex // Protects lastRoutingTime map from concurrent access
 	requestTrackerTimeout time.Duration
 }
 
@@ -174,7 +176,9 @@ func (p *PowerOfTwoRouter) Route(ctx *types.RoutingContext, readyPodList types.P
 	}
 
 	// call immediate after setting target pod to avoid other Route call pick up the same pod
+	p.lastRoutingTimeMu.Lock()
 	p.lastRoutingTime[ctx.Model] = time.Now()
+	p.lastRoutingTimeMu.Unlock()
 	p.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
 	return ctx.TargetAddress(), nil
 }
@@ -305,7 +309,11 @@ func (p *PowerOfTwoRouter) AddRequestCount(ctx *types.RoutingContext, requestID 
 
 	// Skip counting if this model hasn't been routed by this router recently
 	// This avoids counting requests that are handled by other routers (e.g., prefix-cache)
-	if lastModelRoutingTime, ok := p.lastRoutingTime[ctx.Model]; ok {
+	p.lastRoutingTimeMu.RLock()
+	lastModelRoutingTime, ok := p.lastRoutingTime[ctx.Model]
+	p.lastRoutingTimeMu.RUnlock()
+
+	if ok {
 		// If it's been too long since last routing, skip counting
 		if time.Since(lastModelRoutingTime) > p.requestTrackerTimeout {
 			return 0

@@ -28,7 +28,7 @@ type Cache interface {
 	ModelCache
 	MetricCache
 	RequestTracker
-	CanRegisterRequestTracker
+	RequestTrackerRegistry
 	ProfileCache
 	types.OutputPredictorProvider
 	types.RouterProvider
@@ -146,7 +146,7 @@ type RequestTracker interface {
 
 // RequestTrackerRegistry can register multiple RequestTracker implementations
 // When Track operations are called, it will be passed to the registered RequestTracker
-type CanRegisterRequestTracker interface {
+type RequestTrackerRegistry interface {
 	RequestTracker
 	// the registered trackers are called before main tracker
 	// Notice that the operations may be called multiple times for the same request, and the registered trackers are called in the order they are registered
