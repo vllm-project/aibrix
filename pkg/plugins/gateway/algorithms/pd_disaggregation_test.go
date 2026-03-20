@@ -1557,6 +1557,14 @@ func TestGetAvailablePortForPodLoadBalancing(t *testing.T) {
 				},
 			},
 		},
+		Status: v1.PodStatus{
+			ContainerStatuses: []v1.ContainerStatus{
+				{
+					Name:  "container1",
+					Ready: true,
+				},
+			},
+		},
 	}
 
 	router := &pdRouter{
@@ -1588,6 +1596,14 @@ func TestGetAvailablePortForPodLoadBalancingWithLoad(t *testing.T) {
 						{ContainerPort: 8000, Protocol: v1.ProtocolTCP},
 						{ContainerPort: 8001, Protocol: v1.ProtocolTCP},
 					},
+				},
+			},
+		},
+		Status: v1.PodStatus{
+			ContainerStatuses: []v1.ContainerStatus{
+				{
+					Name:  "container1",
+					Ready: true,
 				},
 			},
 		},
