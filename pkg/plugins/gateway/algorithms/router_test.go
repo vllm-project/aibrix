@@ -136,6 +136,26 @@ func TestParseMultiRouterConfig(t *testing.T) {
 			want:      nil,
 			wantErr:   true,
 		},
+		{
+			name:      "Exclusive strategy pd ignores others",
+			routerStr: "least-request:2,pd:1,throughput:3",
+			want: &MultiRouterConfig{
+				Items: []RouterItem{
+					{Name: "pd", Coefficient: 1},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:      "Exclusive strategy slo ignores others",
+			routerStr: "slo-least-load:1,least-latency:2",
+			want: &MultiRouterConfig{
+				Items: []RouterItem{
+					{Name: "slo-least-load", Coefficient: 1},
+				},
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
