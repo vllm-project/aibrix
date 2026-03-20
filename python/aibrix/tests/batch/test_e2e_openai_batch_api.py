@@ -565,9 +565,9 @@ async def test_openai_batch_api_multi_endpoint(endpoint: str):
 
         output_content = output_response.content.decode("utf-8")
         assert output_content, f"[{endpoint}] Output file is empty"
-        assert verify_batch_output_content(output_content, num_requests), (
-            f"[{endpoint}] Output verification failed"
-        )
+        assert verify_batch_output_content(
+            output_content, num_requests
+        ), f"[{endpoint}] Output verification failed"
 
         await app.state.batch_driver.clear_job(batch_id)
 

@@ -43,7 +43,6 @@ from typing import Any, Dict
 import httpx
 import pytest
 
-
 # Sample request bodies for each supported batch endpoint
 ENDPOINT_SAMPLE_BODIES: Dict[str, Dict[str, Any]] = {
     "/v1/chat/completions": {
