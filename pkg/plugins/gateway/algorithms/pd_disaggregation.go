@@ -25,7 +25,6 @@ import (
 	"math/rand"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -112,7 +111,7 @@ type PrefillRequestTracker struct {
 	requestToPod sync.Map // map[string]string
 }
 
- type PodPortBalancer struct {
+type PodPortBalancer struct {
 	mu        sync.RWMutex
 	portStats map[int64]*atomic.Int32
 }
@@ -664,23 +663,22 @@ func (r *pdRouter) getAvailablePortForPod(requestID string, pod *v1.Pod) int64 {
 }
 
 func (r *pdRouter) filterAvailablePortForPod(pod *v1.Pod) []int64 {
-	// Get all ports from pod containers, excluding RPC ports
+	readyMap := make(map[string]bool)
+	for _, cs := range pod.Status.ContainerStatuses {
+		readyMap[cs.Name] = cs.Ready
+	}
+
 	var ports []int64
 	for _, container := range pod.Spec.Containers {
-		for _, port := range container.Ports {
-			if port.Protocol == v1.ProtocolTCP {
-				portNameLower := strings.ToLower(port.Name)
-				isRPCPort := strings.Contains(portNameLower, "rpc")
-				isDataParallelPort := strings.Contains(portNameLower, "data-parallel")
-
-				if port.Name != "" && (isRPCPort || isDataParallelPort) {
+		if ready, ok := readyMap[container.Name]; ok && ready {
+			for _, port := range container.Ports {
+				if port.Protocol != v1.ProtocolTCP {
 					continue
 				}
 				ports = append(ports, int64(port.ContainerPort))
 			}
 		}
 	}
-
 	return ports
 }
 
