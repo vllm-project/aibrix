@@ -152,6 +152,7 @@ class RedisMetadataStore(MetadataStore):
         try:
             return await self._client.ping()
         except Exception:
+            logger.exception("Redis metadata store ping failed")
             return False
 
     async def close(self) -> None:

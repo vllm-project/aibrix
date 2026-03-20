@@ -18,7 +18,7 @@ Tests for the metadata users API.
 Test Coverage:
 - User Pydantic model validation
 - User CRUD API: MetadataStore-backed user management with rate limiting
-- MetadataStore abstraction unit tests
+- MockMetadataStore helper for test isolation
 """
 
 import os
