@@ -83,20 +83,20 @@ def _validate_request_body_for_endpoint(
     # Endpoint-specific type validation
     if endpoint == BatchJobEndpoint.CHAT_COMPLETIONS.value:
         if not isinstance(body.get("messages"), list):
-            return f"Line {line_num}: 'messages' must be an array for {endpoint}"
+            return f"Line {line_num}: 'messages' must be a list for {endpoint}"
     elif endpoint == BatchJobEndpoint.COMPLETIONS.value:
         prompt = body.get("prompt")
         if not isinstance(prompt, (str, list)):
-            return f"Line {line_num}: 'prompt' must be a string or array for {endpoint}"
+            return f"Line {line_num}: 'prompt' must be a string or list for {endpoint}"
     elif endpoint == BatchJobEndpoint.EMBEDDINGS.value:
         input_val = body.get("input")
         if not isinstance(input_val, (str, list)):
-            return f"Line {line_num}: 'input' must be a string or array for {endpoint}"
+            return f"Line {line_num}: 'input' must be a string or list for {endpoint}"
     elif endpoint == BatchJobEndpoint.RERANK.value:
         if not isinstance(body.get("query"), str):
             return f"Line {line_num}: 'query' must be a string for {endpoint}"
         if not isinstance(body.get("documents"), list):
-            return f"Line {line_num}: 'documents' must be an array for {endpoint}"
+            return f"Line {line_num}: 'documents' must be a list for {endpoint}"
 
     return None
 
