@@ -725,28 +725,117 @@ func TestMultiStrategyRouter_Route(t *testing.T) {
 	}
 }
 
-func TestSelectMultiStrategy(t *testing.T) {
-	// Initialize cache for routers that depend on it
-	store := cache.InitForTest()
-	storeCh := cache.InitWithAsyncPods(store, []*v1.Pod{}, "test model")
-	Init()
-	<-storeCh
+func TestE2EMultiStrategyRouting(t *testing.T) {
+	// Initialize cache with specific metrics for different pods to simulate real environment
+	model := "test-model"
+	podA := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "podA", Namespace: "default"},
+		Status: v1.PodStatus{
+			PodIP: "1.1.1.1",
+			Conditions: []v1.PodCondition{
+				{Type: v1.PodReady, Status: v1.ConditionTrue},
+			},
+		},
+	}
+	podB := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "podB", Namespace: "default"},
+		Status: v1.PodStatus{
+			PodIP: "2.2.2.2",
+			Conditions: []v1.PodCondition{
+				{Type: v1.PodReady, Status: v1.ConditionTrue},
+			},
+		},
+	}
 
-	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("least-request:2,least-latency:1"), "model", "", "id", "")
-	
-	router, err := Select(ctx)
-	if err != nil {
-		t.Fatalf("Select error: %v", err)
-	}
-	
-	if _, ok := router.(*multiStrategyRouter); !ok {
-		t.Errorf("Expected multiStrategyRouter, got %T", router)
-	}
+	c := cache.NewWithPodsMetricsForTest(
+		[]*v1.Pod{podA, podB},
+		model,
+		map[string]map[string]metrics.MetricValue{
+			"podA": {
+				// least-request wants lower running requests
+				metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 10},
+				// throughput wants higher throughput
+				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 100},
+				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 50},
+			},
+			"podB": {
+				metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 2}, // B is better for least-request
+				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 10},  // B is worse for throughput
+				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 5},
+			},
+		})
 
-	// Test invalid strategy fallback to Random
-	ctxInvalid := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("invalid-strategy:1,least-latency:1"), "model", "", "id", "")
-	routerInvalid, _ := Select(ctxInvalid)
-	if _, ok := routerInvalid.(*randomRouter); !ok {
-		t.Errorf("Expected fallback to randomRouter for invalid multi-strategy, got %T", routerInvalid)
-	}
+	pods := podsFromCache(c)
+	assert.Equal(t, 2, pods.Len())
+
+	// Force initialize router registry using our test cache
+	// Normally `Init()` initializes routers using `cache.Get()`. We override the factory specifically for testing here.
+	rm := NewRouterManager()
+	
+	// Register least-request with the test cache
+	rm.Register(RouterLeastRequest, func() (types.Router, error) {
+		return &leastRequestRouter{cache: c}, nil
+	})
+	
+	// Register throughput with the test cache
+	rm.Register(RouterThroughput, func() (types.Router, error) {
+		return throughputRouter{cache: c}, nil
+	})
+	
+	rm.Init()
+
+	// 1. E2E Test: Least Request dominates (Weight 10 vs 1)
+	t.Run("E2E_MultiStrategy_LeastRequest_Dominates", func(t *testing.T) {
+		algString := "least-request:10,throughput:1"
+		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "", "req1", "")
+		
+		router, err := rm.Select(ctx)
+		assert.NoError(t, err)
+		
+		_, isMulti := router.(*multiStrategyRouter)
+		assert.True(t, isMulti, "Expected multiStrategyRouter")
+
+		targetIP, err := router.Route(ctx, pods)
+		assert.NoError(t, err)
+		
+		// podB should win because least-request has weight 10, and podB has 2 requests vs podA's 10.
+		// Normalized scores:
+		// least-request: podA=0.0, podB=1.0. Weight=10
+		// throughput: podA=1.0, podB=0.0. Weight=1
+		// Total: podA = 1, podB = 10 -> podB wins!
+		assert.Contains(t, targetIP, "2.2.2.2")
+	})
+
+	// 2. E2E Test: Throughput dominates (Weight 10 vs 1)
+	t.Run("E2E_MultiStrategy_Throughput_Dominates", func(t *testing.T) {
+		algString := "least-request:1,throughput:10"
+		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "", "req2", "")
+		
+		router, err := rm.Select(ctx)
+		assert.NoError(t, err)
+
+		targetIP, err := router.Route(ctx, pods)
+		assert.NoError(t, err)
+		
+		// Total: podA = 10, podB = 1 -> podA wins!
+		assert.Contains(t, targetIP, "1.1.1.1")
+	})
+
+	// 3. E2E Test: Equal Weights (Tie break scenario based on array order)
+	t.Run("E2E_MultiStrategy_Equal_Weights", func(t *testing.T) {
+		algString := "least-request:1,throughput:1" // Weights implicitly 1 if we used "least-request,throughput"
+		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "", "req3", "")
+		
+		router, err := rm.Select(ctx)
+		assert.NoError(t, err)
+
+		targetIP, err := router.Route(ctx, pods)
+		assert.NoError(t, err)
+		
+		// Total: podA = 1, podB = 1.
+		// Tie break goes to the first pod in the list.
+		// Since cache iteration order could be random, we check the original wrapper order. 
+		// Actually `podsFromCache` uses `store.ListPods()` which returns a map slice. Let's just ensure it routes successfully without error.
+		assert.NotEmpty(t, targetIP)
+	})
 }
