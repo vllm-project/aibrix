@@ -184,3 +184,65 @@ func doPrefillRequest(prefillPods) {
     AIBrix gateway is an external processing plugin for envoy proxy which handles inference request validation, selection of target worker and more, but request forwarding to inference engine is done by envoy proxy.
     
     Prefill-Decode disaggregation is a special scenario, where prefill request is directly sent to inference engine by AIBrix gateway plugin and decode request is fowarded by envoy proxy. For prefill request if needed timeout can be configured using env variable, default is <ins>**_60s_**</ins>.
+
+## Multi-Strategy Routing (Batch Soft Scoring)
+
+AIBrix Gateway supports multi-strategy routing, allowing you to combine multiple routing algorithms with different weights. Instead of making hard decisions (where one strategy completely filters out pods or dictates the single winner), the multi-strategy router uses a **Batch Soft Scoring** mechanism to evaluate pods across all specified strategies.
+
+### How it works
+
+1. **Batch Scoring:** Each configured strategy evaluates all ready pods in a single batch operation (`ScoreAll`), returning raw scores and a boolean array indicating whether each pod could be scored (e.g., handling missing metrics).
+2. **Normalization:** The raw scores from each strategy are normalized into a `[0, 1]` range:
+   * **Higher is better** (e.g., `throughput`): `(score - min) / (max - min)`
+   * **Lower is better** (e.g., `least-request`): `(max - score) / (max - min)`
+   * If a pod lacks metrics (`scored=false`), its normalized score is `0.0` (acting as a penalty).
+3. **Weighted Aggregation:** The normalized scores are multiplied by their respective configured weights and summed up for each pod.
+4. **Top-1 Selection:** The pod with the highest total aggregated score is selected to serve the request.
+
+### Configuration Format
+
+You can configure multi-strategy routing by setting the `AIBRIX_ROUTING_ALGORITHM` environment variable using a comma-separated list of `strategy:weight` pairs.
+
+* **Format:** `strategy1:weight1,strategy2:weight2,...`
+* If `:weight` is omitted, it defaults to `1`.
+* If a weight is `0`, the strategy is completely ignored.
+* If an invalid strategy is specified, the system will fall back to the default `random` router.
+
+### Examples
+
+Here are some real-world examples demonstrating how the weighted aggregation works under different scenarios.
+
+Assume we have two pods serving a model:
+* **Pod A**: High load (10 requests) but High throughput (100 tok/s).
+* **Pod B**: Low load (2 requests) but Low throughput (10 tok/s).
+
+#### Example 1: `least-request` Dominates
+```yaml
+AIBRIX_ROUTING_ALGORITHM: "least-request:10,throughput:1"
+```
+* `least-request` (weight 10): Pod B is much better (2 vs 10). Normalized: Pod A = 0.0, Pod B = 1.0. Score contribution: A = 0, B = 10.
+* `throughput` (weight 1): Pod A is much better (100 vs 10). Normalized: Pod A = 1.0, Pod B = 0.0. Score contribution: A = 1, B = 0.
+* **Total Score**: Pod A = 1, Pod B = 10. **Pod B wins!**
+
+#### Example 2: `throughput` Dominates
+```yaml
+AIBRIX_ROUTING_ALGORITHM: "least-request:1,throughput:10"
+```
+* `least-request` (weight 1): Score contribution: A = 0, B = 1.
+* `throughput` (weight 10): Score contribution: A = 10, B = 0.
+* **Total Score**: Pod A = 10, Pod B = 1. **Pod A wins!**
+
+#### Example 3: Complex Scenario with Corner Cases (3 Strategies)
+```yaml
+AIBRIX_ROUTING_ALGORITHM: "least-request,throughput:2,least-latency:0"
+```
+* `least-request`: No weight specified, **defaults to 1**. Contribution: A = 0, B = 1.
+* `throughput`: Explicitly set to weight **2**. Contribution: A = 2, B = 0.
+* `least-latency`: Weight set to **0**, so this strategy is **ignored** and does not participate in scoring.
+* **Total Score**: Pod A = 2, Pod B = 1. **Pod A wins!**
+
+#### Example 4: Invalid Configuration Fallback
+```yaml
+AIBRIX_ROUTING_ALGORITHM: "least-request:1,invalid-strategy:1"
+```
+* Because `invalid-strategy` is not a registered algorithm, the multi-strategy parser will fail. The Gateway will gracefully fall back to using the default **Random Router** to ensure requests continue to be served without interruption.

@@ -821,10 +821,13 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		assert.Contains(t, targetIP, "1.1.1.1")
 	})
 
-	// 3. E2E Test: Equal Weights (Tie break scenario based on array order)
-	t.Run("E2E_MultiStrategy_Equal_Weights", func(t *testing.T) {
-		algString := "least-request:1,throughput:1" // Weights implicitly 1 if we used "least-request,throughput"
-		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "", "req3", "")
+	// 4. E2E Test: 3 strategies, including one without coefficient (defaults to 1), and one with 0 (ignored)
+	t.Run("E2E_MultiStrategy_Three_Strategies_With_Corner_Cases", func(t *testing.T) {
+		// least-request has no weight (defaults to 1)
+		// throughput has weight 2
+		// least-latency has weight 0 (should be parsed out and completely ignored)
+		algString := "least-request,throughput:2,least-latency:0"
+		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "", "req4", "")
 		
 		router, err := rm.Select(ctx)
 		assert.NoError(t, err)
@@ -832,10 +835,27 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		targetIP, err := router.Route(ctx, pods)
 		assert.NoError(t, err)
 		
-		// Total: podA = 1, podB = 1.
-		// Tie break goes to the first pod in the list.
-		// Since cache iteration order could be random, we check the original wrapper order. 
-		// Actually `podsFromCache` uses `store.ListPods()` which returns a map slice. Let's just ensure it routes successfully without error.
-		assert.NotEmpty(t, targetIP)
+		// The active strategies are least-request (weight 1) and throughput (weight 2)
+		// least-request: podA=0.0, podB=1.0. Weight=1. Score contribution: A=0, B=1
+		// throughput: podA=1.0, podB=0.0. Weight=2. Score contribution: A=2, B=0
+		// Total: podA = 2, podB = 1 -> podA wins!
+		assert.Contains(t, targetIP, "1.1.1.1")
+	})
+
+	// 5. E2E Test: Invalid configuration format fallback
+	t.Run("E2E_MultiStrategy_Invalid_Format_Fallback", func(t *testing.T) {
+		// "invalid-strategy:1" is not registered. It should fallback to the RandomRouter
+		algString := "least-request:1,invalid-strategy:1"
+		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "", "req5", "")
+		
+		router, err := rm.Select(ctx)
+		assert.NoError(t, err)
+		
+		// Should fallback to random router, not multiStrategyRouter
+		_, isMulti := router.(*multiStrategyRouter)
+		assert.False(t, isMulti, "Expected fallback to non-multiStrategyRouter")
+		
+		_, isRandom := router.(*randomRouter)
+		assert.True(t, isRandom, "Expected fallback to randomRouter")
 	})
 }
