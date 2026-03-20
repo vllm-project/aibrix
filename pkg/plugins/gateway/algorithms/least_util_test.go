@@ -132,3 +132,30 @@ func TestLeastUtil(t *testing.T) {
 		})
 	}
 }
+
+func TestLeastUtil_ScoreAll(t *testing.T) {
+	podA := newPod("pA", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podB := newPod("pB", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	
+	c := cache.NewWithPodsModelMetricsForTest(
+		[]*v1.Pod{podA, podB},
+		"m1",
+		map[string]map[string]metrics.MetricValue{
+			"pA": {metrics.EngineUtilization: &metrics.SimpleMetricValue{Value: 0.2}},
+			"pB": {metrics.EngineUtilization: &metrics.SimpleMetricValue{Value: 0.9}},
+		})
+		
+	r := leastUtilRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
+	
+	scores, scored, err := r.ScoreAll(ctx, podsFromCache(c))
+	assert.NoError(t, err)
+	
+	assert.True(t, scored[0])
+	assert.InDelta(t, 0.2, scores[0], 0.001)
+	
+	assert.True(t, scored[1])
+	assert.InDelta(t, 0.9, scores[1], 0.001)
+	
+	assert.Equal(t, PolarityLeast, r.Polarity())
+}
