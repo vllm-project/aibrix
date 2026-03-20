@@ -156,5 +156,5 @@ class RedisMetadataStore(MetadataStore):
             return False
 
     async def close(self) -> None:
-        await self._client.aclose()
+        await self._client.aclose()  # type: ignore[attr-defined]
         logger.info("Redis metadata store closed")

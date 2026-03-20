@@ -192,8 +192,10 @@ async def _validate_batch_input_file(
                 )
 
             # Validate request body has required fields for the endpoint
+            # Use the canonical `endpoint` (not the per-line `request_url`)
+            # to ensure validation always matches a known endpoint key.
             body_error = _validate_request_body_for_endpoint(
-                request["body"], request_url, line_num
+                request["body"], endpoint, line_num
             )
             if body_error:
                 return 0, body_error

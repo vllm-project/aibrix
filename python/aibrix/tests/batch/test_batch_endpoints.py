@@ -115,7 +115,7 @@ class TestEndpointBodyValidation:
         result = _validate_request_body_for_endpoint(body, "/v1/chat/completions", 1)
         assert result is not None
         assert "messages" in result
-        assert "array" in result
+        assert "list" in result
 
     def test_completions_valid_body_string_prompt(self):
         """Test valid completions body with string prompt passes."""
@@ -209,7 +209,7 @@ class TestEndpointBodyValidation:
         result = _validate_request_body_for_endpoint(body, "/v1/rerank", 1)
         assert result is not None
         assert "documents" in result
-        assert "array" in result
+        assert "list" in result
 
     def test_unknown_endpoint_passes(self):
         """Test that unknown endpoints skip body validation."""
