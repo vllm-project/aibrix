@@ -20,11 +20,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	v1 "k8s.io/api/core/v1"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"k8s.io/klog/v2"
 )
@@ -32,6 +34,19 @@ import (
 const (
 	RouterNotSet = ""
 )
+
+type Polarity int
+
+const (
+	PolarityLeast Polarity = iota // Lower score is better
+	PolarityMost                  // Higher score is better
+)
+
+// PodScorer defines the interface for strategies that support soft-scoring
+type PodScorer interface {
+	ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) (scores []float64, scored []bool, err error)
+	Polarity() Polarity
+}
 
 var (
 	ErrInitTimeout           = errors.New("router initialization timeout")
@@ -111,6 +126,174 @@ func ParseMultiRouterConfig(routerStr string) (*MultiRouterConfig, error) {
 	return &MultiRouterConfig{Items: items}, nil
 }
 
+// multiStrategyRouter coordinates multiple sub-routers and selects a pod via soft-scoring
+type multiStrategyRouter struct {
+	config  *MultiRouterConfig
+	scorers map[string]PodScorer
+}
+
+// newMultiStrategyRouter initializes a new multiStrategyRouter based on the parsed config
+func newMultiStrategyRouter(config *MultiRouterConfig, rm *RouterManager, ctx *types.RoutingContext) (*multiStrategyRouter, error) {
+	scorers := make(map[string]PodScorer)
+
+	for _, item := range config.Items {
+		rm.routerMu.RLock()
+		provider, ok := rm.routerFactory[types.RoutingAlgorithm(item.Name)]
+		rm.routerMu.RUnlock()
+
+		if !ok {
+			return nil, fmt.Errorf("strategy %s not registered", item.Name)
+		}
+
+		router, err := provider(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize strategy %s: %v", item.Name, err)
+		}
+
+		scorer, ok := router.(PodScorer)
+		if !ok {
+			return nil, fmt.Errorf("strategy %s does not implement PodScorer interface", item.Name)
+		}
+		scorers[item.Name] = scorer
+	}
+
+	return &multiStrategyRouter{
+		config:  config,
+		scorers: scorers,
+	}, nil
+}
+
+// Route executes the multi-strategy scoring pipeline and returns the best pod IP
+func (m *multiStrategyRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	pods := readyPodList.All()
+	if len(pods) == 0 {
+		return "", errors.New("empty pod list")
+	}
+
+	if len(pods) == 1 {
+		ctx.SetTargetPod(pods[0])
+		return ctx.TargetAddress(), nil
+	}
+
+	topPod, _, err := m.scoreAndRank(ctx, readyPodList)
+	if err != nil {
+		return "", err
+	}
+
+	ctx.SetTargetPod(topPod)
+	return ctx.TargetAddress(), nil
+}
+
+// scoreAndRank calculates final scores for all pods and returns the winner
+func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodList types.PodList) (*v1.Pod, map[*v1.Pod]float64, error) {
+	pods := readyPodList.All()
+	finalScores := make(map[*v1.Pod]float64)
+
+	// Calculate total weight to act as denominator
+	totalWeight := 0.0
+	for _, item := range m.config.Items {
+		totalWeight += float64(item.Coefficient)
+	}
+
+	if totalWeight <= 0 {
+		return nil, nil, errors.New("total weight must be greater than zero")
+	}
+
+	// Iterate over each sub-strategy
+	for _, item := range m.config.Items {
+		scorer := m.scorers[item.Name]
+
+		// 1. Collect raw scores
+		scores, scored, err := scorer.ScoreAll(ctx, readyPodList)
+		if err != nil {
+			klog.Warningf("Strategy %s failed to score: %v", item.Name, err)
+			scored = make([]bool, len(pods)) // all false
+			scores = make([]float64, len(pods))
+		}
+
+		// 2. Normalize to [0, 1] based on polarity
+		normScores := m.normalizeScoresArray(scores, scored, scorer.Polarity())
+
+		// 3. Aggregate into final sum
+		weightFraction := float64(item.Coefficient) / totalWeight
+		for i, pod := range pods {
+			finalScores[pod] += normScores[i] * weightFraction
+		}
+	}
+
+	// 4. Find the pod with the highest score
+	var topPods []*v1.Pod
+	maxScore := -1.0
+
+	for _, pod := range pods {
+		score := finalScores[pod]
+		// handle floating point precision
+		if math.Abs(score-maxScore) < 1e-9 {
+			topPods = append(topPods, pod)
+		} else if score > maxScore {
+			maxScore = score
+			topPods = []*v1.Pod{pod}
+		}
+	}
+
+	if len(topPods) == 0 {
+		return nil, nil, errors.New("no valid target pod found after scoring")
+	}
+
+	// Tie-break: select the first pod in the original order
+	winner := topPods[0]
+
+	return winner, finalScores, nil
+}
+
+// normalizeScoresArray maps raw values to a [0, 1] scale.
+func (m *multiStrategyRouter) normalizeScoresArray(scores []float64, scored []bool, polarity Polarity) []float64 {
+	normScores := make([]float64, len(scores))
+	
+	minVal := math.MaxFloat64
+	maxVal := -math.MaxFloat64
+	scoredCount := 0
+
+	// Find min and max for scored pods
+	for i, isScored := range scored {
+		if isScored && !math.IsNaN(scores[i]) {
+			if scores[i] < minVal {
+				minVal = scores[i]
+			}
+			if scores[i] > maxVal {
+				maxVal = scores[i]
+			}
+			scoredCount++
+		}
+	}
+
+	if scoredCount == 0 {
+		return normScores // all 0.0
+	}
+
+	for i, isScored := range scored {
+		if !isScored || math.IsNaN(scores[i]) {
+			normScores[i] = 0.0 // worst score for unscored pods
+			continue
+		}
+
+		if maxVal == minVal {
+			normScores[i] = 1.0 // all scored pods get max score if there's no difference
+			continue
+		}
+
+		if polarity == PolarityLeast {
+			// Reverse score if smaller is better: (max - s) / (max - min)
+			normScores[i] = (maxVal - scores[i]) / (maxVal - minVal)
+		} else {
+			// Higher is better: (s - min) / (max - min)
+			normScores[i] = (scores[i] - minVal) / (maxVal - minVal)
+		}
+	}
+
+	return normScores
+}
+
 type RouterManager struct {
 	routerInited      context.Context
 	routerDoneInit    context.CancelFunc
@@ -129,13 +312,24 @@ func NewRouterManager() *RouterManager {
 
 // Validate validates if user provided routing routers is supported by gateway
 func (rm *RouterManager) Validate(algorithms string) (types.RoutingAlgorithm, bool) {
-	rm.routerMu.RLock()
-	defer rm.routerMu.RUnlock()
-	if _, ok := rm.routerFactory[types.RoutingAlgorithm(algorithms)]; ok {
-		return types.RoutingAlgorithm(algorithms), ok
-	} else {
+	// Parse the strategy configuration using multi-router parsing logic
+	cfg, err := ParseMultiRouterConfig(algorithms)
+	if err != nil {
 		return RouterNotSet, false
 	}
+
+	rm.routerMu.RLock()
+	defer rm.routerMu.RUnlock()
+
+	// Validate each strategy in the configuration
+	for _, item := range cfg.Items {
+		if _, ok := rm.routerFactory[types.RoutingAlgorithm(item.Name)]; !ok {
+			return RouterNotSet, false
+		}
+	}
+
+	// Return the original algorithms string to keep it intact in headers
+	return types.RoutingAlgorithm(algorithms), true
 }
 func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
 	return defaultRM.Validate(algorithms)
@@ -144,6 +338,22 @@ func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
 // Select the user provided router provider supported by gateway, no error reported and fallback to random router
 // Call Validate before this function to ensure expected behavior.
 func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error) {
+	algStr := string(ctx.Algorithm)
+	
+	// Check if it's a multi-strategy (contains ',' or ':')
+	if strings.Contains(algStr, ",") || strings.Contains(algStr, ":") {
+		cfg, err := ParseMultiRouterConfig(algStr)
+		if err == nil {
+			multiRouter, err := newMultiStrategyRouter(cfg, rm, ctx)
+			if err == nil {
+				return multiRouter, nil
+			}
+			klog.Warningf("Failed to initialize multi-strategy router for %s: %v, fallback to %s", algStr, err, RouterRandom)
+			return RandomRouter, nil
+		}
+	}
+
+	// Single strategy
 	rm.routerMu.RLock()
 	defer rm.routerMu.RUnlock()
 	if provider, ok := rm.routerFactory[ctx.Algorithm]; ok {
