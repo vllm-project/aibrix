@@ -155,7 +155,6 @@ func Init() {
 func (rm *RouterManager) NotifyOnPodDelete(podName string) {
 	rm.routerMu.RLock()
 	defer rm.routerMu.RUnlock()
-	
 	dummyCtx := &types.RoutingContext{}
 	// It uses a dummy context since most router providers don't depend on context fields
 	for algorithm, provider := range rm.routerFactory {
@@ -164,7 +163,7 @@ func (rm *RouterManager) NotifyOnPodDelete(podName string) {
 			klog.Errorf("Failed to get router for %s: %v", algorithm, err)
 			continue
 		}
-		
+
 		if routerWithOnPodDelete, ok := router.(interface{ OnPodDelete(string) }); ok {
 			routerWithOnPodDelete.OnPodDelete(podName)
 		}

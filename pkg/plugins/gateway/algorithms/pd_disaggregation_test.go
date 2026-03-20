@@ -1601,7 +1601,6 @@ func TestGetAvailablePortForPodLoadBalancingWithLoad(t *testing.T) {
 	podPorts := []int64{8000, 8001}
 	podPortBalancer := NewPodPortBalancer(podPorts)
 	router.portsTracker.Store("pod1", podPortBalancer)
-	
 	// Get the PodPortBalancer and increase load on port 8000
 	if val, ok := router.portsTracker.Load("pod1"); ok {
 		lb := val.(*PodPortBalancer)

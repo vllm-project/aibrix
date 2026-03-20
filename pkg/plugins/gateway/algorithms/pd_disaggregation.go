@@ -112,8 +112,8 @@ type PrefillRequestTracker struct {
 	requestToPod sync.Map // map[string]string
 }
 
-type PodPortBalancer struct {
-	mu    	  sync.RWMutex
+ type PodPortBalancer struct {
+	mu        sync.RWMutex
 	portStats map[int64]*atomic.Int32
 }
 
@@ -699,7 +699,7 @@ func (r *pdRouter) acquirePort(podName string, port int64) {
 }
 
 func (r *pdRouter) releasePort(podName string, port int64) {
-	val, ok := r.portsTracker.Load(podName); 
+	val, ok := r.portsTracker.Load(podName)
 	if !ok {
 		return
 	}
@@ -1253,12 +1253,12 @@ func (r *pdRouter) scoreCombinedPods(routingCtx *types.RoutingContext, combinedP
 }
 
 func (r *pdRouter) OnPodDelete(podName string) {
-    r.portsTracker.Delete(podName)
-    r.prefillRequestTracker.podRequestCounts.Delete(podName)
+	r.portsTracker.Delete(podName)
+	r.prefillRequestTracker.podRequestCounts.Delete(podName)
 
-    r.countersMu.Lock()
-    delete(r.selectionCounts, podName)
-    r.countersMu.Unlock()
-    
-    klog.V(4).InfoS("Successfully cleaned up pod state", "pod", podName)
+	r.countersMu.Lock()
+	delete(r.selectionCounts, podName)
+	r.countersMu.Unlock()
+
+	klog.V(4).InfoS("Successfully cleaned up pod state", "pod", podName)
 }
