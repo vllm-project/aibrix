@@ -19,6 +19,7 @@ package routingalgorithms
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -89,6 +90,35 @@ var (
 
 func init() {
 	Register(RouterPD, NewPDRouter)
+}
+
+// pdAlgorithmConfig holds PD-specific algorithm configuration parsed from RoutingConfig.
+type pdAlgorithmConfig struct {
+	PromptLenBucketMinLength int  `json:"promptLenBucketMinLength"`
+	PromptLenBucketMaxLength int  `json:"promptLenBucketMaxLength"`
+	Combined                 bool `json:"combined"`
+}
+
+// parsePDAlgorithmConfig parses PD-specific config from the generic RoutingConfig.
+// Returns defaults (min=0, max=MaxInt32, combined=false) if raw is nil or empty.
+func parsePDAlgorithmConfig(raw json.RawMessage) *pdAlgorithmConfig {
+	cfg := &pdAlgorithmConfig{
+		PromptLenBucketMaxLength: math.MaxInt32,
+	}
+	if len(raw) == 0 {
+		return cfg
+	}
+	if err := sonic.Unmarshal(raw, cfg); err != nil {
+		klog.ErrorS(err, "failed to unmarshal PD algorithm config, using default values", "rawConfig", string(raw))
+		return &pdAlgorithmConfig{PromptLenBucketMaxLength: math.MaxInt32}
+	}
+	if cfg.PromptLenBucketMinLength < 0 {
+		cfg.PromptLenBucketMinLength = 0
+	}
+	if cfg.PromptLenBucketMaxLength == 0 {
+		cfg.PromptLenBucketMaxLength = math.MaxInt32
+	}
+	return cfg
 }
 
 type pdRouter struct {
@@ -1132,7 +1162,8 @@ func (r *pdRouter) isPodSuitableForPromptLength(routingCtx *types.RoutingContext
 	if profile == nil {
 		return false
 	}
-	minLength, maxLength := profile.PromptLenBucketMinLength, profile.PromptLenBucketMaxLength
+	pdCfg := parsePDAlgorithmConfig(profile.RoutingConfig)
+	minLength, maxLength := pdCfg.PromptLenBucketMinLength, pdCfg.PromptLenBucketMaxLength
 
 	if minLength > maxLength {
 		return false
@@ -1150,7 +1181,8 @@ func isCombinedPod(routingCtx *types.RoutingContext, pod *v1.Pod) bool {
 	if profile == nil {
 		return false
 	}
-	return profile.Combined
+	pdCfg := parsePDAlgorithmConfig(profile.RoutingConfig)
+	return pdCfg.Combined
 }
 
 func (r *pdRouter) collectAndBucketPods(routingCtx *types.RoutingContext, readyPods []*v1.Pod, promptLength int) ([]*v1.Pod, []*v1.Pod, []*v1.Pod, []*v1.Pod, []*v1.Pod) {

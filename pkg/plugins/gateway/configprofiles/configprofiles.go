@@ -22,7 +22,6 @@ package configprofiles
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
@@ -38,10 +37,8 @@ const (
 
 // ModelConfigProfile holds gateway options for a single profile.
 type ModelConfigProfile struct {
-	RoutingStrategy          string `json:"routingStrategy"`
-	PromptLenBucketMinLength int    `json:"promptLenBucketMinLength"`
-	PromptLenBucketMaxLength int    `json:"promptLenBucketMaxLength"`
-	Combined                 bool   `json:"combined"`
+	RoutingStrategy string          `json:"routingStrategy"`
+	RoutingConfig   json.RawMessage `json:"routingConfig,omitempty"`
 }
 
 // ModelConfigProfiles is the root JSON structure from model.aibrix.ai/config.
@@ -114,16 +111,6 @@ func ParseModelConfig(jsonStr string) (*ModelConfigProfiles, error) {
 	}
 	if len(cfg.Profiles) == 0 {
 		return nil, fmt.Errorf("model config has no profiles")
-	}
-	// Default prompt bounds when not provided: min=0, max=MaxInt32
-	for name, p := range cfg.Profiles {
-		if p.PromptLenBucketMinLength < 0 {
-			p.PromptLenBucketMinLength = 0
-		}
-		if p.PromptLenBucketMaxLength == 0 {
-			p.PromptLenBucketMaxLength = math.MaxInt32
-		}
-		cfg.Profiles[name] = p
 	}
 	return &cfg, nil
 }

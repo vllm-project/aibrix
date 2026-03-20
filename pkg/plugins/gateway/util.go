@@ -329,10 +329,8 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		return
 	}
 	routingCtx.ConfigProfile = &types.ResolvedConfigProfile{
-		RoutingStrategy:          profile.RoutingStrategy,
-		PromptLenBucketMinLength: profile.PromptLenBucketMinLength,
-		PromptLenBucketMaxLength: profile.PromptLenBucketMaxLength,
-		Combined:                 profile.Combined,
+		RoutingStrategy: profile.RoutingStrategy,
+		RoutingConfig:   profile.RoutingConfig,
 	}
 }
 
