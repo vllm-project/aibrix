@@ -82,7 +82,7 @@ func main() {
 	if standalone {
 		// Standalone mode: use file-based discovery
 		klog.Info("Running in standalone mode")
-		discoveryProvider = discovery.NewFileProvider(endpointsConfig)
+		discoveryProvider = discovery.NewStaticProvider(endpointsConfig)
 	} else {
 		// Kubernetes mode: load config and create clients
 		var err error

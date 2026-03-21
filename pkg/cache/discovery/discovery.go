@@ -14,13 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package discovery provides service discovery for standalone/Docker mode.
+// Package discovery provides service discovery backends for the gateway.
 //
-// Currently only FileProvider is implemented. Kubernetes mode still uses
-// the informer logic in pkg/cache/informers.go directly.
+// Available providers:
+//   - StaticProvider: loads endpoints from a YAML config file (for standalone/Docker mode)
+//   - Kubernetes informers (in pkg/cache/informers.go, not yet behind Provider interface)
 //
-// TODO: Add KubernetesProvider to unify both modes under the Provider interface.
-// The main blocker is that informers.go also watches ModelAdapters (for LoRA).
+// TODO: Add KubernetesProvider, ConsulProvider, EtcdProvider to unify all modes
+// under the Provider interface.
 package discovery
 
 import (
