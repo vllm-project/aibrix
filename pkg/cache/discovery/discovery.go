@@ -18,26 +18,48 @@ limitations under the License.
 //
 // Available providers:
 //   - StaticProvider: loads endpoints from a YAML config file (for standalone/Docker mode)
-//   - Kubernetes informers (in pkg/cache/informers.go, not yet behind Provider interface)
+//   - KubernetesProvider: watches Pods and ModelAdapters via K8s informers
 //
-// TODO: Add KubernetesProvider, ConsulProvider, EtcdProvider to unify all modes
-// under the Provider interface.
+// TODO: Add ConsulProvider, EtcdProvider.
 package discovery
 
-import (
-	"k8s.io/client-go/tools/cache"
+// EventType represents the type of a watch event.
+type EventType int
+
+const (
+	EventAdd EventType = iota
+	EventUpdate
+	EventDelete
 )
+
+// WatchEvent represents a change detected by a discovery provider.
+type WatchEvent struct {
+	// Type is the kind of change: add, update, or delete.
+	Type EventType
+	// Object is the current state of the resource (for add/update) or
+	// the last known state (for delete). Currently *v1.Pod.
+	Object any
+	// OldObject is the previous state, only set for EventUpdate. Nil otherwise.
+	OldObject any
+}
+
+// EventHandler is a callback invoked by a provider when a resource changes.
+type EventHandler func(event WatchEvent)
 
 // Provider defines the interface for service discovery backends.
 type Provider interface {
-	// Load returns all k8s like Resources, can be *v1.Pod, *modelv1alpha1.ModelAdapter
+	// Load returns all known resources at the time of the call.
+	// Currently returns *v1.Pod and *modelv1alpha1.ModelAdapter objects.
+	// Providers that deliver all data via Watch may return nil.
 	Load() ([]any, error)
 
-	// Process Resource add/update/delete events. kind is the resource type, "Pod", "ModelAdapter", etc
-	AddEventHandler(kind string,
-		handler cache.ResourceEventHandlerFuncs,
-		stopCh <-chan struct{}) error
+	// Watch registers a handler for resource change events and starts watching.
+	// The provider calls handler for each change (add/update/delete).
+	// For providers like Kubernetes, Watch also delivers initial state as EventAdd.
+	// Static providers may no-op (no dynamic updates).
+	// Watch should block until the initial state is fully delivered, then return.
+	Watch(handler EventHandler, stopCh <-chan struct{}) error
 
-	// Type returns a string identifier for the provider type.
+	// Type returns a string identifier for the provider type (e.g., "static", "consul").
 	Type() string
 }
