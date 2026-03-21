@@ -99,95 +99,73 @@ class TestEndpointBodyValidation:
             "model": "gpt-3.5-turbo",
             "messages": [{"role": "user", "content": "Hello"}],
         }
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/chat/completions", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/chat/completions", 1)
         assert result is None
 
     def test_chat_completions_missing_messages(self):
         """Test chat completions body without messages fails."""
         body = {"model": "gpt-3.5-turbo"}
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/chat/completions", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/chat/completions", 1)
         assert result is not None
         assert "messages" in result
 
     def test_chat_completions_messages_not_array(self):
         """Test chat completions body with non-array messages fails."""
         body = {"model": "gpt-3.5-turbo", "messages": "not an array"}
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/chat/completions", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/chat/completions", 1)
         assert result is not None
         assert "messages" in result
-        assert "array" in result
+        assert "list" in result
 
     def test_completions_valid_body_string_prompt(self):
         """Test valid completions body with string prompt passes."""
         body = {"model": "gpt-3.5-turbo", "prompt": "Hello world"}
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/completions", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/completions", 1)
         assert result is None
 
     def test_completions_valid_body_array_prompt(self):
         """Test valid completions body with array prompt passes."""
         body = {"model": "gpt-3.5-turbo", "prompt": ["Hello", "World"]}
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/completions", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/completions", 1)
         assert result is None
 
     def test_completions_missing_prompt(self):
         """Test completions body without prompt fails."""
         body = {"model": "gpt-3.5-turbo"}
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/completions", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/completions", 1)
         assert result is not None
         assert "prompt" in result
 
     def test_completions_invalid_prompt_type(self):
         """Test completions body with invalid prompt type fails."""
         body = {"model": "gpt-3.5-turbo", "prompt": 123}
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/completions", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/completions", 1)
         assert result is not None
         assert "prompt" in result
 
     def test_embeddings_valid_body_string_input(self):
         """Test valid embeddings body with string input passes."""
         body = {"model": "text-embedding-ada-002", "input": "Hello world"}
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/embeddings", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/embeddings", 1)
         assert result is None
 
     def test_embeddings_valid_body_array_input(self):
         """Test valid embeddings body with array input passes."""
         body = {"model": "text-embedding-ada-002", "input": ["Hello", "World"]}
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/embeddings", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/embeddings", 1)
         assert result is None
 
     def test_embeddings_missing_input(self):
         """Test embeddings body without input fails."""
         body = {"model": "text-embedding-ada-002"}
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/embeddings", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/embeddings", 1)
         assert result is not None
         assert "input" in result
 
     def test_embeddings_missing_model(self):
         """Test embeddings body without model fails."""
         body = {"input": "Hello world"}
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/embeddings", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/embeddings", 1)
         assert result is not None
         assert "model" in result
 
@@ -198,9 +176,7 @@ class TestEndpointBodyValidation:
             "query": "What is AI?",
             "documents": ["AI is...", "Machine learning is..."],
         }
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/rerank", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/rerank", 1)
         assert result is None
 
     def test_rerank_missing_query(self):
@@ -209,9 +185,7 @@ class TestEndpointBodyValidation:
             "model": "reranker-v1",
             "documents": ["doc1", "doc2"],
         }
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/rerank", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/rerank", 1)
         assert result is not None
         assert "query" in result
 
@@ -221,9 +195,7 @@ class TestEndpointBodyValidation:
             "model": "reranker-v1",
             "query": "What is AI?",
         }
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/rerank", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/rerank", 1)
         assert result is not None
         assert "documents" in result
 
@@ -234,19 +206,15 @@ class TestEndpointBodyValidation:
             "query": "What is AI?",
             "documents": "not an array",
         }
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/rerank", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/rerank", 1)
         assert result is not None
         assert "documents" in result
-        assert "array" in result
+        assert "list" in result
 
     def test_unknown_endpoint_passes(self):
         """Test that unknown endpoints skip body validation."""
         body = {"anything": "goes"}
-        result = _validate_request_body_for_endpoint(
-            body, "/v1/unknown", 1
-        )
+        result = _validate_request_body_for_endpoint(body, "/v1/unknown", 1)
         assert result is None
 
     @pytest.mark.parametrize(

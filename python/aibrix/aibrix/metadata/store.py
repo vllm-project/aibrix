@@ -152,8 +152,9 @@ class RedisMetadataStore(MetadataStore):
         try:
             return await self._client.ping()
         except Exception:
+            logger.exception("Redis metadata store ping failed")
             return False
 
     async def close(self) -> None:
-        await self._client.aclose()
+        await self._client.aclose()  # type: ignore[attr-defined]
         logger.info("Redis metadata store closed")
