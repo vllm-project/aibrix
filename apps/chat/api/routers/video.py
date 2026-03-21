@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 import httpx
 
-from models.schemas import VideoGenerateRequest, VideoJobResponse
+from models.schemas import VideoJobResponse
 from services.providers import get_video_provider
 
 logger = logging.getLogger(__name__)
@@ -17,15 +17,25 @@ router = APIRouter(prefix="/api/video", tags=["video"])
 
 
 @router.post("/generate", response_model=VideoJobResponse)
-async def generate_video(req: VideoGenerateRequest):
-    """Submit a video generation job via the configured provider."""
+async def generate_video(
+    prompt: str = Form(...),
+    model: str = Form("sora-2"),
+    size: str = Form("1280x720"),
+    seconds: int = Form(4),
+    image: UploadFile | None = File(None),
+):
+    """Submit a video generation job. Optionally include an image for I2V."""
     try:
         provider = get_video_provider()
+        image_bytes: bytes | None = None
+        if image is not None:
+            image_bytes = await image.read()
         result = await provider.generate(
-            prompt=req.prompt,
-            model=req.model,
-            size=req.size,
-            seconds=req.seconds,
+            prompt=prompt,
+            model=model,
+            size=size,
+            seconds=seconds,
+            image=image_bytes,
         )
         return result
     except httpx.HTTPError as e:

@@ -49,6 +49,11 @@ async def speech(req: AudioSpeechRequest):
             voice=req.voice,
             response_format=req.response_format,
             speed=req.speed,
+            language=req.language,
+            instructions=req.instructions,
+            task_type=req.task_type,
+            ref_audio=req.ref_audio,
+            ref_text=req.ref_text,
         )
         media_types = {
             "mp3": "audio/mpeg",
@@ -56,6 +61,7 @@ async def speech(req: AudioSpeechRequest):
             "aac": "audio/aac",
             "flac": "audio/flac",
             "wav": "audio/wav",
+            "pcm": "audio/pcm",
         }
         media_type = media_types.get(req.response_format, "audio/mpeg")
         return Response(content=audio_bytes, media_type=media_type)

@@ -89,6 +89,7 @@ async def chat_completion_stream(
     model: str,
     temperature: float = 0.7,
     max_tokens: int = 2048,
+    **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completions via the configured provider."""
     provider = get_chat_provider()
@@ -97,5 +98,6 @@ async def chat_completion_stream(
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
+        **kwargs,
     ):
         yield event

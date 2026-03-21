@@ -333,8 +333,9 @@ class OpenAIAudioProvider(AudioProvider):
         voice: str = "alloy",
         response_format: str = "mp3",
         speed: float = 1.0,
+        **kwargs: Any,
     ) -> bytes:
-        payload = {
+        payload: dict[str, Any] = {
             "input": text,
             "model": model,
             "voice": voice,
@@ -399,6 +400,7 @@ class OpenAIVideoProvider(VideoProvider):
         model: str,
         size: str = "1280x720",
         seconds: int = 4,
+        image: bytes | None = None,
         **kwargs: Any,
     ) -> dict:
         # Sora API accepts multipart/form-data.

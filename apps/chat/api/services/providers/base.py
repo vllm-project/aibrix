@@ -104,6 +104,7 @@ class AudioProvider(ABC):
         voice: str = "alloy",
         response_format: str = "mp3",
         speed: float = 1.0,
+        **kwargs: Any,
     ) -> bytes:
         """Text-to-speech. Returns raw audio bytes."""
 
@@ -124,9 +125,12 @@ class VideoProvider(ABC):
         model: str,
         size: str = "1280x720",
         seconds: int = 4,
+        image: bytes | None = None,
         **kwargs: Any,
     ) -> dict:
-        """Submit a video generation job. Returns ``{"id": ..., "status": ...}``."""
+        """Submit a video generation job. Returns ``{"id": ..., "status": ...}``.
+
+        Pass ``image`` bytes for Image-to-Video (I2V) generation."""
 
     @abstractmethod
     async def get_status(self, job_id: str) -> dict:

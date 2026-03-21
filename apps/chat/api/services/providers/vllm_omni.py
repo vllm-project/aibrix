@@ -97,13 +97,14 @@ class VLLMOmniChatProvider(ChatProvider):
         max_tokens: int = 2048,
         **kwargs: Any,
     ) -> dict:
+        modalities = kwargs.get("modalities", ["text"])
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": False,
-            "modalities": ["text"],
+            "modalities": modalities,
         }
         resp = await self.client.post(
             f"{self.base_url}/v1/chat/completions",
@@ -128,13 +129,14 @@ class VLLMOmniChatProvider(ChatProvider):
     ) -> AsyncIterator[str]:
         from services.providers.sse_utils import parse_openai_sse
 
+        modalities = kwargs.get("modalities", ["text"])
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": True,
-            "modalities": ["text"],
+            "modalities": modalities,
         }
         async with self.client.stream(
             "POST",
@@ -385,19 +387,32 @@ class VLLMOmniAudioProvider(AudioProvider):
         voice: str = "vivian",
         response_format: str = "wav",
         speed: float = 1.0,
+        **kwargs: Any,
     ) -> bytes:
         """Generate speech via Qwen3-TTS.
 
-        Adds ``language: "Auto"`` so the model auto-detects the input language.
+        Supports CustomVoice, VoiceDesign, and Base (voice cloning) tasks.
         """
+        language = kwargs.get("language", "Auto")
+        instructions = kwargs.get("instructions", "")
+        task_type = kwargs.get("task_type", "CustomVoice")
+
         payload: dict[str, Any] = {
             "input": text,
             "model": model,
             "voice": voice,
             "response_format": response_format,
             "speed": speed,
-            "language": "Auto",
+            "language": language,
         }
+        if instructions:
+            payload["instructions"] = instructions
+        if task_type != "CustomVoice":
+            payload["task_type"] = task_type
+        if kwargs.get("ref_audio"):
+            payload["ref_audio"] = kwargs["ref_audio"]
+        if kwargs.get("ref_text"):
+            payload["ref_text"] = kwargs["ref_text"]
         resp = await self.client.post(
             f"{self.base_url}/v1/audio/speech",
             json=payload,
@@ -480,11 +495,17 @@ class VLLMOmniVideoProvider(VideoProvider):
         model: str,
         size: str = "832x480",
         seconds: int = 4,
+        image: bytes | None = None,
         **kwargs: Any,
     ) -> dict:
         width, height = _parse_size(size)
         fps = kwargs.get("fps", 16)
         num_frames = fps * seconds + 1
+
+        # I2V uses different defaults for guidance_scale and flow_shift
+        is_i2v = image is not None
+        default_guidance = 1.0 if is_i2v else 4.0
+        default_flow_shift = 12.0 if is_i2v else 5.0
 
         form_data: dict[str, str] = {
             "prompt": prompt,
@@ -493,8 +514,8 @@ class VLLMOmniVideoProvider(VideoProvider):
             "num_frames": str(num_frames),
             "fps": str(fps),
             "num_inference_steps": str(kwargs.get("num_inference_steps", 40)),
-            "guidance_scale": str(kwargs.get("guidance_scale", 4.0)),
-            "flow_shift": str(kwargs.get("flow_shift", 5.0)),
+            "guidance_scale": str(kwargs.get("guidance_scale", default_guidance)),
+            "flow_shift": str(kwargs.get("flow_shift", default_flow_shift)),
         }
         if "negative_prompt" in kwargs:
             form_data["negative_prompt"] = kwargs["negative_prompt"]
@@ -507,10 +528,18 @@ class VLLMOmniVideoProvider(VideoProvider):
 
         job_id = str(uuid.uuid4())
 
+        # Build request — include input_reference file for I2V
+        files: dict | None = None
+        if image is not None:
+            files = {
+                "input_reference": ("input.png", image, "image/png"),
+            }
+
         try:
             resp = await self.client.post(
                 f"{self.base_url}/v1/videos",
                 data=form_data,
+                files=files,
                 headers=_auth_headers(self.api_key),
             )
             if resp.status_code != 200:
@@ -562,8 +591,8 @@ class VLLMOmniVideoProvider(VideoProvider):
         generations = result.get("generations", [])
         if not generations:
             raise ValueError(f"No video data for job {job_id}")
-        # vLLM-Omni returns base64-encoded MP4 in generations[0]["video"]
-        b64_data = generations[0].get("video", "")
+        # vLLM-Omni returns base64-encoded MP4 in data[0]["b64_json"]
+        b64_data = generations[0].get("b64_json", "")
         if not b64_data:
             raise ValueError(f"No video bytes for job {job_id}")
         return base64.b64decode(b64_data)

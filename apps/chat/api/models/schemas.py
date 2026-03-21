@@ -137,6 +137,11 @@ class AudioSpeechRequest(BaseModel):
     voice: str = "alloy"
     response_format: str = "mp3"
     speed: float = 1.0
+    language: str = "Auto"
+    instructions: str = ""
+    task_type: str = "CustomVoice"
+    ref_audio: str | None = None
+    ref_text: str | None = None
 
 
 # ── Video Generation ───────────────────────────────────────
