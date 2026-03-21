@@ -409,10 +409,10 @@ class VLLMOmniAudioProvider(AudioProvider):
             payload["instructions"] = instructions
         if task_type != "CustomVoice":
             payload["task_type"] = task_type
-        if kwargs.get("ref_audio"):
-            payload["ref_audio"] = kwargs["ref_audio"]
-        if kwargs.get("ref_text"):
-            payload["ref_text"] = kwargs["ref_text"]
+        if ref_audio := kwargs.get("ref_audio"):
+            payload["ref_audio"] = ref_audio
+        if ref_text := kwargs.get("ref_text"):
+            payload["ref_text"] = ref_text
         resp = await self.client.post(
             f"{self.base_url}/v1/audio/speech",
             json=payload,
