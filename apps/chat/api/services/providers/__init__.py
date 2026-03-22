@@ -53,7 +53,8 @@ def get_chat_provider() -> ChatProvider:
         name = settings.chat_provider
         cls = _REGISTRY["chat"][name]
         _provider_cache[key] = cls(
-            base_url=settings.get_chat_url(), api_key=settings.get_chat_key(),
+            base_url=settings.get_chat_url(),
+            api_key=settings.get_chat_key(),
         )
     return _provider_cache[key]
 
@@ -64,7 +65,10 @@ def get_image_provider() -> ImageProvider:
         name = settings.image_provider
         cls = _REGISTRY["image"][name]
         _provider_cache[key] = cls(
-            base_url=settings.get_image_url(), api_key=settings.get_image_key(),
+            base_url=settings.get_image_url(),
+            api_key=settings.get_image_key(),
+            image_edit_url=settings.get_image_edit_url(),
+            image_edit_key=settings.get_image_edit_key(),
         )
     return _provider_cache[key]
 
@@ -75,7 +79,12 @@ def get_audio_provider() -> AudioProvider:
         name = settings.audio_provider
         cls = _REGISTRY["audio"][name]
         _provider_cache[key] = cls(
-            base_url=settings.get_audio_url(), api_key=settings.get_audio_key(),
+            base_url=settings.get_asr_url(),
+            api_key=settings.get_asr_key(),
+            asr_url=settings.get_asr_url(),
+            asr_key=settings.get_asr_key(),
+            tts_url=settings.get_tts_url(),
+            tts_key=settings.get_tts_key(),
         )
     return _provider_cache[key]
 
@@ -86,6 +95,7 @@ def get_video_provider() -> VideoProvider:
         name = settings.video_provider
         cls = _REGISTRY["video"][name]
         _provider_cache[key] = cls(
-            base_url=settings.get_video_url(), api_key=settings.get_video_key(),
+            base_url=settings.get_video_url(),
+            api_key=settings.get_video_key(),
         )
     return _provider_cache[key]

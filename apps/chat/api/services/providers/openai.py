@@ -148,9 +148,16 @@ class OpenAIChatProvider(ChatProvider):
 
 
 class OpenAIImageProvider(ImageProvider):
-    def __init__(self, base_url: str, api_key: str = "") -> None:
+    def __init__(
+        self, base_url: str, api_key: str = "",
+        *, image_edit_url: str = "", image_edit_key: str = "",
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.image_edit_url = (
+            image_edit_url.rstrip("/") if image_edit_url else self.base_url
+        )
+        self.image_edit_key = image_edit_key or self.api_key
         self._client: httpx.AsyncClient | None = None
 
     def _make_client(self) -> httpx.AsyncClient:
@@ -213,8 +220,8 @@ class OpenAIImageProvider(ImageProvider):
         **kwargs: Any,
     ) -> dict:
         headers: dict[str, str] = {}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        if self.image_edit_key:
+            headers["Authorization"] = f"Bearer {self.image_edit_key}"
 
         # dall-e-2 uses inpainting (transparent pixels only) so we need
         # RGBA conversion and a fully-transparent mask for opaque images.
@@ -257,7 +264,7 @@ class OpenAIImageProvider(ImageProvider):
         }
 
         resp = await self.client.post(
-            f"{self.base_url}/v1/images/edits",
+            f"{self.image_edit_url}/v1/images/edits",
             files=files,
             data=data,
             headers=headers,
@@ -275,9 +282,17 @@ class OpenAIImageProvider(ImageProvider):
 
 
 class OpenAIAudioProvider(AudioProvider):
-    def __init__(self, base_url: str, api_key: str = "") -> None:
+    def __init__(
+        self, base_url: str, api_key: str = "",
+        *, asr_url: str = "", asr_key: str = "",
+        tts_url: str = "", tts_key: str = "",
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.asr_url = asr_url.rstrip("/") if asr_url else self.base_url
+        self.asr_key = asr_key or self.api_key
+        self.tts_url = tts_url.rstrip("/") if tts_url else self.base_url
+        self.tts_key = tts_key or self.api_key
         self._client: httpx.AsyncClient | None = None
 
     def _make_client(self) -> httpx.AsyncClient:
@@ -309,8 +324,8 @@ class OpenAIAudioProvider(AudioProvider):
         language: str | None = None,
     ) -> dict:
         headers: dict[str, str] = {}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        if self.asr_key:
+            headers["Authorization"] = f"Bearer {self.asr_key}"
 
         files = {"file": (filename, file_bytes)}
         data: dict[str, str] = {"model": model}
@@ -318,7 +333,7 @@ class OpenAIAudioProvider(AudioProvider):
             data["language"] = language
 
         resp = await self.client.post(
-            f"{self.base_url}/v1/audio/transcriptions",
+            f"{self.asr_url}/v1/audio/transcriptions",
             files=files,
             data=data,
             headers=headers,
@@ -342,9 +357,9 @@ class OpenAIAudioProvider(AudioProvider):
             "speed": speed,
         }
         resp = await self.client.post(
-            f"{self.base_url}/v1/audio/speech",
+            f"{self.tts_url}/v1/audio/speech",
             json=payload,
-            headers=_headers(self.api_key),
+            headers=_headers(self.tts_key),
         )
         resp.raise_for_status()
         return resp.content
