@@ -43,6 +43,11 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// sonicJSONInt64 unmarshals JSON numbers into map[string]any as int64 (not float64), so large
+// integer fields (e.g. ctx_request_id, disagg_request_id in disaggregated_params) survive
+// marshal/unmarshal without float64 precision loss.
+var sonicJSONInt64 = sonic.Config{UseInt64: true}.Froze()
+
 const (
 	RouterPD                      types.RoutingAlgorithm = "pd"
 	VLLMEngine                    string                 = "vllm"
@@ -79,6 +84,18 @@ const (
 	HeaderPrefillTargetPod   = "prefill-target-pod"
 )
 
+// Snowflake-style disagg request ID constants.
+// Layout: [timestamp(41b)][machineID(10b)][counter(12b)]
+// The modulo rotation guarantees result >= minGlobalID so TRT-LLM's executor treats
+// it as a global (cross-worker) disagg ID rather than a local one.
+const (
+	trtCounterBits   = 12
+	trtMachineIDBits = 10
+	trtCounterMask   = (1 << trtCounterBits) - 1
+	trtMinGlobalID   = int64(1) << 42
+	trtMaxInt64      = int64(1<<63 - 1)
+)
+
 var (
 	prefillRequestTimeout         int     = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
 	aibrixDecodeMaxRequest        float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_REQUEST", defaultMaxRequest)
@@ -86,6 +103,11 @@ var (
 	aibrixPromptLengthBucketing   bool    = utils.LoadEnvBool("AIBRIX_PROMPT_LENGTH_BUCKETING", false)
 	// KV connector type: "shfs" (default) for GPU/SHFS, "nixl" for Neuron
 	aibrixKVConnectorType string = utils.LoadEnv("AIBRIX_KV_CONNECTOR_TYPE", KVConnectorTypeSHFS)
+	// Machine ID for TRT-LLM snowflake disagg request IDs. Must be in [0, 1023).
+	trtMachineID int64 = int64(utils.LoadEnvInt("AIBRIX_TRT_MACHINE_ID", 0))
+
+	// Per-process monotonic counter for snowflake ID generation.
+	globalDisaggCounter atomic.Int64
 )
 
 func init() {
@@ -119,6 +141,19 @@ func parsePDAlgorithmConfig(raw json.RawMessage) *pdAlgorithmConfig {
 		cfg.PromptLenBucketMaxLength = math.MaxInt32
 	}
 	return cfg
+}
+
+// getDisaggRequestID generates a snowflake-style ID that is shared between a prefill
+// and its corresponding decode request so TRT-LLM can correlate the KV-cache entry.
+// The modulo rotation ensures the result is always >= trtMinGlobalID (1<<42), which
+// is the threshold TRT-LLM uses to distinguish global disagg IDs from local ones.
+func getDisaggRequestID(machineID int64) int64 {
+	timestampMs := time.Now().UnixMilli()
+	counter := globalDisaggCounter.Add(1) - 1&trtCounterMask
+	globalID := (timestampMs << (trtMachineIDBits + trtCounterBits)) |
+		(machineID << trtCounterBits) |
+		counter
+	return globalID%(trtMaxInt64-trtMinGlobalID) + trtMinGlobalID
 }
 
 type pdRouter struct {
@@ -698,11 +733,9 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 	}
 
 	if llmEngine == TensorRTLLM {
-		// Signal to TensorRT-LLM that this is a context-only (prefill) request.
-		// The prefill response will return disaggregated_params containing
-		// first_gen_tokens and opaque_state, which are injected into the decode request.
 		completionRequest["disaggregated_params"] = map[string]any{
-			"request_type": "context_only",
+			"request_type":      "context_only",
+			"disagg_request_id": getDisaggRequestID(trtMachineID),
 		}
 	}
 
@@ -762,10 +795,16 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 		return nil, fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response JSON
+	// Parse response JSON. TRT-LLM prefill returns large integer IDs in disaggregated_params; UseInt64 avoids float64 precision loss.
 	var responseData map[string]any
-	if err := sonic.Unmarshal(body, &responseData); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal prefill response: %w", err)
+	var errUnmarshal error
+	if routingCtx.Engine == TensorRTLLM {
+		errUnmarshal = sonicJSONInt64.Unmarshal(body, &responseData)
+	} else {
+		errUnmarshal = sonic.Unmarshal(body, &responseData)
+	}
+	if errUnmarshal != nil {
+		return nil, fmt.Errorf("failed to unmarshal prefill response: %w", errUnmarshal)
 	}
 
 	return responseData, nil
@@ -839,7 +878,7 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 func (r *pdRouter) updateRoutingContextWithTRTDisaggParams(routingCtx *types.RoutingContext, responseData map[string]any, prefillPod *v1.Pod) error {
 	// Parse the original request body
 	var originalRequest map[string]any
-	if err := sonic.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
+	if err := sonicJSONInt64.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
 		return fmt.Errorf("failed to unmarshal original request body: %w", err)
 	}
 
@@ -871,6 +910,13 @@ func (r *pdRouter) updateRoutingContextWithTRTDisaggParams(routingCtx *types.Rou
 	// Override request_type to generation_only for the decode request
 	disaggParamsMap["request_type"] = "generation_only"
 	originalRequest["disaggregated_params"] = disaggParamsMap
+
+	// Prefill response includes the canonical prompt_token_ids (top-level). Prefer that so decode matches TRT.
+	if pti, ok := responseData["prompt_token_ids"]; ok && pti != nil {
+		if ids, ok := anySliceForJSON(pti); ok {
+			originalRequest["prompt_token_ids"] = ids
+		}
+	}
 
 	updatedReqBody, err := sonic.Marshal(originalRequest)
 	if err != nil {
@@ -1162,4 +1208,34 @@ func (r *pdRouter) scoreCombinedPods(routingCtx *types.RoutingContext, combinedP
 		}
 	}
 	return bestPod
+}
+
+// anySliceForJSON converts a JSON-decoded array (e.g. []any from sonic) into []any suitable for map[string]any marshaling.
+func anySliceForJSON(v any) ([]any, bool) {
+	switch s := v.(type) {
+	case []any:
+		out := make([]any, len(s))
+		copy(out, s)
+		return out, true
+	case []int:
+		out := make([]any, len(s))
+		for i, x := range s {
+			out[i] = x
+		}
+		return out, true
+	case []int64:
+		out := make([]any, len(s))
+		for i, x := range s {
+			out[i] = x
+		}
+		return out, true
+	case []float64:
+		out := make([]any, len(s))
+		for i, x := range s {
+			out[i] = x
+		}
+		return out, true
+	default:
+		return nil, false
+	}
 }
