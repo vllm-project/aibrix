@@ -1,0 +1,32 @@
+# AIBrix Gateway Endpoints Configuration (Local)
+#
+# Defines backend vLLM engines for the gateway to route to.
+# Use real IP addresses or hostnames reachable from this machine.
+#
+# Simple mode: list endpoints directly
+# P/D mode: use rolesets with prefill/decode workers
+
+models:
+  - name: "Qwen/Qwen3.5-4B"
+    engine: "vllm"    # optional: vllm, sglang, trtllm
+    endpoints:
+      - "127.0.0.1:8000"
+
+# Multi-backend example (uncomment to use):
+# models:
+#   - name: "Qwen/Qwen2.5-1.5B-Instruct"
+#     engine: "vllm"
+#     endpoints:
+#       - "192.168.1.10:8000"
+#       - "192.168.1.11:8000"
+#
+# P/D disaggregated example (uncomment to use):
+# models:
+#   - name: "Qwen/Qwen2.5-72B"
+#     engine: "vllm"
+#     rolesets:
+#       - name: default
+#         prefill:
+#           - "192.168.1.10:8000"
+#         decode:
+#           - "192.168.1.11:8000"
