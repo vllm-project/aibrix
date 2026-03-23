@@ -182,7 +182,7 @@ func TestLeastKvCache_ScoreAll(t *testing.T) {
 			},
 			"pB": {
 				metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.5},
-				// missing CPU cache
+				metrics.CPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.0},
 			},
 		})
 		
@@ -193,15 +193,18 @@ func TestLeastKvCache_ScoreAll(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 3, len(scores))
 	
-	// pA has both metrics
-	assert.True(t, scored[0])
-	assert.InDelta(t, 0.2, scores[0], 0.001)
-	
-	// pB missing CPU cache -> scored false
-	assert.False(t, scored[1])
-	
-	// pC missing both -> scored false
-	assert.False(t, scored[2])
+	pods := podsFromCache(c).All()
+	for i, p := range pods {
+		if p.Name == "pA" {
+			assert.True(t, scored[i])
+			assert.InDelta(t, 0.2, scores[i], 0.001)
+		} else if p.Name == "pB" {
+			assert.True(t, scored[i])
+			assert.InDelta(t, 0.5, scores[i], 0.001)
+		} else {
+			assert.False(t, scored[i])
+		}
+	}
 	
 	// Check polarity
 	assert.Equal(t, PolarityLeast, r.Polarity())

@@ -258,10 +258,16 @@ func TestLeastBusyTime_ScoreAll(t *testing.T) {
 	scores, scored, err := r.ScoreAll(ctx, podsFromCache(c))
 	assert.NoError(t, err)
 	
-	assert.True(t, scored[0])
-	assert.InDelta(t, 0.3, scores[0], 0.001)
-	
-	assert.False(t, scored[1])
+	// Ensure that pB is the pod at index 0 and pA is the pod at index 1 or vice versa
+	pods := podsFromCache(c).All()
+	for i, p := range pods {
+		if p.Name == "pA" {
+			assert.True(t, scored[i])
+			assert.InDelta(t, 0.3, scores[i], 0.001)
+		} else {
+			assert.False(t, scored[i])
+		}
+	}
 	
 	assert.Equal(t, PolarityLeast, r.Polarity())
 }

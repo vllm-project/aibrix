@@ -30,6 +30,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
+	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -228,7 +230,7 @@ func TestScoreAndRank(t *testing.T) {
 		expectedScore map[string]float64
 	}{
 		{
-			name: "1) 单策略、HigherIsBetter，正常分布",
+			name: "1) Single Strategy, HigherIsBetter, normal distribution",
 			cfg: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
 			scorers: map[string]PodScorer{
 				"s1": &fakeScorer{
@@ -244,7 +246,7 @@ func TestScoreAndRank(t *testing.T) {
 			},
 		},
 		{
-			name: "2) 单策略、LowerIsBetter，正常分布",
+			name: "2) Single Strategy, LowerIsBetter, normal distribution",
 			cfg: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
 			scorers: map[string]PodScorer{
 				"s1": &fakeScorer{
@@ -260,7 +262,7 @@ func TestScoreAndRank(t *testing.T) {
 			},
 		},
 		{
-			name: "3) 多策略 + 不同 weightCoeff，验证加权结果",
+			name: "3) Multiple Strategies + different weight coefficients",
 			cfg: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 2}, {Name: "s2", Coefficient: 8}}},
 			scorers: map[string]PodScorer{
 				"s1": &fakeScorer{ // HigherIsBetter
@@ -284,7 +286,7 @@ func TestScoreAndRank(t *testing.T) {
 			},
 		},
 		{
-			name: "4) scored==false 的 pod：该策略 normalized=0，但 pod 仍参与其他策略",
+			name: "4) Unscored pods have 0 normalized score, but still participate in other strategies",
 			cfg: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}, {Name: "s2", Coefficient: 1}}},
 			scorers: map[string]PodScorer{
 				"s1": &fakeScorer{ // HigherIsBetter
@@ -312,7 +314,7 @@ func TestScoreAndRank(t *testing.T) {
 			},
 		},
 		{
-			name: "5) 某策略 scored 全 false：该策略对所有 pod 贡献为 0，不影响最终选择",
+			name: "5) Strategy with all pods unscored contributes 0 to all pods",
 			cfg: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}, {Name: "s2", Coefficient: 1}}},
 			scorers: map[string]PodScorer{
 				"s1": &fakeScorer{ // HigherIsBetter
@@ -338,7 +340,7 @@ func TestScoreAndRank(t *testing.T) {
 			},
 		},
 		{
-			name: "6) max==min：normalized 全 1（仅对 scored==true 的 pods）",
+			name: "6) max==min gives normalized score 1.0 (for scored pods only)",
 			cfg: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
 			scorers: map[string]PodScorer{
 				"s1": &fakeScorer{ // HigherIsBetter
@@ -356,7 +358,7 @@ func TestScoreAndRank(t *testing.T) {
 			},
 		},
 		{
-			name: "7) 部分策略未配置 coefficient：默认 1", // Tested by parsing logic mainly, but we can verify it here if config is provided.
+			name: "7) Default weight coefficient is 1", // Tested by parsing logic mainly, but we can verify it here if config is provided.
 			cfg: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}, {Name: "s2", Coefficient: 3}}},
 			scorers: map[string]PodScorer{
 				"s1": &fakeScorer{ 
@@ -802,6 +804,20 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		return throughputRouter{cache: c}, nil
 	})
 	
+	// Register session-affinity 
+	rm.Register(RouterSessionAffinity, func() (types.Router, error) {
+		return NewSessionAffinityRouter()
+	})
+
+	// Register prefix-cache
+	rm.Register(RouterPrefixCache, func() (types.Router, error) {
+		tokenizerObj, _ := tokenizer.NewTokenizer("character", nil)
+		return prefixCacheRouter{
+			prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(), 
+			tokenizer: tokenizerObj,
+		}, nil
+	})
+
 	rm.Init()
 
 	// 1. E2E Test: Least Request dominates (Weight 10 vs 1)
@@ -858,7 +874,7 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		// The active strategies are least-request (weight 1) and throughput (weight 2)
 		// least-request: podA=0.0, podB=1.0. Weight=1. Score contribution: A=0, B=1
 		// throughput: podA=1.0, podB=0.0. Weight=2. Score contribution: A=2, B=0
-		// Total: podA = 2, podB = 1 -> podA wins!
+		// Total: podA = 2, podB = 1 -> podA wins
 		assert.Contains(t, targetIP, "1.1.1.1")
 	})
 
@@ -877,5 +893,46 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		
 		_, isRandom := router.(*randomRouter)
 		assert.True(t, isRandom, "Expected fallback to randomRouter")
+	})
+
+	// 6. E2E Test: Session Affinity combined with Least Request
+	t.Run("E2E_MultiStrategy_SessionAffinity_And_LeastRequest", func(t *testing.T) {
+		// Session affinity is highly opinionated - either 1 or 0
+		// Weight 10 for session affinity means it will heavily bias towards the session pod
+		algString := "session-affinity:10,least-request:1"
+		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "", "req6", "")
+		
+		router, err := rm.Select(ctx)
+		assert.NoError(t, err)
+		
+		targetIP, err := router.Route(ctx, pods)
+		assert.NoError(t, err)
+		
+		// The active strategies are session-affinity (weight 10) and least-request (weight 1).
+		// Request has no session header, so session-affinity gives 0 to all pods.
+		// session-affinity: podA=0.0, podB=0.0. Weight=10. Score contribution: A=0.0, B=0.0
+		// least-request: podA (1 req) = 0.0, podB (0 req) = 1.0. Weight=1. Score contribution: A=0.0, B=1.0
+		// Total: podA = 0.0, podB = 1.0 -> podB wins
+		assert.Contains(t, targetIP, "2.2.2.2")
+	})
+
+	// 7. E2E Test: Prefix Cache combined with Least Request
+	t.Run("E2E_MultiStrategy_PrefixCache_And_LeastRequest", func(t *testing.T) {
+		// Prefix cache is 1, least-request is 2
+		algString := "prefix-cache:1,least-request:2"
+		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "input text", "req7", "")
+		
+		router, err := rm.Select(ctx)
+		assert.NoError(t, err)
+		
+		targetIP, err := router.Route(ctx, pods)
+		assert.NoError(t, err)
+		
+		// The active strategies are prefix-cache (weight 1) and least-request (weight 2).
+		// We didn't seed any prefix cache, so prefix-cache gives 0.0 to all pods.
+		// prefix-cache: podA=0.0, podB=0.0. Weight=1. Score contribution: A=0.0, B=0.0
+		// least-request: podA (1 req) = 0.0, podB (0 req) = 1.0. Weight=2. Score contribution: A=0.0, B=2.0
+		// Total: podA = 0.0, podB = 2.0 -> podB wins
+		assert.Contains(t, targetIP, "2.2.2.2")
 	})
 }

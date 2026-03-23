@@ -148,14 +148,18 @@ func TestLeastUtil_ScoreAll(t *testing.T) {
 	r := leastUtilRouter{cache: c}
 	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
 	
-	scores, scored, err := r.ScoreAll(ctx, podsFromCache(c))
+	podArray := podsFromCache(c)
+	scores, scored, err := r.ScoreAll(ctx, podArray)
 	assert.NoError(t, err)
 	
-	assert.True(t, scored[0])
-	assert.InDelta(t, 0.2, scores[0], 0.001)
-	
-	assert.True(t, scored[1])
-	assert.InDelta(t, 0.9, scores[1], 0.001)
+	for i, p := range podArray.Pods {
+		assert.True(t, scored[i])
+		if p.Name == "pA" {
+			assert.InDelta(t, 0.2, scores[i], 0.001)
+		} else if p.Name == "pB" {
+			assert.InDelta(t, 0.9, scores[i], 0.001)
+		}
+	}
 	
 	assert.Equal(t, PolarityLeast, r.Polarity())
 }
