@@ -16,7 +16,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import redis.asyncio as redis
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -30,6 +29,7 @@ from aibrix.metadata.api.v1 import batch, files, models, users
 from aibrix.metadata.cache import JobCache
 from aibrix.metadata.core import HTTPXClientWrapper, KopfOperatorWrapper
 from aibrix.metadata.setting import settings
+from aibrix.metadata.store import RedisMetadataStore
 from aibrix.storage import create_storage
 
 logger = init_logger(__name__)
@@ -44,13 +44,25 @@ async def liveness_check():
 
 @router.get("/readyz")
 async def readiness_check(request: Request):
-    # Check if Redis is ready
+    # Check if metadata store is ready
     try:
-        if hasattr(request.app.state, "redis_client"):
+        if hasattr(request.app.state, "metadata_store"):
+            ping_ok = await request.app.state.metadata_store.ping()
+            if not ping_ok:
+                logger.error("Metadata store ping returned a falsy result.")
+                return JSONResponse(
+                    content={
+                        "status": "not ready",
+                        "error": "metadata store unavailable",
+                    },
+                    status_code=503,
+                )
+        # Backward compatibility: check redis_client if metadata_store not set
+        elif hasattr(request.app.state, "redis_client"):
             await request.app.state.redis_client.ping()
         return JSONResponse(content={"status": "ready"}, status_code=200)
     except Exception as e:
-        logger.error(f"Redis health check failed: {e}")
+        logger.error(f"Metadata store health check failed: {e}")
         return JSONResponse(
             content={"status": "not ready", "error": str(e)}, status_code=503
         )
@@ -87,17 +99,22 @@ async def lifespan(app: FastAPI):
     # Code executed on startup
     logger.info("Initializing FastAPI app...")
 
-    # Initialize Redis client
-    app.state.redis_client = redis.Redis(
-        host=envs.STORAGE_REDIS_HOST or "localhost",
-        port=envs.STORAGE_REDIS_PORT,
-        db=envs.STORAGE_REDIS_DB,
-        password=envs.STORAGE_REDIS_PASSWORD,
-        decode_responses=False,
-    )
-    logger.info(
-        f"Redis client initialized: {envs.STORAGE_REDIS_HOST}:{envs.STORAGE_REDIS_PORT}"
-    )
+    # Initialize metadata store (abstraction over Redis) only if not already set
+    # (e.g., tests may pre-configure a mock store before lifespan runs)
+    if not hasattr(app.state, "metadata_store") or app.state.metadata_store is None:
+        metadata_store = RedisMetadataStore(
+            host=envs.STORAGE_REDIS_HOST or "localhost",
+            port=envs.STORAGE_REDIS_PORT,
+            db=envs.STORAGE_REDIS_DB,
+            password=envs.STORAGE_REDIS_PASSWORD,
+        )
+        app.state.metadata_store = metadata_store
+        # Backward compatibility: expose underlying Redis client for components
+        # that haven't migrated to the MetadataStore interface yet
+        app.state.redis_client = metadata_store.client
+        logger.info(
+            f"Metadata store initialized: {envs.STORAGE_REDIS_HOST}:{envs.STORAGE_REDIS_PORT}"
+        )
 
     if hasattr(app.state, "httpx_client_wrapper"):
         app.state.httpx_client_wrapper.start()
@@ -115,7 +132,9 @@ async def lifespan(app: FastAPI):
         app.state.kopf_operator_wrapper.stop()
     if hasattr(app.state, "httpx_client_wrapper"):
         await app.state.httpx_client_wrapper.stop()
-    if hasattr(app.state, "redis_client"):
+    if hasattr(app.state, "metadata_store"):
+        await app.state.metadata_store.close()
+    elif hasattr(app.state, "redis_client"):
         await app.state.redis_client.aclose()  # type: ignore[attr-defined]
         logger.info("Redis client closed")
 

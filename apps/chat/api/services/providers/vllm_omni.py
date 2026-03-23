@@ -197,9 +197,16 @@ class VLLMOmniImageProvider(ImageProvider):
     request body (height, width, num_inference_steps, true_cfg_scale, seed).
     """
 
-    def __init__(self, base_url: str, api_key: str = "") -> None:
+    def __init__(
+        self, base_url: str, api_key: str = "",
+        *, image_edit_url: str = "", image_edit_key: str = "",
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.image_edit_url = (
+            image_edit_url.rstrip("/") if image_edit_url else self.base_url
+        )
+        self.image_edit_key = image_edit_key or self.api_key
         self._client: httpx.AsyncClient | None = None
 
     def _make_client(self) -> httpx.AsyncClient:
@@ -305,9 +312,9 @@ class VLLMOmniImageProvider(ImageProvider):
             payload["seed"] = kwargs["seed"]
 
         resp = await self.client.post(
-            f"{self.base_url}/v1/chat/completions",
+            f"{self.image_edit_url}/v1/chat/completions",
             json=payload,
-            headers=_headers(self.api_key),
+            headers=_headers(self.image_edit_key),
         )
         if resp.status_code != 200:
             logger.error(
@@ -331,9 +338,17 @@ class VLLMOmniAudioProvider(AudioProvider):
     * **TTS** (``speech``) adds the ``language`` field required by Qwen3-TTS.
     """
 
-    def __init__(self, base_url: str, api_key: str = "") -> None:
+    def __init__(
+        self, base_url: str, api_key: str = "",
+        *, asr_url: str = "", asr_key: str = "",
+        tts_url: str = "", tts_key: str = "",
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.asr_url = asr_url.rstrip("/") if asr_url else self.base_url
+        self.asr_key = asr_key or self.api_key
+        self.tts_url = tts_url.rstrip("/") if tts_url else self.base_url
+        self.tts_key = tts_key or self.api_key
         self._client: httpx.AsyncClient | None = None
 
     def _make_client(self) -> httpx.AsyncClient:
@@ -370,10 +385,10 @@ class VLLMOmniAudioProvider(AudioProvider):
             data["language"] = language
 
         resp = await self.client.post(
-            f"{self.base_url}/v1/audio/transcriptions",
+            f"{self.asr_url}/v1/audio/transcriptions",
             files=files,
             data=data,
-            headers=_auth_headers(self.api_key),
+            headers=_auth_headers(self.asr_key),
         )
         resp.raise_for_status()
         return resp.json()
@@ -399,9 +414,9 @@ class VLLMOmniAudioProvider(AudioProvider):
             "language": "Auto",
         }
         resp = await self.client.post(
-            f"{self.base_url}/v1/audio/speech",
+            f"{self.tts_url}/v1/audio/speech",
             json=payload,
-            headers=_headers(self.api_key),
+            headers=_headers(self.tts_key),
         )
         if resp.status_code != 200:
             logger.error(
