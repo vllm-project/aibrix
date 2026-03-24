@@ -25,7 +25,6 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
-	"reflect"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -1179,24 +1178,4 @@ func (r *pdRouter) scoreCombinedPods(routingCtx *types.RoutingContext, combinedP
 		}
 	}
 	return bestPod
-}
-
-// anySliceForJSON converts a JSON-decoded array (e.g. []any from sonic) into []any suitable for map[string]any marshaling.
-func anySliceForJSON(v any) ([]any, bool) {
-	if s, ok := v.([]any); ok {
-		out := make([]any, len(s))
-		copy(out, s)
-		return out, true
-	}
-
-	val := reflect.ValueOf(v)
-	if val.Kind() != reflect.Slice {
-		return nil, false
-	}
-
-	out := make([]any, val.Len())
-	for i := 0; i < val.Len(); i++ {
-		out[i] = val.Index(i).Interface()
-	}
-	return out, true
 }
