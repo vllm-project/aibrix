@@ -156,7 +156,7 @@ def build_app(args: argparse.Namespace, params={}):
 
     # Initialize kopf operator wrapper if K8s jobs are enabled
     if args.enable_k8s_job:
-        from aibrix.metadata.core.kopf_operator import KopfOperatorWrapper
+        from aibrix.metadata.core import KopfOperatorWrapper
 
         app.state.kopf_operator_wrapper = KopfOperatorWrapper(
             namespace=getattr(args, "k8s_namespace", "default"),

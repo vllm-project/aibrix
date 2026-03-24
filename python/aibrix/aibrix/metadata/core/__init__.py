@@ -11,10 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from typing import TYPE_CHECKING
+
 from .asyncio_thread import AsyncLoopThread, T
 from .httpx_client import HTTPXClientWrapper
 
 __all__ = ["AsyncLoopThread", "HTTPXClientWrapper", "KopfOperatorWrapper", "T"]
+
+if TYPE_CHECKING:
+    from .kopf_operator import KopfOperatorWrapper
 
 
 def __getattr__(name: str):
