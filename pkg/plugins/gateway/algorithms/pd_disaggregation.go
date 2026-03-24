@@ -43,6 +43,11 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// sonicJSONInt64 unmarshals JSON numbers into map[string]any as int64 (not float64), so large
+// integer fields (e.g. ctx_request_id, disagg_request_id in disaggregated_params) survive
+// marshal/unmarshal without float64 precision loss.
+var sonicJSONInt64 = sonic.Config{UseInt64: true}.Froze()
+
 const (
 	RouterPD                      types.RoutingAlgorithm = "pd"
 	VLLMEngine                    string                 = "vllm"
@@ -698,11 +703,9 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 	}
 
 	if llmEngine == TensorRTLLM {
-		// Signal to TensorRT-LLM that this is a context-only (prefill) request.
-		// The prefill response will return disaggregated_params containing
-		// first_gen_tokens and opaque_state, which are injected into the decode request.
 		completionRequest["disaggregated_params"] = map[string]any{
-			"request_type": "context_only",
+			"request_type":      "context_only",
+			"disagg_request_id": getDisaggRequestID(trtMachineID),
 		}
 	}
 
@@ -762,10 +765,16 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 		return nil, fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response JSON
+	// Parse response JSON. TRT-LLM prefill returns large integer IDs in disaggregated_params; UseInt64 avoids float64 precision loss.
 	var responseData map[string]any
-	if err := sonic.Unmarshal(body, &responseData); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal prefill response: %w", err)
+	var errUnmarshal error
+	if routingCtx.Engine == TensorRTLLM {
+		errUnmarshal = sonicJSONInt64.Unmarshal(body, &responseData)
+	} else {
+		errUnmarshal = sonic.Unmarshal(body, &responseData)
+	}
+	if errUnmarshal != nil {
+		return nil, fmt.Errorf("failed to unmarshal prefill response: %w", errUnmarshal)
 	}
 
 	return responseData, nil
@@ -839,7 +848,7 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 func (r *pdRouter) updateRoutingContextWithTRTDisaggParams(routingCtx *types.RoutingContext, responseData map[string]any, prefillPod *v1.Pod) error {
 	// Parse the original request body
 	var originalRequest map[string]any
-	if err := sonic.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
+	if err := sonicJSONInt64.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
 		return fmt.Errorf("failed to unmarshal original request body: %w", err)
 	}
 
@@ -871,6 +880,13 @@ func (r *pdRouter) updateRoutingContextWithTRTDisaggParams(routingCtx *types.Rou
 	// Override request_type to generation_only for the decode request
 	disaggParamsMap["request_type"] = "generation_only"
 	originalRequest["disaggregated_params"] = disaggParamsMap
+
+	// Prefill response includes the canonical prompt_token_ids (top-level). Prefer that so decode matches TRT.
+	if pti, ok := responseData["prompt_token_ids"]; ok && pti != nil {
+		if ids, ok := anySliceForJSON(pti); ok {
+			originalRequest["prompt_token_ids"] = ids
+		}
+	}
 
 	updatedReqBody, err := sonic.Marshal(originalRequest)
 	if err != nil {
