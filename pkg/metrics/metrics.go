@@ -178,7 +178,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:num_requests_success_total",
 				"sglang": "sglang:num_requests_total",
-				"trtllm": "request_success_total",
+				"trtllm": "trtllm_request_success_total",
 			},
 			Description: "Number of successful requests",
 		},
@@ -214,7 +214,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:e2e_request_latency_seconds",
 				"sglang": "sglang:e2e_request_latency_seconds",
-				"trtllm": "e2e_request_latency_seconds",
+				"trtllm": "trtllm_e2e_request_latency_seconds",
 			},
 			Description: "End-to-end request latency in seconds",
 		},
@@ -226,7 +226,7 @@ var (
 			},
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:request_queue_time_seconds",
-				"trtllm": "request_queue_time_seconds",
+				"trtllm": "trtllm_request_queue_time_seconds",
 			},
 			Description: "Request queue time in seconds",
 		},
@@ -349,7 +349,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:time_to_first_token_seconds",
 				"sglang": "sglang:time_to_first_token_seconds",
-				"trtllm": "time_to_first_token_seconds",
+				"trtllm": "trtllm_time_to_first_token_seconds",
 			},
 			Description: "Time to first token in seconds",
 		},
@@ -362,7 +362,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:time_per_output_token_seconds",
 				"sglang": "sglang:inter_token_latency_seconds",
-				"trtllm": "time_per_output_token_seconds",
+				"trtllm": "trtllm_time_per_output_token_seconds",
 			},
 			Description: "Time per output token in seconds",
 		},
@@ -375,7 +375,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:inter_token_latency_seconds",
 				"sglang": "sglang:inter_token_latency_seconds",
-				"trtllm": "time_per_output_token_seconds",
+				"trtllm": "trtllm_time_per_output_token_seconds",
 			},
 			Description: "Inter-token latency in seconds",
 		},
@@ -456,6 +456,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:kv_cache_usage_perc",
 				"sglang": "sglang:token_usage", // Based on https://github.com/sgl-project/sglang/issues/5979
+				"trtllm": "trtllm_kv_cache_utilization",
 				"xllm":   "kv_cache_utilization",
 			},
 			Description: "KV-cache usage. 1 means 100 percent usage.",
