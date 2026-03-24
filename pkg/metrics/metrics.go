@@ -50,6 +50,7 @@ const (
 	RequestMaxNumGenerationTokens = "request_max_num_generation_tokens"
 
 	KVCacheUsagePerc                = "kv_cache_usage_perc"
+	KVCacheHitRate                  = "kv_cache_hit_rate"
 	NixlNumFailedTransfers          = "nixl_num_failed_transfers_total"
 	NixlNumFailedNotifications      = "nixl_num_failed_notifications_total"
 	PrefixCacheHitTotal             = "prefix_cache_hits_total"
@@ -460,6 +461,17 @@ var (
 				"xllm":   "kv_cache_utilization",
 			},
 			Description: "KV-cache usage. 1 means 100 percent usage.",
+		},
+		KVCacheHitRate: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"trtllm": "trtllm_kv_cache_hit_rate",
+			},
+			Description: "KV-cache hit rate. 1 means all lookups hit cache.",
 		},
 		PrefixCacheQueriesTotal: {
 			MetricScope:  PodModelMetricScope,
