@@ -37,12 +37,6 @@ spec:
                       valueFrom:
                         fieldRef:
                           fieldPath: status.podIP
-                    - name: TRANSFORMERS_OFFLINE
-                      value: "1"
-                    - name: HF_HUB_OFFLINE
-                      value: "1"
-                    - name: CUDA_VISIBLE_DEVICES
-                      value: "0"
                     - name: MODEL
                       value: "Qwen3-8B"
                     - name: MAX_SEQ_LEN
@@ -119,12 +113,6 @@ spec:
                       valueFrom:
                         fieldRef:
                           fieldPath: status.podIP
-                    - name: TRANSFORMERS_OFFLINE
-                      value: "1"
-                    - name: HF_HUB_OFFLINE
-                      value: "1"
-                    - name: CUDA_VISIBLE_DEVICES
-                      value: "0"
                     - name: MODEL
                       value: "Qwen3-8B"
                     - name: MAX_SEQ_LEN

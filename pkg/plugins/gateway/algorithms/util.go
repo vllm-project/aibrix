@@ -19,6 +19,8 @@ package routingalgorithms
 import (
 	"fmt"
 	"math"
+	"sync/atomic"
+	"time"
 
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -26,6 +28,68 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
+
+// Snowflake-style disagg request ID constants for TensorRT-LLM PD routing.
+// Layout: [timestamp(41b)][machineID(10b)][counter(12b)]
+// The modulo rotation guarantees result >= minGlobalID so TRT-LLM's executor treats
+// it as a global (cross-worker) disagg ID rather than a local one.
+//
+// Timestamp uses milliseconds since trtSnowflakeEpochMs (not Unix epoch) so the 41-bit
+// field does not overflow around year ~2039 when using raw Unix millis from 1970.
+const (
+	trtCounterBits      = 12
+	trtMachineIDBits    = 10
+	trtTimestampBits    = 41
+	trtSnowflakeEpochMs = int64(1672531200000) // 2023-01-01T00:00:00Z in milliseconds
+	trtCounterMask      = (1 << trtCounterBits) - 1
+	trtTimestampMax     = (1 << trtTimestampBits) - 1 // max ms offset representable in 41 bits (~69.7y span)
+	trtMinGlobalID      = int64(1) << 42
+	trtMaxInt64         = int64(1<<63 - 1)
+)
+
+var (
+	// Machine ID for TRT-LLM snowflake disagg request IDs (trtMachineIDBits-wide field).
+	// Valid range: 0 <= id < 2^trtMachineIDBits (i.e. [0, 1024) for 10 bits). Out-of-range
+	// values would corrupt the snowflake layout in getDisaggRequestID.
+	trtMachineID int64 = int64(utils.LoadEnvInt("AIBRIX_TRT_MACHINE_ID", 0))
+
+	// Per-process monotonic counter for snowflake ID generation.
+	globalDisaggCounter atomic.Int64
+)
+
+func init() {
+	if err := validateTRTMachineIDValue(trtMachineID); err != nil {
+		panic("routingalgorithms: " + err.Error())
+	}
+}
+
+// validateTRTMachineIDValue ensures machineID fits in trtMachineIDBits bits (used in getDisaggRequestID).
+func validateTRTMachineIDValue(machineID int64) error {
+	maxExclusive := int64(1 << trtMachineIDBits)
+	if machineID < 0 || machineID >= maxExclusive {
+		return fmt.Errorf("invalid AIBRIX_TRT_MACHINE_ID=%d: must satisfy 0 <= id < %d (10-bit field)", machineID, maxExclusive)
+	}
+	return nil
+}
+
+// getDisaggRequestID generates a snowflake-style ID that is shared between a prefill
+// and its corresponding decode request so TRT-LLM can correlate the KV-cache entry.
+// The modulo rotation ensures the result is always >= trtMinGlobalID (1<<42), which
+// is the threshold TRT-LLM uses to distinguish global disagg IDs from local ones.
+func getDisaggRequestID(machineID int64) int64 {
+	timestampMs := time.Now().UnixMilli() - trtSnowflakeEpochMs
+	if timestampMs < 0 {
+		timestampMs = 0 // clock skew before custom epoch
+	}
+	if timestampMs > trtTimestampMax {
+		timestampMs = trtTimestampMax // stay within 41-bit timestamp field (~2092+ from epoch ms)
+	}
+	counter := (globalDisaggCounter.Add(1) - 1) & trtCounterMask
+	globalID := (timestampMs << (trtMachineIDBits + trtCounterBits)) |
+		(machineID << trtCounterBits) |
+		counter
+	return globalID%(trtMaxInt64-trtMinGlobalID) + trtMinGlobalID
+}
 
 // mean calculates the mean of a slice of float64 numbers.
 func mean(numbers []float64) float64 {
