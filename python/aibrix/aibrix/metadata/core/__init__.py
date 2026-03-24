@@ -13,6 +13,19 @@
 # limitations under the License.
 from .asyncio_thread import AsyncLoopThread, T
 from .httpx_client import HTTPXClientWrapper
-from .kopf_operator import KopfOperatorWrapper
 
 __all__ = ["AsyncLoopThread", "HTTPXClientWrapper", "KopfOperatorWrapper", "T"]
+
+
+def __getattr__(name: str):
+    """Lazy-load Kopf (heavy) only when KopfOperatorWrapper is requested.
+
+    Importing ``kopf`` pulls in optional kubernetes-asyncio typing; keeping this
+    lazy avoids loading the operator stack for code paths that only need
+    ``AsyncLoopThread`` (e.g. storage utilities and batch driver imports).
+    """
+    if name == "KopfOperatorWrapper":
+        from .kopf_operator import KopfOperatorWrapper
+
+        return KopfOperatorWrapper
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
