@@ -1946,3 +1946,39 @@ func TestFilterPrefillDecodePods_CombinedPickImbalance(t *testing.T) {
 		})
 	}
 }
+
+func TestGetDisaggRequestID_CustomEpoch(t *testing.T) {
+	id1 := getDisaggRequestID(0)
+	id2 := getDisaggRequestID(0)
+	assert.GreaterOrEqual(t, id1, trtMinGlobalID)
+	assert.GreaterOrEqual(t, id2, trtMinGlobalID)
+	assert.NotEqual(t, id1, id2, "counter should advance")
+	id3 := getDisaggRequestID(42)
+	assert.GreaterOrEqual(t, id3, trtMinGlobalID)
+}
+
+func TestValidateTRTMachineIDValue(t *testing.T) {
+	maxExclusive := int64(1 << trtMachineIDBits)
+	tests := []struct {
+		name    string
+		id      int64
+		wantErr bool
+	}{
+		{"zero", 0, false},
+		{"mid", 512, false},
+		{"max valid", maxExclusive - 1, false},
+		{"negative", -1, true},
+		{"too large", maxExclusive, true},
+		{"overflow bits", maxExclusive + 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateTRTMachineIDValue(tt.id)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
