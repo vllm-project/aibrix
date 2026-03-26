@@ -881,10 +881,16 @@ func (r *pdRouter) updateRoutingContextWithTRTDisaggParams(routingCtx *types.Rou
 	disaggParamsMap["request_type"] = "generation_only"
 	originalRequest["disaggregated_params"] = disaggParamsMap
 
-	// Prefill response includes the canonical prompt_token_ids (top-level). Prefer that so decode matches TRT.
+	// Prefill response includes the canonical prompt_token_ids (top-level). Route it based on request path:
+	// - /v1/completions: set prompt directly from token ids.
+	// - /v1/chat/completions: set prompt_token_ids field.
 	if pti, ok := responseData["prompt_token_ids"]; ok && pti != nil {
 		if ids, ok := anySliceForJSON(pti); ok {
-			originalRequest["prompt_token_ids"] = ids
+			if routingCtx.ReqPath == "/v1/completions" {
+				originalRequest["prompt"] = ids
+			} else if routingCtx.ReqPath == "/v1/chat/completions" {
+				originalRequest["prompt_token_ids"] = ids
+			}
 		}
 	}
 
