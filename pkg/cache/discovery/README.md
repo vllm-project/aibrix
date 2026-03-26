@@ -8,29 +8,20 @@ AIBrix was originally built on Kubernetes, and service discovery was tightly cou
 type EventHandler func(event WatchEvent)
 
 type Provider interface {
-    Load() ([]any, error)
     Watch(handler EventHandler, stopCh <-chan struct{}) error
     Type() string
 }
 ```
 
-### `Load() ([]any, error)`
-
-Returns all known resources as a snapshot. Currently returns `*v1.Pod` objects (and potentially `*modelv1alpha1.ModelAdapter`).
-
-- **StaticProvider**: reads YAML file, returns synthetic pods.
-- **KubernetesProvider**: returns nil — all data is delivered via `Watch()`.
-- **Consul/etcd providers**: may return initial snapshot, or nil if they deliver everything via `Watch()`.
-
 ### `Watch(handler EventHandler, stopCh <-chan struct{}) error`
 
 Registers a callback for resource changes and starts watching. The provider calls `handler` directly — there is no intermediate channel or buffer. This design allows K8s informers to invoke the handler on the informer goroutine without backpressure concerns.
 
-- **StaticProvider**: no-op (static config never changes).
-- **KubernetesProvider**: starts informers, blocks until initial list+sync completes, delivers all existing objects as `EventAdd` via the handler, then returns. After return, informer callbacks continue invoking the handler for ongoing changes.
+- **StaticProvider**: reads config, delivers all endpoints as `EventAdd` via the handler, returns. No ongoing changes.
+- **KubernetesProvider**: wires the handler directly into informer callbacks. Events (including the initial list phase) flow to the handler immediately. After `WaitForCacheSync`, does a post-sync reconcile to fix ordering, then returns. Informer callbacks continue invoking the handler for ongoing changes.
 - **Consul/etcd providers**: starts a watch/poll loop in a goroutine, calls handler from that goroutine.
 
-`Watch` should block until the initial state is fully delivered, then return. This ensures the cache is warm before the gateway starts accepting traffic.
+`Watch` should return once the provider has reached a consistent ready state (e.g., initial sync complete, config loaded). This ensures the cache is warm before the gateway starts accepting traffic.
 
 ### `Type() string`
 
@@ -73,13 +64,13 @@ The `rolesets` structure expresses the pairing between prefill and decode worker
 
 Watches Pods and ModelAdapters via K8s informers. This is the default when no `DiscoveryProvider` is set in `InitOptions`.
 
-All data flows through `Watch()`:
-1. Starts informers, waits for initial list+sync.
-2. Delivers all existing Pods as `EventAdd` (ordered before ModelAdapters).
-3. Delivers all existing ModelAdapters as `EventAdd`.
-4. Returns — informer callbacks continue invoking the handler for ongoing changes.
+The handler is wired directly into K8s informer callbacks — events flow from the start, including during the initial list phase. No intermediate channel, no buffer, no snapshot replay.
 
-The handler is wired directly into informer callbacks. No intermediate channel, no buffer, no backpressure concerns.
+1. Registers handler on Pod and ModelAdapter informers.
+2. Starts informers — initial objects arrive via `AddFunc` as part of the informer's list+watch.
+3. Waits for cache sync (`WaitForCacheSync`).
+4. Post-sync reconcile: re-emits all ModelAdapters as `EventAdd` to fix ordering (Pod and ModelAdapter informers list concurrently, so an adapter may arrive before its pods).
+5. Returns — informer callbacks continue delivering ongoing changes.
 
 ## Architecture
 

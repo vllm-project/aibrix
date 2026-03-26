@@ -399,25 +399,13 @@ func initMetricsCache(store *Store, stopCh <-chan struct{}) {
 }
 
 // initDiscoveryProvider initializes the cache using a discovery provider.
+// All initial state and ongoing changes are delivered through Watch().
 func initDiscoveryProvider(store *Store, provider discovery.Provider, stopCh <-chan struct{}) error {
-	// Process initial load (used by StaticProvider; KubernetesProvider returns nil).
-	objs, err := provider.Load()
-	if err != nil {
-		return err
-	}
-	for _, o := range objs {
-		handleDiscoveryObject(store, discovery.EventAdd, o, nil)
-	}
-
-	// Start watching. The handler is called directly by the provider —
-	// for K8s this means informer callbacks invoke it on the informer goroutine,
-	// for Consul/etcd it would be called from the poll/watch loop.
 	if err := provider.Watch(func(ev discovery.WatchEvent) {
 		handleDiscoveryObject(store, ev.Type, ev.Object, ev.OldObject)
 	}, stopCh); err != nil {
-		return fmt.Errorf("failed to start discovery watch: %w", err)
+		return fmt.Errorf("failed to initialize discovery provider: %w", err)
 	}
-
 	return nil
 }
 

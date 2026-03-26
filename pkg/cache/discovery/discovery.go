@@ -47,17 +47,22 @@ type WatchEvent struct {
 type EventHandler func(event WatchEvent)
 
 // Provider defines the interface for service discovery backends.
+//
+// All initial state and ongoing changes are delivered through Watch() via
+// the EventHandler callback.
 type Provider interface {
-	// Load returns all known resources at the time of the call.
-	// Currently returns *v1.Pod and *modelv1alpha1.ModelAdapter objects.
-	// Providers that deliver all data via Watch may return nil.
-	Load() ([]any, error)
-
 	// Watch registers a handler for resource change events and starts watching.
 	// The provider calls handler for each change (add/update/delete).
-	// For providers like Kubernetes, Watch also delivers initial state as EventAdd.
-	// Static providers may no-op (no dynamic updates).
-	// Watch should block until the initial state is fully delivered, then return.
+	//
+	// Watch should return once the provider has reached a consistent ready state
+	// (e.g., initial sync complete, config loaded). After return, dynamic providers
+	// continue delivering ongoing changes via the handler asynchronously.
+	//
+	// Static providers deliver initial state and return (no ongoing changes).
+	// K8s provider lets informers deliver events directly via the handler from
+	// the start, then does a post-sync reconcile before returning.
+	// Consul/etcd providers may deliver initial state, then start a background
+	// watch/poll loop.
 	Watch(handler EventHandler, stopCh <-chan struct{}) error
 
 	// Type returns a string identifier for the provider type (e.g., "static", "consul").

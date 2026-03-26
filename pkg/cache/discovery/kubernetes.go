@@ -18,7 +18,6 @@ package discovery
 
 import (
 	"errors"
-	"sync/atomic"
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 
@@ -33,12 +32,6 @@ import (
 )
 
 // KubernetesProvider implements Provider using Kubernetes informers.
-// It watches Pods and ModelAdapters via the K8s API server.
-//
-// All data — both initial state and ongoing changes — is delivered
-// via the Watch handler callback. Load() returns nil.
-// The handler is wired directly into K8s informer callbacks with
-// no intermediate channel or buffer.
 type KubernetesProvider struct {
 	config *rest.Config
 }
@@ -53,18 +46,9 @@ func (p *KubernetesProvider) Type() string {
 	return "kubernetes"
 }
 
-// Load returns nil — all data is delivered via Watch().
-func (p *KubernetesProvider) Load() ([]any, error) {
-	return nil, nil
-}
-
-// Watch starts K8s informers, waits for the initial list+sync to complete,
-// delivers all existing objects via the handler, then returns.
-// After Watch returns, the informers continue running and invoke the handler
-// for ongoing changes until stopCh is closed.
-//
-// Delivery order: all Pods first (as EventAdd), then all ModelAdapters (as EventAdd).
-// This ordering ensures pods exist in the cache before ModelAdapter handlers look them up.
+// Watch starts K8s informers with the handler wired directly into informer callbacks.
+// Watch returns once the initial sync and reconcile are complete. After return,
+// informer callbacks continue delivering ongoing changes asynchronously.
 func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{}) error {
 	if err := v1alpha1scheme.AddToScheme(scheme.Scheme); err != nil {
 		return err
@@ -80,33 +64,30 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 		return err
 	}
 
+	// Currently watches all pods cluster-wide (same as the old initCacheInformers).
 	factory := informers.NewSharedInformerFactoryWithOptions(k8sClientSet, 0)
 	crdFactory := crdinformers.NewSharedInformerFactoryWithOptions(crdClientSet, 0)
-
-	// synced gates live event delivery. During the initial list+sync phase,
-	// informer callbacks are suppressed — initial objects are delivered
-	// explicitly from the informer stores after sync completes.
-	var synced atomic.Bool
 
 	podInformer := factory.Core().V1().Pods().Informer()
 	modelInformer := crdFactory.Model().V1alpha1().ModelAdapters().Informer()
 
+	// Wire handler directly into informer callbacks.
+	// Events flow from the start — including during the initial list phase.
 	registerHandlers := func(inf cache.SharedIndexInformer) error {
 		_, err := inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				if synced.Load() {
-					handler(WatchEvent{Type: EventAdd, Object: obj})
-				}
+				handler(WatchEvent{Type: EventAdd, Object: obj})
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
-				if synced.Load() {
-					handler(WatchEvent{Type: EventUpdate, Object: newObj, OldObject: oldObj})
-				}
+				handler(WatchEvent{Type: EventUpdate, Object: newObj, OldObject: oldObj})
 			},
 			DeleteFunc: func(obj interface{}) {
-				if synced.Load() {
-					handler(WatchEvent{Type: EventDelete, Object: obj})
+				// Unwrap tombstones — K8s informers may deliver
+				// cache.DeletedFinalStateUnknown when a delete event is missed.
+				if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+					obj = tombstone.Obj
 				}
+				handler(WatchEvent{Type: EventDelete, Object: obj})
 			},
 		})
 		return err
@@ -120,6 +101,7 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 	}
 
 	// Start informers and wait for initial list+sync.
+	// During this phase, AddFunc fires for each existing object.
 	factory.Start(stopCh)
 	crdFactory.Start(stopCh)
 
@@ -127,21 +109,18 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 		return errors.New("timed out waiting for caches to sync")
 	}
 
-	// Deliver all existing objects — pods first, then adapters.
-	pods := podInformer.GetStore().List()
+	// Post-sync reconcile: re-emit all ModelAdapters to fix ordering.
+	// During initial sync, Pod and ModelAdapter informers list concurrently.
+	// A ModelAdapter's AddFunc may fire before its pods' AddFunc, causing
+	// the pod-model mapping to be missed. Re-emitting adapters after sync
+	// ensures all mappings are established (addModelAdapter is idempotent).
 	adapters := modelInformer.GetStore().List()
-	for _, obj := range pods {
-		handler(WatchEvent{Type: EventAdd, Object: obj})
-	}
 	for _, obj := range adapters {
 		handler(WatchEvent{Type: EventAdd, Object: obj})
 	}
 
-	// Enable live event delivery from informer handlers.
-	synced.Store(true)
-
 	klog.InfoS("Kubernetes discovery provider initialized",
-		"pods", len(pods), "modelAdapters", len(adapters))
+		"pods", len(podInformer.GetStore().List()), "modelAdapters", len(adapters))
 
 	return nil
 }
