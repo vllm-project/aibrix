@@ -22,8 +22,9 @@ _MODEL_CACHE_TTL = 60.0  # seconds
 
 def _get_headers() -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
-    if settings.api_key:
-        headers["Authorization"] = f"Bearer {settings.api_key}"
+    key = settings.get_chat_key()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
     return headers
 
 
@@ -32,7 +33,7 @@ async def check_health() -> bool:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
-                f"{settings.aibrix_gateway_url}/v1/models",
+                f"{settings.get_chat_url()}/v1/models",
                 headers=_get_headers(),
             )
             return resp.status_code == 200
@@ -51,7 +52,7 @@ async def list_models() -> list[dict]:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
-                f"{settings.aibrix_gateway_url}/v1/models",
+                f"{settings.get_chat_url()}/v1/models",
                 headers=_get_headers(),
             )
             resp.raise_for_status()

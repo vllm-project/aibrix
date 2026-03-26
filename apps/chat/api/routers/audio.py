@@ -8,6 +8,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 import httpx
 
+from config import settings
 from models.schemas import AudioSpeechRequest, AudioTranscribeResponse
 from services.providers import get_audio_provider
 
@@ -19,7 +20,7 @@ router = APIRouter(prefix="/api/audio", tags=["audio"])
 @router.post("/transcribe", response_model=AudioTranscribeResponse)
 async def transcribe(
     file: UploadFile = File(...),
-    model: str = Form("whisper-1"),
+    model: str = Form(settings.asr_model or "whisper-1"),
     language: str | None = Form(None),
 ):
     """Transcribe an audio file via the configured audio provider."""

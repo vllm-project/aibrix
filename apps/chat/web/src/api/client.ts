@@ -293,14 +293,13 @@ export function streamCompletion(
 
 export async function generateImage(
   prompt: string,
-  model: string = "dall-e-3",
   size: string = "1024x1024",
   n: number = 1,
 ): Promise<ImageGenerateResponse> {
   const res = await fetch("/api/image/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ prompt, model, size, n }),
+    body: JSON.stringify({ prompt, size, n }),
   });
   if (!res.ok) {
     const detail = await res.text();
@@ -314,14 +313,12 @@ export async function generateImage(
 export async function editImage(
   image: File,
   prompt: string,
-  model: string = "dall-e-2",
   size: string = "1024x1024",
   n: number = 1,
 ): Promise<ImageGenerateResponse> {
   const form = new FormData();
   form.append("image", image);
   form.append("prompt", prompt);
-  form.append("model", model);
   form.append("size", size);
   form.append("n", String(n));
 
@@ -341,12 +338,10 @@ export async function editImage(
 
 export async function transcribeAudio(
   file: File,
-  model: string = "whisper-1",
   language?: string,
 ): Promise<{ text: string }> {
   const form = new FormData();
   form.append("file", file);
-  form.append("model", model);
   if (language) form.append("language", language);
 
   const res = await fetch("/api/audio/transcribe", {
@@ -365,13 +360,11 @@ export async function transcribeAudio(
 
 export async function generateSpeech(
   input: string,
-  model: string = "tts-1",
-  voice: string = "alloy",
 ): Promise<Blob> {
   const res = await fetch("/api/audio/speech", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ input, model, voice, response_format: "mp3" }),
+    body: JSON.stringify({ input, response_format: "mp3" }),
   });
   if (!res.ok) {
     const detail = await res.text();
@@ -384,14 +377,13 @@ export async function generateSpeech(
 
 export async function generateVideo(
   prompt: string,
-  model: string = "sora-2",
   size: string = "1280x720",
   seconds: string = "4",
 ): Promise<VideoJobResponse> {
   const res = await fetch("/api/video/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ prompt, model, size, seconds }),
+    body: JSON.stringify({ prompt, size, seconds: Number(seconds) }),
   });
   if (!res.ok) {
     const detail = await res.text();
