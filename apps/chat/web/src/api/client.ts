@@ -383,7 +383,7 @@ export async function generateVideo(
   const res = await fetch("/api/video/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ prompt, size, seconds: 4 }),
+    body: JSON.stringify({ prompt, size, seconds: Number(seconds) }),
   });
   if (!res.ok) {
     const detail = await res.text();

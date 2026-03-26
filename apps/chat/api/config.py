@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     image_edit_model: str = ""
     asr_model: str = ""
     tts_model: str = ""
-    tts_voice: str = "" # supported speaker, that can be found in the API response
+    tts_voice: str = ""  # Name of a supported speaker that can be found in the API response
     video_model: str = ""
 
     # Model filtering — comma-separated allowlists (empty = show all)

@@ -22,8 +22,9 @@ _MODEL_CACHE_TTL = 60.0  # seconds
 
 def _get_headers() -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
-    if settings.get_chat_key():
-        headers["Authorization"] = f"Bearer {settings.get_chat_key()}"
+    key = settings.get_chat_key()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
     return headers
 
 
