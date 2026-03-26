@@ -382,6 +382,7 @@ func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.Ro
 			Template:           podTemplate,
 			Stateful:           role.Stateful,
 			SchedulingStrategy: role.SchedulingStrategy,
+			RecoveryPolicy:     role.PodRecoveryPolicy,
 		},
 	}
 
