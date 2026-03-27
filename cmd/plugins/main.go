@@ -71,6 +71,11 @@ func main() {
 		}
 	}()
 
+	// register additional routing algorithms that need dependences
+	if redisClient != nil {
+		routing.RegisterPowerOfTwoRouter(redisClient)
+	}
+
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
