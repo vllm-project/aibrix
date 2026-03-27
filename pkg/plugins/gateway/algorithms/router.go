@@ -358,7 +358,7 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 			if err == nil {
 				return multiRouter, nil
 			}
-			klog.Warningf("Failed to initialize multi-strategy router for %s: %v, fallback to %s", algStr, err, RouterRandom)
+			klog.Warningf("Failed to initialize multi-strategy router for %s, requestID: %s: %v, fallback to %s", algStr, ctx.RequestID, err, RouterRandom)
 			return RandomRouter, nil
 		}
 	}

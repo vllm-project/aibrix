@@ -220,26 +220,26 @@ Assume we have two pods serving a model:
 ```yaml
 AIBRIX_ROUTING_ALGORITHM: "least-request:10,throughput:1"
 ```
-* `least-request` (weight 10): Pod B is much better (2 vs 10). Normalized: Pod A = 0.0, Pod B = 1.0. Score contribution: A = 0, B = 10.
-* `throughput` (weight 1): Pod A is much better (100 vs 10). Normalized: Pod A = 1.0, Pod B = 0.0. Score contribution: A = 1, B = 0.
-* **Total Score**: Pod A = 1, Pod B = 10. **Pod B wins!**
+* `least-request` (weight 10): Pod B is much better (2 vs 10). Normalized: Pod A = 0.0, Pod B = 1.0. Weighted Score: A = 0.0 * 10/11 = 0.0, B = 1.0 * 10/11 ≈ 0.91.
+* `throughput` (weight 1): Pod A is much better (100 vs 10). Normalized: Pod A = 1.0, Pod B = 0.0. Weighted Score: A = 1.0 * 1/11 ≈ 0.09, B = 0.0 * 1/11 = 0.0.
+* **Total Score**: Pod A ≈ 0.09, Pod B ≈ 0.91. **Pod B wins!**
 
 #### Example 2: `throughput` Dominates
 ```yaml
 AIBRIX_ROUTING_ALGORITHM: "least-request:1,throughput:10"
 ```
-* `least-request` (weight 1): Score contribution: A = 0, B = 1.
-* `throughput` (weight 10): Score contribution: A = 10, B = 0.
-* **Total Score**: Pod A = 10, Pod B = 1. **Pod A wins!**
+* `least-request` (weight 1): Weighted Score: A = 0.0 * 1/11 = 0.0, B = 1.0 * 1/11 ≈ 0.09.
+* `throughput` (weight 10): Weighted Score: A = 1.0 * 10/11 ≈ 0.91, B = 0.0 * 10/11 = 0.0.
+* **Total Score**: Pod A ≈ 0.91, Pod B ≈ 0.09. **Pod A wins!**
 
 #### Example 3: Complex Scenario with Corner Cases (3 Strategies)
 ```yaml
 AIBRIX_ROUTING_ALGORITHM: "least-request,throughput:2,least-latency:0"
 ```
-* `least-request`: No weight specified, **defaults to 1**. Contribution: A = 0, B = 1.
-* `throughput`: Explicitly set to weight **2**. Contribution: A = 2, B = 0.
+* `least-request`: No weight specified, **defaults to 1**. Weighted Score: A = 0.0 * 1/3 = 0.0, B = 1.0 * 1/3 ≈ 0.33.
+* `throughput`: Explicitly set to weight **2**. Weighted Score: A = 1.0 * 2/3 ≈ 0.67, B = 0.0 * 2/3 = 0.0.
 * `least-latency`: Weight set to **0**, so this strategy is **ignored** and does not participate in scoring.
-* **Total Score**: Pod A = 2, Pod B = 1. **Pod A wins!**
+* **Total Score**: Pod A ≈ 0.67, Pod B ≈ 0.33. **Pod A wins!**
 
 #### Example 4: Invalid Configuration Fallback
 ```yaml

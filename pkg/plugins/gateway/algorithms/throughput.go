@@ -52,7 +52,7 @@ func NewThroughputRouter() (types.Router, error) {
 
 // Polarity returns the polarity for throughput strategy
 func (r throughputRouter) Polarity() Polarity {
-	return PolarityMost // Higher throughput is better
+	return PolarityLeast // Lower throughput (load) is better
 }
 
 // ScoreAll computes the estimated throughput for all pods
@@ -88,7 +88,7 @@ func (r throughputRouter) Route(ctx *types.RoutingContext, readyPodList types.Po
 
 	var targetPod *v1.Pod
 	var targetPods []string
-	minCount := math.MaxFloat64 // the tests want to select the LEAST throughput, not MAX
+	minCount := math.MaxFloat64 // we want to select the pod with the LEAST total weighted tokens processed
 	pods := readyPodList.All()
 
 	for i, pod := range pods {
