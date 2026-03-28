@@ -250,8 +250,8 @@ type redisImbalancePodsFilter struct {
 }
 
 const (
-	defaultImbalanceThreshold     = int64(2)
-	defaultRedisKeyPrefix         = "aibrix:prefix-cache-reqcnt"
+	defaultImbalanceThreshold      = 2
+	defaultRedisKeyPrefix          = "aibrix:prefix-cache-reqcnt"
 	defaultImbalanceTrackerTimeout = time.Minute * 5 // 5 minutes, stop tracking if filter not called
 )
 
