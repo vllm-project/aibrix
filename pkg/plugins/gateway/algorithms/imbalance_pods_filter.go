@@ -19,7 +19,9 @@ package routingalgorithms
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -46,17 +48,19 @@ type MetricsProvider interface {
 // filter route candicates if running requests are imbalance
 type imbalancePodsFilter interface {
 	// Check whether the realtime running requests are imbalanced among the pods
+	// ctx: context for cancellation and timeout propagation
 	// Returns:
 	//     filteredPods: if imbalanced, return the pod with least requests; otherwise, return all the pods
 	//     imbalanced: whether the pods are imbalanced
-	FilterPodsWithPort(readyPodList types.PodList) ([]podServerKey, bool)
+	FilterPodsWithPort(ctx context.Context, readyPodList types.PodList) ([]podServerKey, bool)
 	// FilterPods filters the pods that are imbalanced in the given list, this is the version without port.
 	// Currently, prefix-cache router does not support multi-port, so all the requests are route to the first dp rank in the pod
 	// In the future, when prefix-cache router supports multi-port, this function will be deprecated and use FilterPodsWithPort instead
+	// ctx: context for cancellation and timeout propagation
 	// Returns:
 	//     filteredPods: if imbalanced, return the pod with least requests; otherwise, return all the pods
 	//     imbalanced: whether the pods are imbalanced
-	FilterPods(readyPodList types.PodList) ([]*v1.Pod, bool)
+	FilterPods(ctx context.Context, readyPodList types.PodList) ([]*v1.Pod, bool)
 }
 
 // localImbalancePodsFilter is a local implementation of imbalancePodsFilter
@@ -114,7 +118,7 @@ func (l *localImbalancePodsFilter) getRequestCountsWithPort(readyPods []*v1.Pod,
 }
 
 // FilterPodsWithPort implements [imbalancePodsFilter].
-func (l *localImbalancePodsFilter) FilterPodsWithPort(readyPodList types.PodList) ([]podServerKey, bool) {
+func (l *localImbalancePodsFilter) FilterPodsWithPort(ctx context.Context, readyPodList types.PodList) ([]podServerKey, bool) {
 	if len(readyPodList.All()) == 0 {
 		return []podServerKey{}, false
 	}
@@ -136,8 +140,8 @@ func (l *localImbalancePodsFilter) FilterPodsWithPort(readyPodList types.PodList
 	podRequestCount := l.getRequestCountsWithPort(readyPods, portsMap)
 
 	// Find min and max values
-	var minValue int64 = int64(^uint64(0) >> 1)      // MaxInt64
-	var maxValue int64 = int64(^uint64(0)>>1)*-1 - 1 // MinInt64
+	var minValue int64 = math.MaxInt64
+	var maxValue int64 = math.MinInt64
 
 	for _, candidate := range candidates {
 		key := candidate.String()
@@ -194,8 +198,8 @@ func deduplicatePods(serverKeys []podServerKey) []*v1.Pod {
 
 // FilterPods implements [imbalancePodsFilter].
 // This is the version without port, used by prefix-cache router.
-func (l *localImbalancePodsFilter) FilterPods(readyPodList types.PodList) ([]*v1.Pod, bool) {
-	filteredWithPort, imbalanced := l.FilterPodsWithPort(readyPodList)
+func (l *localImbalancePodsFilter) FilterPods(ctx context.Context, readyPodList types.PodList) ([]*v1.Pod, bool) {
+	filteredWithPort, imbalanced := l.FilterPodsWithPort(ctx, readyPodList)
 	return deduplicatePods(filteredWithPort), imbalanced
 }
 
@@ -238,21 +242,27 @@ type redisImbalancePodsFilter struct {
 	imbalanceThreshold int64 // Threshold for considering pods imbalanced (default: 2)
 	redisKeyPrefix     string
 
+	// lastModelFilterTime tracks when FilterPods was last called for each model
+	// Used to stop tracking request counts for models that are no longer being filtered
 	lastModelFilterTime   map[string]time.Time
+	lastModelFilterTimeMu sync.RWMutex // Protects lastModelFilterTime map
 	requestTrackerTimeout time.Duration
 }
 
 const (
-	defaultImbalanceThreshold = int64(2)
-	defaultRedisKeyPrefix     = "aibrix:prefix-cache-reqcnt"
+	defaultImbalanceThreshold     = int64(2)
+	defaultRedisKeyPrefix         = "aibrix:prefix-cache-reqcnt"
+	defaultImbalanceTrackerTimeout = time.Minute * 5 // 5 minutes, stop tracking if filter not called
 )
 
 // NewRedisImbalancePodsFilter creates a new redis-based imbalance pods filter
 func NewRedisImbalancePodsFilter(redisClient *redis.Client) *redisImbalancePodsFilter {
 	return &redisImbalancePodsFilter{
-		redisCli:           redisClient,
-		imbalanceThreshold: defaultImbalanceThreshold,
-		redisKeyPrefix:     defaultRedisKeyPrefix,
+		redisCli:              redisClient,
+		imbalanceThreshold:    defaultImbalanceThreshold,
+		redisKeyPrefix:        defaultRedisKeyPrefix,
+		lastModelFilterTime:   make(map[string]time.Time),
+		requestTrackerTimeout: defaultImbalanceTrackerTimeout,
 	}
 }
 
@@ -291,7 +301,7 @@ func (r *redisImbalancePodsFilter) buildCandidates(readyPodList types.PodList) [
 }
 
 // FilterPodsWithPort implements [imbalancePodsFilter].
-func (r *redisImbalancePodsFilter) FilterPodsWithPort(readyPodList types.PodList) ([]podServerKey, bool) {
+func (r *redisImbalancePodsFilter) FilterPodsWithPort(ctx context.Context, readyPodList types.PodList) ([]podServerKey, bool) {
 	if len(readyPodList.All()) == 0 {
 		return []podServerKey{}, false
 	}
@@ -323,9 +333,14 @@ func (r *redisImbalancePodsFilter) FilterPodsWithPort(readyPodList types.PodList
 		return candidates, false
 	}
 
+	// Update last filter time for this model
+	r.lastModelFilterTimeMu.Lock()
+	r.lastModelFilterTime[modelName] = time.Now()
+	r.lastModelFilterTimeMu.Unlock()
+
 	// Get all request counts from Redis using HGETALL
 	key := r.buildRedisKey(modelName)
-	counts, err := r.redisCli.HGetAll(context.Background(), key).Result()
+	counts, err := r.redisCli.HGetAll(ctx, key).Result()
 	if err != nil {
 		klog.V(4).ErrorS(err, "failed to get request counts from redis", "key", key)
 		return candidates, false
@@ -333,7 +348,8 @@ func (r *redisImbalancePodsFilter) FilterPodsWithPort(readyPodList types.PodList
 
 	// Build count map for candidates
 	candidateCounts := make(map[string]int64)
-	var minCount, maxCount int64 = -1, -1
+	var minCount int64 = math.MaxInt64
+	var maxCount int64 = math.MinInt64
 	for _, candidate := range candidates {
 		candidateKey := candidate.String()
 		count := int64(0)
@@ -344,10 +360,10 @@ func (r *redisImbalancePodsFilter) FilterPodsWithPort(readyPodList types.PodList
 		}
 		candidateCounts[candidateKey] = count
 
-		if minCount == -1 || count < minCount {
+		if count < minCount {
 			minCount = count
 		}
-		if maxCount == -1 || count > maxCount {
+		if count > maxCount {
 			maxCount = count
 		}
 	}
@@ -380,8 +396,8 @@ func (r *redisImbalancePodsFilter) FilterPodsWithPort(readyPodList types.PodList
 
 // FilterPods implements [imbalancePodsFilter].
 // This is the version without port, used by prefix-cache router.
-func (r *redisImbalancePodsFilter) FilterPods(readyPodList types.PodList) ([]*v1.Pod, bool) {
-	filteredWithPort, imbalanced := r.FilterPodsWithPort(readyPodList)
+func (r *redisImbalancePodsFilter) FilterPods(ctx context.Context, readyPodList types.PodList) ([]*v1.Pod, bool) {
+	filteredWithPort, imbalanced := r.FilterPodsWithPort(ctx, readyPodList)
 	return deduplicatePods(filteredWithPort), imbalanced
 }
 
@@ -389,6 +405,28 @@ func (r *redisImbalancePodsFilter) FilterPods(readyPodList types.PodList) ([]*v1
 func (r *redisImbalancePodsFilter) AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64) {
 	// Check whether target pod is set
 	if !ctx.HasRouted() {
+		return 0
+	}
+
+	// Skip counting if this model hasn't been filtered recently
+	// This avoids counting requests that are no longer being load-balanced
+	r.lastModelFilterTimeMu.RLock()
+	lastModelFilterTime, ok := r.lastModelFilterTime[modelName]
+	r.lastModelFilterTimeMu.RUnlock()
+
+	if ok {
+		// If it's been too long since last filter call, skip counting
+		if time.Since(lastModelFilterTime) > r.requestTrackerTimeout {
+			klog.V(5).InfoS("skip request count tracking, model filter timeout",
+				"model", modelName,
+				"last_filter_time", lastModelFilterTime,
+				"timeout", r.requestTrackerTimeout)
+			return 0
+		}
+	} else {
+		// No filter history for this model, skip counting
+		klog.V(5).InfoS("skip request count tracking, no filter history",
+			"model", modelName)
 		return 0
 	}
 

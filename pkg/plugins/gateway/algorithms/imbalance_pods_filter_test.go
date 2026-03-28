@@ -20,16 +20,17 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/go-redis/redismock/v9"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
-	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
 // mockMetricsProvider implements MetricsProvider for testing
@@ -182,7 +183,7 @@ func TestLocalImbalancePodsFilter_FilterPodsWithPort_SinglePort(t *testing.T) {
 
 	podList := createTestPodListImbalance([]*v1.Pod{pod1, pod2, pod3})
 
-	candidates, imbalanced := filter.FilterPodsWithPort(podList)
+	candidates, imbalanced := filter.FilterPodsWithPort(context.Background(), podList)
 
 	// Should be imbalanced (10-2=8 > threshold 2)
 	assert.True(t, imbalanced)
@@ -206,7 +207,7 @@ func TestLocalImbalancePodsFilter_FilterPodsWithPort_MultiPort(t *testing.T) {
 
 	podList := createTestPodListImbalance([]*v1.Pod{pod1, pod2})
 
-	candidates, imbalanced := filter.FilterPodsWithPort(podList)
+	candidates, imbalanced := filter.FilterPodsWithPort(context.Background(), podList)
 
 	// Should be imbalanced (10-1=9 > threshold 2)
 	assert.True(t, imbalanced)
@@ -229,7 +230,7 @@ func TestLocalImbalancePodsFilter_FilterPodsWithPort_Balanced(t *testing.T) {
 
 	podList := createTestPodListImbalance([]*v1.Pod{pod1, pod2})
 
-	candidates, imbalanced := filter.FilterPodsWithPort(podList)
+	candidates, imbalanced := filter.FilterPodsWithPort(context.Background(), podList)
 
 	// Should not be imbalanced
 	assert.False(t, imbalanced)
@@ -249,7 +250,7 @@ func TestLocalImbalancePodsFilter_FilterPods(t *testing.T) {
 
 	podList := createTestPodListImbalance([]*v1.Pod{pod1})
 
-	result, imbalanced := filter.FilterPods(podList)
+	result, imbalanced := filter.FilterPods(context.Background(), podList)
 
 	// Should not be imbalanced (diff=1 <= threshold 2), but should deduplicate - only 1 pod returned
 	assert.False(t, imbalanced)
@@ -275,7 +276,7 @@ func TestRedisImbalancePodsFilter_FilterPodsWithPort(t *testing.T) {
 		"pod-3": "2",
 	})
 
-	candidates, imbalanced := filter.FilterPodsWithPort(podList)
+	candidates, imbalanced := filter.FilterPodsWithPort(context.Background(), podList)
 
 	// Should be imbalanced (10-2=8 > threshold 2)
 	assert.True(t, imbalanced)
@@ -294,7 +295,7 @@ func TestRedisImbalancePodsFilter_FilterPodsWithPort_NoModelLabel(t *testing.T) 
 
 	podList := createTestPodListImbalance([]*v1.Pod{pod1})
 
-	candidates, imbalanced := filter.FilterPodsWithPort(podList)
+	candidates, imbalanced := filter.FilterPodsWithPort(context.Background(), podList)
 
 	// Should return all candidates without checking Redis
 	assert.False(t, imbalanced)
@@ -305,9 +306,20 @@ func TestRedisImbalancePodsFilter_AddRequestCount(t *testing.T) {
 	db, mock := redismock.NewClientMock()
 	filter := NewRedisImbalancePodsFilter(db)
 
-	pod := createTestPodImbalance("pod-1", "default", nil)
+	pod1 := createTestPodImbalance("pod-1", "default", map[string]string{"model": "test-model"})
+	pod2 := createTestPodImbalance("pod-2", "default", map[string]string{"model": "test-model"})
+	podList := createTestPodListImbalance([]*v1.Pod{pod1, pod2})
+
+	// First call FilterPods to establish filter history
+	mock.ExpectHGetAll("aibrix:prefix-cache-reqcnt:{test-model}").SetVal(map[string]string{
+		"pod-1": "0",
+		"pod-2": "0",
+	})
+	_, _ = filter.FilterPods(context.Background(), podList)
+
+	// Now test AddRequestCount
 	ctx := types.NewRoutingContext(context.Background(), "", "test-model", "", "req-1", "")
-	ctx.SetTargetPod(pod)
+	ctx.SetTargetPod(pod1)
 	ctx.SetTargetPort(8000)
 
 	// Mock Redis HINCRBY
@@ -382,7 +394,7 @@ func TestRedisImbalancePodsFilter_FilterPods_Deduplication(t *testing.T) {
 		"pod-1_8001": "10",
 	})
 
-	result, imbalanced := filter.FilterPods(podList)
+	result, imbalanced := filter.FilterPods(context.Background(), podList)
 
 	// Should return imbalanced (10-5=5 > 2)
 	assert.True(t, imbalanced)
@@ -391,6 +403,54 @@ func TestRedisImbalancePodsFilter_FilterPods_Deduplication(t *testing.T) {
 	assert.Equal(t, "pod-1", result[0].Name)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRedisImbalancePodsFilter_AddRequestCount_Timeout(t *testing.T) {
+	db, mock := redismock.NewClientMock()
+	filter := NewRedisImbalancePodsFilter(db)
+	// Set a very short timeout for testing
+	filter.requestTrackerTimeout = time.Millisecond * 100
+
+	pod1 := createTestPodImbalance("pod-1", "default", map[string]string{"model": "test-model"})
+	pod2 := createTestPodImbalance("pod-2", "default", map[string]string{"model": "test-model"})
+	podList := createTestPodListImbalance([]*v1.Pod{pod1, pod2})
+
+	// First call FilterPods to establish filter history
+	mock.ExpectHGetAll("aibrix:prefix-cache-reqcnt:{test-model}").SetVal(map[string]string{
+		"pod-1": "0",
+		"pod-2": "0",
+	})
+	_, _ = filter.FilterPods(context.Background(), podList)
+
+	// Wait for timeout
+	time.Sleep(time.Millisecond * 150)
+
+	// Now test AddRequestCount - should return 0 due to timeout
+	ctx := types.NewRoutingContext(context.Background(), "", "test-model", "", "req-1", "")
+	ctx.SetTargetPod(pod1)
+	ctx.SetTargetPort(8000)
+
+	// No Redis expectation - should not call Redis
+	traceTerm := filter.AddRequestCount(ctx, "req-1", "test-model")
+
+	// Should return 0 due to timeout
+	assert.Equal(t, int64(0), traceTerm)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRedisImbalancePodsFilter_AddRequestCount_NoFilterHistory(t *testing.T) {
+	db, _ := redismock.NewClientMock()
+	filter := NewRedisImbalancePodsFilter(db)
+
+	pod := createTestPodImbalance("pod-1", "default", nil)
+	ctx := types.NewRoutingContext(context.Background(), "", "test-model", "", "req-1", "")
+	ctx.SetTargetPod(pod)
+	ctx.SetTargetPort(8000)
+
+	// No filter history - should return 0
+	traceTerm := filter.AddRequestCount(ctx, "req-1", "test-model")
+
+	assert.Equal(t, int64(0), traceTerm)
 }
 
 func TestRedisImbalancePodsFilter_BuildRedisKey(t *testing.T) {
@@ -408,7 +468,7 @@ func TestLocalImbalancePodsFilter_EmptyPodList(t *testing.T) {
 
 	podList := createTestPodListImbalance([]*v1.Pod{})
 
-	candidates, imbalanced := filter.FilterPodsWithPort(podList)
+	candidates, imbalanced := filter.FilterPodsWithPort(context.Background(), podList)
 
 	assert.False(t, imbalanced)
 	assert.Equal(t, 0, len(candidates))
@@ -423,7 +483,7 @@ func TestLocalImbalancePodsFilter_SinglePod(t *testing.T) {
 
 	podList := createTestPodListImbalance([]*v1.Pod{pod1})
 
-	candidates, imbalanced := filter.FilterPodsWithPort(podList)
+	candidates, imbalanced := filter.FilterPodsWithPort(context.Background(), podList)
 
 	// Single pod cannot be imbalanced
 	assert.False(t, imbalanced)

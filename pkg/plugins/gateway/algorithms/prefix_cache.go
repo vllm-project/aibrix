@@ -323,9 +323,14 @@ func NewPrefixCacheRouterWithRedis(redisClient *redis.Client) (types.Router, err
 		var kvSyncImbalanceFilter imbalancePodsFilter
 		if useRedisImbalanceFilter && redisClient != nil {
 			kvSyncImbalanceFilter = NewRedisImbalancePodsFilter(redisClient)
-			// Register redis imbalance filter as request tracker
-			c.RegisterRequestTracker(kvSyncImbalanceFilter.(*redisImbalancePodsFilter))
-			klog.Info("Using Redis-based imbalance filter for KV sync router")
+			// Register redis imbalance filter as request tracker with defensive type assertion
+			if tracker, ok := kvSyncImbalanceFilter.(*redisImbalancePodsFilter); ok {
+				c.RegisterRequestTracker(tracker)
+				klog.Info("Using Redis-based imbalance filter for KV sync router")
+			} else {
+				klog.Error("Failed to assert kvSyncImbalanceFilter to *redisImbalancePodsFilter, falling back to local")
+				kvSyncImbalanceFilter = NewLocalImbalancePodsFilter(c)
+			}
 		} else {
 			kvSyncImbalanceFilter = NewLocalImbalancePodsFilter(c)
 			klog.Info("Using local imbalance filter for KV sync router")
@@ -412,7 +417,7 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	}
 
 	// Use imbalance filter instead of getTargetPodListOnLoadImbalance
-	leastReqPodList, isLoadImbalanced := p.imbalanceFilter.FilterPods(readyPodList)
+	leastReqPodList, isLoadImbalanced := p.imbalanceFilter.FilterPods(ctx.Context, readyPodList)
 	if isLoadImbalanced {
 		if len(leastReqPodList) == 0 {
 			klog.InfoS("prefix_cache_load_imbalanced_no_target",
@@ -662,7 +667,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	}
 
 	// Check for load imbalance first
-	leastReqPodList, isLoadImbalanced := k.imbalanceFilter.FilterPods(readyPodList)
+	leastReqPodList, isLoadImbalanced := k.imbalanceFilter.FilterPods(ctx.Context, readyPodList)
 	if isLoadImbalanced {
 		if len(leastReqPodList) == 0 {
 			klog.InfoS("prefix_cache_load_imbalanced_no_target",

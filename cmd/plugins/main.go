@@ -74,6 +74,8 @@ func main() {
 	// register additional routing algorithms that need dependences
 	if redisClient != nil {
 		routing.RegisterPowerOfTwoRouter(redisClient)
+		// will overwrite the existing one with the same name
+		routing.RegisterPrefixCacheRouterWithRedis(redisClient)
 	}
 
 	stopCh := make(chan struct{})
