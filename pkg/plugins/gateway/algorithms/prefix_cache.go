@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/redis/go-redis/v9"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
@@ -55,6 +56,7 @@ var (
 	tokenizerType                                             = utils.LoadEnv(constants.EnvPrefixCacheTokenizerType, "character")
 	podRunningRequestImbalanceAbsCount int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT", defaultPodRunningRequestImbalanceAbsCount)
 	standardDeviationFactor            int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR", defaultStandardDeviationFactor)
+	useRedisImbalanceFilter            bool                   = utils.LoadEnvBool("AIBRIX_PREFIX_CACHE_USE_REDIS_IMBALANCE_FILTER", false)
 )
 
 // PrefixCacheMetrics holds all prefix cache metrics
@@ -160,10 +162,11 @@ func init() {
 
 // kvSyncPrefixCacheRouter handles routing when KV sync is enabled
 type kvSyncPrefixCacheRouter struct {
-	cache          cache.Cache
-	tokenizerPool  TokenizerPoolInterface // Add TokenizerPool reference
-	syncIndexer    *syncindexer.SyncPrefixHashTable
-	metricsEnabled bool
+	cache           cache.Cache
+	tokenizerPool   TokenizerPoolInterface // Add TokenizerPool reference
+	syncIndexer     *syncindexer.SyncPrefixHashTable
+	metricsEnabled  bool
+	imbalanceFilter imbalancePodsFilter // Add imbalance filter
 }
 
 type prefixCacheRouter struct {
@@ -176,6 +179,9 @@ type prefixCacheRouter struct {
 
 	// KV sync router - only created when needed
 	kvSyncRouter *kvSyncPrefixCacheRouter
+
+	// Add imbalance filter for local router
+	imbalanceFilter imbalancePodsFilter
 }
 
 // TokenizerPoolInterface defines the interface for tokenizer pools
@@ -195,6 +201,17 @@ func (p *panicTokenizer) TokenizeInputText(text string) ([]byte, error) {
 }
 
 func NewPrefixCacheRouter() (types.Router, error) {
+	return NewPrefixCacheRouterWithRedis(nil)
+}
+
+// Since the version without redis is called during init, this function will overwrite it with the one that uses redis
+func RegisterPrefixCacheRouterWithRedis(redisClient *redis.Client) {
+	Register(RouterPrefixCache, func() (types.Router, error) {
+		return NewPrefixCacheRouterWithRedis(redisClient)
+	})
+}
+
+func NewPrefixCacheRouterWithRedis(redisClient *redis.Client) (types.Router, error) {
 	// Initialize prefix cache metrics if enabled
 	if err := initializePrefixCacheMetrics(); err != nil {
 		klog.Errorf("Failed to initialize prefix cache metrics: %v", err)
@@ -279,14 +296,19 @@ func NewPrefixCacheRouter() (types.Router, error) {
 		"tokenizer_type", tokenizerType,
 		"remote_tokenizer_enabled", tokenizerPool != nil,
 		"kv_sync_enabled", kvSyncEnabled,
+		"use_redis_imbalance_filter", useRedisImbalanceFilter,
 		"pod_running_request_imbalance_abs_count", podRunningRequestImbalanceAbsCount,
 		"matched_pods_running_requests_standard_deviation_factor", standardDeviationFactor)
+
+	// Create imbalance filter for local router (always use local version)
+	localImbalanceFilter := NewLocalImbalancePodsFilter(c)
 
 	// Create main router with local indexer
 	router := prefixCacheRouter{
 		cache:              c,
 		tokenizer:          tokenizerObj,
 		prefixCacheIndexer: prefixcacheindexer.GetSharedPrefixHashTable(),
+		imbalanceFilter:    localImbalanceFilter,
 		// Only assign tokenizerPool if it's not nil to avoid interface nil issues
 	}
 
@@ -297,11 +319,24 @@ func NewPrefixCacheRouter() (types.Router, error) {
 
 	// Only create KV sync router if enabled
 	if kvSyncEnabled && useRemoteTokenizer && tokenizerPool != nil {
+		// Create imbalance filter for KV sync router
+		var kvSyncImbalanceFilter imbalancePodsFilter
+		if useRedisImbalanceFilter && redisClient != nil {
+			kvSyncImbalanceFilter = NewRedisImbalancePodsFilter(redisClient)
+			// Register redis imbalance filter as request tracker
+			c.RegisterRequestTracker(kvSyncImbalanceFilter.(*redisImbalancePodsFilter))
+			klog.Info("Using Redis-based imbalance filter for KV sync router")
+		} else {
+			kvSyncImbalanceFilter = NewLocalImbalancePodsFilter(c)
+			klog.Info("Using local imbalance filter for KV sync router")
+		}
+
 		kvSyncRouter := &kvSyncPrefixCacheRouter{
-			cache:          c,
-			tokenizerPool:  tokenizerPool, // Pass the pool reference
-			syncIndexer:    syncindexer.NewSyncPrefixHashTable(),
-			metricsEnabled: true,
+			cache:           c,
+			tokenizerPool:   tokenizerPool, // Pass the pool reference
+			syncIndexer:     syncindexer.NewSyncPrefixHashTable(),
+			metricsEnabled:  true,
+			imbalanceFilter: kvSyncImbalanceFilter,
 		}
 
 		router.kvSyncRouter = kvSyncRouter
@@ -376,7 +411,8 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 		readyPodsMap[pod.Name] = struct{}{}
 	}
 
-	leastReqPodList, isLoadImbalanced := getTargetPodListOnLoadImbalance(p.cache, readyPods)
+	// Use imbalance filter instead of getTargetPodListOnLoadImbalance
+	leastReqPodList, isLoadImbalanced := p.imbalanceFilter.FilterPods(readyPodList)
 	if isLoadImbalanced {
 		if len(leastReqPodList) == 0 {
 			klog.InfoS("prefix_cache_load_imbalanced_no_target",
@@ -626,7 +662,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	}
 
 	// Check for load imbalance first
-	leastReqPodList, isLoadImbalanced := getTargetPodListOnLoadImbalance(k.cache, readyPods)
+	leastReqPodList, isLoadImbalanced := k.imbalanceFilter.FilterPods(readyPodList)
 	if isLoadImbalanced {
 		if len(leastReqPodList) == 0 {
 			klog.InfoS("prefix_cache_load_imbalanced_no_target",
