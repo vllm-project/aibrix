@@ -64,10 +64,12 @@ func main() {
 		klog.Fatal("--endpoints-config is required when running in standalone mode")
 	}
 
-	redisClient := utils.GetRedisClient()
+	redisClient := utils.TryGetRedisClient()
 	defer func() {
-		if err := redisClient.Close(); err != nil {
-			klog.Warningf("Error closing Redis client: %v", err)
+		if redisClient != nil {
+			if err := redisClient.Close(); err != nil {
+				klog.Warningf("Error closing Redis client: %v", err)
+			}
 		}
 	}()
 
