@@ -46,7 +46,7 @@ type MetricsProvider interface {
 }
 
 // filter route candicates if running requests are imbalance
-type imbalancePodsFilter interface {
+type ImbalancePodsFilter interface {
 	// Check whether the realtime running requests are imbalanced among the pods
 	// ctx: context for cancellation and timeout propagation
 	// Returns:
@@ -524,8 +524,8 @@ func (r *redisImbalancePodsFilter) DoneRequestTrace(ctx *types.RoutingContext, r
 }
 
 var (
-	_ imbalancePodsFilter = &localImbalancePodsFilter{}
-	_ imbalancePodsFilter = &redisImbalancePodsFilter{}
+	_ ImbalancePodsFilter = &localImbalancePodsFilter{}
+	_ ImbalancePodsFilter = &redisImbalancePodsFilter{}
 	// redisImbalancePodsFilter also implements RequestTracker
 	_ cache.RequestTracker = &redisImbalancePodsFilter{}
 )

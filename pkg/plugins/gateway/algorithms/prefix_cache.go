@@ -166,7 +166,7 @@ type kvSyncPrefixCacheRouter struct {
 	tokenizerPool   TokenizerPoolInterface // Add TokenizerPool reference
 	syncIndexer     *syncindexer.SyncPrefixHashTable
 	metricsEnabled  bool
-	imbalanceFilter imbalancePodsFilter // Add imbalance filter
+	imbalanceFilter ImbalancePodsFilter // Add imbalance filter
 }
 
 type prefixCacheRouter struct {
@@ -181,7 +181,7 @@ type prefixCacheRouter struct {
 	kvSyncRouter *kvSyncPrefixCacheRouter
 
 	// Add imbalance filter for local router
-	imbalanceFilter imbalancePodsFilter
+	imbalanceFilter ImbalancePodsFilter
 }
 
 // TokenizerPoolInterface defines the interface for tokenizer pools
@@ -320,7 +320,7 @@ func NewPrefixCacheRouterWithRedis(redisClient *redis.Client) (types.Router, err
 	// Only create KV sync router if enabled
 	if kvSyncEnabled && useRemoteTokenizer && tokenizerPool != nil {
 		// Create imbalance filter for KV sync router
-		var kvSyncImbalanceFilter imbalancePodsFilter
+		var kvSyncImbalanceFilter ImbalancePodsFilter
 		if useRedisImbalanceFilter && redisClient != nil {
 			kvSyncImbalanceFilter = NewRedisImbalancePodsFilter(redisClient)
 			// Register redis imbalance filter as request tracker with defensive type assertion
