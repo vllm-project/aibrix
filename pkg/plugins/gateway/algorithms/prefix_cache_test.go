@@ -59,7 +59,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 		cache:              c,
 		tokenizer:          tokenizerObj,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
-		imbalanceFilter:    NewLocalImbalancePodsFilter(c),
+		imbalanceFilter:    NewLocalImbalancePodsFilter(c, 8),
 		// No KV sync router, uses original implementation
 	}
 

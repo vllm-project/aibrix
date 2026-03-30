@@ -102,7 +102,7 @@ func TestPrefixCacheRouterConfiguration(t *testing.T) {
 				cache:              c,
 				tokenizer:          tok,
 				prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
-				imbalanceFilter:    NewLocalImbalancePodsFilter(c),
+				imbalanceFilter:    NewLocalImbalancePodsFilter(c, 8),
 			}
 
 			// Set up KV sync router if needed
@@ -116,7 +116,7 @@ func TestPrefixCacheRouterConfiguration(t *testing.T) {
 					tokenizerPool:   mockPool,
 					syncIndexer:     syncindexer.NewSyncPrefixHashTable(),
 					metricsEnabled:  false,
-					imbalanceFilter: NewLocalImbalancePodsFilter(c),
+					imbalanceFilter: NewLocalImbalancePodsFilter(c, 8),
 				}
 				router.kvSyncRouter = kvSyncRouter
 			}
@@ -190,7 +190,7 @@ func TestPrefixCacheRouterWithSyncIndexer(t *testing.T) {
 		tokenizerPool:   mockPool,
 		syncIndexer:     syncindexer.NewSyncPrefixHashTable(),
 		metricsEnabled:  false, // Disable metrics for testing
-		imbalanceFilter: NewLocalImbalancePodsFilter(c),
+		imbalanceFilter: NewLocalImbalancePodsFilter(c, 8),
 	}
 
 	router := prefixCacheRouter{
@@ -198,7 +198,7 @@ func TestPrefixCacheRouterWithSyncIndexer(t *testing.T) {
 		tokenizer:          tok,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 		kvSyncRouter:       kvSyncRouter,
-		imbalanceFilter:    NewLocalImbalancePodsFilter(c),
+		imbalanceFilter:    NewLocalImbalancePodsFilter(c, 8),
 	}
 
 	// Create pod list
@@ -272,7 +272,7 @@ func TestPrefixCacheRouterWithLocalIndexer(t *testing.T) {
 		cache:              c,
 		tokenizer:          tok,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
-		imbalanceFilter:    NewLocalImbalancePodsFilter(c),
+		imbalanceFilter:    NewLocalImbalancePodsFilter(c, 8),
 	}
 
 	// Create pod list
@@ -328,7 +328,7 @@ func TestPrefixCacheRouterFallback(t *testing.T) {
 		tokenizerPool:   mockPool,
 		syncIndexer:     nil,   // No indexer
 		metricsEnabled:  false, // Disable metrics for testing
-		imbalanceFilter: NewLocalImbalancePodsFilter(c),
+		imbalanceFilter: NewLocalImbalancePodsFilter(c, 8),
 	}
 
 	router := prefixCacheRouter{
@@ -336,7 +336,7 @@ func TestPrefixCacheRouterFallback(t *testing.T) {
 		tokenizer:          tok,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 		kvSyncRouter:       kvSyncRouterNoIndexer,
-		imbalanceFilter:    NewLocalImbalancePodsFilter(c),
+		imbalanceFilter:    NewLocalImbalancePodsFilter(c, 8),
 	}
 
 	ctx := types.NewRoutingContext(context.Background(), RouterPrefixCache, "test-model", "test", "req1", "")
@@ -396,7 +396,7 @@ func TestPrefixCacheRouterMetrics(t *testing.T) {
 		tokenizerPool:   mockPool,
 		syncIndexer:     syncindexer.NewSyncPrefixHashTable(),
 		metricsEnabled:  true, // Enable metrics for this test
-		imbalanceFilter: NewLocalImbalancePodsFilter(c),
+		imbalanceFilter: NewLocalImbalancePodsFilter(c, 8),
 	}
 
 	router := prefixCacheRouter{
@@ -404,7 +404,7 @@ func TestPrefixCacheRouterMetrics(t *testing.T) {
 		tokenizer:          tok,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 		kvSyncRouter:       kvSyncRouter,
-		imbalanceFilter:    NewLocalImbalancePodsFilter(c),
+		imbalanceFilter:    NewLocalImbalancePodsFilter(c, 8),
 	}
 
 	// Set indexer status metric like the constructor does
@@ -533,7 +533,7 @@ func TestPrefixCacheRouterLatencyMetric(t *testing.T) {
 		tokenizerPool:   mockPool,
 		syncIndexer:     syncindexer.NewSyncPrefixHashTable(),
 		metricsEnabled:  true, // Enable metrics for latency test
-		imbalanceFilter: NewLocalImbalancePodsFilter(c),
+		imbalanceFilter: NewLocalImbalancePodsFilter(c, 8),
 	}
 
 	router := prefixCacheRouter{
@@ -541,7 +541,7 @@ func TestPrefixCacheRouterLatencyMetric(t *testing.T) {
 		tokenizer:          tok,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 		kvSyncRouter:       kvSyncRouter,
-		imbalanceFilter:    NewLocalImbalancePodsFilter(c),
+		imbalanceFilter:    NewLocalImbalancePodsFilter(c, 8),
 	}
 
 	podList := testPodsFromCache(c)
@@ -637,7 +637,7 @@ func TestPrefixCacheRouterWithRemoteTokenizer(t *testing.T) {
 		tokenizerPool:   mockPool,
 		syncIndexer:     syncIdx,
 		metricsEnabled:  false,
-		imbalanceFilter: NewLocalImbalancePodsFilter(c),
+		imbalanceFilter: NewLocalImbalancePodsFilter(c, 8),
 	}
 
 	// Create router with remote tokenizer
@@ -646,7 +646,7 @@ func TestPrefixCacheRouterWithRemoteTokenizer(t *testing.T) {
 		tokenizer:          nil, // In tests, we don't create a real pool
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 		kvSyncRouter:       kvSyncRouter,
-		imbalanceFilter:    NewLocalImbalancePodsFilter(c),
+		imbalanceFilter:    NewLocalImbalancePodsFilter(c, 8),
 	}
 
 	// Create pod list
@@ -692,7 +692,7 @@ func TestPrefixCacheRouterEdgeCases(t *testing.T) {
 					tokenizerPool:   mockPool,
 					syncIndexer:     syncindexer.NewSyncPrefixHashTable(),
 					metricsEnabled:  false, // Disable metrics for edge case test
-					imbalanceFilter: NewLocalImbalancePodsFilter(c),
+					imbalanceFilter: NewLocalImbalancePodsFilter(c, 8),
 				}
 
 				return prefixCacheRouter{
@@ -700,7 +700,7 @@ func TestPrefixCacheRouterEdgeCases(t *testing.T) {
 					tokenizer:          tok,
 					prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 					kvSyncRouter:       kvSyncRouter, // Use KV sync path to test error handling
-					imbalanceFilter:    NewLocalImbalancePodsFilter(c),
+					imbalanceFilter:    NewLocalImbalancePodsFilter(c, 8),
 				}
 			},
 			setupPods: func() ([]*v1.Pod, *cache.Store) {
@@ -736,7 +736,7 @@ func TestPrefixCacheRouterEdgeCases(t *testing.T) {
 					tokenizerPool:   mockPool,
 					syncIndexer:     nil,   // nil indexer to test error
 					metricsEnabled:  false, // Disable metrics for edge case test
-					imbalanceFilter: NewLocalImbalancePodsFilter(c),
+					imbalanceFilter: NewLocalImbalancePodsFilter(c, 8),
 				}
 
 				return prefixCacheRouter{
@@ -744,7 +744,7 @@ func TestPrefixCacheRouterEdgeCases(t *testing.T) {
 					tokenizer:          tok,
 					prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 					kvSyncRouter:       kvSyncRouter,
-					imbalanceFilter:    NewLocalImbalancePodsFilter(c),
+					imbalanceFilter:    NewLocalImbalancePodsFilter(c, 8),
 				}
 			},
 			setupPods: func() ([]*v1.Pod, *cache.Store) {
@@ -788,7 +788,7 @@ func TestPrefixCacheRouterEdgeCases(t *testing.T) {
 					cache:              c,
 					tokenizer:          mockTok,
 					prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
-					imbalanceFilter:    NewLocalImbalancePodsFilter(c),
+					imbalanceFilter:    NewLocalImbalancePodsFilter(c, 8),
 					// No KV sync router, so uses original path which should fail on tokenizer
 				}
 			},
@@ -864,7 +864,7 @@ func TestPrefixCacheRouterModelExtraction(t *testing.T) {
 		cache:              c,
 		tokenizer:          tok,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
-		imbalanceFilter:    NewLocalImbalancePodsFilter(c),
+		imbalanceFilter:    NewLocalImbalancePodsFilter(c, 8),
 		// No KV sync router for model extraction test
 	}
 
@@ -923,7 +923,7 @@ func TestPrefixCacheRouterConcurrency(t *testing.T) {
 				cache:              c,
 				tokenizer:          tok,
 				prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
-				imbalanceFilter:    NewLocalImbalancePodsFilter(c),
+				imbalanceFilter:    NewLocalImbalancePodsFilter(c, 8),
 			}
 
 			if it.useKVSync {
@@ -936,7 +936,7 @@ func TestPrefixCacheRouterConcurrency(t *testing.T) {
 					tokenizerPool:   mockPool,
 					syncIndexer:     syncindexer.NewSyncPrefixHashTable(),
 					metricsEnabled:  false,
-					imbalanceFilter: NewLocalImbalancePodsFilter(c),
+					imbalanceFilter: NewLocalImbalancePodsFilter(c, 8),
 				}
 				router.kvSyncRouter = kvSyncRouter
 			}

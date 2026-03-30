@@ -170,7 +170,7 @@ func TestDeduplicatePods(t *testing.T) {
 // Test localImbalancePodsFilter
 func TestLocalImbalancePodsFilter_FilterPodsWithPort_SinglePort(t *testing.T) {
 	mockProvider := newMockMetricsProvider()
-	filter := NewLocalImbalancePodsFilter(mockProvider)
+	filter := NewLocalImbalancePodsFilter(mockProvider, 2)
 
 	pod1 := createTestPodImbalance("pod-1", "default", nil)
 	pod2 := createTestPodImbalance("pod-2", "default", nil)
@@ -194,7 +194,7 @@ func TestLocalImbalancePodsFilter_FilterPodsWithPort_SinglePort(t *testing.T) {
 
 func TestLocalImbalancePodsFilter_FilterPodsWithPort_MultiPort(t *testing.T) {
 	mockProvider := newMockMetricsProvider()
-	filter := NewLocalImbalancePodsFilter(mockProvider)
+	filter := NewLocalImbalancePodsFilter(mockProvider, 2)
 
 	pod1 := createTestPodImbalanceWithPorts("pod-1", "default", nil, 8000, 2)
 	pod2 := createTestPodImbalanceWithPorts("pod-2", "default", nil, 8000, 2)
@@ -219,7 +219,7 @@ func TestLocalImbalancePodsFilter_FilterPodsWithPort_MultiPort(t *testing.T) {
 
 func TestLocalImbalancePodsFilter_FilterPodsWithPort_Balanced(t *testing.T) {
 	mockProvider := newMockMetricsProvider()
-	filter := NewLocalImbalancePodsFilter(mockProvider)
+	filter := NewLocalImbalancePodsFilter(mockProvider, 2)
 
 	pod1 := createTestPodImbalance("pod-1", "default", nil)
 	pod2 := createTestPodImbalance("pod-2", "default", nil)
@@ -240,7 +240,7 @@ func TestLocalImbalancePodsFilter_FilterPodsWithPort_Balanced(t *testing.T) {
 
 func TestLocalImbalancePodsFilter_FilterPods(t *testing.T) {
 	mockProvider := newMockMetricsProvider()
-	filter := NewLocalImbalancePodsFilter(mockProvider)
+	filter := NewLocalImbalancePodsFilter(mockProvider, 2)
 
 	pod1 := createTestPodImbalanceWithPorts("pod-1", "default", nil, 8000, 2)
 
@@ -261,7 +261,7 @@ func TestLocalImbalancePodsFilter_FilterPods(t *testing.T) {
 // Test redisImbalancePodsFilter
 func TestRedisImbalancePodsFilter_FilterPodsWithPort(t *testing.T) {
 	db, mock := redismock.NewClientMock()
-	filter := NewRedisImbalancePodsFilter(db)
+	filter := NewRedisImbalancePodsFilter(db, 2)
 
 	pod1 := createTestPodImbalance("pod-1", "default", map[string]string{"model": "test-model"})
 	pod2 := createTestPodImbalance("pod-2", "default", map[string]string{"model": "test-model"})
@@ -289,7 +289,7 @@ func TestRedisImbalancePodsFilter_FilterPodsWithPort(t *testing.T) {
 
 func TestRedisImbalancePodsFilter_FilterPodsWithPort_NoModelLabel(t *testing.T) {
 	db, _ := redismock.NewClientMock()
-	filter := NewRedisImbalancePodsFilter(db)
+	filter := NewRedisImbalancePodsFilter(db, 2)
 
 	pod1 := createTestPodImbalance("pod-1", "default", nil) // No model label
 
@@ -304,7 +304,7 @@ func TestRedisImbalancePodsFilter_FilterPodsWithPort_NoModelLabel(t *testing.T) 
 
 func TestRedisImbalancePodsFilter_AddRequestCount(t *testing.T) {
 	db, mock := redismock.NewClientMock()
-	filter := NewRedisImbalancePodsFilter(db)
+	filter := NewRedisImbalancePodsFilter(db, 2)
 
 	pod1 := createTestPodImbalance("pod-1", "default", map[string]string{"model": "test-model"})
 	pod2 := createTestPodImbalance("pod-2", "default", map[string]string{"model": "test-model"})
@@ -333,7 +333,7 @@ func TestRedisImbalancePodsFilter_AddRequestCount(t *testing.T) {
 
 func TestRedisImbalancePodsFilter_AddRequestCount_NoTargetPod(t *testing.T) {
 	db, _ := redismock.NewClientMock()
-	filter := NewRedisImbalancePodsFilter(db)
+	filter := NewRedisImbalancePodsFilter(db, 2)
 
 	ctx := types.NewRoutingContext(context.Background(), "", "test-model", "", "req-1", "")
 	// No target pod set
@@ -346,7 +346,7 @@ func TestRedisImbalancePodsFilter_AddRequestCount_NoTargetPod(t *testing.T) {
 
 func TestRedisImbalancePodsFilter_DoneRequestCount(t *testing.T) {
 	db, mock := redismock.NewClientMock()
-	filter := NewRedisImbalancePodsFilter(db)
+	filter := NewRedisImbalancePodsFilter(db, 2)
 
 	pod := createTestPodImbalance("pod-1", "default", nil)
 	ctx := types.NewRoutingContext(context.Background(), "", "test-model", "", "req-1", "")
@@ -364,7 +364,7 @@ func TestRedisImbalancePodsFilter_DoneRequestCount(t *testing.T) {
 
 func TestRedisImbalancePodsFilter_DoneRequestCount_PositiveCount(t *testing.T) {
 	db, mock := redismock.NewClientMock()
-	filter := NewRedisImbalancePodsFilter(db)
+	filter := NewRedisImbalancePodsFilter(db, 2)
 
 	pod := createTestPodImbalance("pod-1", "default", nil)
 	ctx := types.NewRoutingContext(context.Background(), "", "test-model", "", "req-1", "")
@@ -382,7 +382,7 @@ func TestRedisImbalancePodsFilter_DoneRequestCount_PositiveCount(t *testing.T) {
 
 func TestRedisImbalancePodsFilter_FilterPods_Deduplication(t *testing.T) {
 	db, mock := redismock.NewClientMock()
-	filter := NewRedisImbalancePodsFilter(db)
+	filter := NewRedisImbalancePodsFilter(db, 2)
 
 	pod1 := createTestPodImbalanceWithPorts("pod-1", "default", map[string]string{"model": "test-model"}, 8000, 2)
 
@@ -407,7 +407,7 @@ func TestRedisImbalancePodsFilter_FilterPods_Deduplication(t *testing.T) {
 
 func TestRedisImbalancePodsFilter_AddRequestCount_Timeout(t *testing.T) {
 	db, mock := redismock.NewClientMock()
-	filter := NewRedisImbalancePodsFilter(db)
+	filter := NewRedisImbalancePodsFilter(db, 2)
 	// Set a very short timeout for testing
 	filter.requestTrackerTimeout = time.Millisecond * 100
 
@@ -440,7 +440,7 @@ func TestRedisImbalancePodsFilter_AddRequestCount_Timeout(t *testing.T) {
 
 func TestRedisImbalancePodsFilter_AddRequestCount_NoFilterHistory(t *testing.T) {
 	db, _ := redismock.NewClientMock()
-	filter := NewRedisImbalancePodsFilter(db)
+	filter := NewRedisImbalancePodsFilter(db, 2)
 
 	pod := createTestPodImbalance("pod-1", "default", nil)
 	ctx := types.NewRoutingContext(context.Background(), "", "test-model", "", "req-1", "")
@@ -455,7 +455,7 @@ func TestRedisImbalancePodsFilter_AddRequestCount_NoFilterHistory(t *testing.T) 
 
 func TestRedisImbalancePodsFilter_BuildRedisKey(t *testing.T) {
 	db, _ := redismock.NewClientMock()
-	filter := NewRedisImbalancePodsFilter(db)
+	filter := NewRedisImbalancePodsFilter(db, 2)
 
 	key := filter.buildRedisKey("test-model")
 	assert.Equal(t, "aibrix:prefix-cache-reqcnt:{test-model}", key)
@@ -464,7 +464,7 @@ func TestRedisImbalancePodsFilter_BuildRedisKey(t *testing.T) {
 // Edge cases
 func TestLocalImbalancePodsFilter_EmptyPodList(t *testing.T) {
 	mockProvider := newMockMetricsProvider()
-	filter := NewLocalImbalancePodsFilter(mockProvider)
+	filter := NewLocalImbalancePodsFilter(mockProvider, 2)
 
 	podList := createTestPodListImbalance([]*v1.Pod{})
 
@@ -476,7 +476,7 @@ func TestLocalImbalancePodsFilter_EmptyPodList(t *testing.T) {
 
 func TestLocalImbalancePodsFilter_SinglePod(t *testing.T) {
 	mockProvider := newMockMetricsProvider()
-	filter := NewLocalImbalancePodsFilter(mockProvider)
+	filter := NewLocalImbalancePodsFilter(mockProvider, 2)
 
 	pod1 := createTestPodImbalance("pod-1", "default", nil)
 	mockProvider.requestCounts["pod-1"] = 10

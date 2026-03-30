@@ -301,7 +301,7 @@ func NewPrefixCacheRouterWithRedis(redisClient *redis.Client) (types.Router, err
 		"matched_pods_running_requests_standard_deviation_factor", standardDeviationFactor)
 
 	// Create imbalance filter for local router (always use local version)
-	localImbalanceFilter := NewLocalImbalancePodsFilter(c)
+	localImbalanceFilter := NewLocalImbalancePodsFilter(c, int64(podRunningRequestImbalanceAbsCount))
 
 	// Create main router with local indexer
 	router := prefixCacheRouter{
@@ -322,17 +322,17 @@ func NewPrefixCacheRouterWithRedis(redisClient *redis.Client) (types.Router, err
 		// Create imbalance filter for KV sync router
 		var kvSyncImbalanceFilter ImbalancePodsFilter
 		if useRedisImbalanceFilter && redisClient != nil {
-			kvSyncImbalanceFilter = NewRedisImbalancePodsFilter(redisClient)
+			kvSyncImbalanceFilter = NewRedisImbalancePodsFilter(redisClient, int64(podRunningRequestImbalanceAbsCount))
 			// Register redis imbalance filter as request tracker with defensive type assertion
 			if tracker, ok := kvSyncImbalanceFilter.(*redisImbalancePodsFilter); ok {
 				c.RegisterRequestTracker(tracker)
 				klog.Info("Using Redis-based imbalance filter for KV sync router")
 			} else {
 				klog.Error("Failed to assert kvSyncImbalanceFilter to *redisImbalancePodsFilter, falling back to local")
-				kvSyncImbalanceFilter = NewLocalImbalancePodsFilter(c)
+				kvSyncImbalanceFilter = NewLocalImbalancePodsFilter(c, int64(podRunningRequestImbalanceAbsCount))
 			}
 		} else {
-			kvSyncImbalanceFilter = NewLocalImbalancePodsFilter(c)
+			kvSyncImbalanceFilter = NewLocalImbalancePodsFilter(c, int64(podRunningRequestImbalanceAbsCount))
 			klog.Info("Using local imbalance filter for KV sync router")
 		}
 

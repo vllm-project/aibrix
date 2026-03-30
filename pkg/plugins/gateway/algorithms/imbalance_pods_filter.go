@@ -70,10 +70,10 @@ type localImbalancePodsFilter struct {
 }
 
 // NewLocalImbalancePodsFilter creates a new local imbalance pods filter
-func NewLocalImbalancePodsFilter(provider MetricsProvider) *localImbalancePodsFilter {
+func NewLocalImbalancePodsFilter(provider MetricsProvider, imbalanceThreshold int64) *localImbalancePodsFilter {
 	return &localImbalancePodsFilter{
 		metricsProvider:    provider,
-		imbalanceThreshold: defaultImbalanceThreshold,
+		imbalanceThreshold: imbalanceThreshold,
 	}
 }
 
@@ -250,16 +250,15 @@ type redisImbalancePodsFilter struct {
 }
 
 const (
-	defaultImbalanceThreshold      = 2
 	defaultRedisKeyPrefix          = "aibrix:prefix-cache-reqcnt"
 	defaultImbalanceTrackerTimeout = time.Minute * 5 // 5 minutes, stop tracking if filter not called
 )
 
 // NewRedisImbalancePodsFilter creates a new redis-based imbalance pods filter
-func NewRedisImbalancePodsFilter(redisClient *redis.Client) *redisImbalancePodsFilter {
+func NewRedisImbalancePodsFilter(redisClient *redis.Client, imbalanceThreshold int64) *redisImbalancePodsFilter {
 	return &redisImbalancePodsFilter{
 		redisCli:              redisClient,
-		imbalanceThreshold:    defaultImbalanceThreshold,
+		imbalanceThreshold:    imbalanceThreshold,
 		redisKeyPrefix:        defaultRedisKeyPrefix,
 		lastModelFilterTime:   make(map[string]time.Time),
 		requestTrackerTimeout: defaultImbalanceTrackerTimeout,
@@ -342,7 +341,7 @@ func (r *redisImbalancePodsFilter) FilterPodsWithPort(ctx context.Context, ready
 	key := r.buildRedisKey(modelName)
 	counts, err := r.redisCli.HGetAll(ctx, key).Result()
 	if err != nil {
-		klog.V(4).ErrorS(err, "failed to get request counts from redis", "key", key)
+		klog.ErrorS(err, "failed to get request counts from redis", "key", key)
 		return candidates, false
 	}
 
@@ -383,7 +382,7 @@ func (r *redisImbalancePodsFilter) FilterPodsWithPort(ctx context.Context, ready
 		}
 	}
 
-	klog.V(4).InfoS("detected load imbalance",
+	klog.V(2).InfoS("detected load imbalance",
 		"model", modelName,
 		"min_count", minCount,
 		"max_count", maxCount,
@@ -504,7 +503,7 @@ func (r *redisImbalancePodsFilter) DoneRequestCount(ctx *types.RoutingContext, r
 	// If count is zero or negative, delete the field
 	if newCount <= 0 {
 		if err := r.redisCli.HDel(ctx.Context, key, field).Err(); err != nil {
-			klog.V(4).ErrorS(err, "failed to delete field from hashmap",
+			klog.ErrorS(err, "failed to delete field from hashmap",
 				"key", key,
 				"field", field)
 		}
