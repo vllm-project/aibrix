@@ -44,20 +44,32 @@ import (
 
 var (
 	grpcAddr        string
-	metricsAddr     string
+	httpAddr        string
+	metricsAddr     string // deprecated: use httpAddr
 	standalone      bool
 	endpointsConfig string
 )
 
 func main() {
 	flag.StringVar(&grpcAddr, "grpc-bind-address", ":50052", "The address the gRPC server binds to.")
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
+	flag.StringVar(&httpAddr, "http-bind-address", "", "The address the HTTP server binds to (metrics, /v1/models).")
+	flag.StringVar(&metricsAddr, "metrics-bind-address", "", "[Deprecated] Use --http-bind-address instead.")
 	flag.BoolVar(&standalone, "standalone", false, "Run in standalone mode without Kubernetes.")
 	flag.StringVar(&endpointsConfig, "endpoints-config", "",
 		"Path to endpoints config file (required in standalone mode).")
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
 	flag.Parse()
+
+	// Resolve HTTP bind address: prefer --http-bind-address, fall back to deprecated --metrics-bind-address
+	if httpAddr == "" {
+		if metricsAddr != "" {
+			klog.Warning("--metrics-bind-address is deprecated, use --http-bind-address instead")
+			httpAddr = metricsAddr
+		} else {
+			httpAddr = ":8080"
+		}
+	}
 
 	// Validate standalone mode flags
 	if standalone && endpointsConfig == "" {
@@ -132,10 +144,10 @@ func main() {
 
 	gatewayServer := gateway.NewServer(redisClient, k8sClient, gatewayK8sClient)
 
-	if err := gatewayServer.StartMetricsServer(metricsAddr); err != nil {
-		klog.Fatalf("Failed to start metrics server: %v", err)
+	if err := gatewayServer.StartHTTPServer(httpAddr); err != nil {
+		klog.Fatalf("Failed to start HTTP server: %v", err)
 	}
-	klog.Infof("Started metrics server on %s", metricsAddr)
+	klog.Infof("Started HTTP server on %s", httpAddr)
 
 	s := grpc.NewServer()
 	extProcPb.RegisterExternalProcessorServer(s, gatewayServer)

@@ -18,15 +18,19 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -61,7 +65,7 @@ type Server struct {
 	gatewayClient       gatewayapi.Interface
 	requestCountTracker map[string]int
 	cache               cache.Cache
-	metricsServer       *metrics.Server
+	httpServer          *http.Server
 	// Broadcast channel for server-initiated shutdown
 	shutdownCh <-chan struct{}
 }
@@ -102,7 +106,6 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		gatewayClient:       gatewayClient,
 		requestCountTracker: map[string]int{},
 		cache:               c,
-		metricsServer:       nil,
 	}
 }
 
@@ -382,23 +385,77 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 	return errors.New(strings.Join(errMsg, ", "))
 }
 
-func (s *Server) StartMetricsServer(addr string) error {
-	if s.metricsServer != nil {
+// StartHTTPServer starts the gateway's HTTP server with metrics and API handlers.
+// In local/standalone mode, Envoy routes /v1/models here since there is no metadata service.
+// In standard K8s deployment, Envoy routes /v1/models to the metadata service instead,
+// so the /v1/models handler here is never reached — no conflict.
+func (s *Server) StartHTTPServer(addr string) error {
+	if s.httpServer != nil {
 		return nil
 	}
 
-	s.metricsServer = metrics.NewServer(addr)
-	if err := s.metricsServer.Start(); err != nil {
-		return fmt.Errorf("failed to start metrics server: %v", err)
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/v1/models", s.handleListModels)
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %v", addr, err)
 	}
+
+	s.httpServer = &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	klog.InfoS("Starting HTTP server", "address", addr)
+	go func() {
+		if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+			klog.ErrorS(err, "Failed to start HTTP server")
+		}
+	}()
 
 	return nil
 }
 
+func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		fmt.Fprintf(w, `{"error":"method not allowed"}`)
+		return
+	}
+
+	type modelObject struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		OwnedBy string `json:"owned_by"`
+	}
+	type modelListResponse struct {
+		Object string        `json:"object"`
+		Data   []modelObject `json:"data"`
+	}
+
+	models := s.cache.ListModels()
+	data := make([]modelObject, len(models))
+	for i, m := range models {
+		data[i] = modelObject{ID: m, Object: "model", Created: 0, OwnedBy: "aibrix"}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(modelListResponse{Object: "list", Data: data}); err != nil {
+		klog.ErrorS(err, "failed to encode model list response")
+	}
+}
+
 func (s *Server) Shutdown() {
-	if s.metricsServer != nil {
-		if err := s.metricsServer.Stop(); err != nil {
-			klog.ErrorS(err, "Error stopping metrics server")
+	if s.httpServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.httpServer.Shutdown(ctx); err != nil {
+			klog.ErrorS(err, "Error stopping HTTP server")
 		}
 	}
 }
