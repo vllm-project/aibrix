@@ -132,6 +132,7 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_ADDR: str = "127.0.0.1"
     AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_PORT: int = 6379
     AIBRIX_KV_CACHE_OL_PRISKV_USE_MPUT_MGET: bool = False
+    AIBRIX_KV_CACHE_OL_PRISKV_USE_ZERO_COPY: bool = False
     AIBRIX_KV_CACHE_OL_PRISKV_PASSWORD: str = ""
 
     # RDMA Auto-Detection Env Vars
@@ -411,6 +412,15 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
             "AIBRIX_KV_CACHE_OL_PRISKV_PASSWORD",
             os.getenv("AIBRIX_KV_CACHE_OL_PRIS_PASSWORD", ""),
         ).strip()
+    ),
+    "AIBRIX_KV_CACHE_OL_PRISKV_USE_ZERO_COPY": lambda: (
+        os.getenv(
+            "AIBRIX_KV_CACHE_OL_PRISKV_USE_ZERO_COPY",
+            os.getenv("AIBRIX_KV_CACHE_OL_PRIS_USE_ZERO_COPY", "0"),
+        )
+        .strip()
+        .lower()
+        in ("1", "true")
     ),
     # ================== RDMA Auto-Detection Env Vars ==================
     "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE": lambda: (
