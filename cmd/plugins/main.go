@@ -77,11 +77,19 @@ func main() {
 	}
 
 	redisClient := utils.GetRedisClient()
-	defer func() {
-		if err := redisClient.Close(); err != nil {
-			klog.Warningf("Error closing Redis client: %v", err)
+	if redisClient == nil {
+		if standalone {
+			klog.Warning("Running without Redis: rate limiting and user auth disabled")
+		} else {
+			klog.Fatal("Redis is required in Kubernetes mode")
 		}
-	}()
+	} else {
+		defer func() {
+			if err := redisClient.Close(); err != nil {
+				klog.Warningf("Error closing Redis client: %v", err)
+			}
+		}()
+	}
 
 	// register additional routing algorithms that need dependences
 	if redisClient != nil {
