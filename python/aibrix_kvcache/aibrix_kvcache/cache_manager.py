@@ -1586,11 +1586,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         if isinstance(kv_tensors, GDRKVCacheHandle):
             assert self.feature.gdr_put, "Does not support GDR put"
 
+        # Bypass L1 if L2 cache is enabled with zero copy
         if self._l2_cache_has_zero_copy():
-            ret = len(kv_tensors) * self.block_ntokens
-            # release will trigger async seals on allocated MRs
-            kv_tensors.release()
-            return Status.ok(ret)
+            return self._l2_put(prefix, query, kv_tensors)
 
         # If L1Cache is enabled, we put kv tensors to L1Cache and leverage its
         # eviction policy to asynchronously ingest kv tensors to L2Cache.
