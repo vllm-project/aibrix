@@ -94,7 +94,12 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 	if err != nil {
 		panic(err)
 	}
-	r := ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
+	var r ratelimiter.RateLimiter
+	if redisClient != nil {
+		r = ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
+	} else {
+		r = ratelimiter.NewNoopRateLimiter()
+	}
 
 	// Initialize the routers
 	routing.Init()
