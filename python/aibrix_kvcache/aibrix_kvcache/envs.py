@@ -152,6 +152,9 @@ if TYPE_CHECKING:
         os.path.join(os.path.expanduser("~"), ".kv_cache_ol", "shfs")
     )
 
+    # vLLM Integration Env Vars
+    VLLM_AIBRIX_SYNC_GRANULARITY: str = "PER_OP"
+
 # The begin-* and end* here are used by the documentation generator
 # to extract the used env vars.
 
@@ -449,6 +452,11 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
             os.path.join(os.path.expanduser("~"), ".kv_cache_ol", "shfs"),
         )
     ),
+    # Specify the sync granularity used by AIBrix connectors. Please refer to
+    # AIBrixOffloadingConnectorSyncGranularity for more details.
+    "VLLM_AIBRIX_SYNC_GRANULARITY": lambda: os.environ.get(
+        "VLLM_AIBRIX_SYNC_GRANULARITY", "PER_OP"
+    ).upper(),
 }
 
 # end-env-vars-definition
