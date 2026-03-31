@@ -47,6 +47,13 @@ static_resources:
                     - name: aibrix_api
                       domains: ["*"]
                       routes:
+                        # Model listing - served by gateway plugin (no metadata service in local mode)
+                        - match:
+                            prefix: "/v1/models"
+                          route:
+                            cluster: gateway_http
+                            timeout: 10s
+
                         # Inference endpoints - routed via ORIGINAL_DST using target-pod header
                         - match:
                             prefix: "/v1/"
@@ -63,11 +70,11 @@ static_resources:
                             body:
                               inline_string: '{"status":"ok"}'
 
-                        # Gateway metrics
+                        # Gateway HTTP server (metrics, /v1/models)
                         - match:
                             prefix: "/metrics"
                           route:
-                            cluster: gateway_metrics
+                            cluster: gateway_http
                             timeout: 10s
 
                         # Catch-all
@@ -121,11 +128,11 @@ static_resources:
                       port_value: 50052
       connect_timeout: 5s
 
-    # Gateway Metrics
-    - name: gateway_metrics
+    # Gateway HTTP server (metrics, /v1/models)
+    - name: gateway_http
       type: STATIC
       load_assignment:
-        cluster_name: gateway_metrics
+        cluster_name: gateway_http
         endpoints:
           - lb_endpoints:
               - endpoint:
