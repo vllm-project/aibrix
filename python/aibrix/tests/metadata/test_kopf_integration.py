@@ -21,7 +21,7 @@ import pytest
 # Set required environment variable before importing
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
-from aibrix.metadata.core.kopf_operator import KopfOperatorWrapper
+from aibrix.metadata.core import KopfOperatorWrapper
 
 
 @pytest.mark.asyncio
@@ -134,9 +134,8 @@ async def test_kopf_operator_wrapper_startup_error():
     with patch("aibrix.metadata.core.kopf_operator.kopf.run") as mock_kopf_run:
 
         def mock_run(**kwargs):
-            ready_flag = kwargs.get("ready_flag")
-            if ready_flag:
-                ready_flag.set()  # Signal ready first
+            # Don't set ready_flag here — let _run_operator's exception
+            # handler store the error first, then signal ready.
             raise RuntimeError("Mock startup error")
 
         mock_kopf_run.side_effect = mock_run

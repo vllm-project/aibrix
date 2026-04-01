@@ -59,7 +59,7 @@ func Test_handleRequestHeaders(t *testing.T) {
 	// Define test cases for different routing and error scenarios
 	tests := []testCase{
 		{
-			name: "not found strategy - should return error",
+			name: "invalid strategy - passes through to request body (validation deferred)",
 			requestHeaders: []*configPb.HeaderValue{
 				{
 					Key:      HeaderRoutingStrategy,
@@ -67,26 +67,23 @@ func Test_handleRequestHeaders(t *testing.T) {
 				},
 			},
 			expected: testResponse{
-				statusCode: envoyTypePb.StatusCode_BadRequest,
+				statusCode: envoyTypePb.StatusCode_OK,
 				headers: []*configPb.HeaderValueOption{
-					{Header: &configPb.HeaderValue{Key: HeaderErrorInvalidRouting, RawValue: []byte("not-found-strategy")}},
-					{Header: &configPb.HeaderValue{Key: "Content-Type", Value: "application/json"}},
+					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
 				},
-				routingCtx: nil,
-				user:       utils.User{},
-				rpm:        0,
+				routingCtx: &types.RoutingContext{
+					ReqHeaders: map[string]string{HeaderRoutingStrategy: "not-found-strategy"},
+				},
+				user: utils.User{},
+				rpm:  0,
 			},
 			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, user utils.User, routingCtx *types.RoutingContext, rpm int64) {
-				// Validate request headers info
-				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
-				assert.Equal(t, tt.expected.headers, resp.GetImmediateResponse().GetHeaders().GetSetHeaders())
+				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
+				assert.Equal(t, tt.expected.headers, resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders())
 				assert.Equal(t, tt.expected.user, user)
-				assert.Nil(t, routingCtx)
+				assert.NotNil(t, routingCtx)
+				assert.Equal(t, tt.expected.routingCtx.ReqHeaders, routingCtx.ReqHeaders)
 				assert.Equal(t, tt.expected.rpm, rpm)
-				// Verify no special headers are set
-				for _, header := range resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders() {
-					assert.NotEqual(t, HeaderWentIntoReqHeaders, header.Header.Key)
-				}
 			},
 		},
 		{
@@ -151,13 +148,12 @@ func Test_handleRequestHeaders(t *testing.T) {
 				},
 				routingCtx: &types.RoutingContext{
 					ReqPath:    "test-path",
-					ReqHeaders: map[string]string{authorizationKey: "token:test-token"},
+					ReqHeaders: map[string]string{authorizationKey: "token:test-token", HeaderRoutingStrategy: "random"},
 				},
 				user: utils.User{},
 				rpm:  0,
 			},
 			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, user utils.User, routingCtx *types.RoutingContext, rpm int64) {
-				// Validate request headers info
 				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
 				assert.Equal(t, tt.expected.headers, resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders())
 				assert.Equal(t, tt.expected.user, user)

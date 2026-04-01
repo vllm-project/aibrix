@@ -17,6 +17,7 @@ limitations under the License.
 package cache
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -113,6 +114,12 @@ type Store struct {
 
 	// KV event management - optional enhancement
 	kvEventManager *KVEventManager
+
+	// Prometheus event queue
+	promqlJobs chan *Pod
+
+	// List of registered request trackers
+	requestTrackers []RequestTracker
 }
 
 // Get retrieves the cache instance
@@ -330,7 +337,7 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		}
 
 		// Create store with provided dependencies
-		store = New(opts.RedisClient, initPrometheusAPI(), opts.ModelRouterProvider)
+		store = New(opts.RedisClient, initPrometheusAPI(config), opts.ModelRouterProvider)
 
 		// Initialize service discovery
 		if opts.DiscoveryProvider != nil {
@@ -379,6 +386,7 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 //	stopCh: Stop signal channel
 func initMetricsCache(store *Store, stopCh <-chan struct{}) {
 	ticker := time.NewTicker(podMetricRefreshInterval)
+	store.initPromQLWorker(stopCh)
 	go func() {
 		for {
 			select {
@@ -598,4 +606,103 @@ func (s *Store) Close() {
 	s.cleanupKVEventSync()
 
 	// Other cleanup can be added here in the future
+}
+
+func (c *Store) enqueuePromQL(pod *Pod) {
+	if c.promqlJobs == nil {
+		return
+	}
+	// Non-blocking enqueue so slow PromQL queries do not affect the main path.
+	select {
+	case c.promqlJobs <- pod:
+	default:
+		// Drop when the queue is full (the next pod refresh cycle will enqueue again).
+		klog.V(5).InfoS("PromQL queue full, dropping promql job", "pod", pod.Name)
+	}
+}
+
+func (c *Store) initPromQLWorker(stopCh <-chan struct{}) {
+	if c.prometheusApi == nil {
+		klog.InfoS("Prometheus API is nil, skip initializing PromQL worker")
+		return
+	}
+	c.promqlJobs = make(chan *Pod, 2*c.podMetricsWorkerCount)
+	go c.promQueryLoop(stopCh)
+}
+
+func (c *Store) promQueryLoop(stopCh <-chan struct{}) {
+	ticker := time.NewTicker(promQueryInterval)
+	defer ticker.Stop()
+
+	// pendingPods keeps at most one pending job per pod key (ns/name).
+	// If the same pod is enqueued multiple times, we overwrite with the latest *Pod.
+	pendingPods := make(map[string]*Pod)
+
+	// fifoKeys records the processing order of pending pod keys.
+	// A key is appended only when it is first seen in pendingPods.
+	fifoKeys := list.New()
+
+	// Build stable key for dedupe/order.
+	podKey := func(p *Pod) string {
+		ns := p.Namespace
+		if ns == "" && p.Pod != nil {
+			ns = p.Pod.Namespace
+		}
+		return ns + "/" + p.Name
+	}
+
+	// Helper: enqueue into (pendingPods + fifoKeys) with dedupe.
+	enqueuePending := func(key string, p *Pod) {
+		if _, exists := pendingPods[key]; !exists {
+			fifoKeys.PushBack(key) // first time seen: record order
+		}
+		pendingPods[key] = p // always keep latest pod pointer
+	}
+
+	for {
+		select {
+		case <-stopCh:
+			return
+
+		// Accept pods from worker and deduplicate.
+		case p := <-c.promqlJobs:
+			if p == nil || p.Pod == nil || !utils.FilterReadyPod(p.Pod) {
+				continue
+			}
+			key := podKey(p)
+			if key == "" || key == "/" {
+				continue
+			}
+			enqueuePending(key, p)
+
+		// Every tick, process exactly one pending pod to cap QPS.
+		case <-ticker.C:
+			if fifoKeys.Len() == 0 {
+				continue
+			}
+
+			// Pop head key (FIFO).
+			element := fifoKeys.Front()
+			key := element.Value.(string)
+			fifoKeys.Remove(element)
+
+			// Get latest pod pointer and mark it as dequeued.
+			p := pendingPods[key]
+			delete(pendingPods, key)
+
+			// Pod may become unready while waiting in queue.
+			if p == nil || p.Pod == nil || !utils.FilterReadyPod(p.Pod) {
+				continue
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), promQueryTimeout)
+			err := c.updateMetricFromPromQL(ctx, p)
+			cancel()
+
+			if err != nil {
+				// Best-effort retry: put it back to the tail.
+				enqueuePending(key, p)
+			}
+		}
+	}
 }

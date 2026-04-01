@@ -50,4 +50,4 @@ RUN rm -rf /tmp/aibrix
 RUN pip install nixl==${NIXL_VERSION} nixl-cu12==${NIXL_VERSION}
 RUN apt install iproute2 perftest ucx-utils iputils-ping net-tools -y
 
-ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+ENTRYPOINT ["vllm", "serve"]

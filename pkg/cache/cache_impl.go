@@ -177,6 +177,10 @@ func (c *Store) GetMetricValueByPodModel(podName, podNamespace, modelName string
 //
 //	int64: Trace term identifier
 func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64) {
+	for _, tracker := range c.requestTrackers {
+		// ignore traceTerm
+		tracker.AddRequestCount(ctx, requestID, modelName)
+	}
 	// Current implementation assumes AddRequestCount() will not be called concurrently.
 	// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
 	if ctx == nil || ctx.CanAddTrace() {
@@ -222,6 +226,10 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 //		modelName: Model handling the request
 //		traceTerm: Trace term identifier
 func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
+	for _, tracker := range c.requestTrackers {
+		// ignore traceTerm
+		tracker.DoneRequestCount(ctx, requestID, modelName, traceTerm)
+	}
 	if ctx != nil && ctx.CanDoneStats() {
 		c.donePodStats(ctx, requestID)
 	}
@@ -247,6 +255,11 @@ func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, mo
 //	outputTokens: Output tokens count
 //	traceTerm: Trace term identifier
 func (c *Store) DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens, outputTokens, traceTerm int64) {
+	for _, tracker := range c.requestTrackers {
+		// ignore traceTerm
+		tracker.DoneRequestTrace(ctx, requestID, modelName, inputTokens, outputTokens, traceTerm)
+	}
+
 	if ctx != nil && ctx.CanDoneStats() {
 		c.donePodStats(ctx, requestID)
 	}
@@ -334,4 +347,8 @@ func (c *Store) GetRouter(ctx *types.RoutingContext) (types.Router, error) {
 	} else {
 		return model.QueueRouter, nil
 	}
+}
+
+func (c *Store) RegisterRequestTracker(tracker RequestTracker) {
+	c.requestTrackers = append(c.requestTrackers, tracker)
 }

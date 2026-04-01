@@ -22,6 +22,9 @@ import (
 	"time"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -39,6 +42,8 @@ const (
 	defaultEngineLabelValue             = "vllm"
 	defaultPodMetricRefreshIntervalInMS = 50
 	defaultPodMetricsWorkerCount        = 10
+	defaultPromQueryIntervalInMS        = 200
+	defaultPromQueryTimeoutInMS         = 2000
 )
 
 var (
@@ -79,6 +84,7 @@ var (
 		metrics.RequestDecodeTimeSeconds,
 		metrics.RequestPrefillTimeSeconds,
 		metrics.HTTPRequestDurationSeconds,
+		metrics.PerStageReqLatencySeconds,
 		metrics.HTTPRequestDurationHighRSeconds,
 		metrics.RequestPromptTokens,
 		metrics.RequestGenerationTokens,
@@ -110,6 +116,8 @@ var (
 		metrics.RunningLoraAdapters,
 	}
 	podMetricRefreshInterval = time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
+	promQueryInterval        = time.Duration(utils.LoadEnvInt("AIBRIX_PROMETHEUS_QUERY_INTERVAL_MS", defaultPromQueryIntervalInMS)) * time.Millisecond
+	promQueryTimeout         = time.Duration(utils.LoadEnvInt("AIBRIX_PROMETHEUS_QUERY_TIMEOUT_MS", defaultPromQueryTimeoutInMS)) * time.Millisecond
 )
 
 // MetricSnapshot represents a metric value at a specific timestamp
@@ -133,18 +141,20 @@ var (
 		maxAge:   5 * time.Minute, // Keep 5 minutes of history
 		maxCount: 20,              // Keep max 20 snapshots per metric
 	}
+
+	prometheusBasicAuthOnce sync.Once
+	prometheusBasicAuthUser string
+	prometheusBasicAuthPass string
 )
 
-func initPrometheusAPI() prometheusv1.API {
-	// Load environment variables
+func initPrometheusAPI(kubeConfig *rest.Config) prometheusv1.API {
 	prometheusEndpoint := utils.LoadEnv("PROMETHEUS_ENDPOINT", "")
-	prometheusBasicAuthUsername := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_USERNAME", "")
-	prometheusBasicAuthPassword := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_PASSWORD", "")
+	loadPrometheusBasicAuth(kubeConfig)
 
 	// Initialize Prometheus API
 	var prometheusApi prometheusv1.API
 	if prometheusEndpoint != "" {
-		api, err := metrics.InitializePrometheusAPI(prometheusEndpoint, prometheusBasicAuthUsername, prometheusBasicAuthPassword)
+		api, err := metrics.InitializePrometheusAPI(prometheusEndpoint, prometheusBasicAuthUser, prometheusBasicAuthPass)
 		if err != nil {
 			klog.Errorf("Error initializing Prometheus API: %v", err)
 		} else {
@@ -153,6 +163,47 @@ func initPrometheusAPI() prometheusv1.API {
 		}
 	}
 	return prometheusApi
+}
+
+// loadPrometheusBasicAuth initializes Prometheus basic auth credentials exactly once (via sync.Once).
+// It loads from a Kubernetes Secret when PROMETHEUS_BASIC_AUTH_SECRET_NAME is set; otherwise it falls back to env vars.
+// The resulting values are stored in package-level variables prometheusBasicAuthUser/prometheusBasicAuthPass.
+func loadPrometheusBasicAuth(kubeConfig *rest.Config) {
+	prometheusBasicAuthOnce.Do(func() {
+		secretName := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_SECRET_NAME", "")
+		if secretName == "" {
+			prometheusBasicAuthUser = utils.LoadEnv("PROMETHEUS_BASIC_AUTH_USERNAME", "")
+			prometheusBasicAuthPass = utils.LoadEnv("PROMETHEUS_BASIC_AUTH_PASSWORD", "")
+			return
+		}
+
+		secretNamespace := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE", utils.NAMESPACE)
+		// Default to "username" and "password" if keys are not specified
+		usernameKey := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_USERNAME_KEY", "username")
+		passwordKey := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_PASSWORD_KEY", "password")
+
+		if kubeConfig == nil {
+			klog.Warningf("Prometheus basic auth secret %s/%s is not loaded due to nil kubeConfig", secretNamespace, secretName)
+			return
+		}
+		clientset, err := kubernetes.NewForConfig(kubeConfig)
+		if err != nil {
+			klog.ErrorS(err, "Failed to create Kubernetes client for Prometheus basic auth secret")
+			return
+		}
+
+		secret, err := clientset.CoreV1().Secrets(secretNamespace).Get(context.Background(), secretName, metav1.GetOptions{})
+		if err != nil {
+			klog.ErrorS(err, "Failed to read Prometheus basic auth secret", "namespace", secretNamespace, "name", secretName)
+			return
+		}
+		if b, ok := secret.Data[usernameKey]; ok {
+			prometheusBasicAuthUser = strings.TrimSpace(string(b))
+		}
+		if b, ok := secret.Data[passwordKey]; ok {
+			prometheusBasicAuthPass = strings.TrimSpace(string(b))
+		}
+	})
 }
 
 func (c *Store) getPodMetricImpl(podName string, metricStore *utils.SyncMap[string, metrics.MetricValue], metricName string) (metrics.MetricValue, error) {
@@ -201,12 +252,11 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			continue
 		}
 
-		podLabelNames, podLabelValues := buildMetricLabels(pod, engineType, "")
 		for metricName, metricValue := range result.Metrics {
 			if shouldSkipMetric(pod.Name, metricName) {
 				continue
 			}
-			metrics.EmitMetricToPrometheus(metricName, metricValue, podLabelNames, podLabelValues)
+			metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod.Pod, metricName, metricValue, metricValue.GetLabelValues())
 		}
 
 		for metricName, metricValue := range result.ModelMetrics {
@@ -221,8 +271,6 @@ func (c *Store) worker(jobs <-chan *Pod) {
 				continue
 			}
 
-			labelNames, labelValues := buildMetricLabels(pod, engineType, model)
-
 			var rateMetricName string
 			if strings.Contains(pod.Name, "prefill") && metric == metrics.PromptTokenTotal {
 				rateMetricName = metrics.AvgPromptThroughputToksPerS
@@ -233,20 +281,19 @@ func (c *Store) worker(jobs <-chan *Pod) {
 				perSecRate := c.calculatePerSecondRate(pod, model, metric, metricValue.GetSimpleValue())
 				if perSecRate >= 0 {
 					rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
-					metrics.SetGaugeMetric(rateMetricName, metrics.GetMetricHelp(rateMetricName), rateValue.GetSimpleValue(), labelNames, labelValues...)
+					metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, rateMetricName, rateValue, metricValue.GetLabelValues())
 					_ = c.updatePodRecord(pod, model, rateMetricName, metrics.PodModelMetricScope, rateValue)
 					klog.V(4).InfoS("get metric per sec rate", "metric", rateMetricName, "raw_value", metricValue.GetSimpleValue(), "per_sec_rate", rateValue.GetSimpleValue())
 				}
 			}
-
-			metrics.EmitMetricToPrometheus(metric, metricValue, labelNames, labelValues)
+			metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, metric, metricValue, metricValue.GetLabelValues())
 		}
 		// Update pod metrics using typed results
 		c.updatePodMetricsFromTypedResult(pod, result)
 
 		// Handle Prometheus-based metrics separately (these require PromQL queries)
 		if c.prometheusApi != nil {
-			c.updateMetricFromPromQL(ctx, pod)
+			c.enqueuePromQL(pod)
 		} else {
 			klog.V(4).InfoS("Prometheus API not initialized, skipping PromQL metrics", "pod", pod.Name)
 		}
@@ -262,7 +309,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 	}
 }
 
-func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
+func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) (queryErr error) {
 	podName := pod.Name
 	podMetricPort := getPodMetricPort(pod)
 	for _, metricName := range prometheusMetricNames {
@@ -279,6 +326,9 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 			err := c.queryUpdatePromQLMetrics(ctx, metric, queryLabels, pod, "", metricName, podMetricPort)
 			if err != nil {
 				klog.V(4).Infof("Failed to query and update PromQL metrics: %v", err)
+				if queryErr == nil {
+					queryErr = err
+				}
 				continue
 			}
 		} else if scope == metrics.PodModelMetricScope {
@@ -288,6 +338,9 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 					err := c.queryUpdatePromQLMetrics(ctx, metric, queryLabels, pod, modelName, metricName, podMetricPort)
 					if err != nil {
 						klog.V(4).Infof("Failed to query and update PromQL metrics: %v", err)
+						if queryErr == nil {
+							queryErr = err
+						}
 						continue
 					}
 				}
@@ -298,6 +351,7 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 			klog.V(4).Infof("Scope %v is not supported", scope)
 		}
 	}
+	return queryErr
 }
 
 func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Metric, queryLabels map[string]string, pod *Pod, modelName string, metricName string, podMetricPort int) error {
@@ -306,7 +360,7 @@ func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Met
 	// Querying metrics
 	result, warnings, err := c.prometheusApi.Query(ctx, query, time.Now())
 	if err != nil {
-		metrics.EmitCounterMetric(&types.RoutingContext{Model: modelName}, pod.Pod, metrics.PrometheusQueryFail, 1.0, nil)
+		metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: modelName}, pod.Pod, metrics.PrometheusQueryFail, &metrics.SimpleMetricValue{Value: 1.0}, nil)
 		// Skip this model fetching if an error is thrown
 		return fmt.Errorf("error executing query: %v", err)
 	}

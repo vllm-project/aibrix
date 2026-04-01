@@ -18,7 +18,7 @@ IMAGES=("runtime" "metadata-service" "gateway-plugins" "controller-manager" "kvc
 
 # pull、retag and push images
 for IMAGE in "${IMAGES[@]}"; do
-    docker pull aibrix/${IMAGE}:${VERSION}
+    docker pull --platform linux/amd64 aibrix/${IMAGE}:${VERSION}
     docker tag aibrix/${IMAGE}:${VERSION} ${REGISTRY}/aibrix/${IMAGE}:${VERSION}
     docker push ${REGISTRY}/aibrix/${IMAGE}:${VERSION}
 done

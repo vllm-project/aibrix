@@ -19,9 +19,11 @@ package routingalgorithms
 import (
 	"context"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -491,6 +493,20 @@ func TestDoPrefillRequest(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name:        "sync tensorrt prefill request",
+			serverCode:  http.StatusOK,
+			llmEngine:   TensorRTLLM,
+			expectError: false,
+		},
+		{
+			name:        "sync tensorrt prefill request - server error",
+			serverCode:  http.StatusInternalServerError,
+			serverResp:  "trt server error",
+			llmEngine:   TensorRTLLM,
+			expectError: true,
+			errorMsg:    "http prefill request failed with status 500",
+		},
+		{
 			name:        "async vllm prefill request, with imbalance load request",
 			serverCode:  http.StatusOK,
 			llmEngine:   "vllm",
@@ -574,34 +590,73 @@ func TestDoPrefillRequest(t *testing.T) {
 }
 
 func TestPreparePrefillPayload(t *testing.T) {
+	// Save original value to restore after test
+	originalKVConnectorType := aibrixKVConnectorType
+	defer func() { aibrixKVConnectorType = originalKVConnectorType }()
+
 	tests := []struct {
-		name      string
-		llmEngine string
-		reqBody   string
-		checkKV   bool
+		name            string
+		llmEngine       string
+		kvConnectorType string
+		reqBody         string
+		checkKV         bool
+		description     string
 	}{
 		{
-			name:      "vllm engine adds kv_transfer_params",
-			llmEngine: VLLMEngine,
-			reqBody:   `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
-			checkKV:   true,
+			name:            "vllm engine with SHFS adds kv_transfer_params",
+			llmEngine:       VLLMEngine,
+			kvConnectorType: KVConnectorTypeSHFS,
+			reqBody:         `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
+			checkKV:         true,
+			description:     "backward compatibility: vLLM + SHFS should add kv_transfer_params",
 		},
 		{
-			name:      "sglang engine no kv_transfer_params",
-			llmEngine: SGLangEngine,
-			reqBody:   `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
-			checkKV:   false,
+			name:            "vllm engine with NIXL no kv_transfer_params",
+			llmEngine:       VLLMEngine,
+			kvConnectorType: KVConnectorTypeNIXL,
+			reqBody:         `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
+			checkKV:         false,
+			description:     "vLLM + NIXL should NOT add kv_transfer_params (handled by backend)",
 		},
 		{
-			name:      "other engine no kv_transfer_params",
-			llmEngine: "other",
-			reqBody:   `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
-			checkKV:   false,
+			name:            "sglang engine with SHFS no kv_transfer_params",
+			llmEngine:       SGLangEngine,
+			kvConnectorType: KVConnectorTypeSHFS,
+			reqBody:         `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
+			checkKV:         false,
+			description:     "SGLang uses bootstrap mechanism, not kv_transfer_params",
+		},
+		{
+			name:            "sglang engine with NIXL no kv_transfer_params",
+			llmEngine:       SGLangEngine,
+			kvConnectorType: KVConnectorTypeNIXL,
+			reqBody:         `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
+			checkKV:         false,
+			description:     "SGLang uses bootstrap mechanism regardless of connector type",
+		},
+		{
+			name:            "other engine with SHFS no kv_transfer_params",
+			llmEngine:       "other",
+			kvConnectorType: KVConnectorTypeSHFS,
+			reqBody:         `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
+			checkKV:         false,
+			description:     "unknown engines should not add kv_transfer_params",
+		},
+		{
+			name:            "other engine with NIXL no kv_transfer_params",
+			llmEngine:       "other",
+			kvConnectorType: KVConnectorTypeNIXL,
+			reqBody:         `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
+			checkKV:         false,
+			description:     "unknown engines should not add kv_transfer_params",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Set the connector type for this test
+			aibrixKVConnectorType = tt.kvConnectorType
+
 			router := &pdRouter{}
 			pod := &v1.Pod{
 				Status: v1.PodStatus{PodIP: "127.0.0.1"},
@@ -612,43 +667,108 @@ func TestPreparePrefillPayload(t *testing.T) {
 			}
 
 			payload, err := router.preparePrefillPayload(routingCtx, pod, tt.llmEngine)
+			assert.NoError(t, err, tt.description)
+
+			var result map[string]any
+			err = sonic.Unmarshal(payload, &result)
+			assert.NoError(t, err)
+
+			// Check basic prefill parameters (always set)
+			assert.Equal(t, float64(1), result["max_tokens"], "max_tokens should be 1 for prefill")
+			assert.Equal(t, float64(1), result["max_completion_tokens"], "max_completion_tokens should be 1 for prefill")
+			assert.Equal(t, false, result["stream"], "stream should be false for prefill")
+			_, exists := result["stream_options"]
+			assert.False(t, exists, "stream_options should be removed")
+
+			// Check KV transfer params based on engine and connector type
+			kvParams, hasKV := result["kv_transfer_params"]
+			if tt.checkKV {
+				assert.True(t, hasKV, "%s: should have kv_transfer_params", tt.description)
+				kvMap := kvParams.(map[string]any)
+				assert.Equal(t, true, kvMap["do_remote_decode"])
+				assert.Equal(t, false, kvMap["do_remote_prefill"])
+			} else {
+				assert.False(t, hasKV, "%s: should NOT have kv_transfer_params", tt.description)
+			}
+		})
+	}
+}
+
+func TestPreparePrefillPayloadBackwardCompatibility(t *testing.T) {
+	// This test specifically validates backward compatibility:
+	// - kv_transfer_params is ONLY added when BOTH conditions are true:
+	//   1. llmEngine == VLLMEngine
+	//   2. aibrixKVConnectorType == KVConnectorTypeSHFS
+	//
+	// This ensures the original behavior is preserved for existing GPU/SHFS deployments
+
+	originalKVConnectorType := aibrixKVConnectorType
+	defer func() { aibrixKVConnectorType = originalKVConnectorType }()
+
+	testCases := []struct {
+		engine        string
+		connectorType string
+		expectKV      bool
+	}{
+		// Original behavior (backward compatible)
+		{VLLMEngine, KVConnectorTypeSHFS, true},
+
+		// New NIXL support (no kv_transfer_params, backend handles it)
+		{VLLMEngine, KVConnectorTypeNIXL, false},
+
+		// Other engines never get kv_transfer_params
+		{SGLangEngine, KVConnectorTypeSHFS, false},
+		{SGLangEngine, KVConnectorTypeNIXL, false},
+		{"unknown", KVConnectorTypeSHFS, false},
+		{"unknown", KVConnectorTypeNIXL, false},
+	}
+
+	for _, tc := range testCases {
+		name := tc.engine + "_" + tc.connectorType
+		t.Run(name, func(t *testing.T) {
+			aibrixKVConnectorType = tc.connectorType
+
+			router := &pdRouter{}
+			pod := &v1.Pod{Status: v1.PodStatus{PodIP: "127.0.0.1"}}
+			routingCtx := &types.RoutingContext{
+				ReqBody: []byte(`{"messages":[{"role":"user","content":"test"}]}`),
+				Context: context.Background(),
+			}
+
+			payload, err := router.preparePrefillPayload(routingCtx, pod, tc.engine)
 			assert.NoError(t, err)
 
 			var result map[string]any
 			err = sonic.Unmarshal(payload, &result)
 			assert.NoError(t, err)
 
-			// Check basic prefill parameters
-			assert.Equal(t, float64(1), result["max_tokens"])
-			assert.Equal(t, float64(1), result["max_completion_tokens"])
-			assert.Equal(t, false, result["stream"])
-			_, exists := result["stream_options"]
-			assert.False(t, exists)
-
-			// Check KV transfer params
-			kvParams, hasKV := result["kv_transfer_params"]
-			if tt.checkKV {
-				assert.True(t, hasKV, "vLLM should have kv_transfer_params")
-				kvMap := kvParams.(map[string]any)
-				assert.Equal(t, true, kvMap["do_remote_decode"])
-				assert.Equal(t, false, kvMap["do_remote_prefill"])
-			} else {
-				assert.False(t, hasKV, "non-vLLM engines should not have kv_transfer_params")
-			}
+			_, hasKV := result["kv_transfer_params"]
+			assert.Equal(t, tc.expectKV, hasKV,
+				"engine=%s, connector=%s: kv_transfer_params expected=%v, got=%v",
+				tc.engine, tc.connectorType, tc.expectKV, hasKV)
 		})
 	}
 }
 
 func TestUpdateRoutingContextWithKVTransferParams(t *testing.T) {
+	// Save original value to restore after test
+	originalKVConnectorType := aibrixKVConnectorType
+	defer func() { aibrixKVConnectorType = originalKVConnectorType }()
+
 	tests := []struct {
-		name         string
-		responseData map[string]any
-		originalBody string
-		expectError  bool
-		expectKV     bool
+		name            string
+		kvConnectorType string
+		responseData    map[string]any
+		originalBody    string
+		expectError     bool
+		expectKV        bool
+		expectDisagg    bool // For NIXL mode: expect disagg_prefill_resp wrapper
+		description     string
 	}{
+		// SHFS mode tests (default - backward compatible)
 		{
-			name: "successful kv params update",
+			name:            "SHFS mode - successful kv params update",
+			kvConnectorType: KVConnectorTypeSHFS,
 			responseData: map[string]any{
 				"kv_transfer_params": map[string]any{
 					"remote_engine_id": "engine123",
@@ -658,25 +778,78 @@ func TestUpdateRoutingContextWithKVTransferParams(t *testing.T) {
 			originalBody: `{"messages":[{"role":"user","content":"test"}]}`,
 			expectError:  false,
 			expectKV:     true,
+			expectDisagg: false,
+			description:  "SHFS mode uses kv_transfer_params with remote_host",
 		},
 		{
-			name:         "no kv params in response",
-			responseData: map[string]any{"other": "data"},
+			name:            "SHFS mode - no kv params in response",
+			kvConnectorType: KVConnectorTypeSHFS,
+			responseData:    map[string]any{"other": "data"},
+			originalBody:    `{"messages":[{"role":"user","content":"test"}]}`,
+			expectError:     false,
+			expectKV:        false,
+			expectDisagg:    false,
+			description:     "SHFS mode without kv_transfer_params in response",
+		},
+		{
+			name:            "SHFS mode - invalid json body",
+			kvConnectorType: KVConnectorTypeSHFS,
+			responseData:    map[string]any{"kv_transfer_params": map[string]any{}},
+			originalBody:    `invalid json`,
+			expectError:     true,
+			expectKV:        false,
+			expectDisagg:    false,
+			description:     "SHFS mode with invalid JSON body",
+		},
+		// NIXL mode tests (Neuron)
+		{
+			name:            "NIXL mode - wraps response in disagg_prefill_resp",
+			kvConnectorType: KVConnectorTypeNIXL,
+			responseData: map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{"content": "test response"},
+				}},
+				"kv_transfer_params": map[string]any{
+					"remote_engine_id": "neuron-engine-1",
+				},
+			},
 			originalBody: `{"messages":[{"role":"user","content":"test"}]}`,
 			expectError:  false,
 			expectKV:     false,
+			expectDisagg: true,
+			description:  "NIXL mode wraps entire prefill response in disagg_prefill_resp",
 		},
 		{
-			name:         "invalid json body",
-			responseData: map[string]any{"kv_transfer_params": map[string]any{}},
-			originalBody: `invalid json`,
-			expectError:  true,
+			name:            "NIXL mode - response without kv_transfer_params",
+			kvConnectorType: KVConnectorTypeNIXL,
+			responseData: map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{"content": "test response"},
+				}},
+			},
+			originalBody: `{"messages":[{"role":"user","content":"test"}]}`,
+			expectError:  false,
 			expectKV:     false,
+			expectDisagg: true,
+			description:  "NIXL mode still wraps response even without kv_transfer_params",
+		},
+		{
+			name:            "NIXL mode - invalid json body",
+			kvConnectorType: KVConnectorTypeNIXL,
+			responseData:    map[string]any{"data": "value"},
+			originalBody:    `invalid json`,
+			expectError:     true,
+			expectKV:        false,
+			expectDisagg:    false,
+			description:     "NIXL mode with invalid JSON body should error",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Set the connector type for this test
+			aibrixKVConnectorType = tt.kvConnectorType
+
 			router := &pdRouter{}
 			pod := &v1.Pod{
 				Status: v1.PodStatus{PodIP: "192.168.1.100"},
@@ -690,28 +863,128 @@ func TestUpdateRoutingContextWithKVTransferParams(t *testing.T) {
 			err := router.updateRoutingContextWithKVTransferParams(routingCtx, tt.responseData, pod)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				assert.Error(t, err, tt.description)
 				return
 			}
 
+			assert.NoError(t, err, tt.description)
+
+			// Parse updated request body
+			var updatedRequest map[string]any
+			err = sonic.Unmarshal(routingCtx.ReqBody, &updatedRequest)
 			assert.NoError(t, err)
 
 			if tt.expectKV {
-				// Parse updated request body
-				var updatedRequest map[string]any
-				err = sonic.Unmarshal(routingCtx.ReqBody, &updatedRequest)
-				assert.NoError(t, err)
-
-				// Check KV transfer params were added
+				// SHFS mode: Check kv_transfer_params were added with remote_host
 				kvParams, exists := updatedRequest["kv_transfer_params"]
-				assert.True(t, exists)
+				assert.True(t, exists, "%s: should have kv_transfer_params", tt.description)
 
-				// Check remote_host was added
 				kvMap := kvParams.(map[string]any)
-				assert.Equal(t, "192.168.1.100", kvMap["remote_host"])
+				assert.Equal(t, "192.168.1.100", kvMap["remote_host"], "remote_host should be set to pod IP")
+			}
+
+			if tt.expectDisagg {
+				// NIXL mode: Check disagg_prefill_resp wrapper
+				disaggResp, exists := updatedRequest["disagg_prefill_resp"]
+				assert.True(t, exists, "%s: should have disagg_prefill_resp", tt.description)
+				assert.NotNil(t, disaggResp, "disagg_prefill_resp should contain the prefill response")
+
+				// Verify the response data is wrapped correctly
+				disaggMap, ok := disaggResp.(map[string]any)
+				assert.True(t, ok, "disagg_prefill_resp should be a map")
+
+				// Original response data should be in the wrapper
+				for key := range tt.responseData {
+					_, exists := disaggMap[key]
+					assert.True(t, exists, "disagg_prefill_resp should contain key: %s", key)
+				}
+
+				// Should NOT have kv_transfer_params at top level in NIXL mode
+				_, hasTopLevelKV := updatedRequest["kv_transfer_params"]
+				assert.False(t, hasTopLevelKV, "NIXL mode should NOT have top-level kv_transfer_params")
 			}
 		})
 	}
+}
+
+// TestUpdateRoutingContextNIXLMode specifically tests NIXL mode behavior
+func TestUpdateRoutingContextNIXLMode(t *testing.T) {
+	// Save original value to restore after test
+	originalKVConnectorType := aibrixKVConnectorType
+	defer func() { aibrixKVConnectorType = originalKVConnectorType }()
+
+	aibrixKVConnectorType = KVConnectorTypeNIXL
+
+	router := &pdRouter{}
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "prefill-neuron-1"},
+		Status:     v1.PodStatus{PodIP: "10.0.1.100"},
+	}
+
+	// Simulate prefill response from Neuron vLLM backend
+	prefillResponse := map[string]any{
+		"id":      "cmpl-neuron-123",
+		"object":  "chat.completion",
+		"created": 1234567890,
+		"model":   "llama3-8b",
+		"choices": []map[string]any{{
+			"index": 0,
+			"message": map[string]any{
+				"role":    "assistant",
+				"content": "",
+			},
+			"finish_reason": "length",
+		}},
+		"usage": map[string]any{
+			"prompt_tokens":     32,
+			"completion_tokens": 1,
+			"total_tokens":      33,
+		},
+		"kv_transfer_params": map[string]any{
+			"kv_connector":      "NixlConnector",
+			"remote_engine_id":  "neuron-engine-abc123",
+			"do_remote_decode":  true,
+			"do_remote_prefill": false,
+		},
+	}
+
+	routingCtx := &types.RoutingContext{
+		RequestID: "nixl-test-request",
+		ReqBody:   []byte(`{"messages":[{"role":"user","content":"Hello"}],"model":"llama3-8b"}`),
+		Context:   context.Background(),
+	}
+
+	err := router.updateRoutingContextWithKVTransferParams(routingCtx, prefillResponse, pod)
+	assert.NoError(t, err)
+
+	// Parse the updated request body
+	var updatedRequest map[string]any
+	err = sonic.Unmarshal(routingCtx.ReqBody, &updatedRequest)
+	assert.NoError(t, err)
+
+	// Verify disagg_prefill_resp wrapper is present
+	disaggResp, exists := updatedRequest["disagg_prefill_resp"]
+	assert.True(t, exists, "NIXL mode should wrap response in disagg_prefill_resp")
+
+	// Verify the wrapper contains the full prefill response
+	disaggMap := disaggResp.(map[string]any)
+	assert.Equal(t, "cmpl-neuron-123", disaggMap["id"])
+	assert.Equal(t, "chat.completion", disaggMap["object"])
+	assert.Equal(t, "llama3-8b", disaggMap["model"])
+
+	// Verify kv_transfer_params is inside the wrapper, not at top level
+	kvParams, hasKV := disaggMap["kv_transfer_params"]
+	assert.True(t, hasKV, "kv_transfer_params should be inside disagg_prefill_resp")
+	kvMap := kvParams.(map[string]any)
+	assert.Equal(t, "neuron-engine-abc123", kvMap["remote_engine_id"])
+
+	// Verify no top-level kv_transfer_params
+	_, hasTopLevelKV := updatedRequest["kv_transfer_params"]
+	assert.False(t, hasTopLevelKV, "NIXL mode should NOT have top-level kv_transfer_params")
+
+	// Original request fields should still be present
+	assert.NotNil(t, updatedRequest["messages"])
+	assert.Equal(t, "llama3-8b", updatedRequest["model"])
 }
 
 func TestVLLMIntegrationWithTestServer(t *testing.T) {
@@ -841,6 +1114,149 @@ func TestVLLMKVTransferProcessing(t *testing.T) {
 	}
 }
 
+func TestTensorRTIntegrationWithTestServer(t *testing.T) {
+	// Integration test: verify TRT prefill request extracts disaggregated_params from test server
+	ts := setupTestServer(t, http.StatusOK, "", TensorRTLLM)
+	defer ts.Close()
+
+	prefillPods := []*v1.Pod{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "prefill-trt",
+			Labels: map[string]string{
+				LLMEngineIdentifier: TensorRTLLM,
+				PDRoleIdentifier:    "prefill",
+			},
+		},
+		Status: v1.PodStatus{
+			PodIP: "127.0.0.1",
+			Conditions: []v1.PodCondition{{
+				Type:   v1.PodReady,
+				Status: v1.ConditionTrue,
+			}},
+		},
+	}}
+
+	routingCtx := &types.RoutingContext{
+		RequestID:  "integration-test",
+		Model:      "test-model",
+		ReqPath:    "/v1/chat/completions",
+		ReqBody:    []byte(`{"messages":[{"role":"user","content":"test"}]}`),
+		ReqHeaders: map[string]string{"Authorization": "Bearer test"},
+		Context:    context.Background(),
+	}
+
+	router := &pdRouter{
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		cache:                 cache.NewWithPodsForTest(prefillPods, "test-model"),
+		tokenizer:             tokenizer.NewCharacterTokenizer(),
+		prefillRequestTracker: NewPrefillRequestTracker(),
+		httpClient:            &http.Client{},
+	}
+
+	err := router.doPrefillRequest(routingCtx, prefillPods[0], TensorRTLLM)
+	assert.NoError(t, err)
+
+	// Verify routing context was updated with disaggregated_params from test server
+	var updatedRequest map[string]any
+	err = sonic.Unmarshal(routingCtx.ReqBody, &updatedRequest)
+	assert.NoError(t, err)
+
+	disaggParams, exists := updatedRequest["disaggregated_params"]
+	assert.True(t, exists, "disaggregated_params should be extracted from TRT test server response")
+
+	disaggMap := disaggParams.(map[string]any)
+	// request_type must be overridden to generation_only for the decode request
+	assert.Equal(t, "generation_only", disaggMap["request_type"])
+	// Payload fields from the prefill response should be preserved
+}
+
+func TestUpdateRoutingContextWithTRTDisaggParams(t *testing.T) {
+	tests := []struct {
+		name          string
+		response      map[string]any
+		expectUpdated bool
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name: "disaggregated_params at top level",
+			response: map[string]any{
+				"disaggregated_params": map[string]any{
+					"request_type":     "context_only",
+					"first_gen_tokens": []int{1, 2},
+				},
+			},
+			expectUpdated: true,
+		},
+		{
+			name: "disaggregated_params inside choices[0]",
+			response: map[string]any{
+				"choices": []any{
+					map[string]any{
+						"disaggregated_params": map[string]any{
+							"request_type": "context_only",
+						},
+					},
+				},
+			},
+			expectUpdated: true,
+		},
+		{
+			name: "no disaggregated_params in response",
+			response: map[string]any{
+				"choices": []any{
+					map[string]any{"message": map[string]any{"content": "hello"}},
+				},
+			},
+			expectUpdated: false,
+		},
+		{
+			name: "disaggregated_params has wrong type",
+			response: map[string]any{
+				"disaggregated_params": "not-a-map",
+			},
+			expectError:   true,
+			errorContains: "disaggregated_params has unexpected type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := &pdRouter{}
+			pod := &v1.Pod{Status: v1.PodStatus{PodIP: "10.0.0.1"}}
+			routingCtx := &types.RoutingContext{
+				RequestID: "trt-test",
+				ReqBody:   []byte(`{"messages":[{"role":"user","content":"hello"}]}`),
+				Context:   context.Background(),
+			}
+
+			err := router.updateRoutingContextWithTRTDisaggParams(routingCtx, tt.response, pod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorContains)
+				return
+			}
+
+			assert.NoError(t, err)
+
+			var updatedRequest map[string]any
+			err = sonic.Unmarshal(routingCtx.ReqBody, &updatedRequest)
+			assert.NoError(t, err)
+
+			disaggParams, exists := updatedRequest["disaggregated_params"]
+			if tt.expectUpdated {
+				assert.True(t, exists, "disaggregated_params should be set in updated request body")
+				disaggMap := disaggParams.(map[string]any)
+				// request_type must be overridden to generation_only
+				assert.Equal(t, "generation_only", disaggMap["request_type"])
+			} else {
+				assert.False(t, exists, "disaggregated_params should not be added when absent from response")
+			}
+		})
+	}
+}
+
 // Common test utilities
 func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *httptest.Server {
 	l, err := net.Listen("tcp", "127.0.0.1:8000")
@@ -860,7 +1276,10 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 		}
 
 		assert.Equal(t, float64(1), completionRequest["max_tokens"])
-		assert.Equal(t, float64(1), completionRequest["max_completion_tokens"])
+		// TensorRT-LLM rejects max_completion_tokens; it is omitted from TRT prefill payloads
+		if llmEngine != TensorRTLLM {
+			assert.Equal(t, float64(1), completionRequest["max_completion_tokens"])
+		}
 		assert.Equal(t, false, completionRequest["stream"])
 		_, exists := completionRequest["stream_options"]
 		assert.False(t, exists, "completionRequest should not have 'stream_options' key")
@@ -881,6 +1300,16 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 			assert.False(t, hasKV, "non-vLLM engines should not have kv_transfer_params")
 		}
 
+		// Check disaggregated_params for TensorRT-LLM prefill requests
+		if llmEngine == TensorRTLLM {
+			disaggParams, hasDisagg := completionRequest["disaggregated_params"]
+			assert.True(t, hasDisagg, "TensorRT-LLM should have disaggregated_params in prefill request")
+			if hasDisagg {
+				disaggMap := disaggParams.(map[string]any)
+				assert.Equal(t, "context_only", disaggMap["request_type"])
+			}
+		}
+
 		// Check X-Request-Id header is set (should match the request ID from routing context)
 		xRequestId := r.Header.Get("X-Request-Id")
 		assert.NotEmpty(t, xRequestId, "X-Request-Id header should be set")
@@ -892,7 +1321,8 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 		if resp != "" {
 			_, _ = w.Write([]byte(resp))
 		} else {
-			if llmEngine == VLLMEngine {
+			switch llmEngine {
+			case VLLMEngine:
 				response := map[string]any{
 					"choices": []map[string]any{{
 						"message": map[string]any{"content": "test response"},
@@ -908,7 +1338,20 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 				}
 				respBytes, _ := sonic.Marshal(response)
 				_, _ = w.Write(respBytes)
-			} else {
+			case TensorRTLLM:
+				// TRT-LLM prefill response contains disaggregated_params at the top level.
+				response := map[string]any{
+					"choices": []map[string]any{{
+						"message": map[string]any{"content": ""},
+					}},
+					"disaggregated_params": map[string]any{
+						"request_type":     "context_only",
+						"first_gen_tokens": []int{42},
+					},
+				}
+				respBytes, _ := sonic.Marshal(response)
+				_, _ = w.Write(respBytes)
+			default:
 				// For other engines, return simple success
 				respBytes, _ := sonic.Marshal(map[string]any{"choices": []map[string]any{{"message": map[string]any{"content": "test response"}}}})
 				_, _ = w.Write(respBytes)
@@ -1267,88 +1710,62 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 func TestIsPodSuitableForPromptLength(t *testing.T) {
 	tests := []struct {
 		name         string
-		podLabels    map[string]string
+		minLen       int
+		maxLen       int
 		promptLength int
 		expected     bool
 	}{
 		{
-			name: "no prompt length range configured",
-			podLabels: map[string]string{
-				"roleset-name": "test",
-				"role-name":    "prefill",
-			},
+			name:         "no prompt length range configured",
+			minLen:       0,
+			maxLen:       math.MaxInt32,
 			promptLength: 1000,
 			expected:     true,
 		},
 		{
-			name: "prompt length exactly at min",
-			podLabels: map[string]string{
-				"roleset-name":      "test",
-				"role-name":         "prefill",
-				"prompt-min-length": "1000",
-				"prompt-max-length": "2000",
-			},
+			name:         "prompt length exactly at min",
+			minLen:       1000,
+			maxLen:       2000,
 			promptLength: 1000,
 			expected:     true,
 		},
 		{
-			name: "prompt length exactly at max",
-			podLabels: map[string]string{
-				"roleset-name":      "test",
-				"role-name":         "prefill",
-				"prompt-min-length": "1000",
-				"prompt-max-length": "2000",
-			},
+			name:         "prompt length exactly at max",
+			minLen:       1000,
+			maxLen:       2000,
 			promptLength: 2000,
 			expected:     true,
 		},
 		{
-			name: "prompt length in middle of range",
-			podLabels: map[string]string{
-				"roleset-name":      "test",
-				"role-name":         "prefill",
-				"prompt-min-length": "1000",
-				"prompt-max-length": "2000",
-			},
+			name:         "prompt length in middle of range",
+			minLen:       1000,
+			maxLen:       2000,
 			promptLength: 1500,
 			expected:     true,
 		},
 		{
-			name: "prompt length below min",
-			podLabels: map[string]string{
-				"roleset-name":      "test",
-				"role-name":         "prefill",
-				"prompt-min-length": "1000",
-				"prompt-max-length": "2000",
-			},
+			name:         "prompt length below min",
+			minLen:       1000,
+			maxLen:       2000,
 			promptLength: 900,
 			expected:     false,
 		},
 		{
-			name: "prompt length above max",
-			podLabels: map[string]string{
-				"roleset-name":      "test",
-				"role-name":         "prefill",
-				"prompt-min-length": "1000",
-				"prompt-max-length": "2000",
-			},
+			name:         "prompt length above max",
+			minLen:       1000,
+			maxLen:       2000,
 			promptLength: 2100,
 			expected:     false,
 		},
 		{
-			name: "prompt length min larger than max",
-			podLabels: map[string]string{
-				"roleset-name":      "test",
-				"role-name":         "prefill",
-				"prompt-min-length": "2000",
-				"prompt-max-length": "1000",
-			},
+			name:         "prompt length min larger than max",
+			minLen:       2000,
+			maxLen:       1000,
 			promptLength: 1000,
 			expected:     false,
 		},
 	}
 
-	// Create a router instance
 	router := &pdRouter{
 		cache:                 cache.NewForTest(),
 		tokenizer:             tokenizer.NewCharacterTokenizer(),
@@ -1356,26 +1773,25 @@ func TestIsPodSuitableForPromptLength(t *testing.T) {
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            &http.Client{},
 	}
+	ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", "req", "user")
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create test pod
-			pod := &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "test-pod",
-					Labels: tt.podLabels,
-				},
-				Status: v1.PodStatus{
-					Conditions: []v1.PodCondition{
-						{Type: v1.PodReady, Status: v1.ConditionTrue},
-					},
-				},
-			}
-
-			result := router.isPodSuitableForPromptLength(pod, tt.promptLength)
+			config := pdConfigAnnotation(tt.minLen, tt.maxLen, false)
+			pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Annotations: map[string]string{constants.ModelAnnoConfig: config}}}
+			result := router.isPodSuitableForPromptLength(ctx, pod, tt.promptLength)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// pdConfigAnnotation returns model.aibrix.ai/config annotation JSON for prompt length bucketing.
+func pdConfigAnnotation(minLen, maxLen int, combined bool) string {
+	combinedStr := "false"
+	if combined {
+		combinedStr = "true"
+	}
+	return `{"defaultProfile":"pd","profiles":{"pd":{"routingStrategy":"pd","routingConfig":{"promptLenBucketMinLength":` + strconv.Itoa(minLen) + `,"promptLenBucketMaxLength":` + strconv.Itoa(maxLen) + `,"combined":` + combinedStr + `}}}}`
 }
 
 func TestFilterPrefillDecodePods_SelectCorrectBucketPods(t *testing.T) {
@@ -1390,10 +1806,13 @@ func TestFilterPrefillDecodePods_SelectCorrectBucketPods(t *testing.T) {
 		selectionCounts:       map[string]int64{},
 	}
 
-	prefillOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill", PromptMinLength: "0", PromptMaxLength: "1000000"}}}
-	prefillBlocked := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-blocked", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill", PromptMinLength: "1000000", PromptMaxLength: "2000000"}}}
-	decodeOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode", PromptMinLength: "0", PromptMaxLength: "1000000"}}}
-	decodeBlocked := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-blocked", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode", PromptMinLength: "1000000", PromptMaxLength: "2000000"}}}
+	// Pods use model.aibrix.ai/config annotation (not labels) for prompt length bucketing.
+	configOK := pdConfigAnnotation(0, 1000000, false)
+	configBlocked := pdConfigAnnotation(1000000, 2000000, false)
+	prefillOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill"}, Annotations: map[string]string{constants.ModelAnnoConfig: configOK}}}
+	prefillBlocked := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-blocked", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill"}, Annotations: map[string]string{constants.ModelAnnoConfig: configBlocked}}}
+	decodeOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode"}, Annotations: map[string]string{constants.ModelAnnoConfig: configOK}}}
+	decodeBlocked := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-blocked", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode"}, Annotations: map[string]string{constants.ModelAnnoConfig: configBlocked}}}
 
 	ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "short", "req-bucket", "user")
 	prefill, decode, err := r.filterPrefillDecodePods(ctx, []*v1.Pod{prefillOK, prefillBlocked, decodeOK, decodeBlocked})
@@ -1405,7 +1824,6 @@ func TestFilterPrefillDecodePods_SelectCorrectBucketPods(t *testing.T) {
 }
 
 func TestFilterPrefillDecodePods_CombinedFallbackBucketing(t *testing.T) {
-	// os.Setenv("AIBRIX_PROMPT_LENGTH_BUCKETING", "true")
 	aibrixPromptLengthBucketing = true
 
 	r := pdRouter{
@@ -1414,11 +1832,16 @@ func TestFilterPrefillDecodePods_CombinedFallbackBucketing(t *testing.T) {
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            &http.Client{},
+		selectionCounts:       map[string]int64{},
 	}
 
-	combined := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "combined-1", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "combined", CombinedIdentifier: "true", PromptMinLength: "0", PromptMaxLength: "1000000"}}}
-	prefillOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill", PromptMinLength: "0", PromptMaxLength: "1"}}}
-	decodeOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode", PromptMinLength: "0", PromptMaxLength: "1"}}}
+	// prefill/decode with 0-1 range: blocked for "say test" (prompt length > 1)
+	// combined with 0-1000000 + combined:true: suitable for fallback
+	configBlocked := pdConfigAnnotation(0, 1, false)
+	configCombined := pdConfigAnnotation(0, 1000000, true)
+	combined := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "combined-1", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "combined"}, Annotations: map[string]string{constants.ModelAnnoConfig: configCombined}}}
+	prefillOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill"}, Annotations: map[string]string{constants.ModelAnnoConfig: configBlocked}}}
+	decodeOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode"}, Annotations: map[string]string{constants.ModelAnnoConfig: configBlocked}}}
 
 	ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "say test", "req-combined", "user")
 	prefill, decode, err := r.filterPrefillDecodePods(ctx, []*v1.Pod{prefillOK, decodeOK, combined})
@@ -1459,11 +1882,14 @@ func TestFilterPrefillDecodePods_CombinedPickImbalance(t *testing.T) {
 		},
 	}
 
+	configPrefillDecode := pdConfigAnnotation(0, 1000000, false)
+	configCombined := pdConfigAnnotation(0, 1000000, true)
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			prefill := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-high", Namespace: "default", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill", constants.ModelLabelName: "test-model", PromptMinLength: "0", PromptMaxLength: "1000000"}}}
-			decode := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-mid", Namespace: "default", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode", constants.ModelLabelName: "test-model", PromptMinLength: "0", PromptMaxLength: "1000000"}}}
-			combined := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "combined-low", Namespace: "default", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "combined", constants.ModelLabelName: "test-model", CombinedIdentifier: "true", PromptMinLength: "0", PromptMaxLength: "1000000"}}}
+			prefill := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-high", Namespace: "default", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill", constants.ModelLabelName: "test-model"}, Annotations: map[string]string{constants.ModelAnnoConfig: configPrefillDecode}}}
+			decode := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-mid", Namespace: "default", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode", constants.ModelLabelName: "test-model"}, Annotations: map[string]string{constants.ModelAnnoConfig: configPrefillDecode}}}
+			combined := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "combined-low", Namespace: "default", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "combined", constants.ModelLabelName: "test-model"}, Annotations: map[string]string{constants.ModelAnnoConfig: configCombined}}}
 
 			metricsMap := map[string]map[string]metrics.MetricValue{}
 			vecDrain100 := model.Vector{&model.Sample{Metric: model.Metric{"__name__": "drain_rate_1m"}, Value: model.SampleValue(100)}}
@@ -1516,6 +1942,42 @@ func TestFilterPrefillDecodePods_CombinedPickImbalance(t *testing.T) {
 				assert.NotNil(t, d)
 				assert.Equal(t, "decode-mid", d.Name)
 				assert.NotEqual(t, "combined-low", d.Name)
+			}
+		})
+	}
+}
+
+func TestGetDisaggRequestID_CustomEpoch(t *testing.T) {
+	id1 := getDisaggRequestID(0)
+	id2 := getDisaggRequestID(0)
+	assert.GreaterOrEqual(t, id1, trtMinGlobalID)
+	assert.GreaterOrEqual(t, id2, trtMinGlobalID)
+	assert.NotEqual(t, id1, id2, "counter should advance")
+	id3 := getDisaggRequestID(42)
+	assert.GreaterOrEqual(t, id3, trtMinGlobalID)
+}
+
+func TestValidateTRTMachineIDValue(t *testing.T) {
+	maxExclusive := int64(1 << trtMachineIDBits)
+	tests := []struct {
+		name    string
+		id      int64
+		wantErr bool
+	}{
+		{"zero", 0, false},
+		{"mid", 512, false},
+		{"max valid", maxExclusive - 1, false},
+		{"negative", -1, true},
+		{"too large", maxExclusive, true},
+		{"overflow bits", maxExclusive + 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateTRTMachineIDValue(tt.id)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}

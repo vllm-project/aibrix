@@ -45,11 +45,13 @@ const (
 
 	// Request & Target Headers
 	HeaderWentIntoReqHeaders = "x-went-into-req-headers"
+	HeaderTargetPodIP        = "target-pod-ip"
 	HeaderTargetPod          = "target-pod"
 	HeaderRoutingStrategy    = "routing-strategy"
 	HeaderRequestID          = "request-id"
 	HeaderModel              = "model"
 	HeaderExternalFilter     = "external-filter"
+	HeaderConfigProfile      = "config-profile"
 
 	// RPM & TPM Update Errors
 	HeaderUpdateTPM        = "x-update-tpm"

@@ -176,6 +176,37 @@ def read_configs(file_path):
 configs = read_configs("config.json")
 HUGGINGFACE_TOKEN = configs.get("huggingface_token", "your huggingface token")
 
+# Minimal 1x1 red PNG for mock image responses (89 bytes)
+MOCK_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
+    "2mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+# Image model name patterns (case-insensitive)
+_IMAGE_MODEL_KEYWORDS = {"image", "edit", "diffusion", "qwen-image", "z-image"}
+
+
+def _is_image_request(data: dict) -> bool:
+    """Detect if a /v1/chat/completions request is for image gen/edit (vLLM-Omni)."""
+    model = (data.get("model") or "").lower()
+    if any(kw in model for kw in _IMAGE_MODEL_KEYWORDS):
+        return True
+    # Also detect by presence of diffusion params
+    if data.get("height") or data.get("width") or data.get("num_inference_steps"):
+        return True
+    return False
+
+
+def _has_input_images(messages: list) -> bool:
+    """Check if any message contains image_url content (image edit request)."""
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            for block in content:
+                if block.get("type") == "image_url":
+                    return True
+    return False
+
 
 def get_token_count(text):
     try:
@@ -530,7 +561,21 @@ def chat_completions():
             )
 
         arrived_at = datetime.now().timestamp()
-        input_tokens = sum(get_token_count(message["content"]) for message in messages)
+        modalities = request.json.get("modalities", ["text"])
+
+        # Token count: handle both string and list content (multimodal)
+        def _msg_tokens(msg):
+            c = msg.get("content", "")
+            if isinstance(c, str):
+                return get_token_count(c)
+            if isinstance(c, list):
+                return sum(
+                    get_token_count(b.get("text", ""))
+                    for b in c if b.get("type") == "text"
+                )
+            return 1
+
+        input_tokens = sum(_msg_tokens(m) for m in messages)
         output_tokens = max_tokens if max_tokens else randint(10, 500)
         arrived_next = request.json.get("next_in")
         if not arrived_next:
@@ -650,6 +695,53 @@ def chat_completions():
             response.headers['X-Accel-Buffering'] = 'no'
             return response
         else:
+            # --- vLLM-Omni: image gen/edit via /v1/chat/completions ---
+            if _is_image_request(request.json):
+                time.sleep(0.2)  # simulate diffusion time
+                is_edit = _has_input_images(messages)
+                response = {
+                    "id": "chatcmpl-img-" + "".join(
+                        random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8)
+                    ),
+                    "object": "chat.completion",
+                    "created": int(arrived_at),
+                    "model": model,
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": [{
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{MOCK_PNG_B64}"
+                                },
+                            }],
+                        },
+                        "finish_reason": "stop",
+                    }],
+                    "usage": {
+                        "prompt_tokens": input_tokens,
+                        "completion_tokens": 0,
+                        "total_tokens": input_tokens,
+                    },
+                }
+                return jsonify(response), 200
+
+            # --- Standard text response (with optional audio) ---
+            text_content = f"\n\nThis is simulated message from {model}!"
+            message_body = {
+                "role": "assistant",
+                "content": text_content,
+            }
+            # vLLM-Omni: include mock audio when modalities has "audio"
+            if "audio" in modalities:
+                # 16 bytes of mock WAV data
+                mock_wav = base64.b64encode(bytes(16)).decode()
+                message_body["audio"] = {
+                    "data": mock_wav,
+                    "format": "wav",
+                }
+
             response = {
                 "id": "chatcmpl-abc123",
                 "object": "chat.completion",
@@ -662,10 +754,7 @@ def chat_completions():
                 },
                 "choices": [
                     {
-                        "message": {
-                            "role": "assistant",
-                            "content": f"\n\nThis is simulated message from {model}!",
-                        },
+                        "message": message_body,
                         "logprobs": None,
                         "finish_reason": "stop",
                         "index": 0,
@@ -698,12 +787,23 @@ def audio_speech():
         voice = request.json.get("voice", "alloy")
         response_format = request.json.get("response_format", "mp3")
         speed = request.json.get("speed", 1.0)
+        # vLLM-Omni TTS params (accepted but not validated strictly)
+        language = request.json.get("language", "Auto")
+        instructions = request.json.get("instructions", "")
+        task_type = request.json.get("task_type", "CustomVoice")
+        ref_audio = request.json.get("ref_audio")
+        ref_text = request.json.get("ref_text")
 
         if not input_text:
             return create_error_response("'input' is a required parameter", param="input")
 
-        # Validate voice
-        valid_voices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+        # Validate voice — accept both OpenAI and vLLM-Omni voices
+        openai_voices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+        vllm_omni_voices = [
+            "aiden", "dylan", "eric", "one_anna", "ryan",
+            "serena", "sohee", "uncle_fu", "vivian",
+        ]
+        valid_voices = openai_voices + vllm_omni_voices
         if voice not in valid_voices:
             return create_error_response(
                 f"Invalid voice '{voice}'. Must be one of: {', '.join(valid_voices)}",
@@ -721,14 +821,22 @@ def audio_speech():
         # Simulate processing time based on text length
         time.sleep(0.1 + len(input_text) * 0.001)
 
-        # Generate mock audio data (minimal valid audio bytes)
-        # This is a minimal MP3 frame header for testing purposes
-        mock_audio = bytes([
-            0xFF, 0xFB, 0x90, 0x00,  # MP3 frame header
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-        ])
+        # Generate mock audio data
+        if response_format == "wav":
+            # Minimal WAV header (44 bytes) with 0 data
+            mock_audio = (
+                b"RIFF" + struct.pack("<I", 36) + b"WAVE"
+                + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, 24000, 48000, 2, 16)
+                + b"data" + struct.pack("<I", 0)
+            )
+        else:
+            # Minimal MP3 frame header for other formats
+            mock_audio = bytes([
+                0xFF, 0xFB, 0x90, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ])
 
         # Set content type based on format
         content_types = {
@@ -755,6 +863,20 @@ def audio_speech():
             error_type="api_error",
             status_code=500
         )
+
+
+@app.route("/v1/audio/voices", methods=["GET"])
+@auth.login_required
+def audio_voices():
+    """
+    Returns available TTS voices (vLLM-Omni compatible).
+    """
+    return jsonify({
+        "voices": [
+            "aiden", "dylan", "eric", "one_anna", "ryan",
+            "serena", "sohee", "uncle_fu", "vivian",
+        ]
+    })
 
 
 @app.route("/v1/audio/transcriptions", methods=["POST"])
@@ -1233,6 +1355,57 @@ def video_generations():
             "The server had an error while processing your request. Sorry about that!",
             error_type="api_error",
             status_code=500
+        )
+
+
+@app.route("/v1/videos", methods=["POST"])
+@auth.login_required
+def vllm_omni_videos():
+    """
+    Simulates the vLLM-Omni /v1/videos endpoint (Wan2.2).
+    Accepts multipart/form-data. Returns synchronous response with base64 MP4.
+    Supports text-to-video and image-to-video (input_reference).
+    """
+    try:
+        prompt = request.form.get("prompt")
+        width = request.form.get("width", "832")
+        height = request.form.get("height", "480")
+        num_frames = request.form.get("num_frames", "33")
+        fps = request.form.get("fps", "16")
+        seed = request.form.get("seed")
+        negative_prompt = request.form.get("negative_prompt")
+        input_reference = request.files.get("input_reference")
+
+        if not prompt:
+            return create_error_response(
+                "'prompt' is a required parameter", param="prompt"
+            )
+
+        # Simulate processing time
+        time.sleep(0.3)
+
+        # Mock base64 MP4 (minimal ftyp box)
+        mock_mp4 = base64.b64encode(
+            b"\x00\x00\x00\x1c"  # box size
+            b"ftypisom"  # major brand
+            b"\x00\x00\x02\x00"  # minor version
+            b"isomiso2mp41"  # compatible brands
+        ).decode()
+
+        response = {
+            "data": [{
+                "b64_json": mock_mp4,
+                "revised_prompt": prompt[:100],
+            }]
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in vLLM-Omni videos endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request.",
+            error_type="api_error",
+            status_code=500,
         )
 
 

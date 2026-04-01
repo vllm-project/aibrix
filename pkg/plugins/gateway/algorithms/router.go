@@ -48,7 +48,7 @@ type RouterManager struct {
 
 func NewRouterManager() *RouterManager {
 	rm := &RouterManager{}
-	rm.routerInited, rm.routerDoneInit = context.WithTimeout(context.Background(), 1*time.Second)
+	rm.routerInited, rm.routerDoneInit = context.WithTimeout(context.Background(), 5*time.Second)
 	rm.routerFactory = make(map[types.RoutingAlgorithm]types.RouterProviderFunc)
 	rm.routerConstructor = make(map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc)
 	return rm

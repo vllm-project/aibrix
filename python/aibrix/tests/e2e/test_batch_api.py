@@ -43,28 +43,64 @@ from typing import Any, Dict
 import httpx
 import pytest
 
+# Sample request bodies for each supported batch endpoint
+ENDPOINT_SAMPLE_BODIES: Dict[str, Dict[str, Any]] = {
+    "/v1/chat/completions": {
+        "model": "gpt-3.5-turbo-0125",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello world!"},
+        ],
+        "max_tokens": 1000,
+    },
+    "/v1/completions": {
+        "model": "gpt-3.5-turbo-0125",
+        "prompt": "Once upon a time",
+        "max_tokens": 100,
+    },
+    "/v1/embeddings": {
+        "model": "text-embedding-ada-002",
+        "input": "The food was delicious and the waiter was friendly.",
+    },
+    "/v1/rerank": {
+        "model": "reranker-v1",
+        "query": "What is deep learning?",
+        "documents": [
+            "Deep learning is a subset of machine learning.",
+            "The weather is nice today.",
+            "Neural networks are inspired by the brain.",
+        ],
+    },
+}
 
-def generate_batch_input_data(num_requests: int = 3) -> str:
-    """Generate test batch input data and return the content as string."""
-    base_request: Dict[str, Any] = {
-        "custom_id": "request-1",
-        "method": "POST",
-        "url": "/v1/chat/completions",
-        "body": {
-            "model": "gpt-3.5-turbo-0125",
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": "Hello world!"},
-            ],
-            "max_tokens": 1000,
-        },
-    }
+
+def generate_batch_input_data(
+    num_requests: int = 3, endpoint: str = "/v1/chat/completions"
+) -> str:
+    """Generate test batch input data for any supported endpoint.
+
+    Args:
+        num_requests: Number of requests to generate
+        endpoint: The API endpoint path (e.g., "/v1/chat/completions")
+
+    Returns:
+        JSONL string with batch requests
+    """
+    sample_body = ENDPOINT_SAMPLE_BODIES.get(endpoint)
+    if sample_body is None:
+        raise ValueError(
+            f"No sample body defined for endpoint '{endpoint}'. "
+            f"Supported: {list(ENDPOINT_SAMPLE_BODIES.keys())}"
+        )
 
     lines = []
     for i in range(num_requests):
-        request = copy.deepcopy(base_request)
-        request["custom_id"] = f"request-{i+1}"
-        request["body"]["messages"][1]["content"] = f"Hello from request {i+1}!"
+        request: Dict[str, Any] = {
+            "custom_id": f"request-{i+1}",
+            "method": "POST",
+            "url": endpoint,
+            "body": copy.deepcopy(sample_body),
+        }
         lines.append(json.dumps(request))
 
     return "\n".join(lines)

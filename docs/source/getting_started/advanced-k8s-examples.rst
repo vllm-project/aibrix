@@ -56,9 +56,8 @@ The following example shows how to:
                 sizeLimit: "2Gi"
           containers:
             - command:
-                - python3
-                - -m
-                - vllm.entrypoints.openai.api_server
+                - vllm
+                - serve
                 - --host
                 - "0.0.0.0"
                 - --port

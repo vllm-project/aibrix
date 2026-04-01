@@ -53,20 +53,20 @@ func TestThroughput(t *testing.T) {
 			},
 			podMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 1},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 2},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 1},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 2},
 				},
 				"p2": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 2},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 1},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 2},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 1},
 				},
 				"p3": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 3},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 3},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 3},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 3},
 				},
 				"p4": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 4},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 4},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 4},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 4},
 				},
 			},
 			expectErr:  false,
@@ -93,16 +93,16 @@ func TestThroughput(t *testing.T) {
 			},
 			podMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 1},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 4},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 1},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 4},
 				},
 				"p2": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 5},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 5},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 5},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 5},
 				},
 				"p3": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 2},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 2},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 2},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 2},
 				},
 			},
 			expectErr:  false,
@@ -120,8 +120,8 @@ func TestThroughput(t *testing.T) {
 			},
 			podMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 1},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 2},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 1},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 2},
 				},
 			},
 			expectErr:  false,

@@ -18,6 +18,7 @@ package types
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -41,6 +42,14 @@ const (
 
 type RequestFeatures []float64
 
+// ResolvedConfigProfile holds the resolved model config profile for a request.
+// Populated from model.aibrix.ai/config annotation based on config-profile header or defaultProfile.
+// Nil when no config is present;
+type ResolvedConfigProfile struct {
+	RoutingStrategy string
+	RoutingConfig   json.RawMessage
+}
+
 // RoutingAlgorithm defines the routing algorithms
 type RoutingAlgorithm string
 
@@ -50,6 +59,7 @@ type RoutingContext struct {
 	context.Context
 	Algorithm      RoutingAlgorithm
 	Model          string
+	Engine         string
 	Stream         bool
 	Message        string
 	RequestID      string
@@ -60,9 +70,10 @@ type RoutingContext struct {
 	TraceTerm      int64     // Trace term identifier, available after AddRequestCount call.
 	RoutedTime     time.Time // Time consumed during routing.
 
-	ReqHeaders map[string]string
-	ReqBody    []byte
-	ReqPath    string
+	ReqHeaders       map[string]string
+	ReqBody          []byte
+	ReqPath          string
+	ReqConfigProfile string
 
 	PrefillStartTime time.Time // Time when prefill request is started.
 	PrefillEndTime   time.Time // Time consumed during prefill.
@@ -73,6 +84,11 @@ type RoutingContext struct {
 	// The router implementation (e.g., sessionAffinityRouter) may populate this field
 	// during the Route() call.
 	RespHeaders map[string]string
+
+	// ConfigProfile holds the resolved model config profile for this request.
+	// Set in HandleRequestBody from model.aibrix.ai/config (annotation)
+	// based on config-profile header. Nil when no config is present.
+	ConfigProfile *ResolvedConfigProfile
 
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
@@ -267,7 +283,11 @@ func (r *RoutingContext) CanAddTrace() bool {
 }
 
 // GetRoutingDelay returns the time duration used for routing the request.
+// Returns 0 if routing did not complete (e.g., prefill failure before SetTargetPod was called).
 func (r *RoutingContext) GetRoutingDelay() time.Duration {
+	if r.RoutedTime.IsZero() {
+		return 0
+	}
 	return r.RoutedTime.Sub(r.RequestTime)
 }
 
@@ -291,6 +311,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Context = ctx
 	r.Algorithm = algorithms
 	r.Model = model
+	r.Engine = ""
 	r.Stream = false
 	r.Message = message
 	r.RequestID = requestID
@@ -306,12 +327,14 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 
 	r.ReqHeaders = map[string]string{}
 	r.ReqPath = ""
+	r.ReqConfigProfile = ""
 	r.ReqBody = []byte{}
 	r.PrefillStartTime = time.Time{}
 	r.PrefillEndTime = time.Time{}
 	// RoutedTime will not be reset, it must before ReqeustTime at this time.
 
 	r.RespHeaders = map[string]string{}
+	r.ConfigProfile = nil
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
 	r.lastError.Store(nil)

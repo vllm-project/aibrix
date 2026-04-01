@@ -377,11 +377,13 @@ func (c *ZMQClient) requestReplay(fromSeq int64) error {
 	}
 
 	// Prepare replay request
+	// DEALER-ROUTER pattern requires: [empty_delimiter, payload]
+	// The DEALER socket will automatically prepend the identity frame
 	reqData := make([]byte, 8)
 	binary.BigEndian.PutUint64(reqData, uint64(fromSeq))
 
-	// Send replay request
-	if _, err := socket.SendBytes(reqData, 0); err != nil {
+	// Send replay request as multipart message: [empty_delimiter, start_seq_bytes]
+	if _, err := socket.SendMessage([]byte{}, reqData); err != nil {
 		return fmt.Errorf("failed to send replay request: %w", err)
 	}
 

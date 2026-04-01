@@ -8,7 +8,7 @@ controllerManager:
   container:
     image:
       repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/controller-manager
-      tag: v0.5.0
+      tag: v0.6.0
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -35,7 +35,7 @@ controllerManager:
   affinity: {}
 
 gatewayPlugin:
-  replicaCount: 1
+  replicaCount: 3
   imagePullSecrets: []
   initContainer:
     image:
@@ -44,15 +44,15 @@ gatewayPlugin:
   container:
     image:
       repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
-      tag: v0.5.0
+      tag: v0.6.0
       imagePullPolicy: IfNotPresent
     resources:
       limits:
-        cpu: "1"
-        memory: 1Gi
+        cpu: "4"
+        memory: 8Gi
       requests:
-        cpu: "1"
-        memory: 1Gi
+        cpu: "4"
+        memory: 8Gi
     envs:
       AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"
       AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE: "character"
@@ -86,7 +86,7 @@ gpuOptimizer:
   container:
     image:
       repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/runtime
-      tag: v0.5.0
+      tag: v0.6.0
     resources:
       limits:
         cpu: 500m
@@ -102,8 +102,20 @@ gpuOptimizer:
   affinity: {}
 
 gateway:
+  # Mode Selection (mutually exclusive; values must be opposite)
+  # | gateway.enable | envoyAsSideCar | Notes |
+  # | -------------- | ------------------- | ----- |
+  # | true           | false               | Envoy managed by Envoy Gateway (data plane). Installs Gateway, GatewayClass, EnvoyProxy, and gateway-plugins. |
+  # | false          | true                | Envoy runs as a sidecar with aibrix-gateway within your workload (no Gateway data plane). Renders only the sidecar Envoy ConfigMap. |
+  # | false          | false               | Disables both. No gateway and no sidecar. Useful when using an external gateway or for CRD-only installs. |
+  # | true           | true                | INVALID: Do not enable both. Values must be opposite. |
+  enable: true
+  envoyAsSideCar: false
+  envoySideCar:
+    ports:
+      http: 10080
   envoyProxy:
-    replicas: 1
+    replicas: 2
     imagePullSecrets: []
     tolerations: []
     affinity:
@@ -132,11 +144,11 @@ gateway:
         image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/envoy:v1.33.2
         resources:
           requests:
-            cpu: "1"
-            memory: 1Gi
+            cpu: "4"
+            memory: 8Gi
           limits:
-            cpu: "1"
-            memory: 1Gi
+            cpu: "4"
+            memory: 8Gi
       shutdownManager:
         image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway:v1.2.8
         resources:
@@ -189,7 +201,7 @@ metadata:
     container:
       image:
         repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/metadata-service
-        tag: v0.5.0
+        tag: v0.6.0
         imagePullPolicy: IfNotPresent
       resources:
         limits:
