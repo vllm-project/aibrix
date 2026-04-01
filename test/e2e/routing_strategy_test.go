@@ -40,7 +40,47 @@ func TestRandomRouting(t *testing.T) {
 	// Even with a correct random router, the test has a ~1% false-negative rate per run.
 	maxAttempts := 3
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		passed := runRandomRoutingCheck(t, attempt)
+		passed := t.Run(fmt.Sprintf("attempt-%d", attempt), func(t *testing.T) {
+			histogram := make(map[string]int)
+			iterration := 100
+
+			for i := 0; i < iterration; i++ {
+				req := "hello test"
+				targetPod := getTargetPodFromChatCompletion(t, req, "random")
+				assert.NotEmpty(t, targetPod, "target pod should not be empty")
+				histogram[targetPod]++
+			}
+
+			assert.True(t, len(histogram) > 1, "target pod distribution should be more than 1")
+
+			// Collective the occurrence of each pod
+			occurrence := make([]float64, 0, len(histogram))
+			for _, count := range histogram {
+				occurrence = append(occurrence, float64(count))
+			}
+
+			// Perform the Chi-Squared test
+			chi2Stat, df, err := chiSquaredGoodnessOfFit(occurrence, float64(iterration/len(occurrence)))
+			assert.NoError(t, err, "chi-squared test failed %v", err)
+			assert.Equal(t, 2, df, "degrees of freedom should be 2")
+
+			// Using a lower 1% significance level to make sure the null hypothesis is not rejected incorrectly
+			significanceLevel := 0.01
+
+			// We need to find the critical value for customed degrees of freedom (df)
+			// and significance level (alpha) from a Chi-Squared distribution table
+			// or a statistical calculator.
+			// For df = 2 ,
+			// common critical values are:
+			// Alpha = 0.10, Critical Value ≈ 4.605
+			// Alpha = 0.05, Critical Value ≈ 5.991
+			// Alpha = 0.01, Critical Value ≈ 9.210
+			assert.True(t, chi2Stat < 9.210,
+				`The observed frequencies (chiSquare: %.3f) are significantly different from the expected
+				frequencies at the %.2f significance level. Suggesting the selection process is likely NOT random according
+				to the expected distribution.`,
+				chi2Stat, significanceLevel)
+		})
 		if passed {
 			return
 		}
@@ -49,52 +89,6 @@ func TestRandomRouting(t *testing.T) {
 		}
 	}
 	t.Fatalf("TestRandomRouting failed after %d attempts", maxAttempts)
-}
-
-func runRandomRoutingCheck(t *testing.T, attempt int) bool {
-	histogram := make(map[string]int)
-	iterration := 100
-
-	for i := 0; i < iterration; i++ {
-		req := "hello test"
-		targetPod := getTargetPodFromChatCompletion(t, req, "random")
-		if targetPod == "" {
-			t.Logf("attempt %d: target pod should not be empty at request %d", attempt, i)
-			return false
-		}
-		histogram[targetPod]++
-	}
-
-	if len(histogram) <= 1 {
-		t.Logf("attempt %d: target pod distribution should be more than 1", attempt)
-		return false
-	}
-
-	// Collective the occurrence of each pod
-	occurrence := make([]float64, 0, len(histogram))
-	for _, count := range histogram {
-		occurrence = append(occurrence, float64(count))
-	}
-
-	// Perform the Chi-Squared test
-	chi2Stat, df, err := chiSquaredGoodnessOfFit(occurrence, float64(iterration/len(occurrence)))
-	if err != nil {
-		t.Logf("attempt %d: chi-squared test failed: %v", attempt, err)
-		return false
-	}
-	if df != 2 {
-		t.Logf("attempt %d: degrees of freedom should be 2, got %d", attempt, df)
-		return false
-	}
-
-	// Using a lower 1% significance level to make sure the null hypothesis is not rejected incorrectly
-	// For df = 2, critical value at alpha = 0.01 is 9.210
-	if chi2Stat >= 9.210 {
-		t.Logf("attempt %d: chiSquare %.3f >= 9.210, distribution not random enough at 0.01 significance level", attempt, chi2Stat)
-		return false
-	}
-
-	return true
 }
 
 // nolint:lll
