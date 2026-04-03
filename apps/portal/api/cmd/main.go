@@ -18,6 +18,7 @@ package main
 
 import (
 	"flag"
+	"io/fs"
 	"log"
 	"os"
 
@@ -90,8 +91,14 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 
 	// Embed frontend static files
-	portal.StaticFS = embeddedDist
-	log.Println("serving embedded frontend")
+	// fs.Sub strips the "dist/" prefix from the embedded filesystem so that
+	// file paths match URL paths (e.g., "index.html" instead of "dist/index.html").
+	if distFS, err := fs.Sub(embeddedDist, "dist"); err == nil {
+		portal.StaticFS = distFS
+		log.Println("serving embedded frontend")
+	} else {
+		log.Printf("warning: failed to load embedded frontend: %v", err)
+	}
 
 	log.Printf("starting portal server on %s", addr)
 	if err := portal.NewRouter(c).Run(addr); err != nil {
