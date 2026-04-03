@@ -304,3 +304,48 @@ func TestInitPrometheusAPI_EndpointSet(t *testing.T) {
 	api := initPrometheusAPI(nil)
 	require.NotNil(t, api)
 }
+
+// TestUpdatePodMetricsNonBlocking verifies that updatePodMetrics does not block
+// when the worker pool is saturated (channel buffer full). This prevents the
+// metrics refresh goroutine from stalling when workers are stuck on slow pods.
+func TestUpdatePodMetricsNonBlocking(t *testing.T) {
+	// Create a store with a tiny channel buffer and NO workers draining it
+	store := &Store{
+		podMetricsJobs: make(chan *Pod, 2),
+	}
+
+	// Add 5 ready pods — more than the channel buffer can hold
+	for i := range 5 {
+		name := fmt.Sprintf("pod-%d", i)
+		store.metaPods.Store(name, &Pod{
+			Pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Status: v1.PodStatus{
+					Phase: v1.PodRunning,
+					PodIP: fmt.Sprintf("10.0.0.%d", i+1),
+					Conditions: []v1.PodCondition{
+						{Type: v1.PodReady, Status: v1.ConditionTrue},
+					},
+				},
+			},
+		})
+	}
+
+	// updatePodMetrics must return promptly without blocking.
+	// With the old blocking send, this would deadlock since no worker is reading.
+	done := make(chan struct{})
+	go func() {
+		store.updatePodMetrics()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success: updatePodMetrics returned without blocking
+	case <-time.After(2 * time.Second):
+		t.Fatal("updatePodMetrics blocked — channel send is not non-blocking")
+	}
+
+	// Exactly 2 pods should have been enqueued (channel buffer size)
+	require.Equal(t, 2, len(store.podMetricsJobs))
+}
