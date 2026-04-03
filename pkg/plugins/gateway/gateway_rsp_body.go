@@ -23,6 +23,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -130,8 +131,8 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			}
 
 			headers = buildEnvoyProxyHeaders(headers,
-				HeaderUpdateRPM, fmt.Sprintf("%d", rpm),
-				HeaderUpdateTPM, fmt.Sprintf("%d", tpm))
+				HeaderUpdateRPM, strconv.FormatInt(rpm, 10),
+				HeaderUpdateTPM, strconv.FormatInt(tpm, 10))
 		}
 
 		headers = buildEnvoyProxyHeaders(headers, HeaderRequestID, routerCtx.RequestID)
