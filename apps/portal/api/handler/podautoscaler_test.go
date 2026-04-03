@@ -270,3 +270,94 @@ func TestDeletePodAutoscaler_NotFound(t *testing.T) {
 		t.Errorf("expected error code 404, got %d", resp.Error.Code)
 	}
 }
+
+func TestUpdatePodAutoscaler_Success(t *testing.T) {
+	pa := newTestPodAutoscaler("my-pa", "default", time.Now())
+	r, _ := setupPodAutoscalerTestRouter(pa)
+
+	newMaxReplicas := int32(20)
+	body := types.PodAutoscalerUpdateRequest{
+		MaxReplicas: &newMaxReplicas,
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("PUT", "/api/v1/podautoscalers/default/my-pa", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp types.PodAutoscalerDetailResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Name != "my-pa" {
+		t.Errorf("expected name my-pa, got %s", resp.Name)
+	}
+	if resp.Namespace != "default" {
+		t.Errorf("expected namespace default, got %s", resp.Namespace)
+	}
+}
+
+func TestUpdatePodAutoscaler_NotFound(t *testing.T) {
+	r, _ := setupPodAutoscalerTestRouter()
+
+	newMaxReplicas := int32(20)
+	body := types.PodAutoscalerUpdateRequest{
+		MaxReplicas: &newMaxReplicas,
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("PUT", "/api/v1/podautoscalers/default/nonexistent", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp types.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal error response: %v", err)
+	}
+
+	if resp.Error.Code != http.StatusNotFound {
+		t.Errorf("expected error code 404, got %d", resp.Error.Code)
+	}
+}
+
+func TestListPodAutoscalers_FilterByNamespace(t *testing.T) {
+	now := time.Now()
+	p1 := newTestPodAutoscaler("pa-1", "ns-a", now)
+	p2 := newTestPodAutoscaler("pa-2", "ns-b", now)
+
+	r, _ := setupPodAutoscalerTestRouter(p1, p2)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/podautoscalers?namespace=ns-a", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var resp types.PodAutoscalerListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if len(resp.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(resp.Items))
+	}
+	if resp.Items[0].Name != "pa-1" {
+		t.Errorf("expected pa-1, got %s", resp.Items[0].Name)
+	}
+	if resp.Items[0].Namespace != "ns-a" {
+		t.Errorf("expected namespace ns-a, got %s", resp.Items[0].Namespace)
+	}
+}

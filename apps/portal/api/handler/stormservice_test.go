@@ -266,3 +266,94 @@ func TestDeleteStormService_NotFound(t *testing.T) {
 		t.Errorf("expected error code 404, got %d", resp.Error.Code)
 	}
 }
+
+func TestUpdateStormService_Success(t *testing.T) {
+	svc := newTestStormService("my-svc", "default", time.Now())
+	r, _ := setupStormServiceTestRouter(svc)
+
+	newReplicas := int32(5)
+	body := types.StormServiceUpdateRequest{
+		Replicas: &newReplicas,
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("PUT", "/api/v1/stormservices/default/my-svc", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp types.StormServiceDetailResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Name != "my-svc" {
+		t.Errorf("expected name my-svc, got %s", resp.Name)
+	}
+	if resp.Namespace != "default" {
+		t.Errorf("expected namespace default, got %s", resp.Namespace)
+	}
+}
+
+func TestUpdateStormService_NotFound(t *testing.T) {
+	r, _ := setupStormServiceTestRouter()
+
+	newReplicas := int32(5)
+	body := types.StormServiceUpdateRequest{
+		Replicas: &newReplicas,
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("PUT", "/api/v1/stormservices/default/nonexistent", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp types.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal error response: %v", err)
+	}
+
+	if resp.Error.Code != http.StatusNotFound {
+		t.Errorf("expected error code 404, got %d", resp.Error.Code)
+	}
+}
+
+func TestListStormServices_FilterByNamespace(t *testing.T) {
+	now := time.Now()
+	s1 := newTestStormService("svc-1", "ns-a", now)
+	s2 := newTestStormService("svc-2", "ns-b", now)
+
+	r, _ := setupStormServiceTestRouter(s1, s2)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/stormservices?namespace=ns-a", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var resp types.StormServiceListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if len(resp.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(resp.Items))
+	}
+	if resp.Items[0].Name != "svc-1" {
+		t.Errorf("expected svc-1, got %s", resp.Items[0].Name)
+	}
+	if resp.Items[0].Namespace != "ns-a" {
+		t.Errorf("expected namespace ns-a, got %s", resp.Items[0].Namespace)
+	}
+}

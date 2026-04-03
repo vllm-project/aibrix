@@ -305,3 +305,121 @@ func TestDeleteModelAdapter_NotFound(t *testing.T) {
 		t.Errorf("expected error code 404, got %d", resp.Error.Code)
 	}
 }
+
+func TestUpdateModelAdapter_Success(t *testing.T) {
+	adapter := newTestModelAdapter("my-adapter", "default", time.Now())
+	r, _ := setupTestRouter(adapter)
+
+	body := types.ModelAdapterUpdateRequest{
+		ArtifactURL: "s3://bucket/updated-adapter",
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("PUT", "/api/v1/modeladapters/default/my-adapter", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp types.ModelAdapterDetailResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Name != "my-adapter" {
+		t.Errorf("expected name my-adapter, got %s", resp.Name)
+	}
+	if resp.Namespace != "default" {
+		t.Errorf("expected namespace default, got %s", resp.Namespace)
+	}
+	if resp.Spec.ArtifactURL != "s3://bucket/updated-adapter" {
+		t.Errorf("expected artifactURL s3://bucket/updated-adapter, got %s", resp.Spec.ArtifactURL)
+	}
+}
+
+func TestUpdateModelAdapter_NotFound(t *testing.T) {
+	r, _ := setupTestRouter()
+
+	body := types.ModelAdapterUpdateRequest{
+		ArtifactURL: "s3://bucket/updated-adapter",
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("PUT", "/api/v1/modeladapters/default/nonexistent", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp types.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal error response: %v", err)
+	}
+
+	if resp.Error.Code != http.StatusNotFound {
+		t.Errorf("expected error code 404, got %d", resp.Error.Code)
+	}
+}
+
+func TestListModelAdapters_Pagination(t *testing.T) {
+	now := time.Now()
+	a1 := newTestModelAdapter("adapter-1", "default", now.Add(-3*time.Hour))
+	a2 := newTestModelAdapter("adapter-2", "default", now.Add(-2*time.Hour))
+	a3 := newTestModelAdapter("adapter-3", "default", now.Add(-1*time.Hour))
+
+	r, _ := setupTestRouter(a1, a2, a3)
+
+	// Page 1 with pageSize 2
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/modeladapters?page=1&pageSize=2", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var resp types.ModelAdapterListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if len(resp.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(resp.Items))
+	}
+	if resp.Pagination.Total != 3 {
+		t.Errorf("expected total 3, got %d", resp.Pagination.Total)
+	}
+	if resp.Pagination.Page != 1 {
+		t.Errorf("expected page 1, got %d", resp.Pagination.Page)
+	}
+	if resp.Pagination.PageSize != 2 {
+		t.Errorf("expected pageSize 2, got %d", resp.Pagination.PageSize)
+	}
+
+	// Page 2 with pageSize 2
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest("GET", "/api/v1/modeladapters?page=2&pageSize=2", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var resp2 types.ModelAdapterListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if len(resp2.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(resp2.Items))
+	}
+	if resp2.Pagination.Total != 3 {
+		t.Errorf("expected total 3, got %d", resp2.Pagination.Total)
+	}
+}

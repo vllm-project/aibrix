@@ -258,3 +258,95 @@ func TestDeleteKVCache_NotFound(t *testing.T) {
 		t.Errorf("expected error code 404, got %d", resp.Error.Code)
 	}
 }
+
+func TestUpdateKVCache_Success(t *testing.T) {
+	kv := newTestKVCache("my-kv", "default", time.Now())
+	r, _ := setupKVCacheTestRouter(kv)
+
+	body := types.KVCacheUpdateRequest{
+		Mode: "local",
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("PUT", "/api/v1/kvcaches/default/my-kv", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp types.KVCacheDetailResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Name != "my-kv" {
+		t.Errorf("expected name my-kv, got %s", resp.Name)
+	}
+	if resp.Namespace != "default" {
+		t.Errorf("expected namespace default, got %s", resp.Namespace)
+	}
+	if resp.Mode != "local" {
+		t.Errorf("expected mode local, got %s", resp.Mode)
+	}
+}
+
+func TestUpdateKVCache_NotFound(t *testing.T) {
+	r, _ := setupKVCacheTestRouter()
+
+	body := types.KVCacheUpdateRequest{
+		Mode: "local",
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("PUT", "/api/v1/kvcaches/default/nonexistent", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp types.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal error response: %v", err)
+	}
+
+	if resp.Error.Code != http.StatusNotFound {
+		t.Errorf("expected error code 404, got %d", resp.Error.Code)
+	}
+}
+
+func TestListKVCaches_FilterByNamespace(t *testing.T) {
+	now := time.Now()
+	k1 := newTestKVCache("kv-1", "ns-a", now)
+	k2 := newTestKVCache("kv-2", "ns-b", now)
+
+	r, _ := setupKVCacheTestRouter(k1, k2)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/kvcaches?namespace=ns-a", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var resp types.KVCacheListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if len(resp.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(resp.Items))
+	}
+	if resp.Items[0].Name != "kv-1" {
+		t.Errorf("expected kv-1, got %s", resp.Items[0].Name)
+	}
+	if resp.Items[0].Namespace != "ns-a" {
+		t.Errorf("expected namespace ns-a, got %s", resp.Items[0].Namespace)
+	}
+}

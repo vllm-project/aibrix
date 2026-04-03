@@ -265,3 +265,97 @@ func TestDeletePodSet_NotFound(t *testing.T) {
 		t.Errorf("expected error code 404, got %d", resp.Error.Code)
 	}
 }
+
+func TestUpdatePodSet_Success(t *testing.T) {
+	ps := newTestPodSet("my-podset", "default", time.Now())
+	r, _ := setupPodSetTestRouter(ps)
+
+	newPodGroupSize := int32(8)
+	body := types.PodSetUpdateRequest{
+		PodGroupSize: &newPodGroupSize,
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("PUT", "/api/v1/podsets/default/my-podset", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp types.PodSetDetailResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Name != "my-podset" {
+		t.Errorf("expected name my-podset, got %s", resp.Name)
+	}
+	if resp.Namespace != "default" {
+		t.Errorf("expected namespace default, got %s", resp.Namespace)
+	}
+	if resp.PodGroupSize != 8 {
+		t.Errorf("expected podGroupSize 8, got %d", resp.PodGroupSize)
+	}
+}
+
+func TestUpdatePodSet_NotFound(t *testing.T) {
+	r, _ := setupPodSetTestRouter()
+
+	newPodGroupSize := int32(8)
+	body := types.PodSetUpdateRequest{
+		PodGroupSize: &newPodGroupSize,
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("PUT", "/api/v1/podsets/default/nonexistent", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp types.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal error response: %v", err)
+	}
+
+	if resp.Error.Code != http.StatusNotFound {
+		t.Errorf("expected error code 404, got %d", resp.Error.Code)
+	}
+}
+
+func TestListPodSets_FilterByNamespace(t *testing.T) {
+	now := time.Now()
+	p1 := newTestPodSet("podset-1", "ns-a", now)
+	p2 := newTestPodSet("podset-2", "ns-b", now)
+
+	r, _ := setupPodSetTestRouter(p1, p2)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/podsets?namespace=ns-a", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var resp types.PodSetListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if len(resp.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(resp.Items))
+	}
+	if resp.Items[0].Name != "podset-1" {
+		t.Errorf("expected podset-1, got %s", resp.Items[0].Name)
+	}
+	if resp.Items[0].Namespace != "ns-a" {
+		t.Errorf("expected namespace ns-a, got %s", resp.Items[0].Namespace)
+	}
+}
