@@ -197,7 +197,7 @@ func TestFilterPrefillDecodePods(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "decode-test", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
 			},
 			expectError:   true,
-			errorContains: "prefill pods are not ready: prefill=0, decode=1",
+			errorContains: "prefill pods are not ready: prefill=0, decode=0",
 		},
 		{
 			name: "error - no decode pods",
@@ -205,7 +205,7 @@ func TestFilterPrefillDecodePods(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-test", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
 			},
 			expectError:   true,
-			errorContains: "decode pods are not ready: prefill=1, decode=0",
+			errorContains: "prefill pods are not ready: prefill=0, decode=0",
 		},
 		{
 			name: "error - no valid pods at all",
@@ -1572,7 +1572,10 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			expectPodFreeGpuUsage:  map[string]float64{"pod1": 70, "pod2": 20, "pod3": 30},
 		},
 		{
-			name: "throughput imbalance - select pod with minimum throughput",
+			// Throughput diff = 3000 - 50 = 2950 > aibrixDecodeMaxThroughputDiff (2048).
+			// Request diff = 2, below aibrixDecodeMaxRequest (16), so request imbalance doesn't fire.
+			// Throughput imbalance triggers: route to pod with minimum throughput (pod1).
+			name: "throughput imbalance - route to min-throughput pod",
 			pods: []*v1.Pod{
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
@@ -1598,7 +1601,38 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			expectPodFreeGpuUsage:  map[string]float64{"pod1": 60, "pod2": 50},
 		},
 		{
-			name: "zero requests - select pod with zero requests",
+			// Throughput diff = 200 - 100 = 100, below aibrixDecodeMaxThroughputDiff (2048).
+			// Request diff = 2, below aibrixDecodeMaxRequest (16).
+			// Neither imbalance fires; scoreDecodePods handles fine-grained selection.
+			name: "throughput imbalance below threshold - no routing decision",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+			},
+			metricsMap: map[string]map[string]metrics.MetricValue{
+				"pod1": {
+					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 10},
+					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
+					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.4},
+				},
+				"pod2": {
+					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 12},
+					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 200},
+					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
+				},
+			},
+			expectTargetPod:        "",
+			expectMaxRequestCount:  12,
+			expectMaxThroughput:    200,
+			expectMaxFreeGPUUsage:  60,
+			expectPodRequestCounts: map[string]float64{"pod1": 10, "pod2": 12},
+			expectPodThroughputs:   map[string]float64{"pod1": 100, "pod2": 200},
+			expectPodFreeGpuUsage:  map[string]float64{"pod1": 60, "pod2": 50},
+		},
+		{
+			// With request diff of 5 (below threshold of 32), no imbalance is detected.
+			// scoreDecodePods will handle the routing using the collected metrics.
+			name: "zero requests on one pod - below imbalance threshold, no routing decision",
 			pods: []*v1.Pod{
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
@@ -1615,7 +1649,7 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.3},
 				},
 			},
-			expectTargetPod:        "pod1",
+			expectTargetPod:        "",
 			expectMaxRequestCount:  5,
 			expectMaxThroughput:    120,
 			expectMaxFreeGPUUsage:  80,
@@ -1624,6 +1658,8 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			expectPodFreeGpuUsage:  map[string]float64{"pod1": 80, "pod2": 70},
 		},
 		{
+			// Single pod with unavailable metrics: no imbalance possible, returns nil.
+			// Throughput and GPU metrics fall back to 0 but don't drive routing.
 			name: "metrics error handling - default values",
 			pods: []*v1.Pod{
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
@@ -1631,7 +1667,7 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			metricsMap: map[string]map[string]metrics.MetricValue{
 				// Empty metrics map to trigger errors
 			},
-			expectTargetPod:        "pod1",
+			expectTargetPod:        "",
 			expectMaxRequestCount:  1,
 			expectMaxThroughput:    1,
 			expectMaxFreeGPUUsage:  100,
@@ -1664,6 +1700,97 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			expectPodRequestCounts: map[string]float64{"pod1": 5, "pod2": 7},
 			expectPodThroughputs:   map[string]float64{"pod1": 100, "pod2": 120},
 			expectPodFreeGpuUsage:  map[string]float64{"pod1": 5, "pod2": 0.1}, // Minimum 0.1 when <= 0
+		},
+		{
+			// pod1 has 8 running at 2.0 req/s → score=4s
+			// pod2 has 6 running at 0.3 req/s → score=20s
+			// ratio = 20/4 = 5.0 > 1.5 threshold → route to pod1 (lowest score)
+			// request diff = 2, well below the hard threshold of 16
+			name: "drain rate imbalance - route to lowest time-to-drain pod",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+			},
+			metricsMap: map[string]map[string]metrics.MetricValue{
+				"pod1": {
+					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 8},
+					metrics.RealTimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
+					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 200},
+					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.3},
+				},
+				"pod2": {
+					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 6},
+					metrics.RealTimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 0.3},
+					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 30},
+					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.5},
+				},
+			},
+			expectTargetPod:        "pod1",
+			expectMaxRequestCount:  8,
+			expectMaxThroughput:    200,
+			expectMaxFreeGPUUsage:  70,
+			expectPodRequestCounts: map[string]float64{"pod1": 8, "pod2": 6},
+			expectPodThroughputs:   map[string]float64{"pod1": 200, "pod2": 30},
+			expectPodFreeGpuUsage:  map[string]float64{"pod1": 70, "pod2": 50},
+		},
+		{
+			// Both pods have balanced scores (ratio < 1.5) — no routing decision.
+			// pod1: 8/2.0=4s, pod2: 6/1.5=4s → ratio=1.0
+			name: "drain rate balanced - no routing decision",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+			},
+			metricsMap: map[string]map[string]metrics.MetricValue{
+				"pod1": {
+					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 8},
+					metrics.RealTimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
+					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 200},
+					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.3},
+				},
+				"pod2": {
+					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 6},
+					metrics.RealTimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 1.5},
+					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 150},
+					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.4},
+				},
+			},
+			expectTargetPod:        "",
+			expectMaxRequestCount:  8,
+			expectMaxThroughput:    200,
+			expectMaxFreeGPUUsage:  70,
+			expectPodRequestCounts: map[string]float64{"pod1": 8, "pod2": 6},
+			expectPodThroughputs:   map[string]float64{"pod1": 200, "pod2": 150},
+			expectPodFreeGpuUsage:  map[string]float64{"pod1": 70, "pod2": 60},
+		},
+		{
+			// Drain rate unavailable for pod2 (missing metric) → skip drain rate scoring entirely.
+			name: "drain rate unavailable - skip scoring, no routing decision",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+			},
+			metricsMap: map[string]map[string]metrics.MetricValue{
+				"pod1": {
+					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 8},
+					metrics.RealTimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
+					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 200},
+					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.3},
+				},
+				"pod2": {
+					metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 6},
+					// RealTimeRunningRequestsDrainRate1m absent — unavailable
+					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 30},
+					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
+				},
+			},
+			expectTargetPod:        "",
+			expectMaxRequestCount:  8,
+			expectMaxThroughput:    200,
+			expectMaxFreeGPUUsage:  70,
+			expectPodRequestCounts: map[string]float64{"pod1": 8, "pod2": 6},
+			expectPodThroughputs:   map[string]float64{"pod1": 200, "pod2": 30},
+			expectPodFreeGpuUsage:  map[string]float64{"pod1": 70, "pod2": 50},
 		},
 	}
 

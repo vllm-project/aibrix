@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
@@ -301,6 +302,17 @@ func (c *Store) worker(jobs <-chan *Pod) {
 		// Update pod metrics using typed results
 		c.updatePodMetricsFromTypedResult(pod, result)
 
+		if strings.Contains(pod.Name, "decode") {
+			completed := float64(atomic.LoadInt64(&pod.completedRequests))
+			drainRate := c.calculateRate1m(pod, "completed_requests", completed)
+			if drainRate >= 0 {
+				rateValue := &metrics.SimpleMetricValue{Value: drainRate}
+				_ = c.updatePodRecord(pod, "", metrics.RealTimeRunningRequestsDrainRate1m, metrics.PodMetricScope, rateValue)
+				klog.V(4).InfoS("Updating drain rate metric", "pod", pod.Name,
+					"completed_requests", completed, metrics.RealTimeRunningRequestsDrainRate1m, drainRate)
+			}
+		}
+
 		// Handle Prometheus-based metrics separately (these require PromQL queries)
 		if c.prometheusApi != nil {
 			c.enqueuePromQL(pod)
@@ -458,21 +470,6 @@ func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.Engine
 	for modelMetricKey, metricValue := range result.ModelMetrics {
 		// modelMetricKey format: "model/metric"
 		modelName, metricName := parseModelMetricKey(modelMetricKey)
-
-		// Calculate per-second rate for token metrics, only for decode pods generation tokens
-		if strings.Contains(pod.Name, "decode") && metricName == metrics.GenerationTokenTotal {
-			if simpleValue, ok := metricValue.(*metrics.SimpleMetricValue); ok {
-				perSecRate := c.calculatePerSecondRate(pod, modelName, metricName, simpleValue.Value)
-				if perSecRate >= 0 { // Only store valid rates (negative means insufficient data)
-					rateMetricName := metrics.AvgGenerationThroughputToksPerS
-					rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
-					_ = c.updatePodRecord(pod, modelName, rateMetricName, metrics.PodModelMetricScope, rateValue)
-					klog.V(4).InfoS("Updating model metric", "pod", pod.Name, "model", modelName,
-						"generation_token_total", metricValue,
-						"avg_generation_throughput_toks_per_s", rateValue)
-				}
-			}
-		}
 
 		if metricDef, exists := metrics.Metrics[metricName]; exists {
 			err := c.updatePodRecord(pod, modelName, metricName, metricDef.MetricScope, metricValue)
