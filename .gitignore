@@ -69,3 +69,4 @@ samples/multimodality/xDiT/xDiT-integration/xDiT
 **/_version.py
 apps/portal/web/node_modules/
 apps/portal/web/dist/
+portal
