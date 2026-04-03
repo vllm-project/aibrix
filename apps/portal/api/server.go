@@ -1,12 +1,16 @@
 package portal
 
 import (
+	"io/fs"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/vllm-project/aibrix/apps/portal/api/handler"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// StaticFS holds the embedded frontend dist files. Set from main.go.
+var StaticFS fs.FS
 
 func NewRouter(c client.Client) *gin.Engine {
 	r := gin.New()
@@ -63,6 +67,23 @@ func NewRouter(c client.Client) *gin.Engine {
 		api.GET("/podsets/:namespace/:name", h.GetPodSet)
 		api.PUT("/podsets/:namespace/:name", h.UpdatePodSet)
 		api.DELETE("/podsets/:namespace/:name", h.DeletePodSet)
+	}
+
+	// Serve embedded frontend (SPA fallback)
+	if StaticFS != nil {
+		fileServer := http.FileServer(http.FS(StaticFS))
+		r.NoRoute(func(c *gin.Context) {
+			// Try to serve the exact file first
+			path := c.Request.URL.Path
+			if f, err := StaticFS.Open(path[1:]); err == nil {
+				f.Close()
+				fileServer.ServeHTTP(c.Writer, c.Request)
+				return
+			}
+			// SPA fallback: serve index.html for all non-API routes
+			c.Request.URL.Path = "/"
+			fileServer.ServeHTTP(c.Writer, c.Request)
+		})
 	}
 
 	return r

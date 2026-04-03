@@ -1,10 +1,22 @@
-FROM golang:1.22 AS builder
+# Stage 1: Build frontend
+FROM node:20-alpine AS frontend
+WORKDIR /web
+COPY apps/portal/web/package.json apps/portal/web/package-lock.json ./
+RUN npm ci
+COPY apps/portal/web/ ./
+RUN npm run build
+
+# Stage 2: Build backend (with embedded frontend)
+FROM golang:1.25 AS builder
 WORKDIR /workspace
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o portal apps/portal/api/cmd/main.go
+# Copy frontend build output into the embed directory
+COPY --from=frontend /web/dist apps/portal/api/cmd/dist
+RUN CGO_ENABLED=0 GOOS=linux go build -o portal apps/portal/api/cmd/main.go apps/portal/api/cmd/static.go
 
+# Stage 3: Runtime
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY --from=builder /workspace/portal .

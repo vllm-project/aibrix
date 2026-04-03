@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"io/fs"
 	"log"
 	"os"
 
@@ -72,6 +73,12 @@ func main() {
 	}
 
 	gin.SetMode(gin.ReleaseMode)
+
+	// Embed frontend static files
+	if distFS, err := fs.Sub(embeddedDist, "dist"); err == nil {
+		portal.StaticFS = distFS
+		log.Println("serving embedded frontend")
+	}
 
 	log.Printf("starting portal server on %s", addr)
 	if err := portal.NewRouter(c).Run(addr); err != nil {
