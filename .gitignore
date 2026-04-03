@@ -67,3 +67,5 @@ samples/multimodality/xDiT/xDiT-integration/xDiT
 
 # setuptools-scm generated version files
 **/_version.py
+apps/portal/web/node_modules/
+apps/portal/web/dist/
