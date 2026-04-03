@@ -16,6 +16,10 @@ issues:
       linters:
         - dupl
         - lll
+    - path: "apps/*"
+      linters:
+        - dupl
+        - lll
     # disable lll check for flag descriptions
     - path: "cmd/controllers/main.go"
       linters:
