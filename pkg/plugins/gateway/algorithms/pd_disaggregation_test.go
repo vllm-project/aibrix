@@ -1912,6 +1912,231 @@ func TestIsPodSuitableForPromptLength(t *testing.T) {
 	}
 }
 
+// makePDPod creates a minimal pod with PD role labels and optional annotations.
+func makePDPod(name, roleset, role string, annotations map[string]string) *v1.Pod {
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Labels:      map[string]string{PDRoleSetIdentifier: roleset, PDRoleIdentifier: role},
+			Annotations: annotations,
+		},
+	}
+}
+
+func podNames(pods []*v1.Pod) []string {
+	names := make([]string, len(pods))
+	for i, p := range pods {
+		names[i] = p.Name
+	}
+	return names
+}
+
+func TestCollectAndBucketPods(t *testing.T) {
+	ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "hello world", "req-1", "user")
+	router := &pdRouter{
+		cache:                 cache.NewForTest(),
+		tokenizer:             tokenizer.NewCharacterTokenizer(),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: NewPrefillRequestTracker(),
+		httpClient:            &http.Client{},
+	}
+
+	// Annotations for prompt-length bucketing tests.
+	// promptLength for "hello world" (11 chars with character tokenizer) = 11.
+	annoShort := pdConfigAnnotation(0, 100, false)    // suitable for promptLength=11
+	annoLong := pdConfigAnnotation(1000, 9999, false) // not suitable for promptLength=11
+
+	t.Run("complete roleset included", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = false
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-1", "rs1", "prefill", nil),
+			makePDPod("decode-1", "rs1", "decode", nil),
+		}
+		prefills, decodes, bucketPrefills, bucketDecodes, combined := router.collectAndBucketPods(ctx, pods, 11)
+
+		assert.ElementsMatch(t, []string{"prefill-1"}, podNames(prefills))
+		assert.ElementsMatch(t, []string{"decode-1"}, podNames(decodes))
+		assert.Empty(t, bucketPrefills)
+		assert.Empty(t, bucketDecodes)
+		assert.Empty(t, combined)
+	})
+
+	t.Run("incomplete roleset - only prefill - excluded", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = false
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-only", "rs1", "prefill", nil),
+		}
+		prefills, decodes, _, _, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.Empty(t, prefills)
+		assert.Empty(t, decodes)
+	})
+
+	t.Run("incomplete roleset - only decode - excluded", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = false
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("decode-only", "rs1", "decode", nil),
+		}
+		prefills, decodes, _, _, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.Empty(t, prefills)
+		assert.Empty(t, decodes)
+	})
+
+	t.Run("multiple rolesets - complete ones included, incomplete excluded", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = false
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-rs1", "rs1", "prefill", nil),
+			makePDPod("decode-rs1", "rs1", "decode", nil),
+			makePDPod("prefill-rs2", "rs2", "prefill", nil),
+			makePDPod("decode-rs2", "rs2", "decode", nil),
+			makePDPod("orphan-prefill", "rs3", "prefill", nil), // no matching decode
+		}
+		prefills, decodes, _, _, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.ElementsMatch(t, []string{"prefill-rs1", "prefill-rs2"}, podNames(prefills))
+		assert.ElementsMatch(t, []string{"decode-rs1", "decode-rs2"}, podNames(decodes))
+	})
+
+	t.Run("bucketing: both sides suitable - roleset included in bucketed slices", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = true
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			makePDPod("decode-1", "rs1", "decode", map[string]string{constants.ModelAnnoConfig: annoShort}),
+		}
+		_, _, bucketPrefills, bucketDecodes, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.ElementsMatch(t, []string{"prefill-1"}, podNames(bucketPrefills))
+		assert.ElementsMatch(t, []string{"decode-1"}, podNames(bucketDecodes))
+	})
+
+	t.Run("bucketing: prefill suitable but decode not - roleset excluded from bucketed slices", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = true
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			makePDPod("decode-1", "rs1", "decode", map[string]string{constants.ModelAnnoConfig: annoLong}),
+		}
+		prefills, decodes, bucketPrefills, bucketDecodes, _ := router.collectAndBucketPods(ctx, pods, 11)
+		// Base slices still contain the complete roleset.
+		assert.ElementsMatch(t, []string{"prefill-1"}, podNames(prefills))
+		assert.ElementsMatch(t, []string{"decode-1"}, podNames(decodes))
+		// Bucketed slices must be empty: decode is not suitable so the pair is rejected.
+		assert.Empty(t, bucketPrefills, "half-pair must not appear in bucketed prefills")
+		assert.Empty(t, bucketDecodes, "half-pair must not appear in bucketed decodes")
+	})
+
+	t.Run("bucketing: decode suitable but prefill not - roleset excluded from bucketed slices", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = true
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoLong}),
+			makePDPod("decode-1", "rs1", "decode", map[string]string{constants.ModelAnnoConfig: annoShort}),
+		}
+		_, _, bucketPrefills, bucketDecodes, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.Empty(t, bucketPrefills, "half-pair must not appear in bucketed prefills")
+		assert.Empty(t, bucketDecodes, "half-pair must not appear in bucketed decodes")
+	})
+
+	t.Run("bucketing: neither side suitable - roleset excluded from bucketed slices", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = true
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoLong}),
+			makePDPod("decode-1", "rs1", "decode", map[string]string{constants.ModelAnnoConfig: annoLong}),
+		}
+		_, _, bucketPrefills, bucketDecodes, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.Empty(t, bucketPrefills)
+		assert.Empty(t, bucketDecodes)
+	})
+
+	t.Run("bucketing: multiple rolesets - only fully-suitable roleset enters bucketed slices", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = true
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			// rs1: both suitable
+			makePDPod("prefill-rs1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			makePDPod("decode-rs1", "rs1", "decode", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			// rs2: prefill suitable, decode not
+			makePDPod("prefill-rs2", "rs2", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			makePDPod("decode-rs2", "rs2", "decode", map[string]string{constants.ModelAnnoConfig: annoLong}),
+		}
+		prefills, decodes, bucketPrefills, bucketDecodes, _ := router.collectAndBucketPods(ctx, pods, 11)
+
+		// Only rs1 is fully suitable for the bucket.
+		assert.ElementsMatch(t, []string{"prefill-rs1"}, podNames(bucketPrefills))
+		assert.ElementsMatch(t, []string{"decode-rs1"}, podNames(bucketDecodes))
+		// Because bucketed slices are non-empty, the base slices are overridden with them.
+		assert.ElementsMatch(t, []string{"prefill-rs1"}, podNames(prefills))
+		assert.ElementsMatch(t, []string{"decode-rs1"}, podNames(decodes))
+	})
+
+	t.Run("bucketing disabled: annotations ignored, bucketed slices always empty", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = false
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			makePDPod("decode-1", "rs1", "decode", map[string]string{constants.ModelAnnoConfig: annoShort}),
+		}
+		prefills, decodes, bucketPrefills, bucketDecodes, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.ElementsMatch(t, []string{"prefill-1"}, podNames(prefills))
+		assert.ElementsMatch(t, []string{"decode-1"}, podNames(decodes))
+		assert.Empty(t, bucketPrefills)
+		assert.Empty(t, bucketDecodes)
+	})
+
+	t.Run("bucketing: combined pods collected", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = true
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		annoCombined := pdConfigAnnotation(0, 100, true)
+		pods := []*v1.Pod{
+			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			makePDPod("decode-1", "rs1", "decode", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			makePDPod("combined-1", "rs2", "combined", map[string]string{constants.ModelAnnoConfig: annoCombined}),
+		}
+		_, _, _, _, combinedPods := router.collectAndBucketPods(ctx, pods, 11)
+		assert.ElementsMatch(t, []string{"combined-1"}, podNames(combinedPods))
+	})
+
+	t.Run("pods missing roleset label are ignored entirely", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = false
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			{ObjectMeta: metav1.ObjectMeta{Name: "no-roleset", Labels: map[string]string{PDRoleIdentifier: "prefill"}}},
+			makePDPod("prefill-1", "rs1", "prefill", nil),
+			makePDPod("decode-1", "rs1", "decode", nil),
+		}
+		prefills, decodes, _, _, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.ElementsMatch(t, []string{"prefill-1"}, podNames(prefills))
+		assert.ElementsMatch(t, []string{"decode-1"}, podNames(decodes))
+	})
+}
+
 // pdConfigAnnotation returns model.aibrix.ai/config annotation JSON for prompt length bucketing.
 func pdConfigAnnotation(minLen, maxLen int, combined bool) string {
 	combinedStr := "false"

@@ -1269,15 +1269,20 @@ func (r *pdRouter) collectAndBucketPods(routingCtx *types.RoutingContext, readyP
 		decodePods = append(decodePods, b.decodes...)
 
 		if bucketingEnabled {
+			var bucketPrefills, bucketDecodes []*v1.Pod
 			for _, pod := range b.prefills {
 				if r.isPodSuitableForPromptLength(routingCtx, pod, promptLength) {
-					promptLengthBucketingPrefillPods = append(promptLengthBucketingPrefillPods, pod)
+					bucketPrefills = append(bucketPrefills, pod)
 				}
 			}
 			for _, pod := range b.decodes {
 				if r.isPodSuitableForPromptLength(routingCtx, pod, promptLength) {
-					promptLengthBucketingDecodePods = append(promptLengthBucketingDecodePods, pod)
+					bucketDecodes = append(bucketDecodes, pod)
 				}
+			}
+			if len(bucketPrefills) > 0 && len(bucketDecodes) > 0 {
+				promptLengthBucketingPrefillPods = append(promptLengthBucketingPrefillPods, bucketPrefills...)
+				promptLengthBucketingDecodePods = append(promptLengthBucketingDecodePods, bucketDecodes...)
 			}
 		}
 	}

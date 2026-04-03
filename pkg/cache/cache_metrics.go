@@ -135,6 +135,19 @@ type RateCalculator struct {
 	maxCount int                         // Maximum number of snapshots to keep
 }
 
+// PurgeEntriesForPod removes all history entries whose key starts with podName/.
+// Call this when a pod is deleted to prevent unbounded map growth in high-churn clusters.
+func (r *RateCalculator) PurgeEntriesForPod(podName string) {
+	prefix := podName + "/"
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k := range r.history {
+		if strings.HasPrefix(k, prefix) {
+			delete(r.history, k)
+		}
+	}
+}
+
 var (
 	// Global rate calculator instance
 	rateCalculator = &RateCalculator{

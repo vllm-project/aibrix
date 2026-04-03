@@ -235,6 +235,8 @@ func (c *Store) deletePod(obj interface{}) {
 		}
 	}
 
+	rateCalculator.PurgeEntriesForPod(name)
+
 	klog.V(4).Infof("POD DELETED: %s/%s", namespace, name)
 	c.debugInfo()
 }
