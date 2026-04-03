@@ -231,6 +231,21 @@ build-gateway-plugins-nozmq: manifests generate fmt vet ## Build gateway-plugins
 build-metadata-service: ## Metadata service is now Python-based, use docker-build-metadata-service instead.
 	@echo "Metadata service is now Python-based. Use 'make docker-build-metadata-service' to build the Docker image."
 	@echo "The Go-based metadata service has been deprecated."
+
+## Portal
+
+.PHONY: build-portal
+build-portal: ## Build portal binary
+	CGO_ENABLED=0 go build -o bin/portal cmd/portal/main.go
+
+.PHONY: test-portal
+test-portal: ## Run portal tests
+	go test ./pkg/portal/... -v -count=1
+
+.PHONY: docker-build-portal
+docker-build-portal: ## Build portal docker image
+	$(call build_and_tag,portal,Dockerfile.portal)
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/controllers/main.go

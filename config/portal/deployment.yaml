@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aibrix-portal
+  namespace: aibrix-system
+  labels:
+    app: aibrix-portal
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aibrix-portal
+  template:
+    metadata:
+      labels:
+        app: aibrix-portal
+    spec:
+      serviceAccountName: aibrix-portal
+      containers:
+        - name: portal
+          image: aibrix/portal:latest
+          ports:
+            - containerPort: 8080
+          args:
+            - --addr=:8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

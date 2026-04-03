@@ -1,0 +1,30 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aibrix-portal
+rules:
+  - apiGroups: ["model.aibrix.ai"]
+    resources: ["modeladapters"]
+    verbs: ["get", "list", "create", "update", "delete", "watch"]
+  - apiGroups: ["orchestration.aibrix.ai"]
+    resources: ["rayclusterfleets", "stormservices", "rolesets", "kvcaches", "podsets"]
+    verbs: ["get", "list", "create", "update", "delete", "watch"]
+  - apiGroups: ["autoscaling.aibrix.ai"]
+    resources: ["podautoscalers"]
+    verbs: ["get", "list", "create", "update", "delete", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "events", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aibrix-portal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aibrix-portal
+subjects:
+  - kind: ServiceAccount
+    name: aibrix-portal
+    namespace: aibrix-system
