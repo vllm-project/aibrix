@@ -4,7 +4,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/vllm-project/aibrix/pkg/portal/types"
+	"github.com/vllm-project/aibrix/apps/portal/api/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 

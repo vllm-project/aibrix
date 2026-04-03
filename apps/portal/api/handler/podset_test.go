@@ -10,14 +10,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/portal/types"
+	"github.com/vllm-project/aibrix/apps/portal/api/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func setupStormServiceTestRouter(objects ...client.Object) (*gin.Engine, client.Client) {
+func setupPodSetTestRouter(objects ...client.Object) (*gin.Engine, client.Client) {
 	gin.SetMode(gin.TestMode)
 
 	scheme := runtime.NewScheme()
@@ -32,49 +32,46 @@ func setupStormServiceTestRouter(objects ...client.Object) (*gin.Engine, client.
 	h := New(fakeClient)
 	r := gin.New()
 
-	r.GET("/api/v1/stormservices", h.ListStormServices)
-	r.POST("/api/v1/stormservices", h.CreateStormService)
-	r.GET("/api/v1/stormservices/:namespace/:name", h.GetStormService)
-	r.PUT("/api/v1/stormservices/:namespace/:name", h.UpdateStormService)
-	r.DELETE("/api/v1/stormservices/:namespace/:name", h.DeleteStormService)
+	r.GET("/api/v1/podsets", h.ListPodSets)
+	r.POST("/api/v1/podsets", h.CreatePodSet)
+	r.GET("/api/v1/podsets/:namespace/:name", h.GetPodSet)
+	r.PUT("/api/v1/podsets/:namespace/:name", h.UpdatePodSet)
+	r.DELETE("/api/v1/podsets/:namespace/:name", h.DeletePodSet)
 
 	return r, fakeClient
 }
 
-func newTestStormService(name, namespace string, creationTime time.Time) *orchestrationv1alpha1.StormService {
-	replicas := int32(1)
-	return &orchestrationv1alpha1.StormService{
+func newTestPodSet(name, namespace string, creationTime time.Time) *orchestrationv1alpha1.PodSet {
+	return &orchestrationv1alpha1.PodSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
 			Namespace:         namespace,
 			CreationTimestamp: metav1.NewTime(creationTime),
 		},
-		Spec: orchestrationv1alpha1.StormServiceSpec{
-			Replicas: &replicas,
-			Stateful: false,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"app": name},
-			},
+		Spec: orchestrationv1alpha1.PodSetSpec{
+			PodGroupSize: 2,
+			Stateful:     false,
 		},
-		Status: orchestrationv1alpha1.StormServiceStatus{
-			Replicas:      1,
-			ReadyReplicas: 0,
+		Status: orchestrationv1alpha1.PodSetStatus{
+			ReadyPods: 0,
+			TotalPods: 2,
+			Phase:     orchestrationv1alpha1.PodSetPhasePending,
 		},
 	}
 }
 
-func TestListStormServices_Empty(t *testing.T) {
-	r, _ := setupStormServiceTestRouter()
+func TestListPodSets_Empty(t *testing.T) {
+	r, _ := setupPodSetTestRouter()
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/stormservices", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/podsets", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", w.Code)
 	}
 
-	var resp types.StormServiceListResponse
+	var resp types.PodSetListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
@@ -87,22 +84,22 @@ func TestListStormServices_Empty(t *testing.T) {
 	}
 }
 
-func TestListStormServices_WithItems(t *testing.T) {
+func TestListPodSets_WithItems(t *testing.T) {
 	now := time.Now()
-	s1 := newTestStormService("svc-1", "default", now.Add(-2*time.Hour))
-	s2 := newTestStormService("svc-2", "default", now.Add(-1*time.Hour))
+	p1 := newTestPodSet("podset-1", "default", now.Add(-2*time.Hour))
+	p2 := newTestPodSet("podset-2", "default", now.Add(-1*time.Hour))
 
-	r, _ := setupStormServiceTestRouter(s1, s2)
+	r, _ := setupPodSetTestRouter(p1, p2)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/stormservices", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/podsets", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", w.Code)
 	}
 
-	var resp types.StormServiceListResponse
+	var resp types.PodSetListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
@@ -114,31 +111,27 @@ func TestListStormServices_WithItems(t *testing.T) {
 		t.Errorf("expected total 2, got %d", resp.Pagination.Total)
 	}
 
-	if resp.Items[0].Name != "svc-2" {
-		t.Errorf("expected first item to be svc-2, got %s", resp.Items[0].Name)
+	if resp.Items[0].Name != "podset-2" {
+		t.Errorf("expected first item to be podset-2, got %s", resp.Items[0].Name)
 	}
-	if resp.Items[1].Name != "svc-1" {
-		t.Errorf("expected second item to be svc-1, got %s", resp.Items[1].Name)
+	if resp.Items[1].Name != "podset-1" {
+		t.Errorf("expected second item to be podset-1, got %s", resp.Items[1].Name)
 	}
 }
 
-func TestCreateStormService_Success(t *testing.T) {
-	r, _ := setupStormServiceTestRouter()
+func TestCreatePodSet_Success(t *testing.T) {
+	r, _ := setupPodSetTestRouter()
 
-	replicas := int32(2)
-	body := types.StormServiceCreateRequest{
-		Name:      "new-svc",
-		Namespace: "default",
-		Replicas:  &replicas,
-		Stateful:  true,
-		Roles: []types.StormRoleSpec{
-			{Name: "worker", Replicas: 1, Image: "worker:latest"},
-		},
+	body := types.PodSetCreateRequest{
+		Name:         "new-podset",
+		Namespace:    "default",
+		PodGroupSize: 4,
+		Stateful:     true,
 	}
 	jsonBody, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/api/v1/stormservices", bytes.NewBuffer(jsonBody))
+	req, _ := http.NewRequest("POST", "/api/v1/podsets", bytes.NewBuffer(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
@@ -146,30 +139,33 @@ func TestCreateStormService_Success(t *testing.T) {
 		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp types.StormServiceDetailResponse
+	var resp types.PodSetDetailResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Name != "new-svc" {
-		t.Errorf("expected name new-svc, got %s", resp.Name)
+	if resp.Name != "new-podset" {
+		t.Errorf("expected name new-podset, got %s", resp.Name)
 	}
 	if resp.Namespace != "default" {
 		t.Errorf("expected namespace default, got %s", resp.Namespace)
+	}
+	if resp.PodGroupSize != 4 {
+		t.Errorf("expected podGroupSize 4, got %d", resp.PodGroupSize)
 	}
 	if resp.Stateful != true {
 		t.Errorf("expected stateful true, got %v", resp.Stateful)
 	}
 }
 
-func TestCreateStormService_ValidationError(t *testing.T) {
-	r, _ := setupStormServiceTestRouter()
+func TestCreatePodSet_ValidationError(t *testing.T) {
+	r, _ := setupPodSetTestRouter()
 
 	body := map[string]string{"name": "test"}
 	jsonBody, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/api/v1/stormservices", bytes.NewBuffer(jsonBody))
+	req, _ := http.NewRequest("POST", "/api/v1/podsets", bytes.NewBuffer(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
@@ -187,36 +183,39 @@ func TestCreateStormService_ValidationError(t *testing.T) {
 	}
 }
 
-func TestGetStormService_Found(t *testing.T) {
-	svc := newTestStormService("my-svc", "default", time.Now())
-	r, _ := setupStormServiceTestRouter(svc)
+func TestGetPodSet_Found(t *testing.T) {
+	ps := newTestPodSet("my-podset", "default", time.Now())
+	r, _ := setupPodSetTestRouter(ps)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/stormservices/default/my-svc", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/podsets/default/my-podset", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp types.StormServiceDetailResponse
+	var resp types.PodSetDetailResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Name != "my-svc" {
-		t.Errorf("expected name my-svc, got %s", resp.Name)
+	if resp.Name != "my-podset" {
+		t.Errorf("expected name my-podset, got %s", resp.Name)
 	}
 	if resp.Namespace != "default" {
 		t.Errorf("expected namespace default, got %s", resp.Namespace)
 	}
+	if resp.PodGroupSize != 2 {
+		t.Errorf("expected podGroupSize 2, got %d", resp.PodGroupSize)
+	}
 }
 
-func TestGetStormService_NotFound(t *testing.T) {
-	r, _ := setupStormServiceTestRouter()
+func TestGetPodSet_NotFound(t *testing.T) {
+	r, _ := setupPodSetTestRouter()
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/stormservices/default/nonexistent", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/podsets/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNotFound {
@@ -233,12 +232,12 @@ func TestGetStormService_NotFound(t *testing.T) {
 	}
 }
 
-func TestDeleteStormService_Success(t *testing.T) {
-	svc := newTestStormService("to-delete", "default", time.Now())
-	r, _ := setupStormServiceTestRouter(svc)
+func TestDeletePodSet_Success(t *testing.T) {
+	ps := newTestPodSet("to-delete", "default", time.Now())
+	r, _ := setupPodSetTestRouter(ps)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("DELETE", "/api/v1/stormservices/default/to-delete", nil)
+	req, _ := http.NewRequest("DELETE", "/api/v1/podsets/default/to-delete", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNoContent {
@@ -246,11 +245,11 @@ func TestDeleteStormService_Success(t *testing.T) {
 	}
 }
 
-func TestDeleteStormService_NotFound(t *testing.T) {
-	r, _ := setupStormServiceTestRouter()
+func TestDeletePodSet_NotFound(t *testing.T) {
+	r, _ := setupPodSetTestRouter()
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("DELETE", "/api/v1/stormservices/default/nonexistent", nil)
+	req, _ := http.NewRequest("DELETE", "/api/v1/podsets/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNotFound {

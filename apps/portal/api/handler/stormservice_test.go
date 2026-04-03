@@ -10,14 +10,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/portal/types"
+	"github.com/vllm-project/aibrix/apps/portal/api/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func setupRayClusterFleetTestRouter(objects ...client.Object) (*gin.Engine, client.Client) {
+func setupStormServiceTestRouter(objects ...client.Object) (*gin.Engine, client.Client) {
 	gin.SetMode(gin.TestMode)
 
 	scheme := runtime.NewScheme()
@@ -32,48 +32,49 @@ func setupRayClusterFleetTestRouter(objects ...client.Object) (*gin.Engine, clie
 	h := New(fakeClient)
 	r := gin.New()
 
-	r.GET("/api/v1/rayclusterfleets", h.ListRayClusterFleets)
-	r.POST("/api/v1/rayclusterfleets", h.CreateRayClusterFleet)
-	r.GET("/api/v1/rayclusterfleets/:namespace/:name", h.GetRayClusterFleet)
-	r.PUT("/api/v1/rayclusterfleets/:namespace/:name", h.UpdateRayClusterFleet)
-	r.DELETE("/api/v1/rayclusterfleets/:namespace/:name", h.DeleteRayClusterFleet)
+	r.GET("/api/v1/stormservices", h.ListStormServices)
+	r.POST("/api/v1/stormservices", h.CreateStormService)
+	r.GET("/api/v1/stormservices/:namespace/:name", h.GetStormService)
+	r.PUT("/api/v1/stormservices/:namespace/:name", h.UpdateStormService)
+	r.DELETE("/api/v1/stormservices/:namespace/:name", h.DeleteStormService)
 
 	return r, fakeClient
 }
 
-func newTestRayClusterFleet(name, namespace string, creationTime time.Time) *orchestrationv1alpha1.RayClusterFleet {
+func newTestStormService(name, namespace string, creationTime time.Time) *orchestrationv1alpha1.StormService {
 	replicas := int32(1)
-	return &orchestrationv1alpha1.RayClusterFleet{
+	return &orchestrationv1alpha1.StormService{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
 			Namespace:         namespace,
 			CreationTimestamp: metav1.NewTime(creationTime),
 		},
-		Spec: orchestrationv1alpha1.RayClusterFleetSpec{
+		Spec: orchestrationv1alpha1.StormServiceSpec{
 			Replicas: &replicas,
+			Stateful: false,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"app": name},
 			},
 		},
-		Status: orchestrationv1alpha1.RayClusterFleetStatus{
+		Status: orchestrationv1alpha1.StormServiceStatus{
 			Replicas:      1,
 			ReadyReplicas: 0,
 		},
 	}
 }
 
-func TestListRayClusterFleets_Empty(t *testing.T) {
-	r, _ := setupRayClusterFleetTestRouter()
+func TestListStormServices_Empty(t *testing.T) {
+	r, _ := setupStormServiceTestRouter()
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/rayclusterfleets", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/stormservices", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", w.Code)
 	}
 
-	var resp types.RayClusterFleetListResponse
+	var resp types.StormServiceListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
@@ -86,22 +87,22 @@ func TestListRayClusterFleets_Empty(t *testing.T) {
 	}
 }
 
-func TestListRayClusterFleets_WithItems(t *testing.T) {
+func TestListStormServices_WithItems(t *testing.T) {
 	now := time.Now()
-	f1 := newTestRayClusterFleet("fleet-1", "default", now.Add(-2*time.Hour))
-	f2 := newTestRayClusterFleet("fleet-2", "default", now.Add(-1*time.Hour))
+	s1 := newTestStormService("svc-1", "default", now.Add(-2*time.Hour))
+	s2 := newTestStormService("svc-2", "default", now.Add(-1*time.Hour))
 
-	r, _ := setupRayClusterFleetTestRouter(f1, f2)
+	r, _ := setupStormServiceTestRouter(s1, s2)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/rayclusterfleets", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/stormservices", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", w.Code)
 	}
 
-	var resp types.RayClusterFleetListResponse
+	var resp types.StormServiceListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
@@ -113,27 +114,31 @@ func TestListRayClusterFleets_WithItems(t *testing.T) {
 		t.Errorf("expected total 2, got %d", resp.Pagination.Total)
 	}
 
-	if resp.Items[0].Name != "fleet-2" {
-		t.Errorf("expected first item to be fleet-2, got %s", resp.Items[0].Name)
+	if resp.Items[0].Name != "svc-2" {
+		t.Errorf("expected first item to be svc-2, got %s", resp.Items[0].Name)
 	}
-	if resp.Items[1].Name != "fleet-1" {
-		t.Errorf("expected second item to be fleet-1, got %s", resp.Items[1].Name)
+	if resp.Items[1].Name != "svc-1" {
+		t.Errorf("expected second item to be svc-1, got %s", resp.Items[1].Name)
 	}
 }
 
-func TestCreateRayClusterFleet_Success(t *testing.T) {
-	r, _ := setupRayClusterFleetTestRouter()
+func TestCreateStormService_Success(t *testing.T) {
+	r, _ := setupStormServiceTestRouter()
 
-	replicas := int32(3)
-	body := types.RayClusterFleetCreateRequest{
-		Name:      "new-fleet",
+	replicas := int32(2)
+	body := types.StormServiceCreateRequest{
+		Name:      "new-svc",
 		Namespace: "default",
 		Replicas:  &replicas,
+		Stateful:  true,
+		Roles: []types.StormRoleSpec{
+			{Name: "worker", Replicas: 1, Image: "worker:latest"},
+		},
 	}
 	jsonBody, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/api/v1/rayclusterfleets", bytes.NewBuffer(jsonBody))
+	req, _ := http.NewRequest("POST", "/api/v1/stormservices", bytes.NewBuffer(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
@@ -141,30 +146,30 @@ func TestCreateRayClusterFleet_Success(t *testing.T) {
 		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp types.RayClusterFleetDetailResponse
+	var resp types.StormServiceDetailResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Name != "new-fleet" {
-		t.Errorf("expected name new-fleet, got %s", resp.Name)
+	if resp.Name != "new-svc" {
+		t.Errorf("expected name new-svc, got %s", resp.Name)
 	}
 	if resp.Namespace != "default" {
 		t.Errorf("expected namespace default, got %s", resp.Namespace)
 	}
-	if resp.Replicas != 3 {
-		t.Errorf("expected replicas 3, got %d", resp.Replicas)
+	if resp.Stateful != true {
+		t.Errorf("expected stateful true, got %v", resp.Stateful)
 	}
 }
 
-func TestCreateRayClusterFleet_ValidationError(t *testing.T) {
-	r, _ := setupRayClusterFleetTestRouter()
+func TestCreateStormService_ValidationError(t *testing.T) {
+	r, _ := setupStormServiceTestRouter()
 
 	body := map[string]string{"name": "test"}
 	jsonBody, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/api/v1/rayclusterfleets", bytes.NewBuffer(jsonBody))
+	req, _ := http.NewRequest("POST", "/api/v1/stormservices", bytes.NewBuffer(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
@@ -182,36 +187,36 @@ func TestCreateRayClusterFleet_ValidationError(t *testing.T) {
 	}
 }
 
-func TestGetRayClusterFleet_Found(t *testing.T) {
-	fleet := newTestRayClusterFleet("my-fleet", "default", time.Now())
-	r, _ := setupRayClusterFleetTestRouter(fleet)
+func TestGetStormService_Found(t *testing.T) {
+	svc := newTestStormService("my-svc", "default", time.Now())
+	r, _ := setupStormServiceTestRouter(svc)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/rayclusterfleets/default/my-fleet", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/stormservices/default/my-svc", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp types.RayClusterFleetDetailResponse
+	var resp types.StormServiceDetailResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Name != "my-fleet" {
-		t.Errorf("expected name my-fleet, got %s", resp.Name)
+	if resp.Name != "my-svc" {
+		t.Errorf("expected name my-svc, got %s", resp.Name)
 	}
 	if resp.Namespace != "default" {
 		t.Errorf("expected namespace default, got %s", resp.Namespace)
 	}
 }
 
-func TestGetRayClusterFleet_NotFound(t *testing.T) {
-	r, _ := setupRayClusterFleetTestRouter()
+func TestGetStormService_NotFound(t *testing.T) {
+	r, _ := setupStormServiceTestRouter()
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/rayclusterfleets/default/nonexistent", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/stormservices/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNotFound {
@@ -228,12 +233,12 @@ func TestGetRayClusterFleet_NotFound(t *testing.T) {
 	}
 }
 
-func TestDeleteRayClusterFleet_Success(t *testing.T) {
-	fleet := newTestRayClusterFleet("to-delete", "default", time.Now())
-	r, _ := setupRayClusterFleetTestRouter(fleet)
+func TestDeleteStormService_Success(t *testing.T) {
+	svc := newTestStormService("to-delete", "default", time.Now())
+	r, _ := setupStormServiceTestRouter(svc)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("DELETE", "/api/v1/rayclusterfleets/default/to-delete", nil)
+	req, _ := http.NewRequest("DELETE", "/api/v1/stormservices/default/to-delete", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNoContent {
@@ -241,11 +246,11 @@ func TestDeleteRayClusterFleet_Success(t *testing.T) {
 	}
 }
 
-func TestDeleteRayClusterFleet_NotFound(t *testing.T) {
-	r, _ := setupRayClusterFleetTestRouter()
+func TestDeleteStormService_NotFound(t *testing.T) {
+	r, _ := setupStormServiceTestRouter()
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("DELETE", "/api/v1/rayclusterfleets/default/nonexistent", nil)
+	req, _ := http.NewRequest("DELETE", "/api/v1/stormservices/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNotFound {

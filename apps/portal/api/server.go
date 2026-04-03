@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/vllm-project/aibrix/pkg/portal/handler"
+	"github.com/vllm-project/aibrix/apps/portal/api/handler"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 

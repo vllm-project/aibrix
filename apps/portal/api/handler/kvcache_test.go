@@ -9,20 +9,19 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/portal/types"
-	corev1 "k8s.io/api/core/v1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/apps/portal/api/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func setupPodAutoscalerTestRouter(objects ...client.Object) (*gin.Engine, client.Client) {
+func setupKVCacheTestRouter(objects ...client.Object) (*gin.Engine, client.Client) {
 	gin.SetMode(gin.TestMode)
 
 	scheme := runtime.NewScheme()
-	_ = autoscalingv1alpha1.AddToScheme(scheme)
+	_ = orchestrationv1alpha1.AddToScheme(scheme)
 
 	builder := fake.NewClientBuilder().WithScheme(scheme)
 	if len(objects) > 0 {
@@ -33,52 +32,43 @@ func setupPodAutoscalerTestRouter(objects ...client.Object) (*gin.Engine, client
 	h := New(fakeClient)
 	r := gin.New()
 
-	r.GET("/api/v1/podautoscalers", h.ListPodAutoscalers)
-	r.POST("/api/v1/podautoscalers", h.CreatePodAutoscaler)
-	r.GET("/api/v1/podautoscalers/:namespace/:name", h.GetPodAutoscaler)
-	r.PUT("/api/v1/podautoscalers/:namespace/:name", h.UpdatePodAutoscaler)
-	r.DELETE("/api/v1/podautoscalers/:namespace/:name", h.DeletePodAutoscaler)
+	r.GET("/api/v1/kvcaches", h.ListKVCaches)
+	r.POST("/api/v1/kvcaches", h.CreateKVCache)
+	r.GET("/api/v1/kvcaches/:namespace/:name", h.GetKVCache)
+	r.PUT("/api/v1/kvcaches/:namespace/:name", h.UpdateKVCache)
+	r.DELETE("/api/v1/kvcaches/:namespace/:name", h.DeleteKVCache)
 
 	return r, fakeClient
 }
 
-func newTestPodAutoscaler(name, namespace string, creationTime time.Time) *autoscalingv1alpha1.PodAutoscaler {
-	minReplicas := int32(1)
-	return &autoscalingv1alpha1.PodAutoscaler{
+func newTestKVCache(name, namespace string, creationTime time.Time) *orchestrationv1alpha1.KVCache {
+	return &orchestrationv1alpha1.KVCache{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
 			Namespace:         namespace,
 			CreationTimestamp: metav1.NewTime(creationTime),
 		},
-		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
-			ScaleTargetRef: corev1.ObjectReference{
-				APIVersion: "apps/v1",
-				Kind:       "Deployment",
-				Name:       "my-deployment",
-			},
-			MinReplicas:     &minReplicas,
-			MaxReplicas:     10,
-			ScalingStrategy: autoscalingv1alpha1.HPA,
+		Spec: orchestrationv1alpha1.KVCacheSpec{
+			Mode: "distributed",
 		},
-		Status: autoscalingv1alpha1.PodAutoscalerStatus{
-			DesiredScale: 1,
-			ActualScale:  1,
+		Status: orchestrationv1alpha1.KVCacheStatus{
+			ReadyReplicas: 0,
 		},
 	}
 }
 
-func TestListPodAutoscalers_Empty(t *testing.T) {
-	r, _ := setupPodAutoscalerTestRouter()
+func TestListKVCaches_Empty(t *testing.T) {
+	r, _ := setupKVCacheTestRouter()
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/podautoscalers", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/kvcaches", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", w.Code)
 	}
 
-	var resp types.PodAutoscalerListResponse
+	var resp types.KVCacheListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
@@ -91,22 +81,22 @@ func TestListPodAutoscalers_Empty(t *testing.T) {
 	}
 }
 
-func TestListPodAutoscalers_WithItems(t *testing.T) {
+func TestListKVCaches_WithItems(t *testing.T) {
 	now := time.Now()
-	p1 := newTestPodAutoscaler("pa-1", "default", now.Add(-2*time.Hour))
-	p2 := newTestPodAutoscaler("pa-2", "default", now.Add(-1*time.Hour))
+	k1 := newTestKVCache("kv-1", "default", now.Add(-2*time.Hour))
+	k2 := newTestKVCache("kv-2", "default", now.Add(-1*time.Hour))
 
-	r, _ := setupPodAutoscalerTestRouter(p1, p2)
+	r, _ := setupKVCacheTestRouter(k1, k2)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/podautoscalers", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/kvcaches", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", w.Code)
 	}
 
-	var resp types.PodAutoscalerListResponse
+	var resp types.KVCacheListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
@@ -118,34 +108,26 @@ func TestListPodAutoscalers_WithItems(t *testing.T) {
 		t.Errorf("expected total 2, got %d", resp.Pagination.Total)
 	}
 
-	if resp.Items[0].Name != "pa-2" {
-		t.Errorf("expected first item to be pa-2, got %s", resp.Items[0].Name)
+	if resp.Items[0].Name != "kv-2" {
+		t.Errorf("expected first item to be kv-2, got %s", resp.Items[0].Name)
 	}
-	if resp.Items[1].Name != "pa-1" {
-		t.Errorf("expected second item to be pa-1, got %s", resp.Items[1].Name)
+	if resp.Items[1].Name != "kv-1" {
+		t.Errorf("expected second item to be kv-1, got %s", resp.Items[1].Name)
 	}
 }
 
-func TestCreatePodAutoscaler_Success(t *testing.T) {
-	r, _ := setupPodAutoscalerTestRouter()
+func TestCreateKVCache_Success(t *testing.T) {
+	r, _ := setupKVCacheTestRouter()
 
-	minReplicas := int32(1)
-	body := types.PodAutoscalerCreateRequest{
-		Name:      "new-pa",
+	body := types.KVCacheCreateRequest{
+		Name:      "new-kv",
 		Namespace: "default",
-		ScaleTargetRef: corev1.ObjectReference{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
-			Name:       "my-deployment",
-		},
-		MinReplicas:     &minReplicas,
-		MaxReplicas:     10,
-		ScalingStrategy: "HPA",
+		Mode:      "distributed",
 	}
 	jsonBody, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/api/v1/podautoscalers", bytes.NewBuffer(jsonBody))
+	req, _ := http.NewRequest("POST", "/api/v1/kvcaches", bytes.NewBuffer(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
@@ -153,27 +135,30 @@ func TestCreatePodAutoscaler_Success(t *testing.T) {
 		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp types.PodAutoscalerDetailResponse
+	var resp types.KVCacheDetailResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Name != "new-pa" {
-		t.Errorf("expected name new-pa, got %s", resp.Name)
+	if resp.Name != "new-kv" {
+		t.Errorf("expected name new-kv, got %s", resp.Name)
 	}
 	if resp.Namespace != "default" {
 		t.Errorf("expected namespace default, got %s", resp.Namespace)
 	}
+	if resp.Mode != "distributed" {
+		t.Errorf("expected mode distributed, got %s", resp.Mode)
+	}
 }
 
-func TestCreatePodAutoscaler_ValidationError(t *testing.T) {
-	r, _ := setupPodAutoscalerTestRouter()
+func TestCreateKVCache_ValidationError(t *testing.T) {
+	r, _ := setupKVCacheTestRouter()
 
-	body := map[string]string{"name": "test"}
+	body := map[string]string{"mode": "distributed"}
 	jsonBody, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/api/v1/podautoscalers", bytes.NewBuffer(jsonBody))
+	req, _ := http.NewRequest("POST", "/api/v1/kvcaches", bytes.NewBuffer(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
@@ -191,36 +176,39 @@ func TestCreatePodAutoscaler_ValidationError(t *testing.T) {
 	}
 }
 
-func TestGetPodAutoscaler_Found(t *testing.T) {
-	pa := newTestPodAutoscaler("my-pa", "default", time.Now())
-	r, _ := setupPodAutoscalerTestRouter(pa)
+func TestGetKVCache_Found(t *testing.T) {
+	kv := newTestKVCache("my-kv", "default", time.Now())
+	r, _ := setupKVCacheTestRouter(kv)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/podautoscalers/default/my-pa", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/kvcaches/default/my-kv", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp types.PodAutoscalerDetailResponse
+	var resp types.KVCacheDetailResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Name != "my-pa" {
-		t.Errorf("expected name my-pa, got %s", resp.Name)
+	if resp.Name != "my-kv" {
+		t.Errorf("expected name my-kv, got %s", resp.Name)
 	}
 	if resp.Namespace != "default" {
 		t.Errorf("expected namespace default, got %s", resp.Namespace)
 	}
+	if resp.Mode != "distributed" {
+		t.Errorf("expected mode distributed, got %s", resp.Mode)
+	}
 }
 
-func TestGetPodAutoscaler_NotFound(t *testing.T) {
-	r, _ := setupPodAutoscalerTestRouter()
+func TestGetKVCache_NotFound(t *testing.T) {
+	r, _ := setupKVCacheTestRouter()
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/podautoscalers/default/nonexistent", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/kvcaches/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNotFound {
@@ -237,12 +225,12 @@ func TestGetPodAutoscaler_NotFound(t *testing.T) {
 	}
 }
 
-func TestDeletePodAutoscaler_Success(t *testing.T) {
-	pa := newTestPodAutoscaler("to-delete", "default", time.Now())
-	r, _ := setupPodAutoscalerTestRouter(pa)
+func TestDeleteKVCache_Success(t *testing.T) {
+	kv := newTestKVCache("to-delete", "default", time.Now())
+	r, _ := setupKVCacheTestRouter(kv)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("DELETE", "/api/v1/podautoscalers/default/to-delete", nil)
+	req, _ := http.NewRequest("DELETE", "/api/v1/kvcaches/default/to-delete", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNoContent {
@@ -250,11 +238,11 @@ func TestDeletePodAutoscaler_Success(t *testing.T) {
 	}
 }
 
-func TestDeletePodAutoscaler_NotFound(t *testing.T) {
-	r, _ := setupPodAutoscalerTestRouter()
+func TestDeleteKVCache_NotFound(t *testing.T) {
+	r, _ := setupKVCacheTestRouter()
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("DELETE", "/api/v1/podautoscalers/default/nonexistent", nil)
+	req, _ := http.NewRequest("DELETE", "/api/v1/kvcaches/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNotFound {

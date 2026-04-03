@@ -8,7 +8,7 @@ import (
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/portal/types"
+	"github.com/vllm-project/aibrix/apps/portal/api/types"
 )
 
 func (h *Handler) GetOverview(c *gin.Context) {

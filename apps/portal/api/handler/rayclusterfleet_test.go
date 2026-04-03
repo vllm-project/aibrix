@@ -10,14 +10,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/portal/types"
+	"github.com/vllm-project/aibrix/apps/portal/api/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func setupPodSetTestRouter(objects ...client.Object) (*gin.Engine, client.Client) {
+func setupRayClusterFleetTestRouter(objects ...client.Object) (*gin.Engine, client.Client) {
 	gin.SetMode(gin.TestMode)
 
 	scheme := runtime.NewScheme()
@@ -32,46 +32,48 @@ func setupPodSetTestRouter(objects ...client.Object) (*gin.Engine, client.Client
 	h := New(fakeClient)
 	r := gin.New()
 
-	r.GET("/api/v1/podsets", h.ListPodSets)
-	r.POST("/api/v1/podsets", h.CreatePodSet)
-	r.GET("/api/v1/podsets/:namespace/:name", h.GetPodSet)
-	r.PUT("/api/v1/podsets/:namespace/:name", h.UpdatePodSet)
-	r.DELETE("/api/v1/podsets/:namespace/:name", h.DeletePodSet)
+	r.GET("/api/v1/rayclusterfleets", h.ListRayClusterFleets)
+	r.POST("/api/v1/rayclusterfleets", h.CreateRayClusterFleet)
+	r.GET("/api/v1/rayclusterfleets/:namespace/:name", h.GetRayClusterFleet)
+	r.PUT("/api/v1/rayclusterfleets/:namespace/:name", h.UpdateRayClusterFleet)
+	r.DELETE("/api/v1/rayclusterfleets/:namespace/:name", h.DeleteRayClusterFleet)
 
 	return r, fakeClient
 }
 
-func newTestPodSet(name, namespace string, creationTime time.Time) *orchestrationv1alpha1.PodSet {
-	return &orchestrationv1alpha1.PodSet{
+func newTestRayClusterFleet(name, namespace string, creationTime time.Time) *orchestrationv1alpha1.RayClusterFleet {
+	replicas := int32(1)
+	return &orchestrationv1alpha1.RayClusterFleet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
 			Namespace:         namespace,
 			CreationTimestamp: metav1.NewTime(creationTime),
 		},
-		Spec: orchestrationv1alpha1.PodSetSpec{
-			PodGroupSize: 2,
-			Stateful:     false,
+		Spec: orchestrationv1alpha1.RayClusterFleetSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": name},
+			},
 		},
-		Status: orchestrationv1alpha1.PodSetStatus{
-			ReadyPods: 0,
-			TotalPods: 2,
-			Phase:     orchestrationv1alpha1.PodSetPhasePending,
+		Status: orchestrationv1alpha1.RayClusterFleetStatus{
+			Replicas:      1,
+			ReadyReplicas: 0,
 		},
 	}
 }
 
-func TestListPodSets_Empty(t *testing.T) {
-	r, _ := setupPodSetTestRouter()
+func TestListRayClusterFleets_Empty(t *testing.T) {
+	r, _ := setupRayClusterFleetTestRouter()
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/podsets", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/rayclusterfleets", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", w.Code)
 	}
 
-	var resp types.PodSetListResponse
+	var resp types.RayClusterFleetListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
@@ -84,22 +86,22 @@ func TestListPodSets_Empty(t *testing.T) {
 	}
 }
 
-func TestListPodSets_WithItems(t *testing.T) {
+func TestListRayClusterFleets_WithItems(t *testing.T) {
 	now := time.Now()
-	p1 := newTestPodSet("podset-1", "default", now.Add(-2*time.Hour))
-	p2 := newTestPodSet("podset-2", "default", now.Add(-1*time.Hour))
+	f1 := newTestRayClusterFleet("fleet-1", "default", now.Add(-2*time.Hour))
+	f2 := newTestRayClusterFleet("fleet-2", "default", now.Add(-1*time.Hour))
 
-	r, _ := setupPodSetTestRouter(p1, p2)
+	r, _ := setupRayClusterFleetTestRouter(f1, f2)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/podsets", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/rayclusterfleets", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", w.Code)
 	}
 
-	var resp types.PodSetListResponse
+	var resp types.RayClusterFleetListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
@@ -111,27 +113,27 @@ func TestListPodSets_WithItems(t *testing.T) {
 		t.Errorf("expected total 2, got %d", resp.Pagination.Total)
 	}
 
-	if resp.Items[0].Name != "podset-2" {
-		t.Errorf("expected first item to be podset-2, got %s", resp.Items[0].Name)
+	if resp.Items[0].Name != "fleet-2" {
+		t.Errorf("expected first item to be fleet-2, got %s", resp.Items[0].Name)
 	}
-	if resp.Items[1].Name != "podset-1" {
-		t.Errorf("expected second item to be podset-1, got %s", resp.Items[1].Name)
+	if resp.Items[1].Name != "fleet-1" {
+		t.Errorf("expected second item to be fleet-1, got %s", resp.Items[1].Name)
 	}
 }
 
-func TestCreatePodSet_Success(t *testing.T) {
-	r, _ := setupPodSetTestRouter()
+func TestCreateRayClusterFleet_Success(t *testing.T) {
+	r, _ := setupRayClusterFleetTestRouter()
 
-	body := types.PodSetCreateRequest{
-		Name:         "new-podset",
-		Namespace:    "default",
-		PodGroupSize: 4,
-		Stateful:     true,
+	replicas := int32(3)
+	body := types.RayClusterFleetCreateRequest{
+		Name:      "new-fleet",
+		Namespace: "default",
+		Replicas:  &replicas,
 	}
 	jsonBody, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/api/v1/podsets", bytes.NewBuffer(jsonBody))
+	req, _ := http.NewRequest("POST", "/api/v1/rayclusterfleets", bytes.NewBuffer(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
@@ -139,33 +141,30 @@ func TestCreatePodSet_Success(t *testing.T) {
 		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp types.PodSetDetailResponse
+	var resp types.RayClusterFleetDetailResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Name != "new-podset" {
-		t.Errorf("expected name new-podset, got %s", resp.Name)
+	if resp.Name != "new-fleet" {
+		t.Errorf("expected name new-fleet, got %s", resp.Name)
 	}
 	if resp.Namespace != "default" {
 		t.Errorf("expected namespace default, got %s", resp.Namespace)
 	}
-	if resp.PodGroupSize != 4 {
-		t.Errorf("expected podGroupSize 4, got %d", resp.PodGroupSize)
-	}
-	if resp.Stateful != true {
-		t.Errorf("expected stateful true, got %v", resp.Stateful)
+	if resp.Replicas != 3 {
+		t.Errorf("expected replicas 3, got %d", resp.Replicas)
 	}
 }
 
-func TestCreatePodSet_ValidationError(t *testing.T) {
-	r, _ := setupPodSetTestRouter()
+func TestCreateRayClusterFleet_ValidationError(t *testing.T) {
+	r, _ := setupRayClusterFleetTestRouter()
 
 	body := map[string]string{"name": "test"}
 	jsonBody, _ := json.Marshal(body)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/api/v1/podsets", bytes.NewBuffer(jsonBody))
+	req, _ := http.NewRequest("POST", "/api/v1/rayclusterfleets", bytes.NewBuffer(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
@@ -183,39 +182,36 @@ func TestCreatePodSet_ValidationError(t *testing.T) {
 	}
 }
 
-func TestGetPodSet_Found(t *testing.T) {
-	ps := newTestPodSet("my-podset", "default", time.Now())
-	r, _ := setupPodSetTestRouter(ps)
+func TestGetRayClusterFleet_Found(t *testing.T) {
+	fleet := newTestRayClusterFleet("my-fleet", "default", time.Now())
+	r, _ := setupRayClusterFleetTestRouter(fleet)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/podsets/default/my-podset", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/rayclusterfleets/default/my-fleet", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp types.PodSetDetailResponse
+	var resp types.RayClusterFleetDetailResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Name != "my-podset" {
-		t.Errorf("expected name my-podset, got %s", resp.Name)
+	if resp.Name != "my-fleet" {
+		t.Errorf("expected name my-fleet, got %s", resp.Name)
 	}
 	if resp.Namespace != "default" {
 		t.Errorf("expected namespace default, got %s", resp.Namespace)
 	}
-	if resp.PodGroupSize != 2 {
-		t.Errorf("expected podGroupSize 2, got %d", resp.PodGroupSize)
-	}
 }
 
-func TestGetPodSet_NotFound(t *testing.T) {
-	r, _ := setupPodSetTestRouter()
+func TestGetRayClusterFleet_NotFound(t *testing.T) {
+	r, _ := setupRayClusterFleetTestRouter()
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/podsets/default/nonexistent", nil)
+	req, _ := http.NewRequest("GET", "/api/v1/rayclusterfleets/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNotFound {
@@ -232,12 +228,12 @@ func TestGetPodSet_NotFound(t *testing.T) {
 	}
 }
 
-func TestDeletePodSet_Success(t *testing.T) {
-	ps := newTestPodSet("to-delete", "default", time.Now())
-	r, _ := setupPodSetTestRouter(ps)
+func TestDeleteRayClusterFleet_Success(t *testing.T) {
+	fleet := newTestRayClusterFleet("to-delete", "default", time.Now())
+	r, _ := setupRayClusterFleetTestRouter(fleet)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("DELETE", "/api/v1/podsets/default/to-delete", nil)
+	req, _ := http.NewRequest("DELETE", "/api/v1/rayclusterfleets/default/to-delete", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNoContent {
@@ -245,11 +241,11 @@ func TestDeletePodSet_Success(t *testing.T) {
 	}
 }
 
-func TestDeletePodSet_NotFound(t *testing.T) {
-	r, _ := setupPodSetTestRouter()
+func TestDeleteRayClusterFleet_NotFound(t *testing.T) {
+	r, _ := setupRayClusterFleetTestRouter()
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("DELETE", "/api/v1/podsets/default/nonexistent", nil)
+	req, _ := http.NewRequest("DELETE", "/api/v1/rayclusterfleets/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNotFound {

@@ -10,7 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/portal/types"
+	"github.com/vllm-project/aibrix/apps/portal/api/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"

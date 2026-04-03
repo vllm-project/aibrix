@@ -236,11 +236,11 @@ build-metadata-service: ## Metadata service is now Python-based, use docker-buil
 
 .PHONY: build-portal
 build-portal: ## Build portal binary
-	CGO_ENABLED=0 go build -o bin/portal cmd/portal/main.go
+	CGO_ENABLED=0 go build -o bin/portal apps/portal/api/cmd/main.go
 
 .PHONY: test-portal
 test-portal: ## Run portal tests
-	go test ./pkg/portal/... -v -count=1
+	go test ./apps/portal/api/... -v -count=1
 
 .PHONY: docker-build-portal
 docker-build-portal: ## Build portal docker image
