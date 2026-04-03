@@ -320,9 +320,9 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			drainRate := c.calculateRate1m(pod, "completed_requests", completed)
 			if drainRate >= 0 {
 				rateValue := &metrics.SimpleMetricValue{Value: drainRate}
-				_ = c.updatePodRecord(pod, "", metrics.RealTimeRunningRequestsDrainRate1m, metrics.PodMetricScope, rateValue)
+				_ = c.updatePodRecord(pod, "", metrics.RealtimeRunningRequestsDrainRate1m, metrics.PodMetricScope, rateValue)
 				klog.V(4).InfoS("Updating drain rate metric", "pod", pod.Name,
-					"completed_requests", completed, metrics.RealTimeRunningRequestsDrainRate1m, drainRate)
+					"completed_requests", completed, metrics.RealtimeRunningRequestsDrainRate1m, drainRate)
 			}
 		}
 

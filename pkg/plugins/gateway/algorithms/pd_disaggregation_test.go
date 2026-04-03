@@ -1714,13 +1714,13 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			metricsMap: map[string]map[string]metrics.MetricValue{
 				"pod1": {
 					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 8},
-					metrics.RealTimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
+					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
 					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 200},
 					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.3},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 6},
-					metrics.RealTimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 0.3},
+					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 0.3},
 					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 30},
 					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.5},
 				},
@@ -1744,13 +1744,13 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			metricsMap: map[string]map[string]metrics.MetricValue{
 				"pod1": {
 					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 8},
-					metrics.RealTimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
+					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
 					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 200},
 					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.3},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 6},
-					metrics.RealTimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 1.5},
+					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 1.5},
 					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 150},
 					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.4},
 				},
@@ -1773,13 +1773,13 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			metricsMap: map[string]map[string]metrics.MetricValue{
 				"pod1": {
 					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 8},
-					metrics.RealTimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
+					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
 					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 200},
 					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.3},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 6},
-					// RealTimeRunningRequestsDrainRate1m absent — unavailable
+					// RealtimeRunningRequestsDrainRate1m absent — unavailable
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 30},
 					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
 				},

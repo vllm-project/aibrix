@@ -87,7 +87,7 @@ const (
 	// Realtime metrics
 	RealtimeNumRequestsRunning         = "realtime_num_requests_running"
 	RealtimeNormalizedPendings         = "realtime_normalized_pendings"
-	RealTimeRunningRequestsDrainRate1m = "realtime_running_requests_drain_rate_1m"
+	RealtimeRunningRequestsDrainRate1m = "realtime_running_requests_drain_rate_1m"
 
 	// error to read metrics from backend
 	PrometheusQueryFail       = "prometheus_query_fail"

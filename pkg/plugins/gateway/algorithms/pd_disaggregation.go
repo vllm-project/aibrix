@@ -347,26 +347,25 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 	return targetPod, imbalance
 }
 
-// loadImbalanceSelectDecodePod selects a decode pod when load imbalance is detected, using two ordered checks:
+// loadImbalanceSelectDecodePod selects a decode pod when load imbalance is detected. It walks all
+// filtered decode pods once, filling podRequestCounts, podThroughputs, and podFreeGpuUsage, then
+// applies three ordered checks (each runs only if the previous did not return):
 //
-//  1. Hard overload (fast path): if the absolute difference between the pod with the most and fewest
-//     running requests exceeds aibrixDecodeMaxRequest, route immediately to the least-loaded pod.
-//     Uses RealtimeNumRequestsRunning, which is gateway-tracked and always authoritative.
+//  1. Request imbalance (fast path): if max minus min running request count (RealtimeNumRequestsRunning
+//     plus pending decode count) is at least aibrixDecodeMaxRequest, return the least-loaded pod.
 //
-//  2. Drain rate scoring (soft path): if request counts are close but pods finish requests at
-//     different rates, compute a time-to-drain score (runningRequests / drainRate1m) per pod.
-//     If the ratio of worst to best score exceeds aibrixDecodeScoreRatioThreshold (default 1.5×),
-//     route to the pod with the lowest score. This path is skipped entirely if drain rate is
-//     unavailable for any pod (e.g. insufficient history, TensorRT engine).
+//  2. Throughput spread: if max minus min AvgGenerationThroughputToksPerS (per model) is greater than
+//     aibrixDecodeMaxThroughputDiff (AIBRIX_DECODE_MAX_THROUGHPUT), return the pod with minimum
+//     throughput. Missing throughput is treated as 0, which can make that pod look like the minimum
+//     during scrape gaps or startup.
 //
-// Throughput-based imbalance detection (AvgGenerationThroughputToksPerS) is intentionally excluded:
-// under partial metric unavailability — a normal condition during scrape gaps or pod startup — a pod
-// with a missing throughput falls back to 0 and becomes the apparent minimum, causing traffic to be
-// routed to it incorrectly. The drain rate path avoids this by skipping the check entirely when any
-// pod's drain rate is unavailable.
+//  3. Drain rate scoring (soft path): if every pod has a positive RealtimeRunningRequestsDrainRate1m,
+//     compute time-to-drain score runningRequests/drainRate per pod. If maxScore/minScore exceeds
+//     aibrixDecodeScoreRatioThreshold, return the pod with the lowest score. If any drain rate is
+//     missing or non-positive, this check is skipped entirely.
 //
-// Returns nil when neither condition is met, allowing scoreDecodePods to handle fine-grained selection.
-// Throughput and GPU usage metrics are still collected and forwarded to scoreDecodePods for scoring.
+// Returns nil when none of the above fire; the caller uses scoreDecodePods with the collected maps.
+// Non-nil pod returns also carry maxRequestCount, maxThroughput, and maxFreeGPUUsage from the same pass.
 func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filteredDecodePods []*v1.Pod) (*v1.Pod, float64, float64, float64, map[string]float64, map[string]float64, map[string]float64) {
 	podRequestCounts := make(map[string]float64)
 	podThroughputs := make(map[string]float64)
@@ -440,7 +439,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	drainRatesAvailable := true
 
 	for _, pod := range filteredDecodePods {
-		drainRate, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealTimeRunningRequestsDrainRate1m)
+		drainRate, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeRunningRequestsDrainRate1m)
 		if err != nil || drainRate.GetSimpleValue() <= 0 {
 			drainRatesAvailable = false
 			break
@@ -1149,7 +1148,17 @@ func (t *PendingDecodeTracker) RemovePendingDecode(requestID string) {
 	}
 	count := countInterface.(*atomic.Int32)
 	if newCount := count.Add(-1); newCount < 0 {
-		count.Store(0)
+		// Do not Store(0): between Add(-1) and Store, another goroutine may Add(1), and Store(0)
+		// would erase that increment. Clamp to 0 only while the value is still negative (CAS loop).
+		for {
+			v := count.Load()
+			if v >= 0 {
+				return
+			}
+			if count.CompareAndSwap(v, 0) {
+				return
+			}
+		}
 	}
 }
 
