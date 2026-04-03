@@ -1,0 +1,458 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package routingalgorithms
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
+)
+
+type imbalancePodsFilterKeyType struct{}
+
+var imbalancePodsFilterReqAddedKey = imbalancePodsFilterKeyType{}
+
+type imbalancePodsFilterReqDelKeyType struct{}
+
+var imbalancePodsFilterReqDelKey = imbalancePodsFilterReqDelKeyType{}
+
+// MetricsProvider provides pod-level metrics
+type MetricsProvider interface {
+	GetMetricValueByPod(podName, namespace, metricName string) (metrics.MetricValue, error)
+}
+
+// RequestCounter provides pod-level request count
+type RequestCounter interface {
+	// GetRequestCounts returns a map of pod name to request count
+	// Returns:
+	//  withNamespace=false:  pod name -> request count
+	//  withNamespace=true: pod namespace/pod name -> request count
+	GetRequestCounts(ctx context.Context, readyPods []*v1.Pod, withNamespace bool) map[string]int
+	// GetRequestCountsWithPort returns running request count for each pod-port combination, used when a pod has multiple ports
+	// Returns:
+	//  withNamespace=false:  pod name/port -> request count
+	//  withNamespace=true:   pod namespace/pod name/port -> request count
+	GetRequestCountsWithPort(ctx context.Context, readyPods []*v1.Pod,
+		portsMap map[string][]int, withNamespace bool) map[string]int
+}
+
+// parse the key of map returned by GetRequestCountsWithPort
+func parseKey(key string, withNamespace bool) (namespace string, podName string, port string) {
+	parts := strings.Split(key, "/")
+	if withNamespace {
+		// namespace/podName/port or namespace/podName
+		if len(parts) == 2 {
+			return parts[0], parts[1], ""
+		}
+		return parts[0], parts[1], parts[2]
+	}
+	// podName/port or podName
+	if len(parts) == 2 {
+		return "", parts[0], parts[1]
+	}
+	return "", parts[0], ""
+}
+
+// localRequestCounter is a local implementation of imbalancePodsFilter
+type localRequestCounter struct {
+	metricsProvider MetricsProvider
+}
+
+// NewLocalImbalancePodsFilter creates a new local imbalance pods filter
+func NewLocalRequestCounter(provider MetricsProvider) *localRequestCounter {
+	return &localRequestCounter{
+		metricsProvider: provider,
+	}
+}
+
+func (l *localRequestCounter) GetRequestCounts(ctx context.Context, readyPods []*v1.Pod, withNamespace bool) map[string]int {
+	podRequestCount := make(map[string]int, len(readyPods))
+	for _, pod := range readyPods {
+		runningReq, err := l.metricsProvider.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
+		if err != nil {
+			runningReq = &metrics.SimpleMetricValue{Value: 0}
+		}
+		podRequestCount[pod.Name] = int(runningReq.GetSimpleValue())
+	}
+
+	return podRequestCount
+}
+
+// getRequestCountsWithPort returns running request count for each pod-port combination
+func (l *localRequestCounter) GetRequestCountsWithPort(
+	ctx context.Context, readyPods []*v1.Pod, portsMap map[string][]int, withNamespace bool) map[string]int {
+	podRequestCount := make(map[string]int)
+	for _, pod := range readyPods {
+		podPorts, exists := portsMap[pod.Name]
+
+		// Single port or no explicit ports
+		if !exists || len(podPorts) == 0 {
+			runningReq, err := l.metricsProvider.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
+			if err != nil {
+				runningReq = &metrics.SimpleMetricValue{Value: 0}
+			}
+			podRequestCount[pod.Name] = int(runningReq.GetSimpleValue())
+			continue
+		}
+
+		// Multi-port pod
+		for _, port := range podPorts {
+			var metricName string
+			var keyName string
+
+			if len(podPorts) == 1 {
+				metricName = metrics.RealtimeNumRequestsRunning
+				keyName = fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+			} else {
+				metricName = fmt.Sprintf("%s/%d", metrics.RealtimeNumRequestsRunning, port)
+				keyName = fmt.Sprintf("%s/%s/%d", pod.Namespace, pod.Name, port)
+			}
+
+			var count int
+			if val, err := l.metricsProvider.GetMetricValueByPod(pod.Name, pod.Namespace, metricName); err == nil && val != nil {
+				count = int(val.GetSimpleValue())
+			}
+			podRequestCount[keyName] = count
+		}
+	}
+
+	return podRequestCount
+}
+
+// deduplicatePods extracts and deduplicates pods from podServerKey list
+func deduplicatePods(serverKeys []podServerKey) []*v1.Pod {
+	podMap := make(map[string]*v1.Pod)
+	for _, serverKey := range serverKeys {
+		if serverKey.pod != nil {
+			podMap[serverKey.pod.Name] = serverKey.pod
+		}
+	}
+
+	result := make([]*v1.Pod, 0, len(podMap))
+	for _, pod := range podMap {
+		result = append(result, pod)
+	}
+	return result
+}
+
+// redisRequestCounter is a redis implementation of imbalancePodsFilter
+// redis key design:
+//
+//		aibrix:prefix-cache-reqcnt:{<modelName>}: hashmap, <pod_name_with_port> -> request_count
+//	 we use hashmap here which is different from power-of-two router, because hgetall is needed to scan all the keys
+//	 modelName is wrapped in {} to support Redis Cluster hashtag, ensuring all keys for the same model are in the same slot
+type redisRequestCounter struct {
+	redisCli           *redis.Client
+	imbalanceThreshold int // Threshold for considering pods imbalanced (default: 2)
+	redisKeyPrefix     string
+
+	// lastModelFilterTime tracks when FilterPods was last called for each model
+	// Used to stop tracking request counts for models that are no longer being filtered
+	lastModelFilterTime   map[string]time.Time
+	lastModelFilterTimeMu sync.RWMutex // Protects lastModelFilterTime map
+	requestTrackerTimeout time.Duration
+}
+
+// GetRequestCounts implements [RequestCounter].
+func (r *redisRequestCounter) GetRequestCounts(ctx context.Context, readyPods []*v1.Pod, withNamespace bool) map[string]int {
+	// Get counts with port first and merge them by pod
+	portsMap := make(map[string][]int) // empty ports map
+	countsWithPort := r.GetRequestCountsWithPort(ctx, readyPods, portsMap, withNamespace)
+
+	// Merge counts for the same pod (sum across all ports)
+	result := make(map[string]int)
+	for key, count := range countsWithPort {
+		// Extract pod key (remove port suffix if present)
+		var podKey string
+		if withNamespace {
+			// Format: "namespace/pod-name" or "namespace/pod-name/port"
+			// Split by "/" and take first two parts
+			parts := strings.Split(key, "/")
+			if len(parts) >= 2 {
+				podKey = parts[0] + "/" + parts[1]
+			} else {
+				podKey = key
+			}
+		} else {
+			// Format: "pod-name" or "pod-name/port"
+			// Split by "/" and take first part
+			parts := strings.Split(key, "/")
+			podKey = parts[0]
+		}
+
+		result[podKey] += count
+	}
+
+	return result
+}
+
+// GetRequestCountsWithPort implements [RequestCounter].
+func (r *redisRequestCounter) GetRequestCountsWithPort(ctx context.Context, readyPods []*v1.Pod, portsMap map[string][]int, withNamespace bool) map[string]int {
+	if len(readyPods) == 0 {
+		return make(map[string]int)
+	}
+
+	// Get model name from the first pod (all pods should serve the same model)
+	modelName := ""
+	if readyPods[0].Labels != nil {
+		if model, ok := readyPods[0].Labels["model"]; ok {
+			modelName = model
+		}
+	}
+
+	if modelName == "" {
+		klog.V(4).InfoS("cannot determine model name from pod, returning empty counts")
+		return make(map[string]int)
+	}
+
+	// Update last filter time for this model
+	r.lastModelFilterTimeMu.Lock()
+	r.lastModelFilterTime[modelName] = time.Now()
+	r.lastModelFilterTimeMu.Unlock()
+
+	// Get all request counts from Redis using HGETALL
+	key := r.buildRedisKey(modelName)
+	counts, err := r.redisCli.HGetAll(ctx, key).Result()
+	if err != nil {
+		klog.ErrorS(err, "failed to get request counts from redis", "key", key)
+		return make(map[string]int)
+	}
+
+	// Build a map of valid pods for filtering
+	validPods := make(map[string]*v1.Pod)
+	for _, pod := range readyPods {
+		validPods[pod.Name] = pod
+	}
+
+	// Parse Redis data and build result map
+	result := make(map[string]int)
+	for field, countStr := range counts {
+		// field format from podServerKey.String():
+		//   without port: "namespace_podname"
+		//   with port: "namespace_podname_port"
+
+		// Split by underscore
+		parts := strings.Split(field, "_")
+		if len(parts) < 2 {
+			continue
+		}
+
+		podName := parts[1]
+		var port int
+		hasPort := false
+		if len(parts) >= 3 {
+			// Parse port from the last part
+			if p, err := strconv.Atoi(parts[2]); err == nil {
+				port = p
+				hasPort = true
+			}
+		}
+
+		// Check if this pod is in readyPods
+		pod, exists := validPods[podName]
+		if !exists {
+			continue
+		}
+
+		// Parse count
+		count, err := strconv.Atoi(countStr)
+		if err != nil {
+			continue
+		}
+
+		// Build result key based on withNamespace parameter
+		var resultKey string
+		if withNamespace {
+			if hasPort {
+				resultKey = fmt.Sprintf("%s/%s/%d", pod.Namespace, pod.Name, port)
+			} else {
+				resultKey = fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+			}
+		} else {
+			if hasPort {
+				resultKey = fmt.Sprintf("%s_%d", pod.Name, port)
+			} else {
+				resultKey = pod.Name
+			}
+		}
+
+		result[resultKey] = count
+	}
+
+	return result
+}
+
+const (
+	defaultRedisKeyPrefix          = "aibrix:prefix-cache-reqcnt"
+	defaultImbalanceTrackerTimeout = time.Minute * 5 // 5 minutes, stop tracking if filter not called
+)
+
+// NewredisRequestCounter creates a new redis-based imbalance pods filter
+func NewRedisRequestCounter(redisClient *redis.Client, imbalanceThreshold int) *redisRequestCounter {
+	return &redisRequestCounter{
+		redisCli:              redisClient,
+		imbalanceThreshold:    imbalanceThreshold,
+		redisKeyPrefix:        defaultRedisKeyPrefix,
+		lastModelFilterTime:   make(map[string]time.Time),
+		requestTrackerTimeout: defaultImbalanceTrackerTimeout,
+	}
+}
+
+// buildRedisKey constructs the redis key for a model
+// Uses Redis Cluster hashtag to ensure all keys for the same model are in the same slot
+func (r *redisRequestCounter) buildRedisKey(modelName string) string {
+	return fmt.Sprintf("%s:{%s}", r.redisKeyPrefix, modelName)
+}
+
+// AddRequestCount implements [cache.RequestTracker].
+func (r *redisRequestCounter) AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64) {
+	// Check whether target pod is set
+	if !ctx.HasRouted() {
+		return 0
+	}
+
+	// Skip counting if this model hasn't been filtered recently
+	// This avoids counting requests that are no longer being load-balanced
+	r.lastModelFilterTimeMu.RLock()
+	lastModelFilterTime, ok := r.lastModelFilterTime[modelName]
+	r.lastModelFilterTimeMu.RUnlock()
+
+	if ok {
+		// If it's been too long since last filter call, skip counting
+		if time.Since(lastModelFilterTime) > r.requestTrackerTimeout {
+			klog.V(5).InfoS("skip request count tracking, model filter timeout",
+				"model", modelName,
+				"last_filter_time", lastModelFilterTime,
+				"timeout", r.requestTrackerTimeout)
+			return 0
+		}
+	} else {
+		// No filter history for this model, skip counting
+		klog.V(5).InfoS("skip request count tracking, no filter history",
+			"model", modelName)
+		return 0
+	}
+
+	// Check whether it is called the first time
+	v := ctx.Context.Value(imbalancePodsFilterReqAddedKey)
+	if v != nil {
+		return 0
+	}
+	ctx.Context = context.WithValue(ctx.Context, imbalancePodsFilterReqAddedKey, true)
+
+	// Build pod server key
+	port := ctx.TargetPort()
+	serverKey := podServerKey{
+		pod:  ctx.TargetPod(),
+		port: port,
+	}
+
+	// Increment request count in hashmap
+	key := r.buildRedisKey(modelName)
+	field := serverKey.String()
+
+	newCount, err := r.redisCli.HIncrBy(ctx.Context, key, field, 1).Result()
+	if err != nil {
+		klog.ErrorS(err, "failed to increment request count in hashmap",
+			"request_id", requestID,
+			"key", key,
+			"field", field)
+		return 0
+	}
+
+	klog.V(4).InfoS("imbalance_filter_add_request",
+		"request_id", requestID,
+		"model", modelName,
+		"pod", serverKey.String(),
+		"new_count", newCount)
+
+	return newCount
+}
+
+// DoneRequestCount implements [cache.RequestTracker].
+// Only one DoneRequestXXX should be called for a request. Idemptency is not required.
+func (r *redisRequestCounter) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
+	// Check whether target pod is set
+	if ctx.TargetPod() == nil {
+		return
+	}
+
+	// Check whether it is called the first time
+	v := ctx.Context.Value(imbalancePodsFilterReqDelKey)
+	if v != nil {
+		return
+	}
+	ctx.Context = context.WithValue(ctx.Context, imbalancePodsFilterReqDelKey, true)
+
+	// Build pod server key
+	port := ctx.TargetPort()
+	serverKey := podServerKey{
+		pod:  ctx.TargetPod(),
+		port: port,
+	}
+
+	// Decrement request count in hashmap
+	key := r.buildRedisKey(modelName)
+	field := serverKey.String()
+
+	newCount, err := r.redisCli.HIncrBy(ctx.Context, key, field, -1).Result()
+	if err != nil {
+		klog.ErrorS(err, "failed to decrement request count in hashmap",
+			"request_id", requestID,
+			"key", key,
+			"field", field)
+		return
+	}
+
+	// If count is zero or negative, delete the field
+	if newCount <= 0 {
+		if err := r.redisCli.HDel(ctx.Context, key, field).Err(); err != nil {
+			klog.ErrorS(err, "failed to delete field from hashmap",
+				"key", key,
+				"field", field)
+		}
+	}
+
+	klog.V(4).InfoS("imbalance_filter_done_request",
+		"request_id", requestID,
+		"model", modelName,
+		"pod", serverKey.String(),
+		"new_count", newCount)
+}
+
+// DoneRequestTrace implements [cache.RequestTracker].
+// Only one DoneRequestXXX should be called for a request. Idemptency is not required.
+func (r *redisRequestCounter) DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens int64, outputTokens int64, traceTerm int64) {
+	r.DoneRequestCount(ctx, requestID, modelName, traceTerm)
+}
+
+var (
+	_ RequestCounter = &localRequestCounter{}
+	_ RequestCounter = &redisRequestCounter{}
+	// redisRequestCounter also implements RequestTracker
+	_ cache.RequestTracker = &redisRequestCounter{}
+)

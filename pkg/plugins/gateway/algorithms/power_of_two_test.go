@@ -134,7 +134,7 @@ func TestPowerOfTwoRouter_podServerKey(t *testing.T) {
 				pod:  pod,
 				port: 8001,
 			},
-			want: "test-pod_8001",
+			want: "default_test-pod_8001",
 		},
 		{
 			name: "without port",
@@ -142,7 +142,7 @@ func TestPowerOfTwoRouter_podServerKey(t *testing.T) {
 				pod:  pod,
 				port: 0,
 			},
-			want: "test-pod",
+			want: "default_test-pod",
 		},
 	}
 
@@ -174,7 +174,7 @@ func TestPowerOfTwoRouter_buildRedisKey(t *testing.T) {
 				pod:  pod,
 				port: 8001,
 			},
-			wantMatch: "po2_req_count:test-model:test-pod_8001:",
+			wantMatch: "po2_req_count:test-model:default_test-pod_8001:",
 		},
 		{
 			name:      "without port",
@@ -183,7 +183,7 @@ func TestPowerOfTwoRouter_buildRedisKey(t *testing.T) {
 				pod:  pod,
 				port: 0,
 			},
-			wantMatch: "po2_req_count:test-model:test-pod:",
+			wantMatch: "po2_req_count:test-model:default_test-pod:",
 		},
 	}
 

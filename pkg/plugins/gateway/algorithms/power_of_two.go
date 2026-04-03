@@ -107,9 +107,9 @@ type podServerKey struct {
 
 func (k podServerKey) String() string {
 	if k.port == 0 {
-		return k.pod.Name
+		return fmt.Sprintf("%s_%s", k.pod.Namespace, k.pod.Name)
 	}
-	return fmt.Sprintf("%s_%d", k.pod.Name, k.port)
+	return fmt.Sprintf("%s_%s_%d", k.pod.Namespace, k.pod.Name, k.port)
 }
 
 // Route implements [types.Router] using power of two choices algorithm.

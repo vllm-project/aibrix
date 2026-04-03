@@ -190,8 +190,11 @@ func TestGetTargetPodOnLoadImbalance(t *testing.T) {
 
 			testCache := cache.NewWithPodsMetricsForTest(pods, "test-model", metricsMap)
 
+			// Get request counts from cache
+			podRequestCount := getRequestCounts(testCache, pods)
+
 			// Execute function
-			targetPodList, imbalance := getTargetPodListOnLoadImbalance(testCache, pods)
+			targetPodList, imbalance := getTargetPodListOnLoadImbalance(podRequestCount, pods)
 
 			// Verify imbalance detection
 			assert.Equal(t, tt.expectImbalance, imbalance, "Imbalance detection mismatch")
@@ -355,7 +358,8 @@ func TestGetTargetPodFromMatchedPods(t *testing.T) {
 			standardDeviationFactor = tt.stdDevFactor
 
 			testCache, pods := createTestSetup(tt.podMetrics)
-			result := getTargetPodFromMatchedPods(testCache, pods, tt.matchedPods)
+			podRequestCount := getRequestCounts(testCache, pods)
+			result := getTargetPodFromMatchedPods(podRequestCount, pods, tt.matchedPods)
 
 			if tt.expectedNil {
 				assert.Nil(t, result, tt.description)
@@ -745,8 +749,11 @@ func TestLoadImbalanceEdgeCases(t *testing.T) {
 
 			testCache := cache.NewWithPodsMetricsForTest(pods, "test-model", metricsMap)
 
+			// Get request counts from cache
+			podRequestCount := getRequestCounts(testCache, pods)
+
 			// Execute function
-			targetPodList, imbalance := getTargetPodListOnLoadImbalance(testCache, pods)
+			targetPodList, imbalance := getTargetPodListOnLoadImbalance(podRequestCount, pods)
 
 			// Verify imbalance detection
 			assert.Equal(t, tt.expectImbalance, imbalance, "Imbalance detection mismatch: %s", tt.description)
@@ -904,7 +911,8 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 			standardDeviationFactor = tt.stdDevFactor
 
 			testCache, pods := createTestSetup(tt.podMetrics)
-			result := getTargetPodFromMatchedPods(testCache, pods, tt.matchedPods)
+			podRequestCount := getRequestCounts(testCache, pods)
+			result := getTargetPodFromMatchedPods(podRequestCount, pods, tt.matchedPods)
 
 			if tt.expectedNil {
 				assert.Nil(t, result, tt.description)
@@ -1030,8 +1038,11 @@ func TestKVSyncPodKeyHandlingEdgeCases(t *testing.T) {
 
 			testCache := cache.NewWithPodsMetricsForTest(pods, "test-model", metricsMap)
 
+			// Get request counts with keys (namespace/podname format) for KV sync function
+			podRequestCountWithKeys := getRequestCountsWithKeys(testCache, pods)
+
 			// Test KV sync function
-			result := getTargetPodFromMatchedPodsWithKeys(testCache, pods, tt.matchedPods)
+			result := getTargetPodFromMatchedPodsWithKeys(podRequestCountWithKeys, pods, tt.matchedPods)
 
 			if tt.expectedNil {
 				assert.Nil(t, result, tt.description)
