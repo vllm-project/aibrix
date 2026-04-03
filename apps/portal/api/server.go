@@ -92,7 +92,10 @@ func NewRouter(c client.Client) *gin.Engine {
 			// Try to serve the exact file first
 			path := c.Request.URL.Path
 			if f, err := StaticFS.Open(path[1:]); err == nil {
-				f.Close()
+				err = f.Close()
+				if err != nil {
+					panic(err)
+				}
 				fileServer.ServeHTTP(c.Writer, c.Request)
 				return
 			}

@@ -69,5 +69,9 @@ samples/multimodality/xDiT/xDiT-integration/xDiT
 **/_version.py
 apps/portal/web/node_modules/
 apps/portal/web/dist/
+# Keep placeholder for go:embed to compile without frontend build
+!apps/portal/api/cmd/dist/
+!apps/portal/api/cmd/dist/index.html
 portal
 docs/superpowers/
+PROJECT_ANALYSIS.md
