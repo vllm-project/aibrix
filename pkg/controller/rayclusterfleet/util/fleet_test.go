@@ -32,13 +32,13 @@ func newRS(annotations map[string]string) *orchestrationv1alpha1.RayClusterRepli
 
 func TestSetReplicasAnnotations(t *testing.T) {
 	tests := []struct {
-		name            string
-		existing        map[string]string
-		desired         int32
-		max             int32
-		wantUpdated     bool
-		wantDesired     string
-		wantMax         string
+		name        string
+		existing    map[string]string
+		desired     int32
+		max         int32
+		wantUpdated bool
+		wantDesired string
+		wantMax     string
 	}{
 		{
 			name:        "nil annotations gets set",
