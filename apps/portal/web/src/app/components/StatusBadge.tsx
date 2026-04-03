@@ -1,18 +1,22 @@
-const colors: Record<string, string> = {
-  ready: "bg-green-100 text-green-800",
-  running: "bg-green-100 text-green-800",
-  pending: "bg-yellow-100 text-yellow-800",
-  progressing: "bg-blue-100 text-blue-800",
-  failed: "bg-red-100 text-red-800",
-  error: "bg-red-100 text-red-800",
-  "": "bg-gray-100 text-gray-600",
+const colorMap: Record<string, { bg: string; text: string }> = {
+  ready:       { bg: "var(--badge-green-bg)", text: "var(--badge-green-text)" },
+  running:     { bg: "var(--badge-green-bg)", text: "var(--badge-green-text)" },
+  pending:     { bg: "var(--badge-yellow-bg)", text: "var(--badge-yellow-text)" },
+  progressing: { bg: "var(--badge-blue-bg)", text: "var(--badge-blue-text)" },
+  failed:      { bg: "var(--badge-red-bg)", text: "var(--badge-red-text)" },
+  error:       { bg: "var(--badge-red-bg)", text: "var(--badge-red-text)" },
 };
+
+const defaultColor = { bg: "var(--badge-gray-bg)", text: "var(--badge-gray-text)" };
 
 export default function StatusBadge({ status }: { status: string }) {
   const key = status.toLowerCase();
-  const cls = colors[key] || colors[""];
+  const c = colorMap[key] || defaultColor;
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${cls}`}>
+    <span
+      className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
+      style={{ backgroundColor: c.bg, color: c.text }}
+    >
       {status || "Unknown"}
     </span>
   );

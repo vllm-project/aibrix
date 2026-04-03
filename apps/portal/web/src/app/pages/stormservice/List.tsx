@@ -29,12 +29,12 @@ export default function StormServiceList() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">StormServices</h2>
-        <Link to="/stormservices/create" className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700">
+        <h2 className="text-2xl font-bold text-[var(--foreground)]">StormServices</h2>
+        <Link to="/stormservices/create" className="px-4 py-2 bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-medium rounded-md hover:opacity-90">
           Create
         </Link>
       </div>
-      {error && <div className="text-red-600 mb-4">{error}</div>}
+      {error && <div className="text-[var(--destructive)] mb-4">{error}</div>}
       <ResourceTable
         columns={columns}
         data={items}

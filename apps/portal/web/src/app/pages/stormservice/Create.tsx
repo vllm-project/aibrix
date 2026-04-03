@@ -37,79 +37,79 @@ export default function StormServiceCreate() {
 
   return (
     <div className="max-w-2xl">
-      <h2 className="text-2xl font-bold text-gray-900 mb-6">Create StormService</h2>
-      {error && <div className="bg-red-50 text-red-700 px-4 py-3 rounded-md mb-4">{error}</div>}
-      <form onSubmit={handleSubmit} className="space-y-4 bg-white p-6 rounded-lg border border-gray-200">
+      <h2 className="text-2xl font-bold text-[var(--foreground)] mb-6">Create StormService</h2>
+      {error && <div className="bg-[var(--badge-red-bg)] text-[var(--badge-red-text)] px-4 py-3 rounded-md mb-4">{error}</div>}
+      <form onSubmit={handleSubmit} className="space-y-4 bg-[var(--card)] p-6 rounded-lg border border-[var(--border)]">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
+          <label className="block text-sm font-medium text-[var(--foreground)] mb-1">Name *</label>
           <input type="text" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500" />
+            className="w-full px-3 py-2 border border-[var(--input-border)] rounded-md text-sm bg-[var(--background)] text-[var(--foreground)] focus:ring-[var(--input-focus)] focus:border-[var(--input-focus)]" />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Namespace *</label>
+          <label className="block text-sm font-medium text-[var(--foreground)] mb-1">Namespace *</label>
           <input type="text" required value={form.namespace} onChange={(e) => setForm({ ...form, namespace: e.target.value })}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500" />
+            className="w-full px-3 py-2 border border-[var(--input-border)] rounded-md text-sm bg-[var(--background)] text-[var(--foreground)] focus:ring-[var(--input-focus)] focus:border-[var(--input-focus)]" />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Replicas</label>
+          <label className="block text-sm font-medium text-[var(--foreground)] mb-1">Replicas</label>
           <input type="number" min={1} value={form.replicas ?? 1} onChange={(e) => setForm({ ...form, replicas: parseInt(e.target.value) || 1 })}
-            className="w-24 px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500" />
+            className="w-24 px-3 py-2 border border-[var(--input-border)] rounded-md text-sm bg-[var(--background)] text-[var(--foreground)] focus:ring-[var(--input-focus)] focus:border-[var(--input-focus)]" />
         </div>
         <div className="flex items-center gap-3">
-          <label className="block text-sm font-medium text-gray-700">Stateful</label>
+          <label className="block text-sm font-medium text-[var(--foreground)]">Stateful</label>
           <input type="checkbox" checked={form.stateful ?? false} onChange={(e) => setForm({ ...form, stateful: e.target.checked })}
-            className="h-4 w-4 text-blue-600 border-gray-300 rounded" />
+            className="h-4 w-4 text-blue-600 border-[var(--input-border)] rounded" />
         </div>
 
         <div>
           <div className="flex items-center justify-between mb-2">
-            <label className="block text-sm font-medium text-gray-700">Roles</label>
-            <button type="button" onClick={addRole} className="px-3 py-1 bg-gray-100 border border-gray-300 rounded-md text-sm hover:bg-gray-200">
+            <label className="block text-sm font-medium text-[var(--foreground)]">Roles</label>
+            <button type="button" onClick={addRole} className="px-3 py-1 bg-gray-100 border border-[var(--input-border)] rounded-md text-sm hover:bg-gray-200">
               Add Role
             </button>
           </div>
           <div className="space-y-4">
             {form.roles.map((role, index) => (
-              <div key={index} className="p-4 border border-gray-200 rounded-md space-y-3">
+              <div key={index} className="p-4 border border-[var(--border)] rounded-md space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700">Role {index + 1}</span>
+                  <span className="text-sm font-medium text-[var(--foreground)]">Role {index + 1}</span>
                   {form.roles.length > 1 && (
-                    <button type="button" onClick={() => removeRole(index)} className="text-red-500 hover:text-red-700 text-sm">Remove</button>
+                    <button type="button" onClick={() => removeRole(index)} className="text-[var(--destructive)] hover:opacity-70 text-sm">Remove</button>
                   )}
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Name *</label>
+                    <label className="block text-xs font-medium text-[var(--foreground)] mb-1">Name *</label>
                     <input type="text" required value={role.name} onChange={(e) => updateRole(index, "name", e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500" />
+                      className="w-full px-3 py-2 border border-[var(--input-border)] rounded-md text-sm bg-[var(--background)] text-[var(--foreground)] focus:ring-[var(--input-focus)] focus:border-[var(--input-focus)]" />
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Replicas</label>
+                    <label className="block text-xs font-medium text-[var(--foreground)] mb-1">Replicas</label>
                     <input type="number" min={1} value={role.replicas} onChange={(e) => updateRole(index, "replicas", parseInt(e.target.value) || 1)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500" />
+                      className="w-full px-3 py-2 border border-[var(--input-border)] rounded-md text-sm bg-[var(--background)] text-[var(--foreground)] focus:ring-[var(--input-focus)] focus:border-[var(--input-focus)]" />
                   </div>
                   <div className="col-span-2">
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Image *</label>
+                    <label className="block text-xs font-medium text-[var(--foreground)] mb-1">Image *</label>
                     <input type="text" required value={role.image} onChange={(e) => updateRole(index, "image", e.target.value)}
                       placeholder="e.g. nginx:latest"
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500" />
+                      className="w-full px-3 py-2 border border-[var(--input-border)] rounded-md text-sm bg-[var(--background)] text-[var(--foreground)] focus:ring-[var(--input-focus)] focus:border-[var(--input-focus)]" />
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">CPU</label>
+                    <label className="block text-xs font-medium text-[var(--foreground)] mb-1">CPU</label>
                     <input type="text" value={role.cpu || ""} onChange={(e) => updateRole(index, "cpu", e.target.value)}
                       placeholder="e.g. 500m"
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500" />
+                      className="w-full px-3 py-2 border border-[var(--input-border)] rounded-md text-sm bg-[var(--background)] text-[var(--foreground)] focus:ring-[var(--input-focus)] focus:border-[var(--input-focus)]" />
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Memory</label>
+                    <label className="block text-xs font-medium text-[var(--foreground)] mb-1">Memory</label>
                     <input type="text" value={role.memory || ""} onChange={(e) => updateRole(index, "memory", e.target.value)}
                       placeholder="e.g. 512Mi"
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500" />
+                      className="w-full px-3 py-2 border border-[var(--input-border)] rounded-md text-sm bg-[var(--background)] text-[var(--foreground)] focus:ring-[var(--input-focus)] focus:border-[var(--input-focus)]" />
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">GPU</label>
+                    <label className="block text-xs font-medium text-[var(--foreground)] mb-1">GPU</label>
                     <input type="number" min={0} value={role.gpu ?? 0} onChange={(e) => updateRole(index, "gpu", parseInt(e.target.value) || 0)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500" />
+                      className="w-full px-3 py-2 border border-[var(--input-border)] rounded-md text-sm bg-[var(--background)] text-[var(--foreground)] focus:ring-[var(--input-focus)] focus:border-[var(--input-focus)]" />
                   </div>
                 </div>
               </div>
@@ -119,11 +119,11 @@ export default function StormServiceCreate() {
 
         <div className="flex gap-3 pt-4">
           <button type="submit" disabled={submitting}
-            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:opacity-50">
+            className="px-4 py-2 bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-medium rounded-md hover:opacity-90 disabled:opacity-50">
             {submitting ? "Creating..." : "Create"}
           </button>
           <button type="button" onClick={() => navigate("/stormservices")}
-            className="px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-md border border-gray-300 hover:bg-gray-50">
+            className="px-4 py-2 bg-[var(--card)] text-[var(--foreground)] text-sm font-medium rounded-md border border-[var(--input-border)] hover:bg-[var(--muted)]">
             Cancel
           </button>
         </div>
