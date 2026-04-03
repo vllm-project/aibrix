@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -133,9 +134,9 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 	// inject pod annotations
 	pod.Annotations[constants.RoleSetIndexAnnotationKey] = roleSet.Annotations[constants.RoleSetIndexAnnotationKey]
 	if roleIndex != nil {
-		pod.Annotations[constants.RoleReplicaIndexAnnotationKey] = fmt.Sprintf("%d", *roleIndex)
+		pod.Annotations[constants.RoleReplicaIndexAnnotationKey] = strconv.Itoa(*roleIndex)
 		// inject to label as well for routing service discovery (some engines use label selector to find pods only)
-		pod.Labels[constants.RoleReplicaIndexLabelKey] = fmt.Sprintf("%d", *roleIndex)
+		pod.Labels[constants.RoleReplicaIndexLabelKey] = strconv.Itoa(*roleIndex)
 	}
 	if roleSet.Spec.SchedulingStrategy != nil {
 		if roleSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy != nil {
@@ -218,7 +219,7 @@ func injectContainerEnvVars(
 	if roleIndex != nil {
 		envMap[constants.RoleReplicaIndexEnvKey] = v1.EnvVar{
 			Name:  constants.RoleReplicaIndexEnvKey,
-			Value: fmt.Sprintf("%d", *roleIndex),
+			Value: strconv.Itoa(*roleIndex),
 		}
 	}
 	keys := make([]string, 0, len(envMap))
@@ -269,7 +270,7 @@ func filterTerminatingPods(pods []*v1.Pod) (terminating []*v1.Pod, notTerminatin
 
 func filterPodsByIndex(pods []*v1.Pod, index int) (result []*v1.Pod) {
 	for i := range pods {
-		if pods[i].Annotations[constants.RoleReplicaIndexAnnotationKey] == fmt.Sprintf("%d", index) {
+		if pods[i].Annotations[constants.RoleReplicaIndexAnnotationKey] == strconv.Itoa(index) {
 			result = append(result, pods[i])
 		}
 	}
