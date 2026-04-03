@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/apps/portal/api/types"
 	corev1 "k8s.io/api/core/v1"
@@ -74,21 +76,13 @@ func TestListPodAutoscalers_Empty(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/podautoscalers", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.PodAutoscalerListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 0 {
-		t.Errorf("expected 0 items, got %d", len(resp.Items))
-	}
-	if resp.Pagination.Total != 0 {
-		t.Errorf("expected total 0, got %d", resp.Pagination.Total)
-	}
+	assert.Empty(t, resp.Items)
+	assert.Equal(t, 0, resp.Pagination.Total)
 }
 
 func TestListPodAutoscalers_WithItems(t *testing.T) {
@@ -102,28 +96,16 @@ func TestListPodAutoscalers_WithItems(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/podautoscalers", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.PodAutoscalerListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(resp.Items))
-	}
-	if resp.Pagination.Total != 2 {
-		t.Errorf("expected total 2, got %d", resp.Pagination.Total)
-	}
+	require.Len(t, resp.Items, 2)
+	assert.Equal(t, 2, resp.Pagination.Total)
 
-	if resp.Items[0].Name != "pa-2" {
-		t.Errorf("expected first item to be pa-2, got %s", resp.Items[0].Name)
-	}
-	if resp.Items[1].Name != "pa-1" {
-		t.Errorf("expected second item to be pa-1, got %s", resp.Items[1].Name)
-	}
+	assert.Equal(t, "pa-2", resp.Items[0].Name)
+	assert.Equal(t, "pa-1", resp.Items[1].Name)
 }
 
 func TestCreatePodAutoscaler_Success(t *testing.T) {
@@ -149,21 +131,13 @@ func TestCreatePodAutoscaler_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
 
 	var resp types.PodAutoscalerDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "new-pa" {
-		t.Errorf("expected name new-pa, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
+	assert.Equal(t, "new-pa", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
 }
 
 func TestCreatePodAutoscaler_ValidationError(t *testing.T) {
@@ -177,18 +151,12 @@ func TestCreatePodAutoscaler_ValidationError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusBadRequest {
-		t.Errorf("expected error code 400, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusBadRequest, resp.Error.Code)
 }
 
 func TestGetPodAutoscaler_Found(t *testing.T) {
@@ -199,21 +167,13 @@ func TestGetPodAutoscaler_Found(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/podautoscalers/default/my-pa", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.PodAutoscalerDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "my-pa" {
-		t.Errorf("expected name my-pa, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
+	assert.Equal(t, "my-pa", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
 }
 
 func TestGetPodAutoscaler_NotFound(t *testing.T) {
@@ -223,18 +183,12 @@ func TestGetPodAutoscaler_NotFound(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/podautoscalers/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestDeletePodAutoscaler_Success(t *testing.T) {
@@ -245,9 +199,7 @@ func TestDeletePodAutoscaler_Success(t *testing.T) {
 	req, _ := http.NewRequest("DELETE", "/api/v1/podautoscalers/default/to-delete", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected status 204, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNoContent, w.Code)
 }
 
 func TestDeletePodAutoscaler_NotFound(t *testing.T) {
@@ -257,18 +209,12 @@ func TestDeletePodAutoscaler_NotFound(t *testing.T) {
 	req, _ := http.NewRequest("DELETE", "/api/v1/podautoscalers/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestUpdatePodAutoscaler_Success(t *testing.T) {
@@ -286,21 +232,13 @@ func TestUpdatePodAutoscaler_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var resp types.PodAutoscalerDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "my-pa" {
-		t.Errorf("expected name my-pa, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
+	assert.Equal(t, "my-pa", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
 }
 
 func TestUpdatePodAutoscaler_NotFound(t *testing.T) {
@@ -317,18 +255,12 @@ func TestUpdatePodAutoscaler_NotFound(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestListPodAutoscalers_FilterByNamespace(t *testing.T) {
@@ -342,22 +274,12 @@ func TestListPodAutoscalers_FilterByNamespace(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/podautoscalers?namespace=ns-a", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.PodAutoscalerListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(resp.Items))
-	}
-	if resp.Items[0].Name != "pa-1" {
-		t.Errorf("expected pa-1, got %s", resp.Items[0].Name)
-	}
-	if resp.Items[0].Namespace != "ns-a" {
-		t.Errorf("expected namespace ns-a, got %s", resp.Items[0].Namespace)
-	}
+	require.Len(t, resp.Items, 1)
+	assert.Equal(t, "pa-1", resp.Items[0].Name)
+	assert.Equal(t, "ns-a", resp.Items[0].Namespace)
 }

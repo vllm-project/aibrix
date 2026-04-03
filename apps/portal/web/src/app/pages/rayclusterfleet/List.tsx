@@ -15,14 +15,27 @@ export default function RayClusterFleetList() {
   const [items, setItems] = useState<RayClusterFleetListItem[]>([]);
   const [error, setError] = useState("");
 
-  const load = () => rayClusterFleetApi.list().then((r) => setItems(r.items)).catch((e) => setError(e.message));
-
-  useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      try {
+        const result = await rayClusterFleetApi.list();
+        if (active) setItems(result.items);
+      } catch (e) {
+        if (active) setError(e instanceof Error ? e.message : "Failed to load");
+      } finally {
+        if (active) setTimeout(poll, 10000);
+      }
+    };
+    poll();
+    return () => { active = false; };
+  }, []);
 
   const handleDelete = async (row: RayClusterFleetListItem) => {
     if (!confirm(`Delete RayClusterFleet "${row.name}"?`)) return;
     await rayClusterFleetApi.delete(row.namespace, row.name);
-    load();
+    const result = await rayClusterFleetApi.list();
+    setItems(result.items);
   };
 
   return (

@@ -17,14 +17,27 @@ export default function ModelAdapterList() {
   const [items, setItems] = useState<ModelAdapterListItem[]>([]);
   const [error, setError] = useState("");
 
-  const load = () => modelAdapterApi.list().then((r) => setItems(r.items)).catch((e) => setError(e.message));
-
-  useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      try {
+        const result = await modelAdapterApi.list();
+        if (active) setItems(result.items);
+      } catch (e) {
+        if (active) setError(e instanceof Error ? e.message : "Failed to load");
+      } finally {
+        if (active) setTimeout(poll, 10000);
+      }
+    };
+    poll();
+    return () => { active = false; };
+  }, []);
 
   const handleDelete = async (row: ModelAdapterListItem) => {
     if (!confirm(`Delete ModelAdapter "${row.name}"?`)) return;
     await modelAdapterApi.delete(row.namespace, row.name);
-    load();
+    const result = await modelAdapterApi.list();
+    setItems(result.items);
   };
 
   return (

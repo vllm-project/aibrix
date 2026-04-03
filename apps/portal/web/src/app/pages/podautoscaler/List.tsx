@@ -16,14 +16,27 @@ export default function PodAutoscalerList() {
   const [items, setItems] = useState<PodAutoscalerListItem[]>([]);
   const [error, setError] = useState("");
 
-  const load = () => podAutoscalerApi.list().then((r) => setItems(r.items)).catch((e) => setError(e.message));
-
-  useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      try {
+        const result = await podAutoscalerApi.list();
+        if (active) setItems(result.items);
+      } catch (e) {
+        if (active) setError(e instanceof Error ? e.message : "Failed to load");
+      } finally {
+        if (active) setTimeout(poll, 10000);
+      }
+    };
+    poll();
+    return () => { active = false; };
+  }, []);
 
   const handleDelete = async (row: PodAutoscalerListItem) => {
     if (!confirm(`Delete PodAutoscaler "${row.name}"?`)) return;
     await podAutoscalerApi.delete(row.namespace, row.name);
-    load();
+    const result = await podAutoscalerApi.list();
+    setItems(result.items);
   };
 
   return (

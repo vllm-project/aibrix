@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/apps/portal/api/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -70,21 +72,13 @@ func TestListStormServices_Empty(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/stormservices", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.StormServiceListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 0 {
-		t.Errorf("expected 0 items, got %d", len(resp.Items))
-	}
-	if resp.Pagination.Total != 0 {
-		t.Errorf("expected total 0, got %d", resp.Pagination.Total)
-	}
+	assert.Empty(t, resp.Items)
+	assert.Equal(t, 0, resp.Pagination.Total)
 }
 
 func TestListStormServices_WithItems(t *testing.T) {
@@ -98,28 +92,16 @@ func TestListStormServices_WithItems(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/stormservices", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.StormServiceListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(resp.Items))
-	}
-	if resp.Pagination.Total != 2 {
-		t.Errorf("expected total 2, got %d", resp.Pagination.Total)
-	}
+	require.Len(t, resp.Items, 2)
+	assert.Equal(t, 2, resp.Pagination.Total)
 
-	if resp.Items[0].Name != "svc-2" {
-		t.Errorf("expected first item to be svc-2, got %s", resp.Items[0].Name)
-	}
-	if resp.Items[1].Name != "svc-1" {
-		t.Errorf("expected second item to be svc-1, got %s", resp.Items[1].Name)
-	}
+	assert.Equal(t, "svc-2", resp.Items[0].Name)
+	assert.Equal(t, "svc-1", resp.Items[1].Name)
 }
 
 func TestCreateStormService_Success(t *testing.T) {
@@ -142,24 +124,28 @@ func TestCreateStormService_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
 
 	var resp types.StormServiceDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "new-svc" {
-		t.Errorf("expected name new-svc, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
-	if resp.Stateful != true {
-		t.Errorf("expected stateful true, got %v", resp.Stateful)
-	}
+	assert.Equal(t, "new-svc", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
+	assert.True(t, resp.Stateful)
+	assert.Equal(t, 1, resp.RolesCount)
+
+	// GET the created resource and verify roles are populated
+	w2 := httptest.NewRecorder()
+	getReq, _ := http.NewRequest("GET", "/api/v1/stormservices/default/new-svc", nil)
+	r.ServeHTTP(w2, getReq)
+
+	require.Equal(t, http.StatusOK, w2.Code)
+
+	var getResp types.StormServiceDetailResponse
+	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &getResp))
+
+	assert.Equal(t, 1, getResp.RolesCount)
+	assert.True(t, getResp.Stateful)
 }
 
 func TestCreateStormService_ValidationError(t *testing.T) {
@@ -173,18 +159,12 @@ func TestCreateStormService_ValidationError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusBadRequest {
-		t.Errorf("expected error code 400, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusBadRequest, resp.Error.Code)
 }
 
 func TestGetStormService_Found(t *testing.T) {
@@ -195,21 +175,13 @@ func TestGetStormService_Found(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/stormservices/default/my-svc", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var resp types.StormServiceDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "my-svc" {
-		t.Errorf("expected name my-svc, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
+	assert.Equal(t, "my-svc", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
 }
 
 func TestGetStormService_NotFound(t *testing.T) {
@@ -219,18 +191,12 @@ func TestGetStormService_NotFound(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/stormservices/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestDeleteStormService_Success(t *testing.T) {
@@ -241,9 +207,7 @@ func TestDeleteStormService_Success(t *testing.T) {
 	req, _ := http.NewRequest("DELETE", "/api/v1/stormservices/default/to-delete", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected status 204, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNoContent, w.Code, "body: %s", w.Body.String())
 }
 
 func TestDeleteStormService_NotFound(t *testing.T) {
@@ -253,18 +217,12 @@ func TestDeleteStormService_NotFound(t *testing.T) {
 	req, _ := http.NewRequest("DELETE", "/api/v1/stormservices/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestUpdateStormService_Success(t *testing.T) {
@@ -282,21 +240,13 @@ func TestUpdateStormService_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var resp types.StormServiceDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "my-svc" {
-		t.Errorf("expected name my-svc, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
+	assert.Equal(t, "my-svc", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
 }
 
 func TestUpdateStormService_NotFound(t *testing.T) {
@@ -313,18 +263,12 @@ func TestUpdateStormService_NotFound(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestListStormServices_FilterByNamespace(t *testing.T) {
@@ -338,22 +282,12 @@ func TestListStormServices_FilterByNamespace(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/stormservices?namespace=ns-a", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.StormServiceListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(resp.Items))
-	}
-	if resp.Items[0].Name != "svc-1" {
-		t.Errorf("expected svc-1, got %s", resp.Items[0].Name)
-	}
-	if resp.Items[0].Namespace != "ns-a" {
-		t.Errorf("expected namespace ns-a, got %s", resp.Items[0].Namespace)
-	}
+	require.Len(t, resp.Items, 1)
+	assert.Equal(t, "svc-1", resp.Items[0].Name)
+	assert.Equal(t, "ns-a", resp.Items[0].Namespace)
 }

@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -24,7 +23,7 @@ func (h *Handler) ListPodSets(c *gin.Context) {
 		opts = append(opts, client.InNamespace(ns))
 	}
 
-	if err := h.client.List(context.TODO(), &list, opts...); err != nil {
+	if err := h.client.List(c.Request.Context(), &list, opts...); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to list pod sets", err.Error())
 		return
 	}
@@ -87,7 +86,7 @@ func (h *Handler) CreatePodSet(c *gin.Context) {
 		},
 	}
 
-	if err := h.client.Create(context.TODO(), ps); err != nil {
+	if err := h.client.Create(c.Request.Context(), ps); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			respondError(c, http.StatusConflict, fmt.Sprintf("pod set %s/%s already exists", req.Namespace, req.Name), err.Error())
 			return
@@ -104,7 +103,7 @@ func (h *Handler) GetPodSet(c *gin.Context) {
 	name := c.Param("name")
 
 	var ps orchestrationv1alpha1.PodSet
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &ps); err != nil {
+	if err := h.client.Get(c.Request.Context(), client.ObjectKey{Namespace: ns, Name: name}, &ps); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("pod set %s/%s not found", ns, name), err.Error())
 			return
@@ -127,7 +126,7 @@ func (h *Handler) UpdatePodSet(c *gin.Context) {
 	}
 
 	var ps orchestrationv1alpha1.PodSet
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &ps); err != nil {
+	if err := h.client.Get(c.Request.Context(), client.ObjectKey{Namespace: ns, Name: name}, &ps); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("pod set %s/%s not found", ns, name), err.Error())
 			return
@@ -140,7 +139,7 @@ func (h *Handler) UpdatePodSet(c *gin.Context) {
 		ps.Spec.PodGroupSize = *req.PodGroupSize
 	}
 
-	if err := h.client.Update(context.TODO(), &ps); err != nil {
+	if err := h.client.Update(c.Request.Context(), &ps); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to update pod set", err.Error())
 		return
 	}
@@ -152,17 +151,14 @@ func (h *Handler) DeletePodSet(c *gin.Context) {
 	ns := c.Param("namespace")
 	name := c.Param("name")
 
-	var ps orchestrationv1alpha1.PodSet
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &ps); err != nil {
+	obj := &orchestrationv1alpha1.PodSet{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+	}
+	if err := h.client.Delete(c.Request.Context(), obj); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("pod set %s/%s not found", ns, name), err.Error())
 			return
 		}
-		respondError(c, http.StatusInternalServerError, "failed to get pod set", err.Error())
-		return
-	}
-
-	if err := h.client.Delete(context.TODO(), &ps); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to delete pod set", err.Error())
 		return
 	}

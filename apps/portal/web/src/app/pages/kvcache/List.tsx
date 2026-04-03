@@ -15,14 +15,27 @@ export default function KVCacheList() {
   const [items, setItems] = useState<KVCacheListItem[]>([]);
   const [error, setError] = useState("");
 
-  const load = () => kvCacheApi.list().then((r) => setItems(r.items)).catch((e) => setError(e.message));
-
-  useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      try {
+        const result = await kvCacheApi.list();
+        if (active) setItems(result.items);
+      } catch (e) {
+        if (active) setError(e instanceof Error ? e.message : "Failed to load");
+      } finally {
+        if (active) setTimeout(poll, 10000);
+      }
+    };
+    poll();
+    return () => { active = false; };
+  }, []);
 
   const handleDelete = async (row: KVCacheListItem) => {
     if (!confirm(`Delete KVCache "${row.name}"?`)) return;
     await kvCacheApi.delete(row.namespace, row.name);
-    load();
+    const result = await kvCacheApi.list();
+    setItems(result.items);
   };
 
   return (

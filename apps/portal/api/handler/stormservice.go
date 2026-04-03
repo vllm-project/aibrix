@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -9,7 +8,9 @@ import (
 	"github.com/gin-gonic/gin"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/apps/portal/api/types"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -24,7 +25,7 @@ func (h *Handler) ListStormServices(c *gin.Context) {
 		opts = append(opts, client.InNamespace(ns))
 	}
 
-	if err := h.client.List(context.TODO(), &list, opts...); err != nil {
+	if err := h.client.List(c.Request.Context(), &list, opts...); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to list storm services", err.Error())
 		return
 	}
@@ -81,6 +82,44 @@ func (h *Handler) CreateStormService(c *gin.Context) {
 		return
 	}
 
+	// Convert request roles to RoleSpec
+	roles := make([]orchestrationv1alpha1.RoleSpec, 0, len(req.Roles))
+	for _, r := range req.Roles {
+		replicas := r.Replicas
+		resources := corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{},
+			Limits:   corev1.ResourceList{},
+		}
+		if r.CPU != "" {
+			resources.Requests[corev1.ResourceCPU] = resource.MustParse(r.CPU)
+			resources.Limits[corev1.ResourceCPU] = resource.MustParse(r.CPU)
+		}
+		if r.Memory != "" {
+			resources.Requests[corev1.ResourceMemory] = resource.MustParse(r.Memory)
+			resources.Limits[corev1.ResourceMemory] = resource.MustParse(r.Memory)
+		}
+		if r.GPU > 0 {
+			resources.Requests[corev1.ResourceName("nvidia.com/gpu")] = resource.MustParse(fmt.Sprintf("%d", r.GPU))
+			resources.Limits[corev1.ResourceName("nvidia.com/gpu")] = resource.MustParse(fmt.Sprintf("%d", r.GPU))
+		}
+
+		roles = append(roles, orchestrationv1alpha1.RoleSpec{
+			Name:     r.Name,
+			Replicas: &replicas,
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:      r.Name,
+							Image:     r.Image,
+							Resources: resources,
+						},
+					},
+				},
+			},
+		})
+	}
+
 	svc := &orchestrationv1alpha1.StormService{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      req.Name,
@@ -97,10 +136,15 @@ func (h *Handler) CreateStormService(c *gin.Context) {
 					"app": req.Name,
 				},
 			},
+			Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+				Spec: &orchestrationv1alpha1.RoleSetSpec{
+					Roles: roles,
+				},
+			},
 		},
 	}
 
-	if err := h.client.Create(context.TODO(), svc); err != nil {
+	if err := h.client.Create(c.Request.Context(), svc); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			respondError(c, http.StatusConflict, fmt.Sprintf("storm service %s/%s already exists", req.Namespace, req.Name), err.Error())
 			return
@@ -117,7 +161,7 @@ func (h *Handler) GetStormService(c *gin.Context) {
 	name := c.Param("name")
 
 	var svc orchestrationv1alpha1.StormService
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &svc); err != nil {
+	if err := h.client.Get(c.Request.Context(), client.ObjectKey{Namespace: ns, Name: name}, &svc); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("storm service %s/%s not found", ns, name), err.Error())
 			return
@@ -140,7 +184,7 @@ func (h *Handler) UpdateStormService(c *gin.Context) {
 	}
 
 	var svc orchestrationv1alpha1.StormService
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &svc); err != nil {
+	if err := h.client.Get(c.Request.Context(), client.ObjectKey{Namespace: ns, Name: name}, &svc); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("storm service %s/%s not found", ns, name), err.Error())
 			return
@@ -153,7 +197,7 @@ func (h *Handler) UpdateStormService(c *gin.Context) {
 		svc.Spec.Replicas = req.Replicas
 	}
 
-	if err := h.client.Update(context.TODO(), &svc); err != nil {
+	if err := h.client.Update(c.Request.Context(), &svc); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to update storm service", err.Error())
 		return
 	}
@@ -165,17 +209,14 @@ func (h *Handler) DeleteStormService(c *gin.Context) {
 	ns := c.Param("namespace")
 	name := c.Param("name")
 
-	var svc orchestrationv1alpha1.StormService
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &svc); err != nil {
+	obj := &orchestrationv1alpha1.StormService{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+	}
+	if err := h.client.Delete(c.Request.Context(), obj); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("storm service %s/%s not found", ns, name), err.Error())
 			return
 		}
-		respondError(c, http.StatusInternalServerError, "failed to get storm service", err.Error())
-		return
-	}
-
-	if err := h.client.Delete(context.TODO(), &svc); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to delete storm service", err.Error())
 		return
 	}
@@ -184,10 +225,16 @@ func (h *Handler) DeleteStormService(c *gin.Context) {
 }
 
 func stormServiceToDetail(svc *orchestrationv1alpha1.StormService) types.StormServiceDetailResponse {
+	rolesCount := 0
+	if svc.Spec.Template.Spec != nil {
+		rolesCount = len(svc.Spec.Template.Spec.Roles)
+	}
+
 	return types.StormServiceDetailResponse{
-		Name:      svc.Name,
-		Namespace: svc.Namespace,
-		Stateful:  svc.Spec.Stateful,
+		Name:       svc.Name,
+		Namespace:  svc.Namespace,
+		Stateful:   svc.Spec.Stateful,
+		RolesCount: rolesCount,
 		Status: types.StormServiceDetailStatus{
 			Replicas:      svc.Status.Replicas,
 			ReadyReplicas: svc.Status.ReadyReplicas,

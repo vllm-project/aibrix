@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -24,7 +23,7 @@ func (h *Handler) ListRayClusterFleets(c *gin.Context) {
 		opts = append(opts, client.InNamespace(ns))
 	}
 
-	if err := h.client.List(context.TODO(), &list, opts...); err != nil {
+	if err := h.client.List(c.Request.Context(), &list, opts...); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to list ray cluster fleets", err.Error())
 		return
 	}
@@ -94,7 +93,7 @@ func (h *Handler) CreateRayClusterFleet(c *gin.Context) {
 		},
 	}
 
-	if err := h.client.Create(context.TODO(), fleet); err != nil {
+	if err := h.client.Create(c.Request.Context(), fleet); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			respondError(c, http.StatusConflict, fmt.Sprintf("ray cluster fleet %s/%s already exists", req.Namespace, req.Name), err.Error())
 			return
@@ -111,7 +110,7 @@ func (h *Handler) GetRayClusterFleet(c *gin.Context) {
 	name := c.Param("name")
 
 	var fleet orchestrationv1alpha1.RayClusterFleet
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &fleet); err != nil {
+	if err := h.client.Get(c.Request.Context(), client.ObjectKey{Namespace: ns, Name: name}, &fleet); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("ray cluster fleet %s/%s not found", ns, name), err.Error())
 			return
@@ -134,7 +133,7 @@ func (h *Handler) UpdateRayClusterFleet(c *gin.Context) {
 	}
 
 	var fleet orchestrationv1alpha1.RayClusterFleet
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &fleet); err != nil {
+	if err := h.client.Get(c.Request.Context(), client.ObjectKey{Namespace: ns, Name: name}, &fleet); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("ray cluster fleet %s/%s not found", ns, name), err.Error())
 			return
@@ -147,7 +146,7 @@ func (h *Handler) UpdateRayClusterFleet(c *gin.Context) {
 		fleet.Spec.Replicas = req.Replicas
 	}
 
-	if err := h.client.Update(context.TODO(), &fleet); err != nil {
+	if err := h.client.Update(c.Request.Context(), &fleet); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to update ray cluster fleet", err.Error())
 		return
 	}
@@ -159,17 +158,14 @@ func (h *Handler) DeleteRayClusterFleet(c *gin.Context) {
 	ns := c.Param("namespace")
 	name := c.Param("name")
 
-	var fleet orchestrationv1alpha1.RayClusterFleet
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &fleet); err != nil {
+	obj := &orchestrationv1alpha1.RayClusterFleet{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+	}
+	if err := h.client.Delete(c.Request.Context(), obj); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("ray cluster fleet %s/%s not found", ns, name), err.Error())
 			return
 		}
-		respondError(c, http.StatusInternalServerError, "failed to get ray cluster fleet", err.Error())
-		return
-	}
-
-	if err := h.client.Delete(context.TODO(), &fleet); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to delete ray cluster fleet", err.Error())
 		return
 	}

@@ -16,14 +16,27 @@ export default function StormServiceList() {
   const [items, setItems] = useState<StormServiceListItem[]>([]);
   const [error, setError] = useState("");
 
-  const load = () => stormServiceApi.list().then((r) => setItems(r.items)).catch((e) => setError(e.message));
-
-  useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      try {
+        const result = await stormServiceApi.list();
+        if (active) setItems(result.items);
+      } catch (e) {
+        if (active) setError(e instanceof Error ? e.message : "Failed to load");
+      } finally {
+        if (active) setTimeout(poll, 10000);
+      }
+    };
+    poll();
+    return () => { active = false; };
+  }, []);
 
   const handleDelete = async (row: StormServiceListItem) => {
     if (!confirm(`Delete StormService "${row.name}"?`)) return;
     await stormServiceApi.delete(row.namespace, row.name);
-    load();
+    const result = await stormServiceApi.list();
+    setItems(result.items);
   };
 
   return (

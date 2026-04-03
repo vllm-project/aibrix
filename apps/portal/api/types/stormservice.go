@@ -40,11 +40,12 @@ type StormServiceListResponse struct {
 }
 
 type StormServiceDetailResponse struct {
-	Name      string                   `json:"name"`
-	Namespace string                   `json:"namespace"`
-	Stateful  bool                     `json:"stateful"`
-	Status    StormServiceDetailStatus `json:"status"`
-	CreatedAt time.Time                `json:"createdAt"`
+	Name       string                   `json:"name"`
+	Namespace  string                   `json:"namespace"`
+	Stateful   bool                     `json:"stateful"`
+	RolesCount int                      `json:"rolesCount"`
+	Status     StormServiceDetailStatus `json:"status"`
+	CreatedAt  time.Time                `json:"createdAt"`
 }
 
 type StormServiceDetailStatus struct {

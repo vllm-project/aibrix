@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/apps/portal/api/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -64,21 +66,13 @@ func TestListKVCaches_Empty(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/kvcaches", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.KVCacheListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 0 {
-		t.Errorf("expected 0 items, got %d", len(resp.Items))
-	}
-	if resp.Pagination.Total != 0 {
-		t.Errorf("expected total 0, got %d", resp.Pagination.Total)
-	}
+	assert.Empty(t, resp.Items)
+	assert.Equal(t, 0, resp.Pagination.Total)
 }
 
 func TestListKVCaches_WithItems(t *testing.T) {
@@ -92,28 +86,16 @@ func TestListKVCaches_WithItems(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/kvcaches", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.KVCacheListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(resp.Items))
-	}
-	if resp.Pagination.Total != 2 {
-		t.Errorf("expected total 2, got %d", resp.Pagination.Total)
-	}
+	require.Len(t, resp.Items, 2)
+	assert.Equal(t, 2, resp.Pagination.Total)
 
-	if resp.Items[0].Name != "kv-2" {
-		t.Errorf("expected first item to be kv-2, got %s", resp.Items[0].Name)
-	}
-	if resp.Items[1].Name != "kv-1" {
-		t.Errorf("expected second item to be kv-1, got %s", resp.Items[1].Name)
-	}
+	assert.Equal(t, "kv-2", resp.Items[0].Name)
+	assert.Equal(t, "kv-1", resp.Items[1].Name)
 }
 
 func TestCreateKVCache_Success(t *testing.T) {
@@ -131,24 +113,14 @@ func TestCreateKVCache_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
 
 	var resp types.KVCacheDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "new-kv" {
-		t.Errorf("expected name new-kv, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
-	if resp.Mode != "distributed" {
-		t.Errorf("expected mode distributed, got %s", resp.Mode)
-	}
+	assert.Equal(t, "new-kv", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
+	assert.Equal(t, "distributed", resp.Mode)
 }
 
 func TestCreateKVCache_ValidationError(t *testing.T) {
@@ -162,18 +134,12 @@ func TestCreateKVCache_ValidationError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusBadRequest {
-		t.Errorf("expected error code 400, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusBadRequest, resp.Error.Code)
 }
 
 func TestGetKVCache_Found(t *testing.T) {
@@ -184,24 +150,14 @@ func TestGetKVCache_Found(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/kvcaches/default/my-kv", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.KVCacheDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "my-kv" {
-		t.Errorf("expected name my-kv, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
-	if resp.Mode != "distributed" {
-		t.Errorf("expected mode distributed, got %s", resp.Mode)
-	}
+	assert.Equal(t, "my-kv", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
+	assert.Equal(t, "distributed", resp.Mode)
 }
 
 func TestGetKVCache_NotFound(t *testing.T) {
@@ -211,18 +167,12 @@ func TestGetKVCache_NotFound(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/kvcaches/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestDeleteKVCache_Success(t *testing.T) {
@@ -233,9 +183,7 @@ func TestDeleteKVCache_Success(t *testing.T) {
 	req, _ := http.NewRequest("DELETE", "/api/v1/kvcaches/default/to-delete", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected status 204, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNoContent, w.Code)
 }
 
 func TestDeleteKVCache_NotFound(t *testing.T) {
@@ -245,18 +193,12 @@ func TestDeleteKVCache_NotFound(t *testing.T) {
 	req, _ := http.NewRequest("DELETE", "/api/v1/kvcaches/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestUpdateKVCache_Success(t *testing.T) {
@@ -273,24 +215,14 @@ func TestUpdateKVCache_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var resp types.KVCacheDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "my-kv" {
-		t.Errorf("expected name my-kv, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
-	if resp.Mode != "local" {
-		t.Errorf("expected mode local, got %s", resp.Mode)
-	}
+	assert.Equal(t, "my-kv", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
+	assert.Equal(t, "local", resp.Mode)
 }
 
 func TestUpdateKVCache_NotFound(t *testing.T) {
@@ -306,18 +238,12 @@ func TestUpdateKVCache_NotFound(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestListKVCaches_FilterByNamespace(t *testing.T) {
@@ -331,22 +257,12 @@ func TestListKVCaches_FilterByNamespace(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/kvcaches?namespace=ns-a", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.KVCacheListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(resp.Items))
-	}
-	if resp.Items[0].Name != "kv-1" {
-		t.Errorf("expected kv-1, got %s", resp.Items[0].Name)
-	}
-	if resp.Items[0].Namespace != "ns-a" {
-		t.Errorf("expected namespace ns-a, got %s", resp.Items[0].Namespace)
-	}
+	require.Len(t, resp.Items, 1)
+	assert.Equal(t, "kv-1", resp.Items[0].Name)
+	assert.Equal(t, "ns-a", resp.Items[0].Namespace)
 }

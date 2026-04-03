@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -24,7 +23,7 @@ func (h *Handler) ListPodAutoscalers(c *gin.Context) {
 		opts = append(opts, client.InNamespace(ns))
 	}
 
-	if err := h.client.List(context.TODO(), &list, opts...); err != nil {
+	if err := h.client.List(c.Request.Context(), &list, opts...); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to list pod autoscalers", err.Error())
 		return
 	}
@@ -90,7 +89,7 @@ func (h *Handler) CreatePodAutoscaler(c *gin.Context) {
 		},
 	}
 
-	if err := h.client.Create(context.TODO(), pa); err != nil {
+	if err := h.client.Create(c.Request.Context(), pa); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			respondError(c, http.StatusConflict, fmt.Sprintf("pod autoscaler %s/%s already exists", req.Namespace, req.Name), err.Error())
 			return
@@ -107,7 +106,7 @@ func (h *Handler) GetPodAutoscaler(c *gin.Context) {
 	name := c.Param("name")
 
 	var pa autoscalingv1alpha1.PodAutoscaler
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &pa); err != nil {
+	if err := h.client.Get(c.Request.Context(), client.ObjectKey{Namespace: ns, Name: name}, &pa); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("pod autoscaler %s/%s not found", ns, name), err.Error())
 			return
@@ -130,7 +129,7 @@ func (h *Handler) UpdatePodAutoscaler(c *gin.Context) {
 	}
 
 	var pa autoscalingv1alpha1.PodAutoscaler
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &pa); err != nil {
+	if err := h.client.Get(c.Request.Context(), client.ObjectKey{Namespace: ns, Name: name}, &pa); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("pod autoscaler %s/%s not found", ns, name), err.Error())
 			return
@@ -149,7 +148,7 @@ func (h *Handler) UpdatePodAutoscaler(c *gin.Context) {
 		pa.Spec.ScalingStrategy = autoscalingv1alpha1.ScalingStrategyType(req.ScalingStrategy)
 	}
 
-	if err := h.client.Update(context.TODO(), &pa); err != nil {
+	if err := h.client.Update(c.Request.Context(), &pa); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to update pod autoscaler", err.Error())
 		return
 	}
@@ -161,17 +160,14 @@ func (h *Handler) DeletePodAutoscaler(c *gin.Context) {
 	ns := c.Param("namespace")
 	name := c.Param("name")
 
-	var pa autoscalingv1alpha1.PodAutoscaler
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &pa); err != nil {
+	obj := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+	}
+	if err := h.client.Delete(c.Request.Context(), obj); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("pod autoscaler %s/%s not found", ns, name), err.Error())
 			return
 		}
-		respondError(c, http.StatusInternalServerError, "failed to get pod autoscaler", err.Error())
-		return
-	}
-
-	if err := h.client.Delete(context.TODO(), &pa); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to delete pod autoscaler", err.Error())
 		return
 	}

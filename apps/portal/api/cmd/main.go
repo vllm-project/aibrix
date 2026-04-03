@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"io/fs"
 	"log"
 	"os"
 
@@ -40,14 +39,14 @@ func main() {
 	}
 
 	scheme := runtime.NewScheme()
-	if err := modelv1alpha1.AddToScheme(scheme); err != nil {
-		log.Fatalf("failed to add model scheme: %v", err)
-	}
-	if err := orchestrationv1alpha1.AddToScheme(scheme); err != nil {
-		log.Fatalf("failed to add orchestration scheme: %v", err)
-	}
-	if err := autoscalingv1alpha1.AddToScheme(scheme); err != nil {
-		log.Fatalf("failed to add autoscaling scheme: %v", err)
+	for _, addToScheme := range []func(*runtime.Scheme) error{
+		modelv1alpha1.AddToScheme,
+		orchestrationv1alpha1.AddToScheme,
+		autoscalingv1alpha1.AddToScheme,
+	} {
+		if err := addToScheme(scheme); err != nil {
+			log.Fatalf("failed to add scheme: %v", err)
+		}
 	}
 
 	var c client.Client
@@ -75,10 +74,8 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 
 	// Embed frontend static files
-	if distFS, err := fs.Sub(embeddedDist, "dist"); err == nil {
-		portal.StaticFS = distFS
-		log.Println("serving embedded frontend")
-	}
+	portal.StaticFS = embeddedDist
+	log.Println("serving embedded frontend")
 
 	log.Printf("starting portal server on %s", addr)
 	if err := portal.NewRouter(c).Run(addr); err != nil {

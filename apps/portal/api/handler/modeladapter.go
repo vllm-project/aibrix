@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -24,7 +23,7 @@ func (h *Handler) ListModelAdapters(c *gin.Context) {
 		opts = append(opts, client.InNamespace(ns))
 	}
 
-	if err := h.client.List(context.TODO(), &list, opts...); err != nil {
+	if err := h.client.List(c.Request.Context(), &list, opts...); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to list model adapters", err.Error())
 		return
 	}
@@ -100,7 +99,7 @@ func (h *Handler) CreateModelAdapter(c *gin.Context) {
 		adapter.Spec.BaseModel = &req.BaseModel
 	}
 
-	if err := h.client.Create(context.TODO(), adapter); err != nil {
+	if err := h.client.Create(c.Request.Context(), adapter); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			respondError(c, http.StatusConflict, fmt.Sprintf("model adapter %s/%s already exists", req.Namespace, req.Name), err.Error())
 			return
@@ -117,7 +116,7 @@ func (h *Handler) GetModelAdapter(c *gin.Context) {
 	name := c.Param("name")
 
 	var adapter modelv1alpha1.ModelAdapter
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &adapter); err != nil {
+	if err := h.client.Get(c.Request.Context(), client.ObjectKey{Namespace: ns, Name: name}, &adapter); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("model adapter %s/%s not found", ns, name), err.Error())
 			return
@@ -140,7 +139,7 @@ func (h *Handler) UpdateModelAdapter(c *gin.Context) {
 	}
 
 	var adapter modelv1alpha1.ModelAdapter
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &adapter); err != nil {
+	if err := h.client.Get(c.Request.Context(), client.ObjectKey{Namespace: ns, Name: name}, &adapter); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("model adapter %s/%s not found", ns, name), err.Error())
 			return
@@ -161,7 +160,7 @@ func (h *Handler) UpdateModelAdapter(c *gin.Context) {
 		adapter.Spec.Replicas = req.Replicas
 	}
 
-	if err := h.client.Update(context.TODO(), &adapter); err != nil {
+	if err := h.client.Update(c.Request.Context(), &adapter); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to update model adapter", err.Error())
 		return
 	}
@@ -173,17 +172,14 @@ func (h *Handler) DeleteModelAdapter(c *gin.Context) {
 	ns := c.Param("namespace")
 	name := c.Param("name")
 
-	var adapter modelv1alpha1.ModelAdapter
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &adapter); err != nil {
+	obj := &modelv1alpha1.ModelAdapter{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+	}
+	if err := h.client.Delete(c.Request.Context(), obj); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("model adapter %s/%s not found", ns, name), err.Error())
 			return
 		}
-		respondError(c, http.StatusInternalServerError, "failed to get model adapter", err.Error())
-		return
-	}
-
-	if err := h.client.Delete(context.TODO(), &adapter); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to delete model adapter", err.Error())
 		return
 	}

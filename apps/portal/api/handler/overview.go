@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -14,9 +13,11 @@ import (
 func (h *Handler) GetOverview(c *gin.Context) {
 	var resp types.OverviewResponse
 
+	ctx := c.Request.Context()
+
 	// ModelAdapters
 	var adapterList modelv1alpha1.ModelAdapterList
-	if err := h.client.List(context.TODO(), &adapterList); err != nil {
+	if err := h.client.List(ctx, &adapterList); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to list model adapters", err.Error())
 		return
 	}
@@ -30,7 +31,7 @@ func (h *Handler) GetOverview(c *gin.Context) {
 
 	// RayClusterFleets
 	var fleetList orchestrationv1alpha1.RayClusterFleetList
-	if err := h.client.List(context.TODO(), &fleetList); err != nil {
+	if err := h.client.List(ctx, &fleetList); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to list ray cluster fleets", err.Error())
 		return
 	}
@@ -48,7 +49,7 @@ func (h *Handler) GetOverview(c *gin.Context) {
 
 	// StormServices
 	var stormList orchestrationv1alpha1.StormServiceList
-	if err := h.client.List(context.TODO(), &stormList); err != nil {
+	if err := h.client.List(ctx, &stormList); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to list storm services", err.Error())
 		return
 	}
@@ -66,7 +67,7 @@ func (h *Handler) GetOverview(c *gin.Context) {
 
 	// PodAutoscalers
 	var paList autoscalingv1alpha1.PodAutoscalerList
-	if err := h.client.List(context.TODO(), &paList); err != nil {
+	if err := h.client.List(ctx, &paList); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to list pod autoscalers", err.Error())
 		return
 	}
@@ -76,7 +77,7 @@ func (h *Handler) GetOverview(c *gin.Context) {
 
 	// KVCaches
 	var kvList orchestrationv1alpha1.KVCacheList
-	if err := h.client.List(context.TODO(), &kvList); err != nil {
+	if err := h.client.List(ctx, &kvList); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to list kv caches", err.Error())
 		return
 	}
@@ -90,7 +91,7 @@ func (h *Handler) GetOverview(c *gin.Context) {
 
 	// PodSets
 	var psList orchestrationv1alpha1.PodSetList
-	if err := h.client.List(context.TODO(), &psList); err != nil {
+	if err := h.client.List(ctx, &psList); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to list pod sets", err.Error())
 		return
 	}

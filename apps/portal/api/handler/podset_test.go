@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/apps/portal/api/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -67,21 +69,13 @@ func TestListPodSets_Empty(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/podsets", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.PodSetListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 0 {
-		t.Errorf("expected 0 items, got %d", len(resp.Items))
-	}
-	if resp.Pagination.Total != 0 {
-		t.Errorf("expected total 0, got %d", resp.Pagination.Total)
-	}
+	assert.Empty(t, resp.Items)
+	assert.Equal(t, 0, resp.Pagination.Total)
 }
 
 func TestListPodSets_WithItems(t *testing.T) {
@@ -95,28 +89,16 @@ func TestListPodSets_WithItems(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/podsets", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.PodSetListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(resp.Items))
-	}
-	if resp.Pagination.Total != 2 {
-		t.Errorf("expected total 2, got %d", resp.Pagination.Total)
-	}
+	require.Len(t, resp.Items, 2)
+	assert.Equal(t, 2, resp.Pagination.Total)
 
-	if resp.Items[0].Name != "podset-2" {
-		t.Errorf("expected first item to be podset-2, got %s", resp.Items[0].Name)
-	}
-	if resp.Items[1].Name != "podset-1" {
-		t.Errorf("expected second item to be podset-1, got %s", resp.Items[1].Name)
-	}
+	assert.Equal(t, "podset-2", resp.Items[0].Name)
+	assert.Equal(t, "podset-1", resp.Items[1].Name)
 }
 
 func TestCreatePodSet_Success(t *testing.T) {
@@ -135,27 +117,15 @@ func TestCreatePodSet_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
 
 	var resp types.PodSetDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "new-podset" {
-		t.Errorf("expected name new-podset, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
-	if resp.PodGroupSize != 4 {
-		t.Errorf("expected podGroupSize 4, got %d", resp.PodGroupSize)
-	}
-	if resp.Stateful != true {
-		t.Errorf("expected stateful true, got %v", resp.Stateful)
-	}
+	assert.Equal(t, "new-podset", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
+	assert.Equal(t, int32(4), resp.PodGroupSize)
+	assert.True(t, resp.Stateful)
 }
 
 func TestCreatePodSet_ValidationError(t *testing.T) {
@@ -169,18 +139,12 @@ func TestCreatePodSet_ValidationError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusBadRequest {
-		t.Errorf("expected error code 400, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusBadRequest, resp.Error.Code)
 }
 
 func TestGetPodSet_Found(t *testing.T) {
@@ -191,24 +155,14 @@ func TestGetPodSet_Found(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/podsets/default/my-podset", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.PodSetDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "my-podset" {
-		t.Errorf("expected name my-podset, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
-	if resp.PodGroupSize != 2 {
-		t.Errorf("expected podGroupSize 2, got %d", resp.PodGroupSize)
-	}
+	assert.Equal(t, "my-podset", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
+	assert.Equal(t, int32(2), resp.PodGroupSize)
 }
 
 func TestGetPodSet_NotFound(t *testing.T) {
@@ -218,18 +172,12 @@ func TestGetPodSet_NotFound(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/podsets/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestDeletePodSet_Success(t *testing.T) {
@@ -240,9 +188,7 @@ func TestDeletePodSet_Success(t *testing.T) {
 	req, _ := http.NewRequest("DELETE", "/api/v1/podsets/default/to-delete", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected status 204, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNoContent, w.Code)
 }
 
 func TestDeletePodSet_NotFound(t *testing.T) {
@@ -252,18 +198,12 @@ func TestDeletePodSet_NotFound(t *testing.T) {
 	req, _ := http.NewRequest("DELETE", "/api/v1/podsets/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestUpdatePodSet_Success(t *testing.T) {
@@ -281,24 +221,14 @@ func TestUpdatePodSet_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var resp types.PodSetDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "my-podset" {
-		t.Errorf("expected name my-podset, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
-	if resp.PodGroupSize != 8 {
-		t.Errorf("expected podGroupSize 8, got %d", resp.PodGroupSize)
-	}
+	assert.Equal(t, "my-podset", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
+	assert.Equal(t, int32(8), resp.PodGroupSize)
 }
 
 func TestUpdatePodSet_NotFound(t *testing.T) {
@@ -315,18 +245,12 @@ func TestUpdatePodSet_NotFound(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestListPodSets_FilterByNamespace(t *testing.T) {
@@ -340,22 +264,12 @@ func TestListPodSets_FilterByNamespace(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/podsets?namespace=ns-a", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.PodSetListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(resp.Items))
-	}
-	if resp.Items[0].Name != "podset-1" {
-		t.Errorf("expected podset-1, got %s", resp.Items[0].Name)
-	}
-	if resp.Items[0].Namespace != "ns-a" {
-		t.Errorf("expected namespace ns-a, got %s", resp.Items[0].Namespace)
-	}
+	require.Len(t, resp.Items, 1)
+	assert.Equal(t, "podset-1", resp.Items[0].Name)
+	assert.Equal(t, "ns-a", resp.Items[0].Namespace)
 }

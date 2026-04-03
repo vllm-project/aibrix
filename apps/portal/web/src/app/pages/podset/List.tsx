@@ -17,14 +17,27 @@ export default function PodSetList() {
   const [items, setItems] = useState<PodSetListItem[]>([]);
   const [error, setError] = useState("");
 
-  const load = () => podSetApi.list().then((r) => setItems(r.items)).catch((e) => setError(e.message));
-
-  useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      try {
+        const result = await podSetApi.list();
+        if (active) setItems(result.items);
+      } catch (e) {
+        if (active) setError(e instanceof Error ? e.message : "Failed to load");
+      } finally {
+        if (active) setTimeout(poll, 10000);
+      }
+    };
+    poll();
+    return () => { active = false; };
+  }, []);
 
   const handleDelete = async (row: PodSetListItem) => {
     if (!confirm(`Delete PodSet "${row.name}"?`)) return;
     await podSetApi.delete(row.namespace, row.name);
-    load();
+    const result = await podSetApi.list();
+    setItems(result.items);
   };
 
   return (

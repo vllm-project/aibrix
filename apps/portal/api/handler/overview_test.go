@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -46,36 +48,18 @@ func TestGetOverview_Empty(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/overview", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.OverviewResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.ModelAdapters.Total != 0 {
-		t.Errorf("expected modelAdapters total 0, got %d", resp.ModelAdapters.Total)
-	}
-	if resp.ModelAdapters.Ready != 0 {
-		t.Errorf("expected modelAdapters ready 0, got %d", resp.ModelAdapters.Ready)
-	}
-	if resp.RayClusterFleets.Total != 0 {
-		t.Errorf("expected rayClusterFleets total 0, got %d", resp.RayClusterFleets.Total)
-	}
-	if resp.StormServices.Total != 0 {
-		t.Errorf("expected stormServices total 0, got %d", resp.StormServices.Total)
-	}
-	if resp.PodAutoscalers.Total != 0 {
-		t.Errorf("expected podAutoscalers total 0, got %d", resp.PodAutoscalers.Total)
-	}
-	if resp.KVCaches.Total != 0 {
-		t.Errorf("expected kvCaches total 0, got %d", resp.KVCaches.Total)
-	}
-	if resp.PodSets.Total != 0 {
-		t.Errorf("expected podSets total 0, got %d", resp.PodSets.Total)
-	}
+	assert.Equal(t, 0, resp.ModelAdapters.Total)
+	assert.Equal(t, 0, resp.ModelAdapters.Ready)
+	assert.Equal(t, 0, resp.RayClusterFleets.Total)
+	assert.Equal(t, 0, resp.StormServices.Total)
+	assert.Equal(t, 0, resp.PodAutoscalers.Total)
+	assert.Equal(t, 0, resp.KVCaches.Total)
+	assert.Equal(t, 0, resp.PodSets.Total)
 }
 
 func TestGetOverview_WithResources(t *testing.T) {
@@ -105,30 +89,16 @@ func TestGetOverview_WithResources(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/overview", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.OverviewResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.ModelAdapters.Total != 1 {
-		t.Errorf("expected modelAdapters total 1, got %d", resp.ModelAdapters.Total)
-	}
-	if resp.ModelAdapters.Ready != 1 {
-		t.Errorf("expected modelAdapters ready 1, got %d", resp.ModelAdapters.Ready)
-	}
-	if resp.ModelAdapters.NotReady != 0 {
-		t.Errorf("expected modelAdapters notReady 0, got %d", resp.ModelAdapters.NotReady)
-	}
+	assert.Equal(t, 1, resp.ModelAdapters.Total)
+	assert.Equal(t, 1, resp.ModelAdapters.Ready)
+	assert.Equal(t, 0, resp.ModelAdapters.NotReady)
 
 	// Other types should still be 0
-	if resp.RayClusterFleets.Total != 0 {
-		t.Errorf("expected rayClusterFleets total 0, got %d", resp.RayClusterFleets.Total)
-	}
-	if resp.PodAutoscalers.Total != 0 {
-		t.Errorf("expected podAutoscalers total 0, got %d", resp.PodAutoscalers.Total)
-	}
+	assert.Equal(t, 0, resp.RayClusterFleets.Total)
+	assert.Equal(t, 0, resp.PodAutoscalers.Total)
 }

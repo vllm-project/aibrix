@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/apps/portal/api/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -69,21 +71,13 @@ func TestListRayClusterFleets_Empty(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/rayclusterfleets", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.RayClusterFleetListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 0 {
-		t.Errorf("expected 0 items, got %d", len(resp.Items))
-	}
-	if resp.Pagination.Total != 0 {
-		t.Errorf("expected total 0, got %d", resp.Pagination.Total)
-	}
+	assert.Empty(t, resp.Items)
+	assert.Equal(t, 0, resp.Pagination.Total)
 }
 
 func TestListRayClusterFleets_WithItems(t *testing.T) {
@@ -97,28 +91,16 @@ func TestListRayClusterFleets_WithItems(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/rayclusterfleets", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.RayClusterFleetListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(resp.Items))
-	}
-	if resp.Pagination.Total != 2 {
-		t.Errorf("expected total 2, got %d", resp.Pagination.Total)
-	}
+	require.Len(t, resp.Items, 2)
+	assert.Equal(t, 2, resp.Pagination.Total)
 
-	if resp.Items[0].Name != "fleet-2" {
-		t.Errorf("expected first item to be fleet-2, got %s", resp.Items[0].Name)
-	}
-	if resp.Items[1].Name != "fleet-1" {
-		t.Errorf("expected second item to be fleet-1, got %s", resp.Items[1].Name)
-	}
+	assert.Equal(t, "fleet-2", resp.Items[0].Name)
+	assert.Equal(t, "fleet-1", resp.Items[1].Name)
 }
 
 func TestCreateRayClusterFleet_Success(t *testing.T) {
@@ -137,24 +119,14 @@ func TestCreateRayClusterFleet_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusCreated, w.Code)
 
 	var resp types.RayClusterFleetDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "new-fleet" {
-		t.Errorf("expected name new-fleet, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
-	if resp.Replicas != 3 {
-		t.Errorf("expected replicas 3, got %d", resp.Replicas)
-	}
+	assert.Equal(t, "new-fleet", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
+	assert.Equal(t, int32(3), resp.Replicas)
 }
 
 func TestCreateRayClusterFleet_ValidationError(t *testing.T) {
@@ -168,18 +140,12 @@ func TestCreateRayClusterFleet_ValidationError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusBadRequest {
-		t.Errorf("expected error code 400, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusBadRequest, resp.Error.Code)
 }
 
 func TestGetRayClusterFleet_Found(t *testing.T) {
@@ -190,21 +156,13 @@ func TestGetRayClusterFleet_Found(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/rayclusterfleets/default/my-fleet", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.RayClusterFleetDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "my-fleet" {
-		t.Errorf("expected name my-fleet, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
+	assert.Equal(t, "my-fleet", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
 }
 
 func TestGetRayClusterFleet_NotFound(t *testing.T) {
@@ -214,18 +172,12 @@ func TestGetRayClusterFleet_NotFound(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/rayclusterfleets/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestDeleteRayClusterFleet_Success(t *testing.T) {
@@ -236,9 +188,7 @@ func TestDeleteRayClusterFleet_Success(t *testing.T) {
 	req, _ := http.NewRequest("DELETE", "/api/v1/rayclusterfleets/default/to-delete", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected status 204, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNoContent, w.Code)
 }
 
 func TestDeleteRayClusterFleet_NotFound(t *testing.T) {
@@ -248,18 +198,12 @@ func TestDeleteRayClusterFleet_NotFound(t *testing.T) {
 	req, _ := http.NewRequest("DELETE", "/api/v1/rayclusterfleets/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestUpdateRayClusterFleet_Success(t *testing.T) {
@@ -277,24 +221,14 @@ func TestUpdateRayClusterFleet_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.RayClusterFleetDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "my-fleet" {
-		t.Errorf("expected name my-fleet, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
-	if resp.Replicas != 5 {
-		t.Errorf("expected replicas 5, got %d", resp.Replicas)
-	}
+	assert.Equal(t, "my-fleet", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
+	assert.Equal(t, int32(5), resp.Replicas)
 }
 
 func TestUpdateRayClusterFleet_NotFound(t *testing.T) {
@@ -311,18 +245,12 @@ func TestUpdateRayClusterFleet_NotFound(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestListRayClusterFleets_FilterByNamespace(t *testing.T) {
@@ -336,22 +264,12 @@ func TestListRayClusterFleets_FilterByNamespace(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/rayclusterfleets?namespace=ns-a", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.RayClusterFleetListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(resp.Items))
-	}
-	if resp.Items[0].Name != "fleet-1" {
-		t.Errorf("expected fleet-1, got %s", resp.Items[0].Name)
-	}
-	if resp.Items[0].Namespace != "ns-a" {
-		t.Errorf("expected namespace ns-a, got %s", resp.Items[0].Namespace)
-	}
+	require.Len(t, resp.Items, 1)
+	assert.Equal(t, "fleet-1", resp.Items[0].Name)
+	assert.Equal(t, "ns-a", resp.Items[0].Namespace)
 }

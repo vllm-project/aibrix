@@ -29,9 +29,19 @@ export default function Dashboard() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    overviewApi.get().then(setData).catch((e) => setError(e.message));
-    const timer = setInterval(() => { overviewApi.get().then(setData); }, 10000);
-    return () => clearInterval(timer);
+    let active = true;
+    const poll = async () => {
+      try {
+        const result = await overviewApi.get();
+        if (active) setData(result);
+      } catch (e) {
+        if (active) setError(e instanceof Error ? e.message : "Failed to load");
+      } finally {
+        if (active) setTimeout(poll, 10000);
+      }
+    };
+    poll();
+    return () => { active = false; };
   }, []);
 
   if (error) return <div className="text-[var(--destructive)]">Error: {error}</div>;

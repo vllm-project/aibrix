@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -24,7 +23,7 @@ func (h *Handler) ListKVCaches(c *gin.Context) {
 		opts = append(opts, client.InNamespace(ns))
 	}
 
-	if err := h.client.List(context.TODO(), &list, opts...); err != nil {
+	if err := h.client.List(c.Request.Context(), &list, opts...); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to list kv caches", err.Error())
 		return
 	}
@@ -84,7 +83,7 @@ func (h *Handler) CreateKVCache(c *gin.Context) {
 		},
 	}
 
-	if err := h.client.Create(context.TODO(), kv); err != nil {
+	if err := h.client.Create(c.Request.Context(), kv); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			respondError(c, http.StatusConflict, fmt.Sprintf("kv cache %s/%s already exists", req.Namespace, req.Name), err.Error())
 			return
@@ -101,7 +100,7 @@ func (h *Handler) GetKVCache(c *gin.Context) {
 	name := c.Param("name")
 
 	var kv orchestrationv1alpha1.KVCache
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &kv); err != nil {
+	if err := h.client.Get(c.Request.Context(), client.ObjectKey{Namespace: ns, Name: name}, &kv); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("kv cache %s/%s not found", ns, name), err.Error())
 			return
@@ -124,7 +123,7 @@ func (h *Handler) UpdateKVCache(c *gin.Context) {
 	}
 
 	var kv orchestrationv1alpha1.KVCache
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &kv); err != nil {
+	if err := h.client.Get(c.Request.Context(), client.ObjectKey{Namespace: ns, Name: name}, &kv); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("kv cache %s/%s not found", ns, name), err.Error())
 			return
@@ -137,7 +136,7 @@ func (h *Handler) UpdateKVCache(c *gin.Context) {
 		kv.Spec.Mode = req.Mode
 	}
 
-	if err := h.client.Update(context.TODO(), &kv); err != nil {
+	if err := h.client.Update(c.Request.Context(), &kv); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to update kv cache", err.Error())
 		return
 	}
@@ -149,17 +148,14 @@ func (h *Handler) DeleteKVCache(c *gin.Context) {
 	ns := c.Param("namespace")
 	name := c.Param("name")
 
-	var kv orchestrationv1alpha1.KVCache
-	if err := h.client.Get(context.TODO(), client.ObjectKey{Namespace: ns, Name: name}, &kv); err != nil {
+	obj := &orchestrationv1alpha1.KVCache{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+	}
+	if err := h.client.Delete(c.Request.Context(), obj); err != nil {
 		if apierrors.IsNotFound(err) {
 			respondError(c, http.StatusNotFound, fmt.Sprintf("kv cache %s/%s not found", ns, name), err.Error())
 			return
 		}
-		respondError(c, http.StatusInternalServerError, "failed to get kv cache", err.Error())
-		return
-	}
-
-	if err := h.client.Delete(context.TODO(), &kv); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to delete kv cache", err.Error())
 		return
 	}

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/apps/portal/api/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -70,21 +72,13 @@ func TestListModelAdapters_Empty(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/modeladapters", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.ModelAdapterListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 0 {
-		t.Errorf("expected 0 items, got %d", len(resp.Items))
-	}
-	if resp.Pagination.Total != 0 {
-		t.Errorf("expected total 0, got %d", resp.Pagination.Total)
-	}
+	assert.Empty(t, resp.Items)
+	assert.Equal(t, 0, resp.Pagination.Total)
 }
 
 func TestListModelAdapters_WithItems(t *testing.T) {
@@ -98,29 +92,17 @@ func TestListModelAdapters_WithItems(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/modeladapters", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.ModelAdapterListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(resp.Items))
-	}
-	if resp.Pagination.Total != 2 {
-		t.Errorf("expected total 2, got %d", resp.Pagination.Total)
-	}
+	require.Len(t, resp.Items, 2)
+	assert.Equal(t, 2, resp.Pagination.Total)
 
 	// Should be sorted by creation time descending (adapter-2 first)
-	if resp.Items[0].Name != "adapter-2" {
-		t.Errorf("expected first item to be adapter-2, got %s", resp.Items[0].Name)
-	}
-	if resp.Items[1].Name != "adapter-1" {
-		t.Errorf("expected second item to be adapter-1, got %s", resp.Items[1].Name)
-	}
+	assert.Equal(t, "adapter-2", resp.Items[0].Name)
+	assert.Equal(t, "adapter-1", resp.Items[1].Name)
 }
 
 func TestListModelAdapters_FilterByNamespace(t *testing.T) {
@@ -134,24 +116,14 @@ func TestListModelAdapters_FilterByNamespace(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/modeladapters?namespace=ns-a", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.ModelAdapterListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(resp.Items))
-	}
-	if resp.Items[0].Name != "adapter-1" {
-		t.Errorf("expected adapter-1, got %s", resp.Items[0].Name)
-	}
-	if resp.Items[0].Namespace != "ns-a" {
-		t.Errorf("expected namespace ns-a, got %s", resp.Items[0].Namespace)
-	}
+	require.Len(t, resp.Items, 1)
+	assert.Equal(t, "adapter-1", resp.Items[0].Name)
+	assert.Equal(t, "ns-a", resp.Items[0].Namespace)
 }
 
 func TestCreateModelAdapter_Success(t *testing.T) {
@@ -171,27 +143,15 @@ func TestCreateModelAdapter_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusCreated, w.Code)
 
 	var resp types.ModelAdapterDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "new-adapter" {
-		t.Errorf("expected name new-adapter, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
-	if resp.Spec.ArtifactURL != "s3://bucket/new-adapter" {
-		t.Errorf("expected artifactURL s3://bucket/new-adapter, got %s", resp.Spec.ArtifactURL)
-	}
-	if resp.Spec.BaseModel != "llama-7b" {
-		t.Errorf("expected baseModel llama-7b, got %s", resp.Spec.BaseModel)
-	}
+	assert.Equal(t, "new-adapter", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
+	assert.Equal(t, "s3://bucket/new-adapter", resp.Spec.ArtifactURL)
+	assert.Equal(t, "llama-7b", resp.Spec.BaseModel)
 }
 
 func TestCreateModelAdapter_ValidationError(t *testing.T) {
@@ -206,18 +166,12 @@ func TestCreateModelAdapter_ValidationError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusBadRequest {
-		t.Errorf("expected error code 400, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusBadRequest, resp.Error.Code)
 }
 
 func TestGetModelAdapter_Found(t *testing.T) {
@@ -228,27 +182,15 @@ func TestGetModelAdapter_Found(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/modeladapters/default/my-adapter", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.ModelAdapterDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "my-adapter" {
-		t.Errorf("expected name my-adapter, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
-	if resp.Spec.BaseModel != "base-model" {
-		t.Errorf("expected baseModel base-model, got %s", resp.Spec.BaseModel)
-	}
-	if resp.Spec.PodSelector["app"] != "vllm" {
-		t.Errorf("expected podSelector app=vllm, got %v", resp.Spec.PodSelector)
-	}
+	assert.Equal(t, "my-adapter", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
+	assert.Equal(t, "base-model", resp.Spec.BaseModel)
+	assert.Equal(t, "vllm", resp.Spec.PodSelector["app"])
 }
 
 func TestGetModelAdapter_NotFound(t *testing.T) {
@@ -258,18 +200,12 @@ func TestGetModelAdapter_NotFound(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/modeladapters/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestDeleteModelAdapter_Success(t *testing.T) {
@@ -280,9 +216,7 @@ func TestDeleteModelAdapter_Success(t *testing.T) {
 	req, _ := http.NewRequest("DELETE", "/api/v1/modeladapters/default/to-delete", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected status 204, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNoContent, w.Code)
 }
 
 func TestDeleteModelAdapter_NotFound(t *testing.T) {
@@ -292,18 +226,12 @@ func TestDeleteModelAdapter_NotFound(t *testing.T) {
 	req, _ := http.NewRequest("DELETE", "/api/v1/modeladapters/default/nonexistent", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestUpdateModelAdapter_Success(t *testing.T) {
@@ -320,24 +248,14 @@ func TestUpdateModelAdapter_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.ModelAdapterDetailResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Name != "my-adapter" {
-		t.Errorf("expected name my-adapter, got %s", resp.Name)
-	}
-	if resp.Namespace != "default" {
-		t.Errorf("expected namespace default, got %s", resp.Namespace)
-	}
-	if resp.Spec.ArtifactURL != "s3://bucket/updated-adapter" {
-		t.Errorf("expected artifactURL s3://bucket/updated-adapter, got %s", resp.Spec.ArtifactURL)
-	}
+	assert.Equal(t, "my-adapter", resp.Name)
+	assert.Equal(t, "default", resp.Namespace)
+	assert.Equal(t, "s3://bucket/updated-adapter", resp.Spec.ArtifactURL)
 }
 
 func TestUpdateModelAdapter_NotFound(t *testing.T) {
@@ -353,18 +271,12 @@ func TestUpdateModelAdapter_NotFound(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 
 	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal error response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("expected error code 404, got %d", resp.Error.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, resp.Error.Code)
 }
 
 func TestListModelAdapters_Pagination(t *testing.T) {
@@ -380,46 +292,26 @@ func TestListModelAdapters_Pagination(t *testing.T) {
 	req, _ := http.NewRequest("GET", "/api/v1/modeladapters?page=1&pageSize=2", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp types.ModelAdapterListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	if len(resp.Items) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(resp.Items))
-	}
-	if resp.Pagination.Total != 3 {
-		t.Errorf("expected total 3, got %d", resp.Pagination.Total)
-	}
-	if resp.Pagination.Page != 1 {
-		t.Errorf("expected page 1, got %d", resp.Pagination.Page)
-	}
-	if resp.Pagination.PageSize != 2 {
-		t.Errorf("expected pageSize 2, got %d", resp.Pagination.PageSize)
-	}
+	require.Len(t, resp.Items, 2)
+	assert.Equal(t, 3, resp.Pagination.Total)
+	assert.Equal(t, 1, resp.Pagination.Page)
+	assert.Equal(t, 2, resp.Pagination.PageSize)
 
 	// Page 2 with pageSize 2
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest("GET", "/api/v1/modeladapters?page=2&pageSize=2", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", w.Code)
-	}
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp2 types.ModelAdapterListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp2); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp2))
 
-	if len(resp2.Items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(resp2.Items))
-	}
-	if resp2.Pagination.Total != 3 {
-		t.Errorf("expected total 3, got %d", resp2.Pagination.Total)
-	}
+	require.Len(t, resp2.Items, 1)
+	assert.Equal(t, 3, resp2.Pagination.Total)
 }
