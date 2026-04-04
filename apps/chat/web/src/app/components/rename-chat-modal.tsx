@@ -1,49 +1,41 @@
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useRef, useState } from 'react'
 
 interface RenameChatModalProps {
-  isOpen: boolean;
-  currentTitle: string;
-  onClose: () => void;
-  onSave: (newTitle: string) => void;
+  isOpen: boolean
+  currentTitle: string
+  onClose: () => void
+  onSave: (newTitle: string) => void
 }
 
-export function RenameChatModal({
-  isOpen,
-  currentTitle,
-  onClose,
-  onSave,
-}: RenameChatModalProps) {
-  const [value, setValue] = useState(currentTitle);
-  const inputRef = useRef<HTMLInputElement>(null);
+export function RenameChatModal({ isOpen, currentTitle, onClose, onSave }: RenameChatModalProps) {
+  const [value, setValue] = useState(currentTitle)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (isOpen) {
-      setValue(currentTitle);
+      setValue(currentTitle)
       setTimeout(() => {
-        inputRef.current?.focus();
-        inputRef.current?.select();
-      }, 50);
+        inputRef.current?.focus()
+        inputRef.current?.select()
+      }, 50)
     }
-  }, [isOpen, currentTitle]);
+  }, [isOpen, currentTitle])
 
-  if (!isOpen) return null;
+  if (!isOpen) return null
 
   const handleSave = () => {
-    const trimmed = value.trim();
+    const trimmed = value.trim()
     if (trimmed) {
-      onSave(trimmed);
+      onSave(trimmed)
     }
-    onClose();
-  };
+    onClose()
+  }
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative bg-card border border-border rounded-2xl w-full max-w-[400px] p-6 shadow-2xl">
-        <h2
-          className="mb-5"
-          style={{ fontSize: "1.1rem" }}
-        >
+        <h2 className="mb-5" style={{ fontSize: '1.1rem' }}>
           Rename chat
         </h2>
 
@@ -52,8 +44,8 @@ export function RenameChatModal({
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") handleSave();
-            if (e.key === "Escape") onClose();
+            if (e.key === 'Enter') handleSave()
+            if (e.key === 'Escape') onClose()
           }}
           className="w-full px-3 py-2.5 bg-accent/50 border border-border rounded-xl text-foreground text-sm placeholder-foreground/30 outline-none focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/40 transition-all"
         />
@@ -75,5 +67,5 @@ export function RenameChatModal({
         </div>
       </div>
     </div>
-  );
+  )
 }

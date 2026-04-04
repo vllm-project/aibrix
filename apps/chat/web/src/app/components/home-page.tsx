@@ -1,24 +1,20 @@
-import { ChatInput } from "./chat-input";
-import type { Attachment } from "./chat-input";
-import { QuickActions } from "./quick-actions";
+import type { Attachment } from './chat-input'
+import { ChatInput } from './chat-input'
+import { QuickActions } from './quick-actions'
 
 interface HomePageProps {
-  userName?: string;
-  onSend?: (message: string, model: string, attachments?: Attachment[]) => void;
-  onStartNewProject?: () => void;
+  userName?: string
+  onSend?: (message: string, model: string, attachments?: Attachment[]) => void
+  onStartNewProject?: () => void
 }
 
-export function HomePage({
-  userName = "there",
-  onSend,
-  onStartNewProject,
-}: HomePageProps) {
+export function HomePage({ userName = 'there', onSend, onStartNewProject }: HomePageProps) {
   const getGreeting = () => {
-    const hour = new Date().getHours();
-    if (hour < 12) return "Good morning";
-    if (hour < 18) return "Good afternoon"; 
-    return "Good evening";
-  };
+    const hour = new Date().getHours()
+    if (hour < 12) return 'Good morning'
+    if (hour < 18) return 'Good afternoon'
+    return 'Good evening'
+  }
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-4 pb-20">
@@ -27,9 +23,9 @@ export function HomePage({
         <h1
           style={{
             fontFamily: "'Playfair Display', serif",
-            fontSize: "2.2rem",
+            fontSize: '2.2rem',
             fontWeight: 400,
-            color: "var(--foreground)",
+            color: 'var(--foreground)',
             opacity: 0.8,
           }}
         >
@@ -37,14 +33,11 @@ export function HomePage({
         </h1>
       </div>
 
-      <ChatInput
-        onSend={onSend}
-        onStartNewProject={onStartNewProject}
-      />
+      <ChatInput onSend={onSend} onStartNewProject={onStartNewProject} />
 
       <div className="mt-5">
         <QuickActions />
       </div>
     </div>
-  );
+  )
 }

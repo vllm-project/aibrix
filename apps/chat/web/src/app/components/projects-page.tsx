@@ -1,42 +1,42 @@
-import { useState, useEffect } from "react";
-import { useNavigate } from "react-router";
-import { Search, Plus, ChevronDown } from "lucide-react";
-import { listProjects, type ProjectSummary } from "@/api/client";
+import { ChevronDown, Plus, Search } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router'
+import { listProjects, type ProjectSummary } from '@/api/client'
 
 function timeAgo(isoDate: string): string {
-  const now = Date.now();
-  const then = new Date(isoDate).getTime();
-  const diffSec = Math.floor((now - then) / 1000);
-  if (diffSec < 60) return "Updated just now";
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `Updated ${diffMin} minute${diffMin > 1 ? "s" : ""} ago`;
-  const diffHour = Math.floor(diffMin / 60);
-  if (diffHour < 24) return `Updated ${diffHour} hour${diffHour > 1 ? "s" : ""} ago`;
-  const diffDay = Math.floor(diffHour / 24);
-  return `Updated ${diffDay} day${diffDay > 1 ? "s" : ""} ago`;
+  const now = Date.now()
+  const then = new Date(isoDate).getTime()
+  const diffSec = Math.floor((now - then) / 1000)
+  if (diffSec < 60) return 'Updated just now'
+  const diffMin = Math.floor(diffSec / 60)
+  if (diffMin < 60) return `Updated ${diffMin} minute${diffMin > 1 ? 's' : ''} ago`
+  const diffHour = Math.floor(diffMin / 60)
+  if (diffHour < 24) return `Updated ${diffHour} hour${diffHour > 1 ? 's' : ''} ago`
+  const diffDay = Math.floor(diffHour / 24)
+  return `Updated ${diffDay} day${diffDay > 1 ? 's' : ''} ago`
 }
 
 interface ProjectsPageProps {
-  onNewProject: () => void;
+  onNewProject: () => void
 }
 
 export function ProjectsPage({ onNewProject }: ProjectsPageProps) {
-  const navigate = useNavigate();
-  const [searchQuery, setSearchQuery] = useState("");
-  const [sortBy, setSortBy] = useState("Activity");
-  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const navigate = useNavigate()
+  const [searchQuery, setSearchQuery] = useState('')
+  const [sortBy, _setSortBy] = useState('Activity')
+  const [projects, setProjects] = useState<ProjectSummary[]>([])
 
   useEffect(() => {
-    let cancelled = false;
+    let cancelled = false
     listProjects().then((data) => {
-      if (!cancelled) setProjects(data);
-    });
-    return () => { cancelled = true; };
-  }, []);
+      if (!cancelled) setProjects(data)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
-  const filtered = projects.filter((p) =>
-    p.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filtered = projects.filter((p) => p.name.toLowerCase().includes(searchQuery.toLowerCase()))
 
   return (
     <div className="flex-1 overflow-y-auto px-8 py-8">
@@ -45,7 +45,7 @@ export function ProjectsPage({ onNewProject }: ProjectsPageProps) {
           <h1
             style={{
               fontFamily: "'Playfair Display', serif",
-              fontSize: "1.6rem",
+              fontSize: '1.6rem',
               fontWeight: 500,
             }}
           >
@@ -61,10 +61,7 @@ export function ProjectsPage({ onNewProject }: ProjectsPageProps) {
         </div>
 
         <div className="relative mb-4">
-          <Search
-            size={16}
-            className="absolute left-3.5 top-1/2 -translate-y-1/2 text-foreground/40"
-          />
+          <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-foreground/40" />
           <input
             type="text"
             value={searchQuery}
@@ -93,18 +90,14 @@ export function ProjectsPage({ onNewProject }: ProjectsPageProps) {
                 <h3 className="text-sm">{project.name}</h3>
               </div>
               {project.description && (
-                <p className="text-xs text-muted-foreground mb-3 line-clamp-2">
-                  {project.description}
-                </p>
+                <p className="text-xs text-muted-foreground mb-3 line-clamp-2">{project.description}</p>
               )}
               <div className="flex-1" />
-              <p className="text-xs text-muted-foreground/60 mt-auto pt-4">
-                {timeAgo(project.updated_at)}
-              </p>
+              <p className="text-xs text-muted-foreground/60 mt-auto pt-4">{timeAgo(project.updated_at)}</p>
             </button>
           ))}
         </div>
       </div>
     </div>
-  );
+  )
 }

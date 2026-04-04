@@ -1,11 +1,15 @@
 {
-  "name": "@aibrix/chat-web",
+  "name": "@aibrix/multi-modality-chat-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "vite"
+    "dev": "vite",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
+    "format": "biome format --write src/",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",
@@ -68,10 +72,14 @@
     "vaul": "1.1.2"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.0.0",
     "@tailwindcss/vite": "4.1.12",
     "@types/node": "^25.3.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "4.7.0",
     "tailwindcss": "4.1.12",
+    "typescript": "^5.7.0",
     "vite": "6.3.5"
   },
   "pnpm": {

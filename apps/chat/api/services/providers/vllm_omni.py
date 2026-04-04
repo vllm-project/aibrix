@@ -113,7 +113,9 @@ class VLLMOmniChatProvider(ChatProvider):
         if resp.status_code != 200:
             logger.error(
                 "vLLM-Omni chat failed: %s %s — %s",
-                resp.status_code, resp.reason_phrase, resp.text,
+                resp.status_code,
+                resp.reason_phrase,
+                resp.text,
             )
         resp.raise_for_status()
         return resp.json()
@@ -146,7 +148,9 @@ class VLLMOmniChatProvider(ChatProvider):
                 body = await resp.aread()
                 logger.error(
                     "vLLM-Omni chat stream failed: %s %s — %s",
-                    resp.status_code, resp.reason_phrase, body.decode(),
+                    resp.status_code,
+                    resp.reason_phrase,
+                    body.decode(),
                 )
             resp.raise_for_status()
             async for event in parse_openai_sse(resp.aiter_lines()):
@@ -198,14 +202,16 @@ class VLLMOmniImageProvider(ImageProvider):
     """
 
     def __init__(
-        self, base_url: str, api_key: str = "",
-        *, image_edit_url: str = "", image_edit_key: str = "",
+        self,
+        base_url: str,
+        api_key: str = "",
+        *,
+        image_edit_url: str = "",
+        image_edit_key: str = "",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self.image_edit_url = (
-            image_edit_url.rstrip("/") if image_edit_url else self.base_url
-        )
+        self.image_edit_url = image_edit_url.rstrip("/") if image_edit_url else self.base_url
         self.image_edit_key = image_edit_key or self.api_key
         self._client: httpx.AsyncClient | None = None
 
@@ -262,7 +268,8 @@ class VLLMOmniImageProvider(ImageProvider):
         if resp.status_code != 200:
             logger.error(
                 "vLLM-Omni image gen failed: %s — %s",
-                resp.status_code, resp.text[:500],
+                resp.status_code,
+                resp.text[:500],
             )
         resp.raise_for_status()
 
@@ -295,13 +302,15 @@ class VLLMOmniImageProvider(ImageProvider):
 
         payload: dict[str, Any] = {
             "model": model,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_uri}},
-                ],
-            }],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_uri}},
+                    ],
+                }
+            ],
             "height": height,
             "width": width,
             "num_inference_steps": kwargs.get("num_inference_steps", 50),
@@ -319,7 +328,8 @@ class VLLMOmniImageProvider(ImageProvider):
         if resp.status_code != 200:
             logger.error(
                 "vLLM-Omni image edit failed: %s — %s",
-                resp.status_code, resp.text[:500],
+                resp.status_code,
+                resp.text[:500],
             )
         resp.raise_for_status()
 
@@ -339,9 +349,14 @@ class VLLMOmniAudioProvider(AudioProvider):
     """
 
     def __init__(
-        self, base_url: str, api_key: str = "",
-        *, asr_url: str = "", asr_key: str = "",
-        tts_url: str = "", tts_key: str = "",
+        self,
+        base_url: str,
+        api_key: str = "",
+        *,
+        asr_url: str = "",
+        asr_key: str = "",
+        tts_url: str = "",
+        tts_key: str = "",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -421,7 +436,8 @@ class VLLMOmniAudioProvider(AudioProvider):
         if resp.status_code != 200:
             logger.error(
                 "vLLM-Omni TTS failed: %s — %s",
-                resp.status_code, resp.text[:500],
+                resp.status_code,
+                resp.text[:500],
             )
         resp.raise_for_status()
         return resp.content
@@ -531,7 +547,8 @@ class VLLMOmniVideoProvider(VideoProvider):
             if resp.status_code != 200:
                 logger.error(
                     "vLLM-Omni video gen failed: %s — %s",
-                    resp.status_code, resp.text[:500],
+                    resp.status_code,
+                    resp.text[:500],
                 )
             resp.raise_for_status()
 
