@@ -1,35 +1,31 @@
-import { useState } from "react";
+import { useState } from 'react'
 
 interface AddTextContentModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onAdd: (title: string, content: string) => void;
+  isOpen: boolean
+  onClose: () => void
+  onAdd: (title: string, content: string) => void
 }
 
-export function AddTextContentModal({
-  isOpen,
-  onClose,
-  onAdd,
-}: AddTextContentModalProps) {
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
+export function AddTextContentModal({ isOpen, onClose, onAdd }: AddTextContentModalProps) {
+  const [title, setTitle] = useState('')
+  const [content, setContent] = useState('')
 
-  if (!isOpen) return null;
+  if (!isOpen) return null
 
   const handleAdd = () => {
     if (title.trim()) {
-      onAdd(title, content);
-      setTitle("");
-      setContent("");
-      onClose();
+      onAdd(title, content)
+      setTitle('')
+      setContent('')
+      onClose()
     }
-  };
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative bg-card border border-border rounded-2xl w-full max-w-[560px] p-8 shadow-2xl">
-        <h2 className="mb-5" style={{ fontSize: "1.25rem", fontWeight: 500 }}>
+        <h2 className="mb-5" style={{ fontSize: '1.25rem', fontWeight: 500 }}>
           Add text content
         </h2>
 
@@ -72,5 +68,5 @@ export function AddTextContentModal({
         </div>
       </div>
     </div>
-  );
+  )
 }

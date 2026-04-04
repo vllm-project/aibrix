@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 
+import httpx
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
-import httpx
 
 from config import settings
 from models.schemas import AudioSpeechRequest, AudioTranscribeResponse
@@ -36,7 +36,7 @@ async def transcribe(
         return result
     except httpx.HTTPError as e:
         logger.exception("Transcription failed")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 @router.post("/speech")
@@ -62,4 +62,4 @@ async def speech(req: AudioSpeechRequest):
         return Response(content=audio_bytes, media_type=media_type)
     except httpx.HTTPError as e:
         logger.exception("Speech generation failed")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from e

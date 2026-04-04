@@ -1,4 +1,4 @@
-import { PlaceholderPage } from "./placeholder-page";
+import { PlaceholderPage } from './placeholder-page'
 
 export function ChatsPlaceholder() {
   return (
@@ -7,7 +7,7 @@ export function ChatsPlaceholder() {
       description="Your conversations will appear here. Start a new chat to begin."
       icon="chats"
     />
-  );
+  )
 }
 
 export function ArtifactsPlaceholder() {
@@ -17,7 +17,7 @@ export function ArtifactsPlaceholder() {
       description="Generated artifacts from your conversations will appear here."
       icon="artifacts"
     />
-  );
+  )
 }
 
 export function CodePlaceholder() {
@@ -27,5 +27,5 @@ export function CodePlaceholder() {
       description="Code snippets and projects from your conversations will appear here."
       icon="code"
     />
-  );
+  )
 }

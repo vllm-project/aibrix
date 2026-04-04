@@ -1,19 +1,19 @@
-import { MessageSquare, Blocks, Code } from "lucide-react";
+import { Blocks, Code, MessageSquare } from 'lucide-react'
 
 interface PlaceholderPageProps {
-  title: string;
-  description: string;
-  icon: "chats" | "artifacts" | "code";
+  title: string
+  description: string
+  icon: 'chats' | 'artifacts' | 'code'
 }
 
 const icons = {
   chats: MessageSquare,
   artifacts: Blocks,
   code: Code,
-};
+}
 
 export function PlaceholderPage({ title, description, icon }: PlaceholderPageProps) {
-  const Icon = icons[icon];
+  const Icon = icons[icon]
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-4 text-center">
@@ -23,14 +23,14 @@ export function PlaceholderPage({ title, description, icon }: PlaceholderPagePro
       <h2
         style={{
           fontFamily: "'Playfair Display', serif",
-          fontSize: "1.4rem",
+          fontSize: '1.4rem',
           fontWeight: 500,
-          marginBottom: "0.5rem",
+          marginBottom: '0.5rem',
         }}
       >
         {title}
       </h2>
       <p className="text-sm text-muted-foreground max-w-[400px]">{description}</p>
     </div>
-  );
+  )
 }

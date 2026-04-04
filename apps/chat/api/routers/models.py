@@ -1,7 +1,6 @@
 """Model discovery endpoint."""
 
 import re
-from typing import Optional
 
 from fastapi import APIRouter, Query
 
@@ -90,11 +89,14 @@ def _get_allowlist(capability: str | None) -> set[str]:
     return set()
 
 
-@router.get("/models", response_model=ModelListResponse,
-             summary="List available models",
-             description="Proxies GET /v1/models from the configured OpenAI-compatible backend. "
-                         "Use ?capability=image to filter by capability.")
-async def list_models(capability: Optional[str] = Query(None)):
+@router.get(
+    "/models",
+    response_model=ModelListResponse,
+    summary="List available models",
+    description="Proxies GET /v1/models from the configured OpenAI-compatible backend. "
+    "Use ?capability=image to filter by capability.",
+)
+async def list_models(capability: str | None = Query(None)):
     """Fetch available models from the gateway (vLLM, AIBrix, OpenAI, etc.).
 
     Optional query param ``capability`` filters results (text, image, video, audio).
