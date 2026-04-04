@@ -290,7 +290,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		return resp, nil
 	}
 
-	statusCode := strconv.Itoa(int(resp.GetImmediateResponse().Status.GetCode()))
+	statusCode := strconv.Itoa(int(resp.GetImmediateResponse().GetStatus().GetCode()))
 	metricFail := getMetricErr(resp.GetImmediateResponse(), st.metricLabel)
 	s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, metricFail+"_fail", statusCode)
 
