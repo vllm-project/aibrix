@@ -70,8 +70,10 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, mo
 			code, err := strconv.Atoi(string(headerValue.RawValue))
 			if err != nil {
 				isProcessingError = true
-				processingErrorCode = 0
-			} else if code != 200 {
+				processingErrorCode = 500
+				break
+			}
+			if code != 200 {
 				isProcessingError = true
 				processingErrorCode = code
 			}
