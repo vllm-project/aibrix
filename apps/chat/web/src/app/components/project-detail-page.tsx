@@ -1,111 +1,89 @@
-import { useState, useRef, useEffect } from "react";
-import { useParams, useNavigate } from "react-router";
-import {
-  ArrowLeft,
-  MoreHorizontal,
-  Star,
-  Pencil,
-  Plus,
-  Upload,
-  FileText,
-  Github,
-} from "lucide-react";
-import { ChatInput } from "./chat-input";
-import { SetInstructionsModal } from "./set-instructions-modal";
-import { AddTextContentModal } from "./add-text-content-modal";
-import {
-  getProject,
-  updateProject,
-  createConversation,
-  notifyConversationsChanged,
-  type Project,
-} from "@/api/client";
+import { ArrowLeft, FileText, Github, MoreHorizontal, Pencil, Plus, Star, Upload } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate, useParams } from 'react-router'
+import { createConversation, getProject, notifyConversationsChanged, type Project, updateProject } from '@/api/client'
+import { AddTextContentModal } from './add-text-content-modal'
+import { ChatInput } from './chat-input'
+import { SetInstructionsModal } from './set-instructions-modal'
 
 interface ProjectFile {
-  id: string;
-  name: string;
-  type: "text" | "file";
+  id: string
+  name: string
+  type: 'text' | 'file'
 }
 
 export function ProjectDetailPage() {
-  const { id } = useParams();
-  const navigate = useNavigate();
+  const { id } = useParams()
+  const navigate = useNavigate()
 
-  const [project, setProject] = useState<Project | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [showInstructionsModal, setShowInstructionsModal] = useState(false);
-  const [showAddTextModal, setShowAddTextModal] = useState(false);
-  const [showFilesMenu, setShowFilesMenu] = useState(false);
-  const [instructions, setInstructions] = useState("");
-  const [files, setFiles] = useState<ProjectFile[]>([]);
+  const [project, setProject] = useState<Project | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [showInstructionsModal, setShowInstructionsModal] = useState(false)
+  const [showAddTextModal, setShowAddTextModal] = useState(false)
+  const [showFilesMenu, setShowFilesMenu] = useState(false)
+  const [instructions, setInstructions] = useState('')
+  const [files, setFiles] = useState<ProjectFile[]>([])
 
-  const filesMenuRef = useRef<HTMLDivElement>(null);
+  const filesMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!id) return;
-    let cancelled = false;
-    setLoading(true);
-    getProject(id).then((p) => {
-      if (cancelled) return;
-      setProject(p);
-      setInstructions(p.instructions);
-      setLoading(false);
-    }).catch(() => {
-      if (!cancelled) setLoading(false);
-    });
-    return () => { cancelled = true; };
-  }, [id]);
+    if (!id) return
+    let cancelled = false
+    setLoading(true)
+    getProject(id)
+      .then((p) => {
+        if (cancelled) return
+        setProject(p)
+        setInstructions(p.instructions)
+        setLoading(false)
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [id])
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (
-        filesMenuRef.current &&
-        !filesMenuRef.current.contains(event.target as Node)
-      ) {
-        setShowFilesMenu(false);
+      if (filesMenuRef.current && !filesMenuRef.current.contains(event.target as Node)) {
+        setShowFilesMenu(false)
       }
     }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
   const handleSaveInstructions = async (newInstructions: string) => {
-    setInstructions(newInstructions);
+    setInstructions(newInstructions)
     if (id) {
       try {
-        await updateProject(id, { instructions: newInstructions });
+        await updateProject(id, { instructions: newInstructions })
       } catch (err) {
-        console.error("Failed to save instructions:", err);
+        console.error('Failed to save instructions:', err)
       }
     }
-  };
+  }
 
   const handleSend = async (message: string, model: string) => {
     try {
-      const conv = await createConversation(model || undefined, undefined, id);
-      notifyConversationsChanged();
+      const conv = await createConversation(model || undefined, undefined, id)
+      notifyConversationsChanged()
       navigate(`/chat/${conv.id}`, {
         state: { firstMessage: message, model },
-      });
+      })
     } catch (err) {
-      console.error("Failed to create conversation:", err);
+      console.error('Failed to create conversation:', err)
     }
-  };
+  }
 
   if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground">
-        Loading...
-      </div>
-    );
+    return <div className="flex-1 flex items-center justify-center text-muted-foreground">Loading...</div>
   }
 
   if (!project) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground">
-        Project not found
-      </div>
-    );
+    return <div className="flex-1 flex items-center justify-center text-muted-foreground">Project not found</div>
   }
 
   return (
@@ -113,7 +91,7 @@ export function ProjectDetailPage() {
       {/* Main content */}
       <div className="flex-1 flex flex-col px-8 py-6 overflow-y-auto">
         <button
-          onClick={() => navigate("/projects")}
+          onClick={() => navigate('/projects')}
           className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors mb-4 w-fit"
         >
           <ArrowLeft size={14} />
@@ -121,9 +99,7 @@ export function ProjectDetailPage() {
         </button>
 
         <div className="flex items-center gap-3 mb-8">
-          <h1 style={{ fontSize: "1.4rem", fontWeight: 500 }}>
-            {project.name}
-          </h1>
+          <h1 style={{ fontSize: '1.4rem', fontWeight: 500 }}>{project.name}</h1>
           <button className="p-1 rounded hover:bg-accent text-foreground/40 hover:text-foreground transition-colors">
             <MoreHorizontal size={18} />
           </button>
@@ -138,8 +114,7 @@ export function ProjectDetailPage() {
           <div className="mt-5 max-w-[680px] w-full">
             <div className="bg-card/50 border border-border rounded-xl p-4 text-center">
               <p className="text-sm text-muted-foreground">
-                Start a chat to keep conversations organized and re-use project
-                knowledge.
+                Start a chat to keep conversations organized and re-use project knowledge.
               </p>
             </div>
           </div>
@@ -164,7 +139,7 @@ export function ProjectDetailPage() {
             onClick={() => setShowInstructionsModal(true)}
           >
             <p className="text-xs text-muted-foreground line-clamp-3">
-              {instructions || "Click to add project instructions..."}
+              {instructions || 'Click to add project instructions...'}
             </p>
           </div>
         </div>
@@ -192,8 +167,8 @@ export function ProjectDetailPage() {
                   </button>
                   <button
                     onClick={() => {
-                      setShowFilesMenu(false);
-                      setShowAddTextModal(true);
+                      setShowFilesMenu(false)
+                      setShowAddTextModal(true)
                     }}
                     className="flex items-center gap-2.5 w-full px-3 py-2 rounded-lg hover:bg-accent text-sm transition-colors"
                   >
@@ -233,10 +208,7 @@ export function ProjectDetailPage() {
           ) : (
             <div className="space-y-2">
               {files.map((file) => (
-                <div
-                  key={file.id}
-                  className="bg-card border border-border rounded-lg p-3 flex items-center gap-2"
-                >
+                <div key={file.id} className="bg-card border border-border rounded-lg p-3 flex items-center gap-2">
                   <FileText size={14} className="text-foreground/60" />
                   <span className="text-sm truncate">{file.name}</span>
                 </div>
@@ -259,12 +231,9 @@ export function ProjectDetailPage() {
         isOpen={showAddTextModal}
         onClose={() => setShowAddTextModal(false)}
         onAdd={(title) => {
-          setFiles((prev) => [
-            ...prev,
-            { id: Date.now().toString(), name: title, type: "text" },
-          ]);
+          setFiles((prev) => [...prev, { id: Date.now().toString(), name: title, type: 'text' }])
         }}
       />
     </div>
-  );
+  )
 }

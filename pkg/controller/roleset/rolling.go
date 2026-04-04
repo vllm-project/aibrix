@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -60,7 +61,7 @@ func (m *RollingManagerSequential) Next(ctx context.Context, roleSet *orchestrat
 	for i, role := range sortedRoles {
 		var orderStr string
 		if role.UpgradeOrder != nil {
-			orderStr = fmt.Sprintf("%d", *role.UpgradeOrder)
+			orderStr = strconv.Itoa(int(*role.UpgradeOrder))
 		} else {
 			orderStr = "nil"
 		}

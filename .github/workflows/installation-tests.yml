@@ -100,6 +100,31 @@ jobs:
       - name: Download all image artifacts
         uses: actions/download-artifact@v4
 
+      - name: Verify image artifacts
+        run: |
+          missing=()
+          for image in controller-manager gateway-plugins runtime metadata-service vllm-mock; do
+            if [ ! -f "${image}-image/${image}.tar" ]; then
+              missing+=("${image}")
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::warning::Missing artifacts: ${missing[*]}. Attempting re-download..."
+            for image in "${missing[@]}"; do
+              gh run download ${{ github.run_id }} --name "${image}-image" --dir "${image}-image"
+            done
+            for image in "${missing[@]}"; do
+              if [ ! -f "${image}-image/${image}.tar" ]; then
+                echo "::error::Artifact ${image}-image/${image}.tar still missing after retry"
+                exit 1
+              fi
+            done
+          fi
+          echo "All image artifacts verified successfully"
+          ls -lh *-image/*.tar
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Free disk space
         run: |-
           # https://github.com/actions/runner-images/issues/2840#issuecomment-2272410832

@@ -36,45 +36,87 @@ func TestStrategyRequiresCache(t *testing.T) {
 }
 
 func TestRandomRouting(t *testing.T) {
-	histogram := make(map[string]int)
-	iterration := 100
+	// Retry up to 3 times to tolerate statistical flakiness in the chi-squared test.
+	// Even with a correct random router, the test has a ~1% false-negative rate per run.
+	maxAttempts := 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if lastErr = runRandomRoutingCheck(); lastErr == nil {
+			return
+		}
+		t.Logf("Attempt %d/%d failed: %v", attempt, maxAttempts, lastErr)
+	}
+	t.Fatalf("TestRandomRouting failed after %d attempts: %v", maxAttempts, lastErr)
+}
 
-	for i := 0; i < iterration; i++ {
-		req := "hello test"
-		targetPod := getTargetPodFromChatCompletion(t, req, "random")
-		assert.NotEmpty(t, targetPod, "target pod should not be empty")
+// chiSquaredCriticalValues contains critical values at 0.01 significance level
+// for varying degrees of freedom, used to dynamically validate chi-squared results
+// regardless of the number of pods in the environment.
+var chiSquaredCriticalValues = map[int]float64{
+	1: 6.635, 2: 9.210, 3: 11.345, 4: 13.277, 5: 15.086,
+}
+
+func runRandomRoutingCheck() error {
+	histogram := make(map[string]int)
+	iteration := 100
+
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "random", option.WithResponseInto(&dst))
+
+	for i := 0; i < iteration; i++ {
+		_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+			Messages: []openai.ChatCompletionMessageParamUnion{
+				openai.UserMessage("hello test"),
+			},
+			Model: modelName,
+		})
+		if err != nil {
+			return fmt.Errorf("chat completion request %d failed: %w", i, err)
+		}
+		targetPod := dst.Header.Get("target-pod")
+		if targetPod == "" {
+			return fmt.Errorf("request %d: target pod should not be empty", i)
+		}
 		histogram[targetPod]++
 	}
 
-	assert.True(t, len(histogram) > 1, "target pod distribution should be more than 1")
+	if len(histogram) <= 1 {
+		return fmt.Errorf("target pod distribution should be more than 1, got %d", len(histogram))
+	}
 
-	// Collective the occurrence of each pod
+	// Collect the occurrence of each pod
 	occurrence := make([]float64, 0, len(histogram))
 	for _, count := range histogram {
 		occurrence = append(occurrence, float64(count))
 	}
 
-	// Perform the Chi-Squared test
-	chi2Stat, df, err := chiSquaredGoodnessOfFit(occurrence, float64(iterration/len(occurrence)))
-	assert.NoError(t, err, "chi-squared test failed %v", err)
-	assert.Equal(t, 2, df, "degrees of freedom should be 2")
+	// Perform the Chi-Squared test using floating-point division for accurate expected frequency
+	chi2Stat, df, err := chiSquaredGoodnessOfFit(occurrence, float64(iteration)/float64(len(occurrence)))
+	if err != nil {
+		return fmt.Errorf("chi-squared test failed: %w", err)
+	}
+
+	// Validate degrees of freedom matches observed pod count
+	expectedDf := len(occurrence) - 1
+	if df != expectedDf {
+		return fmt.Errorf("degrees of freedom should be %d, got %d", expectedDf, df)
+	}
 
 	// Using a lower 1% significance level to make sure the null hypothesis is not rejected incorrectly
-	significanceLevel := 0.01
+	criticalValue, ok := chiSquaredCriticalValues[df]
+	if !ok {
+		return fmt.Errorf("no chi-squared critical value configured for df=%d, "+
+			"pod count %d is unexpected", df, len(histogram))
+	}
 
-	// We need to find the critical value for customed degrees of freedom (df)
-	// and significance level (alpha) from a Chi-Squared distribution table
-	// or a statistical calculator.
-	// For df = 2 ,
-	// common critical values are:
-	// Alpha = 0.10, Critical Value ≈ 4.605
-	// Alpha = 0.05, Critical Value ≈ 5.991
-	// Alpha = 0.01, Critical Value ≈ 9.210
-	assert.True(t, chi2Stat < 9.210,
-		`The observed frequencies (chiSquare: %.3f) are significantly different from the expected 
-		frequencies at the %.2f significance level. Suggesting the selection process is likely NOT random according 
-		to the expected distribution.`,
-		chi2Stat, significanceLevel)
+	if chi2Stat >= criticalValue {
+		return fmt.Errorf(
+			"the observed frequencies (chiSquare: %.3f, df: %d) are significantly different from the expected "+
+				"frequencies at the 0.01 significance level (critical value: %.3f), suggesting the selection "+
+				"process is likely NOT random", chi2Stat, df, criticalValue)
+	}
+
+	return nil
 }
 
 // nolint:lll

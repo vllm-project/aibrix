@@ -229,7 +229,17 @@ func (c *Store) updatePodMetrics() {
 			// Skip unready pod
 			return true
 		}
-		c.podMetricsJobs <- metaPod // Send the job to the worker pool
+		// Non-blocking send: if the worker pool is saturated (all workers busy
+		// and channel buffer full), skip this pod. It will be retried on the
+		// next refresh cycle (every 50ms). This prevents the metrics refresh
+		// goroutine from blocking indefinitely when workers are stuck on slow
+		// or unreachable engine pods.
+		select {
+		case c.podMetricsJobs <- metaPod:
+		default:
+			klog.V(4).InfoS("Metrics worker pool saturated, skipping pod metrics update",
+				"pod", metaPod.Name)
+		}
 		return true
 	})
 }
