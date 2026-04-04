@@ -148,8 +148,12 @@ func (c *loraClient) UnloadAdapter(instance *modelv1alpha1.ModelAdapter, targetP
 	}()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		klog.Warningf("Failed to unload LoRA adapter from pod %s: %s", targetPod.Name, body)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			klog.Warningf("Failed to unload LoRA adapter from pod %s (status %d), and failed to read response body: %v", targetPod.Name, resp.StatusCode, err)
+		} else {
+			klog.Warningf("Failed to unload LoRA adapter from pod %s: %s", targetPod.Name, body)
+		}
 	}
 
 	return nil
@@ -176,7 +180,10 @@ func (c *loraClient) getModels(url string, instance *modelv1alpha1.ModelAdapter)
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get models (status %d), and failed to read response body: %w", resp.StatusCode, err)
+		}
 		return nil, fmt.Errorf("failed to get models: %s", body)
 	}
 
@@ -293,7 +300,10 @@ func (c *loraClient) loadAdapterCall(ctx context.Context, url string, instance *
 	}()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to load LoRA adapter (status %d), and failed to read response body: %w", resp.StatusCode, err)
+		}
 		return fmt.Errorf("failed to load LoRA adapter: %s", body)
 	}
 
