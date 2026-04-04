@@ -1,22 +1,22 @@
-import { useState } from "react";
-import { useNavigate } from "react-router";
-import { ProjectsPage } from "./projects-page";
-import { CreateProjectModal } from "./create-project-modal";
-import { createProject } from "@/api/client";
+import { useState } from 'react'
+import { useNavigate } from 'react-router'
+import { createProject } from '@/api/client'
+import { CreateProjectModal } from './create-project-modal'
+import { ProjectsPage } from './projects-page'
 
 export function ProjectsWrapper() {
-  const navigate = useNavigate();
-  const [showCreateProject, setShowCreateProject] = useState(false);
+  const navigate = useNavigate()
+  const [showCreateProject, setShowCreateProject] = useState(false)
 
   const handleCreate = async (name: string, description: string) => {
-    setShowCreateProject(false);
+    setShowCreateProject(false)
     try {
-      const project = await createProject(name, description);
-      navigate(`/projects/${project.id}`);
+      const project = await createProject(name, description)
+      navigate(`/projects/${project.id}`)
     } catch (err) {
-      console.error("Failed to create project:", err);
+      console.error('Failed to create project:', err)
     }
-  };
+  }
 
   return (
     <>
@@ -27,5 +27,5 @@ export function ProjectsWrapper() {
         onCreate={handleCreate}
       />
     </>
-  );
+  )
 }

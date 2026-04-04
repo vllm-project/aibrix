@@ -1,5 +1,5 @@
-import { Outlet } from "react-router";
-import { AuthProvider } from "@/app/context/auth-context";
+import { Outlet } from 'react-router'
+import { AuthProvider } from '@/app/context/auth-context'
 
 /**
  * Root layout that provides AuthContext to the entire app.
@@ -10,5 +10,5 @@ export function AuthLayout() {
     <AuthProvider>
       <Outlet />
     </AuthProvider>
-  );
+  )
 }
