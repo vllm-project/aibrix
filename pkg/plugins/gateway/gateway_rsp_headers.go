@@ -67,7 +67,12 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, mo
 
 	for _, headerValue := range b.ResponseHeaders.Headers.Headers {
 		if headerValue.Key == ":status" {
-			code, _ := strconv.Atoi(string(headerValue.RawValue))
+			code, err := strconv.Atoi(string(headerValue.RawValue))
+			if err != nil {
+				isProcessingError = true
+				processingErrorCode = 500
+				break
+			}
 			if code != 200 {
 				isProcessingError = true
 				processingErrorCode = code
