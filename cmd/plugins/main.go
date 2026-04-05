@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"google.golang.org/grpc"
@@ -96,8 +97,13 @@ func main() {
 		routing.RegisterPowerOfTwoRouter(redisClient)
 	}
 
+	// stopCh is closed either on normal return (via defer) or proactively in
+	// the signal handler before calling os.Exit. sync.Once guards against a
+	// double-close panic.
 	stopCh := make(chan struct{})
-	defer close(stopCh)
+	var stopOnce sync.Once
+	stopFn := func() { stopOnce.Do(func() { close(stopCh) }) }
+	defer stopFn()
 
 	var config *rest.Config
 	var k8sClient kubernetes.Interface
@@ -179,6 +185,9 @@ func main() {
 		klog.Warningf("signal received: %v, initiating graceful shutdown...", sig)
 		gatewayServer.Shutdown()
 		s.GracefulStop()
+		// Close stopCh so that cache ticker goroutines and other consumers tied
+		// to this signal exit promptly; os.Exit below bypasses deferred calls.
+		stopFn()
 		os.Exit(0)
 	}()
 
