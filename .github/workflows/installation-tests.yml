@@ -31,6 +31,7 @@ on:
 
 jobs:
   build-images:
+    name: Build image (${{ matrix.image }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -185,17 +186,27 @@ jobs:
 
       - name: Load image into Kind
         run: |
+          set -euo pipefail
+          sha="${{ github.sha }}"
+          # Load tarballs into the local Docker daemon in parallel (I/O-bound).
           for image in controller-manager gateway-plugins runtime metadata-service vllm-mock; do
-              docker load < ${image}-image/${image}.tar
+            docker load < "${image}-image/${image}.tar" &
+          done
+          wait
 
-              # Retag the image
-              # This is for application integration, since it is not that easy to override all commits in manifest
-              # It is better to use nightly to represent the latest image
-              docker tag aibrix/${image}:${{ github.sha }} aibrix/${image}:nightly
+          # Same digest as :sha; manifests still reference :nightly in places (e.g. job templates).
+          for image in controller-manager gateway-plugins runtime metadata-service vllm-mock; do
+            docker tag "aibrix/${image}:${sha}" "aibrix/${image}:nightly"
           done
 
-          kind load docker-image aibrix/controller-manager:${{ github.sha }} aibrix/gateway-plugins:${{ github.sha }} aibrix/metadata-service:${{ github.sha }} aibrix/runtime:${{ github.sha }} aibrix/vllm-mock:${{ github.sha }} --name installation-test
-          kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly aibrix/vllm-mock:nightly --name installation-test
+          # One kind load transfers all refs to the cluster nodes (two invocations duplicated work).
+          kind load docker-image \
+            "aibrix/controller-manager:${sha}" "aibrix/controller-manager:nightly" \
+            "aibrix/gateway-plugins:${sha}" "aibrix/gateway-plugins:nightly" \
+            "aibrix/metadata-service:${sha}" "aibrix/metadata-service:nightly" \
+            "aibrix/runtime:${sha}" "aibrix/runtime:nightly" \
+            "aibrix/vllm-mock:${sha}" "aibrix/vllm-mock:nightly" \
+            --name installation-test
 
       - name: Deploy controller with the built image
         run: |
