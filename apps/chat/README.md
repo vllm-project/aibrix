@@ -95,6 +95,44 @@ apps/chat/
 └── API_SPEC.md              # Full API specification
 ```
 
+## Development
+
+### Linting & Formatting
+
+#### Frontend (`web/`)
+
+Uses [Biome](https://biomejs.dev/) for linting and formatting, and TypeScript for type checking.
+
+```bash
+cd apps/chat/web
+npm install
+
+npm run lint          # check lint + format issues
+npm run lint:fix      # auto-fix lint + format issues
+npm run format        # format only
+npm run typecheck     # type check (tsc --noEmit)
+```
+
+#### Backend (`api/`)
+
+Uses [Ruff](https://docs.astral.sh/ruff/) for linting and formatting.
+
+```bash
+cd apps/chat/api
+pip install -r requirements-dev.txt
+
+ruff check .            # lint
+ruff check --fix .      # auto-fix lint issues
+ruff format .           # format
+ruff format --check .   # check format without writing
+```
+
+#### CI
+
+The `apps-chat-ci.yml` workflow runs automatically on PRs and pushes that touch `apps/chat/`. It runs:
+- **Frontend**: `npm run lint` + `npm run typecheck`
+- **Backend**: `ruff check` + `ruff format --check`
+
 ## Guidelines
 
 See [web/GUIDELINES.md](./web/GUIDELINES.md) for AI and design system guidelines.

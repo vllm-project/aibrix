@@ -28,8 +28,8 @@ class ProjectStore:
             ),
             Project(
                 name="How to use AIBrix Chat",
-                description=("An example project that also doubles as a how-to guide " "for using AIBrix Chat."),
-                instructions=("This is an example project that shows how to use AIBrix " "Chat effectively."),
+                description=("An example project that also doubles as a how-to guide for using AIBrix Chat."),
+                instructions=("This is an example project that shows how to use AIBrix Chat effectively."),
             ),
         ]
         for p in examples:
