@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -218,7 +219,7 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 	// Record failed request metric for other gRPC errors
 	if ok {
 		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "gateway_request_fail", fmt.Sprintf("%d", stErr.Code()))
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "gateway_request_fail", strconv.FormatUint(uint64(stErr.Code()), 10))
 		}
 		klog.ErrorS(err, "error receiving stream from Envoy extproc", "requestID", st.requestID, "model", st.model, "grpc_code", stErr.Code(), "grpc_message", stErr.Message())
 		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
@@ -289,7 +290,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		return resp, nil
 	}
 
-	statusCode := fmt.Sprintf("%d", int(resp.GetImmediateResponse().Status.GetCode()))
+	statusCode := strconv.Itoa(int(resp.GetImmediateResponse().GetStatus().GetCode()))
 	metricFail := getMetricErr(resp.GetImmediateResponse(), st.metricLabel)
 	s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, metricFail+"_fail", statusCode)
 

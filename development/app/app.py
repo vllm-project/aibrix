@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from random import randint
 import os
+import uuid
 import json
 from typing import Optional
 
@@ -184,6 +185,67 @@ MOCK_PNG_B64 = (
 
 # Image model name patterns (case-insensitive)
 _IMAGE_MODEL_KEYWORDS = {"image", "edit", "diffusion", "qwen-image", "z-image"}
+
+
+# =============================================================================
+# PD DISAGGREGATION HELPERS (vLLM SHFS mode)
+# =============================================================================
+
+def _is_prefill_request(data: dict) -> bool:
+    """Detect a vLLM PD prefill request (gateway sets do_remote_decode=true)."""
+    kv = data.get("kv_transfer_params")
+    return isinstance(kv, dict) and kv.get("do_remote_decode") is True
+
+
+def _mock_prefill_kv_transfer_params() -> dict:
+    """Return mock kv_transfer_params as a real vLLM prefill pod would include in its response."""
+    return {
+        "do_remote_decode": False,
+        "do_remote_prefill": True,
+        "remote_engine_id": "mock-engine-" + uuid.uuid4().hex[:8],
+        "remote_block_ids": list(range(random.randint(1, 8))),
+        "remote_host": None,   # gateway will fill this in with prefill pod IP
+        "remote_port": 8200,
+    }
+
+
+# =============================================================================
+# PD DISAGGREGATION HELPERS (TensorRT-LLM)
+# =============================================================================
+
+def _is_trtllm_prefill_request(data: dict) -> bool:
+    """Detect a TRT-LLM PD prefill request (disaggregated_params.request_type == context_only)."""
+    disagg = data.get("disaggregated_params")
+    return isinstance(disagg, dict) and disagg.get("request_type") == "context_only"
+
+
+def _mock_trtllm_prefill_disaggregated_params(data: dict) -> dict:
+    """Return mock disaggregated_params as a real TRT-LLM prefill pod would include in its response.
+
+    The gateway reads this, changes request_type to generation_only, and forwards
+    it (along with prompt_token_ids) to the decode pod.
+    """
+    disagg_request_id = data.get("disaggregated_params", {}).get("disagg_request_id", 0)
+    return {
+        "request_type": "context_only",  # gateway overrides this to generation_only for decode
+        "disagg_request_id": disagg_request_id,
+        "first_gen_tokens": [random.randint(100, 32000)],
+        "opaque_state": base64.b64encode(bytes(random.randint(8, 32))).decode(),
+    }
+
+
+def _apply_pd_prefill_fields(response: dict, payload: dict, input_tokens: int) -> None:
+    """Add engine-specific fields to a non-streaming completion response for PD prefill probes.
+
+    vLLM (SHFS): prefill returns kv_transfer_params.
+    TRT-LLM: prefill returns disaggregated_params and prompt_token_ids for the decode request.
+    SGLang: the gateway issues prefill asynchronously and does not rely on this body, so we add nothing.
+    """
+    if _is_prefill_request(payload):
+        response["kv_transfer_params"] = _mock_prefill_kv_transfer_params()
+    elif _is_trtllm_prefill_request(payload):
+        response["disaggregated_params"] = _mock_trtllm_prefill_disaggregated_params(payload)
+        response["prompt_token_ids"] = list(range(input_tokens))
 
 
 def _is_image_request(data: dict) -> bool:
@@ -522,6 +584,9 @@ def completion():
                     "total_tokens": input_tokens + output_tokens,
                 },
             }
+
+            _apply_pd_prefill_fields(response, request.json, input_tokens)
+
             return jsonify(response), 200
     except Exception as e:
         err = {
@@ -761,6 +826,9 @@ def chat_completions():
                     }
                 ],
             }
+
+            _apply_pd_prefill_fields(response, request.json, input_tokens)
+
             return jsonify(response), 200
     except Exception as e:
         err = {

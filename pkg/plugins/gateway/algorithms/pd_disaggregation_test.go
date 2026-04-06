@@ -197,7 +197,7 @@ func TestFilterPrefillDecodePods(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "decode-test", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
 			},
 			expectError:   true,
-			errorContains: "prefill pods are not ready: prefill=0, decode=1",
+			errorContains: "prefill pods are not ready: prefill=0, decode=0",
 		},
 		{
 			name: "error - no decode pods",
@@ -205,7 +205,7 @@ func TestFilterPrefillDecodePods(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-test", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
 			},
 			expectError:   true,
-			errorContains: "decode pods are not ready: prefill=1, decode=0",
+			errorContains: "prefill pods are not ready: prefill=0, decode=0",
 		},
 		{
 			name: "error - no valid pods at all",
@@ -1572,7 +1572,10 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			expectPodFreeGpuUsage:  map[string]float64{"pod1": 70, "pod2": 20, "pod3": 30},
 		},
 		{
-			name: "throughput imbalance - select pod with minimum throughput",
+			// Throughput diff = 3000 - 50 = 2950 > aibrixDecodeMaxThroughputDiff (2048).
+			// Request diff = 2, below aibrixDecodeMaxRequest (16), so request imbalance doesn't fire.
+			// Throughput imbalance triggers: route to pod with minimum throughput (pod1).
+			name: "throughput imbalance - route to min-throughput pod",
 			pods: []*v1.Pod{
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
@@ -1598,7 +1601,38 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			expectPodFreeGpuUsage:  map[string]float64{"pod1": 60, "pod2": 50},
 		},
 		{
-			name: "zero requests - select pod with zero requests",
+			// Throughput diff = 200 - 100 = 100, below aibrixDecodeMaxThroughputDiff (2048).
+			// Request diff = 2, below aibrixDecodeMaxRequest (16).
+			// Neither imbalance fires; scoreDecodePods handles fine-grained selection.
+			name: "throughput imbalance below threshold - no routing decision",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+			},
+			metricsMap: map[string]map[string]metrics.MetricValue{
+				"pod1": {
+					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 10},
+					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
+					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.4},
+				},
+				"pod2": {
+					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 12},
+					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 200},
+					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
+				},
+			},
+			expectTargetPod:        "",
+			expectMaxRequestCount:  12,
+			expectMaxThroughput:    200,
+			expectMaxFreeGPUUsage:  60,
+			expectPodRequestCounts: map[string]float64{"pod1": 10, "pod2": 12},
+			expectPodThroughputs:   map[string]float64{"pod1": 100, "pod2": 200},
+			expectPodFreeGpuUsage:  map[string]float64{"pod1": 60, "pod2": 50},
+		},
+		{
+			// With request diff of 5 (below threshold of 32), no imbalance is detected.
+			// scoreDecodePods will handle the routing using the collected metrics.
+			name: "zero requests on one pod - below imbalance threshold, no routing decision",
 			pods: []*v1.Pod{
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
@@ -1615,7 +1649,7 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.3},
 				},
 			},
-			expectTargetPod:        "pod1",
+			expectTargetPod:        "",
 			expectMaxRequestCount:  5,
 			expectMaxThroughput:    120,
 			expectMaxFreeGPUUsage:  80,
@@ -1624,6 +1658,8 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			expectPodFreeGpuUsage:  map[string]float64{"pod1": 80, "pod2": 70},
 		},
 		{
+			// Single pod with unavailable metrics: no imbalance possible, returns nil.
+			// Throughput and GPU metrics fall back to 0 but don't drive routing.
 			name: "metrics error handling - default values",
 			pods: []*v1.Pod{
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
@@ -1631,7 +1667,7 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			metricsMap: map[string]map[string]metrics.MetricValue{
 				// Empty metrics map to trigger errors
 			},
-			expectTargetPod:        "pod1",
+			expectTargetPod:        "",
 			expectMaxRequestCount:  1,
 			expectMaxThroughput:    1,
 			expectMaxFreeGPUUsage:  100,
@@ -1664,6 +1700,97 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			expectPodRequestCounts: map[string]float64{"pod1": 5, "pod2": 7},
 			expectPodThroughputs:   map[string]float64{"pod1": 100, "pod2": 120},
 			expectPodFreeGpuUsage:  map[string]float64{"pod1": 5, "pod2": 0.1}, // Minimum 0.1 when <= 0
+		},
+		{
+			// pod1 has 8 running at 2.0 req/s → score=4s
+			// pod2 has 6 running at 0.3 req/s → score=20s
+			// ratio = 20/4 = 5.0 > 1.5 threshold → route to pod1 (lowest score)
+			// request diff = 2, well below the hard threshold of 16
+			name: "drain rate imbalance - route to lowest time-to-drain pod",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+			},
+			metricsMap: map[string]map[string]metrics.MetricValue{
+				"pod1": {
+					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 8},
+					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
+					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 200},
+					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.3},
+				},
+				"pod2": {
+					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 6},
+					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 0.3},
+					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 30},
+					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.5},
+				},
+			},
+			expectTargetPod:        "pod1",
+			expectMaxRequestCount:  8,
+			expectMaxThroughput:    200,
+			expectMaxFreeGPUUsage:  70,
+			expectPodRequestCounts: map[string]float64{"pod1": 8, "pod2": 6},
+			expectPodThroughputs:   map[string]float64{"pod1": 200, "pod2": 30},
+			expectPodFreeGpuUsage:  map[string]float64{"pod1": 70, "pod2": 50},
+		},
+		{
+			// Both pods have balanced scores (ratio < 1.5) — no routing decision.
+			// pod1: 8/2.0=4s, pod2: 6/1.5=4s → ratio=1.0
+			name: "drain rate balanced - no routing decision",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+			},
+			metricsMap: map[string]map[string]metrics.MetricValue{
+				"pod1": {
+					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 8},
+					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
+					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 200},
+					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.3},
+				},
+				"pod2": {
+					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 6},
+					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 1.5},
+					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 150},
+					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.4},
+				},
+			},
+			expectTargetPod:        "",
+			expectMaxRequestCount:  8,
+			expectMaxThroughput:    200,
+			expectMaxFreeGPUUsage:  70,
+			expectPodRequestCounts: map[string]float64{"pod1": 8, "pod2": 6},
+			expectPodThroughputs:   map[string]float64{"pod1": 200, "pod2": 150},
+			expectPodFreeGpuUsage:  map[string]float64{"pod1": 70, "pod2": 60},
+		},
+		{
+			// Drain rate unavailable for pod2 (missing metric) → skip drain rate scoring entirely.
+			name: "drain rate unavailable - skip scoring, no routing decision",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+			},
+			metricsMap: map[string]map[string]metrics.MetricValue{
+				"pod1": {
+					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 8},
+					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
+					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 200},
+					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.3},
+				},
+				"pod2": {
+					metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 6},
+					// RealtimeRunningRequestsDrainRate1m absent — unavailable
+					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 30},
+					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
+				},
+			},
+			expectTargetPod:        "",
+			expectMaxRequestCount:  8,
+			expectMaxThroughput:    200,
+			expectMaxFreeGPUUsage:  70,
+			expectPodRequestCounts: map[string]float64{"pod1": 8, "pod2": 6},
+			expectPodThroughputs:   map[string]float64{"pod1": 200, "pod2": 30},
+			expectPodFreeGpuUsage:  map[string]float64{"pod1": 70, "pod2": 50},
 		},
 	}
 
@@ -1783,6 +1910,231 @@ func TestIsPodSuitableForPromptLength(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// makePDPod creates a minimal pod with PD role labels and optional annotations.
+func makePDPod(name, roleset, role string, annotations map[string]string) *v1.Pod {
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Labels:      map[string]string{PDRoleSetIdentifier: roleset, PDRoleIdentifier: role},
+			Annotations: annotations,
+		},
+	}
+}
+
+func podNames(pods []*v1.Pod) []string {
+	names := make([]string, len(pods))
+	for i, p := range pods {
+		names[i] = p.Name
+	}
+	return names
+}
+
+func TestCollectAndBucketPods(t *testing.T) {
+	ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "hello world", "req-1", "user")
+	router := &pdRouter{
+		cache:                 cache.NewForTest(),
+		tokenizer:             tokenizer.NewCharacterTokenizer(),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: NewPrefillRequestTracker(),
+		httpClient:            &http.Client{},
+	}
+
+	// Annotations for prompt-length bucketing tests.
+	// promptLength for "hello world" (11 chars with character tokenizer) = 11.
+	annoShort := pdConfigAnnotation(0, 100, false)    // suitable for promptLength=11
+	annoLong := pdConfigAnnotation(1000, 9999, false) // not suitable for promptLength=11
+
+	t.Run("complete roleset included", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = false
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-1", "rs1", "prefill", nil),
+			makePDPod("decode-1", "rs1", "decode", nil),
+		}
+		prefills, decodes, bucketPrefills, bucketDecodes, combined := router.collectAndBucketPods(ctx, pods, 11)
+
+		assert.ElementsMatch(t, []string{"prefill-1"}, podNames(prefills))
+		assert.ElementsMatch(t, []string{"decode-1"}, podNames(decodes))
+		assert.Empty(t, bucketPrefills)
+		assert.Empty(t, bucketDecodes)
+		assert.Empty(t, combined)
+	})
+
+	t.Run("incomplete roleset - only prefill - excluded", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = false
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-only", "rs1", "prefill", nil),
+		}
+		prefills, decodes, _, _, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.Empty(t, prefills)
+		assert.Empty(t, decodes)
+	})
+
+	t.Run("incomplete roleset - only decode - excluded", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = false
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("decode-only", "rs1", "decode", nil),
+		}
+		prefills, decodes, _, _, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.Empty(t, prefills)
+		assert.Empty(t, decodes)
+	})
+
+	t.Run("multiple rolesets - complete ones included, incomplete excluded", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = false
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-rs1", "rs1", "prefill", nil),
+			makePDPod("decode-rs1", "rs1", "decode", nil),
+			makePDPod("prefill-rs2", "rs2", "prefill", nil),
+			makePDPod("decode-rs2", "rs2", "decode", nil),
+			makePDPod("orphan-prefill", "rs3", "prefill", nil), // no matching decode
+		}
+		prefills, decodes, _, _, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.ElementsMatch(t, []string{"prefill-rs1", "prefill-rs2"}, podNames(prefills))
+		assert.ElementsMatch(t, []string{"decode-rs1", "decode-rs2"}, podNames(decodes))
+	})
+
+	t.Run("bucketing: both sides suitable - roleset included in bucketed slices", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = true
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			makePDPod("decode-1", "rs1", "decode", map[string]string{constants.ModelAnnoConfig: annoShort}),
+		}
+		_, _, bucketPrefills, bucketDecodes, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.ElementsMatch(t, []string{"prefill-1"}, podNames(bucketPrefills))
+		assert.ElementsMatch(t, []string{"decode-1"}, podNames(bucketDecodes))
+	})
+
+	t.Run("bucketing: prefill suitable but decode not - roleset excluded from bucketed slices", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = true
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			makePDPod("decode-1", "rs1", "decode", map[string]string{constants.ModelAnnoConfig: annoLong}),
+		}
+		prefills, decodes, bucketPrefills, bucketDecodes, _ := router.collectAndBucketPods(ctx, pods, 11)
+		// Base slices still contain the complete roleset.
+		assert.ElementsMatch(t, []string{"prefill-1"}, podNames(prefills))
+		assert.ElementsMatch(t, []string{"decode-1"}, podNames(decodes))
+		// Bucketed slices must be empty: decode is not suitable so the pair is rejected.
+		assert.Empty(t, bucketPrefills, "half-pair must not appear in bucketed prefills")
+		assert.Empty(t, bucketDecodes, "half-pair must not appear in bucketed decodes")
+	})
+
+	t.Run("bucketing: decode suitable but prefill not - roleset excluded from bucketed slices", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = true
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoLong}),
+			makePDPod("decode-1", "rs1", "decode", map[string]string{constants.ModelAnnoConfig: annoShort}),
+		}
+		_, _, bucketPrefills, bucketDecodes, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.Empty(t, bucketPrefills, "half-pair must not appear in bucketed prefills")
+		assert.Empty(t, bucketDecodes, "half-pair must not appear in bucketed decodes")
+	})
+
+	t.Run("bucketing: neither side suitable - roleset excluded from bucketed slices", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = true
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoLong}),
+			makePDPod("decode-1", "rs1", "decode", map[string]string{constants.ModelAnnoConfig: annoLong}),
+		}
+		_, _, bucketPrefills, bucketDecodes, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.Empty(t, bucketPrefills)
+		assert.Empty(t, bucketDecodes)
+	})
+
+	t.Run("bucketing: multiple rolesets - only fully-suitable roleset enters bucketed slices", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = true
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			// rs1: both suitable
+			makePDPod("prefill-rs1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			makePDPod("decode-rs1", "rs1", "decode", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			// rs2: prefill suitable, decode not
+			makePDPod("prefill-rs2", "rs2", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			makePDPod("decode-rs2", "rs2", "decode", map[string]string{constants.ModelAnnoConfig: annoLong}),
+		}
+		prefills, decodes, bucketPrefills, bucketDecodes, _ := router.collectAndBucketPods(ctx, pods, 11)
+
+		// Only rs1 is fully suitable for the bucket.
+		assert.ElementsMatch(t, []string{"prefill-rs1"}, podNames(bucketPrefills))
+		assert.ElementsMatch(t, []string{"decode-rs1"}, podNames(bucketDecodes))
+		// Because bucketed slices are non-empty, the base slices are overridden with them.
+		assert.ElementsMatch(t, []string{"prefill-rs1"}, podNames(prefills))
+		assert.ElementsMatch(t, []string{"decode-rs1"}, podNames(decodes))
+	})
+
+	t.Run("bucketing disabled: annotations ignored, bucketed slices always empty", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = false
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			makePDPod("decode-1", "rs1", "decode", map[string]string{constants.ModelAnnoConfig: annoShort}),
+		}
+		prefills, decodes, bucketPrefills, bucketDecodes, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.ElementsMatch(t, []string{"prefill-1"}, podNames(prefills))
+		assert.ElementsMatch(t, []string{"decode-1"}, podNames(decodes))
+		assert.Empty(t, bucketPrefills)
+		assert.Empty(t, bucketDecodes)
+	})
+
+	t.Run("bucketing: combined pods collected", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = true
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		annoCombined := pdConfigAnnotation(0, 100, true)
+		pods := []*v1.Pod{
+			makePDPod("prefill-1", "rs1", "prefill", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			makePDPod("decode-1", "rs1", "decode", map[string]string{constants.ModelAnnoConfig: annoShort}),
+			makePDPod("combined-1", "rs2", "combined", map[string]string{constants.ModelAnnoConfig: annoCombined}),
+		}
+		_, _, _, _, combinedPods := router.collectAndBucketPods(ctx, pods, 11)
+		assert.ElementsMatch(t, []string{"combined-1"}, podNames(combinedPods))
+	})
+
+	t.Run("pods missing roleset label are ignored entirely", func(t *testing.T) {
+		old := aibrixPromptLengthBucketing
+		aibrixPromptLengthBucketing = false
+		defer func() { aibrixPromptLengthBucketing = old }()
+
+		pods := []*v1.Pod{
+			{ObjectMeta: metav1.ObjectMeta{Name: "no-roleset", Labels: map[string]string{PDRoleIdentifier: "prefill"}}},
+			makePDPod("prefill-1", "rs1", "prefill", nil),
+			makePDPod("decode-1", "rs1", "decode", nil),
+		}
+		prefills, decodes, _, _, _ := router.collectAndBucketPods(ctx, pods, 11)
+		assert.ElementsMatch(t, []string{"prefill-1"}, podNames(prefills))
+		assert.ElementsMatch(t, []string{"decode-1"}, podNames(decodes))
+	})
 }
 
 // pdConfigAnnotation returns model.aibrix.ai/config annotation JSON for prompt length bucketing.
