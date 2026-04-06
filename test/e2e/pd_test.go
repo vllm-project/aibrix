@@ -38,9 +38,6 @@ import (
 //     prefill response) to the decode pod.
 //  4. Response headers carry both "prefill-target-pod" and "target-pod".
 func TestPDDisaggregationVLLM(t *testing.T) {
-	k8s := newK8sClientForE2E(t)
-	waitForMinRoutablePodsForModel(t, k8s, "default", modelNameVLLM, 2)
-
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
 
@@ -80,9 +77,6 @@ func TestPDDisaggregationVLLM(t *testing.T) {
 // From the test's perspective the observable contract is identical to vLLM —
 // both prefill-target-pod and target-pod headers must be set and must differ.
 func TestPDDisaggregationSGLang(t *testing.T) {
-	k8s := newK8sClientForE2E(t)
-	waitForMinRoutablePodsForModel(t, k8s, "default", modelNameSGLang, 2)
-
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
 
@@ -116,9 +110,6 @@ func TestPDDisaggregationSGLang(t *testing.T) {
 // which carries disaggregated_params (first_gen_tokens, opaque_state) and
 // prompt_token_ids, then forwards those to the decode pod for generation.
 func TestPDDisaggregationTRTLLM(t *testing.T) {
-	k8s := newK8sClientForE2E(t)
-	waitForMinRoutablePodsForModel(t, k8s, "default", modelNameTRTLLM, 2)
-
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
 
@@ -149,9 +140,6 @@ func TestPDDisaggregationTRTLLM(t *testing.T) {
 // TestPDDisaggregationVLLMMultipleRequests sends several requests to verify that the
 // PD router consistently selects valid prefill/decode pod pairs across requests.
 func TestPDDisaggregationVLLMMultipleRequests(t *testing.T) {
-	k8s := newK8sClientForE2E(t)
-	waitForMinRoutablePodsForModel(t, k8s, "default", modelNameVLLM, 2)
-
 	const iterations = 5
 
 	for i := 0; i < iterations; i++ {
