@@ -90,8 +90,14 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Download all image artifacts
-        uses: actions/download-artifact@v4
+      - name: Download image artifacts
+        uses: actions/download-artifact@v5
+        with:
+          # Only the matrix image tarballs (e.g. controller-manager-image). Do not
+          # download Docker buildx cache artifacts (vllm-project~aibrix~*.dockerbuild),
+          # which are unrelated and can fail to extract after retries.
+          pattern: '*-image'
+          merge-multiple: false
 
       - name: Verify image artifacts
         run: |
