@@ -31,62 +31,56 @@ on:
 
 jobs:
   build-images:
+    name: Build image (${{ matrix.image }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        image: [controller-manager, gateway-plugins, runtime, metadata-service]
+        include:
+          - image: controller-manager
+            dockerfile: build/container/Dockerfile
+            context: .
+          - image: gateway-plugins
+            dockerfile: build/container/Dockerfile.gateway
+            context: .
+          - image: runtime
+            dockerfile: build/container/Dockerfile.python
+            context: .
+          - image: metadata-service
+            dockerfile: build/container/Dockerfile.python
+            context: .
+          - image: vllm-mock
+            dockerfile: development/app/Dockerfile
+            context: development/app
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v4
 
       - name: Build ${{ matrix.image }}
-        run: |
-          GIT_COMMIT_HASH=${{ github.sha }} make docker-build-${{ matrix.image }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          tags: aibrix/${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          load: true
 
       - name: Save image
         run: |
           docker save aibrix/${{ matrix.image }}:${{ github.sha }} > ${{ matrix.image }}.tar
 
       - name: Upload image artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.image }}-image
           path: ${{ matrix.image }}.tar
           retention-days: 1
-  
-  build-mock-image:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        image: [vllm-mock]
-    steps:
-      - name: Check out code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Build vllm-mock
-        run: |
-          cd development/app
-          docker build -t aibrix/vllm-mock:${{ github.sha }} -f Dockerfile .
-
-      - name: Save image
-        run: |
-          docker save aibrix/vllm-mock:${{ github.sha }} > vllm-mock.tar
-
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: vllm-mock-image
-          path: vllm-mock.tar
-          retention-days: 1
 
   installation-test:
-    needs: [build-images, build-mock-image]
+    needs: [build-images]
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -97,8 +91,14 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Download all image artifacts
-        uses: actions/download-artifact@v4
+      - name: Download image artifacts
+        uses: actions/download-artifact@v5
+        with:
+          # Only the matrix image tarballs (e.g. controller-manager-image). Do not
+          # download Docker buildx cache artifacts (vllm-project~aibrix~*.dockerbuild),
+          # which are unrelated and can fail to extract after retries.
+          pattern: '*-image'
+          merge-multiple: false
 
       - name: Verify image artifacts
         run: |
@@ -144,16 +144,38 @@ jobs:
             /usr/share/swift
           df -h /
 
+      - name: Cache kind
+        id: cache-kind
+        uses: actions/cache@v4
+        with:
+          path: /tmp/tools/kind
+          key: kind-v0.24.0-${{ runner.os }}-${{ runner.arch }}
+
       - name: Install kind
         run: |
-          [ $(uname -m) = x86_64 ] && curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
-          chmod +x ./kind
-          mv ./kind /usr/local/bin/kind
+          if [ ! -f /tmp/tools/kind ]; then
+            mkdir -p /tmp/tools
+            [ $(uname -m) = x86_64 ] && curl -Lo /tmp/tools/kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+            chmod +x /tmp/tools/kind
+          fi
+          sudo cp /tmp/tools/kind /usr/local/bin/kind
           kind version
+
+      - name: Cache kustomize
+        id: cache-kustomize
+        uses: actions/cache@v4
+        with:
+          path: /tmp/tools/kustomize
+          key: kustomize-v5.4.3-${{ runner.os }}-${{ runner.arch }}
 
       - name: Install kustomize
         run: |
-          curl -L https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v5.4.3/kustomize_v5.4.3_$(go env GOOS)_$(go env GOARCH).tar.gz | tar -xz -C /usr/local/bin/
+          if [ ! -f /tmp/tools/kustomize ]; then
+            mkdir -p /tmp/tools
+            curl -L https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v5.4.3/kustomize_v5.4.3_$(go env GOOS)_$(go env GOARCH).tar.gz | tar -xz -C /tmp/tools/
+            chmod +x /tmp/tools/kustomize
+          fi
+          sudo cp /tmp/tools/kustomize /usr/local/bin/kustomize
           kustomize version
 
       - name: Set up testing environment
@@ -164,17 +186,27 @@ jobs:
 
       - name: Load image into Kind
         run: |
+          set -euo pipefail
+          sha="${{ github.sha }}"
+          # Load tarballs into the local Docker daemon in parallel (I/O-bound).
           for image in controller-manager gateway-plugins runtime metadata-service vllm-mock; do
-              docker load < ${image}-image/${image}.tar
+            docker load < "${image}-image/${image}.tar" &
+          done
+          wait
 
-              # Retag the image
-              # This is for application integration, since it is not that easy to override all commits in manifest
-              # It is better to use nightly to represent the latest image
-              docker tag aibrix/${image}:${{ github.sha }} aibrix/${image}:nightly
+          # Same digest as :sha; manifests still reference :nightly in places (e.g. job templates).
+          for image in controller-manager gateway-plugins runtime metadata-service vllm-mock; do
+            docker tag "aibrix/${image}:${sha}" "aibrix/${image}:nightly"
           done
 
-          kind load docker-image aibrix/controller-manager:${{ github.sha }} aibrix/gateway-plugins:${{ github.sha }} aibrix/metadata-service:${{ github.sha }} aibrix/runtime:${{ github.sha }} aibrix/vllm-mock:${{ github.sha }} --name installation-test
-          kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly aibrix/vllm-mock:nightly --name installation-test
+          # One kind load transfers all refs to the cluster nodes (two invocations duplicated work).
+          kind load docker-image \
+            "aibrix/controller-manager:${sha}" "aibrix/controller-manager:nightly" \
+            "aibrix/gateway-plugins:${sha}" "aibrix/gateway-plugins:nightly" \
+            "aibrix/metadata-service:${sha}" "aibrix/metadata-service:nightly" \
+            "aibrix/runtime:${sha}" "aibrix/runtime:nightly" \
+            "aibrix/vllm-mock:${sha}" "aibrix/vllm-mock:nightly" \
+            --name installation-test
 
       - name: Deploy controller with the built image
         run: |
