@@ -35,8 +35,10 @@ import (
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -199,4 +201,44 @@ func validateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expecte
 			return false, nil
 		})
 	assert.NoError(t, err, "timeout waiting for all pods to be ready")
+}
+
+// newK8sClientForE2E returns a clientset using the same kubeconfig resolution as kubectl.
+func newK8sClientForE2E(t *testing.T) *kubernetes.Clientset {
+	t.Helper()
+	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		clientcmd.NewDefaultClientConfigLoadingRules(),
+		&clientcmd.ConfigOverrides{},
+	).ClientConfig()
+	require.NoError(t, err, "failed to load kubeconfig for e2e")
+	cs, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+	return cs
+}
+
+// waitForMinRoutablePodsForModel waits until at least minReady pods for the given model
+// label are routable (PodIP set, Ready=True). The gateway rejects requests with 503 until then.
+func waitForMinRoutablePodsForModel(t *testing.T, client *kubernetes.Clientset, namespace, modelName string, minReady int) {
+	t.Helper()
+	selector := constants.ModelLabelName + "=" + modelName
+	err := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, 5*time.Minute, true,
+		func(ctx context.Context) (bool, error) {
+			podList, err := client.CoreV1().Pods(namespace).List(ctx, v1.ListOptions{LabelSelector: selector})
+			if err != nil {
+				return false, err
+			}
+			ready := 0
+			for i := range podList.Items {
+				if utils.FilterReadyPod(&podList.Items[i]) {
+					ready++
+				}
+			}
+			if ready >= minReady {
+				t.Logf("model %s: %d routable pod(s), need %d", modelName, ready, minReady)
+				return true, nil
+			}
+			t.Logf("waiting for routable pods for model %s: %d/%d ready", modelName, ready, minReady)
+			return false, nil
+		})
+	require.NoError(t, err, "timeout waiting for at least %d routable pod(s) for model %s", minReady, modelName)
 }
