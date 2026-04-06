@@ -106,10 +106,10 @@ func TestPDDisaggregationTRTLLM(t *testing.T) {
 func TestPDDisaggregationVLLMMultipleRequests(t *testing.T) {
 	const iterations = 5
 
-	for i := 0; i < iterations; i++ {
-		var dst *http.Response
-		client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
 
+	for i := 0; i < iterations; i++ {
 		_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 			Messages: []openai.ChatCompletionMessageParamUnion{
 				openai.UserMessage("vLLM PD disaggregation stress test message"),

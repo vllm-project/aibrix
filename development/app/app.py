@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from random import randint
 import os
+import uuid
 import json
 from typing import Optional
 
@@ -24,10 +25,6 @@ NAMESPACE = os.getenv("POD_NAMESPACE", "default")
 DEFAULT_REPLICAS = int(os.getenv("DEFAULT_REPLICAS", "1"))
 SIMULATION = os.getenv("SIMULATION", "disabled")
 STANDALONE_MODE = os.getenv("STANDALONE_MODE", "false").lower() in ("true", "1", "yes")
-# Mirrors the pod label model.aibrix.ai/engine. Valid values: vllm, sglang, trtllm.
-# Used to identify the inference engine for non-PD requests where the payload
-# has no engine-specific fields. PD requests are always identified by payload inspection.
-LLM_ENGINE = os.getenv("LLM_ENGINE", "vllm")
 
 # Optional kubernetes import (only needed in Kubernetes environment)
 if not STANDALONE_MODE:
@@ -200,37 +197,16 @@ def _is_prefill_request(data: dict) -> bool:
     return isinstance(kv, dict) and kv.get("do_remote_decode") is True
 
 
-def _is_decode_request(data: dict) -> bool:
-    """Detect a vLLM PD decode request (gateway sets remote_host after prefill)."""
-    kv = data.get("kv_transfer_params")
-    return isinstance(kv, dict) and kv.get("remote_host") is not None
-
-
 def _mock_prefill_kv_transfer_params() -> dict:
     """Return mock kv_transfer_params as a real vLLM prefill pod would include in its response."""
     return {
         "do_remote_decode": False,
         "do_remote_prefill": True,
-        "remote_engine_id": "mock-engine-" + "".join(
-            random.choices("0123456789abcdef", k=8)
-        ),
+        "remote_engine_id": "mock-engine-" + uuid.uuid4().hex[:8],
         "remote_block_ids": list(range(random.randint(1, 8))),
         "remote_host": None,   # gateway will fill this in with prefill pod IP
         "remote_port": 8200,
     }
-
-
-# =============================================================================
-# PD DISAGGREGATION HELPERS (SGLang)
-# =============================================================================
-
-def _is_sglang_request(data: dict) -> bool:
-    """Detect an SGLang PD request (gateway sets bootstrap_host/port/room on the prefill)."""
-    return (
-        "bootstrap_host" in data
-        and "bootstrap_port" in data
-        and "bootstrap_room" in data
-    )
 
 
 # =============================================================================
@@ -241,12 +217,6 @@ def _is_trtllm_prefill_request(data: dict) -> bool:
     """Detect a TRT-LLM PD prefill request (disaggregated_params.request_type == context_only)."""
     disagg = data.get("disaggregated_params")
     return isinstance(disagg, dict) and disagg.get("request_type") == "context_only"
-
-
-def _is_trtllm_decode_request(data: dict) -> bool:
-    """Detect a TRT-LLM PD decode request (disaggregated_params.request_type == generation_only)."""
-    disagg = data.get("disaggregated_params")
-    return isinstance(disagg, dict) and disagg.get("request_type") == "generation_only"
 
 
 def _mock_trtllm_prefill_disaggregated_params(data: dict) -> dict:
@@ -262,6 +232,20 @@ def _mock_trtllm_prefill_disaggregated_params(data: dict) -> dict:
         "first_gen_tokens": [random.randint(100, 32000)],
         "opaque_state": base64.b64encode(bytes(random.randint(8, 32))).decode(),
     }
+
+
+def _apply_pd_prefill_fields(response: dict, payload: dict, input_tokens: int) -> None:
+    """Add engine-specific fields to a non-streaming completion response for PD prefill probes.
+
+    vLLM (SHFS): prefill returns kv_transfer_params.
+    TRT-LLM: prefill returns disaggregated_params and prompt_token_ids for the decode request.
+    SGLang: the gateway issues prefill asynchronously and does not rely on this body, so we add nothing.
+    """
+    if _is_prefill_request(payload):
+        response["kv_transfer_params"] = _mock_prefill_kv_transfer_params()
+    elif _is_trtllm_prefill_request(payload):
+        response["disaggregated_params"] = _mock_trtllm_prefill_disaggregated_params(payload)
+        response["prompt_token_ids"] = list(range(input_tokens))
 
 
 def _is_image_request(data: dict) -> bool:
@@ -601,17 +585,7 @@ def completion():
                 },
             }
 
-            # PD disaggregation: engine-specific prefill response fields
-            if _is_prefill_request(request.json):
-                # vLLM SHFS: prefill pod returns kv_transfer_params
-                response["kv_transfer_params"] = _mock_prefill_kv_transfer_params()
-            elif _is_trtllm_prefill_request(request.json):
-                # TRT-LLM: prefill pod returns disaggregated_params + prompt_token_ids.
-                # The gateway reads these to build the decode request.
-                response["disaggregated_params"] = _mock_trtllm_prefill_disaggregated_params(request.json)
-                response["prompt_token_ids"] = list(range(input_tokens))
-            # SGLang: gateway fires prefill async and ignores the response body,
-            # so no extra fields are needed.
+            _apply_pd_prefill_fields(response, request.json, input_tokens)
 
             return jsonify(response), 200
     except Exception as e:
@@ -853,18 +827,7 @@ def chat_completions():
                 ],
             }
 
-            # PD disaggregation: engine-specific prefill response fields
-            if _is_prefill_request(request.json):
-                # vLLM SHFS: prefill pod returns kv_transfer_params so the gateway
-                # can forward them (with remote_host filled in) to the decode pod.
-                response["kv_transfer_params"] = _mock_prefill_kv_transfer_params()
-            elif _is_trtllm_prefill_request(request.json):
-                # TRT-LLM: prefill pod returns disaggregated_params + prompt_token_ids.
-                # The gateway reads these to build the decode request.
-                response["disaggregated_params"] = _mock_trtllm_prefill_disaggregated_params(request.json)
-                response["prompt_token_ids"] = list(range(input_tokens))
-            # SGLang: gateway fires prefill async and ignores the response body,
-            # so no extra fields are needed.
+            _apply_pd_prefill_fields(response, request.json, input_tokens)
 
             return jsonify(response), 200
     except Exception as e:
