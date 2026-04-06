@@ -27,7 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestPDDisaggregation verifies that the PD (prefill-decode disaggregation) routing
+// TestPDDisaggregationVLLM verifies that the PD (prefill-decode disaggregation) routing
 // strategy performs a prefill request before routing the decode request to a separate pod.
 //
 // Expected flow:
@@ -37,20 +37,20 @@ import (
 //  3. Gateway forwards the original request (with kv_transfer_params updated from the
 //     prefill response) to the decode pod.
 //  4. Response headers carry both "prefill-target-pod" and "target-pod".
-func TestPDDisaggregation(t *testing.T) {
+func TestPDDisaggregationVLLM(t *testing.T) {
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
 
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage("Say this is a test for PD disaggregation"),
+			openai.UserMessage("Say this is a test for vLLM PD disaggregation"),
 		},
-		Model: modelName,
+		Model: modelNameVLLM,
 	})
-	require.NoError(t, err, "PD chat completion request failed")
+	require.NoError(t, err, "vLLM PD chat completion request failed")
 
 	// Validate the response payload.
-	assert.Equal(t, modelName, chatCompletion.Model)
+	assert.Equal(t, modelNameVLLM, chatCompletion.Model)
 	assert.NotEmpty(t, chatCompletion.Choices, "chat completion returned no choices")
 	assert.NotEmpty(t, chatCompletion.Choices[0].Message.Content, "chat completion returned empty message")
 
@@ -66,12 +66,80 @@ func TestPDDisaggregation(t *testing.T) {
 	assert.NotEqual(t, prefillPod, decodePod,
 		"prefill pod and decode pod should be different (got same pod: %s)", decodePod)
 
-	t.Logf("prefill-target-pod: %s, target-pod (decode): %s", prefillPod, decodePod)
+	t.Logf("vLLM — prefill-target-pod: %s, target-pod (decode): %s", prefillPod, decodePod)
 }
 
-// TestPDDisaggregationMultipleRequests sends several requests to verify that the
+// TestPDDisaggregationSGLang verifies PD routing for the SGLang engine.
+//
+// SGLang uses an async prefill: the gateway fires the prefill request in a
+// background goroutine (bootstrap_host/port/room coordinates KV transfer) and
+// immediately routes the decode request without waiting for the prefill response.
+// From the test's perspective the observable contract is identical to vLLM —
+// both prefill-target-pod and target-pod headers must be set and must differ.
+func TestPDDisaggregationSGLang(t *testing.T) {
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+
+	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("Say this is a test for SGLang PD disaggregation"),
+		},
+		Model: modelNameSGLang,
+	})
+	require.NoError(t, err, "SGLang PD chat completion request failed")
+
+	assert.Equal(t, modelNameSGLang, chatCompletion.Model)
+	assert.NotEmpty(t, chatCompletion.Choices, "chat completion returned no choices")
+	assert.NotEmpty(t, chatCompletion.Choices[0].Message.Content, "chat completion returned empty message")
+
+	decodePod := dst.Header.Get("target-pod")
+	assert.NotEmpty(t, decodePod, "target-pod header must be set (decode pod)")
+
+	prefillPod := dst.Header.Get("prefill-target-pod")
+	assert.NotEmpty(t, prefillPod, "prefill-target-pod header must be set")
+
+	assert.NotEqual(t, prefillPod, decodePod,
+		"prefill pod and decode pod should be different (got same pod: %s)", decodePod)
+
+	t.Logf("SGLang — prefill-target-pod: %s, target-pod (decode): %s", prefillPod, decodePod)
+}
+
+// TestPDDisaggregationTRTLLM verifies PD routing for the TensorRT-LLM engine.
+//
+// TRT-LLM uses a synchronous prefill: the gateway waits for the prefill response
+// which carries disaggregated_params (first_gen_tokens, opaque_state) and
+// prompt_token_ids, then forwards those to the decode pod for generation.
+func TestPDDisaggregationTRTLLM(t *testing.T) {
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+
+	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("Say this is a test for TensorRT-LLM PD disaggregation"),
+		},
+		Model: modelNameTRTLLM,
+	})
+	require.NoError(t, err, "TRT-LLM PD chat completion request failed")
+
+	assert.Equal(t, modelNameTRTLLM, chatCompletion.Model)
+	assert.NotEmpty(t, chatCompletion.Choices, "chat completion returned no choices")
+	assert.NotEmpty(t, chatCompletion.Choices[0].Message.Content, "chat completion returned empty message")
+
+	decodePod := dst.Header.Get("target-pod")
+	assert.NotEmpty(t, decodePod, "target-pod header must be set (decode pod)")
+
+	prefillPod := dst.Header.Get("prefill-target-pod")
+	assert.NotEmpty(t, prefillPod, "prefill-target-pod header must be set")
+
+	assert.NotEqual(t, prefillPod, decodePod,
+		"prefill pod and decode pod should be different (got same pod: %s)", decodePod)
+
+	t.Logf("TRT-LLM — prefill-target-pod: %s, target-pod (decode): %s", prefillPod, decodePod)
+}
+
+// TestPDDisaggregationVLLMMultipleRequests sends several requests to verify that the
 // PD router consistently selects valid prefill/decode pod pairs across requests.
-func TestPDDisaggregationMultipleRequests(t *testing.T) {
+func TestPDDisaggregationVLLMMultipleRequests(t *testing.T) {
 	const iterations = 5
 
 	for i := 0; i < iterations; i++ {
@@ -80,11 +148,11 @@ func TestPDDisaggregationMultipleRequests(t *testing.T) {
 
 		_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 			Messages: []openai.ChatCompletionMessageParamUnion{
-				openai.UserMessage("PD disaggregation stress test message"),
+				openai.UserMessage("vLLM PD disaggregation stress test message"),
 			},
-			Model: modelName,
+			Model: modelNameVLLM,
 		})
-		require.NoError(t, err, "PD chat completion request %d failed", i)
+		require.NoError(t, err, "vLLM PD chat completion request %d failed", i)
 
 		decodePod := dst.Header.Get("target-pod")
 		prefillPod := dst.Header.Get("prefill-target-pod")

@@ -24,6 +24,10 @@ NAMESPACE = os.getenv("POD_NAMESPACE", "default")
 DEFAULT_REPLICAS = int(os.getenv("DEFAULT_REPLICAS", "1"))
 SIMULATION = os.getenv("SIMULATION", "disabled")
 STANDALONE_MODE = os.getenv("STANDALONE_MODE", "false").lower() in ("true", "1", "yes")
+# Mirrors the pod label model.aibrix.ai/engine. Valid values: vllm, sglang, trtllm.
+# Used to identify the inference engine for non-PD requests where the payload
+# has no engine-specific fields. PD requests are always identified by payload inspection.
+LLM_ENGINE = os.getenv("LLM_ENGINE", "vllm")
 
 # Optional kubernetes import (only needed in Kubernetes environment)
 if not STANDALONE_MODE:
@@ -213,6 +217,50 @@ def _mock_prefill_kv_transfer_params() -> dict:
         "remote_block_ids": list(range(random.randint(1, 8))),
         "remote_host": None,   # gateway will fill this in with prefill pod IP
         "remote_port": 8200,
+    }
+
+
+# =============================================================================
+# PD DISAGGREGATION HELPERS (SGLang)
+# =============================================================================
+
+def _is_sglang_request(data: dict) -> bool:
+    """Detect an SGLang PD request (gateway sets bootstrap_host/port/room on the prefill)."""
+    return (
+        "bootstrap_host" in data
+        and "bootstrap_port" in data
+        and "bootstrap_room" in data
+    )
+
+
+# =============================================================================
+# PD DISAGGREGATION HELPERS (TensorRT-LLM)
+# =============================================================================
+
+def _is_trtllm_prefill_request(data: dict) -> bool:
+    """Detect a TRT-LLM PD prefill request (disaggregated_params.request_type == context_only)."""
+    disagg = data.get("disaggregated_params")
+    return isinstance(disagg, dict) and disagg.get("request_type") == "context_only"
+
+
+def _is_trtllm_decode_request(data: dict) -> bool:
+    """Detect a TRT-LLM PD decode request (disaggregated_params.request_type == generation_only)."""
+    disagg = data.get("disaggregated_params")
+    return isinstance(disagg, dict) and disagg.get("request_type") == "generation_only"
+
+
+def _mock_trtllm_prefill_disaggregated_params(data: dict) -> dict:
+    """Return mock disaggregated_params as a real TRT-LLM prefill pod would include in its response.
+
+    The gateway reads this, changes request_type to generation_only, and forwards
+    it (along with prompt_token_ids) to the decode pod.
+    """
+    disagg_request_id = data.get("disaggregated_params", {}).get("disagg_request_id", 0)
+    return {
+        "request_type": "context_only",  # gateway overrides this to generation_only for decode
+        "disagg_request_id": disagg_request_id,
+        "first_gen_tokens": [random.randint(100, 32000)],
+        "opaque_state": base64.b64encode(bytes(random.randint(8, 32))).decode(),
     }
 
 
@@ -553,9 +601,17 @@ def completion():
                 },
             }
 
-            # PD disaggregation (vLLM SHFS): prefill pod returns kv_transfer_params
+            # PD disaggregation: engine-specific prefill response fields
             if _is_prefill_request(request.json):
+                # vLLM SHFS: prefill pod returns kv_transfer_params
                 response["kv_transfer_params"] = _mock_prefill_kv_transfer_params()
+            elif _is_trtllm_prefill_request(request.json):
+                # TRT-LLM: prefill pod returns disaggregated_params + prompt_token_ids.
+                # The gateway reads these to build the decode request.
+                response["disaggregated_params"] = _mock_trtllm_prefill_disaggregated_params(request.json)
+                response["prompt_token_ids"] = list(range(input_tokens))
+            # SGLang: gateway fires prefill async and ignores the response body,
+            # so no extra fields are needed.
 
             return jsonify(response), 200
     except Exception as e:
@@ -797,10 +853,18 @@ def chat_completions():
                 ],
             }
 
-            # PD disaggregation (vLLM SHFS): prefill pod returns kv_transfer_params
-            # so the gateway can forward them (with remote_host filled in) to the decode pod.
+            # PD disaggregation: engine-specific prefill response fields
             if _is_prefill_request(request.json):
+                # vLLM SHFS: prefill pod returns kv_transfer_params so the gateway
+                # can forward them (with remote_host filled in) to the decode pod.
                 response["kv_transfer_params"] = _mock_prefill_kv_transfer_params()
+            elif _is_trtllm_prefill_request(request.json):
+                # TRT-LLM: prefill pod returns disaggregated_params + prompt_token_ids.
+                # The gateway reads these to build the decode request.
+                response["disaggregated_params"] = _mock_trtllm_prefill_disaggregated_params(request.json)
+                response["prompt_token_ids"] = list(range(input_tokens))
+            # SGLang: gateway fires prefill async and ignores the response body,
+            # so no extra fields are needed.
 
             return jsonify(response), 200
     except Exception as e:

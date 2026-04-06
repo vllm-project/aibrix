@@ -1,19 +1,20 @@
-# PD (Prefill-Decode) disaggregation mock StormService for e2e tests.
+# TensorRT-LLM PD (Prefill-Decode) disaggregation mock StormService for e2e tests.
 #
 # A single StormService replica with two roles ("prefill" and "decode") backed
 # by the vllm-mock image.  The gateway PD router pairs pods from the same
 # roleset (auto-assigned by the StormService controller as "roleset-name") and
-# routes the prefill probe to the prefill pod before sending the full request
-# to the decode pod.
+# routes the prefill request synchronously to the prefill pod (which returns
+# disaggregated_params + prompt_token_ids), then forwards those params to the
+# decode pod for generation.
 #
 # Apply alongside components.yaml (provides mocked-app-sa and RBAC).
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: mock-llama2-7b-pd
+  name: mock-llama2-7b-pd-trtllm
   namespace: default
   labels:
-    model.aibrix.ai/name: "llama2-7b"
+    model.aibrix.ai/name: "llama2-7b-trtllm"
     model.aibrix.ai/port: "8000"
 spec:
   replicas: 1
@@ -22,11 +23,11 @@ spec:
   stateful: true
   selector:
     matchLabels:
-      app: "mock-llama2-7b-pd"
+      app: "mock-llama2-7b-pd-trtllm"
   template:
     metadata:
       labels:
-        app: "mock-llama2-7b-pd"
+        app: "mock-llama2-7b-pd-trtllm"
       annotations:
         model.aibrix.ai/config: |
           {
@@ -45,8 +46,9 @@ spec:
           template:
             metadata:
               labels:
-                model.aibrix.ai/name: "llama2-7b"
+                model.aibrix.ai/name: "llama2-7b-trtllm"
                 model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: trtllm
                 adapter.model.aibrix.ai/enabled: "true"
             spec:
               serviceAccountName: mocked-app-sa
@@ -56,6 +58,8 @@ spec:
                   ports:
                     - containerPort: 8000
                   env:
+                    - name: LLM_ENGINE
+                      value: trtllm
                     - name: DEPLOYMENT_NAME
                       valueFrom:
                         fieldRef:
@@ -80,7 +84,7 @@ spec:
                     - "8080"
                   env:
                     - name: INFERENCE_ENGINE
-                      value: vllm
+                      value: trtllm
                     - name: INFERENCE_ENGINE_ENDPOINT
                       value: http://localhost:8000
                   ports:
@@ -116,8 +120,9 @@ spec:
           template:
             metadata:
               labels:
-                model.aibrix.ai/name: "llama2-7b"
+                model.aibrix.ai/name: "llama2-7b-trtllm"
                 model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: trtllm
                 adapter.model.aibrix.ai/enabled: "true"
             spec:
               serviceAccountName: mocked-app-sa
@@ -127,6 +132,8 @@ spec:
                   ports:
                     - containerPort: 8000
                   env:
+                    - name: LLM_ENGINE
+                      value: trtllm
                     - name: DEPLOYMENT_NAME
                       valueFrom:
                         fieldRef:
@@ -151,7 +158,7 @@ spec:
                     - "8080"
                   env:
                     - name: INFERENCE_ENGINE
-                      value: vllm
+                      value: trtllm
                     - name: INFERENCE_ENGINE_ENDPOINT
                       value: http://localhost:8000
                   ports:
