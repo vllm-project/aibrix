@@ -131,10 +131,11 @@ func TestPrefixCacheRouting(t *testing.T) {
 	t.Logf("req: %s, target pod: %v\n", req, targetPod2)
 	assert.Equal(t, targetPod, targetPod2)
 
-	// #3 request - new request, match to random pod
+	// #3 request - new request with a completely different prefix, should route to a different pod
 	var count int
 	for count < 5 {
-		generateMessage := fmt.Sprintf("prefix-cache routing algorithm test message, ensure test message is longer than 128 bytes!! this is %v message! 这是测试消息！", rand.Intn(1000))
+		generateMessage := fmt.Sprintf("%d: completely different request prefix to avoid cache hits between "+
+			"iterations, and padding to exceed 128 bytes for prefix cache routing test!!", rand.Intn(1000))
 		targetPod3 := getTargetPodFromChatCompletion(t, generateMessage, "prefix-cache")
 		t.Logf("req: %s, target pod from #3 request: %v\n", generateMessage, targetPod3)
 		if targetPod != targetPod3 {
