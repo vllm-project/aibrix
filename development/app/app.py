@@ -186,6 +186,36 @@ MOCK_PNG_B64 = (
 _IMAGE_MODEL_KEYWORDS = {"image", "edit", "diffusion", "qwen-image", "z-image"}
 
 
+# =============================================================================
+# PD DISAGGREGATION HELPERS (vLLM SHFS mode)
+# =============================================================================
+
+def _is_prefill_request(data: dict) -> bool:
+    """Detect a vLLM PD prefill request (gateway sets do_remote_decode=true)."""
+    kv = data.get("kv_transfer_params")
+    return isinstance(kv, dict) and kv.get("do_remote_decode") is True
+
+
+def _is_decode_request(data: dict) -> bool:
+    """Detect a vLLM PD decode request (gateway sets remote_host after prefill)."""
+    kv = data.get("kv_transfer_params")
+    return isinstance(kv, dict) and kv.get("remote_host") is not None
+
+
+def _mock_prefill_kv_transfer_params() -> dict:
+    """Return mock kv_transfer_params as a real vLLM prefill pod would include in its response."""
+    return {
+        "do_remote_decode": False,
+        "do_remote_prefill": True,
+        "remote_engine_id": "mock-engine-" + "".join(
+            random.choices("0123456789abcdef", k=8)
+        ),
+        "remote_block_ids": list(range(random.randint(1, 8))),
+        "remote_host": None,   # gateway will fill this in with prefill pod IP
+        "remote_port": 8200,
+    }
+
+
 def _is_image_request(data: dict) -> bool:
     """Detect if a /v1/chat/completions request is for image gen/edit (vLLM-Omni)."""
     model = (data.get("model") or "").lower()
@@ -522,6 +552,11 @@ def completion():
                     "total_tokens": input_tokens + output_tokens,
                 },
             }
+
+            # PD disaggregation (vLLM SHFS): prefill pod returns kv_transfer_params
+            if _is_prefill_request(request.json):
+                response["kv_transfer_params"] = _mock_prefill_kv_transfer_params()
+
             return jsonify(response), 200
     except Exception as e:
         err = {
@@ -761,6 +796,12 @@ def chat_completions():
                     }
                 ],
             }
+
+            # PD disaggregation (vLLM SHFS): prefill pod returns kv_transfer_params
+            # so the gateway can forward them (with remote_host filled in) to the decode pod.
+            if _is_prefill_request(request.json):
+                response["kv_transfer_params"] = _mock_prefill_kv_transfer_params()
+
             return jsonify(response), 200
     except Exception as e:
         err = {
