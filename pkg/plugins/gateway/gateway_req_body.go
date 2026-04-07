@@ -97,7 +97,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		routingCtx.Algorithm = routingAlgorithm
 	}
 
-	headers := []*configPb.HeaderValueOption{}
+	// Pre-allocate for the routing path (4 headers: strategy, target-pod, content-length, X-Request-Id).
+	headers := make([]*configPb.HeaderValueOption, 0, 4)
 
 	// Path rewriting for image/video generation based on engine type
 	// xdit engine uses /generate and /generatevideo endpoints
