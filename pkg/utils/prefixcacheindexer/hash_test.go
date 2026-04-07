@@ -220,8 +220,7 @@ func BenchmarkPrefixHashTableMatchPrefix(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-for i := 0; i < b.N; i++ {
-		// MatchPrefix mutates readyPods; use a fresh copy each iteration.
+	for i := 0; i < b.N; i++ {
 		pods := make(map[string]struct{}, len(readyPods))
 		for k := range readyPods {
 			pods[k] = struct{}{}
