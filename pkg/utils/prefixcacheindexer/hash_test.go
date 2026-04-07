@@ -153,3 +153,118 @@ func TestHashChaining(t *testing.T) {
 	assert.NotEqual(t, hashes1[0], hashes5[0]) // First block different
 	assert.NotEqual(t, hashes1[1], hashes5[1]) // Second block also different due to chaining
 }
+
+func BenchmarkGetPrefixHashes(b *testing.B) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+	tokens := make([]byte, 1024)
+	for i := range tokens {
+		tokens[i] = byte(i % 256)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = cache.GetPrefixHashes(tokens)
+	}
+}
+
+func BenchmarkPrefixHashTableAddPrefix(b *testing.B) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+	model := "m1"
+	podPrefix := "pod-"
+	tokens := make([]byte, 1024)
+	for i := range tokens {
+		tokens[i] = byte((i * 31) % 256)
+	}
+	prefixHashes := cache.GetPrefixHashes(tokens)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cache.AddPrefix(prefixHashes, model, fmt.Sprintf("%s%d", podPrefix, i))
+	}
+}
+
+func BenchmarkPrefixHashTableMatchPrefix(b *testing.B) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+	model := "m1"
+	tokens := make([]byte, 1024)
+	for i := range tokens {
+		tokens[i] = byte((i * 17) % 256)
+	}
+	prefixHashes := cache.GetPrefixHashes(tokens)
+
+	for i := 0; i < 16; i++ {
+		cache.AddPrefix(prefixHashes, model, fmt.Sprintf("p%d", i))
+	}
+
+	readyPods := make(map[string]struct{}, 24)
+	for i := 0; i < 16; i++ {
+		readyPods[fmt.Sprintf("p%d", i)] = struct{}{}
+	}
+	for i := 0; i < 8; i++ {
+		readyPods[fmt.Sprintf("other-%d", i)] = struct{}{}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = cache.MatchPrefix(tokens, model, readyPods)
+	}
+}
+
+func BenchmarkPrefixHashTableAddAndMatchParallel(b *testing.B) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+	model := "m1"
+	seedTokens := make([]byte, 1024)
+	for i := range seedTokens {
+		seedTokens[i] = byte((i * 29) % 256)
+	}
+	seedHashes := cache.GetPrefixHashes(seedTokens)
+
+	// Seed cache with a baseline pod so MatchPrefix can observe hits.
+	cache.AddPrefix(seedHashes, model, "p0")
+
+	allReadyPods := make(map[string]struct{}, 24)
+	for i := 0; i < 16; i++ {
+		allReadyPods[fmt.Sprintf("p%d", i)] = struct{}{}
+	}
+	for i := 0; i < 8; i++ {
+		allReadyPods[fmt.Sprintf("other-%d", i)] = struct{}{}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		localIter := 0
+		for pb.Next() {
+			pod := fmt.Sprintf("p%d", localIter%16)
+			cache.AddPrefix(seedHashes, model, pod)
+
+			// MatchPrefix mutates readyPods; use a fresh copy each iteration.
+			readyPods := make(map[string]struct{}, len(allReadyPods))
+			for k := range allReadyPods {
+				readyPods[k] = struct{}{}
+			}
+			_, _ = cache.MatchPrefix(seedTokens, model, readyPods)
+
+			localIter++
+		}
+	})
+}
