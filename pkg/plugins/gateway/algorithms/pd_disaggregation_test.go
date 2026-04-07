@@ -79,7 +79,7 @@ func TestPDRouter_Route(t *testing.T) {
 
 	r := pdRouter{
 		cache:                 cache.NewForTest(),
-		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable()},
+		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:prefixcacheindexer.NewPrefixHashTable()},
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            &http.Client{},
@@ -275,7 +275,7 @@ func TestFilterPrefillDecodePods(t *testing.T) {
 
 	r := pdRouter{
 		cache:                 cache.NewForTest(),
-		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable()},
+		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:prefixcacheindexer.NewPrefixHashTable()},
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		selectionCounts:       map[string]int64{},
@@ -336,7 +336,7 @@ func TestScorePrefillPods(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create router with real dependencies
 			r := &pdRouter{
-				prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable()},
+				prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:prefixcacheindexer.NewPrefixHashTable()},
 				prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 				prefillRequestTracker: NewPrefillRequestTracker(),
 			}
@@ -371,17 +371,17 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 
 	t.Run("pod with higher prefix match wins within roleset", func(t *testing.T) {
 		tbl := prefixcacheindexer.NewPrefixHashTable()
-		tok := tokenizer.NewCharacterTokenizer()
 		tracker := NewPrefillRequestTracker()
 
-		// Seed pod1 with the full prefix so it gets a 100% match.
+		// Seed pod1 using the same token representation that prepare() uses (character tokenizer).
+		tok := tokenizer.NewCharacterTokenizer()
 		tokens, err := tok.TokenizeInputText(ctx.Message)
 		assert.NoError(t, err)
 		_, hashes := tbl.MatchPrefix(tokens, ctx.Model, map[string]struct{}{"pod1": {}})
 		tbl.AddPrefix(hashes, ctx.Model, "pod1")
 
 		r := &pdRouter{
-			prefillPolicy:         &prefixCachePrefillPolicy{tok: tok, prefixCacheIndexer: tbl},
+			prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: tbl},
 			prefixCacheIndexer:    tbl,
 			prefillRequestTracker: tracker,
 		}
@@ -397,7 +397,7 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 		addRequests(tracker, "pod2", 5)
 
 		r := &pdRouter{
-			prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: tbl},
+			prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:tbl},
 			prefixCacheIndexer:    tbl,
 			prefillRequestTracker: tracker,
 		}
@@ -414,7 +414,7 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 		addRequests(tracker, "pod2", 1000)
 
 		r := &pdRouter{
-			prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: tbl},
+			prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:tbl},
 			prefixCacheIndexer:    tbl,
 			prefillRequestTracker: tracker,
 		}
@@ -427,7 +427,7 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 	t.Run("multiple rolesets return one winner per roleset", func(t *testing.T) {
 		tbl := prefixcacheindexer.NewPrefixHashTable()
 		r := &pdRouter{
-			prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: tbl},
+			prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:tbl},
 			prefixCacheIndexer:    tbl,
 			prefillRequestTracker: NewPrefillRequestTracker(),
 		}
@@ -442,7 +442,7 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 	t.Run("prefix hashes are returned", func(t *testing.T) {
 		tbl := prefixcacheindexer.NewPrefixHashTable()
 		r := &pdRouter{
-			prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: tbl},
+			prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:tbl},
 			prefixCacheIndexer:    tbl,
 			prefillRequestTracker: NewPrefillRequestTracker(),
 		}
@@ -454,7 +454,7 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 	t.Run("empty pod list returns empty scores", func(t *testing.T) {
 		tbl := prefixcacheindexer.NewPrefixHashTable()
 		r := &pdRouter{
-			prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: tbl},
+			prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:tbl},
 			prefixCacheIndexer:    tbl,
 			prefillRequestTracker: NewPrefillRequestTracker(),
 		}
@@ -630,14 +630,10 @@ func TestDoPrefillRequest(t *testing.T) {
 	}
 
 	createRouter := func(pods []*v1.Pod, metricsMap map[string]map[string]metrics.MetricValue) *pdRouter {
-		tokenizerObj, err := tokenizer.NewTokenizer("character", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
 		c := cache.NewWithPodsMetricsForTest(pods, "m1", metricsMap)
 		tbl := prefixcacheindexer.NewPrefixHashTable()
 		return &pdRouter{
-			prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizerObj, prefixCacheIndexer: tbl},
+			prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: tbl},
 			prefixCacheIndexer:    tbl,
 			cache:                 c,
 			prefillRequestTracker: NewPrefillRequestTracker(),
@@ -1202,7 +1198,7 @@ func TestVLLMIntegrationWithTestServer(t *testing.T) {
 	}
 
 	router := &pdRouter{
-		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable()},
+		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:prefixcacheindexer.NewPrefixHashTable()},
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		cache:                 cache.NewWithPodsForTest(prefillPods, "test-model"),
 		prefillRequestTracker: NewPrefillRequestTracker(),
@@ -1329,7 +1325,7 @@ func TestTensorRTIntegrationWithTestServer(t *testing.T) {
 	}
 
 	router := &pdRouter{
-		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable()},
+		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:prefixcacheindexer.NewPrefixHashTable()},
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		cache:                 cache.NewWithPodsForTest(prefillPods, "test-model"),
 		prefillRequestTracker: NewPrefillRequestTracker(),
@@ -2078,7 +2074,7 @@ func TestIsPodSuitableForPromptLength(t *testing.T) {
 
 	router := &pdRouter{
 		cache:                 cache.NewForTest(),
-		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable()},
+		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:prefixcacheindexer.NewPrefixHashTable()},
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            &http.Client{},
@@ -2118,7 +2114,7 @@ func TestCollectAndBucketPods(t *testing.T) {
 	ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "hello world", "req-1", "user")
 	router := &pdRouter{
 		cache:                 cache.NewForTest(),
-		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable()},
+		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:prefixcacheindexer.NewPrefixHashTable()},
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            &http.Client{},
@@ -2334,7 +2330,7 @@ func TestFilterPrefillDecodePods_SelectCorrectBucketPods(t *testing.T) {
 
 	r := pdRouter{
 		cache:                 cache.NewForTest(),
-		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable()},
+		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:prefixcacheindexer.NewPrefixHashTable()},
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            &http.Client{},
@@ -2363,7 +2359,7 @@ func TestFilterPrefillDecodePods_CombinedFallbackBucketing(t *testing.T) {
 
 	r := pdRouter{
 		cache:                 cache.NewForTest(),
-		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable()},
+		prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:prefixcacheindexer.NewPrefixHashTable()},
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            &http.Client{},
@@ -2457,7 +2453,7 @@ func TestFilterPrefillDecodePods_CombinedPickImbalance(t *testing.T) {
 			cacheStore := cache.NewWithPodsMetricsForTest([]*v1.Pod{prefill, decode, combined}, "test-model", metricsMap)
 			r := pdRouter{
 				cache:                 cacheStore,
-				prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable()},
+				prefillPolicy:         &prefixCachePrefillPolicy{tok: tokenizer.NewCharacterTokenizer(), prefixCacheIndexer:prefixcacheindexer.NewPrefixHashTable()},
 				prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 				prefillRequestTracker: NewPrefillRequestTracker(),
 				httpClient:            &http.Client{},
