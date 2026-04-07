@@ -133,8 +133,13 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			targetNamespace = routingCtx.TargetPod().Namespace
 			request_count = getRunningRequestsByPod(s, targetPodName, targetNamespace)
 		}
+
+		routingDelay := routingCtx.GetRoutingDelay()
+		if routingAlgorithm == routing.RouterPD && !routingCtx.PrefillStartTime.IsZero() {
+			routingDelay = routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime)
+		}
 		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream, "routing_strategy", routingAlgorithm,
-			"target_pod", targetPodName, "target_pod_ip", targetPodIP, "outstanding_requests", request_count, "routing_time_taken", routingCtx.GetRoutingDelay())
+			"target_pod", targetPodName, "target_pod_ip", targetPodIP, "outstanding_requests", request_count, "routing_time_taken", routingDelay)
 	}
 
 	routingCtx.RequestEndTime = time.Now()

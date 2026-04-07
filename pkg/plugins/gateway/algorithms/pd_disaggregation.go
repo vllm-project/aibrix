@@ -64,12 +64,16 @@ const (
 	PromptLenBucketMaxLength      string                 = "prompt-len-bucket-max-length"
 	defaultPrefillRequestTimeout  int                    = 30
 
-	defaultMaxRequest                   float64 = 16
-	defaultMaxTokenThroughputDiff       float64 = 2048
-	defaultRequestRateHighLoadThreshold         = 1.0
-	defaultRequestRateLowLoadThreshold          = 0.25
-	defaultDecodeScoreRatioThreshold    float64 = 1.5 // min queue-drain time ratio to trigger drain-rate routing
-	defaultDrainRateEpsilon             float64 = 0.1 // floor for drain rate to avoid division by zero
+	prefillScorePolicyPrefixCache  = "prefix_cache"
+	prefillScorePolicyLeastRequest = "least_request"
+
+	defaultPrefillLoadImbalanceMinSpread      int32   = 16
+	defaultDecodeLoadImbalanceMinSpread       float64 = 16
+	defaultDecodeThroughputImbalanceMinSpread float64 = 2048
+	defaultRequestRateHighLoadThreshold               = 1.0
+	defaultRequestRateLowLoadThreshold                = 0.25
+	defaultDecodeScoreRatioThreshold          float64 = 1.5 // min queue-drain time ratio to trigger drain-rate routing
+	defaultDrainRateEpsilon                   float64 = 0.1 // floor for drain rate to avoid division by zero
 
 	pdRouteValidateLLMEngineFail       = "pd-validate-llm-engine-fail"
 	pdRouteFilterPrefillDecodePodsFail = "pd-filter-prefill-decode-pods-fail"
@@ -87,13 +91,15 @@ const (
 )
 
 var (
-	prefillRequestTimeout           int     = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
-	aibrixDecodeMaxRequest          float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_REQUEST", defaultMaxRequest)
-	aibrixDecodeMaxThroughputDiff   float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_THROUGHPUT", defaultMaxTokenThroughputDiff)
-	aibrixDecodeScoreRatioThreshold float64 = utils.LoadEnvFloat("AIBRIX_DECODE_SCORE_RATIO_THRESHOLD", defaultDecodeScoreRatioThreshold)
-	aibrixPromptLengthBucketing     bool    = utils.LoadEnvBool("AIBRIX_PROMPT_LENGTH_BUCKETING", false)
+	prefillRequestTimeout                    int     = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
+	aibrixPrefillLoadImbalanceMinSpread      int32   = int32(utils.LoadEnvInt("AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD", int(defaultPrefillLoadImbalanceMinSpread)))
+	aibrixDecodeLoadImbalanceMinSpread       float64 = utils.LoadEnvFloat("AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD", defaultDecodeLoadImbalanceMinSpread)
+	aibrixDecodeThroughputImbalanceMinSpread float64 = utils.LoadEnvFloat("AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD", defaultDecodeThroughputImbalanceMinSpread)
+	aibrixDecodeScoreRatioThreshold          float64 = utils.LoadEnvFloat("AIBRIX_DECODE_SCORE_RATIO_THRESHOLD", defaultDecodeScoreRatioThreshold)
+	aibrixPromptLengthBucketing              bool    = utils.LoadEnvBool("AIBRIX_PROMPT_LENGTH_BUCKETING", false)
 	// KV connector type: "shfs" (default) for GPU/SHFS, "nixl" for Neuron
-	aibrixKVConnectorType string = utils.LoadEnv("AIBRIX_KV_CONNECTOR_TYPE", KVConnectorTypeSHFS)
+	aibrixKVConnectorType    string = utils.LoadEnv("AIBRIX_KV_CONNECTOR_TYPE", KVConnectorTypeSHFS)
+	aibrixPrefillScorePolicy string = utils.LoadEnv("AIBRIX_PREFILL_SCORE_POLICY", prefillScorePolicyPrefixCache)
 )
 
 func init() {
@@ -131,7 +137,7 @@ func parsePDAlgorithmConfig(raw json.RawMessage) *pdAlgorithmConfig {
 
 type pdRouter struct {
 	cache                 cache.Cache
-	tokenizer             tokenizer.Tokenizer
+	prefillPolicy         prefillScorePolicy
 	prefixCacheIndexer    *prefixcacheindexer.PrefixHashTable
 	prefillRequestTracker *PrefillRequestTracker
 	pendingDecodeTracker  *PendingDecodeTracker
@@ -162,18 +168,31 @@ type PendingDecodeTracker struct {
 }
 
 func NewPDRouter() (types.Router, error) {
-	var tokenizerObj tokenizer.Tokenizer
-	if tokenizerType == tokenizerTypeTiktoken {
-		tokenizerObj = tokenizer.NewTiktokenTokenizer()
-	} else {
-		tokenizerObj = tokenizer.NewCharacterTokenizer()
-	}
-
 	c, err := cache.Get()
 	if err != nil {
 		klog.Error("fail to get cache store in prefix cache router")
 		return nil, err
 	}
+
+	sharedPrefixTable := prefixcacheindexer.GetSharedPrefixHashTable()
+
+	var policy prefillScorePolicy
+	switch aibrixPrefillScorePolicy {
+	case prefillScorePolicyLeastRequest:
+		policy = &leastRequestPrefillPolicy{}
+	default: // prefillScorePolicyPrefixCache
+		var tok tokenizer.Tokenizer
+		if tokenizerType == tokenizerTypeTiktoken {
+			tok = tokenizer.NewTiktokenTokenizer()
+		} else {
+			tok = tokenizer.NewCharacterTokenizer()
+		}
+		policy = &prefixCachePrefillPolicy{
+			tok:                tok,
+			prefixCacheIndexer: sharedPrefixTable,
+		}
+	}
+	klog.InfoS("pd_router prefill score policy", "policy", policy.name())
 
 	// Create a shared HTTP client with connection pooling
 	httpClient := &http.Client{
@@ -188,8 +207,8 @@ func NewPDRouter() (types.Router, error) {
 
 	pdRouter := pdRouter{
 		cache:                 c,
-		tokenizer:             tokenizerObj,
-		prefixCacheIndexer:    prefixcacheindexer.GetSharedPrefixHashTable(),
+		prefillPolicy:         policy,
+		prefixCacheIndexer:    sharedPrefixTable,
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		pendingDecodeTracker:  NewPendingDecodeTracker(),
 		httpClient:            httpClient,
@@ -210,15 +229,16 @@ func NewPrefillRequestTracker() *PrefillRequestTracker {
 }
 
 func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	readyPods := readyPodList.All()
 	// Validate engine consistency across all prefill pods
-	llmEngine, err := validateAndGetLLMEngine(readyPodList.All())
+	llmEngine, err := validateAndGetLLMEngine(readyPods)
 	if err != nil {
 		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRouteValidateLLMEngineFail, "status_code": "400"})
 		return "", fmt.Errorf("engine validation failed for request %s: %w", ctx.RequestID, err)
 	}
 
-	prefillPod, decodePod, err := r.filterPrefillDecodePods(ctx, readyPodList.All())
+	prefillPod, decodePod, err := r.filterPrefillDecodePods(ctx, readyPods)
 	if err != nil {
 		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRouteFilterPrefillDecodePodsFail, "status_code": "400"})
@@ -339,7 +359,7 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 		}
 	}
 
-	if maxValue-minValue > 32 && len(targetPods) > 0 {
+	if maxValue-minValue > aibrixPrefillLoadImbalanceMinSpread && len(targetPods) > 0 {
 		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
 		imbalance = true
 	}
@@ -352,10 +372,10 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 // applies three ordered checks (each runs only if the previous did not return):
 //
 //  1. Request imbalance (fast path): if max minus min running request count (RealtimeNumRequestsRunning
-//     plus pending decode count) is at least aibrixDecodeMaxRequest, return the least-loaded pod.
+//     plus pending decode count) is at least aibrixDecodeLoadImbalanceMinSpread, return the least-loaded pod.
 //
 //  2. Throughput spread: if max minus min AvgGenerationThroughputToksPerS (per model) is greater than
-//     aibrixDecodeMaxThroughputDiff (AIBRIX_DECODE_MAX_THROUGHPUT), return the pod with minimum
+//     aibrixDecodeThroughputImbalanceMinSpread (AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD), return the pod with minimum
 //     throughput. Missing throughput is treated as 0, which can make that pod look like the minimum
 //     during scrape gaps or startup.
 //
@@ -416,7 +436,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		maxFreeGPUUsage = math.Max(maxFreeGPUUsage, podFreeGpuUsage[pod.Name])
 	}
 
-	if maxRequestCount-minRequestCount >= aibrixDecodeMaxRequest {
+	if maxRequestCount-minRequestCount >= aibrixDecodeLoadImbalanceMinSpread {
 		klog.V(4).InfoS("request imbalance at decode pods", "request_id", ctx.RequestID,
 			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
 			"free_gpu_percent", podFreeGpuUsage[minRequestPod.Name],
@@ -424,7 +444,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		return minRequestPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
 	}
 
-	if maxThroughput-minThroughput > aibrixDecodeMaxThroughputDiff {
+	if maxThroughput-minThroughput > aibrixDecodeThroughputImbalanceMinSpread {
 		klog.V(4).InfoS("throughput imbalance at decode pods", "request_id", ctx.RequestID,
 			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
 			"min_throughput", minThroughput, "max_throughput", maxThroughput,
@@ -462,65 +482,122 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	return nil, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
 }
 
-// scorePrefillPods scores prefill pods using formula (100 - match_percent) * 0.1 + (req_cnt / max_request_count)
-// selects pod with lowest score indicating highest percent match and least request count.
-func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPods []*v1.Pod) (map[string]*Scores, float64, []uint64) {
-	prefillScores := map[string]*Scores{}
-	tokens, err := r.tokenizer.TokenizeInputText(routingCtx.Message)
+// prefillScorePolicy is the scoring strategy for prefill pod selection.
+// Implement this interface to add a new policy; register it in NewPDRouter via AIBRIX_PREFILL_SCORE_POLICY.
+type prefillScorePolicy interface {
+	// prepare is called once per request before any scorePod calls.
+	// pods and readyPodsMap are the same set; readyPodsMap is provided for O(1) lookups.
+	// Returns an error only if scoring cannot proceed at all (e.g. tokenization failure).
+	prepare(routingCtx *types.RoutingContext, pods []*v1.Pod, readyPodsMap map[string]struct{}) error
+	// scorePod returns the score for a single pod (lower is better).
+	scorePod(pod *v1.Pod, reqCnt, maxRequestCount float64) float64
+	// name returns the policy identifier used in log lines.
+	name() string
+}
+
+// prefixCachePrefillPolicy scores pods by prefix-cache match percentage plus normalised request count:
+//
+//	score = (100 - matchPercent) * 0.1 + reqCnt / maxReqCnt
+type prefixCachePrefillPolicy struct {
+	tok                tokenizer.Tokenizer
+	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
+	matchedPods        map[string]int
+	hashes             []uint64
+}
+
+func (p *prefixCachePrefillPolicy) prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) error {
+	tokens, err := p.tok.TokenizeInputText(routingCtx.Message)
 	if err != nil {
-		return nil, 0, nil
+		return err
 	}
+	p.matchedPods, p.hashes = p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
+	return nil
+}
+
+func (p *prefixCachePrefillPolicy) scorePod(pod *v1.Pod, reqCnt, maxRequestCount float64) float64 {
+	matchPct := float64(p.matchedPods[pod.Name])
+	score := (100-matchPct)*.1 + reqCnt/maxRequestCount
+	klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
+		"policy", p.name(),
+		"score", fmt.Sprintf("(100 - %f) * 0.1 + %f / %f", matchPct, reqCnt, maxRequestCount),
+		"prefix_match_percent", matchPct,
+		"running_reqs", reqCnt, "max_running_reqs", maxRequestCount)
+	return score
+}
+
+func (p *prefixCachePrefillPolicy) name() string { return prefillScorePolicyPrefixCache }
+
+// leastRequestPrefillPolicy scores pods by raw running request count (lower = better).
+// No prefix-cache state is consulted; prefixHashes returns nil.
+type leastRequestPrefillPolicy struct{}
+
+func (p *leastRequestPrefillPolicy) prepare(_ *types.RoutingContext, _ []*v1.Pod, _ map[string]struct{}) error {
+	return nil
+}
+
+func (p *leastRequestPrefillPolicy) scorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
+	klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
+		"policy", p.name(),
+		"running_reqs", reqCnt)
+	return reqCnt
+}
+
+func (p *leastRequestPrefillPolicy) name() string { return prefillScorePolicyLeastRequest }
+
+// scorePrefillPods computes per-roleset prefill scores using the configured prefillScorePolicy.
+// It handles the shared bookkeeping (request counts, mean/stddev filter, roleset tracking)
+// and delegates per-pod scoring to the policy.
+func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPods []*v1.Pod) (map[string]*Scores, float64, []uint64) {
 	utils.CryptoShuffle(prefillPods)
 
-	var maxRequestCount float64 = 1
-	requestCount := []float64{}
-	readyPodsMap := map[string]struct{}{}
 	podRequestCount := r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods)
 
-	for _, cnt := range podRequestCount {
-		countFloat := float64(cnt)
-		requestCount = append(requestCount, countFloat)
-		if countFloat > maxRequestCount {
-			maxRequestCount = countFloat
-		}
-	}
-	meanRequestCount := mean(requestCount)
-	stdDevRequestCount := standardDeviation(requestCount)
+	var maxRequestCount float64 = 1
+	requestCounts := make([]float64, 0, len(podRequestCount))
+	readyPodsMap := make(map[string]struct{}, len(prefillPods))
 	for _, pod := range prefillPods {
 		readyPodsMap[pod.Name] = struct{}{}
 	}
+	for _, cnt := range podRequestCount {
+		cf := float64(cnt)
+		requestCounts = append(requestCounts, cf)
+		if cf > maxRequestCount {
+			maxRequestCount = cf
+		}
+	}
+	meanRequestCount := mean(requestCounts)
+	stdDevRequestCount := standardDeviation(requestCounts)
 
-	matchedPods, prefixHashes := r.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
+	if err := r.prefillPolicy.prepare(routingCtx, prefillPods, readyPodsMap); err != nil {
+		return nil, 0, nil
+	}
 
+	prefillScores := map[string]*Scores{}
 	maxPrefillScore := float64(1)
 	for _, pod := range prefillPods {
 		rolesetName := pod.Labels[PDRoleSetIdentifier]
 		reqCnt := float64(podRequestCount[pod.Name])
 		if reqCnt > meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
-			klog.V(4).InfoS("prefill pod request count is higher than mean request count, skipping", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
+			klog.V(4).InfoS("prefill pod request count is higher than mean request count, skipping",
+				"request_id", routingCtx.RequestID, "pod_name", pod.Name,
 				"req_cnt", reqCnt, "mean_req_cnt", meanRequestCount, "std_dev_req_cnt", stdDevRequestCount)
 			continue
 		}
 
-		prefillScore := (100-float64(matchedPods[pod.Name]))*.1 + (reqCnt / maxRequestCount)
-		if existingScore, exists := prefillScores[rolesetName]; !exists || prefillScore < existingScore.Score {
-			prefillScores[rolesetName] = &Scores{
-				Pod:   pod,
-				Score: prefillScore,
-			}
+		score := r.prefillPolicy.scorePod(pod, reqCnt, maxRequestCount)
+		if existing, exists := prefillScores[rolesetName]; !exists || score < existing.Score {
+			prefillScores[rolesetName] = &Scores{Pod: pod, Score: score}
 		}
-		if prefillScore > maxPrefillScore {
-			maxPrefillScore = prefillScore
+		if score > maxPrefillScore {
+			maxPrefillScore = score
 		}
-
-		klog.V(4).InfoS("prefill_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
-			"prefill_score", prefillScore,
-			"score", fmt.Sprintf("(100 - %f) * 0.1 + %f / %f", float64(matchedPods[pod.Name]), reqCnt, maxRequestCount),
-			"prefix_match_percent", float64(matchedPods[pod.Name]),
-			"running_reqs", reqCnt, "max_running_reqs", maxRequestCount)
 	}
 
-	return prefillScores, maxPrefillScore, prefixHashes
+	var hashes []uint64
+	if pc, ok := r.prefillPolicy.(*prefixCachePrefillPolicy); ok {
+		hashes = pc.hashes
+	}
+	return prefillScores, maxPrefillScore, hashes
 }
 
 // scoreDecodePods scores decode pods using formula (running_reqs / max_request_count) + (1 - throughput / max_throughput) / (1 - free_gpu_usage / max_free_gpu_usage)
