@@ -63,6 +63,14 @@ type chatReqMinimal struct {
 	} `json:"messages"`
 }
 
+// embeddingReqMinimal captures the embedding fields needed for validation in a
+// single unmarshal pass, including raw stream for strict stream=false checks.
+type embeddingReqMinimal struct {
+	Model  string                              `json:"model"`
+	Input  openai.EmbeddingNewParamsInputUnion `json:"input"`
+	Stream json.RawMessage                     `json:"stream"`
+}
+
 // parseChatMessages extracts a single concatenated text string from the minimal
 // chat request messages. For simple string content it unquotes the JSON string
 // directly; for array/object content it writes the raw JSON bytes.
@@ -145,25 +153,24 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		message = completionObj.Prompt
 		stream = completionObj.Stream
 	case PathEmbeddings:
-		embeddingObj := openai.EmbeddingNewParams{}
-		if err := sonic.Unmarshal(requestBody, &embeddingObj); err != nil {
+		var embeddingReq embeddingReqMinimal
+		if err := sonic.Unmarshal(requestBody, &embeddingReq); err != nil {
 			klog.ErrorS(err, "error to unmarshal embeddings object", "requestID", requestID, "requestBody", string(requestBody))
 			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
-		model = embeddingObj.Model
-		if err := validateEmbeddingInput(embeddingObj); err != nil {
+		model = embeddingReq.Model
+		if err := validateEmbeddingInput(openai.EmbeddingNewParams{
+			Model: embeddingReq.Model,
+			Input: embeddingReq.Input,
+		}); err != nil {
 			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, err.Error(), "", "input", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
-		// Check for stream field without allocating a full map; preserve original
-		// behavior: error if stream key is present but malformed or set to true.
-		var embedStream struct {
-			Stream json.RawMessage `json:"stream"`
-		}
-		if err := sonic.Unmarshal(requestBody, &embedStream); err == nil && len(embedStream.Stream) > 0 {
+		// Preserve behavior: if stream is provided, it must be a valid bool and false.
+		if len(embeddingReq.Stream) > 0 {
 			var streamBool bool
-			if err := sonic.Unmarshal(embedStream.Stream, &streamBool); err != nil || streamBool {
+			if err := sonic.Unmarshal(embeddingReq.Stream, &streamBool); err != nil || streamBool {
 				errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", "", "stream", HeaderErrorRequestBodyProcessing, "true")
 				return
 			}
