@@ -116,7 +116,7 @@ func TestPrefixCacheRouterConfiguration(t *testing.T) {
 					tokenizerPool:  mockPool,
 					syncIndexer:    syncindexer.NewSyncPrefixHashTable(),
 					metricsEnabled: false,
-		requestCounter: NewLocalRequestCounter(c),
+					requestCounter: NewLocalRequestCounter(c),
 				}
 				router.kvSyncRouter = kvSyncRouter
 			}
@@ -336,7 +336,7 @@ func TestPrefixCacheRouterFallback(t *testing.T) {
 		tokenizer:          tok,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 		kvSyncRouter:       kvSyncRouterNoIndexer,
-		requestCounter: NewLocalRequestCounter(c),
+		requestCounter:     NewLocalRequestCounter(c),
 	}
 
 	ctx := types.NewRoutingContext(context.Background(), RouterPrefixCache, "test-model", "test", "req1", "")
@@ -404,7 +404,7 @@ func TestPrefixCacheRouterMetrics(t *testing.T) {
 		tokenizer:          tok,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 		kvSyncRouter:       kvSyncRouter,
-		requestCounter: NewLocalRequestCounter(c),
+		requestCounter:     NewLocalRequestCounter(c),
 	}
 
 	// Set indexer status metric like the constructor does
@@ -541,7 +541,7 @@ func TestPrefixCacheRouterLatencyMetric(t *testing.T) {
 		tokenizer:          tok,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 		kvSyncRouter:       kvSyncRouter,
-		requestCounter: NewLocalRequestCounter(c),
+		requestCounter:     NewLocalRequestCounter(c),
 	}
 
 	podList := testPodsFromCache(c)
@@ -646,7 +646,7 @@ func TestPrefixCacheRouterWithRemoteTokenizer(t *testing.T) {
 		tokenizer:          nil, // In tests, we don't create a real pool
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 		kvSyncRouter:       kvSyncRouter,
-		requestCounter: NewLocalRequestCounter(c),
+		requestCounter:     NewLocalRequestCounter(c),
 	}
 
 	// Create pod list
@@ -700,7 +700,7 @@ func TestPrefixCacheRouterEdgeCases(t *testing.T) {
 					tokenizer:          tok,
 					prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 					kvSyncRouter:       kvSyncRouter, // Use KV sync path to test error handling
-				requestCounter:     NewLocalRequestCounter(c),
+					requestCounter:     NewLocalRequestCounter(c),
 				}
 			},
 			setupPods: func() ([]*v1.Pod, *cache.Store) {
@@ -744,7 +744,7 @@ func TestPrefixCacheRouterEdgeCases(t *testing.T) {
 					tokenizer:          tok,
 					prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 					kvSyncRouter:       kvSyncRouter,
-		requestCounter: NewLocalRequestCounter(c),
+					requestCounter:     NewLocalRequestCounter(c),
 				}
 			},
 			setupPods: func() ([]*v1.Pod, *cache.Store) {
@@ -789,7 +789,7 @@ func TestPrefixCacheRouterEdgeCases(t *testing.T) {
 					tokenizer:          mockTok,
 					prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 					// No KV sync router, so uses original path which should fail on tokenizer
-				requestCounter:     NewLocalRequestCounter(c),
+					requestCounter: NewLocalRequestCounter(c),
 				}
 			},
 			setupPods: func() ([]*v1.Pod, *cache.Store) {
@@ -865,7 +865,7 @@ func TestPrefixCacheRouterModelExtraction(t *testing.T) {
 		tokenizer:          tok,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 		// No KV sync router for model extraction test
-		requestCounter:     NewLocalRequestCounter(c),
+		requestCounter: NewLocalRequestCounter(c),
 	}
 
 	podList := testPodsFromCache(c)
@@ -936,7 +936,7 @@ func TestPrefixCacheRouterConcurrency(t *testing.T) {
 					tokenizerPool:  mockPool,
 					syncIndexer:    syncindexer.NewSyncPrefixHashTable(),
 					metricsEnabled: false,
-		requestCounter: NewLocalRequestCounter(c),
+					requestCounter: NewLocalRequestCounter(c),
 				}
 				router.kvSyncRouter = kvSyncRouter
 			}
