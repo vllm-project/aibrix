@@ -31,15 +31,17 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
+const testModelName = "test-model"
+
 // TestRedisRequestCounter_AtomicDecrementDelete verifies that the Lua script
 // atomically decrements and deletes, preventing race conditions
 func TestRedisRequestCounter_AtomicDecrementDelete(t *testing.T) {
 	// Create mock Redis client
 	client, mock := redismock.NewClientMock()
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	counter := NewRedisRequestCounter(client)
-	modelName := "test-model"
+	modelName := testModelName
 	key := counter.buildRedisKey(modelName)
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -61,7 +63,7 @@ func TestRedisRequestCounter_AtomicDecrementDelete(t *testing.T) {
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req1", "")
 		ctx.SetTargetPod(pod)
 		// Mark that AddRequestCount was called
-		ctx.Context = context.WithValue(ctx.Context, imbalancePodsFilterReqAddedKey, true)
+		ctx.Context = context.WithValue(ctx.Context, requestCountAddedKey, true)
 
 		// Call DoneRequestCount which should decrement to 0 and delete
 		counter.DoneRequestCount(ctx, "req1", modelName, 1)
@@ -76,7 +78,7 @@ func TestRedisRequestCounter_AtomicDecrementDelete(t *testing.T) {
 
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req2", "")
 		ctx.SetTargetPod(pod)
-		ctx.Context = context.WithValue(ctx.Context, imbalancePodsFilterReqAddedKey, true)
+		ctx.Context = context.WithValue(ctx.Context, requestCountAddedKey, true)
 
 		counter.DoneRequestCount(ctx, "req2", modelName, 0)
 
@@ -90,7 +92,7 @@ func TestRedisRequestCounter_AtomicDecrementDelete(t *testing.T) {
 
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req3", "")
 		ctx.SetTargetPod(pod)
-		ctx.Context = context.WithValue(ctx.Context, imbalancePodsFilterReqAddedKey, true)
+		ctx.Context = context.WithValue(ctx.Context, requestCountAddedKey, true)
 
 		counter.DoneRequestCount(ctx, "req3", modelName, 5)
 
@@ -101,10 +103,10 @@ func TestRedisRequestCounter_AtomicDecrementDelete(t *testing.T) {
 // TestRedisRequestCounter_AddRequestCount verifies increment operation
 func TestRedisRequestCounter_AddRequestCount(t *testing.T) {
 	client, mock := redismock.NewClientMock()
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	counter := NewRedisRequestCounter(client)
-	modelName := "test-model"
+	modelName := testModelName
 	key := counter.buildRedisKey(modelName)
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -162,7 +164,7 @@ func TestRedisRequestCounter_AddRequestCount(t *testing.T) {
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req3", "")
 		ctx.SetTargetPod(pod)
 		// Mark as already added
-		ctx.Context = context.WithValue(ctx.Context, imbalancePodsFilterReqAddedKey, true)
+		ctx.Context = context.WithValue(ctx.Context, requestCountAddedKey, true)
 
 		traceTerm := counter.AddRequestCount(ctx, "req3", modelName)
 		assert.Equal(t, int64(0), traceTerm)
@@ -176,10 +178,10 @@ func TestRedisRequestCounter_AddRequestCount(t *testing.T) {
 // properly skips when AddRequestCount was not called
 func TestRedisRequestCounter_DoneRequestCount_Skips(t *testing.T) {
 	client, mock := redismock.NewClientMock()
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	counter := NewRedisRequestCounter(client)
-	modelName := "test-model"
+	modelName := testModelName
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-pod",
@@ -206,8 +208,8 @@ func TestRedisRequestCounter_DoneRequestCount_Skips(t *testing.T) {
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req2", "")
 		ctx.SetTargetPod(pod)
 		// Mark both Add and Done as called
-		ctx.Context = context.WithValue(ctx.Context, imbalancePodsFilterReqAddedKey, true)
-		ctx.Context = context.WithValue(ctx.Context, imbalancePodsFilterReqDelKey, true)
+		ctx.Context = context.WithValue(ctx.Context, requestCountAddedKey, true)
+		ctx.Context = context.WithValue(ctx.Context, requestCountDoneKey, true)
 
 		// Call DoneRequestCount - should skip because already called
 		counter.DoneRequestCount(ctx, "req2", modelName, 1)

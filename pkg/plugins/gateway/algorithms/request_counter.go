@@ -32,13 +32,13 @@ import (
 	"k8s.io/klog/v2"
 )
 
-type imbalancePodsFilterKeyType struct{}
+type requestCountAddedKeyType struct{}
 
-var imbalancePodsFilterReqAddedKey = imbalancePodsFilterKeyType{}
+var requestCountAddedKey = requestCountAddedKeyType{}
 
-type imbalancePodsFilterReqDelKeyType struct{}
+type requestCountDoneKeyType struct{}
 
-var imbalancePodsFilterReqDelKey = imbalancePodsFilterReqDelKeyType{}
+var requestCountDoneKey = requestCountDoneKeyType{}
 
 // MetricsProvider provides pod-level metrics
 type MetricsProvider interface {
@@ -131,7 +131,7 @@ func (l *localRequestCounter) GetRequestCountsWithPort(
 	return podRequestCount
 }
 
-// redisRequestCounter is a redis implementation of imbalancePodsFilter
+// redisRequestCounter is a redis-based implementation of RequestCounter
 // redis key design:
 //
 //		aibrix:prefix-cache-reqcnt:{<modelName>}: hashmap, <pod_name_with_port> -> request_count
@@ -290,11 +290,11 @@ func (r *redisRequestCounter) AddRequestCount(ctx *types.RoutingContext, request
 	}
 
 	// Check whether it is called the first time
-	v := ctx.Context.Value(imbalancePodsFilterReqAddedKey)
+	v := ctx.Context.Value(requestCountAddedKey)
 	if v != nil {
 		return 0
 	}
-	ctx.Context = context.WithValue(ctx.Context, imbalancePodsFilterReqAddedKey, true)
+	ctx.Context = context.WithValue(ctx.Context, requestCountAddedKey, true)
 
 	// Build pod server key
 	port := ctx.TargetPort()
@@ -345,7 +345,7 @@ func (r *redisRequestCounter) DoneRequestCount(ctx *types.RoutingContext, reques
 
 	// Check if AddRequestCount was actually called for this request
 	// This prevents decrementing the counter if it was never incremented
-	if ctx.Context.Value(imbalancePodsFilterReqAddedKey) == nil {
+	if ctx.Context.Value(requestCountAddedKey) == nil {
 		klog.V(5).InfoS("skip request count decrement, AddRequestCount was not called",
 			"request_id", requestID,
 			"model", modelName)
@@ -353,11 +353,11 @@ func (r *redisRequestCounter) DoneRequestCount(ctx *types.RoutingContext, reques
 	}
 
 	// Check whether it is called the first time
-	v := ctx.Context.Value(imbalancePodsFilterReqDelKey)
+	v := ctx.Context.Value(requestCountDoneKey)
 	if v != nil {
 		return
 	}
-	ctx.Context = context.WithValue(ctx.Context, imbalancePodsFilterReqDelKey, true)
+	ctx.Context = context.WithValue(ctx.Context, requestCountDoneKey, true)
 
 	// Build pod server key
 	port := ctx.TargetPort()
