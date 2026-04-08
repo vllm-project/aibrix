@@ -102,7 +102,7 @@ func TestPrefixCacheRouterConfiguration(t *testing.T) {
 				cache:              c,
 				tokenizer:          tok,
 				prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
-			requestCounter:     NewLocalRequestCounter(c),
+				requestCounter:     NewLocalRequestCounter(c),
 			}
 
 			// Set up KV sync router if needed
@@ -923,7 +923,7 @@ func TestPrefixCacheRouterConcurrency(t *testing.T) {
 				cache:              c,
 				tokenizer:          tok,
 				prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
-			requestCounter:     NewLocalRequestCounter(c),
+				requestCounter:     NewLocalRequestCounter(c),
 			}
 
 			if it.useKVSync {

@@ -889,7 +889,7 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 		{
 			name:         "single_pod_match_exceeds_threshold",
 			podMetrics:   map[string]int{"pod-1": 5, "pod-2": 200, "pod-3": 10}, // pod-2 heavily loaded
-			matchedPods:  map[string]int{"default/pod-2": 100},                          // Only one pod matches but overloaded
+			matchedPods:  map[string]int{"default/pod-2": 100}, // Only one pod matches but overloaded
 			stdDevFactor: 1,
 			expectedNil:  true, // Should reject overloaded pod
 			description:  "Single matching pod exceeding threshold should be rejected",
