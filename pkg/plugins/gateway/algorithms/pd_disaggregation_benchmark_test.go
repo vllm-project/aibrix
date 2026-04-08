@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -49,9 +48,11 @@ func BenchmarkScorePrefillPods(b *testing.B) {
 	for _, engine := range []string{VLLMEngine} {
 		b.Run(engine, func(b *testing.B) {
 			pods := benchmarkPDPods(engine, "prefill", pdBenchmarkRolesetCount, pdBenchmarkReplicaCount)
+			tok := tokenizer.NewCharacterTokenizer()
+			benchmarkPrefixTable := prefixcacheindexer.NewPrefixHashTable()
 			router := &pdRouter{
-				tokenizer:             tokenizer.NewCharacterTokenizer(),
-				prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+				prefillPolicy:         newPrefixCachePrefillPolicy(benchmarkPrefixTable),
+				prefixCacheIndexer:    benchmarkPrefixTable,
 				prefillRequestTracker: NewPrefillRequestTracker(),
 			}
 
@@ -66,7 +67,7 @@ func BenchmarkScorePrefillPods(b *testing.B) {
 			defer ctx.Delete()
 			ctx.Engine = engine
 
-			tokens, err := router.tokenizer.TokenizeInputText(ctx.Message)
+			tokens, err := tok.TokenizeInputText(ctx.Message)
 			if err != nil {
 				b.Fatalf("tokenize prompt: %v", err)
 			}
@@ -174,10 +175,13 @@ func BenchmarkDoPrefillRequest(b *testing.B) {
 			prefillPod := benchmarkPDPods(engine, "prefill", 1, 1)[0]
 			prefillPod.Labels[constants.ModelLabelPort] = strconv.Itoa(port)
 
+			ctx := benchmarkPrefillRoutingContext(engine, 0)
+
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				ctx := benchmarkPrefillRoutingContext(engine, i)
+				ctx.RequestID = fmt.Sprintf("bench-prefill-%s-%d", engine, i)
+				ctx.RequestTime = time.Now()
 				if err := router.doPrefillRequest(ctx, prefillPod, engine); err != nil {
 					b.Fatalf("doPrefillRequest failed: %v", err)
 				}
@@ -239,7 +243,7 @@ func benchmarkPrefillRoutingContext(engine string, requestID int) *types.Routing
 const randReqBodyChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "
 
 // randReqBody returns a JSON chat-completions body whose total length is exactly targetLen bytes.
-// The content field is filled with random printable characters on every call.
+// The content field is filled with a deterministic character pattern for stable, low-overhead benchmarks.
 func randReqBody(targetLen int) []byte {
 	const prefix = `{"messages":[{"role":"user","content":"`
 	const suffix = `"}],"stream":true}`
@@ -250,7 +254,7 @@ func randReqBody(targetLen int) []byte {
 	buf := make([]byte, len(prefix)+contentLen+len(suffix))
 	copy(buf, prefix)
 	for i := range contentLen {
-		buf[len(prefix)+i] = randReqBodyChars[rand.Intn(len(randReqBodyChars))]
+		buf[len(prefix)+i] = randReqBodyChars[i%len(randReqBodyChars)]
 	}
 	copy(buf[len(prefix)+contentLen:], suffix)
 	return buf
