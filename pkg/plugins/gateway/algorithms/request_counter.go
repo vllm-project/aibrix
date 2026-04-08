@@ -138,14 +138,13 @@ func (l *localRequestCounter) GetRequestCountsWithPort(
 //	 we use hashmap here which is different from power-of-two router, because hgetall is needed to scan all the keys
 //	 modelName is wrapped in {} to support Redis Cluster hashtag, ensuring all keys for the same model are in the same slot
 type redisRequestCounter struct {
-	redisCli           *redis.Client
-	imbalanceThreshold int // Threshold for considering pods imbalanced (default: 2)
-	redisKeyPrefix     string
+	redisCli       *redis.Client
+	redisKeyPrefix string
 
-	// lastModelFilterTime tracks when FilterPods was last called for each model
-	// Used to stop tracking request counts for models that are no longer being filtered
-	lastModelFilterTime   map[string]time.Time
-	lastModelFilterTimeMu sync.RWMutex // Protects lastModelFilterTime map
+	// lastModelRouteTime tracks when routing was last performed for each model
+	// Used to stop tracking request counts for models that are no longer being routed
+	lastModelRouteTime   map[string]time.Time
+	lastModelRouteTimeMu sync.RWMutex // Protects lastModelRouteTime map
 	requestTrackerTimeout time.Duration
 }
 
@@ -209,10 +208,10 @@ func (r *redisRequestCounter) GetRequestCountsWithPort(ctx context.Context, read
 		return result
 	}
 
-	// Update last filter time for this model
-	r.lastModelFilterTimeMu.Lock()
-	r.lastModelFilterTime[modelName] = time.Now()
-	r.lastModelFilterTimeMu.Unlock()
+	// Update last route time for this model
+	r.lastModelRouteTimeMu.Lock()
+	r.lastModelRouteTime[modelName] = time.Now()
+	r.lastModelRouteTimeMu.Unlock()
 
 	// Get all request counts from Redis using HGETALL
 	key := r.buildRedisKey(modelName)
@@ -246,12 +245,11 @@ const (
 )
 
 // NewredisRequestCounter creates a new redis-based imbalance pods filter
-func NewRedisRequestCounter(redisClient *redis.Client, imbalanceThreshold int) *redisRequestCounter {
+func NewRedisRequestCounter(redisClient *redis.Client) *redisRequestCounter {
 	return &redisRequestCounter{
 		redisCli:              redisClient,
-		imbalanceThreshold:    imbalanceThreshold,
 		redisKeyPrefix:        defaultRedisKeyPrefix,
-		lastModelFilterTime:   make(map[string]time.Time),
+		lastModelRouteTime:    make(map[string]time.Time),
 		requestTrackerTimeout: defaultImbalanceTrackerTimeout,
 	}
 }
@@ -269,24 +267,24 @@ func (r *redisRequestCounter) AddRequestCount(ctx *types.RoutingContext, request
 		return 0
 	}
 
-	// Skip counting if this model hasn't been filtered recently
+	// Skip counting if this model hasn't been routed recently
 	// This avoids counting requests that are no longer being load-balanced
-	r.lastModelFilterTimeMu.RLock()
-	lastModelFilterTime, ok := r.lastModelFilterTime[modelName]
-	r.lastModelFilterTimeMu.RUnlock()
+	r.lastModelRouteTimeMu.RLock()
+	lastModelRouteTime, ok := r.lastModelRouteTime[modelName]
+	r.lastModelRouteTimeMu.RUnlock()
 
 	if ok {
-		// If it's been too long since last filter call, skip counting
-		if time.Since(lastModelFilterTime) > r.requestTrackerTimeout {
-			klog.V(5).InfoS("skip request count tracking, model filter timeout",
+		// If it's been too long since last route call, skip counting
+		if time.Since(lastModelRouteTime) > r.requestTrackerTimeout {
+			klog.V(5).InfoS("skip request count tracking, model route timeout",
 				"model", modelName,
-				"last_filter_time", lastModelFilterTime,
+				"last_route_time", lastModelRouteTime,
 				"timeout", r.requestTrackerTimeout)
 			return 0
 		}
 	} else {
-		// No filter history for this model, skip counting
-		klog.V(5).InfoS("skip request count tracking, no filter history",
+		// No route history for this model, skip counting
+		klog.V(5).InfoS("skip request count tracking, no route history",
 			"model", modelName)
 		return 0
 	}
@@ -372,22 +370,24 @@ func (r *redisRequestCounter) DoneRequestCount(ctx *types.RoutingContext, reques
 	key := r.buildRedisKey(modelName)
 	field := serverKey.String()
 
-	newCount, err := r.redisCli.HIncrBy(ctx.Context, key, field, -1).Result()
+	// Use Lua script to atomically decrement and delete if zero
+	// This prevents race condition where another request increments the counter
+	// between our decrement and delete operations
+	luaScript := `
+		local new_count = redis.call('HINCRBY', KEYS[1], ARGV[1], -1)
+		if new_count <= 0 then
+			redis.call('HDEL', KEYS[1], ARGV[1])
+		end
+		return new_count
+	`
+
+	newCount, err := r.redisCli.Eval(ctx.Context, luaScript, []string{key}, field).Int64()
 	if err != nil {
 		klog.ErrorS(err, "failed to decrement request count in hashmap",
 			"request_id", requestID,
 			"key", key,
 			"field", field)
 		return
-	}
-
-	// If count is zero or negative, delete the field
-	if newCount <= 0 {
-		if err := r.redisCli.HDel(ctx.Context, key, field).Err(); err != nil {
-			klog.ErrorS(err, "failed to delete field from hashmap",
-				"key", key,
-				"field", field)
-		}
 	}
 
 	klog.V(4).InfoS("imbalance_filter_done_request",

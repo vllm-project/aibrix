@@ -13,6 +13,7 @@ require (
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.20.0
+	github.com/go-redis/redismock/v9 v9.2.0 
 	github.com/kubewharf/godel-scheduler-api v0.0.0-20240910073424-8068ac118f44
 	github.com/onsi/ginkgo v1.16.5
 	github.com/onsi/ginkgo/v2 v2.20.1
