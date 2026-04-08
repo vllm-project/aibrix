@@ -95,7 +95,11 @@ func main() {
 	// register additional routing algorithms that need dependences
 	if redisClient != nil {
 		routing.RegisterPowerOfTwoRouter(redisClient)
-		routing.RegisterPrefixCacheRouterWithRedis(redisClient)
+
+		// Only register prefix cache router with Redis if the feature is enabled
+		if utils.LoadEnvBool(constants.EnvPrefixCacheUseRedisReqCnt, false) {
+			routing.RegisterPrefixCacheRouterWithRedis(redisClient)
+		}
 	}
 
 	// stopCh is closed either on normal return (via defer) or proactively in
