@@ -373,7 +373,10 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 
 	// Find matching pods
 	var matchedPods []*v1.Pod
-	if modelPods, ok := node.modelToPods[model]; ok {
+	node.mu.RLock()
+	modelPods, ok := node.modelToPods[model]
+	node.mu.RUnlock()
+	if ok {
 		for _, pod := range pods {
 			if _, ok := modelPods[pod.Name]; ok {
 				if matchedPods == nil {
@@ -384,7 +387,7 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 			}
 		}
 	}
-	klog.InfoS("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v", "nodeID", node.id, "key", node.key, "matchedTokens", matchedTokens, "modelToPods", node.modelToPods)
+	klog.InfoS("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v", "nodeID", node.id, "key", node.key, "matchedTokens", matchedTokens, "modelToPods", modelPods)
 	return matchedTokens, unmatchedTokens, matchedPods
 }
 
