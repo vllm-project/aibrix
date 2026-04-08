@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
-from routers import auth, audio, chat, conversations, health, images, models, projects, video
+from routers import audio, auth, chat, conversations, health, images, models, projects, video
 from services.providers import (
     get_audio_provider,
     get_chat_provider,

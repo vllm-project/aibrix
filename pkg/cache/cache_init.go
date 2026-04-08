@@ -117,6 +117,9 @@ type Store struct {
 
 	// Prometheus event queue
 	promqlJobs chan *Pod
+
+	// List of registered request trackers
+	requestTrackers []RequestTracker
 }
 
 // Get retrieves the cache instance
@@ -491,8 +494,14 @@ func initTraceCache(redisClient *redis.Client, stopCh <-chan struct{}) {
 			return
 		}
 		if traceAlignmentTimer != nil {
-			// Wait for time window alignment
-			<-traceAlignmentTimer.C
+			// Wait for time window alignment, but bail out early if shutdown is
+			// requested during the alignment phase to avoid leaking the Timer.
+			select {
+			case <-traceAlignmentTimer.C:
+			case <-stopCh:
+				traceAlignmentTimer.Stop()
+				return
+			}
 			traceAlignmentTimer = nil
 			traceTicker = time.NewTicker(RequestTraceWriteInterval)
 		}

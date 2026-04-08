@@ -1,0 +1,109 @@
+# vLLM PD (Prefill-Decode) disaggregation mock StormService for e2e tests.
+#
+# A single StormService replica with two roles ("prefill" and "decode") backed
+# by the vllm-mock image.  The gateway PD router pairs pods from the same
+# roleset (auto-assigned by the StormService controller as "roleset-name") and
+# routes the prefill probe to the prefill pod before sending the full request
+# to the decode pod.
+#
+# Apply alongside components.yaml (provides mocked-app-sa and RBAC).
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: mock-llama2-7b-pd-vllm
+  namespace: default
+  labels:
+    model.aibrix.ai/name: "llama2-7b-vllm"
+    model.aibrix.ai/port: "8000"
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: "mock-llama2-7b-pd-vllm"
+  template:
+    metadata:
+      labels:
+        app: "mock-llama2-7b-pd-vllm"
+      annotations:
+        model.aibrix.ai/config: |
+          {
+            "defaultProfile": "pd",
+            "profiles": {
+              "pd": {
+                "routingStrategy": "pd"
+              }
+            }
+          }
+    spec:
+      roles:
+        - name: prefill
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: "llama2-7b-vllm"
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+                adapter.model.aibrix.ai/enabled: "true"
+            spec:
+              serviceAccountName: mocked-app-sa
+              containers:
+                - name: llm-engine
+                  image: aibrix/vllm-mock:nightly
+                  ports:
+                    - containerPort: 8000
+                  env:
+                    - name: DEPLOYMENT_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.labels['app']
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: MY_POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+        - name: decode
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: "llama2-7b-vllm"
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+                adapter.model.aibrix.ai/enabled: "true"
+            spec:
+              serviceAccountName: mocked-app-sa
+              containers:
+                - name: llm-engine
+                  image: aibrix/vllm-mock:nightly
+                  ports:
+                    - containerPort: 8000
+                  env:
+                    - name: DEPLOYMENT_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.labels['app']
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: MY_POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP

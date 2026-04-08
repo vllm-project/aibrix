@@ -27,7 +27,7 @@ from aibrix.batch.job_entity import JobEntityManager
 from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files, models, users
 from aibrix.metadata.cache import JobCache
-from aibrix.metadata.core import HTTPXClientWrapper, KopfOperatorWrapper
+from aibrix.metadata.core import HTTPXClientWrapper
 from aibrix.metadata.setting import settings
 from aibrix.metadata.store import RedisMetadataStore
 from aibrix.storage import create_storage
@@ -156,6 +156,8 @@ def build_app(args: argparse.Namespace, params={}):
 
     # Initialize kopf operator wrapper if K8s jobs are enabled
     if args.enable_k8s_job:
+        from aibrix.metadata.core import KopfOperatorWrapper
+
         app.state.kopf_operator_wrapper = KopfOperatorWrapper(
             namespace=getattr(args, "k8s_namespace", "default"),
             startup_timeout=getattr(args, "kopf_startup_timeout", 30.0),

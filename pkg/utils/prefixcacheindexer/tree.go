@@ -373,7 +373,10 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 
 	// Find matching pods
 	var matchedPods []*v1.Pod
-	if modelPods, ok := node.modelToPods[model]; ok {
+	node.mu.RLock()
+	modelPods, ok := node.modelToPods[model]
+	node.mu.RUnlock()
+	if ok {
 		for _, pod := range pods {
 			if _, ok := modelPods[pod.Name]; ok {
 				if matchedPods == nil {
@@ -384,35 +387,50 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 			}
 		}
 	}
-	klog.InfoS("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v", "nodeID", node.id, "key", node.key, "matchedTokens", matchedTokens, "modelToPods", node.modelToPods)
+	klog.InfoS("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v", "nodeID", node.id, "key", node.key, "matchedTokens", matchedTokens, "modelToPods", modelPods)
 	return matchedTokens, unmatchedTokens, matchedPods
 }
 
 // This is being used by GetNode
+// Uses iterative traversal to avoid stack overflow with deep trees (e.g. 30K+ token inputs).
 func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, tokens []int) (*TreeNode, []int) {
 	if len(tokens) == 0 {
 		return node, nil
 	}
 
-	node.lastAccess = time.Now()
-	if child, ok := node.children[tokens[0]]; ok {
-		prefixLen := matchLen(child.key, tokens)
-		if prefixLen > 0 {
-			if prefixLen == len(child.key) {
-				// Complete match with this node's key
-				if prefixLen == len(tokens) {
-					return child, child.key
-				}
-				// Continue matching with remaining tokens
-				deeperNode, deeperMatched := c.matchPrefixHelper(child, tokens[prefixLen:])
-				if deeperNode != nil && len(deeperMatched) > 0 {
-					return deeperNode, append(child.key, deeperMatched...)
-				}
-				return child, child.key
-			}
-			// Partial match with this node's key
-			return child, child.key[:prefixLen]
+	bestNode := node
+	totalMatched := 0
+	current := node
+
+	for totalMatched < len(tokens) {
+		current.lastAccess = time.Now()
+		remaining := tokens[totalMatched:]
+		child, ok := current.children[remaining[0]]
+		if !ok {
+			break
 		}
+		prefixLen := matchLen(child.key, remaining)
+		if prefixLen == 0 {
+			break
+		}
+
+		if prefixLen == len(child.key) {
+			// Complete match with child's key
+			totalMatched += prefixLen
+			bestNode = child
+			if totalMatched == len(tokens) {
+				return child, tokens[:totalMatched]
+			}
+			current = child
+			continue
+		}
+		// Partial match with child's key
+		totalMatched += prefixLen
+		return child, tokens[:totalMatched]
+	}
+
+	if totalMatched > 0 {
+		return bestNode, tokens[:totalMatched]
 	}
 	return node, nil
 }
@@ -436,55 +454,66 @@ func (c *LPRadixCache) AddPrefix(tokens []int, model string, podName string) (*T
 	return node, matchedTokens, unmatchedTokens
 }
 
+// insertHelper inserts tokens into the radix tree iteratively.
+// Uses iterative traversal to avoid stack overflow with deep trees (e.g. 30K+ token inputs).
 func (c *LPRadixCache) insertHelper(node *TreeNode, key []int, value []int) (*TreeNode, []int, []int) {
-	node.lastAccess = time.Now()
-	node.load++
-	timePassed := node.lastAccess.Sub(c.startTime).Seconds()
-	klog.V(5).InfoS("Updated node(%d) last access: %.2f seconds", "nodeID", node.id, "timePassed", timePassed)
+	originalKey := key
+	originalValue := value
+	offset := 0
+	current := node
 
-	if len(key) == 0 {
-		return node, nil, nil
-	}
+	for {
+		current.lastAccess = time.Now()
+		current.load++
+		timePassed := current.lastAccess.Sub(c.startTime).Seconds()
+		klog.V(5).InfoS("Updated node last access", "nodeID", current.id, "timePassed", timePassed)
 
-	// Check if one of the children matches the prefix
-	if child, ok := node.children[key[0]]; ok {
-		prefixLen := matchLen(child.key, key)
+		remaining := originalKey[offset:]
+		if len(remaining) == 0 {
+			return current, nil, nil
+		}
+
+		// Check if one of the children matches the prefix
+		child, ok := current.children[remaining[0]]
+		if !ok {
+			// No matching child, create new node
+			klog.V(5).InfoS("No child matches any of the prefix. Create a new tree node")
+			remainingValue := originalValue[offset:]
+			newNode := c.NewTreeNode(c.numPods, current, remaining, remainingValue)
+			current.children[remaining[0]] = newNode
+			c.allNodes[newNode.id] = newNode
+			if offset > 0 {
+				return newNode, originalKey[:offset], originalKey[offset:]
+			}
+			return newNode, nil, originalKey
+		}
+
+		prefixLen := matchLen(child.key, remaining)
 
 		// Case 1: Complete match with child's key
 		if prefixLen == len(child.key) {
-			if prefixLen == len(key) {
-				klog.V(5).InfoS("Entire input tokens match the child node(%d)", "childNodeID", child.id)
+			if prefixLen == len(remaining) {
+				klog.V(5).InfoS("Entire input tokens match the child node", "childNodeID", child.id)
 				child.lastAccess = time.Now()
 				child.load++
-				return child, key, nil // Return the original key for exact match
+				return child, originalKey, nil
 			}
-			// Partial match, continue deeper
-			klog.V(5).InfoS("Partial tokens match child node(%d). Continue deeper", "childNodeID", child.id)
-			childNode, childMatched, childUnmatched := c.insertHelper(child, key[prefixLen:], value[prefixLen:])
-			if len(childMatched) > 0 {
-				return childNode, key[:prefixLen+len(childMatched)], childUnmatched
-			}
-			return childNode, key[:prefixLen], key[prefixLen:]
+			// Continue deeper iteratively
+			klog.V(5).InfoS("Partial tokens match child node, continue deeper", "childNodeID", child.id)
+			offset += prefixLen
+			current = child
+			continue
 		}
 
 		// Case 2: Partial match, need to split
-		newNode := c.splitNode(key, child, prefixLen)
-		if prefixLen == len(key) {
-			return newNode, key, nil
+		newNode := c.splitNode(remaining, child, prefixLen)
+		offset += prefixLen
+		if offset == len(originalKey) {
+			return newNode, originalKey, nil
 		}
-		deeperNode, deeperMatched, deeperUnmatched := c.insertHelper(newNode, key[prefixLen:], value[prefixLen:])
-		if len(deeperMatched) > 0 {
-			return deeperNode, key[:prefixLen+len(deeperMatched)], deeperUnmatched
-		}
-		return deeperNode, key[:prefixLen], key[prefixLen:]
+		// Continue from the split node
+		current = newNode
 	}
-
-	// No matching child, create new node
-	klog.V(5).InfoS("No child matches any of the prefix. Create a new tree node")
-	newNode := c.NewTreeNode(c.numPods, node, key, value)
-	node.children[key[0]] = newNode
-	c.allNodes[newNode.id] = newNode
-	return newNode, nil, key
 }
 
 func (c *LPRadixCache) doesExceededTTL(node *TreeNode, now time.Time) bool {

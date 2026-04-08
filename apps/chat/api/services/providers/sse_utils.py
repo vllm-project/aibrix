@@ -35,10 +35,12 @@ async def parse_openai_sse(lines: AsyncIterator[str]) -> AsyncIterator[str]:
                 yield json.dumps({"event": "text_delta", "delta": content})
             finish = choice.get("finish_reason")
             if finish:
-                yield json.dumps({
-                    "event": "done",
-                    "finish_reason": finish,
-                    "usage": chunk.get("usage"),
-                })
+                yield json.dumps(
+                    {
+                        "event": "done",
+                        "finish_reason": finish,
+                        "usage": chunk.get("usage"),
+                    }
+                )
         except json.JSONDecodeError:
             continue

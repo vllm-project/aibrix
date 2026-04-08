@@ -1,126 +1,114 @@
-import { useState, useRef, useCallback, useEffect } from "react";
-import { AudioLines, ArrowUp, X, Loader2, Square } from "lucide-react";
-import { ModelSelector } from "./model-selector";
-import { PlusMenu } from "./plus-menu";
-import { Tooltip } from "./tooltip";
-import { useAudioRecording } from "../hooks/use-audio-recording";
-import { transcribeAudio } from "../../api/client";
+import { ArrowUp, AudioLines, Loader2, Square, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { transcribeAudio } from '../../api/client'
+import { useAudioRecording } from '../hooks/use-audio-recording'
+import { ModelSelector } from './model-selector'
+import { PlusMenu } from './plus-menu'
+import { Tooltip } from './tooltip'
 
 export interface Attachment {
-  id: string;
-  name: string;
-  type: string;
-  file: File;
-  uploading: boolean;
-  progress: number;
-  blob_url?: string;
-  kind: "image" | "file";
+  id: string
+  name: string
+  type: string
+  file: File
+  uploading: boolean
+  progress: number
+  blob_url?: string
+  kind: 'image' | 'file'
 }
 
 interface ChatInputProps {
-  placeholder?: string;
-  disabled?: boolean;
-  selectedModel?: string;
-  onModelChange?: (model: string) => void;
-  onSend?: (message: string, model: string, attachments?: Attachment[]) => void;
-  onStartNewProject?: () => void;
+  placeholder?: string
+  disabled?: boolean
+  selectedModel?: string
+  onModelChange?: (model: string) => void
+  onSend?: (message: string, model: string, attachments?: Attachment[]) => void
+  onStartNewProject?: () => void
 }
 
 export function ChatInput({
-  placeholder = "How can I help you today?",
+  placeholder = 'How can I help you today?',
   disabled = false,
   selectedModel,
   onModelChange,
   onSend,
   onStartNewProject,
 }: ChatInputProps) {
-  const [message, setMessage] = useState("");
-  const [internalSelectedModel, setInternalSelectedModel] = useState("");
-  const currentModel = selectedModel ?? internalSelectedModel;
-  const handleModelChange = onModelChange ?? setInternalSelectedModel;
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [isDragOver, setIsDragOver] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const [audioError, setAudioError] = useState<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [message, setMessage] = useState('')
+  const [internalSelectedModel, setInternalSelectedModel] = useState('')
+  const currentModel = selectedModel ?? internalSelectedModel
+  const handleModelChange = onModelChange ?? setInternalSelectedModel
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [isDragOver, setIsDragOver] = useState(false)
+  const [isTranscribing, setIsTranscribing] = useState(false)
+  const [audioError, setAudioError] = useState<string | null>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const { isRecording, duration, start, stop, cancel } = useAudioRecording();
+  const { isRecording, duration, start, stop, cancel } = useAudioRecording()
 
-  const hasContent = message.trim().length > 0 || attachments.some((a) => !a.uploading);
+  const hasContent = message.trim().length > 0 || attachments.some((a) => !a.uploading)
 
   const formatDuration = (secs: number) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${m}:${s.toString().padStart(2, "0")}`;
-  };
+    const m = Math.floor(secs / 60)
+    const s = secs % 60
+    return `${m}:${s.toString().padStart(2, '0')}`
+  }
 
   const handleAddFilesOrPhotos = useCallback(() => {
-  fileInputRef.current?.click();
-  }, []);
-
-  
+    fileInputRef.current?.click()
+  }, [])
 
   const handleAudioClick = async () => {
-    setAudioError(null);
+    setAudioError(null)
     try {
-      await start();
+      await start()
     } catch {
-      setAudioError("Microphone access denied");
+      setAudioError('Microphone access denied')
     }
-  };
+  }
 
   const handleAudioStop = async () => {
-    setIsTranscribing(true);
-    setAudioError(null);
+    setIsTranscribing(true)
+    setAudioError(null)
     try {
-      const file = await stop();
-      const result = await transcribeAudio(file);
-      setMessage((prev) => (prev ? prev + " " + result.text : result.text));
-      textareaRef.current?.focus();
+      const file = await stop()
+      const result = await transcribeAudio(file)
+      setMessage((prev) => (prev ? `${prev} ${result.text}` : result.text))
+      textareaRef.current?.focus()
     } catch (err) {
-      setAudioError(
-        err instanceof Error ? err.message : "Transcription failed"
-      );
+      setAudioError(err instanceof Error ? err.message : 'Transcription failed')
     } finally {
-      setIsTranscribing(false);
+      setIsTranscribing(false)
     }
-  };
+  }
 
   const handleAudioCancel = () => {
-    cancel();
-    setAudioError(null);
-  };
+    cancel()
+    setAudioError(null)
+  }
 
   const simulateUpload = useCallback((img: Attachment) => {
-    const duration = 800 + Math.random() * 600;
-    const steps = 12;
-    const stepTime = duration / steps;
-    let step = 0;
+    const duration = 800 + Math.random() * 600
+    const steps = 12
+    const stepTime = duration / steps
+    let step = 0
 
     const interval = setInterval(() => {
-      step++;
-      const progress = Math.min((step / steps) * 100, 100);
-      setAttachments((prev) =>
-        prev.map((i) =>
-          i.id === img.id ? { ...i, progress } : i
-        )
-      );
+      step++
+      const progress = Math.min((step / steps) * 100, 100)
+      setAttachments((prev) => prev.map((i) => (i.id === img.id ? { ...i, progress } : i)))
       if (step >= steps) {
-        clearInterval(interval);
-        setAttachments((prev) =>
-          prev.map((i) =>
-            i.id === img.id ? { ...i, uploading: false, progress: 100 } : i
-          )
-        );
+        clearInterval(interval)
+        setAttachments((prev) => prev.map((i) => (i.id === img.id ? { ...i, uploading: false, progress: 100 } : i)))
       }
-    }, stepTime);
-  }, []);
+    }, stepTime)
+  }, [])
 
   const addFiles = useCallback(
     (files: File[]) => {
       files.forEach((file) => {
-        const isImage = file.type.startsWith("image/");
+        const isImage = file.type.startsWith('image/')
         const base: Attachment = {
           id: crypto.randomUUID(),
           name: file.name,
@@ -128,110 +116,112 @@ export function ChatInput({
           file,
           uploading: true,
           progress: 0,
-          kind: isImage ? "image" : "file",
-        };
+          kind: isImage ? 'image' : 'file',
+        }
 
         if (isImage) {
-          const blob_url = URL.createObjectURL(file);
-          const attachment: Attachment = { ...base, blob_url };
-          setAttachments((prev) => [...prev, attachment]);
-          simulateUpload(attachment);
+          const blob_url = URL.createObjectURL(file)
+          const attachment: Attachment = { ...base, blob_url }
+          setAttachments((prev) => [...prev, attachment])
+          simulateUpload(attachment)
         } else {
-          setAttachments((prev) => [...prev, base]);
-          simulateUpload(base);
+          setAttachments((prev) => [...prev, base])
+          simulateUpload(base)
         }
-      });
+      })
     },
-    [simulateUpload]
-  );
+    [simulateUpload],
+  )
 
   const handleFileInputChange = useCallback(
-  (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    if (files.length === 0) return;
-    addFiles(files);
-    e.target.value = "";
-  },
-  [addFiles]
-);
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files ?? [])
+      if (files.length === 0) return
+      addFiles(files)
+      e.target.value = ''
+    },
+    [addFiles],
+  )
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
-      const items = Array.from(e.clipboardData.items);
-      const imageItems = items.filter((item) => item.type.startsWith("image/"));
+      const items = Array.from(e.clipboardData.items)
+      const imageItems = items.filter((item) => item.type.startsWith('image/'))
       if (imageItems.length > 0) {
-        e.preventDefault();
-        const files = imageItems
-          .map((item) => item.getAsFile())
-          .filter(Boolean) as File[];
-        addFiles(files);
+        e.preventDefault()
+        const files = imageItems.map((item) => item.getAsFile()).filter(Boolean) as File[]
+        addFiles(files)
       }
     },
-    [addFiles]
-  );
+    [addFiles],
+  )
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
-      e.preventDefault();
-      setIsDragOver(false);
-      const files = Array.from(e.dataTransfer.files);
-      addFiles(files);
+      e.preventDefault()
+      setIsDragOver(false)
+      const files = Array.from(e.dataTransfer.files)
+      addFiles(files)
     },
-    [addFiles]
-  );
+    [addFiles],
+  )
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  }, []);
+    e.preventDefault()
+    setIsDragOver(true)
+  }, [])
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-  }, []);
+    e.preventDefault()
+    setIsDragOver(false)
+  }, [])
 
   const removeAttachment = (id: string) => {
     setAttachments((prev) => {
-      const attachmentToRemove = prev.find((a) => a.id === id);
-      if (attachmentToRemove?.blob_url?.startsWith("blob:")) {
-        URL.revokeObjectURL(attachmentToRemove.blob_url);
+      const attachmentToRemove = prev.find((a) => a.id === id)
+      if (attachmentToRemove?.blob_url?.startsWith('blob:')) {
+        URL.revokeObjectURL(attachmentToRemove.blob_url)
       }
-      return prev.filter((a) => a.id !== id);
-    });
-  };
+      return prev.filter((a) => a.id !== id)
+    })
+  }
 
-  const attachmentsRef = useRef(attachments);
-  attachmentsRef.current = attachments;
+  const attachmentsRef = useRef(attachments)
+  attachmentsRef.current = attachments
 
   useEffect(() => {
     return () => {
       attachmentsRef.current.forEach((a) => {
-        if (a.blob_url?.startsWith("blob:")) {
-          URL.revokeObjectURL(a.blob_url);
+        if (a.blob_url?.startsWith('blob:')) {
+          URL.revokeObjectURL(a.blob_url)
         }
-      });
-    };
-  }, []);
+      })
+    }
+  }, [])
 
   const handleSubmit = () => {
-    if (!hasContent || disabled) return;
-    onSend?.(message, currentModel, attachments.filter((a) => !a.uploading));
-    setMessage("");
-    setAttachments([]);
-  };
+    if (!hasContent || disabled) return
+    onSend?.(
+      message,
+      currentModel,
+      attachments.filter((a) => !a.uploading),
+    )
+    setMessage('')
+    setAttachments([])
+  }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit();
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSubmit()
     }
-  };
+  }
 
   return (
     <div className="w-full max-w-[680px] mx-auto">
       <div
         className={`bg-card border rounded-2xl transition-colors ${
-          isDragOver ? "border-blue-500/50 bg-blue-500/5" : "border-border"
+          isDragOver ? 'border-blue-500/50 bg-blue-500/5' : 'border-border'
         }`}
         onDrop={handleDrop}
         onDragOver={handleDragOver}
@@ -245,10 +235,7 @@ export function ChatInput({
                 <div className="w-[120px] h-[90px] rounded-xl overflow-hidden border border-border bg-accent/50">
                   {attachment.uploading ? (
                     <div className="w-full h-full flex flex-col items-center justify-center gap-2">
-                      <Loader2
-                        size={20}
-                        className="text-foreground/40 animate-spin"
-                      />
+                      <Loader2 size={20} className="text-foreground/40 animate-spin" />
                       <div className="w-16 h-1 rounded-full bg-foreground/10 overflow-hidden">
                         <div
                           className="h-full bg-foreground/40 rounded-full transition-all duration-150"
@@ -256,18 +243,12 @@ export function ChatInput({
                         />
                       </div>
                     </div>
-                  ) : attachment.kind === "image" && attachment.blob_url ? (
-                    <img
-                      src={attachment.blob_url}
-                      alt={attachment.name}
-                      className="w-full h-full object-cover"
-                    /> 
+                  ) : attachment.kind === 'image' && attachment.blob_url ? (
+                    <img src={attachment.blob_url} alt={attachment.name} className="w-full h-full object-cover" />
                   ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center px-2 text-center">
                       <div className="text-xs text-foreground/50 mb-1">FILE</div>
-                      <div className="text-xs text-foreground/80 line-clamp-2 break-all">
-                        {attachment.name}
-                      </div>
+                      <div className="text-xs text-foreground/80 line-clamp-2 break-all">{attachment.name}</div>
                     </div>
                   )}
                 </div>
@@ -296,24 +277,18 @@ export function ChatInput({
             disabled={disabled || isRecording || isTranscribing}
             rows={1}
             className="w-full bg-transparent text-foreground placeholder-foreground/30 resize-none outline-none text-[15px] disabled:opacity-50"
-            style={{ minHeight: "24px", maxHeight: "200px" }}
+            style={{ minHeight: '24px', maxHeight: '200px' }}
             onInput={(e) => {
-              const target = e.target as HTMLTextAreaElement;
-              target.style.height = "auto";
-              target.style.height = Math.min(target.scrollHeight, 200) + "px";
+              const target = e.target as HTMLTextAreaElement
+              target.style.height = 'auto'
+              target.style.height = `${Math.min(target.scrollHeight, 200)}px`
             }}
           />
         </div>
         <div className="flex items-center justify-between px-3 pb-3">
-          <PlusMenu 
-            onStartNewProject={onStartNewProject} 
-            onAddFilesOrPhotos={handleAddFilesOrPhotos}
-          />
+          <PlusMenu onStartNewProject={onStartNewProject} onAddFilesOrPhotos={handleAddFilesOrPhotos} />
           <div className="flex items-center gap-3">
-            <ModelSelector
-              selectedModel={currentModel}
-              onModelChange={handleModelChange}
-            />
+            <ModelSelector selectedModel={currentModel} onModelChange={handleModelChange} />
 
             {/* Recording mode */}
             {isRecording ? (
@@ -381,5 +356,5 @@ export function ChatInput({
         onChange={handleFileInputChange}
       />
     </div>
-  );
+  )
 }

@@ -21,7 +21,7 @@ import pytest
 # Set required environment variable before importing
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
-from aibrix.metadata.core.kopf_operator import KopfOperatorWrapper
+from aibrix.metadata.core import KopfOperatorWrapper
 
 
 @pytest.mark.asyncio

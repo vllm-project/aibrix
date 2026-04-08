@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     video_api_url: str = ""
     video_api_key: str = ""
 
+    # Default model names per capability
+    image_model: str = ""
+    image_edit_model: str = ""
+    asr_model: str = ""
+    tts_model: str = ""
+    tts_voice: str = ""  # Name of a supported speaker that can be found in the API response
+    video_model: str = ""
+
     # Model filtering — comma-separated allowlists (empty = show all)
     # MODELS_ALLOWLIST applies to all capabilities; per-capability overrides below
     models_allowlist: str = ""

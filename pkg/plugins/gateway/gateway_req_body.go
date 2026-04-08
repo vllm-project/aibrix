@@ -97,7 +97,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		routingCtx.Algorithm = routingAlgorithm
 	}
 
-	headers := []*configPb.HeaderValueOption{}
+	// Pre-allocate for the routing path (4 headers: strategy, target-pod, content-length, X-Request-Id).
+	headers := make([]*configPb.HeaderValueOption, 0, 4)
 
 	// Path rewriting for image/video generation based on engine type
 	// xdit engine uses /generate and /generatevideo endpoints
@@ -132,8 +133,13 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			targetNamespace = routingCtx.TargetPod().Namespace
 			request_count = getRunningRequestsByPod(s, targetPodName, targetNamespace)
 		}
+
+		routingDelay := routingCtx.GetRoutingDelay()
+		if routingAlgorithm == routing.RouterPD && !routingCtx.PrefillStartTime.IsZero() {
+			routingDelay = routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime)
+		}
 		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream, "routing_strategy", routingAlgorithm,
-			"target_pod", targetPodName, "target_pod_ip", targetPodIP, "outstanding_requests", request_count, "routing_time_taken", routingCtx.GetRoutingDelay())
+			"target_pod", targetPodName, "target_pod_ip", targetPodIP, "outstanding_requests", request_count, "routing_time_taken", routingDelay)
 	}
 
 	routingCtx.RequestEndTime = time.Now()
