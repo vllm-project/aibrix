@@ -26,6 +26,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
@@ -181,7 +182,10 @@ type redisRequestCounter struct {
 func (r *redisRequestCounter) GetRequestCounts(ctx context.Context, readyPods []*v1.Pod, withNamespace bool) map[string]int {
 	// Get counts with port first and merge them by pod
 	portsMap := make(map[string][]int) // empty ports map
+
+	startTime := time.Now()
 	countsWithPort := r.GetRequestCountsWithPort(ctx, readyPods, portsMap, withNamespace)
+	klog.V(4).InfoS("redisRequestCounter_GetRequestCounts_withPort_done", "duration", time.Since(startTime))
 
 	// Merge counts for the same pod (sum across all ports)
 	result := make(map[string]int)
@@ -219,7 +223,7 @@ func (r *redisRequestCounter) GetRequestCountsWithPort(ctx context.Context, read
 	// Get model name from the first pod (all pods should serve the same model)
 	modelName := ""
 	if readyPods[0].Labels != nil {
-		if model, ok := readyPods[0].Labels["model"]; ok {
+		if model, ok := readyPods[0].Labels[constants.ModelLabelName]; ok {
 			modelName = model
 		}
 	}
@@ -234,12 +238,41 @@ func (r *redisRequestCounter) GetRequestCountsWithPort(ctx context.Context, read
 	r.lastModelFilterTime[modelName] = time.Now()
 	r.lastModelFilterTimeMu.Unlock()
 
+	// Initialize result with all readyPods set to 0
+	result := make(map[string]int)
+	for _, pod := range readyPods {
+		podPorts, hasPorts := portsMap[pod.Name]
+
+		if !hasPorts || len(podPorts) == 0 {
+			// No ports specified, add single entry for this pod
+			var resultKey string
+			if withNamespace {
+				resultKey = fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+			} else {
+				resultKey = pod.Name
+			}
+			result[resultKey] = 0
+		} else {
+			// Has ports, add entry for each port
+			for _, port := range podPorts {
+				var resultKey string
+				if withNamespace {
+					resultKey = fmt.Sprintf("%s/%s/%d", pod.Namespace, pod.Name, port)
+				} else {
+					resultKey = fmt.Sprintf("%s/%d", pod.Name, port)
+				}
+				result[resultKey] = 0
+			}
+		}
+	}
+
 	// Get all request counts from Redis using HGETALL
 	key := r.buildRedisKey(modelName)
 	counts, err := r.redisCli.HGetAll(ctx, key).Result()
 	if err != nil {
 		klog.ErrorS(err, "failed to get request counts from redis", "key", key)
-		return make(map[string]int)
+		// Return result with all zeros
+		return result
 	}
 
 	// Build a map of valid pods for filtering
@@ -248,8 +281,7 @@ func (r *redisRequestCounter) GetRequestCountsWithPort(ctx context.Context, read
 		validPods[pod.Name] = pod
 	}
 
-	// Parse Redis data and build result map
-	result := make(map[string]int)
+	// Parse Redis data and update result map
 	for field, countStr := range counts {
 		// field format from podServerKey.String():
 		//   without port: "namespace_podname"
@@ -294,13 +326,16 @@ func (r *redisRequestCounter) GetRequestCountsWithPort(ctx context.Context, read
 			}
 		} else {
 			if hasPort {
-				resultKey = fmt.Sprintf("%s_%d", pod.Name, port)
+				resultKey = fmt.Sprintf("%s/%d", pod.Name, port)
 			} else {
 				resultKey = pod.Name
 			}
 		}
 
-		result[resultKey] = count
+		// Only update if this key was initialized (exists in result)
+		if _, keyExists := result[resultKey]; keyExists {
+			result[resultKey] = count
+		}
 	}
 
 	return result
