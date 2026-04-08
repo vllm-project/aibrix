@@ -17,6 +17,7 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"testing"
@@ -191,7 +192,8 @@ func TestGetTargetPodOnLoadImbalance(t *testing.T) {
 			testCache := cache.NewWithPodsMetricsForTest(pods, "test-model", metricsMap)
 
 			// Get request counts from cache
-			podRequestCount := getRequestCounts(testCache, pods)
+			requestCounter := NewLocalRequestCounter(testCache)
+			podRequestCount := requestCounter.GetRequestCounts(context.Background(), pods)
 
 			// Execute function
 			targetPodList, imbalance := getTargetPodListOnLoadImbalance(podRequestCount, pods)
@@ -266,7 +268,7 @@ func TestGetTargetPodFromMatchedPods(t *testing.T) {
 		{
 			name:         "highest_match_within_stddev",
 			podMetrics:   map[string]int{"pod-1": 5, "pod-2": 10, "pod-3": 15},
-			matchedPods:  map[string]int{"pod-1": 100, "pod-2": 50, "pod-3": 25},
+			matchedPods:  map[string]int{"default/pod-1": 100, "default/pod-2": 50, "default/pod-3": 25},
 			stdDevFactor: 1,
 			expectedPod:  "pod-1",
 			description:  "Should select pod with highest match % when within std dev",
@@ -274,7 +276,7 @@ func TestGetTargetPodFromMatchedPods(t *testing.T) {
 		{
 			name:         "skip_overloaded_pod_high_match",
 			podMetrics:   map[string]int{"pod-1": 100, "pod-2": 10, "pod-3": 12},
-			matchedPods:  map[string]int{"pod-1": 100, "pod-2": 80, "pod-3": 60},
+			matchedPods:  map[string]int{"default/pod-1": 100, "default/pod-2": 80, "default/pod-3": 60},
 			stdDevFactor: 1,
 			expectedPod:  "pod-2",
 			description:  "Should skip pod with highest match if overloaded",
@@ -282,7 +284,7 @@ func TestGetTargetPodFromMatchedPods(t *testing.T) {
 		{
 			name:         "same_match_select_least_loaded",
 			podMetrics:   map[string]int{"pod-1": 20, "pod-2": 10, "pod-3": 30},
-			matchedPods:  map[string]int{"pod-1": 50, "pod-2": 50, "pod-3": 50},
+			matchedPods:  map[string]int{"default/pod-1": 50, "default/pod-2": 50, "default/pod-3": 50},
 			stdDevFactor: 1,
 			expectedPod:  "pod-2",
 			description:  "With same match %, should select least loaded",
@@ -290,7 +292,7 @@ func TestGetTargetPodFromMatchedPods(t *testing.T) {
 		{
 			name:         "all_pods_exceed_stddev_select_best_match",
 			podMetrics:   map[string]int{"pod-1": 11, "pod-2": 12, "pod-3": 13},
-			matchedPods:  map[string]int{"pod-1": 90, "pod-2": 80, "pod-3": 70},
+			matchedPods:  map[string]int{"default/pod-1": 90, "default/pod-2": 80, "default/pod-3": 70},
 			stdDevFactor: -10, // Impossible threshold: mean=12, threshold becomes negative, all pods > threshold
 			expectedNil:  true,
 			description:  "When all exceed std dev, should return nil",
@@ -306,7 +308,7 @@ func TestGetTargetPodFromMatchedPods(t *testing.T) {
 		{
 			name:         "single_matched_pod_within_threshold",
 			podMetrics:   map[string]int{"pod-1": 10, "pod-2": 20},
-			matchedPods:  map[string]int{"pod-1": 75},
+			matchedPods:  map[string]int{"default/pod-1": 75},
 			stdDevFactor: 2,
 			expectedPod:  "pod-1",
 			description:  "Single matched pod within threshold",
@@ -314,7 +316,7 @@ func TestGetTargetPodFromMatchedPods(t *testing.T) {
 		{
 			name:         "prefer_higher_match_with_acceptable_load",
 			podMetrics:   map[string]int{"pod-1": 11, "pod-2": 10, "pod-3": 12},
-			matchedPods:  map[string]int{"pod-1": 100, "pod-2": 90, "pod-3": 80},
+			matchedPods:  map[string]int{"default/pod-1": 100, "default/pod-2": 90, "default/pod-3": 80},
 			stdDevFactor: 5,
 			expectedPod:  "pod-1",
 			description:  "Should prefer higher match when load difference is minimal",
@@ -322,7 +324,7 @@ func TestGetTargetPodFromMatchedPods(t *testing.T) {
 		{
 			name:         "match_pod_with_highest_prefix_match_percent",
 			podMetrics:   map[string]int{"pod-1": 1, "pod-2": 2, "pod-3": 3, "pod-4": 4},
-			matchedPods:  map[string]int{"pod-1": 50, "pod-2": 60},
+			matchedPods:  map[string]int{"default/pod-1": 50, "default/pod-2": 60},
 			stdDevFactor: 1,
 			expectedPod:  "pod-2", // Should select highest match % (60%)
 			description:  "Should select pod with highest prefix match percent",
@@ -330,7 +332,7 @@ func TestGetTargetPodFromMatchedPods(t *testing.T) {
 		{
 			name:         "lowest_running_request_count_for_same_prefix_match",
 			podMetrics:   map[string]int{"pod-1": 1, "pod-2": 2, "pod-3": 3, "pod-4": 4},
-			matchedPods:  map[string]int{"pod-1": 50, "pod-2": 50, "pod-3": 50},
+			matchedPods:  map[string]int{"default/pod-1": 50, "default/pod-2": 50, "default/pod-3": 50},
 			stdDevFactor: 1,
 			expectedPod:  "pod-1", // All have 50% match, pod-1 has lowest load (1)
 			description:  "Should select pod with lowest running request count for same prefix match percent",
@@ -338,7 +340,7 @@ func TestGetTargetPodFromMatchedPods(t *testing.T) {
 		{
 			name:         "any_pod_with_same_request_count_and_match_percent",
 			podMetrics:   map[string]int{"pod-1": 1, "pod-2": 1, "pod-3": 1, "pod-4": 4},
-			matchedPods:  map[string]int{"pod-1": 50, "pod-2": 50, "pod-3": 50},
+			matchedPods:  map[string]int{"default/pod-1": 50, "default/pod-2": 50, "default/pod-3": 50},
 			stdDevFactor: 1,
 			expectedPod:  "", // Any of pod-1, pod-2, pod-3 (will be handled in test)
 			description:  "Should select any pod with same running request count and same prefix match percent",
@@ -346,7 +348,7 @@ func TestGetTargetPodFromMatchedPods(t *testing.T) {
 		{
 			name:         "lower_prefix_match_with_requests_below_threshold",
 			podMetrics:   map[string]int{"pod-1": 1, "pod-2": 10, "pod-3": 1, "pod-4": 4},
-			matchedPods:  map[string]int{"pod-1": 50, "pod-2": 100},
+			matchedPods:  map[string]int{"default/pod-1": 50, "default/pod-2": 100},
 			stdDevFactor: 1,
 			expectedPod:  "pod-1", // pod-2 is overloaded (10), so select pod-1 with lower match but acceptable load
 			description:  "Should select pod with lower prefix match percent when other has requests below imbalance threshold",
@@ -358,8 +360,9 @@ func TestGetTargetPodFromMatchedPods(t *testing.T) {
 			standardDeviationFactor = tt.stdDevFactor
 
 			testCache, pods := createTestSetup(tt.podMetrics)
-			podRequestCount := getRequestCounts(testCache, pods)
-			result := getTargetPodFromMatchedPods(podRequestCount, pods, tt.matchedPods)
+			requestCounter := NewLocalRequestCounter(testCache)
+			podRequestCount := requestCounter.GetRequestCounts(context.Background(), pods)
+			result := getTargetPodFromMatchedPodsWithKeys(podRequestCount, pods, tt.matchedPods)
 
 			if tt.expectedNil {
 				assert.Nil(t, result, tt.description)
@@ -395,7 +398,7 @@ func TestGetRequestCounts(t *testing.T) {
 				"pod-2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 20}},
 				"pod-3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 30}},
 			},
-			expectedCounts: map[string]int{"pod-1": 10, "pod-2": 20, "pod-3": 30},
+			expectedCounts: map[string]int{"default/pod-1": 10, "default/pod-2": 20, "default/pod-3": 30},
 			description:    "Should retrieve all metrics correctly",
 		},
 		{
@@ -405,7 +408,7 @@ func TestGetRequestCounts(t *testing.T) {
 				"pod-2": {}, // No metrics
 				"pod-3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 25}},
 			},
-			expectedCounts: map[string]int{"pod-1": 15, "pod-2": 0, "pod-3": 25},
+			expectedCounts: map[string]int{"default/pod-1": 15, "default/pod-2": 0, "default/pod-3": 25},
 			description:    "Missing metrics should default to 0",
 		},
 		{
@@ -420,7 +423,7 @@ func TestGetRequestCounts(t *testing.T) {
 				"pod-1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
 				"pod-2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
 			},
-			expectedCounts: map[string]int{"pod-1": 0, "pod-2": 0},
+			expectedCounts: map[string]int{"default/pod-1": 0, "default/pod-2": 0},
 			description:    "Zero metrics should be preserved",
 		},
 		{
@@ -429,7 +432,7 @@ func TestGetRequestCounts(t *testing.T) {
 				"pod-1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 10.7}},
 				"pod-2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 20.3}},
 			},
-			expectedCounts: map[string]int{"pod-1": 10, "pod-2": 20},
+			expectedCounts: map[string]int{"default/pod-1": 10, "default/pod-2": 20},
 			description:    "Decimal values should be truncated to int",
 		},
 	}
@@ -452,7 +455,8 @@ func TestGetRequestCounts(t *testing.T) {
 			testCache := cache.NewWithPodsMetricsForTest(pods, "test-model", tt.podMetrics)
 
 			// Get request counts
-			result := getRequestCounts(testCache, pods)
+			requestCounter := NewLocalRequestCounter(testCache)
+			result := requestCounter.GetRequestCounts(context.Background(), pods)
 
 			// Verify results
 			assert.Equal(t, tt.expectedCounts, result, tt.description)
@@ -557,7 +561,8 @@ func TestGetRequestCountsWithKeysHelper(t *testing.T) {
 			testCache := cache.NewWithPodsMetricsForTest(pods, "test-model", tt.podMetrics)
 
 			// Get request counts with keys
-			result := getRequestCountsWithKeys(testCache, pods)
+			requestCounter := NewLocalRequestCounter(testCache)
+			result := requestCounter.GetRequestCounts(context.Background(), pods)
 
 			// Verify
 			assert.Equal(t, tt.expectedCounts, result, tt.description)
@@ -750,7 +755,8 @@ func TestLoadImbalanceEdgeCases(t *testing.T) {
 			testCache := cache.NewWithPodsMetricsForTest(pods, "test-model", metricsMap)
 
 			// Get request counts from cache
-			podRequestCount := getRequestCounts(testCache, pods)
+			requestCounter := NewLocalRequestCounter(testCache)
+			podRequestCount := requestCounter.GetRequestCounts(context.Background(), pods)
 
 			// Execute function
 			targetPodList, imbalance := getTargetPodListOnLoadImbalance(podRequestCount, pods)
@@ -826,7 +832,7 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 		{
 			name:         "zero_standard_deviation_factor",
 			podMetrics:   map[string]int{"pod-1": 10, "pod-2": 15, "pod-3": 20},
-			matchedPods:  map[string]int{"pod-1": 100, "pod-2": 90, "pod-3": 80},
+			matchedPods:  map[string]int{"default/pod-1": 100, "default/pod-2": 90, "default/pod-3": 80},
 			stdDevFactor: 0,       // No tolerance - only mean
 			expectedPod:  "pod-1", // Should still select best match within mean
 			description:  "Zero stddev factor should use strict mean threshold",
@@ -834,7 +840,7 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 		{
 			name:         "negative_standard_deviation_factor",
 			podMetrics:   map[string]int{"pod-1": 10, "pod-2": 10, "pod-3": 10},
-			matchedPods:  map[string]int{"pod-1": 100, "pod-2": 90, "pod-3": 80},
+			matchedPods:  map[string]int{"default/pod-1": 100, "default/pod-2": 90, "default/pod-3": 80},
 			stdDevFactor: -1,      // Invalid negative
 			expectedPod:  "pod-1", // Should still select best match
 			description:  "Negative stddev factor should be handled gracefully",
@@ -842,7 +848,7 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 		{
 			name:         "very_large_standard_deviation_factor",
 			podMetrics:   map[string]int{"pod-1": 1000, "pod-2": 10, "pod-3": 15},
-			matchedPods:  map[string]int{"pod-1": 100, "pod-2": 90, "pod-3": 80},
+			matchedPods:  map[string]int{"default/pod-1": 100, "default/pod-2": 90, "default/pod-3": 80},
 			stdDevFactor: 1000,    // Very large tolerance
 			expectedPod:  "pod-1", // Should select highest match even if overloaded
 			description:  "Large stddev factor should allow overloaded pods",
@@ -850,7 +856,7 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 		{
 			name:         "all_pods_within_threshold_with_factor_1",
 			podMetrics:   map[string]int{"pod-1": 100, "pod-2": 101, "pod-3": 102},
-			matchedPods:  map[string]int{"pod-1": 90, "pod-2": 80, "pod-3": 70},
+			matchedPods:  map[string]int{"default/pod-1": 90, "default/pod-2": 80, "default/pod-3": 70},
 			stdDevFactor: 1,       // Mean=101, StdDev=1, Threshold=102 - all pods ≤ 102
 			expectedPod:  "pod-1", // Should select highest match % (90%)
 			description:  "When all pods are within threshold, should select highest match",
@@ -858,7 +864,7 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 		{
 			name:         "all_pods_exceed_threshold_tight_bound",
 			podMetrics:   map[string]int{"pod-1": 200, "pod-2": 201, "pod-3": 202},
-			matchedPods:  map[string]int{"pod-1": 90, "pod-2": 80, "pod-3": 70},
+			matchedPods:  map[string]int{"default/pod-1": 90, "default/pod-2": 80, "default/pod-3": 70},
 			stdDevFactor: 0,     // Mean=201, StdDev=1, Threshold=201 - only pod-1 within
 			expectedNil:  false, // pod-1 (200) should be within threshold (≤201)
 			expectedPod:  "pod-1",
@@ -867,7 +873,7 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 		{
 			name:         "identical_match_percentages_different_loads",
 			podMetrics:   map[string]int{"pod-1": 50, "pod-2": 10, "pod-3": 30},
-			matchedPods:  map[string]int{"pod-1": 75, "pod-2": 75, "pod-3": 75},
+			matchedPods:  map[string]int{"default/pod-1": 75, "default/pod-2": 75, "default/pod-3": 75},
 			stdDevFactor: 2,       // Generous tolerance
 			expectedPod:  "pod-2", // Should select least loaded with same match
 			description:  "Identical match % should select least loaded",
@@ -875,7 +881,7 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 		{
 			name:         "single_pod_match_within_threshold",
 			podMetrics:   map[string]int{"pod-1": 5, "pod-2": 50, "pod-3": 60},
-			matchedPods:  map[string]int{"pod-2": 80}, // Only one pod matches
+			matchedPods:  map[string]int{"default/pod-2": 80}, // Only one pod matches
 			stdDevFactor: 2,
 			expectedPod:  "pod-2", // Should select the only matching pod if within threshold
 			description:  "Single matching pod within threshold should be selected",
@@ -883,7 +889,7 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 		{
 			name:         "single_pod_match_exceeds_threshold",
 			podMetrics:   map[string]int{"pod-1": 5, "pod-2": 200, "pod-3": 10}, // pod-2 heavily loaded
-			matchedPods:  map[string]int{"pod-2": 100},                          // Only one pod matches but overloaded
+			matchedPods:  map[string]int{"default/pod-2": 100},                          // Only one pod matches but overloaded
 			stdDevFactor: 1,
 			expectedNil:  true, // Should reject overloaded pod
 			description:  "Single matching pod exceeding threshold should be rejected",
@@ -891,7 +897,7 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 		{
 			name:         "extreme_load_imbalance_high_match",
 			podMetrics:   map[string]int{"pod-1": math.MaxInt32, "pod-2": 0, "pod-3": 5},
-			matchedPods:  map[string]int{"pod-1": 100, "pod-2": 50, "pod-3": 25},
+			matchedPods:  map[string]int{"default/pod-1": 100, "default/pod-2": 50, "default/pod-3": 25},
 			stdDevFactor: 1,
 			expectedPod:  "pod-2", // pod-2 and pod-3 both within threshold, pod-2 has higher match (50% > 25%)
 			description:  "With extreme imbalance, should select highest match among low-load pods",
@@ -899,7 +905,7 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 		{
 			name:         "zero_variance_request_counts",
 			podMetrics:   map[string]int{"pod-1": 10, "pod-2": 10, "pod-3": 10}, // Identical loads
-			matchedPods:  map[string]int{"pod-1": 90, "pod-2": 80, "pod-3": 70},
+			matchedPods:  map[string]int{"default/pod-1": 90, "default/pod-2": 80, "default/pod-3": 70},
 			stdDevFactor: 1,
 			expectedPod:  "pod-1", // With zero variance, all pods are within threshold
 			description:  "Zero variance should allow all pods, select highest match",
@@ -911,8 +917,9 @@ func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 			standardDeviationFactor = tt.stdDevFactor
 
 			testCache, pods := createTestSetup(tt.podMetrics)
-			podRequestCount := getRequestCounts(testCache, pods)
-			result := getTargetPodFromMatchedPods(podRequestCount, pods, tt.matchedPods)
+			requestCounter := NewLocalRequestCounter(testCache)
+			podRequestCount := requestCounter.GetRequestCounts(context.Background(), pods)
+			result := getTargetPodFromMatchedPodsWithKeys(podRequestCount, pods, tt.matchedPods)
 
 			if tt.expectedNil {
 				assert.Nil(t, result, tt.description)
@@ -1039,7 +1046,8 @@ func TestKVSyncPodKeyHandlingEdgeCases(t *testing.T) {
 			testCache := cache.NewWithPodsMetricsForTest(pods, "test-model", metricsMap)
 
 			// Get request counts with keys (namespace/podname format) for KV sync function
-			podRequestCountWithKeys := getRequestCountsWithKeys(testCache, pods)
+			requestCounter := NewLocalRequestCounter(testCache)
+			podRequestCountWithKeys := requestCounter.GetRequestCounts(context.Background(), pods)
 
 			// Test KV sync function
 			result := getTargetPodFromMatchedPodsWithKeys(podRequestCountWithKeys, pods, tt.matchedPods)

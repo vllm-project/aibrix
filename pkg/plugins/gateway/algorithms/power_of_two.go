@@ -99,19 +99,6 @@ func NewPowerOfTwoRouterWithRedis(redisClient *redis.Client, keyRotationSec ...i
 	return router, nil
 }
 
-// podServerKey represents a pod with specific port
-type podServerKey struct {
-	pod  *v1.Pod
-	port int
-}
-
-func (k podServerKey) String() string {
-	if k.port == 0 {
-		return fmt.Sprintf("%s_%s", k.pod.Namespace, k.pod.Name)
-	}
-	return fmt.Sprintf("%s_%s_%d", k.pod.Namespace, k.pod.Name, k.port)
-}
-
 // Route implements [types.Router] using power of two choices algorithm.
 // It randomly selects two candidates and routes to the one with fewer running requests.
 func (p *PowerOfTwoRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {

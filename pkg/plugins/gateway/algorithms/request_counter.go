@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -50,35 +49,16 @@ type MetricsProvider interface {
 type RequestCounter interface {
 	// GetRequestCounts returns a map of pod name to request count
 	// Returns:
-	//  withNamespace=false:  pod name -> request count
-	//  withNamespace=true: pod namespace/pod name -> request count
-	GetRequestCounts(ctx context.Context, readyPods []*v1.Pod, withNamespace bool) map[string]int
+	//  pod namespace/pod name -> request count
+	GetRequestCounts(ctx context.Context, readyPods []*v1.Pod) map[string]int
 	// GetRequestCountsWithPort returns running request count for each pod-port combination, used when a pod has multiple ports
 	// Returns:
-	//  withNamespace=false:  pod name/port -> request count
-	//  withNamespace=true:   pod namespace/pod name/port -> request count
+	//  pod namespace/pod name/port -> request count
 	GetRequestCountsWithPort(ctx context.Context, readyPods []*v1.Pod,
-		portsMap map[string][]int, withNamespace bool) map[string]int
+		portsMap map[string][]int) map[string]int
 }
 
-// parse the key of map returned by GetRequestCountsWithPort
-func parseKey(key string, withNamespace bool) (namespace string, podName string, port string) {
-	parts := strings.Split(key, "/")
-	if withNamespace {
-		// namespace/podName/port or namespace/podName
-		if len(parts) == 2 {
-			return parts[0], parts[1], ""
-		}
-		return parts[0], parts[1], parts[2]
-	}
-	// podName/port or podName
-	if len(parts) == 2 {
-		return "", parts[0], parts[1]
-	}
-	return "", parts[0], ""
-}
-
-// localRequestCounter is a local implementation of imbalancePodsFilter
+// localRequestCounter is a local implementation of RequestCounter
 type localRequestCounter struct {
 	metricsProvider MetricsProvider
 }
@@ -90,14 +70,17 @@ func NewLocalRequestCounter(provider MetricsProvider) *localRequestCounter {
 	}
 }
 
-func (l *localRequestCounter) GetRequestCounts(ctx context.Context, readyPods []*v1.Pod, withNamespace bool) map[string]int {
+func (l *localRequestCounter) GetRequestCounts(ctx context.Context, readyPods []*v1.Pod) map[string]int {
 	podRequestCount := make(map[string]int, len(readyPods))
 	for _, pod := range readyPods {
 		runningReq, err := l.metricsProvider.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
 		if err != nil {
 			runningReq = &metrics.SimpleMetricValue{Value: 0}
 		}
-		podRequestCount[pod.Name] = int(runningReq.GetSimpleValue())
+
+		// Build key based on withNamespace parameter
+		k := &podServerKey{pod: pod}
+		podRequestCount[k.String()] = int(runningReq.GetSimpleValue())
 	}
 
 	return podRequestCount
@@ -105,7 +88,7 @@ func (l *localRequestCounter) GetRequestCounts(ctx context.Context, readyPods []
 
 // getRequestCountsWithPort returns running request count for each pod-port combination
 func (l *localRequestCounter) GetRequestCountsWithPort(
-	ctx context.Context, readyPods []*v1.Pod, portsMap map[string][]int, withNamespace bool) map[string]int {
+	ctx context.Context, readyPods []*v1.Pod, portsMap map[string][]int) map[string]int {
 	podRequestCount := make(map[string]int)
 	for _, pod := range readyPods {
 		podPorts, exists := portsMap[pod.Name]
@@ -116,7 +99,8 @@ func (l *localRequestCounter) GetRequestCountsWithPort(
 			if err != nil {
 				runningReq = &metrics.SimpleMetricValue{Value: 0}
 			}
-			podRequestCount[pod.Name] = int(runningReq.GetSimpleValue())
+			k := &podServerKey{pod: pod}
+			podRequestCount[k.String()] = int(runningReq.GetSimpleValue())
 			continue
 		}
 
@@ -127,10 +111,13 @@ func (l *localRequestCounter) GetRequestCountsWithPort(
 
 			if len(podPorts) == 1 {
 				metricName = metrics.RealtimeNumRequestsRunning
-				keyName = fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+				k := &podServerKey{pod: pod}
+				keyName = k.String()
 			} else {
 				metricName = fmt.Sprintf("%s/%d", metrics.RealtimeNumRequestsRunning, port)
-				keyName = fmt.Sprintf("%s/%s/%d", pod.Namespace, pod.Name, port)
+				// Multi-port pod
+				k := &podServerKey{pod: pod, port: port}
+				keyName = k.String()
 			}
 
 			var count int
@@ -142,22 +129,6 @@ func (l *localRequestCounter) GetRequestCountsWithPort(
 	}
 
 	return podRequestCount
-}
-
-// deduplicatePods extracts and deduplicates pods from podServerKey list
-func deduplicatePods(serverKeys []podServerKey) []*v1.Pod {
-	podMap := make(map[string]*v1.Pod)
-	for _, serverKey := range serverKeys {
-		if serverKey.pod != nil {
-			podMap[serverKey.pod.Name] = serverKey.pod
-		}
-	}
-
-	result := make([]*v1.Pod, 0, len(podMap))
-	for _, pod := range podMap {
-		result = append(result, pod)
-	}
-	return result
 }
 
 // redisRequestCounter is a redis implementation of imbalancePodsFilter
@@ -179,12 +150,12 @@ type redisRequestCounter struct {
 }
 
 // GetRequestCounts implements [RequestCounter].
-func (r *redisRequestCounter) GetRequestCounts(ctx context.Context, readyPods []*v1.Pod, withNamespace bool) map[string]int {
+func (r *redisRequestCounter) GetRequestCounts(ctx context.Context, readyPods []*v1.Pod) map[string]int {
 	// Get counts with port first and merge them by pod
 	portsMap := make(map[string][]int) // empty ports map
 
 	startTime := time.Now()
-	countsWithPort := r.GetRequestCountsWithPort(ctx, readyPods, portsMap, withNamespace)
+	countsWithPort := r.GetRequestCountsWithPort(ctx, readyPods, portsMap)
 	klog.V(4).InfoS("redisRequestCounter_GetRequestCounts_withPort_done", "duration", time.Since(startTime))
 
 	// Merge counts for the same pod (sum across all ports)
@@ -192,22 +163,8 @@ func (r *redisRequestCounter) GetRequestCounts(ctx context.Context, readyPods []
 	for key, count := range countsWithPort {
 		// Extract pod key (remove port suffix if present)
 		var podKey string
-		if withNamespace {
-			// Format: "namespace/pod-name" or "namespace/pod-name/port"
-			// Split by "/" and take first two parts
-			parts := strings.Split(key, "/")
-			if len(parts) >= 2 {
-				podKey = parts[0] + "/" + parts[1]
-			} else {
-				podKey = key
-			}
-		} else {
-			// Format: "pod-name" or "pod-name/port"
-			// Split by "/" and take first part
-			parts := strings.Split(key, "/")
-			podKey = parts[0]
-		}
-
+		namespace, podName, _ := parseServerKey(key)
+		podKey = fmt.Sprintf("%s/%s", namespace, podName)
 		result[podKey] += count
 	}
 
@@ -215,9 +172,28 @@ func (r *redisRequestCounter) GetRequestCounts(ctx context.Context, readyPods []
 }
 
 // GetRequestCountsWithPort implements [RequestCounter].
-func (r *redisRequestCounter) GetRequestCountsWithPort(ctx context.Context, readyPods []*v1.Pod, portsMap map[string][]int, withNamespace bool) map[string]int {
+func (r *redisRequestCounter) GetRequestCountsWithPort(ctx context.Context, readyPods []*v1.Pod, portsMap map[string][]int) map[string]int {
 	if len(readyPods) == 0 {
 		return make(map[string]int)
+	}
+
+	// Initialize result with all readyPods set to 0
+	// This ensures we always return counts for all pods, even if Redis query fails
+	result := make(map[string]int)
+	for _, pod := range readyPods {
+		podPorts, hasPorts := portsMap[pod.Name]
+
+		if !hasPorts || len(podPorts) == 0 {
+			// No ports specified, add single entry for this pod
+			k := &podServerKey{pod: pod}
+			result[k.String()] = 0
+		} else {
+			// Has ports, add entry for each port
+			for _, port := range podPorts {
+				k := &podServerKey{pod: pod, port: port}
+				result[k.String()] = 0
+			}
+		}
 	}
 
 	// Get model name from the first pod (all pods should serve the same model)
@@ -229,42 +205,14 @@ func (r *redisRequestCounter) GetRequestCountsWithPort(ctx context.Context, read
 	}
 
 	if modelName == "" {
-		klog.V(4).InfoS("cannot determine model name from pod, returning empty counts")
-		return make(map[string]int)
+		klog.V(4).InfoS("cannot determine model name from pod, returning counts initialized to 0")
+		return result
 	}
 
 	// Update last filter time for this model
 	r.lastModelFilterTimeMu.Lock()
 	r.lastModelFilterTime[modelName] = time.Now()
 	r.lastModelFilterTimeMu.Unlock()
-
-	// Initialize result with all readyPods set to 0
-	result := make(map[string]int)
-	for _, pod := range readyPods {
-		podPorts, hasPorts := portsMap[pod.Name]
-
-		if !hasPorts || len(podPorts) == 0 {
-			// No ports specified, add single entry for this pod
-			var resultKey string
-			if withNamespace {
-				resultKey = fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-			} else {
-				resultKey = pod.Name
-			}
-			result[resultKey] = 0
-		} else {
-			// Has ports, add entry for each port
-			for _, port := range podPorts {
-				var resultKey string
-				if withNamespace {
-					resultKey = fmt.Sprintf("%s/%s/%d", pod.Namespace, pod.Name, port)
-				} else {
-					resultKey = fmt.Sprintf("%s/%d", pod.Name, port)
-				}
-				result[resultKey] = 0
-			}
-		}
-	}
 
 	// Get all request counts from Redis using HGETALL
 	key := r.buildRedisKey(modelName)
@@ -275,66 +223,17 @@ func (r *redisRequestCounter) GetRequestCountsWithPort(ctx context.Context, read
 		return result
 	}
 
-	// Build a map of valid pods for filtering
-	validPods := make(map[string]*v1.Pod)
-	for _, pod := range readyPods {
-		validPods[pod.Name] = pod
-	}
-
 	// Parse Redis data and update result map
-	for field, countStr := range counts {
-		// field format from podServerKey.String():
-		//   without port: "namespace_podname"
-		//   with port: "namespace_podname_port"
-
-		// Split by underscore
-		parts := strings.Split(field, "_")
-		if len(parts) < 2 {
-			continue
-		}
-
-		podName := parts[1]
-		var port int
-		hasPort := false
-		if len(parts) >= 3 {
-			// Parse port from the last part
-			if p, err := strconv.Atoi(parts[2]); err == nil {
-				port = p
-				hasPort = true
-			}
-		}
-
-		// Check if this pod is in readyPods
-		pod, exists := validPods[podName]
-		if !exists {
-			continue
-		}
-
+	for podKey, countStr := range counts {
 		// Parse count
 		count, err := strconv.Atoi(countStr)
 		if err != nil {
 			continue
 		}
 
-		// Build result key based on withNamespace parameter
-		var resultKey string
-		if withNamespace {
-			if hasPort {
-				resultKey = fmt.Sprintf("%s/%s/%d", pod.Namespace, pod.Name, port)
-			} else {
-				resultKey = fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-			}
-		} else {
-			if hasPort {
-				resultKey = fmt.Sprintf("%s/%d", pod.Name, port)
-			} else {
-				resultKey = pod.Name
-			}
-		}
-
 		// Only update if this key was initialized (exists in result)
-		if _, keyExists := result[resultKey]; keyExists {
-			result[resultKey] = count
+		if _, keyExists := result[podKey]; keyExists {
+			result[podKey] = count
 		}
 	}
 
@@ -419,6 +318,16 @@ func (r *redisRequestCounter) AddRequestCount(ctx *types.RoutingContext, request
 		return 0
 	}
 
+	// Set TTL on the hash key to prevent memory leaks for inactive models
+	// Use requestTrackerTimeout as the expiry duration
+	// This is safe to call on every increment - Redis only updates TTL if key exists
+	if err := r.redisCli.Expire(ctx.Context, key, r.requestTrackerTimeout).Err(); err != nil {
+		klog.ErrorS(err, "failed to set TTL on request count key",
+			"key", key,
+			"ttl", r.requestTrackerTimeout)
+		// Don't return error - the increment succeeded, TTL failure is not critical
+	}
+
 	klog.V(4).InfoS("imbalance_filter_add_request",
 		"request_id", requestID,
 		"model", modelName,
@@ -433,6 +342,15 @@ func (r *redisRequestCounter) AddRequestCount(ctx *types.RoutingContext, request
 func (r *redisRequestCounter) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
 	// Check whether target pod is set
 	if ctx.TargetPod() == nil {
+		return
+	}
+
+	// Check if AddRequestCount was actually called for this request
+	// This prevents decrementing the counter if it was never incremented
+	if ctx.Context.Value(imbalancePodsFilterReqAddedKey) == nil {
+		klog.V(5).InfoS("skip request count decrement, AddRequestCount was not called",
+			"request_id", requestID,
+			"model", modelName)
 		return
 	}
 
