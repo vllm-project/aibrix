@@ -1,6 +1,8 @@
 # PD Disaggregation Router
 
-`pd_disaggregation.go` implements the **prefill-decode (PD) disaggregated routing algorithm** (`RouterPD = "pd"`). In PD disaggregation, inference is split across two specialized pod roles:
+`pd_disaggregation.go` implements the **prefill-decode (PD) disaggregated routing algorithm** (`RouterPD = "pd"`). **This file (`pd_readme.md`) is the canonical documentation** for PD: request flow, scoring, engine behavior, metrics, and environment variables. PD-only settings are under **Environment Variables**; variables shared with the prefix-cache router (tokenizer, stddev factor, and related `AIBRIX_PREFIX_CACHE_*` knobs) are listed in **Inherited from Prefix Cache Router** in the same section.
+
+In PD disaggregation, inference is split across two specialized pod roles:
 
 - **Prefill pod** — processes the prompt (context), builds the KV-cache, then transfers it.
 - **Decode pod** — generates tokens using the KV-cache transferred from the prefill pod.
@@ -153,7 +155,7 @@ score = (100 - match_percent) * 0.1  +  req_count / max_req_count
 
 - Lower score = better (more cache hits, fewer outstanding requests).
 - After routing, the prefix hashes are enqueued to `prefixUpdateCh` for asynchronous indexer update.
-- Tokenizer selected by `AIBRIX_TOKENIZER_TYPE`: `tiktoken` or `character` (default).
+- Tokenizer is selected by `AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE` (same as the prefix-cache router): `tiktoken` or `character` (default).
 
 ### `least_request`
 
@@ -327,7 +329,7 @@ When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) an
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AIBRIX_PREFILL_SCORE_POLICY` | `prefix_cache` | Prefill pod scoring strategy: `prefix_cache` or `least_request` |
+| `AIBRIX_PREFILL_SCORE_POLICY` | `prefix_cache` | Prefill pod scoring: `prefix_cache` or `least_request`. Any other value logs a warning and falls back to `prefix_cache`. |
 | `AIBRIX_KV_CONNECTOR_TYPE` | `shfs` | KV transfer backend: `shfs` (GPU/SHFS) or `nixl` (Neuron) |
 | `AIBRIX_PREFILL_REQUEST_TIMEOUT` | `30` | Prefill HTTP request timeout in seconds |
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | `false` | Enable prompt-length-based pod bucketing |
@@ -356,8 +358,8 @@ When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) an
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AIBRIX_TOKENIZER_TYPE` | `character` | Tokenizer for prefix cache scoring: `tiktoken` or `character` |
-| `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` | (see prefix_cache.go) | Multiplier N: prefill pods with `req_count > mean + N*stddev` are skipped |
+| `AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE` | `character` | Tokenizer for prefix-cache prefill scoring: `tiktoken` or `character` |
+| `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` | `1` | Multiplier N: prefill pods with `req_count > mean + N*stddev` are skipped from per-roleset selection |
 
 ---
 
@@ -414,7 +416,10 @@ NewPDRouter()
   │
   ├─ cache.Get()                          // shared metrics cache
   ├─ prefixcacheindexer.GetSharedPrefixHashTable()
-  ├─ select prefillScorePolicy based on AIBRIX_PREFILL_SCORE_POLICY
+  ├─ prefillScorePolicy from AIBRIX_PREFILL_SCORE_POLICY:
+  │     least_request → LeastRequestPrefillPolicy
+  │     prefix_cache  → PrefixCachePrefillPolicy (shared tokenizer + PrefixHashTable)
+  │     (other)       → log warning, same as prefix_cache
   ├─ create HTTP client with connection pool
   │     MaxIdleConns=100, MaxIdleConnsPerHost=10, IdleConnTimeout=90s
   ├─ NewPrefillRequestTracker()

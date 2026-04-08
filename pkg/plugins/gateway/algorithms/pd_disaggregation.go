@@ -174,6 +174,19 @@ type PendingDecodeTracker struct {
 	requestToPod sync.Map // map[string]string
 }
 
+func newPrefixCachePrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable) prefillScorePolicy {
+	var tok tokenizer.Tokenizer
+	if tokenizerType == tokenizerTypeTiktoken {
+		tok = tokenizer.NewTiktokenTokenizer()
+	} else {
+		tok = tokenizer.NewCharacterTokenizer()
+	}
+	return &prefixCachePrefillPolicy{
+		tok:                tok,
+		prefixCacheIndexer: sharedPrefixTable,
+	}
+}
+
 func NewPDRouter() (types.Router, error) {
 	c, err := cache.Get()
 	if err != nil {
@@ -187,17 +200,13 @@ func NewPDRouter() (types.Router, error) {
 	switch aibrixPrefillScorePolicy {
 	case prefillScorePolicyLeastRequest:
 		policy = &leastRequestPrefillPolicy{}
-	default: // prefillScorePolicyPrefixCache
-		var tok tokenizer.Tokenizer
-		if tokenizerType == tokenizerTypeTiktoken {
-			tok = tokenizer.NewTiktokenTokenizer()
-		} else {
-			tok = tokenizer.NewCharacterTokenizer()
-		}
-		policy = &prefixCachePrefillPolicy{
-			tok:                tok,
-			prefixCacheIndexer: sharedPrefixTable,
-		}
+	case prefillScorePolicyPrefixCache:
+		policy = newPrefixCachePrefillPolicy(sharedPrefixTable)
+	default:
+		klog.InfoS("pd_router unknown AIBRIX_PREFILL_SCORE_POLICY, using prefix_cache",
+			"value", aibrixPrefillScorePolicy,
+			"valid", []string{prefillScorePolicyPrefixCache, prefillScorePolicyLeastRequest})
+		policy = newPrefixCachePrefillPolicy(sharedPrefixTable)
 	}
 	klog.InfoS("pd_router prefill score policy", "policy", policy.name())
 
@@ -597,6 +606,8 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 
 	scorer, err := r.prefillPolicy.prepare(routingCtx, prefillPods, readyPodsMap)
 	if err != nil {
+		klog.ErrorS(err, "prefill scorer preparation failed",
+			"request_id", routingCtx.RequestID, "policy", r.prefillPolicy.name(), "model", routingCtx.Model)
 		return nil, 0, nil
 	}
 

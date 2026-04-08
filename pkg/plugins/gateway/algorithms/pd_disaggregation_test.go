@@ -17,7 +17,9 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"math"
 	"net"
@@ -39,6 +41,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2"
 )
 
 func TestPDRouter_Route(t *testing.T) {
@@ -364,6 +367,16 @@ func addRequests(tracker *PrefillRequestTracker, podName string, n int) {
 	}
 }
 
+type errorPrefillPolicy struct {
+	err error
+}
+
+func (p *errorPrefillPolicy) prepare(*types.RoutingContext, []*v1.Pod, map[string]struct{}) (prefillScorer, error) {
+	return nil, p.err
+}
+
+func (p *errorPrefillPolicy) name() string { return "error_policy" }
+
 func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 	ctx := types.NewRoutingContext(context.Background(), "pd", "model", "hello world", "req-1", "user")
 
@@ -462,6 +475,37 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 		scores, maxScore, _ := r.scorePrefillPods(ctx, []*v1.Pod{})
 		assert.Empty(t, scores)
 		assert.Equal(t, float64(1), maxScore)
+	})
+
+	t.Run("prepare error is logged and scoring returns no result", func(t *testing.T) {
+		var logs bytes.Buffer
+		klog.LogToStderr(false)
+		klog.SetOutput(&logs)
+		defer func() {
+			klog.Flush()
+			klog.SetOutput(io.Discard)
+			klog.LogToStderr(true)
+		}()
+
+		prepareErr := errors.New("tokenization failed")
+		r := &pdRouter{
+			prefillPolicy:         &errorPrefillPolicy{err: prepareErr},
+			prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+			prefillRequestTracker: NewPrefillRequestTracker(),
+		}
+
+		scores, maxScore, hashes := r.scorePrefillPods(ctx, []*v1.Pod{pod("pod1", "rs1")})
+		klog.Flush()
+
+		assert.Nil(t, scores)
+		assert.Zero(t, maxScore)
+		assert.Nil(t, hashes)
+		assert.Contains(t, logs.String(), "prefill scorer preparation failed")
+		assert.Contains(t, logs.String(), "request_id")
+		assert.Contains(t, logs.String(), ctx.RequestID)
+		assert.Contains(t, logs.String(), "policy")
+		assert.Contains(t, logs.String(), "error_policy")
+		assert.Contains(t, logs.String(), prepareErr.Error())
 	})
 }
 
