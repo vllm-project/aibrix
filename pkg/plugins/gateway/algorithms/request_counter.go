@@ -143,8 +143,8 @@ type redisRequestCounter struct {
 
 	// lastModelRouteTime tracks when routing was last performed for each model
 	// Used to stop tracking request counts for models that are no longer being routed
-	lastModelRouteTime   map[string]time.Time
-	lastModelRouteTimeMu sync.RWMutex // Protects lastModelRouteTime map
+	lastModelRouteTime    map[string]time.Time
+	lastModelRouteTimeMu  sync.RWMutex // Protects lastModelRouteTime map
 	requestTrackerTimeout time.Duration
 }
 
