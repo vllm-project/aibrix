@@ -47,10 +47,23 @@ type TreeNode struct {
 	modelToPods   map[string]map[string]time.Time // model -> {podName -> lastAccessTime}
 }
 
+// GetModelToPods returns a deep copy of the model-to-pods mapping.
+// Callers can safely iterate the returned maps without holding any lock.
 func (n *TreeNode) GetModelToPods() map[string]map[string]time.Time {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	return n.modelToPods
+	if n.modelToPods == nil {
+		return nil
+	}
+	snapshot := make(map[string]map[string]time.Time, len(n.modelToPods))
+	for model, pods := range n.modelToPods {
+		podsCopy := make(map[string]time.Time, len(pods))
+		for k, v := range pods {
+			podsCopy[k] = v
+		}
+		snapshot[model] = podsCopy
+	}
+	return snapshot
 }
 
 func (n *TreeNode) InitAndUpdateModelPod(model string, podName string, timestamp time.Time) {
@@ -80,11 +93,23 @@ func (n *TreeNode) GetLastAccess() time.Time {
 }
 
 func (n *TreeNode) GetEvictedPods() map[int]bool {
-	return n.evictedPods
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	snapshot := make(map[int]bool, len(n.evictedPods))
+	for k, v := range n.evictedPods {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 func (n *TreeNode) GetCachedPods() map[int]bool {
-	return n.cachedPods
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	snapshot := make(map[int]bool, len(n.cachedPods))
+	for k, v := range n.cachedPods {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 func (n *TreeNode) GetParent() *TreeNode {
@@ -116,7 +141,13 @@ func (n *TreeNode) GetID() int {
 }
 
 func (n *TreeNode) GetChildren() map[int]*TreeNode {
-	return n.children
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	snapshot := make(map[int]*TreeNode, len(n.children))
+	for k, v := range n.children {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 func (n *TreeNode) ResetEvictedPods() {
@@ -181,13 +212,19 @@ func (n *TreeNode) GetModelToPodCount() int {
 	return len(n.modelToPods)
 }
 
+// GetPodsForModel returns a copy of the pod map for the given model.
 func (n *TreeNode) GetPodsForModel(model string) map[string]time.Time {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	if _, exists := n.modelToPods[model]; exists {
-		return n.modelToPods[model] // Still returns direct reference but smaller scope
+	pods, exists := n.modelToPods[model]
+	if !exists {
+		return nil
 	}
-	return nil
+	snapshot := make(map[string]time.Time, len(pods))
+	for k, v := range pods {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 func (n *TreeNode) AddOrUpdatePodForModel(model string, podName string, timestamp time.Time) {
@@ -377,14 +414,21 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 
 	unmatchedTokens := inputTokens[len(matchedTokens):]
 
-	// Find matching pods
+	// Find matching pods. Copy the inner map under lock to avoid concurrent
+	// map read/write with AddOrUpdatePodForModel from other goroutines.
 	var matchedPods []*v1.Pod
 	node.mu.RLock()
-	modelPods, ok := node.modelToPods[model]
+	var podsCopy map[string]time.Time
+	if innerMap, ok := node.modelToPods[model]; ok {
+		podsCopy = make(map[string]time.Time, len(innerMap))
+		for k, v := range innerMap {
+			podsCopy[k] = v
+		}
+	}
 	node.mu.RUnlock()
-	if ok {
+	if podsCopy != nil {
 		for _, pod := range pods {
-			if _, ok := modelPods[pod.Name]; ok {
+			if _, ok := podsCopy[pod.Name]; ok {
 				if matchedPods == nil {
 					matchedPods = make([]*v1.Pod, 0, len(pods))
 				}
@@ -393,7 +437,7 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 			}
 		}
 	}
-	klog.InfoS("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v", "nodeID", node.id, "key", node.key, "matchedTokens", matchedTokens, "modelToPods", modelPods)
+	klog.InfoS("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v", "nodeID", node.id, "key", node.key, "matchedTokens", matchedTokens, "modelToPods", podsCopy)
 	return matchedTokens, unmatchedTokens, matchedPods
 }
 
@@ -578,26 +622,30 @@ func (c *LPRadixCache) evictNode(node *TreeNode) {
 		return
 	}
 
-	// Clean up pod mappings in parent nodes
+	// Clean up pod mappings in parent nodes.
+	// Acquire parent.mu to prevent concurrent map access from GetModelToPods callers.
 	current := node
 	for parent := node.parent; parent != nil; parent = parent.parent {
-		// Remove this node's pod mappings from parent
+		parent.mu.Lock()
 		for model, pods := range current.modelToPods {
 			if parentPods, ok := parent.modelToPods[model]; ok {
 				for podName := range pods {
 					delete(parentPods, podName)
 				}
-				// Remove model mapping if no pods left
 				if len(parentPods) == 0 {
 					delete(parent.modelToPods, model)
 				}
 			}
 		}
+		parent.mu.Unlock()
 	}
 
-	// Remove node from parent's children
+	// Remove node from parent's children.
+	// Acquire parent.mu to prevent concurrent map access from GetChildren callers.
 	if node.parent != nil {
+		node.parent.mu.Lock()
 		delete(node.parent.children, node.key[0])
+		node.parent.mu.Unlock()
 	}
 
 	// Remove from allNodes map
