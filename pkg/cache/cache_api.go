@@ -19,7 +19,6 @@ package cache
 import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	syncindexer "github.com/vllm-project/aibrix/pkg/utils/syncprefixcacheindexer"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -31,7 +30,6 @@ type Cache interface {
 	RequestTracker
 	RequestTrackerRegistry
 	ProfileCache
-	SyncIndexerProvider
 	types.OutputPredictorProvider
 	types.RouterProvider
 }
@@ -168,11 +166,4 @@ type ProfileCache interface {
 	//   deploymentName: Name of the deployment
 	//   modelName: Name of the model
 	GetModelProfileByDeploymentName(deploymentName string, modelName string) (*ModelGPUProfile, error)
-}
-
-// SyncIndexerProvider provides access to the sync prefix indexer for KV sync routing
-type SyncIndexerProvider interface {
-	// GetSyncPrefixIndexer returns the shared sync prefix indexer instance
-	// Returns nil if KV sync is not enabled or indexer is not initialized
-	GetSyncPrefixIndexer() *syncindexer.SyncPrefixHashTable
 }
