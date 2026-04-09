@@ -56,8 +56,9 @@ func TestRedisRequestCounter_AtomicDecrementDelete(t *testing.T) {
 
 	// Test case 1: Decrement from 1 to 0 should delete the field
 	t.Run("decrement_to_zero", func(t *testing.T) {
-		// Expect any Eval call with key and field, return 0
-		mock.Regexp().ExpectEval(`.*HINCRBY.*`, []string{key}, field).SetVal(int64(0))
+		// Expect EvalSha call (script is cached), return 0
+		// Use Regexp to match any SHA hash
+		mock.Regexp().ExpectEvalSha(`.*`, []string{key}, field).SetVal(int64(0))
 
 		// Create context using constructor
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req1", "")
@@ -74,7 +75,7 @@ func TestRedisRequestCounter_AtomicDecrementDelete(t *testing.T) {
 
 	// Test case 2: Decrement from 0 to -1 should delete the field
 	t.Run("decrement_to_negative", func(t *testing.T) {
-		mock.Regexp().ExpectEval(`.*HINCRBY.*`, []string{key}, field).SetVal(int64(-1))
+		mock.Regexp().ExpectEvalSha(`.*`, []string{key}, field).SetVal(int64(-1))
 
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req2", "")
 		ctx.SetTargetPod(pod)
@@ -88,7 +89,7 @@ func TestRedisRequestCounter_AtomicDecrementDelete(t *testing.T) {
 	// Test case 3: Decrement from 5 to 4 should NOT delete the field
 	t.Run("decrement_above_zero", func(t *testing.T) {
 		// Expect Lua script returns 4 (count > 0, so no deletion happens in Lua)
-		mock.Regexp().ExpectEval(`.*HINCRBY.*`, []string{key}, field).SetVal(int64(4))
+		mock.Regexp().ExpectEvalSha(`.*`, []string{key}, field).SetVal(int64(4))
 
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req3", "")
 		ctx.SetTargetPod(pod)

@@ -40,6 +40,16 @@ type requestCountDoneKeyType struct{}
 
 var requestCountDoneKey = requestCountDoneKeyType{}
 
+// decrementScript is a cached Lua script for atomically decrementing and deleting hash fields
+// Using redis.NewScript allows Redis to cache the script and use EvalSha for better performance
+var decrementScript = redis.NewScript(`
+	local new_count = redis.call('HINCRBY', KEYS[1], ARGV[1], -1)
+	if new_count <= 0 then
+		redis.call('HDEL', KEYS[1], ARGV[1])
+	end
+	return new_count
+`)
+
 // MetricsProvider provides pod-level metrics
 type MetricsProvider interface {
 	GetMetricValueByPod(podName, namespace, metricName string) (metrics.MetricValue, error)
@@ -370,18 +380,11 @@ func (r *redisRequestCounter) DoneRequestCount(ctx *types.RoutingContext, reques
 	key := r.buildRedisKey(modelName)
 	field := serverKey.String()
 
-	// Use Lua script to atomically decrement and delete if zero
+	// Use cached Lua script to atomically decrement and delete if zero
 	// This prevents race condition where another request increments the counter
 	// between our decrement and delete operations
-	luaScript := `
-		local new_count = redis.call('HINCRBY', KEYS[1], ARGV[1], -1)
-		if new_count <= 0 then
-			redis.call('HDEL', KEYS[1], ARGV[1])
-		end
-		return new_count
-	`
-
-	newCount, err := r.redisCli.Eval(ctx.Context, luaScript, []string{key}, field).Int64()
+	// The script is cached at package level, allowing Redis to use EvalSha for better performance
+	newCount, err := decrementScript.Run(ctx.Context, r.redisCli, []string{key}, field).Int64()
 	if err != nil {
 		klog.ErrorS(err, "failed to decrement request count in hashmap",
 			"request_id", requestID,
