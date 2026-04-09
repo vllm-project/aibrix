@@ -276,10 +276,16 @@ func (c *LPRadixCache) PrettyPrint() {
 	c.prettyPrintHelper(c.rootNode, "", true)
 }
 
+// GetAllNodes returns a snapshot copy of the internal node map.
+// Callers can safely iterate the returned map without holding any lock.
 func (c *LPRadixCache) GetAllNodes() map[int]*TreeNode {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.allNodes
+	snapshot := make(map[int]*TreeNode, len(c.allNodes))
+	for k, v := range c.allNodes {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 func (c *LPRadixCache) GetAllPodsInNode(node *TreeNode) []string {
