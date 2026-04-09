@@ -144,18 +144,31 @@ func (l *localRequestCounter) GetRequestCountsWithPort(
 // redisRequestCounter is a redis-based implementation of RequestCounter
 // redis key design:
 //
-//		aibrix:prefix-cache-reqcnt:{<modelName>}: hashmap, <pod_name_with_port> -> request_count
-//	 we use hashmap here which is different from power-of-two router, because hgetall is needed to scan all the keys
-//	 modelName is wrapped in {} to support Redis Cluster hashtag, ensuring all keys for the same model are in the same slot
+//	aibrix:prefix-cache-reqcnt:{<modelName>}:<timestamp>: hashmap, <pod_name_with_port> -> request_count
+//	timestamp is rotated every hour to prevent stale counts from accumulating
+//	modelName is wrapped in {} to support Redis Cluster hashtag, ensuring all keys for the same model are in the same slot
 type redisRequestCounter struct {
 	redisCli       *redis.Client
 	redisKeyPrefix string
+	keyRotationSec int64 // Key rotation period in seconds (default: 3600s = 1 hour)
 
 	// lastModelRouteTime tracks when routing was last performed for each model
 	// Used to stop tracking request counts for models that are no longer being routed
 	lastModelRouteTime    map[string]time.Time
 	lastModelRouteTimeMu  sync.RWMutex // Protects lastModelRouteTime map
 	requestTrackerTimeout time.Duration
+}
+
+// getRequestTimeFromContext extracts RequestTime from context if it's a RoutingContext,
+// otherwise returns current time
+func (r *redisRequestCounter) getRequestTimeFromContext(ctx context.Context) time.Time {
+	// Try type assertion to see if this is actually a *types.RoutingContext
+	// In prefix_cache.go, we pass ctx (which embeds context.Context) as the first parameter
+	if routingCtx, ok := ctx.(*types.RoutingContext); ok {
+		return routingCtx.RequestTime
+	}
+	// Fallback to current time
+	return time.Now()
 }
 
 // GetRequestCounts implements [RequestCounter].
@@ -223,8 +236,11 @@ func (r *redisRequestCounter) GetRequestCountsWithPort(ctx context.Context, read
 	r.lastModelRouteTime[modelName] = time.Now()
 	r.lastModelRouteTimeMu.Unlock()
 
+	// Extract request time from context or use current time
+	requestTime := r.getRequestTimeFromContext(ctx)
+
 	// Get all request counts from Redis using HGETALL
-	key := r.buildRedisKey(modelName)
+	key := r.buildRedisKey(modelName, requestTime)
 	counts, err := r.redisCli.HGetAll(ctx, key).Result()
 	if err != nil {
 		klog.ErrorS(err, "failed to get request counts from redis", "key", key)
@@ -252,6 +268,8 @@ func (r *redisRequestCounter) GetRequestCountsWithPort(ctx context.Context, read
 const (
 	defaultRedisKeyPrefix          = "aibrix:prefix-cache-reqcnt"
 	defaultImbalanceTrackerTimeout = time.Minute * 5 // 5 minutes, stop tracking if filter not called
+	defaultReqCntKeyRotationSec    = int64(3600)     // 1 hour, rotate keys to prevent stale counts
+	defaultReqCntKeyExpiry         = 2 * time.Hour   // TTL for Redis keys (2x rotation period)
 )
 
 // NewredisRequestCounter creates a new redis-based imbalance pods filter
@@ -259,15 +277,21 @@ func NewRedisRequestCounter(redisClient *redis.Client) *redisRequestCounter {
 	return &redisRequestCounter{
 		redisCli:              redisClient,
 		redisKeyPrefix:        defaultRedisKeyPrefix,
+		keyRotationSec:        defaultReqCntKeyRotationSec,
 		lastModelRouteTime:    make(map[string]time.Time),
 		requestTrackerTimeout: defaultImbalanceTrackerTimeout,
 	}
 }
 
-// buildRedisKey constructs the redis key for a model
+// buildRedisKey constructs the redis key for a model with timestamp rotation
+// The timestamp is modulo keyRotationSec to rotate keys periodically (default: every hour)
+// This prevents stale counts from accumulating when gateway instances exit abnormally
 // Uses Redis Cluster hashtag to ensure all keys for the same model are in the same slot
-func (r *redisRequestCounter) buildRedisKey(modelName string) string {
-	return fmt.Sprintf("%s:{%s}", r.redisKeyPrefix, modelName)
+func (r *redisRequestCounter) buildRedisKey(modelName string, requestTime time.Time) string {
+	timestamp := requestTime.Unix()
+	// Rotate key every keyRotationSec seconds (default 3600s = 1 hour)
+	rotatedTimestamp := timestamp - (timestamp % r.keyRotationSec)
+	return fmt.Sprintf("%s:{%s}:%d", r.redisKeyPrefix, modelName, rotatedTimestamp)
 }
 
 // AddRequestCount implements [cache.RequestTracker].
@@ -314,7 +338,8 @@ func (r *redisRequestCounter) AddRequestCount(ctx *types.RoutingContext, request
 	}
 
 	// Increment request count in hashmap
-	key := r.buildRedisKey(modelName)
+	// Use RequestTime from context for key rotation
+	key := r.buildRedisKey(modelName, ctx.RequestTime)
 	field := serverKey.String()
 
 	newCount, err := r.redisCli.HIncrBy(ctx.Context, key, field, 1).Result()
@@ -377,7 +402,8 @@ func (r *redisRequestCounter) DoneRequestCount(ctx *types.RoutingContext, reques
 	}
 
 	// Decrement request count in hashmap
-	key := r.buildRedisKey(modelName)
+	// Use RequestTime from context for key rotation (must match the key used in AddRequestCount)
+	key := r.buildRedisKey(modelName, ctx.RequestTime)
 	field := serverKey.String()
 
 	// Use cached Lua script to atomically decrement and delete if zero

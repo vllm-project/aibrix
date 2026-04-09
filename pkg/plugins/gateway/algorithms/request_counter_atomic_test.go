@@ -42,7 +42,9 @@ func TestRedisRequestCounter_AtomicDecrementDelete(t *testing.T) {
 
 	counter := NewRedisRequestCounter(client)
 	modelName := testModelName
-	key := counter.buildRedisKey(modelName)
+	// Use a fixed time for consistent key generation in tests
+	testTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	key := counter.buildRedisKey(modelName, testTime)
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-pod",
@@ -60,8 +62,9 @@ func TestRedisRequestCounter_AtomicDecrementDelete(t *testing.T) {
 		// Use Regexp to match any SHA hash
 		mock.Regexp().ExpectEvalSha(`.*`, []string{key}, field).SetVal(int64(0))
 
-		// Create context using constructor
+		// Create context using constructor with the same test time
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req1", "")
+		ctx.RequestTime = testTime // Set RequestTime to match the key
 		ctx.SetTargetPod(pod)
 		// Mark that AddRequestCount was called
 		ctx.Context = context.WithValue(ctx.Context, requestCountAddedKey, true)
@@ -78,6 +81,7 @@ func TestRedisRequestCounter_AtomicDecrementDelete(t *testing.T) {
 		mock.Regexp().ExpectEvalSha(`.*`, []string{key}, field).SetVal(int64(-1))
 
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req2", "")
+		ctx.RequestTime = testTime // Set RequestTime to match the key
 		ctx.SetTargetPod(pod)
 		ctx.Context = context.WithValue(ctx.Context, requestCountAddedKey, true)
 
@@ -92,6 +96,7 @@ func TestRedisRequestCounter_AtomicDecrementDelete(t *testing.T) {
 		mock.Regexp().ExpectEvalSha(`.*`, []string{key}, field).SetVal(int64(4))
 
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req3", "")
+		ctx.RequestTime = testTime // Set RequestTime to match the key
 		ctx.SetTargetPod(pod)
 		ctx.Context = context.WithValue(ctx.Context, requestCountAddedKey, true)
 
@@ -108,7 +113,9 @@ func TestRedisRequestCounter_AddRequestCount(t *testing.T) {
 
 	counter := NewRedisRequestCounter(client)
 	modelName := testModelName
-	key := counter.buildRedisKey(modelName)
+	// Use a fixed time for consistent key generation in tests
+	testTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	key := counter.buildRedisKey(modelName, testTime)
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-pod",
@@ -132,6 +139,7 @@ func TestRedisRequestCounter_AddRequestCount(t *testing.T) {
 		mock.ExpectExpire(key, counter.requestTrackerTimeout).SetVal(true)
 
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req1", "")
+		ctx.RequestTime = testTime // Set RequestTime to match the key
 		ctx.SetTargetPod(pod)
 
 		traceTerm := counter.AddRequestCount(ctx, "req1", modelName)
@@ -152,6 +160,7 @@ func TestRedisRequestCounter_AddRequestCount(t *testing.T) {
 		mock.ExpectExpire(key, counter.requestTrackerTimeout).SetVal(true)
 
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req2", "")
+		ctx.RequestTime = testTime // Set RequestTime to match the key
 		ctx.SetTargetPod(pod)
 
 		traceTerm := counter.AddRequestCount(ctx, "req2", modelName)
@@ -163,6 +172,7 @@ func TestRedisRequestCounter_AddRequestCount(t *testing.T) {
 	t.Run("skip_if_already_called", func(t *testing.T) {
 		// If AddRequestCount was already called, should skip
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req3", "")
+		ctx.RequestTime = testTime // Set RequestTime to match the key
 		ctx.SetTargetPod(pod)
 		// Mark as already added
 		ctx.Context = context.WithValue(ctx.Context, requestCountAddedKey, true)
