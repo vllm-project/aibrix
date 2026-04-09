@@ -133,10 +133,10 @@ func TestRedisRequestCounter_AddRequestCount(t *testing.T) {
 		counter.lastModelRouteTime[modelName] = time.Now()
 		counter.lastModelRouteTimeMu.Unlock()
 
-		// Expect HIncrBy to return 1 (first request)
-		mock.ExpectHIncrBy(key, field, 1).SetVal(1)
-		// Expect Expire to be called for TTL
-		mock.ExpectExpire(key, counter.requestTrackerTimeout).SetVal(true)
+		// Expect EvalSha call (script is cached) to return 1
+		// The Lua script will check key existence, increment, and set TTL if needed
+		ttlSeconds := counter.keyRotationSec + 300 // rotation period + 5 minute buffer
+		mock.Regexp().ExpectEvalSha(`.*`, []string{key}, field, ttlSeconds).SetVal(int64(1))
 
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req1", "")
 		ctx.RequestTime = testTime // Set RequestTime to match the key
@@ -154,10 +154,9 @@ func TestRedisRequestCounter_AddRequestCount(t *testing.T) {
 		counter.lastModelRouteTime[modelName] = time.Now()
 		counter.lastModelRouteTimeMu.Unlock()
 
-		// Expect HIncrBy to return 2 (second request)
-		mock.ExpectHIncrBy(key, field, 1).SetVal(2)
-		// Expect Expire to be called for TTL
-		mock.ExpectExpire(key, counter.requestTrackerTimeout).SetVal(true)
+		// Expect EvalSha call to return 2
+		ttlSeconds := counter.keyRotationSec + 300 // rotation period + 5 minute buffer
+		mock.Regexp().ExpectEvalSha(`.*`, []string{key}, field, ttlSeconds).SetVal(int64(2))
 
 		ctx := types.NewRoutingContext(context.Background(), "", modelName, "", "req2", "")
 		ctx.RequestTime = testTime // Set RequestTime to match the key

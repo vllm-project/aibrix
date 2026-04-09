@@ -50,6 +50,17 @@ var decrementScript = redis.NewScript(`
 	return new_count
 `)
 
+// incrementScript is a cached Lua script for atomically incrementing and setting TTL on new keys
+// This ensures TTL is only set when the key is first created, not on every increment
+var incrementScript = redis.NewScript(`
+	local key_existed = redis.call('EXISTS', KEYS[1])
+	local new_count = redis.call('HINCRBY', KEYS[1], ARGV[1], 1)
+	if key_existed == 0 then
+		redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+	end
+	return new_count
+`)
+
 // MetricsProvider provides pod-level metrics
 type MetricsProvider interface {
 	GetMetricValueByPod(podName, namespace, metricName string) (metrics.MetricValue, error)
@@ -266,10 +277,9 @@ func (r *redisRequestCounter) GetRequestCountsWithPort(ctx context.Context, read
 }
 
 const (
-	defaultRedisKeyPrefix          = "aibrix:prefix-cache-reqcnt"
-	defaultImbalanceTrackerTimeout = time.Minute * 5 // 5 minutes, stop tracking if filter not called
-	defaultReqCntKeyRotationSec    = int64(3600)     // 1 hour, rotate keys to prevent stale counts
-	defaultReqCntKeyExpiry         = 2 * time.Hour   // TTL for Redis keys (2x rotation period)
+	defaultRedisKeyPrefix       = "aibrix:prefix-cache-reqcnt"
+	defaultReqCntTrackerTimeout = time.Minute * 5 // 5 minutes, stop tracking if GetRequestCounts not called
+	defaultReqCntKeyRotationSec = int64(3600)     // 1 hour, rotate keys to prevent stale counts
 )
 
 // NewredisRequestCounter creates a new redis-based imbalance pods filter
@@ -279,7 +289,7 @@ func NewRedisRequestCounter(redisClient *redis.Client) *redisRequestCounter {
 		redisKeyPrefix:        defaultRedisKeyPrefix,
 		keyRotationSec:        defaultReqCntKeyRotationSec,
 		lastModelRouteTime:    make(map[string]time.Time),
-		requestTrackerTimeout: defaultImbalanceTrackerTimeout,
+		requestTrackerTimeout: defaultReqCntTrackerTimeout,
 	}
 }
 
@@ -337,28 +347,20 @@ func (r *redisRequestCounter) AddRequestCount(ctx *types.RoutingContext, request
 		port: port,
 	}
 
-	// Increment request count in hashmap
+	// Increment request count in hashmap using Lua script
 	// Use RequestTime from context for key rotation
+	// The script will set TTL only when the key is first created
 	key := r.buildRedisKey(modelName, ctx.RequestTime)
 	field := serverKey.String()
+	ttlSeconds := r.keyRotationSec + 300 // rotation period + 5 minute buffer
 
-	newCount, err := r.redisCli.HIncrBy(ctx.Context, key, field, 1).Result()
+	newCount, err := incrementScript.Run(ctx.Context, r.redisCli, []string{key}, field, ttlSeconds).Int64()
 	if err != nil {
 		klog.ErrorS(err, "failed to increment request count in hashmap",
 			"request_id", requestID,
 			"key", key,
 			"field", field)
 		return 0
-	}
-
-	// Set TTL on the hash key to prevent memory leaks for inactive models
-	// Use requestTrackerTimeout as the expiry duration
-	// This is safe to call on every increment - Redis only updates TTL if key exists
-	if err := r.redisCli.Expire(ctx.Context, key, r.requestTrackerTimeout).Err(); err != nil {
-		klog.ErrorS(err, "failed to set TTL on request count key",
-			"key", key,
-			"ttl", r.requestTrackerTimeout)
-		// Don't return error - the increment succeeded, TTL failure is not critical
 	}
 
 	klog.V(4).InfoS("imbalance_filter_add_request",
