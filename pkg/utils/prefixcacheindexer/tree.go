@@ -622,12 +622,15 @@ func (c *LPRadixCache) evictNode(node *TreeNode) {
 		return
 	}
 
+	// Snapshot the node's pod mappings before traversing parents, to avoid
+	// reading current.modelToPods without current.mu (races with RemovePodsNotInSet).
+	modelToPodsSnapshot := node.GetModelToPods()
+
 	// Clean up pod mappings in parent nodes.
 	// Acquire parent.mu to prevent concurrent map access from GetModelToPods callers.
-	current := node
 	for parent := node.parent; parent != nil; parent = parent.parent {
 		parent.mu.Lock()
-		for model, pods := range current.modelToPods {
+		for model, pods := range modelToPodsSnapshot {
 			if parentPods, ok := parent.modelToPods[model]; ok {
 				for podName := range pods {
 					delete(parentPods, podName)
