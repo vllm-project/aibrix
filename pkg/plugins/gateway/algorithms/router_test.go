@@ -853,8 +853,10 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		targetIP, err := router.Route(ctx, pods)
 		assert.NoError(t, err)
 		
-		// Total: podA = 10, podB = 1 -> podA wins!
-		assert.Contains(t, targetIP, "1.1.1.1")
+		// Throughput now uses PolarityLeast (lower accumulated throughput is better)
+		// podB has lower throughput scores than podA (10/5 vs 100/50), so podB is better for throughput.
+		// Total: podA = 0, podB = 10 -> podB wins!
+		assert.Contains(t, targetIP, "2.2.2.2")
 	})
 
 	// 4. E2E Test: 3 strategies, including one without coefficient (defaults to 1), and one with 0 (ignored)
@@ -873,9 +875,9 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		
 		// The active strategies are least-request (weight 1) and throughput (weight 2)
 		// least-request: podA=0.0, podB=1.0. Weight=1. Score contribution: A=0, B=1
-		// throughput: podA=1.0, podB=0.0. Weight=2. Score contribution: A=2, B=0
-		// Total: podA = 2, podB = 1 -> podA wins
-		assert.Contains(t, targetIP, "1.1.1.1")
+		// throughput: podA=0.0, podB=1.0. Weight=2. Score contribution: A=0, B=2
+		// Total: podA = 0, podB = 3 -> podB wins
+		assert.Contains(t, targetIP, "2.2.2.2")
 	})
 
 	// 5. E2E Test: Invalid configuration format fallback
@@ -930,9 +932,163 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		
 		// The active strategies are prefix-cache (weight 1) and least-request (weight 2).
 		// We didn't seed any prefix cache, so prefix-cache gives 0.0 to all pods.
-		// prefix-cache: podA=0.0, podB=0.0. Weight=1. Score contribution: A=0.0, B=0.0
-		// least-request: podA (1 req) = 0.0, podB (0 req) = 1.0. Weight=2. Score contribution: A=0.0, B=2.0
-		// Total: podA = 0.0, podB = 2.0 -> podB wins
+		// Min=0, Max=0, so normalizeScoresArray will give 1.0 to all scored pods.
+		// prefix-cache: podA=1.0, podB=1.0. Weight=1. Score contribution: A=1.0, B=1.0
+		// least-request: podA (10 req) = 0.0, podB (2 req) = 1.0. Weight=2. Score contribution: A=0.0, B=2.0
+		// Total: podA = 1.0, podB = 3.0 -> podB wins
+		assert.Contains(t, targetIP, "2.2.2.2")
+	})
+
+	// --- 8. E2E Test: Multi-Strategy vs Single Strategy Comparison Tests ---
+	// Let's demonstrate how multi-strategy provides a more optimal solution than a single strategy.
+	
+	// Test 8a: Single Strategy (least-request) fails to consider throughput load
+	t.Run("E2E_SingleStrategy_LeastRequest_Only", func(t *testing.T) {
+		algString := "least-request"
+		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "test request", "req8a", "")
+		
+		router, err := rm.Select(ctx)
+		assert.NoError(t, err)
+		
+		targetIP, err := router.Route(ctx, pods)
+		assert.NoError(t, err)
+		
+		// Pod B has 2 requests, Pod A has 10 requests. 
+		// "least-request" purely looks at current active requests, so it picks Pod B.
+		assert.Contains(t, targetIP, "2.2.2.2")
+	})
+
+	// Test 8b: Single Strategy (throughput) fails to consider current active requests
+	t.Run("E2E_SingleStrategy_Throughput_Only", func(t *testing.T) {
+		algString := "throughput"
+		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "test request", "req8b", "")
+		
+		router, err := rm.Select(ctx)
+		assert.NoError(t, err)
+		
+		targetIP, err := router.Route(ctx, pods)
+		assert.NoError(t, err)
+		
+		// "throughput" (PolarityLeast) looks for the pod that has processed the *least total weighted tokens*.
+		// Pod A: 2*100 + 50 = 250.
+		// Pod B: 2*10 + 5 = 25.
+		// Pod B has processed significantly fewer tokens (25 vs 250), meaning its historical load is much lower.
+		// Therefore, "throughput" alone will also pick Pod B.
+		assert.Contains(t, targetIP, "2.2.2.2")
+	})
+
+	// Let's modify the metrics temporarily to create a scenario where single strategies disagree,
+	// but multi-strategy finds the sweet spot.
+	podC := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "podC", Namespace: "default"},
+		Status: v1.PodStatus{
+			PodIP: "3.3.3.3",
+			Conditions: []v1.PodCondition{
+				{Type: v1.PodReady, Status: v1.ConditionTrue},
+			},
+		},
+	}
+	
+	// Re-initialize cache with 3 pods for the advanced comparison
+	c3 := cache.NewWithPodsMetricsForTest(
+		[]*v1.Pod{podA, podB, podC},
+		model,
+		map[string]map[string]metrics.MetricValue{
+			"podA": {
+				// Very low active requests, but historically massive throughput (very tired/hot)
+				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 1},
+				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 500},
+				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 500}, 
+				// throughput score = 1500 (Worst)
+			},
+			"podB": {
+				// Historically barely used, but currently slammed with requests
+				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 50}, // Worst
+				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 5},
+				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 5},
+				// throughput score = 15 (Best)
+			},
+			"podC": {
+				// The "Sweet Spot": Medium active requests, medium historical throughput
+				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 10}, // Medium
+				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 50},
+				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 50},
+				// throughput score = 150 (Medium)
+			},
+		})
+	pods3 := podsFromCache(c3)
+
+	// Update router manager with the new 3-pod cache
+	rm3 := NewRouterManager()
+	rm3.Register(RouterLeastRequest, func() (types.Router, error) { return &leastRequestRouter{cache: c3}, nil })
+	rm3.Register(RouterThroughput, func() (types.Router, error) { return throughputRouter{cache: c3}, nil })
+	rm3.Init()
+
+	// Test 8c: Single Strategy (least-request) picks Pod A, ignoring that A is historically overloaded
+	t.Run("E2E_Comparison_Single_LeastRequest", func(t *testing.T) {
+		ctx := types.NewRoutingContext(context.Background(), "least-request", model, "", "req8c", "")
+		router, _ := rm3.Select(ctx)
+		targetIP, _ := router.Route(ctx, pods3)
+		assert.Contains(t, targetIP, "1.1.1.1") // Picks Pod A
+	})
+
+	// Test 8d: Single Strategy (throughput) picks Pod B, ignoring that B is currently slammed
+	t.Run("E2E_Comparison_Single_Throughput", func(t *testing.T) {
+		ctx := types.NewRoutingContext(context.Background(), "throughput", model, "", "req8d", "")
+		router, _ := rm3.Select(ctx)
+		targetIP, _ := router.Route(ctx, pods3)
+		assert.Contains(t, targetIP, "2.2.2.2") // Picks Pod B
+	})
+
+	// Test 8e: Multi-Strategy (least-request:1, throughput:1) finds the balanced Pod C
+	t.Run("E2E_Comparison_MultiStrategy_Balanced", func(t *testing.T) {
+		// By combining both with equal weight, the router avoids the extremes and picks Pod C
+		ctx := types.NewRoutingContext(context.Background(), "least-request:1,throughput:1", model, "", "req8e", "")
+		router, _ := rm3.Select(ctx)
+		targetIP, _ := router.Route(ctx, pods3)
+		
+		// Math:
+		// least-request (Least is better): Min=1(A), Max=50(B)
+		//   A: (50-1)/49 = 1.0
+		//   B: (50-50)/49 = 0.0
+		//   C: (50-10)/49 = 0.816
+		// throughput (Least is better): Min=15(B), Max=1500(A)
+		//   A: (1500-1500)/1485 = 0.0
+		//   B: (1500-15)/1485 = 1.0
+		//   C: (1500-150)/1485 = 0.909
+		// Total Scores (equal weight):
+		//   A = 1.0 + 0.0 = 1.0
+		//   B = 0.0 + 1.0 = 1.0
+		//   C = 0.816 + 0.909 = 1.725
+		// Pod C has the highest combined soft score!
+		assert.Contains(t, targetIP, "3.3.3.3") // Picks Pod C
+	})
+
+	// 9. E2E Test: Reviewer's Benchmark Scenario (prefix-cache:0.75, least-request:0.125, throughput:0.125)
+	// Converted to integer coefficients (x8): prefix-cache:6, least-request:1, throughput:1
+	// If the user omits `:1` it uses default weight 1, so the config is `prefix-cache:6,least-request,throughput`
+	t.Run("E2E_MultiStrategy_Reviewer_Benchmark_Simulation", func(t *testing.T) {
+		algString := "prefix-cache:6,least-request,throughput"
+		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "another request", "req8", "")
+		
+		router, err := rm.Select(ctx)
+		assert.NoError(t, err)
+		
+		targetIP, err := router.Route(ctx, pods)
+		assert.NoError(t, err)
+		
+		// Expected Calculation:
+		// 1. prefix-cache (weight 6): No cache match seeded. Min=0, Max=0. Both pods get normalized score 1.0.
+		//    Weighted: A = 6.0, B = 6.0
+		// 2. least-request (weight 1): Pod A=10, Pod B=2. (PolarityLeast). Max=10, Min=2. 
+		//    Pod A: (10-10)/8 = 0.0. Pod B: (10-2)/8 = 1.0.
+		//    Weighted: A = 0.0, B = 1.0
+		// 3. throughput (weight 1): Pod A=250, Pod B=25. (PolarityLeast). Max=250, Min=25.
+		//    Pod A: (250-250)/225 = 0.0. Pod B: (250-25)/225 = 1.0.
+		//    Weighted: A = 0.0, B = 1.0
+		//
+		// Total score A: 6.0 + 0.0 + 0.0 = 6.0
+		// Total score B: 6.0 + 1.0 + 1.0 = 8.0 -> Pod B wins!
 		assert.Contains(t, targetIP, "2.2.2.2")
 	})
 }

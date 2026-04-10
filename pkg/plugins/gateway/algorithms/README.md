@@ -246,3 +246,30 @@ AIBRIX_ROUTING_ALGORITHM: "least-request,throughput:2,least-latency:0"
 AIBRIX_ROUTING_ALGORITHM: "least-request:1,invalid-strategy:1"
 ```
 * Because `invalid-strategy` is not a registered algorithm, the multi-strategy parser will fail. The Gateway will gracefully fall back to using the default **Random Router** to ensure requests continue to be served without interruption.
+
+#### Example 5: Multi-Strategy Finding the Sweet Spot
+In reality, a pod with the absolute minimum active requests might have just recovered from being severely overloaded. Multi-strategy routing prevents routing to extreme outliers by considering multiple dimensions.
+
+Assume three pods with the following metrics:
+* **Pod A**: Very low active requests (1 req), but historically massively overloaded (1500 tokens).
+* **Pod B**: Historically barely used (15 tokens), but currently slammed with active requests (50 req).
+* **Pod C**: The "Sweet Spot" - Medium active requests (10 req), and medium historical load (150 tokens).
+
+**Single Strategy Flaws:**
+* `AIBRIX_ROUTING_ALGORITHM="least-request"`: Completely ignores historical load and picks **Pod A** (which is exhausted).
+* `AIBRIX_ROUTING_ALGORITHM="throughput"`: Completely ignores current spikes and picks **Pod B** (which is currently slammed).
+
+**Multi-Strategy Solution:**
+```yaml
+AIBRIX_ROUTING_ALGORITHM: "least-request:1,throughput:1"
+```
+* `least-request` (weight 1): Normalizes active requests [1, 50]. 
+  * Pod A: 1.0
+  * Pod B: 0.0
+  * Pod C: 0.816
+* `throughput` (weight 1): Normalizes historical load [15, 1500].
+  * Pod A: 0.0
+  * Pod B: 1.0
+  * Pod C: 0.909
+* **Total Score (Weighted)**: Pod A = 0.5, Pod B = 0.5, Pod C ≈ **0.86**. 
+* **Result**: **Pod C wins!** The router correctly identifies the most balanced pod, avoiding the exhausted Pod A and the currently slammed Pod B.
