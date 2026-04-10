@@ -28,7 +28,6 @@ import (
 	"github.com/redis/go-redis/v9"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
@@ -339,19 +338,16 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		// Create store with provided dependencies
 		store = New(opts.RedisClient, initPrometheusAPI(config), opts.ModelRouterProvider)
 
-		// Initialize service discovery
-		if opts.DiscoveryProvider != nil {
-			// Use custom discovery provider (e.g., file-based for standalone mode)
-			if err := initDiscoveryProvider(store, opts.DiscoveryProvider, stopCh); err != nil {
-				klog.Fatalf("Failed to initialize discovery provider: %v", err)
-			}
-			klog.InfoS("Using custom discovery provider", "type", opts.DiscoveryProvider.Type())
-		} else {
-			// Use Kubernetes informers (default)
-			if err := initCacheInformers(store, config, stopCh); err != nil {
-				klog.Fatalf("Failed to initialize cache informers: %v", err)
-			}
+		// Initialize service discovery — all modes go through the Provider interface
+		provider := opts.DiscoveryProvider
+		if provider == nil {
+			// Default: Kubernetes informer-based discovery
+			provider = discovery.NewKubernetesProvider(config)
 		}
+		if err := initDiscoveryProvider(store, provider, stopCh); err != nil {
+			klog.Fatalf("Failed to initialize discovery provider: %v", err)
+		}
+		klog.InfoS("Using discovery provider", "type", provider.Type())
 		initMetricsCache(store, stopCh)
 
 		// Initialize profile cache if enabled
@@ -405,44 +401,50 @@ func initMetricsCache(store *Store, stopCh <-chan struct{}) {
 	}()
 }
 
-// initDiscoveryProvider initializes the cache using a custom discovery provider.
+// initDiscoveryProvider initializes the cache using a discovery provider.
+// All initial state and ongoing changes are delivered through Watch().
 func initDiscoveryProvider(store *Store, provider discovery.Provider, stopCh <-chan struct{}) error {
-	objs, err := provider.Load()
-	if err != nil {
-		return err
+	if err := provider.Watch(func(ev discovery.WatchEvent) {
+		handleDiscoveryObject(store, ev.Type, ev.Object, ev.OldObject)
+	}, stopCh); err != nil {
+		return fmt.Errorf("failed to initialize discovery provider: %w", err)
 	}
-
-	// add all resources during initialization
-	for _, o := range objs {
-		switch obj := o.(type) {
-		case *v1.Pod:
-			store.addPod(obj)
-		case *modelv1alpha1.ModelAdapter:
-			store.addModelAdapter(obj)
-		default:
-			klog.Warningf("Discovery provider returned unknown object type: %T", o)
-		}
-	}
-
-	// Watch for updates
-	if err := provider.AddEventHandler("Pod",
-		cache.ResourceEventHandlerFuncs{
-			AddFunc:    store.addPod,
-			UpdateFunc: store.updatePod,
-			DeleteFunc: store.deletePod,
-		}, stopCh); err != nil {
-		return err
-	}
-	if err := provider.AddEventHandler("ModelAdapter",
-		cache.ResourceEventHandlerFuncs{
-			AddFunc:    store.addModelAdapter,
-			UpdateFunc: store.updateModelAdapter,
-			DeleteFunc: store.deleteModelAdapter,
-		}, stopCh); err != nil {
-		return err
-	}
-
 	return nil
+}
+
+func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj any) {
+	switch o := obj.(type) {
+	case *v1.Pod:
+		switch evType {
+		case discovery.EventAdd:
+			store.addPod(o)
+		case discovery.EventUpdate:
+			oldPod, ok := oldObj.(*v1.Pod)
+			if !ok {
+				klog.Errorf("Pod update event for %s/%s with incorrect old object type: %T", o.Namespace, o.Name, oldObj)
+				return
+			}
+			store.updatePod(oldPod, o)
+		case discovery.EventDelete:
+			store.deletePod(o)
+		}
+	case *modelv1alpha1.ModelAdapter:
+		switch evType {
+		case discovery.EventAdd:
+			store.addModelAdapter(o)
+		case discovery.EventUpdate:
+			oldAdapter, ok := oldObj.(*modelv1alpha1.ModelAdapter)
+			if !ok {
+				klog.Errorf("ModelAdapter update event for %s/%s with incorrect old object type: %T", o.Namespace, o.Name, oldObj)
+				return
+			}
+			store.updateModelAdapter(oldAdapter, o)
+		case discovery.EventDelete:
+			store.deleteModelAdapter(o)
+		}
+	default:
+		klog.Warningf("Discovery event with unknown object type: %T", obj)
+	}
 }
 
 // initMetricsCache initializes metrics cache update loop
