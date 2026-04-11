@@ -511,6 +511,16 @@ export function Playground({ onNavigateToModel }: PlaygroundProps) {
     scrollToBottom();
   }, [messages, streamingContent, scrollToBottom]);
 
+  // Clear any in-flight stream interval when the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (streamIntervalRef.current) {
+        clearInterval(streamIntervalRef.current);
+        streamIntervalRef.current = null;
+      }
+    };
+  }, []);
+
   const modelSlug = selectedModel.name.toLowerCase().replace(/[\s.]+/g, '-').replace(/[()]/g, '');
 
   const handleSend = () => {

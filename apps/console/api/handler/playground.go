@@ -78,7 +78,12 @@ func (h *PlaygroundHandler) HandleChatCompletion(w http.ResponseWriter, r *http.
 	req.Stream = true
 
 	// Forward to AIBrix gateway
-	reqBody, _ := json.Marshal(req)
+	reqBody, err := json.Marshal(req)
+	if err != nil {
+		klog.Errorf("Failed to marshal playground request: %v", err)
+		http.Error(w, `{"error":"failed to marshal request body"}`, http.StatusInternalServerError)
+		return
+	}
 	gatewayURL := h.gatewayEndpoint + "/v1/chat/completions"
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), "POST", gatewayURL, bytes.NewReader(reqBody))
