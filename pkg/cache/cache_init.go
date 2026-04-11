@@ -562,8 +562,8 @@ func (s *Store) initKVEventSync() error {
 		return fmt.Errorf("invalid KV event sync configuration: %w", err)
 	}
 
-	// Create sync indexer after validation passes
-	s.syncPrefixIndexer = syncindexer.NewSyncPrefixHashTable()
+	// Create sync indexer after validation passes - use shared singleton
+	s.syncPrefixIndexer = syncindexer.GetSharedSyncPrefixHashTable()
 	if s.syncPrefixIndexer == nil {
 		return fmt.Errorf("failed to create sync prefix indexer")
 	}
@@ -590,9 +590,12 @@ func (s *Store) cleanupKVEventSync() {
 		s.kvEventManager = nil
 	}
 
-	// Clear sync indexer
+	// Clear sync indexer reference
+	// NOTE: Do NOT call Close() on the shared singleton instance
+	// as it may still be used by other components (e.g., gateway router).
+	// The singleton's lifecycle is managed globally and should only be
+	// closed during process shutdown, not during Store cleanup.
 	if s.syncPrefixIndexer != nil {
-		s.syncPrefixIndexer.Close()
 		s.syncPrefixIndexer = nil
 	}
 }
