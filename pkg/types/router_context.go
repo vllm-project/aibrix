@@ -342,7 +342,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 
 	r.RespHeaders = map[string]string{}
 	r.ConfigProfile = nil
-	r.CandidatePods = nil // Reset candidate pods
+	r.CandidatePods = nil                // Reset candidate pods
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
 	r.lastError.Store(nil)
