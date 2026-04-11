@@ -34,27 +34,57 @@ func TestChainedRouter(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "pod1",
 				Namespace: "default",
+				Labels: map[string]string{
+					"model.aibrix.ai/port": "8000",
+				},
 			},
 			Status: v1.PodStatus{
-				PodIP: "1.1.1.1",
+				PodIP:  "1.1.1.1",
+				Phase:  v1.PodRunning,
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodReady,
+						Status: v1.ConditionTrue,
+					},
+				},
 			},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "pod2",
 				Namespace: "default",
+				Labels: map[string]string{
+					"model.aibrix.ai/port": "8000",
+				},
 			},
 			Status: v1.PodStatus{
-				PodIP: "2.2.2.2",
+				PodIP:  "2.2.2.2",
+				Phase:  v1.PodRunning,
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodReady,
+						Status: v1.ConditionTrue,
+					},
+				},
 			},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "pod3",
 				Namespace: "default",
+				Labels: map[string]string{
+					"model.aibrix.ai/port": "8000",
+				},
 			},
 			Status: v1.PodStatus{
-				PodIP: "3.3.3.3",
+				PodIP:  "3.3.3.3",
+				Phase:  v1.PodRunning,
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodReady,
+						Status: v1.ConditionTrue,
+					},
+				},
 			},
 		},
 	}
@@ -124,9 +154,19 @@ func TestChainedRouterWithInvalidAlgorithm(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "pod1",
 				Namespace: "default",
+				Labels: map[string]string{
+					"model.aibrix.ai/port": "8000",
+				},
 			},
 			Status: v1.PodStatus{
-				PodIP: "1.1.1.1",
+				PodIP:  "1.1.1.1",
+				Phase:  v1.PodRunning,
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodReady,
+						Status: v1.ConditionTrue,
+					},
+				},
 			},
 		},
 	}

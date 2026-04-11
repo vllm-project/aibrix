@@ -107,12 +107,13 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		}
 
 		if len(validAlgorithms) > 1 {
+			routingAlgorithm = routing.RouterChained
 			// Set chained algorithms to routing context
 			routingCtx.Algorithms = validAlgorithms
-			routingCtx.Algorithm = routing.RouterChained
-		} else if len(algorithms) == 1 {
-			routingCtx.Algorithm = validAlgorithms[0]
+		} else if len(validAlgorithms) == 1 {
+			routingAlgorithm = validAlgorithms[0]
 		}
+		routingCtx.Algorithm = routingAlgorithm
 	}
 
 	headers := []*configPb.HeaderValueOption{}

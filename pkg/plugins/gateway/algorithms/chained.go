@@ -99,11 +99,18 @@ func (r *chainedRouter) Route(ctx *types.RoutingContext, readyPodList types.PodL
 
 func (r *chainedRouter) applyAlgorithm(ctx *types.RoutingContext, algorithm types.RoutingAlgorithm, candidatePods []*v1.Pod) ([]*v1.Pod, error) {
 	// Create a new routing context for this algorithm
-	routingCtx := types.NewRoutingContext(ctx.Context, algorithm, ctx.Model, ctx.Message, ctx.RequestID, "")
+	user := ""
+	if ctx.User != nil {
+		user = *ctx.User
+	}
+
+	routingCtx := types.NewRoutingContext(ctx.Context, algorithm, ctx.Model, ctx.Message, ctx.RequestID, user)
+	defer routingCtx.Delete()
+
 	routingCtx.ReqHeaders = ctx.ReqHeaders
 	routingCtx.ReqBody = ctx.ReqBody
 	routingCtx.ReqPath = ctx.ReqPath
-	
+
 	routingCtx.CandidatePods = candidatePods
 	router, err := r.routerManager.Select(&types.RoutingContext{Algorithm: algorithm})
 	if err != nil {
@@ -111,7 +118,6 @@ func (r *chainedRouter) applyAlgorithm(ctx *types.RoutingContext, algorithm type
 	}
 
 	podList := &utils.PodArray{Pods: candidatePods}
-	
 	_, err = router.Route(routingCtx, podList)
 	if err != nil {
 		return nil, err
