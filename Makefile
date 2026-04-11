@@ -227,6 +227,14 @@ build-gateway-plugins: manifests generate fmt vet ## Build gateway-plugins binar
 build-gateway-plugins-nozmq: manifests generate fmt vet ## Build gateway-plugins binary without ZMQ (for standalone mode).
 	CGO_ENABLED=0 go build -tags="nozmq" -o bin/gateway-plugins cmd/plugins/main.go
 
+.PHONY: build-console
+build-console: ## Build console API server binary.
+	CGO_ENABLED=0 go build -tags="nozmq" -o bin/console ./cmd/console
+
+.PHONY: generate-console-proto
+generate-console-proto: ## Generate Go code from console proto files.
+	cd apps/console/api && buf generate
+
 .PHONY: build-metadata-service
 build-metadata-service: ## Metadata service is now Python-based, use docker-build-metadata-service instead.
 	@echo "Metadata service is now Python-based. Use 'make docker-build-metadata-service' to build the Docker image."

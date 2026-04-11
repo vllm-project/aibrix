@@ -1,0 +1,359 @@
+// Copyright 2025 The Aibrix Team.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package console.v1;
+
+option go_package = "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1;consolev1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+
+// =============================================================================
+// Deployment Service
+// =============================================================================
+
+service DeploymentService {
+  rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/deployments"
+    };
+  }
+
+  rpc GetDeployment(GetDeploymentRequest) returns (Deployment) {
+    option (google.api.http) = {
+      get: "/api/v1/deployments/{id}"
+    };
+  }
+
+  rpc CreateDeployment(CreateDeploymentRequest) returns (Deployment) {
+    option (google.api.http) = {
+      post: "/api/v1/deployments"
+      body: "*"
+    };
+  }
+
+  rpc DeleteDeployment(DeleteDeploymentRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/deployments/{id}"
+    };
+  }
+}
+
+message Deployment {
+  string id = 1;
+  string name = 2;
+  string deployment_id = 3;
+  string base_model = 4;
+  string base_model_id = 5;
+  string replicas = 6;
+  int32 gpus_per_replica = 7;
+  string gpu_type = 8;
+  string region = 9;
+  string created_by = 10;
+  string status = 11; // "Ready", "Deploying", "Failed"
+}
+
+message ListDeploymentsRequest {
+  string search = 1;
+}
+
+message ListDeploymentsResponse {
+  repeated Deployment deployments = 1;
+}
+
+message GetDeploymentRequest {
+  string id = 1;
+}
+
+message CreateDeploymentRequest {
+  string name = 1;
+  string base_model = 2;
+  string region = 3;
+  string accelerator_type = 4;
+  int32 accelerator_count = 5;
+  string quantization = 6;
+  int32 min_replicas = 7;
+  int32 max_replicas = 8;
+  bool enable_auto_scaling = 9;
+  bool enable_multi_lora = 10;
+}
+
+message DeleteDeploymentRequest {
+  string id = 1;
+}
+
+// =============================================================================
+// Job Service (Batch Inference)
+// =============================================================================
+
+service JobService {
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/jobs"
+    };
+  }
+
+  rpc GetJob(GetJobRequest) returns (Job) {
+    option (google.api.http) = {
+      get: "/api/v1/jobs/{id}"
+    };
+  }
+
+  rpc CreateJob(CreateJobRequest) returns (Job) {
+    option (google.api.http) = {
+      post: "/api/v1/jobs"
+      body: "*"
+    };
+  }
+}
+
+message Job {
+  string id = 1;
+  string name = 2;
+  string inference_id = 3;
+  string model = 4;
+  string model_id = 5;
+  string input_dataset = 6;
+  string input_dataset_id = 7;
+  string create_date = 8;
+  string create_time = 9;
+  string created_by = 10;
+  string status = 11; // "Completed", "Validating", "Failed"
+  string full_path = 12;
+}
+
+message ListJobsRequest {
+  string search = 1;
+  string status = 2;
+}
+
+message ListJobsResponse {
+  repeated Job jobs = 1;
+}
+
+message GetJobRequest {
+  string id = 1;
+}
+
+message CreateJobRequest {
+  string model = 1;
+  string dataset_id = 2;
+  string display_name = 3;
+  optional int32 max_tokens = 4;
+  optional double temperature = 5;
+  optional double top_p = 6;
+  optional int32 n = 7;
+  string quantization = 8;
+}
+
+// =============================================================================
+// Model Service (Catalog)
+// =============================================================================
+
+service ModelService {
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/models"
+    };
+  }
+
+  rpc GetModel(GetModelRequest) returns (Model) {
+    option (google.api.http) = {
+      get: "/api/v1/models/{id}"
+    };
+  }
+}
+
+message Model {
+  string id = 1;
+  string name = 2;
+  string provider = 3;
+  string icon_bg = 4;
+  string icon_text = 5;
+  string icon_text_color = 6;
+  repeated string categories = 7; // "LLM", "Audio", "Image", "Video", "Vision", "Embedding", "Reranks"
+  bool is_new = 8;
+  ModelPricing pricing = 9;
+  string context_length = 10;
+  string description = 11;
+  ModelMetadata metadata = 12;
+  ModelSpecification specification = 13;
+  repeated string tags = 14;
+}
+
+message ModelPricing {
+  string uncached_input = 1;
+  string cached_input = 2;
+  string output = 3;
+  string per_minute = 4;
+  string per_step = 5;
+  string per_ea = 6;
+  string per_tokens = 7;
+}
+
+message ModelMetadata {
+  string state = 1;
+  string created_on = 2;
+  string kind = 3;
+  string provider_name = 4;
+  string hugging_face = 5;
+}
+
+message ModelSpecification {
+  bool calibrated = 1;
+  bool mixture_of_experts = 2;
+  string parameters = 3;
+}
+
+message ListModelsRequest {
+  string search = 1;
+  string category = 2;
+}
+
+message ListModelsResponse {
+  repeated Model models = 1;
+}
+
+message GetModelRequest {
+  string id = 1;
+}
+
+// =============================================================================
+// API Key Service
+// =============================================================================
+
+service APIKeyService {
+  rpc ListAPIKeys(ListAPIKeysRequest) returns (ListAPIKeysResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/apikeys"
+    };
+  }
+
+  rpc CreateAPIKey(CreateAPIKeyRequest) returns (CreateAPIKeyResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/apikeys"
+      body: "*"
+    };
+  }
+
+  rpc DeleteAPIKey(DeleteAPIKeyRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/apikeys/{id}"
+    };
+  }
+}
+
+message APIKey {
+  string id = 1;
+  string name = 2;
+  string secret_key = 3; // masked after creation
+  string created_at = 4;
+}
+
+message ListAPIKeysRequest {}
+
+message ListAPIKeysResponse {
+  repeated APIKey api_keys = 1;
+}
+
+message CreateAPIKeyRequest {
+  string name = 1;
+}
+
+message CreateAPIKeyResponse {
+  APIKey api_key = 1;
+  string full_key = 2; // only returned once at creation
+}
+
+message DeleteAPIKeyRequest {
+  string id = 1;
+}
+
+// =============================================================================
+// Secret Service
+// =============================================================================
+
+service SecretService {
+  rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/secrets"
+    };
+  }
+
+  rpc CreateSecret(CreateSecretRequest) returns (Secret) {
+    option (google.api.http) = {
+      post: "/api/v1/secrets"
+      body: "*"
+    };
+  }
+
+  rpc DeleteSecret(DeleteSecretRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/secrets/{id}"
+    };
+  }
+}
+
+message Secret {
+  string id = 1;
+  string name = 2;
+}
+
+message ListSecretsRequest {
+  string search = 1;
+}
+
+message ListSecretsResponse {
+  repeated Secret secrets = 1;
+}
+
+message CreateSecretRequest {
+  string name = 1;
+  string value = 2;
+}
+
+message DeleteSecretRequest {
+  string id = 1;
+}
+
+// =============================================================================
+// Quota Service
+// =============================================================================
+
+service QuotaService {
+  rpc ListQuotas(ListQuotasRequest) returns (ListQuotasResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/quotas"
+    };
+  }
+}
+
+message Quota {
+  string id = 1;
+  string name = 2;
+  string quota_id = 3;
+  int32 current_usage = 4;
+  double usage_percentage = 5;
+  int32 quota = 6;
+}
+
+message ListQuotasRequest {
+  string search = 1;
+}
+
+message ListQuotasResponse {
+  repeated Quota quotas = 1;
+}
