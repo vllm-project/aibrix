@@ -1,65 +1,63 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Copy, MoreVertical, X, Key } from 'lucide-react';
+import { listAPIKeys, createAPIKey, deleteAPIKey } from '../../utils/api';
+import type { APIKey } from '../../utils/api';
 import { copyToClipboard } from '../../utils/clipboard';
-
-interface ApiKey {
-  id: string;
-  name: string;
-  secretKey: string;
-  createdAt: string;
-}
 
 interface ApiKeysPageProps {
   onToast: (message: string, subtitle?: string) => void;
 }
 
 export function ApiKeysPage({ onToast }: ApiKeysPageProps) {
-  const [apiKeys, setApiKeys] = useState<ApiKey[]>([
-    {
-      id: 'key_5VFKZKA2qxmqU5aJ',
-      name: 'AIBRIX_API_KEY',
-      secretKey: 'aibrix_WSo2...',
-      createdAt: 'Jan 19, 2026 7:34 AM',
-    },
-  ]);
+  const [apiKeys, setApiKeys] = useState<APIKey[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showCopyModal, setShowCopyModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState('');
   const [generatedKey, setGeneratedKey] = useState('');
+  const [creating, setCreating] = useState(false);
 
-  const generateRandomKey = () => {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let result = 'aibrix_';
-    for (let i = 0; i < 24; i++) {
-      result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
+  const fetchKeys = () => {
+    setLoading(true);
+    listAPIKeys()
+      .then(keys => setApiKeys(keys))
+      .catch(err => console.error('Failed to fetch API keys:', err))
+      .finally(() => setLoading(false));
   };
+
+  useEffect(() => {
+    fetchKeys();
+  }, []);
 
   const handleCreateKey = () => {
     if (!newKeyName.trim()) return;
 
-    const fullKey = generateRandomKey();
-    const newApiKey: ApiKey = {
-      id: `key_${Math.random().toString(36).substring(2, 18)}`,
-      name: newKeyName,
-      secretKey: fullKey.substring(0, 10) + '...',
-      createdAt: new Date().toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      }) + ' ' + new Date().toLocaleTimeString('en-US', {
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true,
-      }),
-    };
+    setCreating(true);
+    createAPIKey(newKeyName)
+      .then(result => {
+        setApiKeys(prev => [...prev, result.apiKey]);
+        setGeneratedKey(result.fullKey);
+        setShowCreateModal(false);
+        setShowCopyModal(true);
+        setNewKeyName('');
+      })
+      .catch(err => {
+        console.error('Failed to create API key:', err);
+        onToast('Failed to create API key');
+      })
+      .finally(() => setCreating(false));
+  };
 
-    setApiKeys([...apiKeys, newApiKey]);
-    setGeneratedKey(fullKey);
-    setShowCreateModal(false);
-    setShowCopyModal(true);
-    setNewKeyName('');
+  const handleDeleteKey = (id: string) => {
+    deleteAPIKey(id)
+      .then(() => {
+        setApiKeys(prev => prev.filter(k => k.id !== id));
+        onToast('API key deleted');
+      })
+      .catch(err => {
+        console.error('Failed to delete API key:', err);
+        onToast('Failed to delete API key');
+      });
   };
 
   const handleCopyKey = () => {
@@ -119,7 +117,20 @@ export function ApiKeysPage({ onToast }: ApiKeysPageProps) {
             </tr>
           </thead>
           <tbody>
-            {apiKeys.map((key) => (
+            {loading ? (
+              <tr>
+                <td colSpan={4} className="px-6 py-8 text-center text-sm text-gray-400">
+                  Loading API keys...
+                </td>
+              </tr>
+            ) : apiKeys.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="px-6 py-8 text-center text-sm text-gray-400">
+                  No API keys found. Create one to get started.
+                </td>
+              </tr>
+            ) : (
+              apiKeys.map((key) => (
               <tr key={key.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-3">
@@ -153,12 +164,15 @@ export function ApiKeysPage({ onToast }: ApiKeysPageProps) {
                   </div>
                 </td>
                 <td className="px-4 py-4">
-                  <button className="text-gray-300 hover:text-gray-500">
+                  <button
+                    className="text-gray-300 hover:text-gray-500"
+                    onClick={() => handleDeleteKey(key.id)}
+                  >
                     <MoreVertical className="w-4 h-4" />
                   </button>
                 </td>
               </tr>
-            ))}
+            )))}
           </tbody>
         </table>
       </div>
@@ -200,10 +214,10 @@ export function ApiKeysPage({ onToast }: ApiKeysPageProps) {
             <div className="flex justify-end">
               <button
                 onClick={handleCreateKey}
-                disabled={!newKeyName.trim()}
+                disabled={!newKeyName.trim() || creating}
                 className="px-6 py-2.5 bg-teal-600 text-white rounded-lg text-sm hover:bg-teal-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Generate Key
+                {creating ? 'Generating...' : 'Generate Key'}
               </button>
             </div>
           </div>

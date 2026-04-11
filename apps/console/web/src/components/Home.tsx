@@ -1,6 +1,26 @@
+import { useState, useEffect } from 'react';
 import { Boxes, Rocket, Library, Gamepad2, ArrowUpRight, Zap, Server } from 'lucide-react';
+import { listDeployments, listJobs, listModels } from '../utils/api';
 
 export function Home() {
+  const [deploymentCount, setDeploymentCount] = useState<number | null>(null);
+  const [jobCount, setJobCount] = useState<number | null>(null);
+  const [modelCount, setModelCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    listDeployments()
+      .then(d => setDeploymentCount(d.length))
+      .catch(() => setDeploymentCount(0));
+
+    listJobs()
+      .then(j => setJobCount(j.length))
+      .catch(() => setJobCount(0));
+
+    listModels()
+      .then(m => setModelCount(m.length))
+      .catch(() => setModelCount(0));
+  }, []);
+
   const quickLinks = [
     { icon: Boxes, label: 'Batch Inference', desc: 'Run large-scale inference jobs on datasets', color: 'from-teal-500 to-emerald-600' },
     { icon: Rocket, label: 'Deployments', desc: 'Deploy models with custom scaling options', color: 'from-cyan-500 to-blue-600' },
@@ -26,7 +46,9 @@ export function Home() {
             </div>
             <span className="text-sm text-gray-500">Active Deployments</span>
           </div>
-          <div className="text-2xl text-gray-900">3</div>
+          <div className="text-2xl text-gray-900">
+            {deploymentCount !== null ? deploymentCount : '...'}
+          </div>
         </div>
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
           <div className="flex items-center gap-3 mb-3">
@@ -35,7 +57,9 @@ export function Home() {
             </div>
             <span className="text-sm text-gray-500">Batch Jobs (30d)</span>
           </div>
-          <div className="text-2xl text-gray-900">12</div>
+          <div className="text-2xl text-gray-900">
+            {jobCount !== null ? jobCount : '...'}
+          </div>
         </div>
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
           <div className="flex items-center gap-3 mb-3">
@@ -44,7 +68,9 @@ export function Home() {
             </div>
             <span className="text-sm text-gray-500">Available Models</span>
           </div>
-          <div className="text-2xl text-gray-900">50+</div>
+          <div className="text-2xl text-gray-900">
+            {modelCount !== null ? modelCount : '...'}
+          </div>
         </div>
       </div>
 

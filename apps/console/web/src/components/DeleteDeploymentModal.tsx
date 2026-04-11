@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Copy } from 'lucide-react';
-import { mockDeployments } from '../data/mockData';
+import { getDeployment, deleteDeployment } from '../utils/api';
+import type { Deployment } from '../data/mockData';
 
 interface DeleteDeploymentModalProps {
   deploymentId: string;
@@ -8,14 +9,49 @@ interface DeleteDeploymentModalProps {
 }
 
 export function DeleteDeploymentModal({ deploymentId, onClose }: DeleteDeploymentModalProps) {
-  const deployment = mockDeployments.find(d => d.id === deploymentId);
+  const [deployment, setDeployment] = useState<Deployment | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
   const [confirmText, setConfirmText] = useState('');
   const [hardDelete, setHardDelete] = useState(false);
   const [ignoreChecks, setIgnoreChecks] = useState(false);
 
+  useEffect(() => {
+    setLoading(true);
+    getDeployment(deploymentId)
+      .then(d => setDeployment(d))
+      .catch(err => {
+        console.error('Failed to fetch deployment:', err);
+        setDeployment(null);
+      })
+      .finally(() => setLoading(false));
+  }, [deploymentId]);
+
+  if (loading) {
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-xl max-w-lg w-full mx-4 shadow-2xl p-6 text-center text-sm text-gray-400">
+          Loading...
+        </div>
+      </div>
+    );
+  }
+
   if (!deployment) return null;
 
   const canConfirm = confirmText === deployment.deploymentId && (hardDelete || ignoreChecks);
+
+  const handleConfirmDelete = () => {
+    setDeleting(true);
+    deleteDeployment(deploymentId)
+      .then(() => {
+        onClose();
+      })
+      .catch(err => {
+        console.error('Failed to delete deployment:', err);
+      })
+      .finally(() => setDeleting(false));
+  };
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -96,14 +132,15 @@ export function DeleteDeploymentModal({ deploymentId, onClose }: DeleteDeploymen
               Back
             </button>
             <button
-              disabled={!canConfirm}
+              disabled={!canConfirm || deleting}
+              onClick={handleConfirmDelete}
               className={`flex-1 px-4 py-2 rounded-lg text-sm ${
-                canConfirm
+                canConfirm && !deleting
                   ? 'bg-red-600 text-white hover:bg-red-700'
                   : 'bg-gray-100 text-gray-400 cursor-not-allowed'
               }`}
             >
-              Confirm Deletion
+              {deleting ? 'Deleting...' : 'Confirm Deletion'}
             </button>
           </div>
         </div>

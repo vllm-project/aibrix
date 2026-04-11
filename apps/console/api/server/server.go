@@ -20,6 +20,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
@@ -29,22 +30,65 @@ import (
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/handler"
+	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
+
+	"github.com/vllm-project/aibrix/apps/console/api/config"
 )
 
 // Server holds the gRPC and HTTP servers for the console backend.
 type Server struct {
-	grpcServer      *grpc.Server
-	httpServer      *http.Server
-	store           store.Store
-	gatewayEndpoint string
+	grpcServer *grpc.Server
+	httpServer *http.Server
+	store      store.Store
+	cfg        *config.Config
+	auth       *middleware.AuthMiddleware
+	mysqlStore *store.MySQLStore // nil if using memory store
 }
 
-// New creates a new console Server.
-func New(gatewayEndpoint string) *Server {
+// New creates a new console Server from configuration.
+func New(cfg *config.Config) *Server {
+	var s store.Store
+	var mysqlStore *store.MySQLStore
+
+	switch cfg.StoreType {
+	case "mysql":
+		ms, err := store.NewMySQLStore(cfg.MySQLDSN, cfg.SecretsEncryptionKey)
+		if err != nil {
+			klog.Fatalf("Failed to connect to MySQL: %v", err)
+		}
+		if err := ms.RunMigrations(); err != nil {
+			klog.Fatalf("Failed to run MySQL migrations: %v", err)
+		}
+		if err := ms.LoadDemoData(); err != nil {
+			klog.Fatalf("Failed to load MySQL demo data: %v", err)
+		}
+		s = ms
+		mysqlStore = ms
+		klog.Info("Using MySQL store")
+	default:
+		s = store.NewMemoryStore()
+		klog.Info("Using in-memory store")
+	}
+
+	authCfg := middleware.AuthConfig{
+		Mode:             cfg.AuthMode,
+		OIDCIssuerURL:    cfg.OIDCIssuerURL,
+		OIDCClientID:     cfg.OIDCClientID,
+		OIDCClientSecret: cfg.OIDCClientSecret,
+		OIDCRedirectURL:  cfg.OIDCRedirectURL,
+		SessionSecret:    cfg.SessionSecret,
+		DevUserName:      cfg.DevUserName,
+		DevUserEmail:     cfg.DevUserEmail,
+		BasicUsername:    cfg.BasicUsername,
+		BasicPassword:    cfg.BasicPassword,
+	}
+
 	return &Server{
-		store:           store.NewMemoryStore(),
-		gatewayEndpoint: gatewayEndpoint,
+		store:      s,
+		cfg:        cfg,
+		auth:       middleware.NewAuthMiddleware(authCfg),
+		mysqlStore: mysqlStore,
 	}
 }
 
@@ -95,13 +139,35 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	}
 
 	// Register playground SSE proxy as a custom route
-	playgroundHandler := handler.NewPlaygroundHandler(s.gatewayEndpoint)
+	playgroundHandler := handler.NewPlaygroundHandler(s.cfg.GatewayEndpoint)
 	if err := mux.HandlePath("POST", "/api/v1/playground/chat/completions", playgroundHandler.HandleChatCompletion); err != nil {
 		return err
 	}
 
-	// Wrap with CORS middleware
-	httpHandler := corsMiddleware(mux)
+	// Register file proxy routes
+	fileHandler := handler.NewFileHandler(s.cfg.MetadataServiceURL)
+	fileHandler.RegisterRoutes(mux)
+
+	// Register auth routes
+	s.auth.RegisterAuthRoutes(mux)
+
+	// Register health endpoint
+	if err := mux.HandlePath("GET", "/api/v1/health", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}); err != nil {
+		return err
+	}
+
+	// Build handler chain: CORS -> Auth -> Routes
+	var httpHandler http.Handler = mux
+	httpHandler = s.auth.Handler(httpHandler)
+	httpHandler = corsMiddleware(s.cfg.AllowedOrigins)(httpHandler)
+
+	// Serve static files if configured
+	if s.cfg.StaticFilesDir != "" {
+		httpHandler = staticFileMiddleware(s.cfg.StaticFilesDir, httpHandler)
+	}
 
 	s.httpServer = &http.Server{
 		Addr:    httpAddr,
@@ -120,17 +186,70 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if s.httpServer != nil {
 		_ = s.httpServer.Shutdown(ctx)
 	}
+	if s.mysqlStore != nil {
+		_ = s.mysqlStore.Close()
+	}
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+// corsMiddleware returns middleware that sets CORS headers from an allowlist.
+//
+// allowedOrigins is a comma-separated list of origins. When empty, no CORS
+// headers are set (same-origin only). When the request's Origin matches an
+// entry, the middleware echoes that exact origin back with credentials allowed.
+// A single "*" entry permits any origin but disables credentials, since the
+// "*" + Allow-Credentials combination is rejected by browsers.
+func corsMiddleware(allowedOrigins string) func(http.Handler) http.Handler {
+	var origins []string
+	for _, o := range strings.Split(allowedOrigins, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			origins = append(origins, o)
+		}
+	}
+	wildcard := len(origins) == 1 && origins[0] == "*"
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			if origin != "" && len(origins) > 0 {
+				allowed := wildcard
+				if !allowed {
+					for _, o := range origins {
+						if o == origin {
+							allowed = true
+							break
+						}
+					}
+				}
+				if allowed {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Vary", "Origin")
+					w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+					w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-User-ID")
+					if !wildcard {
+						w.Header().Set("Access-Control-Allow-Credentials", "true")
+					}
+				}
+			}
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// staticFileMiddleware serves static files from dir for non-API paths.
+// API paths (/api/) are passed through to the next handler.
+func staticFileMiddleware(dir string, next http.Handler) http.Handler {
+	fs := http.FileServer(http.Dir(dir))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
+		// API requests go to the backend
+		if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/api" {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		// Try to serve static file
+		fs.ServeHTTP(w, r)
 	})
 }

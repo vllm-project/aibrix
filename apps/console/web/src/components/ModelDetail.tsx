@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { ArrowLeft, Copy, Calendar, Box, Home as HomeIcon, Globe, Moon, Settings2, Layers, ChevronDown } from 'lucide-react';
-import { mockModels } from '../data/mockData';
+import { getModel } from '../utils/api';
+import type { Model } from '../data/mockData';
 import { copyToClipboard } from '../utils/clipboard';
 
 interface ModelDetailProps {
@@ -158,8 +159,35 @@ export function ModelDetail({ modelId, onBack }: ModelDetailProps) {
   const [activeLanguage, setActiveLanguage] = useState<Language>('Python');
   const [activeMode, setActiveMode] = useState<Mode>('Chat');
   const [copied, setCopied] = useState(false);
+  const [model, setModel] = useState<Model | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const model = mockModels.find(m => m.id === modelId);
+  useEffect(() => {
+    if (!modelId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    getModel(modelId)
+      .then(m => setModel(m))
+      .catch(err => {
+        console.error('Failed to fetch model:', err);
+        setModel(null);
+      })
+      .finally(() => setLoading(false));
+  }, [modelId]);
+
+  if (loading) {
+    return (
+      <div className="p-8">
+        <button onClick={onBack} className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-4">
+          <ArrowLeft className="w-4 h-4" />
+          Back to Model Library
+        </button>
+        <p className="text-sm text-gray-400">Loading model...</p>
+      </div>
+    );
+  }
 
   if (!model) {
     return (

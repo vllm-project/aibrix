@@ -1,43 +1,54 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Search, Eye, EyeOff, X, ChevronLeft, ChevronRight, SlidersHorizontal, ChevronsUpDown } from 'lucide-react';
-
-interface Secret {
-  id: string;
-  name: string;
-}
+import { listSecrets, createSecret, deleteSecret } from '../../utils/api';
+import type { Secret } from '../../utils/api';
 
 interface SecretsPageProps {
   onToast: (message: string, subtitle?: string) => void;
 }
 
 export function SecretsPage({ onToast }: SecretsPageProps) {
-  const [secrets, setSecrets] = useState<Secret[]>([
-    { id: '1', name: 'GENERAL_SECRET_KEY' },
-  ]);
+  const [secrets, setSecrets] = useState<Secret[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newSecretName, setNewSecretName] = useState('');
   const [newSecretValue, setNewSecretValue] = useState('');
   const [showSecretValue, setShowSecretValue] = useState(false);
+  const [creating, setCreating] = useState(false);
 
-  const filteredSecrets = secrets.filter((s) =>
-    s.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const fetchSecrets = () => {
+    setLoading(true);
+    listSecrets(searchQuery || undefined)
+      .then(s => setSecrets(s))
+      .catch(err => console.error('Failed to fetch secrets:', err))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchSecrets();
+  }, [searchQuery]);
+
+  const filteredSecrets = secrets;
 
   const handleCreateSecret = () => {
     if (!newSecretName.trim()) return;
 
-    const newSecret: Secret = {
-      id: String(secrets.length + 1),
-      name: newSecretName,
-    };
-
-    setSecrets([...secrets, newSecret]);
-    onToast('Secret created successfully', `Secret "${newSecretName}" has been created`);
-    setShowCreateModal(false);
-    setNewSecretName('');
-    setNewSecretValue('');
-    setShowSecretValue(false);
+    setCreating(true);
+    createSecret(newSecretName, newSecretValue)
+      .then((newSecret) => {
+        setSecrets(prev => [...prev, newSecret]);
+        onToast('Secret created successfully', `Secret "${newSecretName}" has been created`);
+        setShowCreateModal(false);
+        setNewSecretName('');
+        setNewSecretValue('');
+        setShowSecretValue(false);
+      })
+      .catch(err => {
+        console.error('Failed to create secret:', err);
+        onToast('Failed to create secret');
+      })
+      .finally(() => setCreating(false));
   };
 
   return (
@@ -87,19 +98,25 @@ export function SecretsPage({ onToast }: SecretsPageProps) {
             </tr>
           </thead>
           <tbody>
-            {filteredSecrets.map((secret) => (
-              <tr key={secret.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
-                <td className="px-6 py-4 text-sm">{secret.name}</td>
-                <td className="px-6 py-4"></td>
+            {loading ? (
+              <tr>
+                <td colSpan={2} className="px-6 py-8 text-center text-sm text-gray-400">
+                  Loading secrets...
+                </td>
               </tr>
-            ))}
-            {filteredSecrets.length === 0 && (
+            ) : filteredSecrets.length === 0 ? (
               <tr>
                 <td colSpan={2} className="px-6 py-8 text-center text-sm text-gray-400">
                   No secrets found
                 </td>
               </tr>
-            )}
+            ) : (
+              filteredSecrets.map((secret) => (
+              <tr key={secret.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
+                <td className="px-6 py-4 text-sm">{secret.name}</td>
+                <td className="px-6 py-4"></td>
+              </tr>
+            )))}
           </tbody>
         </table>
       </div>
@@ -189,10 +206,10 @@ export function SecretsPage({ onToast }: SecretsPageProps) {
               </button>
               <button
                 onClick={handleCreateSecret}
-                disabled={!newSecretName.trim()}
+                disabled={!newSecretName.trim() || creating}
                 className="px-5 py-2.5 bg-teal-600 text-white rounded-lg text-sm hover:bg-teal-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Create Secret
+                {creating ? 'Creating...' : 'Create Secret'}
               </button>
             </div>
           </div>
