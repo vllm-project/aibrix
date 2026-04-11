@@ -39,8 +39,8 @@ func TestChainedRouter(t *testing.T) {
 				},
 			},
 			Status: v1.PodStatus{
-				PodIP:  "1.1.1.1",
-				Phase:  v1.PodRunning,
+				PodIP: "1.1.1.1",
+				Phase: v1.PodRunning,
 				Conditions: []v1.PodCondition{
 					{
 						Type:   v1.PodReady,
@@ -58,8 +58,8 @@ func TestChainedRouter(t *testing.T) {
 				},
 			},
 			Status: v1.PodStatus{
-				PodIP:  "2.2.2.2",
-				Phase:  v1.PodRunning,
+				PodIP: "2.2.2.2",
+				Phase: v1.PodRunning,
 				Conditions: []v1.PodCondition{
 					{
 						Type:   v1.PodReady,
@@ -77,8 +77,8 @@ func TestChainedRouter(t *testing.T) {
 				},
 			},
 			Status: v1.PodStatus{
-				PodIP:  "3.3.3.3",
-				Phase:  v1.PodRunning,
+				PodIP: "3.3.3.3",
+				Phase: v1.PodRunning,
 				Conditions: []v1.PodCondition{
 					{
 						Type:   v1.PodReady,
@@ -159,8 +159,8 @@ func TestChainedRouterWithInvalidAlgorithm(t *testing.T) {
 				},
 			},
 			Status: v1.PodStatus{
-				PodIP:  "1.1.1.1",
-				Phase:  v1.PodRunning,
+				PodIP: "1.1.1.1",
+				Phase: v1.PodRunning,
 				Conditions: []v1.PodCondition{
 					{
 						Type:   v1.PodReady,
