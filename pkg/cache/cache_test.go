@@ -26,6 +26,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -35,6 +36,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8scache "k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 )
 
@@ -228,6 +230,66 @@ var _ = Describe("Cache", func() {
 		// No model meta cratead on failure
 		_, exist = cache.metaModels.Load("m0adapter")
 		Expect(exist).To(BeFalse())
+	})
+
+	It("should resyncModelAdapters repair missing adapter mapping", func() {
+		cache.addPod(getReadyPod("p1", "default", "m1", 0))
+
+		adapter := getNewModelAdapter("m1adapter", "default", "p1")
+		store := k8scache.NewStore(k8scache.MetaNamespaceKeyFunc)
+		Expect(store.Add(adapter)).To(Succeed())
+
+		cache.resyncModelAdapters(store, nil)
+
+		metaPod, exist := cache.metaPods.Load("default/p1")
+		Expect(exist).To(BeTrue())
+		modelName, exist := metaPod.Models.Load("m1adapter")
+		Expect(exist).To(BeTrue())
+		Expect(modelName).To(Equal("m1adapter"))
+
+		metaModel, exist := cache.metaModels.Load("m1adapter")
+		Expect(exist).To(BeTrue())
+		modelPod, exist := metaModel.Pods.Load("default/p1")
+		Expect(exist).To(BeTrue())
+		Expect(modelPod).To(Equal(metaPod.Pod))
+	})
+
+	It("should resyncModelAdapters retry until pod arrives", func() {
+		adapter := getNewModelAdapter("m1adapter", "default", "p1")
+		store := k8scache.NewStore(k8scache.MetaNamespaceKeyFunc)
+		Expect(store.Add(adapter)).To(Succeed())
+
+		originalRetries := modelAdapterResyncMaxRetries
+		originalInterval := modelAdapterResyncRetryInterval
+		modelAdapterResyncMaxRetries = 5
+		modelAdapterResyncRetryInterval = 10 * time.Millisecond
+		defer func() {
+			modelAdapterResyncMaxRetries = originalRetries
+			modelAdapterResyncRetryInterval = originalInterval
+		}()
+
+		done := make(chan struct{})
+		go func() {
+			cache.resyncModelAdapters(store, nil)
+			close(done)
+		}()
+
+		time.Sleep(15 * time.Millisecond)
+		cache.addPod(getReadyPod("p1", "default", "m1", 0))
+
+		Eventually(done).Should(BeClosed())
+
+		metaPod, exist := cache.metaPods.Load("default/p1")
+		Expect(exist).To(BeTrue())
+		modelName, exist := metaPod.Models.Load("m1adapter")
+		Expect(exist).To(BeTrue())
+		Expect(modelName).To(Equal("m1adapter"))
+
+		metaModel, exist := cache.metaModels.Load("m1adapter")
+		Expect(exist).To(BeTrue())
+		modelPod, exist := metaModel.Pods.Load("default/p1")
+		Expect(exist).To(BeTrue())
+		Expect(modelPod).To(Equal(metaPod.Pod))
 	})
 
 	It("should updatePod clear old mappings with no model adapter inherited", func() {
