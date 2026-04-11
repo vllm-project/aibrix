@@ -21,10 +21,15 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"k8s.io/klog/v2"
 )
+
+// fileHTTPClientTimeout bounds proxy requests to the metadata service so a slow
+// or hung upstream can't pin file handler goroutines indefinitely.
+const fileHTTPClientTimeout = 60 * time.Second
 
 // FileHandler proxies file operations to the AIBrix metadata service.
 type FileHandler struct {
@@ -36,7 +41,7 @@ type FileHandler struct {
 func NewFileHandler(metadataServiceURL string) *FileHandler {
 	return &FileHandler{
 		metadataServiceURL: strings.TrimRight(metadataServiceURL, "/"),
-		httpClient:         &http.Client{},
+		httpClient:         &http.Client{Timeout: fileHTTPClientTimeout},
 	}
 }
 

@@ -139,10 +139,11 @@ export function CreateJob({ onBack }: CreateJobProps) {
           const fileInfo = await uploadFile(selectedFile, 'batch');
           datasetId = fileInfo.id;
           setUploadedFileId(fileInfo.id);
-        } catch {
-          // File upload failed (e.g. metadata service not running).
-          // Use the filename as a fallback dataset identifier.
-          datasetId = selectedFile.name.replace(/\.[^.]+$/, '');
+        } catch (uploadErr) {
+          // Upload must succeed so the backend can resolve the dataset id.
+          const msg = uploadErr instanceof Error ? uploadErr.message : 'Unknown error';
+          setSubmitError(`Failed to upload dataset: ${msg}`);
+          return;
         } finally {
           setUploading(false);
         }

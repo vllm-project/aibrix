@@ -19,8 +19,12 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"os"
 )
+
+// AuthModeDev is the development auth mode name.
+const AuthModeDev = "dev"
 
 // Config holds all configuration for the AIBrix console backend.
 type Config struct {
@@ -50,8 +54,14 @@ type Config struct {
 	// OIDCRedirectURL is the OIDC redirect URL after authentication.
 	OIDCRedirectURL string
 
-	// SessionSecret is used to sign session cookies.
+	// SessionSecret is used to sign session cookies. Must be provided via
+	// SESSION_SECRET env var in non-dev modes; generated randomly in dev mode.
 	SessionSecret string
+
+	// SecretsEncryptionKey is the 32-byte hex-encoded AES-256 key used to
+	// encrypt stored secret values. Must be provided via SECRETS_ENCRYPTION_KEY
+	// env var in non-dev modes; generated randomly in dev mode.
+	SecretsEncryptionKey string
 
 	// DevUserName is the display name used in dev auth mode.
 	DevUserName string
@@ -66,29 +76,52 @@ type Config struct {
 	// StaticFilesDir is the path to the frontend dist/ directory.
 	// When empty, static file serving is disabled.
 	StaticFilesDir string
+
+	// AllowedOrigins is a comma-separated list of allowed CORS origins.
+	// When empty, CORS is disabled (same-origin only).
+	AllowedOrigins string
 }
 
 // Load reads configuration from environment variables and applies sensible defaults.
-func Load() *Config {
-	return &Config{
-		StoreType:          envOrDefault("STORE_TYPE", "memory"),
-		MySQLDSN:           envOrDefault("MYSQL_DSN", ""),
-		GatewayEndpoint:    envOrDefault("GATEWAY_ENDPOINT", "http://localhost:8888"),
-		MetadataServiceURL: envOrDefault("METADATA_SERVICE_URL", "http://localhost:8000"),
-		GRPCAddr:           envOrDefault("GRPC_ADDR", ":50060"),
-		HTTPAddr:           envOrDefault("HTTP_ADDR", ":8090"),
-		AuthMode:           envOrDefault("AUTH_MODE", "dev"),
-		OIDCIssuerURL:      envOrDefault("OIDC_ISSUER_URL", ""),
-		OIDCClientID:       envOrDefault("OIDC_CLIENT_ID", ""),
-		OIDCClientSecret:   envOrDefault("OIDC_CLIENT_SECRET", ""),
-		OIDCRedirectURL:    envOrDefault("OIDC_REDIRECT_URL", "http://localhost:8090/api/v1/auth/callback"),
-		SessionSecret:      envOrDefault("SESSION_SECRET", generateRandomHex(32)),
-		DevUserName:        envOrDefault("DEV_USER_NAME", "Test User"),
-		DevUserEmail:       envOrDefault("DEV_USER_EMAIL", "test@aibrix.ai"),
-		BasicUsername:      envOrDefault("BASIC_USERNAME", ""),
-		BasicPassword:      envOrDefault("BASIC_PASSWORD", ""),
-		StaticFilesDir:     envOrDefault("STATIC_FILES_DIR", ""),
+//
+// In dev auth mode, SessionSecret and SecretsEncryptionKey are generated
+// randomly at startup if not supplied. In non-dev modes both must be provided
+// explicitly via SESSION_SECRET and SECRETS_ENCRYPTION_KEY environment
+// variables; Load returns an error otherwise.
+func Load() (*Config, error) {
+	authMode := envOrDefault("AUTH_MODE", AuthModeDev)
+	devMode := authMode == AuthModeDev
+
+	sessionSecret, err := requiredSecret("SESSION_SECRET", devMode)
+	if err != nil {
+		return nil, err
 	}
+	encryptionKey, err := requiredSecret("SECRETS_ENCRYPTION_KEY", devMode)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Config{
+		StoreType:            envOrDefault("STORE_TYPE", "memory"),
+		MySQLDSN:             envOrDefault("MYSQL_DSN", ""),
+		GatewayEndpoint:      envOrDefault("GATEWAY_ENDPOINT", "http://localhost:8888"),
+		MetadataServiceURL:   envOrDefault("METADATA_SERVICE_URL", "http://localhost:8000"),
+		GRPCAddr:             envOrDefault("GRPC_ADDR", ":50060"),
+		HTTPAddr:             envOrDefault("HTTP_ADDR", ":8090"),
+		AuthMode:             authMode,
+		OIDCIssuerURL:        envOrDefault("OIDC_ISSUER_URL", ""),
+		OIDCClientID:         envOrDefault("OIDC_CLIENT_ID", ""),
+		OIDCClientSecret:     envOrDefault("OIDC_CLIENT_SECRET", ""),
+		OIDCRedirectURL:      envOrDefault("OIDC_REDIRECT_URL", "http://localhost:8090/api/v1/auth/callback"),
+		SessionSecret:        sessionSecret,
+		SecretsEncryptionKey: encryptionKey,
+		DevUserName:          envOrDefault("DEV_USER_NAME", "Test User"),
+		DevUserEmail:         envOrDefault("DEV_USER_EMAIL", "test@aibrix.ai"),
+		BasicUsername:        envOrDefault("BASIC_USERNAME", ""),
+		BasicPassword:        envOrDefault("BASIC_PASSWORD", ""),
+		StaticFilesDir:       envOrDefault("STATIC_FILES_DIR", ""),
+		AllowedOrigins:       envOrDefault("ALLOWED_ORIGINS", ""),
+	}, nil
 }
 
 // envOrDefault returns the value of the environment variable named by key,
@@ -100,12 +133,26 @@ func envOrDefault(key, fallback string) string {
 	return fallback
 }
 
-// generateRandomHex returns a hex-encoded random string of n bytes.
+// requiredSecret returns the env var value if set. In dev mode it generates a
+// random 32-byte hex value when unset. In non-dev mode it returns an error
+// when the env var is empty.
+func requiredSecret(key string, devMode bool) (string, error) {
+	if v := os.Getenv(key); v != "" {
+		return v, nil
+	}
+	if !devMode {
+		return "", fmt.Errorf("%s must be set in non-dev auth modes", key)
+	}
+	return generateRandomHex(32), nil
+}
+
+// generateRandomHex returns a hex-encoded random string of n bytes. It panics
+// if crypto/rand fails, since continuing without strong randomness would
+// compromise any security-sensitive use of the result.
 func generateRandomHex(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
-		// Fall back to a fixed value if crypto/rand fails (should not happen).
-		return "aibrix-console-default-session-secret"
+		panic(fmt.Sprintf("crypto/rand failed: %v", err))
 	}
 	return hex.EncodeToString(b)
 }

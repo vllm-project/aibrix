@@ -42,7 +42,10 @@ func main() {
 	flag.Parse()
 
 	// Load configuration from environment
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		klog.Fatalf("Failed to load configuration: %v", err)
+	}
 
 	// Apply CLI flag overrides
 	if *grpcAddr != "" {

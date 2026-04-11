@@ -18,12 +18,18 @@ package store
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	_ "embed"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
-	"os"
 	"strings"
 	"time"
 
@@ -33,13 +39,18 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+//go:embed migrations/001_initial.sql
+var initialMigrationSQL string
+
 // MySQLStore implements Store backed by a MySQL database.
 type MySQLStore struct {
-	db *sql.DB
+	db     *sql.DB
+	aesKey []byte
 }
 
 // NewMySQLStore opens a MySQL connection, verifies it with a ping, and returns a MySQLStore.
-func NewMySQLStore(dsn string) (*MySQLStore, error) {
+// encryptionKey is a hex-encoded 32-byte key used for AES-256-GCM on stored secrets.
+func NewMySQLStore(dsn, encryptionKey string) (*MySQLStore, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open mysql: %w", err)
@@ -48,17 +59,17 @@ func NewMySQLStore(dsn string) (*MySQLStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to ping mysql: %w", err)
 	}
-	return &MySQLStore{db: db}, nil
+	key, err := hex.DecodeString(encryptionKey)
+	if err != nil || len(key) != 32 {
+		_ = db.Close()
+		return nil, fmt.Errorf("encryption key must be a 64-char hex string (32 bytes)")
+	}
+	return &MySQLStore{db: db, aesKey: key}, nil
 }
 
-// RunMigrations reads and executes a SQL migration file from the given directory.
-func (s *MySQLStore) RunMigrations(migrationsDir string) error {
-	data, err := os.ReadFile(migrationsDir + "/001_initial.sql")
-	if err != nil {
-		return fmt.Errorf("failed to read migration file: %w", err)
-	}
-	_, err = s.db.Exec(string(data))
-	if err != nil {
+// RunMigrations executes the embedded initial SQL migration.
+func (s *MySQLStore) RunMigrations() error {
+	if _, err := s.db.Exec(initialMigrationSQL); err != nil {
 		return fmt.Errorf("failed to execute migration: %w", err)
 	}
 	return nil
@@ -70,14 +81,44 @@ func (s *MySQLStore) Close() error {
 }
 
 // mysqlRandomString generates a random alphanumeric string of length n.
+// It panics if crypto/rand fails, since continuing without randomness would
+// produce predictable identifiers.
 func mysqlRandomString(n int) string {
 	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, n)
 	for i := range b {
-		idx, _ := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+		idx, err := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+		if err != nil {
+			panic(fmt.Sprintf("crypto/rand failed: %v", err))
+		}
 		b[i] = chars[idx.Int64()]
 	}
 	return string(b)
+}
+
+// encryptSecret encrypts plaintext with AES-256-GCM using the store's key.
+// The returned string is base64(nonce || ciphertext || tag).
+func (s *MySQLStore) encryptSecret(plaintext string) (string, error) {
+	block, err := aes.NewCipher(s.aesKey)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	sealed := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+	return base64.StdEncoding.EncodeToString(sealed), nil
+}
+
+// hashAPIKey returns a hex-encoded SHA-256 hash of the full API key.
+func hashAPIKey(fullKey string) string {
+	sum := sha256.Sum256([]byte(fullKey))
+	return hex.EncodeToString(sum[:])
 }
 
 // --- Deployments ---
@@ -383,22 +424,32 @@ func scanModelRow(row *sql.Row) (*pb.Model, error) {
 // unmarshalModelJSON unmarshals the JSON columns into the model's sub-messages.
 func unmarshalModelJSON(m *pb.Model, categoriesJSON, pricingJSON, metadataJSON, specJSON, tagsJSON []byte) (*pb.Model, error) {
 	if len(categoriesJSON) > 0 {
-		_ = json.Unmarshal(categoriesJSON, &m.Categories)
+		if err := json.Unmarshal(categoriesJSON, &m.Categories); err != nil {
+			return nil, fmt.Errorf("unmarshal model categories: %w", err)
+		}
 	}
 	if len(pricingJSON) > 0 {
 		m.Pricing = &pb.ModelPricing{}
-		_ = json.Unmarshal(pricingJSON, m.Pricing)
+		if err := json.Unmarshal(pricingJSON, m.Pricing); err != nil {
+			return nil, fmt.Errorf("unmarshal model pricing: %w", err)
+		}
 	}
 	if len(metadataJSON) > 0 {
 		m.Metadata = &pb.ModelMetadata{}
-		_ = json.Unmarshal(metadataJSON, m.Metadata)
+		if err := json.Unmarshal(metadataJSON, m.Metadata); err != nil {
+			return nil, fmt.Errorf("unmarshal model metadata: %w", err)
+		}
 	}
 	if len(specJSON) > 0 {
 		m.Specification = &pb.ModelSpecification{}
-		_ = json.Unmarshal(specJSON, m.Specification)
+		if err := json.Unmarshal(specJSON, m.Specification); err != nil {
+			return nil, fmt.Errorf("unmarshal model specification: %w", err)
+		}
 	}
 	if len(tagsJSON) > 0 {
-		_ = json.Unmarshal(tagsJSON, &m.Tags)
+		if err := json.Unmarshal(tagsJSON, &m.Tags); err != nil {
+			return nil, fmt.Errorf("unmarshal model tags: %w", err)
+		}
 	}
 	return m, nil
 }
@@ -431,12 +482,13 @@ func (s *MySQLStore) ListAPIKeys(ctx context.Context) ([]*pb.APIKey, error) {
 
 func (s *MySQLStore) CreateAPIKey(ctx context.Context, name string) (*pb.APIKey, string, error) {
 	id := "key_" + mysqlRandomString(16)
-	fullKey := "fw_" + mysqlRandomString(24)
+	fullKey := "aibrix_" + mysqlRandomString(24)
 	masked := fullKey[:10] + "..."
+	hashed := hashAPIKey(fullKey)
 
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO api_keys (id, name, key_hash, key_prefix) VALUES (?, ?, ?, ?)`,
-		id, name, masked, masked)
+		id, name, hashed, masked)
 	if err != nil {
 		return nil, "", status.Errorf(codes.Internal, "create api key: %v", err)
 	}
@@ -497,9 +549,13 @@ func (s *MySQLStore) ListSecrets(ctx context.Context, search string) ([]*pb.Secr
 
 func (s *MySQLStore) CreateSecret(ctx context.Context, name, value string) (*pb.Secret, error) {
 	id := mysqlRandomString(36)
-	_, err := s.db.ExecContext(ctx,
+	encrypted, err := s.encryptSecret(value)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "encrypt secret: %v", err)
+	}
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO secrets (id, name, encrypted_value) VALUES (?, ?, ?)`,
-		id, name, value)
+		id, name, encrypted)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "create secret: %v", err)
 	}
@@ -557,8 +613,8 @@ func (s *MySQLStore) ListQuotas(ctx context.Context, search string) ([]*pb.Quota
 
 // --- Seed Data ---
 
-// SeedData inserts the default seed data if the database is empty (deployment count == 0).
-func (s *MySQLStore) SeedData() error {
+// LoadDemoData inserts the default demo data if the database is empty (deployment count == 0).
+func (s *MySQLStore) LoadDemoData() error {
 	var count int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM deployments`).Scan(&count); err != nil {
 		return fmt.Errorf("check deployment count: %w", err)
@@ -567,28 +623,28 @@ func (s *MySQLStore) SeedData() error {
 		return nil
 	}
 
-	if err := s.seedDeployments(); err != nil {
+	if err := s.loadDemoDeployments(); err != nil {
 		return err
 	}
-	if err := s.seedJobs(); err != nil {
+	if err := s.loadDemoJobs(); err != nil {
 		return err
 	}
-	if err := s.seedModels(); err != nil {
+	if err := s.loadDemoModels(); err != nil {
 		return err
 	}
-	if err := s.seedAPIKeys(); err != nil {
+	if err := s.loadDemoAPIKeys(); err != nil {
 		return err
 	}
-	if err := s.seedSecrets(); err != nil {
+	if err := s.loadDemoSecrets(); err != nil {
 		return err
 	}
-	if err := s.seedQuotas(); err != nil {
+	if err := s.loadDemoQuotas(); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (s *MySQLStore) seedDeployments() error {
+func (s *MySQLStore) loadDemoDeployments() error {
 	_, err := s.db.Exec(
 		`INSERT INTO deployments (id, name, deployment_id, base_model, base_model_id,
 		                          replicas, gpus_per_replica, gpu_type, region, created_by, status)
@@ -596,11 +652,11 @@ func (s *MySQLStore) seedDeployments() error {
 		"deploy-1", "gsm-8k-20260118", "euxdnr5z",
 		"DeepSeek R1 Distill Llama 8B", "deepseek-r1-distil-llama-8b",
 		"1[01]", 1, "NVIDIA H100 80GB", "US Iowa 1",
-		"seedjeffwan@gmail.com", "Ready")
+		"demo@aibrix.ai", "Ready")
 	return err
 }
 
-func (s *MySQLStore) seedJobs() error {
+func (s *MySQLStore) loadDemoJobs() error {
 	_, err := s.db.Exec(
 		`INSERT INTO jobs (id, name, inference_id, model, model_id,
 		                   input_dataset, input_dataset_id, create_date, create_time,
@@ -610,18 +666,18 @@ func (s *MySQLStore) seedJobs() error {
 		"job-1", "gsm-8k-20260118", "vpswvq8h",
 		"qwen2p5-32b-instruct", "qwen1zp5-32b-instruct",
 		"demo-gsm8k-math-dataset-1000", "demo-gsm8k-math-dataset-1000",
-		"Jan 18, 2026", "3:37 PM", "seedjeffwan@gmail.com",
+		"Jan 18, 2026", "3:37 PM", "demo@aibrix.ai",
 		"Completed", "accounts/aibrix/batchInference/27a6ee2c",
 		"job-2", "gsm-8k-20260118-v2", "abc12345",
 		"qwen2p5-32b-instruct", "qwen1zp5-32b-instruct",
 		"demo-gsm8k-math-dataset-1000", "demo-gsm8k-math-dataset-1000",
-		"Jan 18, 2026", "4:15 PM", "seedjeffwan@gmail.com",
+		"Jan 18, 2026", "4:15 PM", "demo@aibrix.ai",
 		"Validating", "accounts/aibrix/batchInference/a0b13ef5")
 	return err
 }
 
-func (s *MySQLStore) seedModels() error {
-	type seedModel struct {
+func (s *MySQLStore) loadDemoModels() error {
+	type demoModel struct {
 		id            string
 		name          string
 		provider      string
@@ -638,7 +694,7 @@ func (s *MySQLStore) seedModels() error {
 		tags          []string
 	}
 
-	models := []seedModel{
+	models := []demoModel{
 		{
 			id: "model-minimax-m2.5", name: "MiniMax-M2.5", provider: "MiniMax",
 			iconBg: "bg-red-100", iconText: "M", iconTextColor: "text-red-600",
@@ -743,27 +799,32 @@ func (s *MySQLStore) seedModels() error {
 			string(categoriesJSON), m.isNew, string(pricingJSON), m.contextLength,
 			m.description, string(metadataJSON), string(specJSON), string(tagsJSON))
 		if err != nil {
-			return fmt.Errorf("seed model %s: %w", m.id, err)
+			return fmt.Errorf("demo model %s: %w", m.id, err)
 		}
 	}
 	return nil
 }
 
-func (s *MySQLStore) seedAPIKeys() error {
+func (s *MySQLStore) loadDemoAPIKeys() error {
 	_, err := s.db.Exec(
 		`INSERT INTO api_keys (id, name, key_hash, key_prefix) VALUES (?, ?, ?, ?)`,
-		"key_5VFKZKA2qxmqU5aJ", "FW_API_KEY", "fw_WSo2...", "fw_WSo2...")
+		"key_5VFKZKA2qxmqU5aJ", "AIBRIX_API_KEY",
+		hashAPIKey("aibrix_WSo2xxxxxxxxxxxxxxxxxx"), "aibrix_WSo2...")
 	return err
 }
 
-func (s *MySQLStore) seedSecrets() error {
-	_, err := s.db.Exec(
+func (s *MySQLStore) loadDemoSecrets() error {
+	encrypted, err := s.encryptSecret("secret-value")
+	if err != nil {
+		return fmt.Errorf("demo secrets: %w", err)
+	}
+	_, err = s.db.Exec(
 		`INSERT INTO secrets (id, name, encrypted_value) VALUES (?, ?, ?)`,
-		"1", "GENERAL_SECRET_KEY", "secret-value")
+		"1", "GENERAL_SECRET_KEY", encrypted)
 	return err
 }
 
-func (s *MySQLStore) seedQuotas() error {
+func (s *MySQLStore) loadDemoQuotas() error {
 	_, err := s.db.Exec(
 		`INSERT INTO quotas (id, name, quota_id, current_usage, usage_percentage, quota)
 		 VALUES (?, ?, ?, ?, ?, ?),

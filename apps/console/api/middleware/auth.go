@@ -82,12 +82,14 @@ type AuthMiddleware struct {
 }
 
 // NewAuthMiddleware creates a new AuthMiddleware with the given configuration.
+// SessionSecret must be non-empty; callers should obtain it from config.Load,
+// which enforces a strong secret in non-dev modes.
 func NewAuthMiddleware(cfg AuthConfig) *AuthMiddleware {
 	if cfg.Mode == "" {
 		cfg.Mode = authModeDev
 	}
 	if cfg.SessionSecret == "" {
-		cfg.SessionSecret = "aibrix-default-secret"
+		panic("auth: SessionSecret must be set")
 	}
 	return &AuthMiddleware{
 		config: cfg,

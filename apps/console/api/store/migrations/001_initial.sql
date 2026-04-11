@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS models (
 -- ---------------------------------------------------------------------------
 -- API Keys
 -- The key_hash stores the hashed secret for verification; key_prefix stores a
--- short displayable prefix (e.g. "fw_WSo2..."). The full plaintext key is
+-- short displayable prefix (e.g. "aibrix_WSo2..."). The full plaintext key is
 -- returned only once at creation time and is never persisted.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS api_keys (

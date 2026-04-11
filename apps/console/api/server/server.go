@@ -20,6 +20,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
@@ -52,15 +53,15 @@ func New(cfg *config.Config) *Server {
 
 	switch cfg.StoreType {
 	case "mysql":
-		ms, err := store.NewMySQLStore(cfg.MySQLDSN)
+		ms, err := store.NewMySQLStore(cfg.MySQLDSN, cfg.SecretsEncryptionKey)
 		if err != nil {
 			klog.Fatalf("Failed to connect to MySQL: %v", err)
 		}
-		if err := ms.RunMigrations("apps/console/api/store/migrations"); err != nil {
+		if err := ms.RunMigrations(); err != nil {
 			klog.Fatalf("Failed to run MySQL migrations: %v", err)
 		}
-		if err := ms.SeedData(); err != nil {
-			klog.Fatalf("Failed to seed MySQL data: %v", err)
+		if err := ms.LoadDemoData(); err != nil {
+			klog.Fatalf("Failed to load MySQL demo data: %v", err)
 		}
 		s = ms
 		mysqlStore = ms
@@ -161,7 +162,7 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	// Build handler chain: CORS -> Auth -> Routes
 	var httpHandler http.Handler = mux
 	httpHandler = s.auth.Handler(httpHandler)
-	httpHandler = corsMiddleware(httpHandler)
+	httpHandler = corsMiddleware(s.cfg.AllowedOrigins)(httpHandler)
 
 	// Serve static files if configured
 	if s.cfg.StaticFilesDir != "" {
@@ -190,18 +191,52 @@ func (s *Server) Shutdown(ctx context.Context) {
 	}
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-User-ID")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
+// corsMiddleware returns middleware that sets CORS headers from an allowlist.
+//
+// allowedOrigins is a comma-separated list of origins. When empty, no CORS
+// headers are set (same-origin only). When the request's Origin matches an
+// entry, the middleware echoes that exact origin back with credentials allowed.
+// A single "*" entry permits any origin but disables credentials, since the
+// "*" + Allow-Credentials combination is rejected by browsers.
+func corsMiddleware(allowedOrigins string) func(http.Handler) http.Handler {
+	var origins []string
+	for _, o := range strings.Split(allowedOrigins, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			origins = append(origins, o)
 		}
-		next.ServeHTTP(w, r)
-	})
+	}
+	wildcard := len(origins) == 1 && origins[0] == "*"
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			if origin != "" && len(origins) > 0 {
+				allowed := wildcard
+				if !allowed {
+					for _, o := range origins {
+						if o == origin {
+							allowed = true
+							break
+						}
+					}
+				}
+				if allowed {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Vary", "Origin")
+					w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+					w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-User-ID")
+					if !wildcard {
+						w.Header().Set("Access-Control-Allow-Credentials", "true")
+					}
+				}
+			}
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // staticFileMiddleware serves static files from dir for non-API paths.
