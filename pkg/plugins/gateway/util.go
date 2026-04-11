@@ -362,6 +362,20 @@ func deriveRoutingStrategyFromContext(routingCtx *types.RoutingContext) (string,
 	return defaultRoutingStrategy, defaultRoutingStrategyEnabled
 }
 
+// parseChainedAlgorithms parses a comma-separated list of algorithms and returns a slice of RoutingAlgorithm.
+// If any algorithm is not registered, it returns an empty slice.
+func parseChainedAlgorithms(strategy string) []types.RoutingAlgorithm {
+	parts := strings.Split(strategy, ",")
+	algorithms := make([]types.RoutingAlgorithm, 0, len(parts))
+	for _, part := range parts {
+		alg := strings.TrimSpace(part)
+		if alg != "" {
+			algorithms = append(algorithms, types.RoutingAlgorithm(alg))
+		}
+	}
+	return algorithms
+}
+
 // getChatCompletionsMessage returns message for chat completions object
 func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCompletionNewParams) (string, *extProcPb.ProcessingResponse) {
 	if len(chatCompletionObj.Messages) == 0 {

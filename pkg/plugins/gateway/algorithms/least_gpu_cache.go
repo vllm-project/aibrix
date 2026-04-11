@@ -74,6 +74,7 @@ func (r leastGpuCacheRouter) Route(ctx *types.RoutingContext, readyPodList types
 	}
 
 	if len(candidatePods) > 0 {
+		ctx.CandidatePods = candidatePods
 		targetPod = candidatePods[rand.Intn(len(candidatePods))]
 	}
 

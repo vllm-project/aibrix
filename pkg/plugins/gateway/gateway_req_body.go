@@ -89,12 +89,30 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 	// Derive and validate routing strategy (headers -> profile -> env); return 400 on invalid
 	if strategy, enabled := deriveRoutingStrategyFromContext(routingCtx); enabled {
-		var ok bool
-		if routingAlgorithm, ok = routing.Validate(strategy); !ok {
-			klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", strategy)
-			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategy %s", strategy), "", "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
+		algorithms := parseChainedAlgorithms(strategy)
+		var validAlgorithms, invalidAlgorithms []types.RoutingAlgorithm
+		for _, alg := range algorithms {
+			if _, ok := routing.Validate(string(alg)); ok {
+				validAlgorithms = append(validAlgorithms, alg)
+			} else {
+				invalidAlgorithms = append(invalidAlgorithms, alg)
+			}
 		}
-		routingCtx.Algorithm = routingAlgorithm
+
+		if len(validAlgorithms) < 1 {
+			klog.Warningf("incorrect routing strategies in chain, requestID: %s, invalid-strategies: %v", requestID, invalidAlgorithms)
+			if len(invalidAlgorithms) > 0 {
+				return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategies: %v", invalidAlgorithms), "", "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
+			}
+		}
+
+		if len(validAlgorithms) > 1 {
+			// Set chained algorithms to routing context
+			routingCtx.Algorithms = validAlgorithms
+			routingCtx.Algorithm = routing.RouterChained
+		} else if len(algorithms) == 1 {
+			routingCtx.Algorithm = validAlgorithms[0]
+		}
 	}
 
 	headers := []*configPb.HeaderValueOption{}

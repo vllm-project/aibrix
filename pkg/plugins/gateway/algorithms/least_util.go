@@ -71,6 +71,7 @@ func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 	}
 
 	if len(candidatePods) > 0 {
+		ctx.CandidatePods = candidatePods
 		targetPod = candidatePods[rand.Intn(len(candidatePods))]
 	}
 

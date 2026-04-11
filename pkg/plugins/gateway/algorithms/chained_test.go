@@ -1,0 +1,148 @@
+/*
+Copyright 2026 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package routingalgorithms
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+func TestChainedRouter(t *testing.T) {
+	// Create test pods
+	pods := []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pod1",
+				Namespace: "default",
+			},
+			Status: v1.PodStatus{
+				PodIP: "1.1.1.1",
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pod2",
+				Namespace: "default",
+			},
+			Status: v1.PodStatus{
+				PodIP: "2.2.2.2",
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pod3",
+				Namespace: "default",
+			},
+			Status: v1.PodStatus{
+				PodIP: "3.3.3.3",
+			},
+		},
+	}
+
+	podList := &utils.PodArray{Pods: pods}
+
+	// Create routing context
+	ctx := types.NewRoutingContext(context.Background(), RouterChained, "test-model", "test-message", "test-request-id", "")
+
+	// Test cases
+	tests := []struct {
+		name        string
+		algorithms  []types.RoutingAlgorithm
+		readyPods   types.PodList
+		expectError bool
+	}{
+		{
+			name:        "empty algorithms - should use random",
+			algorithms:  []types.RoutingAlgorithm{},
+			readyPods:   podList,
+			expectError: false,
+		},
+		{
+			name:        "single algorithm - random",
+			algorithms:  []types.RoutingAlgorithm{RouterRandom},
+			readyPods:   podList,
+			expectError: false,
+		},
+		{
+			name:        "multiple algorithms - random, random",
+			algorithms:  []types.RoutingAlgorithm{RouterRandom, RouterRandom},
+			readyPods:   podList,
+			expectError: false,
+		},
+		{
+			name:        "single pod - should short circuit",
+			algorithms:  []types.RoutingAlgorithm{RouterRandom, RouterRandom},
+			readyPods:   &utils.PodArray{Pods: []*v1.Pod{pods[0]}},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create chained router
+			router, err := NewChainedRouter(tt.algorithms)
+			assert.NoError(t, err)
+
+			// Test routing
+			result, err := router.Route(ctx, tt.readyPods)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				// Should return a valid address
+				assert.Contains(t, result, ":")
+			}
+		})
+	}
+}
+
+func TestChainedRouterWithInvalidAlgorithm(t *testing.T) {
+	// Create test pods
+	pods := []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pod1",
+				Namespace: "default",
+			},
+			Status: v1.PodStatus{
+				PodIP: "1.1.1.1",
+			},
+		},
+	}
+
+	podList := &utils.PodArray{Pods: pods}
+
+	// Create routing context
+	ctx := types.NewRoutingContext(context.Background(), RouterChained, "test-model", "test-message", "test-request-id", "")
+
+	// Test with invalid algorithm
+	invalidAlg := types.RoutingAlgorithm("invalid-algorithm")
+	router, err := NewChainedRouter([]types.RoutingAlgorithm{invalidAlg})
+	assert.NoError(t, err)
+
+	// Should handle invalid algorithm gracefully
+	result, err := router.Route(ctx, podList)
+	assert.NoError(t, err)
+	assert.Contains(t, result, ":")
+}
