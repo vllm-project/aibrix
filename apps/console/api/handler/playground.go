@@ -99,7 +99,7 @@ func (h *PlaygroundHandler) HandleChatCompletion(w http.ResponseWriter, r *http.
 		http.Error(w, `{"error":"gateway unreachable"}`, http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")

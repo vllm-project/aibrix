@@ -22,16 +22,16 @@ import (
 
 func strPtr(s string) *string { return &s }
 
-func (s *MemoryStore) seedData() {
-	s.seedDeployments()
-	s.seedJobs()
-	s.seedModels()
-	s.seedAPIKeys()
-	s.seedSecrets()
-	s.seedQuotas()
+func (s *MemoryStore) loadDemoData() {
+	s.loadDemoDeployments()
+	s.loadDemoJobs()
+	s.loadDemoModels()
+	s.loadDemoAPIKeys()
+	s.loadDemoSecrets()
+	s.loadDemoQuotas()
 }
 
-func (s *MemoryStore) seedDeployments() {
+func (s *MemoryStore) loadDemoDeployments() {
 	s.deployments = []*pb.Deployment{
 		{
 			Id:             "deploy-1",
@@ -43,13 +43,13 @@ func (s *MemoryStore) seedDeployments() {
 			GpusPerReplica: 1,
 			GpuType:        "NVIDIA H100 80GB",
 			Region:         "US Iowa 1",
-			CreatedBy:      "seedjeffwan@gmail.com",
+			CreatedBy:      "demo@aibrix.ai",
 			Status:         "Ready",
 		},
 	}
 }
 
-func (s *MemoryStore) seedJobs() {
+func (s *MemoryStore) loadDemoJobs() {
 	s.jobs = []*pb.Job{
 		{
 			Id:             "job-1",
@@ -61,7 +61,7 @@ func (s *MemoryStore) seedJobs() {
 			InputDatasetId: "demo-gsm8k-math-dataset-1000",
 			CreateDate:     "Jan 18, 2026",
 			CreateTime:     "3:37 PM",
-			CreatedBy:      "seedjeffwan@gmail.com",
+			CreatedBy:      "demo@aibrix.ai",
 			Status:         "Completed",
 			FullPath:       "accounts/aibrix/batchInference/27a6ee2c",
 		},
@@ -75,14 +75,14 @@ func (s *MemoryStore) seedJobs() {
 			InputDatasetId: "demo-gsm8k-math-dataset-1000",
 			CreateDate:     "Jan 18, 2026",
 			CreateTime:     "4:15 PM",
-			CreatedBy:      "seedjeffwan@gmail.com",
+			CreatedBy:      "demo@aibrix.ai",
 			Status:         "Validating",
 			FullPath:       "accounts/aibrix/batchInference/a0b13ef5",
 		},
 	}
 }
 
-func (s *MemoryStore) seedModels() {
+func (s *MemoryStore) loadDemoModels() {
 	s.models = []*pb.Model{
 		{
 			Id: "model-minimax-m2.5", Name: "MiniMax-M2.5", Provider: "MiniMax",
@@ -120,7 +120,7 @@ func (s *MemoryStore) seedModels() {
 		{
 			Id: "model-deepseek-v3.2", Name: "Deepseek v3.2", Provider: "DeepSeek",
 			IconBg: "bg-purple-100", IconText: "D", IconTextColor: "text-purple-700",
-			Categories: []string{"LLM"},
+			Categories:    []string{"LLM"},
 			Pricing:       &pb.ModelPricing{UncachedInput: "$0.56/M"},
 			ContextLength: "128k Context",
 			Description:   "Deepseek v3.2 is the latest iteration of the DeepSeek language model series.",
@@ -131,7 +131,7 @@ func (s *MemoryStore) seedModels() {
 		{
 			Id: "model-llama-3.3-70b", Name: "Llama 3.3 70B Instruct", Provider: "Meta",
 			IconBg: "bg-blue-100", IconText: "L", IconTextColor: "text-blue-700",
-			Categories: []string{"LLM"},
+			Categories:    []string{"LLM"},
 			Pricing:       &pb.ModelPricing{UncachedInput: "$0.20/M", Output: "$0.20/M"},
 			ContextLength: "128k Context",
 			Description:   "Meta's Llama 3.3 70B Instruct model is optimized for instruction following and multi-turn dialogue.",
@@ -176,21 +176,21 @@ func (s *MemoryStore) seedModels() {
 	}
 }
 
-func (s *MemoryStore) seedAPIKeys() {
+func (s *MemoryStore) loadDemoAPIKeys() {
 	s.apiKeys = []*apiKeyEntry{
 		{
 			key: &pb.APIKey{
 				Id:        "key_5VFKZKA2qxmqU5aJ",
-				Name:      "FW_API_KEY",
-				SecretKey: "fw_WSo2...",
+				Name:      "API_KEY",
+				SecretKey: "WSo2...",
 				CreatedAt: "Jan 19, 2026 7:34 AM",
 			},
-			secret: "fw_WSo2xxxxxxxxxxxxxxxxxx",
+			secret: "WSo2xxxxxxxxxxxxxxxxxx",
 		},
 	}
 }
 
-func (s *MemoryStore) seedSecrets() {
+func (s *MemoryStore) loadDemoSecrets() {
 	s.secrets = []*secretEntry{
 		{
 			secret: &pb.Secret{Id: "1", Name: "GENERAL_SECRET_KEY"},
@@ -199,7 +199,7 @@ func (s *MemoryStore) seedSecrets() {
 	}
 }
 
-func (s *MemoryStore) seedQuotas() {
+func (s *MemoryStore) loadDemoQuotas() {
 	s.quotas = []*pb.Quota{
 		{Id: "1", Name: "Deployed Model Count", QuotaId: "deployed-model-count", CurrentUsage: 0, UsagePercentage: 0, Quota: 100},
 		{Id: "2", Name: "Eval Protocol Free Daily Credits", QuotaId: "eval-protocol-free-daily-credits", CurrentUsage: 0, UsagePercentage: 0, Quota: 0},

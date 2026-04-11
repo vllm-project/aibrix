@@ -52,10 +52,10 @@ type secretEntry struct {
 	value  string
 }
 
-// NewMemoryStore creates a new in-memory store pre-populated with sample data.
+// NewMemoryStore creates a new in-memory store pre-populated with demo data.
 func NewMemoryStore() *MemoryStore {
 	s := &MemoryStore{nextID: 100}
-	s.seedData()
+	s.loadDemoData()
 	return s
 }
 
@@ -265,7 +265,7 @@ func (s *MemoryStore) CreateAPIKey(_ context.Context, name string) (*pb.APIKey, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	fullKey := "fw_" + randomString(24)
+	fullKey := "aibrix_" + randomString(24)
 	key := &pb.APIKey{
 		Id:        "key_" + randomString(16),
 		Name:      name,

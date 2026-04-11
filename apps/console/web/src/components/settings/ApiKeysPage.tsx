@@ -17,8 +17,8 @@ export function ApiKeysPage({ onToast }: ApiKeysPageProps) {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([
     {
       id: 'key_5VFKZKA2qxmqU5aJ',
-      name: 'FW_API_KEY',
-      secretKey: 'fw_WSo2...',
+      name: 'AIBRIX_API_KEY',
+      secretKey: 'aibrix_WSo2...',
       createdAt: 'Jan 19, 2026 7:34 AM',
     },
   ]);
@@ -29,7 +29,7 @@ export function ApiKeysPage({ onToast }: ApiKeysPageProps) {
 
   const generateRandomKey = () => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let result = 'fw_';
+    let result = 'aibrix_';
     for (let i = 0; i < 24; i++) {
       result += chars.charAt(Math.floor(Math.random() * chars.length));
     }

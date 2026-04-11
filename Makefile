@@ -228,7 +228,7 @@ build-gateway-plugins-nozmq: manifests generate fmt vet ## Build gateway-plugins
 	CGO_ENABLED=0 go build -tags="nozmq" -o bin/gateway-plugins cmd/plugins/main.go
 
 .PHONY: build-console
-build-console: fmt vet ## Build console API server binary.
+build-console: ## Build console API server binary.
 	CGO_ENABLED=0 go build -tags="nozmq" -o bin/console ./cmd/console
 
 .PHONY: generate-console-proto

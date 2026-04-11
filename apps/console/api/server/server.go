@@ -96,7 +96,9 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 
 	// Register playground SSE proxy as a custom route
 	playgroundHandler := handler.NewPlaygroundHandler(s.gatewayEndpoint)
-	mux.HandlePath("POST", "/api/v1/playground/chat/completions", playgroundHandler.HandleChatCompletion)
+	if err := mux.HandlePath("POST", "/api/v1/playground/chat/completions", playgroundHandler.HandleChatCompletion); err != nil {
+		return err
+	}
 
 	// Wrap with CORS middleware
 	httpHandler := corsMiddleware(mux)
