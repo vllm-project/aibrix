@@ -20,8 +20,6 @@ import (
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 )
 
-func strPtr(s string) *string { return &s }
-
 func (s *MemoryStore) loadDemoData() {
 	s.loadDemoDeployments()
 	s.loadDemoJobs()

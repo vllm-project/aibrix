@@ -146,7 +146,11 @@ func (s *MemoryStore) ListJobs(_ context.Context, search, statusFilter string) (
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var result []*pb.Job
+	if search == "" && statusFilter == "" {
+		return s.jobs, nil
+	}
+
+	result := make([]*pb.Job, 0)
 	for _, j := range s.jobs {
 		if statusFilter != "" && !strings.EqualFold(j.Status, statusFilter) {
 			continue
@@ -160,9 +164,6 @@ func (s *MemoryStore) ListJobs(_ context.Context, search, statusFilter string) (
 			}
 		}
 		result = append(result, j)
-	}
-	if result == nil {
-		return s.jobs, nil
 	}
 	return result, nil
 }

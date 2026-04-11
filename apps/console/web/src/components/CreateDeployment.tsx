@@ -28,7 +28,6 @@ export function CreateDeployment({ onBack }: CreateDeploymentProps) {
     'Qwen2.5 32B',
     'Qwen2.5 72B',
     'Qwen2.5 72B Instruct',
-    'Qwen2.5 72B',
     'Qwen2.5-Coder 15B Instruct',
     'Qwen2.5-Coder 15B',
     'DeepSeek v3.2',
