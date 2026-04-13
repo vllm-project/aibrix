@@ -705,16 +705,34 @@ func TestEffectiveScorePoliciesFromRoutingConfig(t *testing.T) {
 			RoutingConfig: json.RawMessage(`{"prefillScorePolicy":"prefix_cache","decodeScorePolicy":"least_request"}`),
 		},
 	}
-	pre, dec := r.effectiveScorePolicies(ctx)
+	pre, dec, err := r.effectiveScorePolicies(ctx)
+	assert.NoError(t, err)
 	_, isPrefix := pre.(*prefixCachePrefillPolicy)
 	assert.True(t, isPrefix, "routingConfig should override prefill to prefix_cache")
 	assert.Equal(t, pd.DecodePolicyLeastRequest, dec.Name())
 
 	ctxNoProfile := &types.RoutingContext{RequestID: "req-env"}
-	pre2, dec2 := r.effectiveScorePolicies(ctxNoProfile)
+	pre2, dec2, err2 := r.effectiveScorePolicies(ctxNoProfile)
+	assert.NoError(t, err2)
 	_, isLR := pre2.(*leastRequestPrefillPolicy)
 	assert.True(t, isLR, "without profile use router env defaults")
 	assert.Equal(t, pd.DecodePolicyLoadBalancing, dec2.Name())
+}
+
+func TestEffectiveScorePoliciesUnknownDecodeScorePolicy(t *testing.T) {
+	r := &pdRouter{
+		prefillPolicy: &leastRequestPrefillPolicy{},
+		decodePolicy:  pd.LoadBalancingDecodePolicy{},
+	}
+	ctx := &types.RoutingContext{
+		RequestID: "req-bad-decode",
+		ConfigProfile: &types.ResolvedConfigProfile{
+			RoutingConfig: json.RawMessage(`{"decodeScorePolicy":"not_a_real_policy"}`),
+		},
+	}
+	_, _, err := r.effectiveScorePolicies(ctx)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown decodeScorePolicy")
 }
 
 func TestDoPrefillRequest(t *testing.T) {

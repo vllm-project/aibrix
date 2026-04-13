@@ -113,6 +113,9 @@ var (
 	aibrixDecodeScorePolicy string = utils.LoadEnv("AIBRIX_DECODE_SCORE_POLICY", pd.ScorePolicyLoadBalancing)
 )
 
+// loadBalancingDecodePolicy is shared for nil-policy fallback and invalid-score fallback (stateless type).
+var loadBalancingDecodePolicy = pd.LoadBalancingDecodePolicy{}
+
 func init() {
 	Register(RouterPD, NewPDRouter)
 }
@@ -152,11 +155,13 @@ func parsePDAlgorithmConfig(raw json.RawMessage) *pdAlgorithmConfig {
 // When routingCtx.ConfigProfile.RoutingConfig sets prefillScorePolicy and/or decodeScorePolicy,
 // those override the gateway defaults from AIBRIX_PREFILL_SCORE_POLICY / AIBRIX_DECODE_SCORE_POLICY
 // (stored on the router at startup). Empty or missing fields keep the env-based policies.
-func (r *pdRouter) effectiveScorePolicies(routingCtx *types.RoutingContext) (prefillScorePolicy, pd.DecodeScorePolicy) {
+// A non-empty decodeScorePolicy that is not recognized returns an error so routing does not
+// silently run with a different policy than the user configured.
+func (r *pdRouter) effectiveScorePolicies(routingCtx *types.RoutingContext) (prefillScorePolicy, pd.DecodeScorePolicy, error) {
 	prefill := r.prefillPolicy
 	decode := r.decodePolicy
 	if routingCtx.ConfigProfile == nil || len(routingCtx.ConfigProfile.RoutingConfig) == 0 {
-		return prefill, decode
+		return prefill, decode, nil
 	}
 	cfg := parsePDAlgorithmConfig(routingCtx.ConfigProfile.RoutingConfig)
 	if s := strings.TrimSpace(cfg.PrefillScorePolicy); s != "" {
@@ -175,18 +180,19 @@ func (r *pdRouter) effectiveScorePolicies(routingCtx *types.RoutingContext) (pre
 	if s := strings.TrimSpace(cfg.DecodeScorePolicy); s != "" {
 		d, _, unknown := pd.ResolveDecodePolicy(s)
 		if unknown {
-			klog.InfoS("unknown decodeScorePolicy in routingConfig, keeping env-based policy",
-				"request_id", routingCtx.RequestID, "value", s, "valid", pd.ValidDecodePolicyNames())
-		} else {
-			decode = d
+			valid := pd.ValidDecodePolicyNames()
+			klog.Warningf("unknown decodeScorePolicy in routingConfig (request_id=%s value=%q valid=%v)",
+				routingCtx.RequestID, s, valid)
+			return nil, nil, fmt.Errorf("unknown decodeScorePolicy %q in routingConfig (valid: %v)", s, valid)
 		}
+		decode = d
 	}
 	if strings.TrimSpace(cfg.PrefillScorePolicy) != "" || strings.TrimSpace(cfg.DecodeScorePolicy) != "" {
 		klog.V(4).InfoS("pd score policies from model config profile routingConfig",
 			"request_id", routingCtx.RequestID,
 			"prefill_policy", prefill.name(), "decode_policy", decode.Name())
 	}
-	return prefill, decode
+	return prefill, decode, nil
 }
 
 type pdRouter struct {
@@ -399,7 +405,10 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		}
 	}
 
-	prefillPol, decodePol := r.effectiveScorePolicies(routingCtx)
+	prefillPol, decodePol, err := r.effectiveScorePolicies(routingCtx)
+	if err != nil {
+		return nil, nil, err
+	}
 	prefillScores, maxPrefillScore, prefixHashes := r.scorePrefillPods(routingCtx, prefillPods, prefillPol)
 	decodeRun := r.scoreDecodePods(routingCtx, decodePods, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage, decodePol)
 	return r.finalPDScore(routingCtx, prefixHashes, prefillScores, maxPrefillScore, decodeRun)
@@ -705,10 +714,9 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 		policy = r.decodePolicy
 	}
 	if policy == nil {
-		policy = pd.LoadBalancingDecodePolicy{}
+		policy = loadBalancingDecodePolicy
 	}
 	policyName := policy.Name()
-	lbPolicy := pd.LoadBalancingDecodePolicy{}
 
 	out := pd.DecodeScoreRun{
 		PerRoleset: make(map[string]pd.RolesetDecodePick),
@@ -735,7 +743,7 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 		decodeScore := policy.ScoreDecodePod(routingCtx, pod, in)
 		if pd.InvalidDecodeScore(decodeScore) {
 			if policyName != pd.DecodePolicyLoadBalancing {
-				decodeScore = lbPolicy.ScoreDecodePod(routingCtx, pod, in)
+				decodeScore = loadBalancingDecodePolicy.ScoreDecodePod(routingCtx, pod, in)
 				out.FallbackUsed = true
 			}
 			if pd.InvalidDecodeScore(decodeScore) {
@@ -830,12 +838,25 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		utils.GetModelPortForPod(routingCtx.RequestID, prefillPod),
 		routingCtx.ReqPath)
 
+	prefillPol, decodePol, polErr := r.effectiveScorePolicies(routingCtx)
+	prefillScorePolicyName := r.prefillPolicy.name()
+	if polErr == nil {
+		prefillScorePolicyName = prefillPol.name()
+	}
+
+	decodeScorePolicyName := string(r.decodePolicy.Name())
+	if polErr == nil {
+		decodeScorePolicyName = string(decodePol.Name())
+	}
+
 	fields := []interface{}{
 		"request_id", routingCtx.RequestID,
 		"llm_engine", llmEngine,
 		"model_name", routingCtx.Model,
 		"prefill_pod", prefillPod.Name,
 		"prefill_url", apiURL,
+		"prefill_score_policy", prefillScorePolicyName,
+		"decode_score_policy", decodeScorePolicyName,
 		"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name),
 	}
 	klog.InfoS("prefill_request_start", fields...)

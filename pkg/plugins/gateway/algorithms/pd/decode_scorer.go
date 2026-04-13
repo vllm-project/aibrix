@@ -128,7 +128,7 @@ func (LoadBalancingDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext
 	return decodeScore
 }
 
-// LeastRequestDecodePolicy scores only by running decode request count (including pending decode)
+// LeastRequestDecodePolicy scores only by running decode request count (including pending decode).
 type LeastRequestDecodePolicy struct{}
 
 func (LeastRequestDecodePolicy) Name() DecodePolicyName { return DecodePolicyLeastRequest }
@@ -144,7 +144,7 @@ func (LeastRequestDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext,
 	return in.RunningReqs
 }
 
-// built-in factories (mutable only via RegisterDecodePolicy for extra names).
+// decodePolicyFactories holds the built-in policy factories; extra/custom names are added via RegisterDecodePolicy into decodePolicyRegistryCustom.
 var decodePolicyFactories = map[string]func() DecodeScorePolicy{
 	string(DecodePolicyLoadBalancing): func() DecodeScorePolicy { return LoadBalancingDecodePolicy{} },
 	string(DecodePolicyLeastRequest):  func() DecodeScorePolicy { return LeastRequestDecodePolicy{} },
@@ -154,6 +154,7 @@ var decodePolicyFactories = map[string]func() DecodeScorePolicy{
 // Must be called before ResolveDecodePolicy for that name to ensure the policy is visible; concurrent calls are safe.
 func RegisterDecodePolicy(name string, factory func() DecodeScorePolicy) {
 	if factory == nil {
+		klog.Warningf("RegisterDecodePolicy ignored: nil factory for name %q", name)
 		return
 	}
 	decodePolicyRegistryMu.Lock()
@@ -161,7 +162,7 @@ func RegisterDecodePolicy(name string, factory func() DecodeScorePolicy) {
 	decodePolicyRegistryCustom[strings.ToLower(strings.TrimSpace(name))] = factory
 }
 
-// ResolveDecodePolicy returns the policy for env value raw, its canonical name, and unknown true if raw was not registered.
+// ResolveDecodePolicy returns the policy for env value raw, its canonical name, and unknown set to true if raw was not registered.
 func ResolveDecodePolicy(raw string) (policy DecodeScorePolicy, canonical DecodePolicyName, unknown bool) {
 	key := strings.ToLower(strings.TrimSpace(raw))
 	if key == "" {
