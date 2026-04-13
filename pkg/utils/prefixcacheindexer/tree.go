@@ -89,6 +89,8 @@ func (n *TreeNode) GetLoad() int {
 }
 
 func (n *TreeNode) GetLastAccess() time.Time {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	return n.lastAccess
 }
 
@@ -453,7 +455,9 @@ func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, tokens []int) (*TreeNod
 	current := node
 
 	for totalMatched < len(tokens) {
+		current.mu.Lock()
 		current.lastAccess = time.Now()
+		current.mu.Unlock()
 		remaining := tokens[totalMatched:]
 		child, ok := current.children[remaining[0]]
 		if !ok {
