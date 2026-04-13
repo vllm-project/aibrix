@@ -110,8 +110,8 @@ func (r *chainedRouter) applyAlgorithm(ctx *types.RoutingContext, algorithm type
 	routingCtx.ReqHeaders = ctx.ReqHeaders
 	routingCtx.ReqBody = ctx.ReqBody
 	routingCtx.ReqPath = ctx.ReqPath
+	routingCtx.CandidatePods = nil
 
-	routingCtx.CandidatePods = candidatePods
 	router, err := r.routerManager.Select(&types.RoutingContext{Algorithm: algorithm})
 	if err != nil {
 		return nil, err

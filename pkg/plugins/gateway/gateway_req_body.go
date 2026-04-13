@@ -92,6 +92,10 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		algorithms := parseChainedAlgorithms(strategy)
 		var validAlgorithms, invalidAlgorithms []types.RoutingAlgorithm
 		for _, alg := range algorithms {
+			if alg == routing.RouterChained { // Reject "chained" as it's an internal algorithm
+				invalidAlgorithms = append(invalidAlgorithms, alg)
+				continue
+			}
 			if _, ok := routing.Validate(string(alg)); ok {
 				validAlgorithms = append(validAlgorithms, alg)
 			} else {
@@ -104,6 +108,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			if len(invalidAlgorithms) > 0 {
 				return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategies: %v", invalidAlgorithms), "", "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
 			}
+			// Return error for empty valid algorithms
+			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no valid routing strategies provided", "", "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
 		}
 
 		if len(validAlgorithms) > 1 {

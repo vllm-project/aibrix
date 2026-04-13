@@ -74,8 +74,11 @@ func (r leastGpuCacheRouter) Route(ctx *types.RoutingContext, readyPodList types
 	}
 
 	if len(candidatePods) > 0 {
-		ctx.CandidatePods = candidatePods
 		targetPod = candidatePods[rand.Intn(len(candidatePods))]
+		// set candidatePods only if algorithm is chained
+		if ctx.Algorithm == RouterChained {
+			ctx.CandidatePods = candidatePods
+		}
 	}
 
 	// Use fallback if no valid metrics

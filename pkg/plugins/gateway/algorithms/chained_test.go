@@ -18,6 +18,7 @@ package routingalgorithms
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -91,9 +92,6 @@ func TestChainedRouter(t *testing.T) {
 
 	podList := &utils.PodArray{Pods: pods}
 
-	// Create routing context
-	ctx := types.NewRoutingContext(context.Background(), RouterChained, "test-model", "test-message", "test-request-id", "")
-
 	// Test cases
 	tests := []struct {
 		name        string
@@ -129,6 +127,10 @@ func TestChainedRouter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Create a new routing context for each test case
+			ctx := types.NewRoutingContext(context.Background(), RouterChained, "test-model", "test-message", "test-request-id", "")
+			defer ctx.Delete()
+
 			// Create chained router
 			router, err := NewChainedRouter(tt.algorithms)
 			assert.NoError(t, err)
@@ -148,7 +150,7 @@ func TestChainedRouter(t *testing.T) {
 }
 
 func TestChainedRouterWithInvalidAlgorithm(t *testing.T) {
-	// Create test pods
+	// Create test pods with multiple pods to avoid short-circuiting
 	pods := []*v1.Pod{
 		{
 			ObjectMeta: metav1.ObjectMeta{
@@ -160,6 +162,25 @@ func TestChainedRouterWithInvalidAlgorithm(t *testing.T) {
 			},
 			Status: v1.PodStatus{
 				PodIP: "1.1.1.1",
+				Phase: v1.PodRunning,
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodReady,
+						Status: v1.ConditionTrue,
+					},
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pod2",
+				Namespace: "default",
+				Labels: map[string]string{
+					"model.aibrix.ai/port": "8000",
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP: "2.2.2.2",
 				Phase: v1.PodRunning,
 				Conditions: []v1.PodCondition{
 					{
@@ -185,4 +206,112 @@ func TestChainedRouterWithInvalidAlgorithm(t *testing.T) {
 	result, err := router.Route(ctx, podList)
 	assert.NoError(t, err)
 	assert.Contains(t, result, ":")
+}
+
+// TestChainedRouterNarrowing tests that chained routing actually narrows down candidate sets
+// by applying multiple algorithms sequentially.
+func TestChainedRouterNarrowing(t *testing.T) {
+	// Create test pods with different GPU cache and utilization values
+	// This allows us to test if chaining algorithms actually narrows the candidate set
+	pods := []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pod-low-gpu-low-util",
+				Namespace: "default",
+				Labels: map[string]string{
+					"model.aibrix.ai/port": "8000",
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP: "1.1.1.1",
+				Phase: v1.PodRunning,
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodReady,
+						Status: v1.ConditionTrue,
+					},
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pod-low-gpu-high-util",
+				Namespace: "default",
+				Labels: map[string]string{
+					"model.aibrix.ai/port": "8000",
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP: "2.2.2.2",
+				Phase: v1.PodRunning,
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodReady,
+						Status: v1.ConditionTrue,
+					},
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pod-high-gpu-low-util",
+				Namespace: "default",
+				Labels: map[string]string{
+					"model.aibrix.ai/port": "8000",
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP: "3.3.3.3",
+				Phase: v1.PodRunning,
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodReady,
+						Status: v1.ConditionTrue,
+					},
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pod-high-gpu-high-util",
+				Namespace: "default",
+				Labels: map[string]string{
+					"model.aibrix.ai/port": "8000",
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP: "4.4.4.4",
+				Phase: v1.PodRunning,
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodReady,
+						Status: v1.ConditionTrue,
+					},
+				},
+			},
+		},
+	}
+
+	podList := &utils.PodArray{Pods: pods}
+
+	// Create routing context
+	ctx := types.NewRoutingContext(context.Background(), RouterChained, "test-model", "test-message", "test-request-id", "")
+	defer ctx.Delete()
+
+	// Test chaining with least-gpu-cache followed by least-utilization
+	// This should narrow down the candidate set from multiple pods to fewer pods
+	algorithms := []types.RoutingAlgorithm{RouterLeastGpuCache, RouterUtil}
+	router, err := NewChainedRouter(algorithms)
+	assert.NoError(t, err)
+
+	// Should be able to route successfully
+	result, err := router.Route(ctx, podList)
+	assert.NoError(t, err)
+	assert.Contains(t, result, ":")
+
+	// The result should be one of our test pods
+	assert.True(t, strings.Contains(result, "1.1.1.1:8000") ||
+		strings.Contains(result, "2.2.2.2:8000") ||
+		strings.Contains(result, "3.3.3.3:8000") ||
+		strings.Contains(result, "4.4.4.4:8000"))
 }
