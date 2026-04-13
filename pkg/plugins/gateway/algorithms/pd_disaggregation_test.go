@@ -19,6 +19,7 @@ package routingalgorithms
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -35,6 +36,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -43,6 +45,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 )
+
+// scorePrefillWithDefaultPolicy runs scorePrefillPods using the router's configured prefill policy (tests / benchmarks).
+func scorePrefillWithDefaultPolicy(r *pdRouter, ctx *types.RoutingContext, pods []*v1.Pod) (map[string]*Scores, float64, []uint64) {
+	return r.scorePrefillPods(ctx, pods, r.prefillPolicy)
+}
 
 func TestPDRouter_Route(t *testing.T) {
 	tests := []struct {
@@ -350,7 +357,7 @@ func TestScorePrefillPods(t *testing.T) {
 			}
 
 			// Call the function
-			scores, maxScore, prefixHashes := r.scorePrefillPods(ctx, tt.pods)
+			scores, maxScore, prefixHashes := scorePrefillWithDefaultPolicy(r, ctx, tt.pods)
 
 			// Verify basic functionality
 			assert.Equal(t, tt.expectScores, len(scores), "number of scores should match")
@@ -399,7 +406,7 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 			prefillRequestTracker: tracker,
 		}
 
-		scores, _, _ := r.scorePrefillPods(ctx, []*v1.Pod{pod("pod1", "rs1"), pod("pod2", "rs1")})
+		scores, _, _ := scorePrefillWithDefaultPolicy(r, ctx, []*v1.Pod{pod("pod1", "rs1"), pod("pod2", "rs1")})
 		assert.Len(t, scores, 1, "one roleset")
 		assert.Equal(t, "pod1", scores["rs1"].Pod.Name, "pod1 has higher cache match and should win")
 	})
@@ -415,7 +422,7 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 			prefillRequestTracker: tracker,
 		}
 
-		scores, _, _ := r.scorePrefillPods(ctx, []*v1.Pod{pod("pod1", "rs1"), pod("pod2", "rs1")})
+		scores, _, _ := scorePrefillWithDefaultPolicy(r, ctx, []*v1.Pod{pod("pod1", "rs1"), pod("pod2", "rs1")})
 		assert.Len(t, scores, 1)
 		assert.Equal(t, "pod1", scores["rs1"].Pod.Name, "pod1 has fewer requests and should win")
 	})
@@ -432,7 +439,7 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 			prefillRequestTracker: tracker,
 		}
 
-		scores, _, _ := r.scorePrefillPods(ctx, []*v1.Pod{pod("pod1", "rs1"), pod("pod2", "rs1")})
+		scores, _, _ := scorePrefillWithDefaultPolicy(r, ctx, []*v1.Pod{pod("pod1", "rs1"), pod("pod2", "rs1")})
 		assert.Len(t, scores, 1)
 		assert.Equal(t, "pod1", scores["rs1"].Pod.Name, "pod2 filtered by stddev, pod1 should win")
 	})
@@ -446,7 +453,7 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 		}
 
 		pods := []*v1.Pod{pod("p1", "rs1"), pod("p2", "rs1"), pod("p3", "rs2")}
-		scores, _, _ := r.scorePrefillPods(ctx, pods)
+		scores, _, _ := scorePrefillWithDefaultPolicy(r, ctx, pods)
 		assert.Len(t, scores, 2, "two rolesets")
 		assert.Contains(t, scores, "rs1")
 		assert.Contains(t, scores, "rs2")
@@ -460,7 +467,7 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 			prefillRequestTracker: NewPrefillRequestTracker(),
 		}
 
-		_, _, hashes := r.scorePrefillPods(ctx, []*v1.Pod{pod("pod1", "rs1")})
+		_, _, hashes := scorePrefillWithDefaultPolicy(r, ctx, []*v1.Pod{pod("pod1", "rs1")})
 		assert.NotNil(t, hashes, "prefix cache policy should return prefix hashes")
 	})
 
@@ -472,7 +479,7 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 			prefillRequestTracker: NewPrefillRequestTracker(),
 		}
 
-		scores, maxScore, _ := r.scorePrefillPods(ctx, []*v1.Pod{})
+		scores, maxScore, _ := scorePrefillWithDefaultPolicy(r, ctx, []*v1.Pod{})
 		assert.Empty(t, scores)
 		assert.Equal(t, float64(1), maxScore)
 	})
@@ -494,7 +501,7 @@ func TestScorePrefillPods_PrefixCachePolicy(t *testing.T) {
 			prefillRequestTracker: NewPrefillRequestTracker(),
 		}
 
-		scores, maxScore, hashes := r.scorePrefillPods(ctx, []*v1.Pod{pod("pod1", "rs1")})
+		scores, maxScore, hashes := scorePrefillWithDefaultPolicy(r, ctx, []*v1.Pod{pod("pod1", "rs1")})
 		klog.Flush()
 
 		assert.Nil(t, scores)
@@ -526,7 +533,7 @@ func TestScorePrefillPods_LeastRequestPolicy(t *testing.T) {
 		tracker := NewPrefillRequestTracker()
 		addRequests(tracker, "pod2", 5)
 
-		scores, _, _ := makeRouter(tracker).scorePrefillPods(ctx, []*v1.Pod{pod("pod1", "rs1"), pod("pod2", "rs1")})
+		scores, _, _ := scorePrefillWithDefaultPolicy(makeRouter(tracker), ctx, []*v1.Pod{pod("pod1", "rs1"), pod("pod2", "rs1")})
 		assert.Len(t, scores, 1)
 		assert.Equal(t, "pod1", scores["rs1"].Pod.Name, "pod1 (0 reqs) should beat pod2 (5 reqs)")
 	})
@@ -537,7 +544,7 @@ func TestScorePrefillPods_LeastRequestPolicy(t *testing.T) {
 		addRequests(tracker, "pod3", 1) // rs2: pod3=1, pod4=0 → pod4 wins
 
 		pods := []*v1.Pod{pod("pod1", "rs1"), pod("pod2", "rs1"), pod("pod3", "rs2"), pod("pod4", "rs2")}
-		scores, _, _ := makeRouter(tracker).scorePrefillPods(ctx, pods)
+		scores, _, _ := scorePrefillWithDefaultPolicy(makeRouter(tracker), ctx, pods)
 		assert.Len(t, scores, 2)
 		assert.Equal(t, "pod1", scores["rs1"].Pod.Name)
 		assert.Equal(t, "pod4", scores["rs2"].Pod.Name)
@@ -547,24 +554,24 @@ func TestScorePrefillPods_LeastRequestPolicy(t *testing.T) {
 		tracker := NewPrefillRequestTracker()
 		addRequests(tracker, "pod2", 1000)
 
-		scores, _, _ := makeRouter(tracker).scorePrefillPods(ctx, []*v1.Pod{pod("pod1", "rs1"), pod("pod2", "rs1")})
+		scores, _, _ := scorePrefillWithDefaultPolicy(makeRouter(tracker), ctx, []*v1.Pod{pod("pod1", "rs1"), pod("pod2", "rs1")})
 		assert.Len(t, scores, 1)
 		assert.Equal(t, "pod1", scores["rs1"].Pod.Name, "pod2 filtered by stddev")
 	})
 
 	t.Run("prefix hashes are nil", func(t *testing.T) {
-		_, _, hashes := makeRouter(NewPrefillRequestTracker()).scorePrefillPods(ctx, []*v1.Pod{pod("pod1", "rs1")})
+		_, _, hashes := scorePrefillWithDefaultPolicy(makeRouter(NewPrefillRequestTracker()), ctx, []*v1.Pod{pod("pod1", "rs1")})
 		assert.Nil(t, hashes, "least_request policy should not return prefix hashes")
 	})
 
 	t.Run("single pod is always selected", func(t *testing.T) {
-		scores, _, _ := makeRouter(NewPrefillRequestTracker()).scorePrefillPods(ctx, []*v1.Pod{pod("solo", "rs1")})
+		scores, _, _ := scorePrefillWithDefaultPolicy(makeRouter(NewPrefillRequestTracker()), ctx, []*v1.Pod{pod("solo", "rs1")})
 		assert.Len(t, scores, 1)
 		assert.Equal(t, "solo", scores["rs1"].Pod.Name)
 	})
 
 	t.Run("empty pod list returns empty scores", func(t *testing.T) {
-		scores, maxScore, hashes := makeRouter(NewPrefillRequestTracker()).scorePrefillPods(ctx, []*v1.Pod{})
+		scores, maxScore, hashes := scorePrefillWithDefaultPolicy(makeRouter(NewPrefillRequestTracker()), ctx, []*v1.Pod{})
 		assert.Empty(t, scores)
 		assert.Equal(t, float64(1), maxScore)
 		assert.Nil(t, hashes)
@@ -575,7 +582,7 @@ func TestScorePrefillPods_LeastRequestPolicy(t *testing.T) {
 		addRequests(tracker, "pod1", 3)
 		addRequests(tracker, "pod2", 7)
 
-		scores, maxScore, _ := makeRouter(tracker).scorePrefillPods(ctx,
+		scores, maxScore, _ := scorePrefillWithDefaultPolicy(makeRouter(tracker), ctx,
 			[]*v1.Pod{pod("pod1", "rs1"), pod("pod2", "rs2")})
 		assert.Equal(t, float64(3), scores["rs1"].Score)
 		assert.Equal(t, float64(7), scores["rs2"].Score)
@@ -586,55 +593,128 @@ func TestScorePrefillPods_LeastRequestPolicy(t *testing.T) {
 func TestScoreDecodePods(t *testing.T) {
 	tests := []struct {
 		name         string
+		decodePolicy pd.DecodeScorePolicy
 		pods         []*v1.Pod
 		expectScores int // number of scores expected
+		counts       map[string]float64
+		throughputs  map[string]float64
+		freeGPU      map[string]float64
+		check        func(t *testing.T, run pd.DecodeScoreRun)
 	}{
 		{
-			name: "basic decode scoring",
+			name:         "load_balancing basic",
+			decodePolicy: pd.LoadBalancingDecodePolicy{},
 			pods: []*v1.Pod{
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Labels: map[string]string{PDRoleSetIdentifier: "roleset1"}}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Labels: map[string]string{PDRoleSetIdentifier: "roleset2"}}},
 			},
 			expectScores: 2,
+			check: func(t *testing.T, run pd.DecodeScoreRun) {
+				assert.GreaterOrEqual(t, run.MaxScore, 0.0, "max score should be non-negative")
+				assert.Nil(t, run.Err)
+			},
 		},
 		{
-			name: "multiple pods same roleset",
+			name:         "load_balancing multiple pods same roleset",
+			decodePolicy: pd.LoadBalancingDecodePolicy{},
 			pods: []*v1.Pod{
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Labels: map[string]string{PDRoleSetIdentifier: "roleset1"}}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Labels: map[string]string{PDRoleSetIdentifier: "roleset1"}}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "pod3", Labels: map[string]string{PDRoleSetIdentifier: "roleset2"}}},
 			},
-			expectScores: 2, // Should have 2 rolesets
+			expectScores: 2,
+			check: func(t *testing.T, run pd.DecodeScoreRun) {
+				assert.GreaterOrEqual(t, run.MaxScore, 0.0)
+				assert.Nil(t, run.Err)
+			},
+		},
+		{
+			name:         "least_request picks lower queue depth per roleset",
+			decodePolicy: pd.LeastRequestDecodePolicy{},
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Labels: map[string]string{PDRoleSetIdentifier: "rs1"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod-b", Labels: map[string]string{PDRoleSetIdentifier: "rs1"}}},
+			},
+			expectScores: 1,
+			counts: map[string]float64{
+				"pod-a": 3,
+				"pod-b": 7,
+			},
+			throughputs: map[string]float64{"pod-a": 100, "pod-b": 500},
+			freeGPU:     map[string]float64{"pod-a": 50, "pod-b": 90},
+			check: func(t *testing.T, run pd.DecodeScoreRun) {
+				assert.Equal(t, float64(3), run.PerRoleset["rs1"].Score)
+				assert.Equal(t, "pod-a", run.PerRoleset["rs1"].Pod.Name)
+				// MaxScore is the max over all per-pod scores in this pass (for finalPDScore normalization), not the winning roleset score.
+				assert.Equal(t, float64(7), run.MaxScore)
+				assert.Nil(t, run.Err)
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create router with real dependencies
-			r := &pdRouter{}
+			r := &pdRouter{decodePolicy: tt.decodePolicy}
 
-			// Create routing context
 			ctx := &types.RoutingContext{
 				RequestID: "test-request",
 			}
 
-			// Call the function with minimal parameters
-			scores, maxScore := r.scoreDecodePods(
+			counts := tt.counts
+			if counts == nil {
+				counts = map[string]float64{}
+			}
+			throughputs := tt.throughputs
+			if throughputs == nil {
+				throughputs = map[string]float64{}
+			}
+			freeGPU := tt.freeGPU
+			if freeGPU == nil {
+				freeGPU = map[string]float64{}
+			}
+
+			run := r.scoreDecodePods(
 				ctx,
 				tt.pods,
-				10.0,                 // maxRequestCount
-				100.0,                // maxThroughput
-				80.0,                 // maxFreeGPUUsage
-				map[string]float64{}, // podRequestCounts
-				map[string]float64{}, // podThroughputs
-				map[string]float64{}, // podFreeGpuUsage
+				10.0, // maxRequestCount
+				100.0,
+				80.0,
+				counts,
+				throughputs,
+				freeGPU,
+				r.decodePolicy,
 			)
 
-			// Verify basic functionality
-			assert.Equal(t, tt.expectScores, len(scores), "number of scores should match")
-			assert.GreaterOrEqual(t, maxScore, 0.0, "max score should be non-negative")
+			assert.Equal(t, tt.expectScores, len(run.PerRoleset), "number of scores should match")
+			if tt.check != nil {
+				tt.check(t, run)
+			}
 		})
 	}
+}
+
+func TestEffectiveScorePoliciesFromRoutingConfig(t *testing.T) {
+	r := &pdRouter{
+		prefillPolicy:      &leastRequestPrefillPolicy{},
+		decodePolicy:       pd.LoadBalancingDecodePolicy{},
+		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+	}
+	ctx := &types.RoutingContext{
+		RequestID: "req-profile",
+		ConfigProfile: &types.ResolvedConfigProfile{
+			RoutingConfig: json.RawMessage(`{"prefillScorePolicy":"prefix_cache","decodeScorePolicy":"least_request"}`),
+		},
+	}
+	pre, dec := r.effectiveScorePolicies(ctx)
+	_, isPrefix := pre.(*prefixCachePrefillPolicy)
+	assert.True(t, isPrefix, "routingConfig should override prefill to prefix_cache")
+	assert.Equal(t, pd.DecodePolicyLeastRequest, dec.Name())
+
+	ctxNoProfile := &types.RoutingContext{RequestID: "req-env"}
+	pre2, dec2 := r.effectiveScorePolicies(ctxNoProfile)
+	_, isLR := pre2.(*leastRequestPrefillPolicy)
+	assert.True(t, isLR, "without profile use router env defaults")
+	assert.Equal(t, pd.DecodePolicyLoadBalancing, dec2.Name())
 }
 
 func TestDoPrefillRequest(t *testing.T) {
