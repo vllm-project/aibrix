@@ -116,13 +116,20 @@ scorePrefillPods()              (per roleset, best pod wins)
   └──────────────────────────────────────────────────────────────────┘
         │
         ▼
-scoreDecodePods()               (per roleset, best pod wins)
+scoreDecodePods()  →  pd.DecodeScoreRun (per roleset best pod + MaxScore + policy metadata)
   ┌──────────────────────────────────────────────────────────────────┐
-  │  norm_reqs     = running_reqs / max_running_reqs                 │
-  │  norm_thru     = 1 - throughput / max_throughput                 │
-  │  norm_free_gpu = free_gpu_pct / max_free_gpu_pct                 │
+  │  Policy: load_balancing (default)                                │
+  │    norm_reqs     = running_reqs / max_running_reqs               │
+  │    norm_thru     = 1 - throughput / max_throughput               │
+  │    norm_free_gpu = free_gpu_pct / max_free_gpu_pct               │
+  │    score = (w_run*norm_reqs + w_thru*norm_thru) / norm_free_gpu   │
+  │    (w_run, w_thru from AIBRIX_DECODE_LB_WEIGHT_*, default 1)      │
+  │    NaN scores: skip; non-NaN Inf possible if norm_free_gpu = 0   │
   │                                                                  │
-  │  score = (norm_reqs + norm_thru) / norm_free_gpu                 │
+  │  Policy: least_request                                           │
+  │    score = running_reqs (with pending)                           │
+  │                                                                  │
+  │  If primary policy yields NaN, one load_balancing retry per pod    │
   │                     lower is better                              │
   └──────────────────────────────────────────────────────────────────┘
         │
@@ -140,7 +147,7 @@ finalPDScore()
 
 ## Prefill Score Policies
 
-Controlled by `AIBRIX_PREFILL_SCORE_POLICY`.
+Controlled by `AIBRIX_PREFILL_SCORE_POLICY`, or overridden per request via the model **`routingConfig`** in `model.aibrix.ai/config` (see [Config profile overrides](#config-profile-overrides-for-pd-score-policies)).
 
 ### `prefix_cache` (default)
 
@@ -167,22 +174,65 @@ score = req_count
 
 ---
 
-## Decode Scoring Formula
+## Decode Score Policies
+
+Implementation lives in `algorithms/pd/decode_scorer.go` (`package pd`). Policies are selected by **`pd.ResolveDecodePolicy`** from `AIBRIX_DECODE_SCORE_POLICY`. Extra names can be registered at init time with **`pd.RegisterDecodePolicy`**. Per-pass results use **`pd.DecodeScoreRun`** (map of roleset → best pod/score, `MaxScore` for normalization, optional `Err`, `FallbackUsed`, `Policy`).
+
+Metrics are passed per pod via **`pd.DecodePodInput`** (running/throughput/free GPU and batch maxima). The router guarantees positive maxima from `loadImbalanceSelectDecodePod` as today.
+
+Controlled by `AIBRIX_DECODE_SCORE_POLICY`, or overridden per request via **`routingConfig`** in the model config profile (see [Config profile overrides](#config-profile-overrides-for-pd-score-policies)).
+
+Metrics are pulled from the cache per pod (same maps as `loadImbalanceSelectDecodePod`):
+- `RealtimeNumRequestsRunning` + `PendingDecodeTracker` count
+- `AvgGenerationThroughputToksPerS` (per model)
+- `GPUCacheUsagePerc` (free = 100 − usage%)
+
+### `load_balancing` (default)
+
+Balances normalized queue depth, inverse throughput, and free GPU headroom:
 
 ```
 norm_running_reqs  = running_reqs_with_pending / max_running_reqs
 norm_throughput    = 1 - avg_gen_throughput_tok_s / max_throughput
 norm_free_gpu      = free_gpu_percent / max_free_gpu_percent
 
-decode_score = (norm_running_reqs + norm_throughput) / norm_free_gpu
+decode_score = (w_run * norm_running_reqs + w_thru * norm_throughput) / norm_free_gpu
 ```
 
-Metrics pulled from the cache per pod:
-- `RealtimeNumRequestsRunning` + `PendingDecodeTracker` count
-- `AvgGenerationThroughputToksPerS` (per model)
-- `GPUCacheUsagePerc` (free = 100 − usage%)
+`w_run` and `w_thru` default to `1` (historical equal weighting). Lower score is better (fewer outstanding requests, higher throughput, more free GPU).
+
+### `least_request`
+
+No throughput or GPU terms. Score equals raw running decode request count (including pending decode), same units as `RealtimeNumRequestsRunning` + pending.
+
+```
+decode_score = running_reqs_with_pending
+```
+
+### Config profile overrides for PD score policies
+
+When the gateway resolves a model config profile (`routingCtx.ConfigProfile` from `model.aibrix.ai/config` and the `config-profile` header), the **`routingConfig`** JSON may include:
+
+| Field | Values | Effect |
+|-------|--------|--------|
+| `prefillScorePolicy` | `prefix_cache`, `least_request` | Overrides `AIBRIX_PREFILL_SCORE_POLICY` for that request |
+| `decodeScorePolicy` | `load_balancing`, `least_request` (or any name registered via `pd.RegisterDecodePolicy`) | Overrides `AIBRIX_DECODE_SCORE_POLICY` for that request |
+
+Example fragment inside a profile:
+
+```json
+"routingConfig": {
+  "promptLenBucketMinLength": 0,
+  "promptLenBucketMaxLength": 8192,
+  "prefillScorePolicy": "prefix_cache",
+  "decodeScorePolicy": "least_request"
+}
+```
+
+Omitted fields keep the gateway defaults from environment variables.
 
 ---
+
 
 ## Engine-Specific Prefill Behaviour
 
@@ -330,6 +380,7 @@ When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) an
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AIBRIX_PREFILL_SCORE_POLICY` | `prefix_cache` | Prefill pod scoring: `prefix_cache` or `least_request`. Any other value logs a warning and falls back to `prefix_cache`. |
+| `AIBRIX_DECODE_SCORE_POLICY` | `load_balancing` | Decode pod scoring for `finalPDScore`: `load_balancing` or `least_request`. Any other value logs a warning and falls back to `load_balancing`. |
 | `AIBRIX_KV_CONNECTOR_TYPE` | `shfs` | KV transfer backend: `shfs` (GPU/SHFS) or `nixl` (Neuron) |
 | `AIBRIX_PREFILL_REQUEST_TIMEOUT` | `30` | Prefill HTTP request timeout in seconds |
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | `false` | Enable prompt-length-based pod bucketing |
@@ -344,6 +395,8 @@ When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) an
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `AIBRIX_DECODE_LB_WEIGHT_RUNNING` | `1.0` | Multiplier on normalized running-request term in `load_balancing` numerator |
+| `AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT` | `1.0` | Multiplier on normalized inverse-throughput term in `load_balancing` numerator |
 | `AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD` | `16.0` | Min `(max − min)` running request count spread to trigger decode imbalance routing |
 | `AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD` | `2048.0` | Min `(max − min)` token throughput spread (tok/s) to trigger throughput-based routing |
 | `AIBRIX_DECODE_SCORE_RATIO_THRESHOLD` | `1.5` | `max_drain_score / min_drain_score` ratio threshold to trigger drain-rate routing |
@@ -420,6 +473,10 @@ NewPDRouter()
   │     least_request → LeastRequestPrefillPolicy
   │     prefix_cache  → PrefixCachePrefillPolicy (shared tokenizer + PrefixHashTable)
   │     (other)       → log warning, same as prefix_cache
+  ├─ decode score policy (package algorithms/pd, decode_scorer.go) from AIBRIX_DECODE_SCORE_POLICY:
+  │     least_request   → pd.LeastRequestDecodePolicy
+  │     load_balancing  → pd.LoadBalancingDecodePolicy
+  │     (other)         → log warning, same as load_balancing
   ├─ create HTTP client with connection pool
   │     MaxIdleConns=100, MaxIdleConnsPerHost=10, IdleConnTimeout=90s
   ├─ NewPrefillRequestTracker()

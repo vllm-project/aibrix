@@ -164,7 +164,7 @@ func TestResolveProfileFromPod(t *testing.T) {
 }
 
 func TestParseModelConfigWithRoutingConfig(t *testing.T) {
-	jsonStr := `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"pd","routingConfig":{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":4096,"combined":true}}}}`
+	jsonStr := `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"pd","routingConfig":{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":4096,"combined":true,"prefillScorePolicy":"least_request","decodeScorePolicy":"least_request"}}}}`
 	cfg, err := ParseModelConfig(jsonStr)
 	if err != nil {
 		t.Fatalf("ParseModelConfig() err=%v", err)
@@ -181,6 +181,9 @@ func TestParseModelConfigWithRoutingConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(profile.RoutingConfig), "promptLenBucketMaxLength") {
 		t.Errorf("RoutingConfig should contain promptLenBucketMaxLength, got %s", string(profile.RoutingConfig))
+	}
+	if !strings.Contains(string(profile.RoutingConfig), "prefillScorePolicy") || !strings.Contains(string(profile.RoutingConfig), "decodeScorePolicy") {
+		t.Errorf("RoutingConfig should carry PD score policy fields, got %s", string(profile.RoutingConfig))
 	}
 }
 
