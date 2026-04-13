@@ -839,13 +839,19 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		routingCtx.ReqPath)
 
 	prefillPol, decodePol, polErr := r.effectiveScorePolicies(routingCtx)
-	prefillScorePolicyName := r.prefillPolicy.name()
-	if polErr == nil {
+	prefillScorePolicyName := prefillScorePolicyPrefixCache
+	if r.prefillPolicy != nil {
+		prefillScorePolicyName = r.prefillPolicy.name()
+	}
+	if polErr == nil && prefillPol != nil {
 		prefillScorePolicyName = prefillPol.name()
 	}
 
-	decodeScorePolicyName := string(r.decodePolicy.Name())
-	if polErr == nil {
+	decodeScorePolicyName := string(pd.DecodePolicyLoadBalancing)
+	if r.decodePolicy != nil {
+		decodeScorePolicyName = string(r.decodePolicy.Name())
+	}
+	if polErr == nil && decodePol != nil {
 		decodeScorePolicyName = string(decodePol.Name())
 	}
 
