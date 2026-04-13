@@ -89,6 +89,8 @@ func (n *TreeNode) GetLoad() int {
 }
 
 func (n *TreeNode) GetLastAccess() time.Time {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	return n.lastAccess
 }
 
@@ -448,12 +450,21 @@ func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, tokens []int) (*TreeNod
 		return node, nil
 	}
 
+	// One timestamp for the whole match path so all touched nodes share a
+	// consistent LRU time and we avoid calling time.Now() per hop.
+	now := time.Now()
+	touchLastAccess := func(n *TreeNode) {
+		n.mu.Lock()
+		n.lastAccess = now
+		n.mu.Unlock()
+	}
+
 	bestNode := node
 	totalMatched := 0
 	current := node
 
 	for totalMatched < len(tokens) {
-		current.lastAccess = time.Now()
+		touchLastAccess(current)
 		remaining := tokens[totalMatched:]
 		child, ok := current.children[remaining[0]]
 		if !ok {
@@ -469,13 +480,16 @@ func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, tokens []int) (*TreeNod
 			totalMatched += prefixLen
 			bestNode = child
 			if totalMatched == len(tokens) {
+				// Final matched node is child; next iteration would not run.
+				touchLastAccess(child)
 				return child, tokens[:totalMatched]
 			}
 			current = child
 			continue
 		}
-		// Partial match with child's key
+		// Partial match with child's key — return child as best node; update it.
 		totalMatched += prefixLen
+		touchLastAccess(child)
 		return child, tokens[:totalMatched]
 	}
 
