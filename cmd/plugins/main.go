@@ -161,12 +161,13 @@ func main() {
 	gatewayServer := gateway.NewServer(redisClient, k8sClient, gatewayK8sClient)
 
 	redissyncEnabled := utils.LoadEnvBool("AIBRIX_REDISSYNC_ENABLED", false)
-	var redissyncManager *redissync.Manager
+	var syncManager *redissync.RedisSync
 	if redissyncEnabled {
-		redissyncManager = redissync.NewManager(redisClient)
-		redissyncManager.Register(prefixcacheindexer.NewPrefixHashTableSyncable(
-			prefixcacheindexer.GetSharedPrefixHashTable()))
-		redissyncManager.Start()
+		table := prefixcacheindexer.GetSharedPrefixHashTable()
+		table.EnableDeltaSync()
+		syncManager = redissync.New(redisClient)
+		syncManager.Register(prefixcacheindexer.NewPrefixHashTableSyncable(table))
+		syncManager.Start()
 	}
 
 	if err := gatewayServer.StartHTTPServer(httpAddr); err != nil {
@@ -194,8 +195,8 @@ func main() {
 	go func() {
 		sig := <-gracefulStop
 		klog.Warningf("signal received: %v, initiating graceful shutdown...", sig)
-		if redissyncManager != nil {
-			redissyncManager.Stop()
+		if syncManager != nil {
+			syncManager.Stop()
 		}
 		gatewayServer.Shutdown()
 		s.GracefulStop()

@@ -75,11 +75,21 @@ func NewPrefixHashTable() *PrefixHashTable {
 		"prefix_cache_block_eviction_interval_seconds", prefixCacheEvictionInterval,
 		"prefix_cache_block_eviction_duration_minutes", prefixCacheEvictionDuration)
 	instance := &PrefixHashTable{
-		seed:     seed,
-		store:    lrustore.NewLRUStore[uint64, Block](prefixCacheBlockNumber, prefixCacheEvictionDuration, prefixCacheEvictionInterval, func() time.Time { return time.Now() }),
-		dirtyIds: make(map[string]struct{}),
+		seed:  seed,
+		store: lrustore.NewLRUStore[uint64, Block](prefixCacheBlockNumber, prefixCacheEvictionDuration, prefixCacheEvictionInterval, func() time.Time { return time.Now() }),
 	}
 	return instance
+}
+
+// EnableDeltaSync initializes dirty-set tracking so GetDeltaForSync/ClearDirtyForSync
+// can be used. Call this once before registering with redissync.Manager. It is safe
+// to call multiple times; subsequent calls are no-ops.
+func (c *PrefixHashTable) EnableDeltaSync() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dirtyIds == nil {
+		c.dirtyIds = make(map[string]struct{})
+	}
 }
 
 // MatchPrefix matches the input token prefix's if already cached
@@ -141,7 +151,9 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 		}
 
 		c.store.Put(prefixHash, block)
-		c.dirtyIds[strconv.FormatUint(prefixHash, 10)] = struct{}{}
+		if c.dirtyIds != nil {
+			c.dirtyIds[strconv.FormatUint(prefixHash, 10)] = struct{}{}
+		}
 	}
 }
 

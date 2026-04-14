@@ -15,6 +15,7 @@ limitations under the License.
 */
 package cache
 
+// Store is implemented by LRUStore; keep Range in sync if you add another implementation.
 type Store[K comparable, V any] interface {
 	Put(key K, value V) bool
 	Get(key K) (V, bool)
