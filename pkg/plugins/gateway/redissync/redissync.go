@@ -22,13 +22,13 @@ limitations under the License.
 // Usage:
 //
 //  1. Create a Manager and register Syncables (e.g. prefixcacheindexer.NewPrefixHashTableSyncable(table)).
-//  2. Call Start() to run periodic pull from Redis.
-//  3. For write-through: after local state changes, call Sync().Put(ctx, namespace, id, data)
-//     (e.g. after AddPrefix, encode each updated block and Put to "prefixcache").
+//  2. Call Start() to run periodic pull/push from Redis.
+//  3. Optional write-through: after local state changes, call Put(ctx, namespace, id, data)
+//     so peers see updates before the next push (see package README; prefix cache uses delta + periodic push by default).
 //  4. On shutdown, call Stop().
 //
 // Example: prefixcacheindexer.NewPrefixHashTableSyncable(table) implements
-// syncable.Syncable; use EncodeBlockForSync on the table for write-through.
+// syncable.Syncable; EncodeBlockForSync supports optional per-block Put for write-through.
 package redissync
 
 import (
@@ -46,10 +46,11 @@ import (
 const (
 	defaultKeyPrefix          = "aibrix"
 	defaultSyncPeriod         = 10 * time.Second
-	recordTTL                 = 2 * time.Minute // TTL per record (each entity key); record expires if not written within this window
-	setexChunkSize            = 25              // batch size for pipeline SETEX (~20-30)
-	mgetBatchSize             = 200             // batch size for MGET when pulling
-	scanCount                 = 500             // SCAN COUNT hint per iteration
+	defaultRecordTTL          = 2 * time.Minute  // default TTL per entity key (SETEX); override with WithRecordTTL
+	defaultStopWaitTimeout    = 90 * time.Second // max time Stop() waits for syncLoop to exit after signaling stop
+	setexChunkSize            = 25               // batch size for pipeline SETEX (~20-30)
+	mgetBatchSize             = 200              // batch size for MGET when pulling
+	scanCount                 = 500              // SCAN COUNT hint per iteration
 	opTimeout                 = 30 * time.Second
 	maxBackoff                = 1 * time.Minute
 	snapshotWarnFields        = 10000      // warn when full snapshot exceeds this many fields
@@ -59,17 +60,20 @@ const (
 // RedisSync stores one Redis key per entity with per-record TTL. Key format
 // aibrix:{namespace}:e:{entityId} so {namespace} is the hash tag for same-shard routing.
 type RedisSync struct {
-	client         *redis.Client
-	keyPrefix      string
-	syncPeriod     time.Duration
-	opTimeout      time.Duration
-	syncables      []syncable.Syncable
-	started        bool
-	startedMu      sync.Mutex
-	setexChunkSize int
-	mgetBatchSize  int
-	stopCh         chan struct{}
-	stopOnce       sync.Once
+	client          *redis.Client
+	keyPrefix       string
+	syncPeriod      time.Duration
+	opTimeout       time.Duration
+	recordTTL       time.Duration
+	stopWaitTimeout time.Duration
+	syncables       []syncable.Syncable
+	started         bool
+	startedMu       sync.Mutex
+	setexChunkSize  int
+	mgetBatchSize   int
+	stopCh          chan struct{}
+	stopOnce        sync.Once
+	loopWg          sync.WaitGroup
 }
 
 // Option configures RedisSync.
@@ -106,20 +110,48 @@ func WithMGetBatchSize(n int) Option {
 	return func(r *RedisSync) { r.mgetBatchSize = n }
 }
 
-// New creates a RedisSync that uses only Hash commands on one key per namespace.
+// WithRecordTTL sets the per-entity SETEX TTL (default 2 minutes). Values <= 0 are ignored.
+func WithRecordTTL(d time.Duration) Option {
+	return func(r *RedisSync) {
+		if d > 0 {
+			r.recordTTL = d
+		}
+	}
+}
+
+// WithStopWaitTimeout sets how long Stop() waits for the background sync loop to exit
+// after closing the stop channel (default 90s). Values <= 0 use the default.
+func WithStopWaitTimeout(d time.Duration) Option {
+	return func(r *RedisSync) {
+		if d > 0 {
+			r.stopWaitTimeout = d
+		}
+	}
+}
+
+// New creates a RedisSync that stores one string key per entity (SETEX/MGET/SCAN).
 func New(client *redis.Client, opts ...Option) *RedisSync {
 	r := &RedisSync{
-		client:     client,
-		keyPrefix:  defaultKeyPrefix,
-		syncPeriod: defaultSyncPeriod,
-		opTimeout:  opTimeout,
-		syncables:  nil,
-		stopCh:     make(chan struct{}),
+		client:          client,
+		keyPrefix:       defaultKeyPrefix,
+		syncPeriod:      defaultSyncPeriod,
+		opTimeout:       opTimeout,
+		recordTTL:       defaultRecordTTL,
+		stopWaitTimeout: defaultStopWaitTimeout,
+		syncables:       nil,
+		stopCh:          make(chan struct{}),
 	}
 	for _, o := range opts {
 		o(r)
 	}
 	return r
+}
+
+func (r *RedisSync) ttl() time.Duration {
+	if r.recordTTL > 0 {
+		return r.recordTTL
+	}
+	return defaultRecordTTL
 }
 
 // Register adds a Syncable for periodic sync. Must be called before Start;
@@ -160,13 +192,13 @@ func (r *RedisSync) entityIDFromKey(namespace, key string) string {
 	return ""
 }
 
-// Put writes one entity to Redis (write-through). Uses SETEX so the record has per-entity TTL (recordTTL).
+// Put writes one entity to Redis (write-through). Uses SETEX so the record has per-entity TTL.
 func (r *RedisSync) Put(ctx context.Context, namespace, id string, data []byte) error {
 	if namespace == "" {
 		return fmt.Errorf("redissync put: namespace must be non-empty")
 	}
 	key := r.redisKeyForEntity(namespace, id)
-	if err := r.client.SetEx(ctx, key, data, recordTTL).Err(); err != nil {
+	if err := r.client.SetEx(ctx, key, data, r.ttl()).Err(); err != nil {
 		return fmt.Errorf("redissync put %s/%s: %w", namespace, id, err)
 	}
 	return nil
@@ -282,7 +314,7 @@ func (r *RedisSync) Pull(ctx context.Context, s syncable.Syncable) error {
 
 // Push writes Syncable state to Redis. If s implements syncable.DeltaSyncable, only
 // changed entities (delta) are written; otherwise the full snapshot. Each record is
-// written with SETEX so it has its own TTL (recordTTL).
+// written with SETEX so it has its own per-entity TTL.
 func (r *RedisSync) Push(ctx context.Context, s syncable.Syncable) error {
 	namespace := s.Namespace()
 	if delta, ok := s.(syncable.DeltaSyncable); ok {
@@ -304,7 +336,7 @@ func (r *RedisSync) setexChunked(ctx context.Context, namespace string, m map[st
 	}
 	for id, data := range m {
 		key := r.redisKeyForEntity(namespace, id)
-		pipe.SetEx(ctx, key, data, recordTTL)
+		pipe.SetEx(ctx, key, data, r.ttl())
 		n++
 		if n >= chunkSize {
 			if _, err := pipe.Exec(ctx); err != nil {
@@ -341,35 +373,38 @@ func (r *RedisSync) pushDelta(ctx context.Context, namespace string, s syncable.
 		ts, hasTombstone := s.(syncable.TombstoneSupport)
 		pipe := r.client.Pipeline()
 		n := 0
-		flushPipe := func() {
+		flushPipe := func() error {
 			if n == 0 {
-				return
+				return nil
 			}
-			if _, err := pipe.Exec(ctx); err != nil {
-				klog.V(4).InfoS("redissync pipeline exec error (deletions)", "namespace", namespace, "err", err)
-			}
+			_, err := pipe.Exec(ctx)
 			pipe = r.client.Pipeline()
 			n = 0
+			return err
 		}
 		for _, id := range deleted {
 			key := r.redisKeyForEntity(namespace, id)
 			if hasTombstone {
 				payload := ts.MakeTombstone(ctx, id)
-				pipe.SetEx(ctx, key, payload, recordTTL)
+				pipe.SetEx(ctx, key, payload, r.ttl())
 			} else {
 				pipe.Del(ctx, key)
 			}
 			n++
 			if n >= chunkSize {
-				flushPipe()
+				if err := flushPipe(); err != nil {
+					return fmt.Errorf("redissync push deletion pipeline %s: %w", namespace, err)
+				}
 			}
 		}
-		flushPipe()
+		if err := flushPipe(); err != nil {
+			return fmt.Errorf("redissync push deletion pipeline %s: %w", namespace, err)
+		}
 	}
 	if nUpdated > 0 || nDeleted > 0 {
-		klog.InfoS("redissync pushed delta only", "namespace", namespace, "updated", nUpdated, "deleted", nDeleted)
+		klog.V(4).InfoS("redissync pushed delta only", "namespace", namespace, "updated", nUpdated, "deleted", nDeleted)
 		if err := s.ClearDirty(ctx); err != nil {
-			klog.V(4).InfoS("redissync ClearDirty error", "namespace", namespace, "err", err)
+			return fmt.Errorf("redissync ClearDirty %s: %w", namespace, err)
 		}
 	}
 	return nil
@@ -413,7 +448,12 @@ func (r *RedisSync) Start() {
 	}
 	r.started = true
 	r.startedMu.Unlock()
-	go r.syncLoop()
+	klog.InfoS("redissync started", "syncPeriod", r.syncPeriod, "syncables", len(r.syncables))
+	r.loopWg.Add(1)
+	go func() {
+		defer r.loopWg.Done()
+		r.syncLoop()
+	}()
 }
 
 // StartWithContext starts the sync loop and binds it to the provided context.
@@ -446,7 +486,7 @@ func (r *RedisSync) syncLoop() {
 		}
 	}
 	for {
-		// Next run after period + jitter (±20%), or backoff on error.
+		// Next run after period + jitter (±10%), or backoff on error.
 		interval := backoff
 		var jitter time.Duration
 		if jitterRange := int64(r.syncPeriod) / 5; jitterRange > 0 {
@@ -495,7 +535,23 @@ func (r *RedisSync) runOneSyncCycle() error {
 	return lastErr
 }
 
-// Stop stops the background sync loop. Safe to call more than once.
+// Stop signals the background sync loop to exit and blocks until it finishes or
+// stopWaitTimeout elapses (default 90s). Safe to call more than once; each call waits
+// for the loop goroutine if Start was used.
 func (r *RedisSync) Stop() {
 	r.stopOnce.Do(func() { close(r.stopCh) })
+	wait := r.stopWaitTimeout
+	if wait <= 0 {
+		wait = defaultStopWaitTimeout
+	}
+	done := make(chan struct{})
+	go func() {
+		r.loopWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(wait):
+		klog.Warningf("redissync: sync loop did not exit within %v", wait)
+	}
 }

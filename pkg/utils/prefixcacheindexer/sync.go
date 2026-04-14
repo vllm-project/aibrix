@@ -63,6 +63,7 @@ func (c *PrefixHashTable) GetSnapshotForSync(ctx context.Context) (map[string][]
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	out := make(map[string][]byte)
+	var encodeErr error
 	c.store.Range(func(blockHash uint64, block Block) bool {
 		select {
 		case <-ctx.Done():
@@ -71,16 +72,21 @@ func (c *PrefixHashTable) GetSnapshotForSync(ctx context.Context) (map[string][]
 		}
 		data, err := encodeBlock(block)
 		if err != nil {
+			encodeErr = fmt.Errorf("encodeBlock %d: %w", blockHash, err)
 			return false
 		}
 		out[strconv.FormatUint(blockHash, 10)] = data
 		return true
 	})
+	if encodeErr != nil {
+		return nil, encodeErr
+	}
 	return out, ctx.Err()
 }
 
 // EncodeBlockForSync returns the serialized form of the block for the given
-// block hash, or nil if not present. Use for write-through after AddPrefix.
+// block hash, or nil if not present. Use with redissync.Sync.Put for optional
+// write-through after AddPrefix; default gateway wiring uses periodic delta push only.
 func (c *PrefixHashTable) EncodeBlockForSync(blockHash uint64) ([]byte, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -97,6 +103,10 @@ func (c *PrefixHashTable) EncodeBlockForSync(blockHash uint64) ([]byte, bool) {
 
 // GetDeltaForSync returns only entities that changed since last ClearDirtyForSync
 // (updated id->bytes; deleted is nil — evictions are not tracked).
+//
+// If a block was marked dirty then evicted from the local LRU before the next push,
+// it is skipped here (no Redis delete is sent). Stale Redis keys for that entity age
+// out via per-key TTL; do not assume immediate cross-replica delete propagation.
 func (c *PrefixHashTable) GetDeltaForSync(ctx context.Context) (updated map[string][]byte, deleted []string, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -116,7 +126,7 @@ func (c *PrefixHashTable) GetDeltaForSync(ctx context.Context) (updated map[stri
 		}
 		block, ok := c.store.Get(blockHash)
 		if !ok {
-			continue // evicted since marked dirty; skip or could add to deleted
+			continue // evicted since marked dirty; Redis key may linger until TTL
 		}
 		data, e := encodeBlock(block)
 		if e != nil {
@@ -177,7 +187,8 @@ type PrefixHashTableSyncable struct {
 }
 
 // NewPrefixHashTableSyncable returns a Syncable for the given table. Register
-// it with redissync.Manager; use EncodeBlockForSync for write-through after AddPrefix.
+// it with redissync.Manager. EncodeBlockForSync supports optional write-through;
+// default integration uses periodic delta sync only.
 func NewPrefixHashTableSyncable(table *PrefixHashTable) syncable.Syncable {
 	return &PrefixHashTableSyncable{Table: table}
 }

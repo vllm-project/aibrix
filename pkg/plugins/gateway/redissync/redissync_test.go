@@ -39,11 +39,6 @@ func newTestRedis(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
 	return mr, client
 }
 
-func newTestSync(t *testing.T, client *redis.Client, opts ...Option) *RedisSync {
-	t.Helper()
-	return New(client, opts...)
-}
-
 // fakeSyncable is a simple in-memory Syncable for testing.
 type fakeSyncable struct {
 	mu        sync.Mutex
@@ -201,7 +196,7 @@ func (h *fakeHooksSyncable) OnSyncEnd(_ context.Context) error {
 
 func TestPut(t *testing.T) {
 	mr, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 	ctx := context.Background()
 
 	err := r.Put(ctx, "ns1", "entity1", []byte("value1"))
@@ -219,14 +214,14 @@ func TestPut(t *testing.T) {
 
 func TestPut_EmptyNamespace(t *testing.T) {
 	_, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 	err := r.Put(context.Background(), "", "id", []byte("v"))
 	assert.Error(t, err)
 }
 
 func TestDelete(t *testing.T) {
 	mr, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 	ctx := context.Background()
 
 	key := "aibrix:{ns1}:e:entity1"
@@ -239,14 +234,14 @@ func TestDelete(t *testing.T) {
 
 func TestDelete_EmptyNamespace(t *testing.T) {
 	_, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 	err := r.Delete(context.Background(), "", "id")
 	assert.Error(t, err)
 }
 
 func TestPull_Basic(t *testing.T) {
 	mr, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 	ctx := context.Background()
 
 	require.NoError(t, mr.Set("aibrix:{ns}:e:a", "val-a"))
@@ -267,7 +262,7 @@ func TestPull_Basic(t *testing.T) {
 
 func TestPull_Empty(t *testing.T) {
 	_, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 
 	s := newFakeSyncable("ns")
 	err := r.Pull(context.Background(), s)
@@ -277,7 +272,7 @@ func TestPull_Empty(t *testing.T) {
 
 func TestPull_BatchingAcrossMGetBatchSize(t *testing.T) {
 	mr, client := newTestRedis(t)
-	r := newTestSync(t, client, WithMGetBatchSize(10))
+	r := New(client, WithMGetBatchSize(10))
 	ctx := context.Background()
 
 	total := 35 // more than one batch
@@ -294,7 +289,7 @@ func TestPull_BatchingAcrossMGetBatchSize(t *testing.T) {
 
 func TestPull_IgnoresOtherNamespaceKeys(t *testing.T) {
 	mr, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 	ctx := context.Background()
 
 	require.NoError(t, mr.Set("aibrix:{ns1}:e:a", "mine"))
@@ -312,7 +307,7 @@ func TestPull_IgnoresOtherNamespaceKeys(t *testing.T) {
 
 func TestPull_TombstoneDeletesLocal(t *testing.T) {
 	mr, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 	ctx := context.Background()
 
 	s := newFakeTombstoneSyncable("ns")
@@ -334,7 +329,7 @@ func TestPull_TombstoneDeletesLocal(t *testing.T) {
 
 func TestPull_StalePolicyDeletesFromRedis(t *testing.T) {
 	mr, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 	ctx := context.Background()
 
 	require.NoError(t, mr.Set("aibrix:{ns}:e:stale", "old"))
@@ -358,7 +353,7 @@ func TestPull_StalePolicyDeletesFromRedis(t *testing.T) {
 
 func TestPull_OptionalHooksCalled(t *testing.T) {
 	_, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 
 	s := newFakeHooksSyncable("ns")
 	err := r.Pull(context.Background(), s)
@@ -370,7 +365,7 @@ func TestPull_OptionalHooksCalled(t *testing.T) {
 
 func TestPush_FullSnapshot(t *testing.T) {
 	mr, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 	ctx := context.Background()
 
 	s := newFakeSyncable("ns")
@@ -391,7 +386,7 @@ func TestPush_FullSnapshot(t *testing.T) {
 
 func TestPush_FullSnapshot_Empty(t *testing.T) {
 	_, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 
 	s := newFakeSyncable("ns")
 	err := r.Push(context.Background(), s)
@@ -400,7 +395,7 @@ func TestPush_FullSnapshot_Empty(t *testing.T) {
 
 func TestPush_DeltaUpdatedAndDeleted(t *testing.T) {
 	mr, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 	ctx := context.Background()
 
 	// Pre-seed a key that will be "deleted"
@@ -428,7 +423,7 @@ func TestPush_DeltaUpdatedAndDeleted(t *testing.T) {
 
 func TestPush_DeltaWithTombstone(t *testing.T) {
 	mr, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 	ctx := context.Background()
 
 	s := newFakeTombstoneSyncable("ns")
@@ -446,7 +441,7 @@ func TestPush_DeltaWithTombstone(t *testing.T) {
 
 func TestPush_DeltaEmpty_NoClearDirty(t *testing.T) {
 	_, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 
 	s := newFakeDeltaSyncable("ns")
 	// no delta; ClearDirty should not be called (nothing to sync)
@@ -456,7 +451,7 @@ func TestPush_DeltaEmpty_NoClearDirty(t *testing.T) {
 
 func TestKeyFormat(t *testing.T) {
 	_, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 
 	assert.Equal(t, "aibrix:{myns}:e:myid", r.redisKeyForEntity("myns", "myid"))
 	assert.Equal(t, "aibrix:{myns}:e:*", r.redisScanPattern("myns"))
@@ -464,7 +459,7 @@ func TestKeyFormat(t *testing.T) {
 
 func TestEntityIDFromKey(t *testing.T) {
 	_, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 
 	key := "aibrix:{ns}:e:entity123"
 	id := r.entityIDFromKey("ns", key)
@@ -476,12 +471,14 @@ func TestEntityIDFromKey(t *testing.T) {
 
 func TestWithOptions(t *testing.T) {
 	_, client := newTestRedis(t)
-	r := newTestSync(t, client,
+	r := New(client,
 		WithKeyPrefix("custom"),
 		WithSyncPeriod(5*time.Second),
 		WithOpTimeout(15*time.Second),
 		WithSetexChunkSize(50),
 		WithMGetBatchSize(100),
+		WithRecordTTL(7*time.Minute),
+		WithStopWaitTimeout(45*time.Second),
 	)
 
 	assert.Equal(t, "custom", r.keyPrefix)
@@ -489,11 +486,13 @@ func TestWithOptions(t *testing.T) {
 	assert.Equal(t, 15*time.Second, r.opTimeout)
 	assert.Equal(t, 50, r.setexChunkSize)
 	assert.Equal(t, 100, r.mgetBatchSize)
+	assert.Equal(t, 7*time.Minute, r.recordTTL)
+	assert.Equal(t, 45*time.Second, r.stopWaitTimeout)
 }
 
 func TestStop_Idempotent(t *testing.T) {
 	_, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 
 	r.Start()
 	assert.NotPanics(t, func() {
@@ -504,7 +503,7 @@ func TestStop_Idempotent(t *testing.T) {
 
 func TestRegister_AfterStart_IsNoOp(t *testing.T) {
 	_, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 
 	r.Start()
 	defer r.Stop()
@@ -516,7 +515,7 @@ func TestRegister_AfterStart_IsNoOp(t *testing.T) {
 
 func TestPull_TTLSetOnPush(t *testing.T) {
 	mr, client := newTestRedis(t)
-	r := newTestSync(t, client)
+	r := New(client)
 	ctx := context.Background()
 
 	s := newFakeSyncable("ns")
@@ -527,5 +526,5 @@ func TestPull_TTLSetOnPush(t *testing.T) {
 
 	ttl := mr.TTL("aibrix:{ns}:e:id1")
 	assert.Greater(t, ttl, time.Duration(0))
-	assert.LessOrEqual(t, ttl, recordTTL)
+	assert.LessOrEqual(t, ttl, defaultRecordTTL)
 }

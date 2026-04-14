@@ -35,6 +35,7 @@ func newTableWithBlocks(t *testing.T) (*PrefixHashTable, []uint64) {
 	prefixCacheBlockSize = 4
 
 	cache := NewPrefixHashTable()
+	cache.EnableDeltaSync()
 	_, hashes := cache.MatchPrefix([]byte{1, 2, 3, 4, 5, 6, 7, 8}, "model1", getReadyPods())
 	cache.AddPrefix(hashes, "model1", "pod1")
 	return cache, hashes
@@ -376,6 +377,7 @@ func TestDeltaLifecycle(t *testing.T) {
 	prefixCacheBlockSize = 4
 
 	cache := NewPrefixHashTable()
+	cache.EnableDeltaSync()
 
 	_, h1 := cache.MatchPrefix([]byte{1, 2, 3, 4}, "m", getReadyPods())
 	cache.AddPrefix(h1, "m", "p1")
