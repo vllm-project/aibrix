@@ -108,18 +108,21 @@ func (c *PrefixHashTable) EncodeBlockForSync(blockHash uint64) ([]byte, bool) {
 // it is skipped here (no Redis delete is sent). Stale Redis keys for that entity age
 // out via per-key TTL; do not assume immediate cross-replica delete propagation.
 func (c *PrefixHashTable) GetDeltaForSync(ctx context.Context) (updated map[string][]byte, deleted []string, err error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Snapshot dirty IDs and copy block data under a read lock so the routing
+	// path (seqSearchPrefix, also an RLock caller) is not blocked during JSON
+	// encoding. Block.modelToPods contains maps (reference types), so a deep
+	// copy is required before releasing the lock.
+	c.mu.RLock()
 	if len(c.dirtyIds) == 0 {
+		c.mu.RUnlock()
 		return nil, nil, nil
 	}
-	updated = make(map[string][]byte, len(c.dirtyIds))
+	type pendingBlock struct {
+		id    string
+		block Block
+	}
+	work := make([]pendingBlock, 0, len(c.dirtyIds))
 	for id := range c.dirtyIds {
-		select {
-		case <-ctx.Done():
-			return nil, nil, ctx.Err()
-		default:
-		}
 		blockHash, e := strconv.ParseUint(id, 10, 64)
 		if e != nil {
 			continue
@@ -128,13 +131,41 @@ func (c *PrefixHashTable) GetDeltaForSync(ctx context.Context) (updated map[stri
 		if !ok {
 			continue // evicted since marked dirty; Redis key may linger until TTL
 		}
-		data, e := encodeBlock(block)
+		work = append(work, pendingBlock{id: id, block: copyBlock(block)})
+	}
+	c.mu.RUnlock()
+
+	if len(work) == 0 {
+		return nil, nil, nil
+	}
+	updated = make(map[string][]byte, len(work))
+	for _, p := range work {
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		default:
+		}
+		data, e := encodeBlock(p.block)
 		if e != nil {
 			continue
 		}
-		updated[id] = data
+		updated[p.id] = data
 	}
 	return updated, nil, nil
+}
+
+// copyBlock returns a deep copy of b so its map fields can be safely read
+// outside any lock after the read lock is released.
+func copyBlock(b Block) Block {
+	out := Block{modelToPods: make(map[string]map[string]time.Time, len(b.modelToPods))}
+	for model, pods := range b.modelToPods {
+		cp := make(map[string]time.Time, len(pods))
+		for pod, t := range pods {
+			cp[pod] = t
+		}
+		out.modelToPods[model] = cp
+	}
+	return out
 }
 
 // ClearDirtyForSync clears the dirty set after a successful delta push.

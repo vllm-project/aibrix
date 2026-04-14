@@ -465,7 +465,7 @@ func TestEntityIDFromKey(t *testing.T) {
 	id := r.entityIDFromKey("ns", key)
 	assert.Equal(t, "entity123", id)
 
-	// too-short key returns empty
+	// exact prefix with no entity ID returns empty (caller skips it)
 	assert.Equal(t, "", r.entityIDFromKey("ns", "aibrix:{ns}:e:"))
 }
 

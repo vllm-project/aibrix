@@ -184,9 +184,10 @@ func (r *RedisSync) redisScanPattern(namespace string) string {
 }
 
 // entityIDFromKey extracts entity ID from key "aibrix:{ns}:e:{id}" -> id.
+// Returns "" if the key does not contain an entity ID (caller skips empty IDs).
 func (r *RedisSync) entityIDFromKey(namespace, key string) string {
 	prefix := fmt.Sprintf("%s:{%s}:e:", r.keyPrefix, namespace)
-	if len(key) > len(prefix) {
+	if len(key) >= len(prefix) {
 		return key[len(prefix):]
 	}
 	return ""
