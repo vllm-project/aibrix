@@ -175,6 +175,10 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 }
 
 // injectContainerEnvVars injects env variables into container.
+// Note: Built-in env variables are added first to ensure they're available for expansion
+// in user-defined env variables. User-defined env variables maintain their original order
+// from the container spec, which should be stable across reconcile loops if the upstream
+// RoleSpec preserves order (e.g., through YAML unmarshalling).
 func injectContainerEnvVars(
 	container *v1.Container,
 	roleSet *orchestrationv1alpha1.RoleSet,
@@ -182,12 +186,8 @@ func injectContainerEnvVars(
 	roleIndex *int,
 	templateHash string,
 ) {
-	// Use map to quickly check if env variable already exists
-	existingEnvs := make(map[string]bool, len(container.Env)+6)
 	// Use slice to maintain env variable order
 	envs := make([]v1.EnvVar, 0, len(container.Env)+6)
-
-	// First add built-in env variables
 	builtInEnvs := []v1.EnvVar{
 		{
 			Name:  constants.StormServiceNameEnvKey,
@@ -217,18 +217,15 @@ func injectContainerEnvVars(
 			Value: strconv.Itoa(*roleIndex),
 		})
 	}
-
-	// Add built-in env variables and mark them as existing
+	// First add built-in env variables
 	for _, env := range builtInEnvs {
 		envs = append(envs, env)
-		existingEnvs[env.Name] = true
 	}
 
-	// Add original container env variables, skipping existing ones
+	// Add original container env variables, skipping built-in envs
 	for _, env := range container.Env {
-		if !existingEnvs[env.Name] && !ContainerInjectEnv.Has(env.Name) {
+		if !ContainerInjectEnv.Has(env.Name) {
 			envs = append(envs, env)
-			existingEnvs[env.Name] = true
 		}
 	}
 
