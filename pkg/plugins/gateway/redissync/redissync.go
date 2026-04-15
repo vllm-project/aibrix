@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/syncable"
 	"k8s.io/klog/v2"
 )
@@ -55,6 +56,10 @@ const (
 	maxBackoff                = 1 * time.Minute
 	snapshotWarnFields        = 10000      // warn when full snapshot exceeds this many fields
 	snapshotWarnBytesPerField = 512 * 1024 // warn when total snapshot size/fields exceeds this (512KB per field avg)
+)
+
+var (
+	syncPeriod = utils.LoadEnvDuration("AIBRIX_REDISSYNC_SYNC_PERIOD", defaultSyncPeriod)
 )
 
 // RedisSync stores one Redis key per entity with per-record TTL. Key format
@@ -134,7 +139,7 @@ func New(client *redis.Client, opts ...Option) *RedisSync {
 	r := &RedisSync{
 		client:          client,
 		keyPrefix:       defaultKeyPrefix,
-		syncPeriod:      defaultSyncPeriod,
+		syncPeriod:      syncPeriod,
 		opTimeout:       opTimeout,
 		recordTTL:       defaultRecordTTL,
 		stopWaitTimeout: defaultStopWaitTimeout,
