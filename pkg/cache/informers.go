@@ -17,6 +17,7 @@ package cache
 
 import (
 	"errors"
+	"time"
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -38,6 +39,11 @@ const (
 	modelIdentifier = constants.ModelLabelName
 	nodeType        = "ray.io/node-type"
 	nodeWorker      = "worker"
+)
+
+var (
+	modelAdapterResyncMaxRetries    = 30
+	modelAdapterResyncRetryInterval = 1 * time.Second
 )
 
 func initCacheInformers(instance *Store, config *rest.Config, stopCh <-chan struct{}) error {
@@ -85,7 +91,7 @@ func initCacheInformers(instance *Store, config *rest.Config, stopCh <-chan stru
 
 	// After cache sync, resync all ModelAdapters to ensure pod mappings are correct
 	// This handles the case where ModelAdapters were processed before their pods were cached
-	instance.resyncModelAdapters(modelInformer.GetStore())
+	instance.resyncModelAdapters(modelInformer.GetStore(), stopCh)
 
 	// Log cache state after initialization
 	klog.Infof("Cache initialization completed. Models: %v", instance.ListModels())
@@ -235,6 +241,8 @@ func (c *Store) deletePod(obj interface{}) {
 		}
 	}
 
+	rateCalculator.PurgeEntriesForPod(name)
+
 	klog.V(4).Infof("POD DELETED: %s/%s", namespace, name)
 	c.debugInfo()
 }
@@ -379,29 +387,91 @@ func (c *Store) deletePodAndModelMappingLocked(podName, namespace, modelName str
 }
 
 // resyncModelAdapters processes all ModelAdapters from the informer store to ensure
-// all pod mappings are correctly established after cache initialization
-func (c *Store) resyncModelAdapters(store cache.Store) {
+// all pod mappings are correctly established after cache initialization.
+// It retries missing pod mappings in batches so startup delay is bounded by
+// maxRetries * retryInterval regardless of the number of adapters.
+func (c *Store) resyncModelAdapters(store cache.Store, stopCh <-chan struct{}) {
 	klog.Info("Resyncing ModelAdapters to ensure pod mappings are correct")
 
-	objects := store.List()
-	for _, obj := range objects {
+	adapters := make([]*modelv1alpha1.ModelAdapter, 0)
+	for _, obj := range store.List() {
 		if modelAdapter, ok := obj.(*modelv1alpha1.ModelAdapter); ok {
-			c.mu.Lock()
-			// Process each pod instance in the ModelAdapter
-			for _, podName := range modelAdapter.Status.Instances {
-				// Check if pod exists in cache before creating mapping
-				if _, exists := c.metaPods.Load(utils.GeneratePodKey(modelAdapter.Namespace, podName)); exists {
-					c.addPodAndModelMappingLockedByName(podName, modelAdapter.Namespace, modelAdapter.Name)
-					klog.V(4).Infof("Resynced pod mapping for adapter %s, pod %s/%s",
-						modelAdapter.Name, modelAdapter.Namespace, podName)
-				} else {
-					klog.Warningf("Pod %s/%s not found in cache for ModelAdapter %s during resync",
-						modelAdapter.Namespace, podName, modelAdapter.Name)
-				}
-			}
-			c.mu.Unlock()
+			adapters = append(adapters, modelAdapter)
 		}
 	}
 
+	lastMissing := make(map[string][]string)
+	for i := 0; i < modelAdapterResyncMaxRetries; i++ {
+		klog.V(4).Infof("resyncModelAdapters retry attempt %d/%d", i+1, modelAdapterResyncMaxRetries)
+
+		incompleteModels := 0
+		lastMissing = make(map[string][]string)
+		for _, modelAdapter := range adapters {
+			missingPods := []string{}
+
+			c.mu.Lock()
+			for _, podName := range modelAdapter.Status.Instances {
+				podKey := utils.GeneratePodKey(modelAdapter.Namespace, podName)
+				if metaPod, exists := c.metaPods.Load(podKey); exists {
+					c.addPodAndModelMappingLocked(metaPod, modelAdapter.Name)
+					klog.V(4).Infof("Resynced pod mapping for adapter %s, pod %s/%s",
+						modelAdapter.Name, modelAdapter.Namespace, podName)
+				} else {
+					missingPods = append(missingPods, podName)
+					klog.V(4).Infof("Pod %s/%s not found in cache for ModelAdapter %s during resync (attempt %d/%d)",
+						modelAdapter.Namespace, podName, modelAdapter.Name, i+1, modelAdapterResyncMaxRetries)
+				}
+			}
+			c.mu.Unlock()
+
+			if len(missingPods) > 0 {
+				incompleteModels++
+				lastMissing[modelAdapter.Name] = missingPods
+			}
+		}
+
+		if incompleteModels == 0 {
+			break
+		}
+
+		if i == modelAdapterResyncMaxRetries-1 {
+			break
+		}
+
+		if !waitForModelAdapterResyncRetry(stopCh, modelAdapterResyncRetryInterval) {
+			klog.Warning("ModelAdapter resync interrupted by stop signal")
+			return
+		}
+	}
+
+	totalModels := len(adapters)
+	completeModels := totalModels - len(lastMissing)
+	for _, modelAdapter := range adapters {
+		if missingPods, exists := lastMissing[modelAdapter.Name]; exists {
+			klog.Errorf("Failed to find all pods for ModelAdapter %s after %d retries", modelAdapter.Name, modelAdapterResyncMaxRetries)
+			klog.Errorf("Missing pods for ModelAdapter %s: %v", modelAdapter.Name, missingPods)
+		} else {
+			klog.V(4).Infof("ModelAdapter %s has all pod mappings established", modelAdapter.Name)
+		}
+	}
+	klog.Infof("ModelAdapter mapping resync completed: %d total, %d complete, %d incomplete",
+		totalModels, completeModels, len(lastMissing))
 	klog.Info("ModelAdapter resync completed")
+}
+
+func waitForModelAdapterResyncRetry(stopCh <-chan struct{}, interval time.Duration) bool {
+	if stopCh == nil {
+		time.Sleep(interval)
+		return true
+	}
+
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+
+	select {
+	case <-stopCh:
+		return false
+	case <-timer.C:
+		return true
+	}
 }

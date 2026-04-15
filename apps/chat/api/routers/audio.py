@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 
+import httpx
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
-import httpx
 
+from config import settings
 from models.schemas import AudioSpeechRequest, AudioTranscribeResponse
 from services.providers import get_audio_provider
 
@@ -19,7 +20,7 @@ router = APIRouter(prefix="/api/audio", tags=["audio"])
 @router.post("/transcribe", response_model=AudioTranscribeResponse)
 async def transcribe(
     file: UploadFile = File(...),
-    model: str = Form("whisper-1"),
+    model: str = Form(settings.asr_model or "whisper-1"),
     language: str | None = Form(None),
 ):
     """Transcribe an audio file via the configured audio provider."""
@@ -35,7 +36,7 @@ async def transcribe(
         return result
     except httpx.HTTPError as e:
         logger.exception("Transcription failed")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 @router.post("/speech")
@@ -61,4 +62,4 @@ async def speech(req: AudioSpeechRequest):
         return Response(content=audio_bytes, media_type=media_type)
     except httpx.HTTPError as e:
         logger.exception("Speech generation failed")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from e

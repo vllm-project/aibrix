@@ -47,10 +47,23 @@ type TreeNode struct {
 	modelToPods   map[string]map[string]time.Time // model -> {podName -> lastAccessTime}
 }
 
+// GetModelToPods returns a deep copy of the model-to-pods mapping.
+// Callers can safely iterate the returned maps without holding any lock.
 func (n *TreeNode) GetModelToPods() map[string]map[string]time.Time {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	return n.modelToPods
+	if n.modelToPods == nil {
+		return nil
+	}
+	snapshot := make(map[string]map[string]time.Time, len(n.modelToPods))
+	for model, pods := range n.modelToPods {
+		podsCopy := make(map[string]time.Time, len(pods))
+		for k, v := range pods {
+			podsCopy[k] = v
+		}
+		snapshot[model] = podsCopy
+	}
+	return snapshot
 }
 
 func (n *TreeNode) InitAndUpdateModelPod(model string, podName string, timestamp time.Time) {
@@ -76,15 +89,29 @@ func (n *TreeNode) GetLoad() int {
 }
 
 func (n *TreeNode) GetLastAccess() time.Time {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	return n.lastAccess
 }
 
 func (n *TreeNode) GetEvictedPods() map[int]bool {
-	return n.evictedPods
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	snapshot := make(map[int]bool, len(n.evictedPods))
+	for k, v := range n.evictedPods {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 func (n *TreeNode) GetCachedPods() map[int]bool {
-	return n.cachedPods
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	snapshot := make(map[int]bool, len(n.cachedPods))
+	for k, v := range n.cachedPods {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 func (n *TreeNode) GetParent() *TreeNode {
@@ -116,7 +143,13 @@ func (n *TreeNode) GetID() int {
 }
 
 func (n *TreeNode) GetChildren() map[int]*TreeNode {
-	return n.children
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	snapshot := make(map[int]*TreeNode, len(n.children))
+	for k, v := range n.children {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 func (n *TreeNode) ResetEvictedPods() {
@@ -181,13 +214,19 @@ func (n *TreeNode) GetModelToPodCount() int {
 	return len(n.modelToPods)
 }
 
+// GetPodsForModel returns a copy of the pod map for the given model.
 func (n *TreeNode) GetPodsForModel(model string) map[string]time.Time {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	if _, exists := n.modelToPods[model]; exists {
-		return n.modelToPods[model] // Still returns direct reference but smaller scope
+	pods, exists := n.modelToPods[model]
+	if !exists {
+		return nil
 	}
-	return nil
+	snapshot := make(map[string]time.Time, len(pods))
+	for k, v := range pods {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 func (n *TreeNode) AddOrUpdatePodForModel(model string, podName string, timestamp time.Time) {
@@ -276,10 +315,16 @@ func (c *LPRadixCache) PrettyPrint() {
 	c.prettyPrintHelper(c.rootNode, "", true)
 }
 
+// GetAllNodes returns a snapshot copy of the internal node map.
+// Callers can safely iterate the returned map without holding any lock.
 func (c *LPRadixCache) GetAllNodes() map[int]*TreeNode {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.allNodes
+	snapshot := make(map[int]*TreeNode, len(c.allNodes))
+	for k, v := range c.allNodes {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 func (c *LPRadixCache) GetAllPodsInNode(node *TreeNode) []string {
@@ -371,11 +416,21 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 
 	unmatchedTokens := inputTokens[len(matchedTokens):]
 
-	// Find matching pods
+	// Find matching pods. Copy the inner map under lock to avoid concurrent
+	// map read/write with AddOrUpdatePodForModel from other goroutines.
 	var matchedPods []*v1.Pod
-	if modelPods, ok := node.modelToPods[model]; ok {
+	node.mu.RLock()
+	var podsCopy map[string]time.Time
+	if innerMap, ok := node.modelToPods[model]; ok {
+		podsCopy = make(map[string]time.Time, len(innerMap))
+		for k, v := range innerMap {
+			podsCopy[k] = v
+		}
+	}
+	node.mu.RUnlock()
+	if podsCopy != nil {
 		for _, pod := range pods {
-			if _, ok := modelPods[pod.Name]; ok {
+			if _, ok := podsCopy[pod.Name]; ok {
 				if matchedPods == nil {
 					matchedPods = make([]*v1.Pod, 0, len(pods))
 				}
@@ -384,35 +439,62 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 			}
 		}
 	}
-	klog.InfoS("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v", "nodeID", node.id, "key", node.key, "matchedTokens", matchedTokens, "modelToPods", node.modelToPods)
+	klog.InfoS("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v", "nodeID", node.id, "key", node.key, "matchedTokens", matchedTokens, "modelToPods", podsCopy)
 	return matchedTokens, unmatchedTokens, matchedPods
 }
 
 // This is being used by GetNode
+// Uses iterative traversal to avoid stack overflow with deep trees (e.g. 30K+ token inputs).
 func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, tokens []int) (*TreeNode, []int) {
 	if len(tokens) == 0 {
 		return node, nil
 	}
 
-	node.lastAccess = time.Now()
-	if child, ok := node.children[tokens[0]]; ok {
-		prefixLen := matchLen(child.key, tokens)
-		if prefixLen > 0 {
-			if prefixLen == len(child.key) {
-				// Complete match with this node's key
-				if prefixLen == len(tokens) {
-					return child, child.key
-				}
-				// Continue matching with remaining tokens
-				deeperNode, deeperMatched := c.matchPrefixHelper(child, tokens[prefixLen:])
-				if deeperNode != nil && len(deeperMatched) > 0 {
-					return deeperNode, append(child.key, deeperMatched...)
-				}
-				return child, child.key
-			}
-			// Partial match with this node's key
-			return child, child.key[:prefixLen]
+	// One timestamp for the whole match path so all touched nodes share a
+	// consistent LRU time and we avoid calling time.Now() per hop.
+	now := time.Now()
+	touchLastAccess := func(n *TreeNode) {
+		n.mu.Lock()
+		n.lastAccess = now
+		n.mu.Unlock()
+	}
+
+	bestNode := node
+	totalMatched := 0
+	current := node
+
+	for totalMatched < len(tokens) {
+		touchLastAccess(current)
+		remaining := tokens[totalMatched:]
+		child, ok := current.children[remaining[0]]
+		if !ok {
+			break
 		}
+		prefixLen := matchLen(child.key, remaining)
+		if prefixLen == 0 {
+			break
+		}
+
+		if prefixLen == len(child.key) {
+			// Complete match with child's key
+			totalMatched += prefixLen
+			bestNode = child
+			if totalMatched == len(tokens) {
+				// Final matched node is child; next iteration would not run.
+				touchLastAccess(child)
+				return child, tokens[:totalMatched]
+			}
+			current = child
+			continue
+		}
+		// Partial match with child's key — return child as best node; update it.
+		totalMatched += prefixLen
+		touchLastAccess(child)
+		return child, tokens[:totalMatched]
+	}
+
+	if totalMatched > 0 {
+		return bestNode, tokens[:totalMatched]
 	}
 	return node, nil
 }
@@ -436,55 +518,66 @@ func (c *LPRadixCache) AddPrefix(tokens []int, model string, podName string) (*T
 	return node, matchedTokens, unmatchedTokens
 }
 
+// insertHelper inserts tokens into the radix tree iteratively.
+// Uses iterative traversal to avoid stack overflow with deep trees (e.g. 30K+ token inputs).
 func (c *LPRadixCache) insertHelper(node *TreeNode, key []int, value []int) (*TreeNode, []int, []int) {
-	node.lastAccess = time.Now()
-	node.load++
-	timePassed := node.lastAccess.Sub(c.startTime).Seconds()
-	klog.V(5).InfoS("Updated node(%d) last access: %.2f seconds", "nodeID", node.id, "timePassed", timePassed)
+	originalKey := key
+	originalValue := value
+	offset := 0
+	current := node
 
-	if len(key) == 0 {
-		return node, nil, nil
-	}
+	for {
+		current.lastAccess = time.Now()
+		current.load++
+		timePassed := current.lastAccess.Sub(c.startTime).Seconds()
+		klog.V(5).InfoS("Updated node last access", "nodeID", current.id, "timePassed", timePassed)
 
-	// Check if one of the children matches the prefix
-	if child, ok := node.children[key[0]]; ok {
-		prefixLen := matchLen(child.key, key)
+		remaining := originalKey[offset:]
+		if len(remaining) == 0 {
+			return current, nil, nil
+		}
+
+		// Check if one of the children matches the prefix
+		child, ok := current.children[remaining[0]]
+		if !ok {
+			// No matching child, create new node
+			klog.V(5).InfoS("No child matches any of the prefix. Create a new tree node")
+			remainingValue := originalValue[offset:]
+			newNode := c.NewTreeNode(c.numPods, current, remaining, remainingValue)
+			current.children[remaining[0]] = newNode
+			c.allNodes[newNode.id] = newNode
+			if offset > 0 {
+				return newNode, originalKey[:offset], originalKey[offset:]
+			}
+			return newNode, nil, originalKey
+		}
+
+		prefixLen := matchLen(child.key, remaining)
 
 		// Case 1: Complete match with child's key
 		if prefixLen == len(child.key) {
-			if prefixLen == len(key) {
-				klog.V(5).InfoS("Entire input tokens match the child node(%d)", "childNodeID", child.id)
+			if prefixLen == len(remaining) {
+				klog.V(5).InfoS("Entire input tokens match the child node", "childNodeID", child.id)
 				child.lastAccess = time.Now()
 				child.load++
-				return child, key, nil // Return the original key for exact match
+				return child, originalKey, nil
 			}
-			// Partial match, continue deeper
-			klog.V(5).InfoS("Partial tokens match child node(%d). Continue deeper", "childNodeID", child.id)
-			childNode, childMatched, childUnmatched := c.insertHelper(child, key[prefixLen:], value[prefixLen:])
-			if len(childMatched) > 0 {
-				return childNode, key[:prefixLen+len(childMatched)], childUnmatched
-			}
-			return childNode, key[:prefixLen], key[prefixLen:]
+			// Continue deeper iteratively
+			klog.V(5).InfoS("Partial tokens match child node, continue deeper", "childNodeID", child.id)
+			offset += prefixLen
+			current = child
+			continue
 		}
 
 		// Case 2: Partial match, need to split
-		newNode := c.splitNode(key, child, prefixLen)
-		if prefixLen == len(key) {
-			return newNode, key, nil
+		newNode := c.splitNode(remaining, child, prefixLen)
+		offset += prefixLen
+		if offset == len(originalKey) {
+			return newNode, originalKey, nil
 		}
-		deeperNode, deeperMatched, deeperUnmatched := c.insertHelper(newNode, key[prefixLen:], value[prefixLen:])
-		if len(deeperMatched) > 0 {
-			return deeperNode, key[:prefixLen+len(deeperMatched)], deeperUnmatched
-		}
-		return deeperNode, key[:prefixLen], key[prefixLen:]
+		// Continue from the split node
+		current = newNode
 	}
-
-	// No matching child, create new node
-	klog.V(5).InfoS("No child matches any of the prefix. Create a new tree node")
-	newNode := c.NewTreeNode(c.numPods, node, key, value)
-	node.children[key[0]] = newNode
-	c.allNodes[newNode.id] = newNode
-	return newNode, nil, key
 }
 
 func (c *LPRadixCache) doesExceededTTL(node *TreeNode, now time.Time) bool {
@@ -543,26 +636,33 @@ func (c *LPRadixCache) evictNode(node *TreeNode) {
 		return
 	}
 
-	// Clean up pod mappings in parent nodes
-	current := node
+	// Snapshot the node's pod mappings before traversing parents, to avoid
+	// reading current.modelToPods without current.mu (races with RemovePodsNotInSet).
+	modelToPodsSnapshot := node.GetModelToPods()
+
+	// Clean up pod mappings in parent nodes.
+	// Acquire parent.mu to prevent concurrent map access from GetModelToPods callers.
 	for parent := node.parent; parent != nil; parent = parent.parent {
-		// Remove this node's pod mappings from parent
-		for model, pods := range current.modelToPods {
+		parent.mu.Lock()
+		for model, pods := range modelToPodsSnapshot {
 			if parentPods, ok := parent.modelToPods[model]; ok {
 				for podName := range pods {
 					delete(parentPods, podName)
 				}
-				// Remove model mapping if no pods left
 				if len(parentPods) == 0 {
 					delete(parent.modelToPods, model)
 				}
 			}
 		}
+		parent.mu.Unlock()
 	}
 
-	// Remove node from parent's children
+	// Remove node from parent's children.
+	// Acquire parent.mu to prevent concurrent map access from GetChildren callers.
 	if node.parent != nil {
+		node.parent.mu.Lock()
 		delete(node.parent.children, node.key[0])
+		node.parent.mu.Unlock()
 	}
 
 	// Remove from allNodes map

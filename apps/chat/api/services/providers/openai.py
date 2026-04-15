@@ -9,15 +9,11 @@ from __future__ import annotations
 
 import io
 import logging
-import time
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 from PIL import Image
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 from services.providers.base import (
     AudioProvider,
@@ -26,19 +22,26 @@ from services.providers.base import (
     VideoProvider,
 )
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 async def _log_request(request: httpx.Request) -> None:
     content_length = request.headers.get("content-length", "?")
     logger.warning(
         ">> %s %s (content-length=%s)",
-        request.method, request.url, content_length,
+        request.method,
+        request.url,
+        content_length,
     )
 
 
 async def _log_response(response: httpx.Response) -> None:
     logger.info(
         "<< %s %s -- %s",
-        response.request.method, response.request.url, response.status_code,
+        response.request.method,
+        response.request.url,
+        response.status_code,
     )
 
 
@@ -105,7 +108,9 @@ class OpenAIChatProvider(ChatProvider):
         if resp.status_code != 200:
             logger.error(
                 "Chat completion failed: %s %s — %s",
-                resp.status_code, resp.reason_phrase, resp.text,
+                resp.status_code,
+                resp.reason_phrase,
+                resp.text,
             )
         resp.raise_for_status()
         return resp.json()
@@ -137,7 +142,9 @@ class OpenAIChatProvider(ChatProvider):
                 body = await resp.aread()
                 logger.error(
                     "Chat stream failed: %s %s — %s",
-                    resp.status_code, resp.reason_phrase, body.decode(),
+                    resp.status_code,
+                    resp.reason_phrase,
+                    body.decode(),
                 )
             resp.raise_for_status()
             async for event in parse_openai_sse(resp.aiter_lines()):
@@ -148,9 +155,18 @@ class OpenAIChatProvider(ChatProvider):
 
 
 class OpenAIImageProvider(ImageProvider):
-    def __init__(self, base_url: str, api_key: str = "") -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str = "",
+        *,
+        image_edit_url: str = "",
+        image_edit_key: str = "",
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.image_edit_url = image_edit_url.rstrip("/") if image_edit_url else self.base_url
+        self.image_edit_key = image_edit_key or self.api_key
         self._client: httpx.AsyncClient | None = None
 
     def _make_client(self) -> httpx.AsyncClient:
@@ -213,8 +229,8 @@ class OpenAIImageProvider(ImageProvider):
         **kwargs: Any,
     ) -> dict:
         headers: dict[str, str] = {}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        if self.image_edit_key:
+            headers["Authorization"] = f"Bearer {self.image_edit_key}"
 
         # dall-e-2 uses inpainting (transparent pixels only) so we need
         # RGBA conversion and a fully-transparent mask for opaque images.
@@ -241,7 +257,9 @@ class OpenAIImageProvider(ImageProvider):
 
         logger.info(
             "Image edit: model=%s file=%s size=%d bytes mask=%s",
-            model, filename, len(image),
+            model,
+            filename,
+            len(image),
             "full" if mask_bytes else ("from-alpha" if is_dalle2 else "none"),
         )
         files: dict[str, tuple[str, bytes, str]] = {
@@ -257,7 +275,7 @@ class OpenAIImageProvider(ImageProvider):
         }
 
         resp = await self.client.post(
-            f"{self.base_url}/v1/images/edits",
+            f"{self.image_edit_url}/v1/images/edits",
             files=files,
             data=data,
             headers=headers,
@@ -265,7 +283,9 @@ class OpenAIImageProvider(ImageProvider):
         if resp.status_code != 200:
             logger.error(
                 "Image edit failed: %s %s — %s",
-                resp.status_code, resp.reason_phrase, resp.text,
+                resp.status_code,
+                resp.reason_phrase,
+                resp.text,
             )
         resp.raise_for_status()
         return resp.json()
@@ -275,9 +295,22 @@ class OpenAIImageProvider(ImageProvider):
 
 
 class OpenAIAudioProvider(AudioProvider):
-    def __init__(self, base_url: str, api_key: str = "") -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str = "",
+        *,
+        asr_url: str = "",
+        asr_key: str = "",
+        tts_url: str = "",
+        tts_key: str = "",
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.asr_url = asr_url.rstrip("/") if asr_url else self.base_url
+        self.asr_key = asr_key or self.api_key
+        self.tts_url = tts_url.rstrip("/") if tts_url else self.base_url
+        self.tts_key = tts_key or self.api_key
         self._client: httpx.AsyncClient | None = None
 
     def _make_client(self) -> httpx.AsyncClient:
@@ -309,8 +342,8 @@ class OpenAIAudioProvider(AudioProvider):
         language: str | None = None,
     ) -> dict:
         headers: dict[str, str] = {}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        if self.asr_key:
+            headers["Authorization"] = f"Bearer {self.asr_key}"
 
         files = {"file": (filename, file_bytes)}
         data: dict[str, str] = {"model": model}
@@ -318,7 +351,7 @@ class OpenAIAudioProvider(AudioProvider):
             data["language"] = language
 
         resp = await self.client.post(
-            f"{self.base_url}/v1/audio/transcriptions",
+            f"{self.asr_url}/v1/audio/transcriptions",
             files=files,
             data=data,
             headers=headers,
@@ -342,9 +375,9 @@ class OpenAIAudioProvider(AudioProvider):
             "speed": speed,
         }
         resp = await self.client.post(
-            f"{self.base_url}/v1/audio/speech",
+            f"{self.tts_url}/v1/audio/speech",
             json=payload,
-            headers=_headers(self.api_key),
+            headers=_headers(self.tts_key),
         )
         resp.raise_for_status()
         return resp.content
@@ -420,7 +453,9 @@ class OpenAIVideoProvider(VideoProvider):
         if resp.status_code != 200:
             logger.error(
                 "Video generate failed: %s %s — %s",
-                resp.status_code, resp.reason_phrase, resp.text,
+                resp.status_code,
+                resp.reason_phrase,
+                resp.text,
             )
         resp.raise_for_status()
         data = resp.json()

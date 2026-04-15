@@ -1,0 +1,154 @@
+# AIBrix Local Envoy Configuration
+#
+# Designed for bare-process mode: Envoy + gateway-plugin running as two local processes.
+#
+# Request flow:
+#   Client -> Envoy (:10080) -> ext_proc (localhost:50052) -> target backend (via target-pod header)
+
+admin:
+  address:
+    socket_address:
+      address: 127.0.0.1
+      port_value: 9901
+  access_log:
+    - name: envoy.access_loggers.stdout
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+
+static_resources:
+  listeners:
+    - name: http_listener
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10080
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                codec_type: AUTO
+
+                # LLM responses can be long-running
+                stream_idle_timeout: 300s
+                request_timeout: 600s
+
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        text_format: "[%START_TIME%] \"%REQ(:METHOD)% %REQ(:PATH)% %PROTOCOL%\" %RESPONSE_CODE% %RESPONSE_FLAGS% %BYTES_RECEIVED% %BYTES_SENT% %DURATION%ms \"%UPSTREAM_HOST%\"\n"
+
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: aibrix_api
+                      domains: ["*"]
+                      routes:
+                        # Model listing - served by gateway plugin (no metadata service in local mode)
+                        - match:
+                            prefix: "/v1/models"
+                          route:
+                            cluster: gateway_http
+                            timeout: 10s
+
+                        # Inference endpoints - routed via ORIGINAL_DST using target-pod header
+                        - match:
+                            prefix: "/v1/"
+                          route:
+                            cluster: original_destination_cluster
+                            timeout: 600s
+                            idle_timeout: 300s
+
+                        # Health check
+                        - match:
+                            prefix: "/healthz"
+                          direct_response:
+                            status: 200
+                            body:
+                              inline_string: '{"status":"ok"}'
+
+                        # Gateway HTTP server (metrics, /v1/models)
+                        - match:
+                            prefix: "/metrics"
+                          route:
+                            cluster: gateway_http
+                            timeout: 10s
+
+                        # Catch-all
+                        - match:
+                            prefix: "/"
+                          direct_response:
+                            status: 404
+                            body:
+                              inline_string: '{"error":"Not Found","message":"Use /v1/chat/completions or /v1/models"}'
+
+                http_filters:
+                  # External Processor - Gateway Plugin
+                  - name: envoy.filters.http.ext_proc
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: gateway_ext_proc
+                        timeout: 30s
+                      processing_mode:
+                        request_header_mode: SEND
+                        request_body_mode: BUFFERED
+                        response_header_mode: SEND
+                        response_body_mode: STREAMED
+                        request_trailer_mode: SKIP
+                        response_trailer_mode: SKIP
+                      message_timeout: 60s
+                      failure_mode_allow: false
+
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    # Gateway Plugin (ext_proc gRPC on localhost)
+    - name: gateway_ext_proc
+      type: STATIC
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: gateway_ext_proc
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 127.0.0.1
+                      port_value: 50052
+      connect_timeout: 5s
+
+    # Gateway HTTP server (metrics, /v1/models)
+    - name: gateway_http
+      type: STATIC
+      load_assignment:
+        cluster_name: gateway_http
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 127.0.0.1
+                      port_value: 8080
+      connect_timeout: 5s
+
+    # Dynamic backend routing via target-pod header
+    # The gateway-plugin sets "target-pod" header to the selected backend (e.g., "127.0.0.1:8000")
+    # ORIGINAL_DST reads this header to determine the upstream address.
+    - name: original_destination_cluster
+      type: ORIGINAL_DST
+      lb_policy: CLUSTER_PROVIDED
+      original_dst_lb_config:
+        use_http_header: true
+        http_header_name: "target-pod"
+      connect_timeout: 30s

@@ -45,7 +45,21 @@ var (
 	evictionInterval      = time.Duration(utils.LoadEnvInt("AIBRIX_SYNC_EVICTION_INTERVAL_SECONDS", defaultEvictionIntervalSeconds)) * time.Second
 	evictionDuration      = time.Duration(utils.LoadEnvInt("AIBRIX_SYNC_EVICTION_DURATION_MINUTES", defaultEvictionDurationMinutes)) * time.Minute
 	prefixCacheBlockSize  = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_BLOCK_SIZE", defaultPrefixCacheBlockSize)
+
+	// Singleton pattern for shared SyncPrefixHashTable instance
+	sharedSyncOnce     sync.Once
+	sharedSyncInstance *SyncPrefixHashTable
 )
+
+// GetSharedSyncPrefixHashTable returns the shared singleton instance of SyncPrefixHashTable.
+// This ensures that all components (Store, kvSyncRouter, etc.) use the same indexer instance.
+// This follows the same pattern as GetSharedPrefixHashTable for consistency.
+func GetSharedSyncPrefixHashTable() *SyncPrefixHashTable {
+	sharedSyncOnce.Do(func() {
+		sharedSyncInstance = NewSyncPrefixHashTable()
+	})
+	return sharedSyncInstance
+}
 
 // ModelContext represents the first-level hash key
 type ModelContext struct {

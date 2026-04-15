@@ -14,29 +14,57 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package discovery provides service discovery for standalone/Docker mode.
+// Package discovery provides service discovery backends for the gateway.
 //
-// Currently only FileProvider is implemented. Kubernetes mode still uses
-// the informer logic in pkg/cache/informers.go directly.
+// Available providers:
+//   - StaticProvider: loads endpoints from a YAML config file (for standalone/Docker mode)
+//   - KubernetesProvider: watches Pods and ModelAdapters via K8s informers
 //
-// TODO: Add KubernetesProvider to unify both modes under the Provider interface.
-// The main blocker is that informers.go also watches ModelAdapters (for LoRA).
+// TODO: Add ConsulProvider, EtcdProvider.
 package discovery
 
-import (
-	"k8s.io/client-go/tools/cache"
+// EventType represents the type of a watch event.
+type EventType int
+
+const (
+	EventAdd EventType = iota
+	EventUpdate
+	EventDelete
 )
 
+// WatchEvent represents a change detected by a discovery provider.
+type WatchEvent struct {
+	// Type is the kind of change: add, update, or delete.
+	Type EventType
+	// Object is the current state of the resource (for add/update) or
+	// the last known state (for delete). Currently *v1.Pod.
+	Object any
+	// OldObject is the previous state, only set for EventUpdate. Nil otherwise.
+	OldObject any
+}
+
+// EventHandler is a callback invoked by a provider when a resource changes.
+type EventHandler func(event WatchEvent)
+
 // Provider defines the interface for service discovery backends.
+//
+// All initial state and ongoing changes are delivered through Watch() via
+// the EventHandler callback.
 type Provider interface {
-	// Load returns all k8s like Resources, can be *v1.Pod, *modelv1alpha1.ModelAdapter
-	Load() ([]any, error)
+	// Watch registers a handler for resource change events and starts watching.
+	// The provider calls handler for each change (add/update/delete).
+	//
+	// Watch should return once the provider has reached a consistent ready state
+	// (e.g., initial sync complete, config loaded). After return, dynamic providers
+	// continue delivering ongoing changes via the handler asynchronously.
+	//
+	// Static providers deliver initial state and return (no ongoing changes).
+	// K8s provider lets informers deliver events directly via the handler from
+	// the start, then does a post-sync reconcile before returning.
+	// Consul/etcd providers may deliver initial state, then start a background
+	// watch/poll loop.
+	Watch(handler EventHandler, stopCh <-chan struct{}) error
 
-	// Process Resource add/update/delete events. kind is the resource type, "Pod", "ModelAdapter", etc
-	AddEventHandler(kind string,
-		handler cache.ResourceEventHandlerFuncs,
-		stopCh <-chan struct{}) error
-
-	// Type returns a string identifier for the provider type.
+	// Type returns a string identifier for the provider type (e.g., "static", "consul").
 	Type() string
 }

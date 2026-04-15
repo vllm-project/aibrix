@@ -113,7 +113,9 @@ class VLLMOmniChatProvider(ChatProvider):
         if resp.status_code != 200:
             logger.error(
                 "vLLM-Omni chat failed: %s %s — %s",
-                resp.status_code, resp.reason_phrase, resp.text,
+                resp.status_code,
+                resp.reason_phrase,
+                resp.text,
             )
         resp.raise_for_status()
         return resp.json()
@@ -146,7 +148,9 @@ class VLLMOmniChatProvider(ChatProvider):
                 body = await resp.aread()
                 logger.error(
                     "vLLM-Omni chat stream failed: %s %s — %s",
-                    resp.status_code, resp.reason_phrase, body.decode(),
+                    resp.status_code,
+                    resp.reason_phrase,
+                    body.decode(),
                 )
             resp.raise_for_status()
             async for event in parse_openai_sse(resp.aiter_lines()):
@@ -197,9 +201,18 @@ class VLLMOmniImageProvider(ImageProvider):
     request body (height, width, num_inference_steps, true_cfg_scale, seed).
     """
 
-    def __init__(self, base_url: str, api_key: str = "") -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str = "",
+        *,
+        image_edit_url: str = "",
+        image_edit_key: str = "",
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.image_edit_url = image_edit_url.rstrip("/") if image_edit_url else self.base_url
+        self.image_edit_key = image_edit_key or self.api_key
         self._client: httpx.AsyncClient | None = None
 
     def _make_client(self) -> httpx.AsyncClient:
@@ -255,7 +268,8 @@ class VLLMOmniImageProvider(ImageProvider):
         if resp.status_code != 200:
             logger.error(
                 "vLLM-Omni image gen failed: %s — %s",
-                resp.status_code, resp.text[:500],
+                resp.status_code,
+                resp.text[:500],
             )
         resp.raise_for_status()
 
@@ -288,13 +302,15 @@ class VLLMOmniImageProvider(ImageProvider):
 
         payload: dict[str, Any] = {
             "model": model,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_uri}},
-                ],
-            }],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_uri}},
+                    ],
+                }
+            ],
             "height": height,
             "width": width,
             "num_inference_steps": kwargs.get("num_inference_steps", 50),
@@ -305,14 +321,15 @@ class VLLMOmniImageProvider(ImageProvider):
             payload["seed"] = kwargs["seed"]
 
         resp = await self.client.post(
-            f"{self.base_url}/v1/chat/completions",
+            f"{self.image_edit_url}/v1/chat/completions",
             json=payload,
-            headers=_headers(self.api_key),
+            headers=_headers(self.image_edit_key),
         )
         if resp.status_code != 200:
             logger.error(
                 "vLLM-Omni image edit failed: %s — %s",
-                resp.status_code, resp.text[:500],
+                resp.status_code,
+                resp.text[:500],
             )
         resp.raise_for_status()
 
@@ -331,9 +348,22 @@ class VLLMOmniAudioProvider(AudioProvider):
     * **TTS** (``speech``) adds the ``language`` field required by Qwen3-TTS.
     """
 
-    def __init__(self, base_url: str, api_key: str = "") -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str = "",
+        *,
+        asr_url: str = "",
+        asr_key: str = "",
+        tts_url: str = "",
+        tts_key: str = "",
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.asr_url = asr_url.rstrip("/") if asr_url else self.base_url
+        self.asr_key = asr_key or self.api_key
+        self.tts_url = tts_url.rstrip("/") if tts_url else self.base_url
+        self.tts_key = tts_key or self.api_key
         self._client: httpx.AsyncClient | None = None
 
     def _make_client(self) -> httpx.AsyncClient:
@@ -370,10 +400,10 @@ class VLLMOmniAudioProvider(AudioProvider):
             data["language"] = language
 
         resp = await self.client.post(
-            f"{self.base_url}/v1/audio/transcriptions",
+            f"{self.asr_url}/v1/audio/transcriptions",
             files=files,
             data=data,
-            headers=_auth_headers(self.api_key),
+            headers=_auth_headers(self.asr_key),
         )
         resp.raise_for_status()
         return resp.json()
@@ -399,14 +429,15 @@ class VLLMOmniAudioProvider(AudioProvider):
             "language": "Auto",
         }
         resp = await self.client.post(
-            f"{self.base_url}/v1/audio/speech",
+            f"{self.tts_url}/v1/audio/speech",
             json=payload,
-            headers=_headers(self.api_key),
+            headers=_headers(self.tts_key),
         )
         if resp.status_code != 200:
             logger.error(
                 "vLLM-Omni TTS failed: %s — %s",
-                resp.status_code, resp.text[:500],
+                resp.status_code,
+                resp.text[:500],
             )
         resp.raise_for_status()
         return resp.content
@@ -516,7 +547,8 @@ class VLLMOmniVideoProvider(VideoProvider):
             if resp.status_code != 200:
                 logger.error(
                     "vLLM-Omni video gen failed: %s — %s",
-                    resp.status_code, resp.text[:500],
+                    resp.status_code,
+                    resp.text[:500],
                 )
             resp.raise_for_status()
 

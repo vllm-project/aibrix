@@ -1,0 +1,300 @@
+import type { Job, Deployment, Model } from '../data/mockData';
+
+// --- Additional interfaces for API entities ---
+
+export interface APIKey {
+  id: string;
+  name: string;
+  secretKey: string;
+  createdAt: string;
+}
+
+export interface Secret {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+export interface Quota {
+  id: string;
+  quotaId: string;
+  name: string;
+  currentUsage: number;
+  usagePercentage: number;
+  quota: number;
+}
+
+export interface FileInfo {
+  id: string;
+  name: string;
+  purpose: string;
+  size: number;
+  createdAt: string;
+}
+
+export interface UserInfo {
+  id: string;
+  email: string;
+  name: string;
+}
+
+export interface CreateJobRequest {
+  model: string;
+  datasetId: string;
+  displayName: string;
+  maxTokens?: number;
+  temperature?: number;
+  topP?: number;
+  n?: number;
+  quantization?: string;
+}
+
+export interface CreateDeploymentRequest {
+  name: string;
+  baseModel: string;
+  region: string;
+  acceleratorType: string;
+  acceleratorCount: number;
+  quantization?: string;
+  minReplicas: number;
+  maxReplicas?: number;
+  enableAutoScaling?: boolean;
+  enableMultiLora?: boolean;
+}
+
+// --- Case conversion utilities ---
+
+function snakeToCamelKey(key: string): string {
+  return key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+function camelToSnakeKey(key: string): string {
+  return key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+}
+
+export function snakeToCamel<T>(data: unknown): T {
+  if (Array.isArray(data)) {
+    return data.map((item) => snakeToCamel(item)) as unknown as T;
+  }
+  if (data !== null && typeof data === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      result[snakeToCamelKey(key)] = snakeToCamel(value);
+    }
+    return result as T;
+  }
+  return data as T;
+}
+
+export function camelToSnake<T>(data: unknown): T {
+  if (Array.isArray(data)) {
+    return data.map((item) => camelToSnake(item)) as unknown as T;
+  }
+  if (data !== null && typeof data === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      result[camelToSnakeKey(key)] = camelToSnake(value);
+    }
+    return result as T;
+  }
+  return data as T;
+}
+
+// --- Fetch helper ---
+
+class APIError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'APIError';
+    this.status = status;
+  }
+}
+
+async function apiFetch<T>(
+  url: string,
+  options?: RequestInit,
+): Promise<T> {
+  const response = await fetch(url, {
+    ...options,
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...options?.headers,
+    },
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => 'Unknown error');
+    throw new APIError(text, response.status);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  const json = await response.json();
+  return snakeToCamel<T>(json);
+}
+
+function buildQuery(params: Record<string, string | undefined>): string {
+  const entries = Object.entries(params).filter(
+    (entry): entry is [string, string] => entry[1] !== undefined && entry[1] !== '',
+  );
+  if (entries.length === 0) return '';
+  return '?' + new URLSearchParams(entries).toString();
+}
+
+// --- Jobs ---
+
+export async function listJobs(search?: string, status?: string): Promise<Job[]> {
+  const query = buildQuery({ search, status });
+  const data = await apiFetch<{ jobs: Job[] }>(`/api/v1/jobs${query}`);
+  return data.jobs || [];
+}
+
+export async function getJob(id: string): Promise<Job> {
+  return apiFetch<Job>(`/api/v1/jobs/${encodeURIComponent(id)}`);
+}
+
+export async function createJob(req: CreateJobRequest): Promise<Job> {
+  return apiFetch<Job>('/api/v1/jobs', {
+    method: 'POST',
+    body: JSON.stringify(camelToSnake(req)),
+  });
+}
+
+// --- Deployments ---
+
+export async function listDeployments(search?: string): Promise<Deployment[]> {
+  const query = buildQuery({ search });
+  const data = await apiFetch<{ deployments: Deployment[] }>(`/api/v1/deployments${query}`);
+  return data.deployments || [];
+}
+
+export async function getDeployment(id: string): Promise<Deployment> {
+  return apiFetch<Deployment>(`/api/v1/deployments/${encodeURIComponent(id)}`);
+}
+
+export async function createDeployment(req: CreateDeploymentRequest): Promise<Deployment> {
+  return apiFetch<Deployment>('/api/v1/deployments', {
+    method: 'POST',
+    body: JSON.stringify(camelToSnake(req)),
+  });
+}
+
+export async function deleteDeployment(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/deployments/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+// --- Models ---
+
+export async function listModels(search?: string, category?: string): Promise<Model[]> {
+  const query = buildQuery({ search, category });
+  const data = await apiFetch<{ models: Model[] }>(`/api/v1/models${query}`);
+  return data.models || [];
+}
+
+export async function getModel(id: string): Promise<Model> {
+  return apiFetch<Model>(`/api/v1/models/${encodeURIComponent(id)}`);
+}
+
+// --- API Keys ---
+
+export async function listAPIKeys(): Promise<APIKey[]> {
+  const data = await apiFetch<{ apiKeys: APIKey[] }>('/api/v1/apikeys');
+  return data.apiKeys || [];
+}
+
+export async function createAPIKey(
+  name: string,
+): Promise<{ apiKey: APIKey; fullKey: string }> {
+  return apiFetch<{ apiKey: APIKey; fullKey: string }>('/api/v1/apikeys', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function deleteAPIKey(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/apikeys/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+// --- Secrets ---
+
+export async function listSecrets(search?: string): Promise<Secret[]> {
+  const query = buildQuery({ search });
+  const data = await apiFetch<{ secrets: Secret[] }>(`/api/v1/secrets${query}`);
+  return data.secrets || [];
+}
+
+export async function createSecret(name: string, value: string): Promise<Secret> {
+  return apiFetch<Secret>('/api/v1/secrets', {
+    method: 'POST',
+    body: JSON.stringify({ name, value }),
+  });
+}
+
+export async function deleteSecret(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/secrets/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+// --- Quotas ---
+
+export async function listQuotas(search?: string): Promise<Quota[]> {
+  const query = buildQuery({ search });
+  const data = await apiFetch<{ quotas: Quota[] }>(`/api/v1/quotas${query}`);
+  return data.quotas || [];
+}
+
+// --- Files ---
+
+export async function uploadFile(file: File, purpose?: string): Promise<FileInfo> {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (purpose) {
+    formData.append('purpose', purpose);
+  }
+
+  const response = await fetch('/api/v1/files/upload', {
+    method: 'POST',
+    credentials: 'include',
+    body: formData,
+    // Do not set Content-Type; the browser sets it with the boundary
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => 'Unknown error');
+    throw new APIError(text, response.status);
+  }
+
+  const json = await response.json();
+  return snakeToCamel<FileInfo>(json);
+}
+
+export async function listFiles(): Promise<FileInfo[]> {
+  const data = await apiFetch<{ files: FileInfo[] }>('/api/v1/files');
+  return data.files;
+}
+
+// --- Auth ---
+
+export async function getAuthConfig(): Promise<{ mode: string; providerName?: string }> {
+  return apiFetch<{ mode: string; providerName?: string }>('/api/v1/auth/config');
+}
+
+export async function getUserInfo(): Promise<UserInfo | null> {
+  return apiFetch<UserInfo | null>('/api/v1/auth/userinfo');
+}
+
+export async function logout(): Promise<void> {
+  return apiFetch<void>('/api/v1/auth/logout', {
+    method: 'POST',
+  });
+}

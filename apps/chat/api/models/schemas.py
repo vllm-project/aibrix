@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from config import settings
 
 # ── Messages ───────────────────────────────────────────────
 
@@ -18,6 +19,7 @@ class MessageContent(BaseModel):
     type: str  # "text" or "image_url"
     text: str | None = None
     image_url: dict[str, str] | None = None
+
 
 class ChatAttachment(BaseModel):
     """Serializable attachment metadata for images or files in chat."""
@@ -38,9 +40,7 @@ class Message(BaseModel):
     parent_id: str | None = None
     model: str | None = None
     attachments: list[ChatAttachment] = Field(default_factory=list)
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 # ── Conversations ──────────────────────────────────────────
@@ -55,12 +55,8 @@ class Conversation(BaseModel):
     model: str | None = None
     user_id: str = ""
     project_id: str | None = None
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-    updated_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class ConversationSummary(BaseModel):
@@ -105,7 +101,7 @@ class CompletionResponse(BaseModel):
 
 class ImageGenerateRequest(BaseModel):
     prompt: str = Field(..., max_length=4000)
-    model: str = "dall-e-3"
+    model: str = settings.image_model or "dall-e-3"
     size: str = "1024x1024"
     n: int = Field(1, ge=1, le=4)
     quality: str | None = None
@@ -133,8 +129,8 @@ class AudioTranscribeResponse(BaseModel):
 
 class AudioSpeechRequest(BaseModel):
     input: str = Field(..., max_length=10000)
-    model: str = "tts-1"
-    voice: str = "alloy"
+    model: str = settings.tts_model or "tts-1"
+    voice: str = settings.tts_voice or "alloy"
     response_format: str = "mp3"
     speed: float = 1.0
 
@@ -144,7 +140,7 @@ class AudioSpeechRequest(BaseModel):
 
 class VideoGenerateRequest(BaseModel):
     prompt: str = Field(..., max_length=4000)
-    model: str = "sora-2"
+    model: str = settings.video_model or "sora-2"
     size: str = "1280x720"
     seconds: int = Field(4, ge=1, le=60)
 
@@ -184,12 +180,8 @@ class Project(BaseModel):
     description: str = ""
     instructions: str = ""
     user_id: str = ""
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-    updated_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class ProjectSummary(BaseModel):
@@ -218,9 +210,7 @@ class UpdateProjectRequest(BaseModel):
 class User(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class LoginRequest(BaseModel):
