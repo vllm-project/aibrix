@@ -127,6 +127,8 @@ func TestPrefixCacheRouting(t *testing.T) {
 	targetPod := getTargetPodFromChatCompletion(t, req, "prefix-cache")
 	t.Logf("req: %s, target pod: %v\n", req, targetPod)
 
+	time.Sleep(2 * time.Second)
+
 	// #2 request - reuse target pod from first time
 	targetPod2 := getTargetPodFromChatCompletion(t, req, "prefix-cache")
 	t.Logf("req: %s, target pod: %v\n", req, targetPod2)
@@ -170,6 +172,7 @@ func TestMultiTurnConversation(t *testing.T) {
 		messages = append(messages, openai.AssistantMessage(chatCompletion.Choices[0].Message.Content))
 		if i == 1 {
 			targetPod = dst.Header.Get("target-pod")
+			time.Sleep(2 * time.Second)
 		}
 
 		assert.Equal(t, targetPod, dst.Header.Get("target-pod"), "each multiturn conversation must route to same target pod")
