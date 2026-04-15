@@ -163,11 +163,14 @@ func main() {
 	redissyncEnabled := utils.LoadEnvBool("AIBRIX_REDISSYNC_ENABLED", false)
 	var syncManager *redissync.RedisSync
 	if redissyncEnabled {
+		klog.InfoS("redissync enabled; starting cross-replica state sync")
 		table := prefixcacheindexer.GetSharedPrefixHashTable()
 		table.EnableDeltaSync()
 		syncManager = redissync.New(redisClient)
 		syncManager.Register(prefixcacheindexer.NewPrefixHashTableSyncable(table))
 		syncManager.Start()
+	} else {
+		klog.InfoS("redissync disabled; set AIBRIX_REDISSYNC_ENABLED=true to enable cross-replica state sync")
 	}
 
 	if err := gatewayServer.StartHTTPServer(httpAddr); err != nil {

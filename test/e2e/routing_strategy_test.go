@@ -22,6 +22,7 @@ import (
 	"math/rand"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -172,6 +173,31 @@ func TestMultiTurnConversation(t *testing.T) {
 		}
 
 		assert.Equal(t, targetPod, dst.Header.Get("target-pod"), "each multiturn conversation must route to same target pod")
+	}
+}
+
+// nolint:lll
+// TestPrefixCacheRoutingConsistency sends a warm-up request, waits 2 seconds,
+// then sends 10 requests with the same prompt and asserts they all route to the
+// same backend pod (prefix cache hit).
+func TestPrefixCacheRoutingConsistency(t *testing.T) {
+	// Message must exceed the prefix cache block threshold (>128 bytes) so that
+	// at least one full block is hashed and stored in the prefix cache.
+	const msg = "prefix-cache consistency test: this message is intentionally long to exceed the " +
+		"128-byte block threshold required for prefix cache routing to engage. 这是前缀缓存路由一致性测试消息！"
+
+	// Warm up: populate the prefix cache for this prompt on the target pod.
+	warmPod := getTargetPodFromChatCompletion(t, msg, "prefix-cache")
+	require.NotEmpty(t, warmPod, "warm-up request returned no target-pod header")
+	t.Logf("warm-up routed to: %s", warmPod)
+
+	time.Sleep(2 * time.Second)
+
+	// All 10 subsequent requests with the same prefix must route to the same pod.
+	for i := 0; i < 10; i++ {
+		pod := getTargetPodFromChatCompletion(t, msg, "prefix-cache")
+		assert.Equal(t, warmPod, pod, "request %d: expected pod %s, got %s", i+1, warmPod, pod)
+		t.Logf("request %d routed to: %s", i+1, pod)
 	}
 }
 
