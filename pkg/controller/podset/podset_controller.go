@@ -388,11 +388,25 @@ func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.P
 	// Add environment variables for pod coordination
 	if pod.Spec.Containers != nil {
 		for i := range pod.Spec.Containers {
-			pod.Spec.Containers[i].Env = append(pod.Spec.Containers[i].Env,
-				v1.EnvVar{Name: constants.PodSetNameEnvKey, Value: podSet.Name},
-				v1.EnvVar{Name: constants.PodSetIndexEnvKey, Value: strconv.Itoa(podIndex)},
-				v1.EnvVar{Name: constants.PodSetSizeEnvKey, Value: strconv.Itoa(int(podSet.Spec.PodGroupSize))},
-			)
+			// Add built-in environment variables to the beginning
+			builtInEnvs := []v1.EnvVar{
+				{Name: constants.PodSetNameEnvKey, Value: podSet.Name},
+				{Name: constants.PodSetIndexEnvKey, Value: strconv.Itoa(podIndex)},
+				{Name: constants.PodSetSizeEnvKey, Value: strconv.Itoa(int(podSet.Spec.PodGroupSize))},
+			}
+
+			builtInEnvMap := make(map[string]bool)
+			for _, env := range builtInEnvs {
+				builtInEnvMap[env.Name] = true
+			}
+			// Append only user-defined env vars that don't conflict with built-in ones
+			for _, env := range pod.Spec.Containers[i].Env {
+				if !builtInEnvMap[env.Name] {
+					builtInEnvs = append(builtInEnvs, env)
+				}
+			}
+
+			pod.Spec.Containers[i].Env = builtInEnvs
 		}
 	}
 
