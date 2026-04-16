@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
@@ -395,13 +396,14 @@ func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.P
 				{Name: constants.PodSetSizeEnvKey, Value: strconv.Itoa(int(podSet.Spec.PodGroupSize))},
 			}
 
-			builtInEnvMap := make(map[string]bool)
-			for _, env := range builtInEnvs {
-				builtInEnvMap[env.Name] = true
-			}
+			builtInEnvSet := sets.NewString(
+				constants.PodSetNameEnvKey,
+				constants.PodSetIndexEnvKey,
+				constants.PodSetSizeEnvKey,
+			)
 			// Append only user-defined env vars that don't conflict with built-in ones
 			for _, env := range pod.Spec.Containers[i].Env {
-				if !builtInEnvMap[env.Name] {
+				if !builtInEnvSet.Has(env.Name) {
 					builtInEnvs = append(builtInEnvs, env)
 				}
 			}
