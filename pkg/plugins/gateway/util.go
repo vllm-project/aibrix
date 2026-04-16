@@ -127,7 +127,9 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		}
 		if req.Stream != nil {
 			stream = *req.Stream
-			if stream && user.Tpm > 0 && !req.StreamOptions.IncludeUsage {
+			// stream_options.include_usage is an OpenAI-specific field; Anthropic-style
+			// clients hitting /v1/messages will not include it, so skip this check for that path.
+			if stream && user.Tpm > 0 && requestPath == PathChatCompletions && !req.StreamOptions.IncludeUsage {
 				klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID)
 				errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "include usage for stream options not set",
 					"", "stream_options", HeaderErrorStreamOptionsIncludeUsage, "include usage for stream options not set")
