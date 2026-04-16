@@ -130,13 +130,9 @@ func (c *Store) addPod(obj interface{}) {
 		return
 	}
 
-	pgIndex, ok := pod.Labels[podGroupIndex]
-	if ok {
-		pgIndexNumber, err := strconv.Atoi(pgIndex)
-		if err != nil || pgIndexNumber > 0 {
-			klog.V(4).InfoS("ignored pod group index > 0", "index", pgIndex)
-			return
-		}
+	// ignore podGroup index > 0
+	if isWorkerPodGroupIndex(pod) {
+		return
 	}
 
 	c.mu.Lock()
@@ -186,6 +182,11 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	newNodeType := newPod.Labels[nodeType]
 	if oldNodeType == nodeWorker || newNodeType == nodeWorker {
 		klog.InfoS("ignored ray worker pod", "old pod", oldPod.Name, "new pod", newPod.Name)
+		return
+	}
+
+	// ignore old and new pod which podGroup index > 0
+	if isWorkerPodGroupIndex(oldPod) || isWorkerPodGroupIndex(newPod) {
 		return
 	}
 
@@ -485,4 +486,16 @@ func waitForModelAdapterResyncRetry(stopCh <-chan struct{}, interval time.Durati
 	case <-timer.C:
 		return true
 	}
+}
+
+func isWorkerPodGroupIndex(pod *v1.Pod) bool {
+	pgIndex, ok := pod.Labels[podGroupIndex]
+	if ok {
+		pgIndexNumber, err := strconv.Atoi(pgIndex)
+		if err != nil || pgIndexNumber > 0 {
+			klog.V(4).Infof("ignored pod %s because podGroupIndex %s > 0", pod.Name, pgIndex)
+			return true
+		}
+	}
+	return false
 }
