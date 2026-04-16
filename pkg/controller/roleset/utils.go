@@ -178,7 +178,8 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 // Note: Built-in env variables are added first to ensure they're available for expansion
 // in user-defined env variables. User-defined env variables maintain their original order
 // from the container spec, which should be stable across reconcile loops if the upstream
-// RoleSpec preserves order (e.g., through YAML unmarshalling).
+// RoleSpec preserves order (e.g., through YAML unmarshalling). Otherwise, unnecessary pod
+// updates may occur.
 func injectContainerEnvVars(
 	container *v1.Container,
 	roleSet *orchestrationv1alpha1.RoleSet,
@@ -217,10 +218,7 @@ func injectContainerEnvVars(
 			Value: strconv.Itoa(*roleIndex),
 		})
 	}
-	// First add built-in env variables
-	for _, env := range builtInEnvs {
-		envs = append(envs, env)
-	}
+	envs = append(envs, builtInEnvs...)
 
 	// Add original container env variables, skipping built-in envs
 	for _, env := range container.Env {
