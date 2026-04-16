@@ -62,6 +62,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        true,
 		},
 		{
+			name:        "messages alias is language",
+			requestPath: "/v1/messages",
+			want:        true,
+		},
+		{
 			name:        "completions is language",
 			requestPath: "/v1/completions",
 			want:        true,

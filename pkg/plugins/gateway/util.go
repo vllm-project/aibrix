@@ -111,7 +111,7 @@ func parseChatMessages(requestID string, msgs []struct {
 // nolint:nakedret
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	switch requestPath {
-	case PathChatCompletions:
+	case PathChatCompletions, PathMessages:
 		// Single-pass minimal unmarshal: avoids the openai SDK's reflection-heavy
 		// apijson decoder and gjson parsing, and eliminates the previous redundant
 		// map[string]json.RawMessage unmarshal used only for stream-field detection.
