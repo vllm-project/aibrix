@@ -175,6 +175,11 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 }
 
 // injectContainerEnvVars injects env variables into container.
+// Note: Built-in env variables are added first to ensure they're available for expansion
+// in user-defined env variables. User-defined env variables maintain their original order
+// from the container spec, which should be stable across reconcile loops if the upstream
+// RoleSpec preserves order (e.g., through YAML unmarshalling). Otherwise, unnecessary pod
+// updates may occur.
 func injectContainerEnvVars(
 	container *v1.Container,
 	roleSet *orchestrationv1alpha1.RoleSet,
@@ -182,58 +187,47 @@ func injectContainerEnvVars(
 	roleIndex *int,
 	templateHash string,
 ) {
-	envMap := make(map[string]v1.EnvVar, len(container.Env)+6)
-
-	// copy existing env
-	for _, e := range container.Env {
-		if !ContainerInjectEnv.Has(e.Name) {
-			envMap[e.Name] = e
-		}
-	}
-
-	envMap[constants.StormServiceNameEnvKey] = v1.EnvVar{
-		Name:  constants.StormServiceNameEnvKey,
-		Value: roleSet.Labels[constants.StormServiceNameLabelKey],
-	}
-
-	envMap[constants.RoleSetNameEnvKey] = v1.EnvVar{
-		Name:  constants.RoleSetNameEnvKey,
-		Value: roleSet.Name,
-	}
-
-	envMap[constants.RoleSetIndexEnvKey] = v1.EnvVar{
-		Name:  constants.RoleSetIndexEnvKey,
-		Value: roleSet.Annotations[constants.RoleSetIndexAnnotationKey],
-	}
-
-	envMap[constants.RoleNameEnvKey] = v1.EnvVar{
-		Name:  constants.RoleNameEnvKey,
-		Value: role.Name,
-	}
-
-	envMap[constants.RoleTemplateHashEnvKey] = v1.EnvVar{
-		Name:  constants.RoleTemplateHashEnvKey,
-		Value: templateHash,
+	// Use slice to maintain env variable order
+	envs := make([]v1.EnvVar, 0, len(container.Env)+6)
+	builtInEnvs := []v1.EnvVar{
+		{
+			Name:  constants.StormServiceNameEnvKey,
+			Value: roleSet.Labels[constants.StormServiceNameLabelKey],
+		},
+		{
+			Name:  constants.RoleSetNameEnvKey,
+			Value: roleSet.Name,
+		},
+		{
+			Name:  constants.RoleSetIndexEnvKey,
+			Value: roleSet.Annotations[constants.RoleSetIndexAnnotationKey],
+		},
+		{
+			Name:  constants.RoleNameEnvKey,
+			Value: role.Name,
+		},
+		{
+			Name:  constants.RoleTemplateHashEnvKey,
+			Value: templateHash,
+		},
 	}
 
 	if roleIndex != nil {
-		envMap[constants.RoleReplicaIndexEnvKey] = v1.EnvVar{
+		builtInEnvs = append(builtInEnvs, v1.EnvVar{
 			Name:  constants.RoleReplicaIndexEnvKey,
 			Value: strconv.Itoa(*roleIndex),
+		})
+	}
+	envs = append(envs, builtInEnvs...)
+
+	// Add original container env variables, skipping built-in envs
+	for _, env := range container.Env {
+		if !ContainerInjectEnv.Has(env.Name) {
+			envs = append(envs, env)
 		}
 	}
-	keys := make([]string, 0, len(envMap))
-	for k := range envMap {
-		keys = append(keys, k)
-	}
-	// sort the env by name before adding them to the container spec
-	// to ensure deterministic output and prevent unnecessary pod updates
-	sort.Strings(keys)
 
-	container.Env = make([]v1.EnvVar, 0, len(envMap))
-	for _, k := range keys {
-		container.Env = append(container.Env, envMap[k])
-	}
+	container.Env = envs
 }
 
 func filterRolePods(role *orchestrationv1alpha1.RoleSpec, pods []*v1.Pod) []*v1.Pod {
