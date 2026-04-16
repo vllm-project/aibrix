@@ -169,6 +169,13 @@ var _ = Describe("Cache", func() {
 		_, exist = cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeFalse())
 
+		// Ignore pods with podGroupIndex > 0
+		podGroupWorker := getReadyPod("p1", "default", "m1", 0)
+		podGroupWorker.ObjectMeta.Labels[podGroupIndex] = "1"
+		cache.addPod(podGroupWorker)
+		_, exist = cache.metaPods.Load("default/p1")
+		Expect(exist).To(BeFalse())
+
 		pod := getReadyPod("p1", "default", "m1", 0)
 		cache.addPod(pod)
 

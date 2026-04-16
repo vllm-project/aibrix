@@ -17,6 +17,7 @@ package cache
 
 import (
 	"errors"
+	"strconv"
 	"time"
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
@@ -39,6 +40,7 @@ const (
 	modelIdentifier = constants.ModelLabelName
 	nodeType        = "ray.io/node-type"
 	nodeWorker      = "worker"
+	podGroupIndex   = "stormservice.orchestration.aibrix.ai/pod-group-index"
 )
 
 var (
@@ -126,6 +128,15 @@ func (c *Store) addPod(obj interface{}) {
 	if ok && nodeType == nodeWorker {
 		klog.V(4).InfoS("ignored ray worker pod", "name", pod.Name)
 		return
+	}
+
+	pgIndex, ok := pod.Labels[podGroupIndex]
+	if ok {
+		pgIndexNumber, err := strconv.Atoi(pgIndex)
+		if err != nil || pgIndexNumber > 0 {
+			klog.V(4).InfoS("ignored pod group index > 0", "index", pgIndex)
+			return
+		}
 	}
 
 	c.mu.Lock()
