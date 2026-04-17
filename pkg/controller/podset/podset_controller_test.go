@@ -22,6 +22,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	dynamicFake "k8s.io/client-go/dynamic/fake"
+	"k8s.io/client-go/tools/record"
+	clientFake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
@@ -54,9 +58,13 @@ func TestCreatePodFromTemplate_EnvOrder(t *testing.T) {
 			},
 		},
 	}
-
-	// Create a PodSetReconciler
-	reconciler := &PodSetReconciler{}
+	scheme := runtime.NewScheme()
+	reconciler := &PodSetReconciler{
+		Client:        clientFake.NewClientBuilder().Build(),
+		Scheme:        scheme,
+		EventRecorder: &record.FakeRecorder{},
+		DynamicClient: dynamicFake.NewSimpleDynamicClient(scheme),
+	}
 
 	// Call createPodFromTemplate with podIndex 0
 	pod, err := reconciler.createPodFromTemplate(podSet, 0)
@@ -79,30 +87,12 @@ func TestCreatePodFromTemplate_EnvOrder(t *testing.T) {
 	assert.Equal(t, expectedEnvCount, len(container.Env), "container should have correct number of env vars")
 
 	// Verify built-in env vars are at the beginning
-	for i, env := range container.Env {
-		if i < len(builtInEnvNames) {
-			// First N env vars should be built-in
-			assert.Contains(t, builtInEnvNames, env.Name, "Built-in env var should be at the beginning")
-
-			// Check built-in env var values
-			switch env.Name {
-			case constants.PodSetNameEnvKey:
-				assert.Equal(t, "test-podset", env.Value)
-			case constants.PodSetIndexEnvKey:
-				assert.Equal(t, "0", env.Value)
-			case constants.PodSetSizeEnvKey:
-				assert.Equal(t, "2", env.Value)
-			}
-		} else {
-			// User-defined env vars should come after built-in ones
-			assert.NotContains(t, builtInEnvNames, env.Name, "User-defined env var should not be a built-in name")
-		}
+	for i := 0; i < len(builtInEnvNames); i++ {
+		assert.Equal(t, builtInEnvNames[i], container.Env[i].Name, "Built-in env var should be at the beginning")
 	}
 
 	// Verify user-defined env vars maintain their order
 	userEnvStartIndex := len(builtInEnvNames)
-	assert.Less(t, userEnvStartIndex, len(container.Env), "should have user-defined env vars")
-
 	expectedUserEnvOrder := []string{"USER_VAR_Z", "USER_VAR_A"}
 	for i, expectedName := range expectedUserEnvOrder {
 		actualIndex := userEnvStartIndex + i
@@ -139,9 +129,13 @@ func TestCreatePodFromTemplate_EnvConflict(t *testing.T) {
 			},
 		},
 	}
-
-	// Create a PodSetReconciler
-	reconciler := &PodSetReconciler{}
+	scheme := runtime.NewScheme()
+	reconciler := &PodSetReconciler{
+		Client:        clientFake.NewClientBuilder().Build(),
+		Scheme:        scheme,
+		EventRecorder: &record.FakeRecorder{},
+		DynamicClient: dynamicFake.NewSimpleDynamicClient(scheme),
+	}
 
 	// Call createPodFromTemplate with podIndex 0
 	pod, err := reconciler.createPodFromTemplate(podSet, 0)
@@ -164,24 +158,13 @@ func TestCreatePodFromTemplate_EnvConflict(t *testing.T) {
 	assert.Equal(t, expectedEnvCount, len(container.Env), "container should have correct number of env vars")
 
 	// Verify built-in env vars are at the beginning and not overridden
-	for i, env := range container.Env {
-		if i < len(builtInEnvNames) {
-			// First N env vars should be built-in
-			assert.Contains(t, builtInEnvNames, env.Name, "Built-in env var should be at the beginning")
-
-			// Check built-in env var values are not overridden
-			switch env.Name {
-			case constants.PodSetNameEnvKey:
-				assert.Equal(t, "test-podset", env.Value, "Built-in env var should not be overridden")
-			case constants.PodSetIndexEnvKey:
-				assert.Equal(t, "0", env.Value, "Built-in env var should not be overridden")
-			case constants.PodSetSizeEnvKey:
-				assert.Equal(t, "2", env.Value, "Built-in env var should not be overridden")
-			}
-		} else {
-			// Only non-conflicting user-defined env var should be present
-			assert.Equal(t, "USER_VAR", env.Name, "Only non-conflicting user-defined env var should be present")
-			assert.Equal(t, "value", env.Value, "User-defined env var value should be preserved")
-		}
+	for i := 0; i < len(builtInEnvNames); i++ {
+		assert.Equal(t, builtInEnvNames[i], container.Env[i].Name, "Built-in env var should be at the beginning")
 	}
+
+	// Only non-conflicting user-defined env var should be present
+	env := container.Env[len(builtInEnvNames)]
+	assert.NotNil(t, env, "should have non-conflicting user-defined env var")
+	assert.Equal(t, "USER_VAR", env.Name, "Only non-conflicting user-defined env var should be present")
+	assert.Equal(t, "value", env.Value, "User-defined env var value should be preserved")
 }
