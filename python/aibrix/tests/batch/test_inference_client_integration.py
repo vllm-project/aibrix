@@ -14,7 +14,11 @@
 
 import pytest
 
-from aibrix.batch.job_driver import InferenceEngineClient, ProxyInferenceEngineClient
+from aibrix.batch.job_driver import (
+    InferenceEngineClient,
+    MockInferenceEngineClient,
+    ProxyInferenceEngineClient,
+)
 
 
 class TestInferenceClientIntegration:
@@ -23,7 +27,7 @@ class TestInferenceClientIntegration:
     @pytest.mark.asyncio
     async def test_mock_inference_client(self):
         """Test inference client in mock mode."""
-        client = InferenceEngineClient()  # No base_url = mock mode
+        client = MockInferenceEngineClient()  # Explicit mock for testing
 
         request_data = {
             "custom_id": "test-1",
@@ -57,6 +61,13 @@ class TestInferenceClientIntegration:
         # Should raise an exception when trying to connect to invalid host
         with pytest.raises(Exception):  # Will be httpx.RequestError or similar
             await client.inference_request("/v1/chat/completions", request_data)
+
+    @pytest.mark.asyncio
+    async def test_base_client_raises_not_implemented(self):
+        """Test that base InferenceEngineClient raises NotImplementedError."""
+        client = InferenceEngineClient()
+        with pytest.raises(NotImplementedError):
+            await client.inference_request("/test", {})
 
     @pytest.mark.asyncio
     async def test_retry_behavior_demonstration(self):
