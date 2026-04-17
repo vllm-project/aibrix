@@ -123,15 +123,9 @@ func (c *Store) addPod(obj interface{}) {
 		klog.V(4).InfoS("ignored pod without model label or annotation", "name", pod.Name)
 		return
 	}
-	// ignore worker pods
-	nodeType, ok := pod.Labels[nodeType]
-	if ok && nodeType == nodeWorker {
-		klog.V(4).InfoS("ignored ray worker pod", "name", pod.Name)
-		return
-	}
 
-	// ignore podGroup index > 0
-	if isWorkerPodGroupIndex(pod) {
+	// ignore worker pod
+	if isWorkerPod(pod) {
 		return
 	}
 
@@ -153,6 +147,14 @@ func (c *Store) addPod(obj interface{}) {
 func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
+
+	// calculate early to avoid unnecessary lock
+	oldIsWorker := isWorkerPod(oldPod)
+	newIsWorker := isWorkerPod(newPod)
+	if oldIsWorker && newIsWorker {
+		klog.InfoS("ignore worker pod update:", "old pod", oldPod.Name, "new pod", newPod.Name)
+		return
+	}
 
 	_, oldOk := getModelNameFromPod(oldPod)
 	_, existed := c.metaPods.Load(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name)) // Make sure nothing left.
@@ -185,13 +187,8 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 		return
 	}
 
-	// ignore old and new pod which podGroup index > 0
-	if isWorkerPodGroupIndex(oldPod) || isWorkerPodGroupIndex(newPod) {
-		return
-	}
-
 	// Add new mappings if present
-	if newOk {
+	if newOk && !newIsWorker {
 		metaPod := c.addPodLocked(newPod)
 		c.addPodAndModelMappingLocked(metaPod, newModelName)
 	}
@@ -488,12 +485,21 @@ func waitForModelAdapterResyncRetry(stopCh <-chan struct{}, interval time.Durati
 	}
 }
 
-func isWorkerPodGroupIndex(pod *v1.Pod) bool {
+func isWorkerPod(pod *v1.Pod) bool {
+	nodeTyp, ok := pod.Labels[nodeType]
+	if ok && nodeTyp == nodeWorker {
+		klog.V(4).InfoS("ignored ray worker pod", "name", pod.Name)
+		return true
+	}
+
 	pgIndex, ok := pod.Labels[podGroupIndex]
 	if ok {
 		pgIndexNumber, err := strconv.Atoi(pgIndex)
-		if err != nil || pgIndexNumber > 0 {
-			klog.V(4).Infof("ignored pod %s because podGroupIndex %s > 0", pod.Name, pgIndex)
+		if err != nil {
+			klog.V(4).InfoS("ignored pod:", "name", pod.Name, "err", err)
+		}
+		if pgIndexNumber > 0 {
+			klog.V(4).InfoS("ignored pod: podGroupIndex > 0", "name", pod.Name, "index", pgIndex)
 			return true
 		}
 	}
