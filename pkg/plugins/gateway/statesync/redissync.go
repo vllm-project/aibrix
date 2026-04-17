@@ -314,7 +314,9 @@ func (r *RedisSync) Pull(ctx context.Context, s syncable.Syncable) error {
 			return err
 		}
 	}
+	klog.Info("\n")
 	klog.V(4).InfoS("redissync pull complete", "namespace", namespace, "keys", totalKeys, "duration", time.Since(pullStart))
+	klog.Info("\n")
 	return nil
 }
 
