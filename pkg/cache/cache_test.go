@@ -169,6 +169,13 @@ var _ = Describe("Cache", func() {
 		_, exist = cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeFalse())
 
+		// Ignore pods with podGroupIndex > 0
+		podGroupWorker := getReadyPod("p1", "default", "m1", 0)
+		podGroupWorker.ObjectMeta.Labels[podGroupIndex] = "1"
+		cache.addPod(podGroupWorker)
+		_, exist = cache.metaPods.Load("default/p1")
+		Expect(exist).To(BeFalse())
+
 		pod := getReadyPod("p1", "default", "m1", 0)
 		cache.addPod(pod)
 
@@ -353,6 +360,39 @@ var _ = Describe("Cache", func() {
 		Expect(err).To(BeNil())
 		Expect(pods.Len()).To(Equal(1))
 		Expect(utils.CountRoutablePods(pods.All())).To(Equal(1))
+	})
+
+	It("should updatePod after podIndex updated", func() {
+		oldPod := getNewPod("p1", "default", "m1", 0)
+		oldPod.ObjectMeta.Labels[podGroupIndex] = "1"
+		cache.addPod(oldPod)
+		_, exist := cache.metaPods.Load("default/p1")
+		Expect(exist).To(BeFalse())
+
+		newPod := getReadyPod("p1", "default", "m1", 0) // IP may changed due to migration
+		newPod.ObjectMeta.Labels[podGroupIndex] = "1"
+		cache.updatePod(oldPod, newPod)
+		_, exist = cache.metaPods.Load("default/p1")
+		Expect(exist).To(BeFalse())
+
+		newPod.ObjectMeta.Labels[podGroupIndex] = "0"
+		cache.updatePod(oldPod, newPod)
+		_, exist = cache.metaPods.Load("default/p1")
+		Expect(exist).To(BeTrue())
+	})
+
+	It("should not delete pod after podIndex updated", func() {
+		oldPod := getNewPod("p1", "default", "m1", 0)
+		oldPod.ObjectMeta.Labels[podGroupIndex] = "0"
+		cache.addPod(oldPod)
+		_, exist := cache.metaPods.Load("default/p1")
+		Expect(exist).To(BeTrue())
+
+		newPod := getReadyPod("p1", "default", "m1", 0) // IP may changed due to migration
+		newPod.ObjectMeta.Labels[podGroupIndex] = "1"
+		cache.updatePod(oldPod, newPod)
+		_, exist = cache.metaPods.Load("default/p1")
+		Expect(exist).To(BeFalse())
 	})
 
 	It("should deletePod clear pod, model, and modelAdapter entrys", func() {
