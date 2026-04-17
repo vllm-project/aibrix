@@ -140,6 +140,16 @@ func Test_ValidateRequestBody(t *testing.T) {
 			messages:    "this is system say this is test",
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
+		{
+			message:     "/v1/messages valid request body (same as chat completions)",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/messages",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": true}, "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
+			stream:      true,
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
 	}
 
 	for _, tt := range testCases {
