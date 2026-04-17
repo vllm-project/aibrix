@@ -29,7 +29,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-
 func TestLeastGpuCache(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -155,7 +154,7 @@ func TestLeastGpuCache_ScoreAll(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "pB", Labels: map[string]string{"model.aibrix.ai/port": "8000"}},
 		Status:     v1.PodStatus{PodIP: "2.2.2.2", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
 	}
-	
+
 	c := cache.NewWithPodsModelMetricsForTest(
 		[]*v1.Pod{podA, podB},
 		"m1",
@@ -163,23 +162,23 @@ func TestLeastGpuCache_ScoreAll(t *testing.T) {
 			"pA": {metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1}},
 			"pB": {metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.8}},
 		})
-		
+
 	r := leastGpuCacheRouter{cache: c}
 	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
-	
+
 	scores, scored, err := r.ScoreAll(ctx, podsFromCache(c))
 	assert.NoError(t, err)
 	assert.Equal(t, 2, len(scores))
 	assert.Equal(t, 2, len(scored))
-	
+
 	// pA has metrics
 	assert.True(t, scored[0])
 	assert.InDelta(t, 0.1, scores[0], 0.001)
-	
+
 	// pB has metrics
 	assert.True(t, scored[1])
 	assert.InDelta(t, 0.8, scores[1], 0.001)
-	
+
 	// Check polarity
 	assert.Equal(t, PolarityLeast, r.Polarity())
 }

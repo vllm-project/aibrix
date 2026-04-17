@@ -83,7 +83,7 @@ func (r *leastRequestRouter) Route(ctx *types.RoutingContext, readyPodList types
 	if isMultiPortPods(readyPods) {
 		return r.apiServerRoute(ctx, readyPods, readyPodList.ListPortsForPod())
 	}
-	
+
 	scores, scored, err := r.ScoreAll(ctx, readyPodList)
 	if err != nil {
 		return "", err
@@ -97,7 +97,7 @@ func (r *leastRequestRouter) Route(ctx *types.RoutingContext, readyPodList types
 		if !scored[i] {
 			continue
 		}
-		
+
 		if scores[i] < minCount {
 			minCount = scores[i]
 			targetPods = []string{pod.Name}
@@ -105,7 +105,7 @@ func (r *leastRequestRouter) Route(ctx *types.RoutingContext, readyPodList types
 			targetPods = append(targetPods, pod.Name)
 		}
 	}
-	
+
 	if len(targetPods) > 0 {
 		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
 	}

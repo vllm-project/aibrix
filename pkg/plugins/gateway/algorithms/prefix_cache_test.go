@@ -248,7 +248,7 @@ func TestPrefixCache_ScoreAll(t *testing.T) {
 	// Now try ScoreAll with the same input, p1 should have higher score (or the selected pod)
 	ctx2 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r2", "")
 	scores, scored, err := prefixCacheRouter.ScoreAll(ctx2, podList)
-	
+
 	assert.NoError(t, err)
 	assert.Equal(t, 4, len(scores))
 	assert.Equal(t, 4, len(scored))

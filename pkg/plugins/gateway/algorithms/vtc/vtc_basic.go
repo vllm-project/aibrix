@@ -265,7 +265,7 @@ func (r *BasicVTCRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.
 		randomFactor := rand.Float64() * 0.1
 
 		score := (fairnessWeight * fairnessScore) + (utilizationWeight * utilizationScore) + randomFactor
-		
+
 		scores[i] = score
 		scored[i] = true
 	}

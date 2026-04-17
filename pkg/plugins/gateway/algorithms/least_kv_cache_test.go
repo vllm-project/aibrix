@@ -171,7 +171,7 @@ func TestLeastKvCache_ScoreAll(t *testing.T) {
 	podA := newPod("pA", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
 	podB := newPod("pB", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
 	podC := newPod("pC", "3.3.3.3", true, map[string]string{"model.aibrix.ai/port": "8000"})
-	
+
 	c := cache.NewWithPodsModelMetricsForTest(
 		[]*v1.Pod{podA, podB, podC},
 		"m1",
@@ -185,14 +185,14 @@ func TestLeastKvCache_ScoreAll(t *testing.T) {
 				metrics.CPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.0},
 			},
 		})
-		
+
 	r := leastKvCacheRouter{cache: c}
 	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
-	
+
 	scores, scored, err := r.ScoreAll(ctx, podsFromCache(c))
 	assert.NoError(t, err)
 	assert.Equal(t, 3, len(scores))
-	
+
 	pods := podsFromCache(c).All()
 	for i, p := range pods {
 		if p.Name == "pA" {
@@ -205,7 +205,7 @@ func TestLeastKvCache_ScoreAll(t *testing.T) {
 			assert.False(t, scored[i])
 		}
 	}
-	
+
 	// Check polarity
 	assert.Equal(t, PolarityLeast, r.Polarity())
 }

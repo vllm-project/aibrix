@@ -179,11 +179,11 @@ type wrapper struct {
 	pods []*v1.Pod
 }
 
-func (w wrapper) All() []*v1.Pod { return w.pods }
-func (w wrapper) ListPortsForPod() map[string][]int { return nil }
-func (w wrapper) Indexes() []string { return nil }
+func (w wrapper) All() []*v1.Pod                     { return w.pods }
+func (w wrapper) ListPortsForPod() map[string][]int  { return nil }
+func (w wrapper) Indexes() []string                  { return nil }
 func (w wrapper) ListByIndex(index string) []*v1.Pod { return nil }
-func (w wrapper) Len() int { return len(w.pods) }
+func (w wrapper) Len() int                           { return len(w.pods) }
 
 // Fake scorer for integration testing
 type fakeScorer struct {
@@ -219,7 +219,7 @@ func TestScoreAndRank(t *testing.T) {
 	podA := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "podA"}}
 	podB := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "podB"}}
 	podC := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "podC"}}
-	
+
 	readyPodList := wrapper{[]*v1.Pod{podA, podB, podC}}
 
 	tests := []struct {
@@ -231,11 +231,11 @@ func TestScoreAndRank(t *testing.T) {
 	}{
 		{
 			name: "1) Single Strategy, HigherIsBetter, normal distribution",
-			cfg: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
+			cfg:  &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
 			scorers: map[string]PodScorer{
 				"s1": &fakeScorer{
 					polarity: PolarityMost,
-					scores: map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30}, // min=10, max=30
+					scores:   map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30}, // min=10, max=30
 				},
 			},
 			expectedWin: "podC",
@@ -247,11 +247,11 @@ func TestScoreAndRank(t *testing.T) {
 		},
 		{
 			name: "2) Single Strategy, LowerIsBetter, normal distribution",
-			cfg: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
+			cfg:  &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
 			scorers: map[string]PodScorer{
 				"s1": &fakeScorer{
 					polarity: PolarityLeast,
-					scores: map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30}, // min=10, max=30
+					scores:   map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30}, // min=10, max=30
 				},
 			},
 			expectedWin: "podA",
@@ -263,15 +263,15 @@ func TestScoreAndRank(t *testing.T) {
 		},
 		{
 			name: "3) Multiple Strategies + different weight coefficients",
-			cfg: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 2}, {Name: "s2", Coefficient: 8}}},
+			cfg:  &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 2}, {Name: "s2", Coefficient: 8}}},
 			scorers: map[string]PodScorer{
 				"s1": &fakeScorer{ // HigherIsBetter
 					polarity: PolarityMost,
-					scores: map[*v1.Pod]float64{podA: 100, podB: 50, podC: 0}, // A=1.0, B=0.5, C=0.0
+					scores:   map[*v1.Pod]float64{podA: 100, podB: 50, podC: 0}, // A=1.0, B=0.5, C=0.0
 				},
 				"s2": &fakeScorer{ // LowerIsBetter
 					polarity: PolarityLeast,
-					scores: map[*v1.Pod]float64{podA: 30, podB: 20, podC: 10}, // A=0.0, B=0.5, C=1.0
+					scores:   map[*v1.Pod]float64{podA: 30, podB: 20, podC: 10}, // A=0.0, B=0.5, C=1.0
 				},
 			},
 			// Total weight = 10
@@ -287,17 +287,17 @@ func TestScoreAndRank(t *testing.T) {
 		},
 		{
 			name: "4) Unscored pods have 0 normalized score, but still participate in other strategies",
-			cfg: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}, {Name: "s2", Coefficient: 1}}},
+			cfg:  &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}, {Name: "s2", Coefficient: 1}}},
 			scorers: map[string]PodScorer{
 				"s1": &fakeScorer{ // HigherIsBetter
 					polarity: PolarityMost,
 					// podC is NaN -> scored=false
-					scores: map[*v1.Pod]float64{podA: 100, podB: 50, podC: math.NaN()}, 
+					scores: map[*v1.Pod]float64{podA: 100, podB: 50, podC: math.NaN()},
 					// A=1.0, B=0.0, C=0.0 (penalty)
 				},
 				"s2": &fakeScorer{ // HigherIsBetter
 					polarity: PolarityMost,
-					scores: map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30}, 
+					scores:   map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30},
 					// A=0.0, B=0.5, C=1.0
 				},
 			},
@@ -315,16 +315,16 @@ func TestScoreAndRank(t *testing.T) {
 		},
 		{
 			name: "5) Strategy with all pods unscored contributes 0 to all pods",
-			cfg: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}, {Name: "s2", Coefficient: 1}}},
+			cfg:  &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}, {Name: "s2", Coefficient: 1}}},
 			scorers: map[string]PodScorer{
 				"s1": &fakeScorer{ // HigherIsBetter
 					polarity: PolarityMost,
 					// All NaN -> scored=false for all -> all 0.0
-					scores: map[*v1.Pod]float64{podA: math.NaN(), podB: math.NaN(), podC: math.NaN()}, 
+					scores: map[*v1.Pod]float64{podA: math.NaN(), podB: math.NaN(), podC: math.NaN()},
 				},
 				"s2": &fakeScorer{ // HigherIsBetter
 					polarity: PolarityMost,
-					scores: map[*v1.Pod]float64{podA: 10, podB: 30, podC: 20}, 
+					scores:   map[*v1.Pod]float64{podA: 10, podB: 30, podC: 20},
 					// A=0.0, B=1.0, C=0.5
 				},
 			},
@@ -341,12 +341,12 @@ func TestScoreAndRank(t *testing.T) {
 		},
 		{
 			name: "6) max==min gives normalized score 1.0 (for scored pods only)",
-			cfg: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
+			cfg:  &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
 			scorers: map[string]PodScorer{
 				"s1": &fakeScorer{ // HigherIsBetter
 					polarity: PolarityMost,
 					// A,B are 10. C is NaN.
-					scores: map[*v1.Pod]float64{podA: 10, podB: 10, podC: math.NaN()}, 
+					scores: map[*v1.Pod]float64{podA: 10, podB: 10, podC: math.NaN()},
 				},
 			},
 			// A=1.0, B=1.0, C=0.0
@@ -359,15 +359,15 @@ func TestScoreAndRank(t *testing.T) {
 		},
 		{
 			name: "7) Default weight coefficient is 1", // Tested by parsing logic mainly, but we can verify it here if config is provided.
-			cfg: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}, {Name: "s2", Coefficient: 3}}},
+			cfg:  &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}, {Name: "s2", Coefficient: 3}}},
 			scorers: map[string]PodScorer{
-				"s1": &fakeScorer{ 
+				"s1": &fakeScorer{
 					polarity: PolarityMost,
-					scores: map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30}, // A=0, B=0.5, C=1.0
+					scores:   map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30}, // A=0, B=0.5, C=1.0
 				},
-				"s2": &fakeScorer{ 
+				"s2": &fakeScorer{
 					polarity: PolarityLeast,
-					scores: map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30}, // A=1.0, B=0.5, C=0.0
+					scores:   map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30}, // A=1.0, B=0.5, C=0.0
 				},
 			},
 			// s1 weight=1, s2 weight=3, total=4
@@ -781,8 +781,8 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 50},
 			},
 			"podB": {
-				metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 2}, // B is better for least-request
-				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 10},  // B is worse for throughput
+				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 2},  // B is better for least-request
+				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 10}, // B is worse for throughput
 				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 5},
 			},
 		})
@@ -793,18 +793,18 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 	// Force initialize router registry using our test cache
 	// Normally `Init()` initializes routers using `cache.Get()`. We override the factory specifically for testing here.
 	rm := NewRouterManager()
-	
+
 	// Register least-request with the test cache
 	rm.Register(RouterLeastRequest, func() (types.Router, error) {
 		return &leastRequestRouter{cache: c}, nil
 	})
-	
+
 	// Register throughput with the test cache
 	rm.Register(RouterThroughput, func() (types.Router, error) {
 		return throughputRouter{cache: c}, nil
 	})
-	
-	// Register session-affinity 
+
+	// Register session-affinity
 	rm.Register(RouterSessionAffinity, func() (types.Router, error) {
 		return NewSessionAffinityRouter()
 	})
@@ -813,8 +813,8 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 	rm.Register(RouterPrefixCache, func() (types.Router, error) {
 		tokenizerObj, _ := tokenizer.NewTokenizer("character", nil)
 		return prefixCacheRouter{
-			prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(), 
-			tokenizer: tokenizerObj,
+			prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+			tokenizer:          tokenizerObj,
 		}, nil
 	})
 
@@ -824,16 +824,16 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 	t.Run("E2E_MultiStrategy_LeastRequest_Dominates", func(t *testing.T) {
 		algString := "least-request:10,throughput:1"
 		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "", "req1", "")
-		
+
 		router, err := rm.Select(ctx)
 		assert.NoError(t, err)
-		
+
 		_, isMulti := router.(*multiStrategyRouter)
 		assert.True(t, isMulti, "Expected multiStrategyRouter")
 
 		targetIP, err := router.Route(ctx, pods)
 		assert.NoError(t, err)
-		
+
 		// podB should win because least-request has weight 10, and podB has 2 requests vs podA's 10.
 		// Normalized scores:
 		// least-request: podA=0.0, podB=1.0. Weight=10
@@ -846,13 +846,13 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 	t.Run("E2E_MultiStrategy_Throughput_Dominates", func(t *testing.T) {
 		algString := "least-request:1,throughput:10"
 		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "", "req2", "")
-		
+
 		router, err := rm.Select(ctx)
 		assert.NoError(t, err)
 
 		targetIP, err := router.Route(ctx, pods)
 		assert.NoError(t, err)
-		
+
 		// Throughput now uses PolarityLeast (lower accumulated throughput is better)
 		// podB has lower throughput scores than podA (10/5 vs 100/50), so podB is better for throughput.
 		// Total: podA = 0, podB = 10 -> podB wins!
@@ -866,13 +866,13 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		// least-latency has weight 0 (should be parsed out and completely ignored)
 		algString := "least-request,throughput:2,least-latency:0"
 		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "", "req4", "")
-		
+
 		router, err := rm.Select(ctx)
 		assert.NoError(t, err)
 
 		targetIP, err := router.Route(ctx, pods)
 		assert.NoError(t, err)
-		
+
 		// The active strategies are least-request (weight 1) and throughput (weight 2)
 		// least-request: podA=0.0, podB=1.0. Weight=1. Score contribution: A=0, B=1
 		// throughput: podA=0.0, podB=1.0. Weight=2. Score contribution: A=0, B=2
@@ -885,14 +885,14 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		// "invalid-strategy:1" is not registered. It should fallback to the RandomRouter
 		algString := "least-request:1,invalid-strategy:1"
 		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "", "req5", "")
-		
+
 		router, err := rm.Select(ctx)
 		assert.NoError(t, err)
-		
+
 		// Should fallback to random router, not multiStrategyRouter
 		_, isMulti := router.(*multiStrategyRouter)
 		assert.False(t, isMulti, "Expected fallback to non-multiStrategyRouter")
-		
+
 		_, isRandom := router.(*randomRouter)
 		assert.True(t, isRandom, "Expected fallback to randomRouter")
 	})
@@ -903,13 +903,13 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		// Weight 10 for session affinity means it will heavily bias towards the session pod
 		algString := "session-affinity:10,least-request:1"
 		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "", "req6", "")
-		
+
 		router, err := rm.Select(ctx)
 		assert.NoError(t, err)
-		
+
 		targetIP, err := router.Route(ctx, pods)
 		assert.NoError(t, err)
-		
+
 		// The active strategies are session-affinity (weight 10) and least-request (weight 1).
 		// Request has no session header, so session-affinity gives 0 to all pods.
 		// session-affinity: podA=0.0, podB=0.0. Weight=10. Score contribution: A=0.0, B=0.0
@@ -923,13 +923,13 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		// Prefix cache is 1, least-request is 2
 		algString := "prefix-cache:1,least-request:2"
 		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "input text", "req7", "")
-		
+
 		router, err := rm.Select(ctx)
 		assert.NoError(t, err)
-		
+
 		targetIP, err := router.Route(ctx, pods)
 		assert.NoError(t, err)
-		
+
 		// The active strategies are prefix-cache (weight 1) and least-request (weight 2).
 		// We didn't seed any prefix cache, so prefix-cache gives 0.0 to all pods.
 		// Min=0, Max=0, so normalizeScoresArray will give 1.0 to all scored pods.
@@ -941,19 +941,19 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 
 	// --- 8. E2E Test: Multi-Strategy vs Single Strategy Comparison Tests ---
 	// Let's demonstrate how multi-strategy provides a more optimal solution than a single strategy.
-	
+
 	// Test 8a: Single Strategy (least-request) fails to consider throughput load
 	t.Run("E2E_SingleStrategy_LeastRequest_Only", func(t *testing.T) {
 		algString := "least-request"
 		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "test request", "req8a", "")
-		
+
 		router, err := rm.Select(ctx)
 		assert.NoError(t, err)
-		
+
 		targetIP, err := router.Route(ctx, pods)
 		assert.NoError(t, err)
-		
-		// Pod B has 2 requests, Pod A has 10 requests. 
+
+		// Pod B has 2 requests, Pod A has 10 requests.
 		// "least-request" purely looks at current active requests, so it picks Pod B.
 		assert.Contains(t, targetIP, "2.2.2.2")
 	})
@@ -962,13 +962,13 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 	t.Run("E2E_SingleStrategy_Throughput_Only", func(t *testing.T) {
 		algString := "throughput"
 		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "test request", "req8b", "")
-		
+
 		router, err := rm.Select(ctx)
 		assert.NoError(t, err)
-		
+
 		targetIP, err := router.Route(ctx, pods)
 		assert.NoError(t, err)
-		
+
 		// "throughput" (PolarityLeast) looks for the pod that has processed the *least total weighted tokens*.
 		// Pod A: 2*100 + 50 = 250.
 		// Pod B: 2*10 + 5 = 25.
@@ -988,7 +988,7 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 			},
 		},
 	}
-	
+
 	// Re-initialize cache with 3 pods for the advanced comparison
 	c3 := cache.NewWithPodsMetricsForTest(
 		[]*v1.Pod{podA, podB, podC},
@@ -998,7 +998,7 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 				// Very low active requests, but historically massive throughput (very tired/hot)
 				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 1},
 				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 500},
-				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 500}, 
+				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 500},
 				// throughput score = 1500 (Worst)
 			},
 			"podB": {
@@ -1046,7 +1046,7 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		ctx := types.NewRoutingContext(context.Background(), "least-request:1,throughput:1", model, "", "req8e", "")
 		router, _ := rm3.Select(ctx)
 		targetIP, _ := router.Route(ctx, pods3)
-		
+
 		// Math:
 		// least-request (Least is better): Min=1(A), Max=50(B)
 		//   A: (50-1)/49 = 1.0
@@ -1070,17 +1070,17 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 	t.Run("E2E_MultiStrategy_Reviewer_Benchmark_Simulation", func(t *testing.T) {
 		algString := "prefix-cache:6,least-request,throughput"
 		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "another request", "req8", "")
-		
+
 		router, err := rm.Select(ctx)
 		assert.NoError(t, err)
-		
+
 		targetIP, err := router.Route(ctx, pods)
 		assert.NoError(t, err)
-		
+
 		// Expected Calculation:
 		// 1. prefix-cache (weight 6): No cache match seeded. Min=0, Max=0. Both pods get normalized score 1.0.
 		//    Weighted: A = 6.0, B = 6.0
-		// 2. least-request (weight 1): Pod A=10, Pod B=2. (PolarityLeast). Max=10, Min=2. 
+		// 2. least-request (weight 1): Pod A=10, Pod B=2. (PolarityLeast). Max=10, Min=2.
 		//    Pod A: (10-10)/8 = 0.0. Pod B: (10-2)/8 = 1.0.
 		//    Weighted: A = 0.0, B = 1.0
 		// 3. throughput (weight 1): Pod A=250, Pod B=25. (PolarityLeast). Max=250, Min=25.

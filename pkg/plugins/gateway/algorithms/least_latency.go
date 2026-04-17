@@ -77,7 +77,7 @@ func (r leastExpectedLatencyRouter) ScoreAll(ctx *types.RoutingContext, readyPod
 			cntGeneration += 1
 		}
 	}
-	
+
 	guessPromptTokens := 10.0
 	if cntPromt > 0 {
 		guessPromptTokens = sumPromptTokens / float64(cntPromt)

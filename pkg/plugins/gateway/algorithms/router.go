@@ -26,8 +26,8 @@ import (
 	"sync"
 	"time"
 
-	v1 "k8s.io/api/core/v1"
 	"github.com/vllm-project/aibrix/pkg/types"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
@@ -199,6 +199,15 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 	pods := readyPodList.All()
 	finalScores := make(map[*v1.Pod]float64)
 
+	// To collect diagnostic info for klog
+	type podDiag struct {
+		StrategyLog []string
+	}
+	diags := make(map[*v1.Pod]*podDiag)
+	for _, pod := range pods {
+		diags[pod] = &podDiag{}
+	}
+
 	// Calculate total weight to act as denominator
 	totalWeight := 0.0
 	for _, item := range m.config.Items {
@@ -227,7 +236,16 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 		// 3. Aggregate into final sum
 		weightFraction := float64(item.Coefficient) / totalWeight
 		for i, pod := range pods {
-			finalScores[pod] += normScores[i] * weightFraction
+			weightedScore := normScores[i] * weightFraction
+			finalScores[pod] += weightedScore
+
+			// Record diagnostic information for this pod and strategy
+			rawScoreStr := "N/A"
+			if scored[i] {
+				rawScoreStr = fmt.Sprintf("%.2f", scores[i])
+			}
+			diagStr := fmt.Sprintf("%s(raw:%s, norm:%.2f, weight:%.3f)", item.Name, rawScoreStr, normScores[i], weightedScore)
+			diags[pod].StrategyLog = append(diags[pod].StrategyLog, diagStr)
 		}
 	}
 
@@ -253,13 +271,26 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 	// Tie-break: select the first pod in the original order
 	winner := topPods[0]
 
+	// 5. Log the routing decision and all candidate metrics to klog
+	var logBuilder strings.Builder
+	logBuilder.WriteString(fmt.Sprintf("Multi-strategy routing decision for request [%s]. Selected target pod: [%s]. Candidate pod details:\n", ctx.RequestID, winner.Name))
+	for _, pod := range pods {
+		winnerFlag := " "
+		if pod.Name == winner.Name {
+			winnerFlag = "*"
+		}
+		logBuilder.WriteString(fmt.Sprintf("  [%s] Pod: %-30s | FinalScore: %.4f | Details: %s\n",
+			winnerFlag, pod.Name, finalScores[pod], strings.Join(diags[pod].StrategyLog, ", ")))
+	}
+	klog.Info(logBuilder.String())
+
 	return winner, finalScores, nil
 }
 
 // normalizeScoresArray maps raw values to a [0, 1] scale.
 func (m *multiStrategyRouter) normalizeScoresArray(scores []float64, scored []bool, polarity Polarity) []float64 {
 	normScores := make([]float64, len(scores))
-	
+
 	minVal := math.MaxFloat64
 	maxVal := -math.MaxFloat64
 	scoredCount := 0
@@ -349,7 +380,7 @@ func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
 // Call Validate before this function to ensure expected behavior.
 func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error) {
 	algStr := string(ctx.Algorithm)
-	
+
 	// Check if it's a multi-strategy (contains ',' or ':')
 	if strings.Contains(algStr, ",") || strings.Contains(algStr, ":") {
 		cfg, err := ParseMultiRouterConfig(algStr)
