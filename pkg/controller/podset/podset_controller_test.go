@@ -45,6 +45,14 @@ func TestCreatePodFromTemplate_EnvOrder(t *testing.T) {
 			PodGroupSize: 2,
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
+					InitContainers: []corev1.Container{
+						{
+							Name: "init-container",
+							Env: []corev1.EnvVar{
+								{Name: "INIT_USER_VAR", Value: "init-value"},
+							},
+						},
+					},
 					Containers: []corev1.Container{
 						{
 							Name: "test-container",
@@ -99,6 +107,19 @@ func TestCreatePodFromTemplate_EnvOrder(t *testing.T) {
 		assert.Less(t, actualIndex, len(container.Env), "should have enough user-defined env vars")
 		assert.Equal(t, expectedName, container.Env[actualIndex].Name, "User-defined env var should maintain original order")
 	}
+
+	// Verify InitContainers have built-in env vars at the beginning
+	assert.Len(t, pod.Spec.InitContainers, 1, "pod should have one init container")
+	initContainer := &pod.Spec.InitContainers[0]
+	expectedInitEnvCount := len(builtInEnvNames) + 1 // 3 built-in + 1 user-defined
+	assert.Equal(t, expectedInitEnvCount, len(initContainer.Env), "init container should have correct number of env vars")
+	// Verify built-in env vars are at the beginning of init container
+	for i := 0; i < len(builtInEnvNames); i++ {
+		assert.Equal(t, builtInEnvNames[i], initContainer.Env[i].Name, "Built-in env var should be at the beginning of init container")
+	}
+	// Verify user-defined env var in init container
+	assert.Equal(t, "INIT_USER_VAR", initContainer.Env[len(builtInEnvNames)].Name, "User-defined env var should be present in init container")
+	assert.Equal(t, "init-value", initContainer.Env[len(builtInEnvNames)].Value, "User-defined env var value should be preserved in init container")
 }
 
 func TestCreatePodFromTemplate_EnvConflict(t *testing.T) {
