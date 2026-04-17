@@ -37,7 +37,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/redissync"
+	statesync "github.com/vllm-project/aibrix/pkg/plugins/gateway/statesync"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"google.golang.org/grpc/health"
@@ -161,12 +161,12 @@ func main() {
 	gatewayServer := gateway.NewServer(redisClient, k8sClient, gatewayK8sClient)
 
 	redissyncEnabled := utils.LoadEnvBool("AIBRIX_REDISSYNC_ENABLED", false)
-	var syncManager *redissync.RedisSync
+	var syncManager *statesync.RedisSync
 	if redissyncEnabled {
 		klog.InfoS("redissync enabled; starting cross-replica state sync")
 		table := prefixcacheindexer.GetSharedPrefixHashTable()
 		table.EnableDeltaSync()
-		syncManager = redissync.New(redisClient)
+		syncManager = statesync.New(redisClient)
 		syncManager.Register(prefixcacheindexer.NewPrefixHashTableSyncable(table))
 		syncManager.Start()
 	} else {
