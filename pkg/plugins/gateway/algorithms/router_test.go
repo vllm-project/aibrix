@@ -545,14 +545,14 @@ func TestWithIPPods(t *testing.T) {
 		model,
 		map[string]map[string]metrics.MetricValue{
 			"p1": {
-				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 15},
-				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 20},
-				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 20},
+				metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 15},
+				metrics.AvgPromptToksPerReq:        &metrics.SimpleMetricValue{Value: 20},
+				metrics.AvgGenerationToksPerReq:    &metrics.SimpleMetricValue{Value: 20},
 			},
 			"p2": {
-				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 45},
-				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 15},
-				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 2},
+				metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 45},
+				metrics.AvgPromptToksPerReq:        &metrics.SimpleMetricValue{Value: 15},
+				metrics.AvgGenerationToksPerReq:    &metrics.SimpleMetricValue{Value: 2},
 			},
 		})
 
@@ -777,13 +777,13 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 				// least-request wants lower running requests
 				metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 10},
 				// throughput wants higher throughput
-				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 100},
-				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 50},
+				metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 100},
+				metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 50},
 			},
 			"podB": {
-				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 2},  // B is better for least-request
-				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 10}, // B is worse for throughput
-				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 5},
+				metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 2},  // B is better for least-request
+				metrics.AvgPromptToksPerReq:        &metrics.SimpleMetricValue{Value: 10}, // B is worse for throughput
+				metrics.AvgGenerationToksPerReq:    &metrics.SimpleMetricValue{Value: 5},
 			},
 		})
 
@@ -969,12 +969,7 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		targetIP, err := router.Route(ctx, pods)
 		assert.NoError(t, err)
 
-		// "throughput" (PolarityLeast) looks for the pod that has processed the *least total weighted tokens*.
-		// Pod A: 2*100 + 50 = 250.
-		// Pod B: 2*10 + 5 = 25.
-		// Pod B has processed significantly fewer tokens (25 vs 250), meaning its historical load is much lower.
-		// Therefore, "throughput" alone will also pick Pod B.
-		assert.Contains(t, targetIP, "2.2.2.2")
+		assert.Contains(t, targetIP, "2.2.2.2") // Throughput is polarity least: Pod B is best
 	})
 
 	// Let's modify the metrics temporarily to create a scenario where single strategies disagree,
@@ -996,23 +991,23 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		map[string]map[string]metrics.MetricValue{
 			"podA": {
 				// Very low active requests, but historically massive throughput (very tired/hot)
-				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 1},
-				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 500},
-				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 500},
-				// throughput score = 1500 (Worst)
+				metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1},
+				metrics.AvgPromptToksPerReq:        &metrics.SimpleMetricValue{Value: 500},
+				metrics.AvgGenerationToksPerReq:    &metrics.SimpleMetricValue{Value: 500},
+				// throughput score = 1500 (Worst for throughput, best for least-request)
 			},
 			"podB": {
 				// Historically barely used, but currently slammed with requests
-				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 50}, // Worst
-				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 5},
-				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 5},
-				// throughput score = 15 (Best)
+				metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 50}, // Worst
+				metrics.AvgPromptToksPerReq:        &metrics.SimpleMetricValue{Value: 5},
+				metrics.AvgGenerationToksPerReq:    &metrics.SimpleMetricValue{Value: 5},
+				// throughput score = 15 (Best for throughput, worst for least-request)
 			},
 			"podC": {
 				// The "Sweet Spot": Medium active requests, medium historical throughput
-				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 10}, // Medium
-				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 50},
-				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 50},
+				metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 10}, // Medium
+				metrics.AvgPromptToksPerReq:        &metrics.SimpleMetricValue{Value: 50},
+				metrics.AvgGenerationToksPerReq:    &metrics.SimpleMetricValue{Value: 50},
 				// throughput score = 150 (Medium)
 			},
 		})
@@ -1032,7 +1027,7 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		assert.Contains(t, targetIP, "1.1.1.1") // Picks Pod A
 	})
 
-	// Test 8d: Single Strategy (throughput) picks Pod B, ignoring that B is currently slammed
+	// Test 8d: Single Strategy (throughput) picks Pod B (historically least loaded)
 	t.Run("E2E_Comparison_Single_Throughput", func(t *testing.T) {
 		ctx := types.NewRoutingContext(context.Background(), "throughput", model, "", "req8d", "")
 		router, _ := rm3.Select(ctx)
@@ -1047,21 +1042,7 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		router, _ := rm3.Select(ctx)
 		targetIP, _ := router.Route(ctx, pods3)
 
-		// Math:
-		// least-request (Least is better): Min=1(A), Max=50(B)
-		//   A: (50-1)/49 = 1.0
-		//   B: (50-50)/49 = 0.0
-		//   C: (50-10)/49 = 0.816
-		// throughput (Least is better): Min=15(B), Max=1500(A)
-		//   A: (1500-1500)/1485 = 0.0
-		//   B: (1500-15)/1485 = 1.0
-		//   C: (1500-150)/1485 = 0.909
-		// Total Scores (equal weight):
-		//   A = 1.0 + 0.0 = 1.0
-		//   B = 0.0 + 1.0 = 1.0
-		//   C = 0.816 + 0.909 = 1.725
-		// Pod C has the highest combined soft score!
-		assert.Contains(t, targetIP, "3.3.3.3") // Picks Pod C
+		assert.Contains(t, targetIP, "3.3.3.3")
 	})
 
 	// 9. E2E Test: Reviewer's Benchmark Scenario (prefix-cache:0.75, least-request:0.125, throughput:0.125)
