@@ -89,10 +89,35 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 	// Derive and validate routing strategy (headers -> profile -> env); return 400 on invalid
 	if strategy, enabled := deriveRoutingStrategyFromContext(routingCtx); enabled {
-		var ok bool
-		if routingAlgorithm, ok = routing.Validate(strategy); !ok {
-			klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", strategy)
-			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategy %s", strategy), "", "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
+		algorithms := parseChainedAlgorithms(strategy)
+		var validAlgorithms, invalidAlgorithms []types.RoutingAlgorithm
+		for _, alg := range algorithms {
+			if alg == routing.RouterChained { // Reject "chained" as it's an internal algorithm
+				invalidAlgorithms = append(invalidAlgorithms, alg)
+				continue
+			}
+			if _, ok := routing.Validate(string(alg)); ok {
+				validAlgorithms = append(validAlgorithms, alg)
+			} else {
+				invalidAlgorithms = append(invalidAlgorithms, alg)
+			}
+		}
+
+		if len(validAlgorithms) < 1 {
+			klog.Warningf("incorrect routing strategies in chain, requestID: %s, invalid-strategies: %v", requestID, invalidAlgorithms)
+			if len(invalidAlgorithms) > 0 {
+				return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategies: %v", invalidAlgorithms), "", "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
+			}
+			// Return error for empty valid algorithms
+			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no valid routing strategies provided", "", "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
+		}
+
+		if len(validAlgorithms) > 1 {
+			routingAlgorithm = routing.RouterChained
+			// Set chained algorithms to routing context
+			routingCtx.Algorithms = validAlgorithms
+		} else if len(validAlgorithms) == 1 {
+			routingAlgorithm = validAlgorithms[0]
 		}
 		routingCtx.Algorithm = routingAlgorithm
 	}

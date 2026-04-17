@@ -58,6 +58,7 @@ type RoutingAlgorithm string
 type RoutingContext struct {
 	context.Context
 	Algorithm      RoutingAlgorithm
+	Algorithms     []RoutingAlgorithm // Chained routing algorithms (multiple algorithms applied in sequence)
 	Model          string
 	Engine         string
 	Stream         bool
@@ -89,6 +90,10 @@ type RoutingContext struct {
 	// Set in HandleRequestBody from model.aibrix.ai/config (annotation)
 	// based on config-profile header. Nil when no config is present.
 	ConfigProfile *ResolvedConfigProfile
+
+	// CandidatePods holds the list of candidate pods for routing.
+	// This is used in chained routing where each algorithm can narrow down the candidates.
+	CandidatePods []*v1.Pod
 
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
@@ -310,6 +315,7 @@ func (r *RoutingContext) getError() (err error) {
 func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID, user string) {
 	r.Context = ctx
 	r.Algorithm = algorithms
+	r.Algorithms = nil // Reset chained algorithms
 	r.Model = model
 	r.Engine = ""
 	r.Stream = false
@@ -335,6 +341,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 
 	r.RespHeaders = map[string]string{}
 	r.ConfigProfile = nil
+	r.CandidatePods = nil                // Reset candidate pods
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
 	r.lastError.Store(nil)
