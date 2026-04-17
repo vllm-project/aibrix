@@ -567,6 +567,41 @@ func buildEnvoyProxyHeaders(headers []*configPb.HeaderValueOption, keyValues ...
 	return headers
 }
 
+func buildImmediateResponseFromHTTPResponse(resp *types.ImmediateHTTPResponse, extraHeaders map[string]string) *extProcPb.ProcessingResponse {
+	if resp == nil {
+		return nil
+	}
+	headers := map[string]string{}
+	for k, v := range resp.Headers {
+		headers[k] = v
+	}
+	for k, v := range extraHeaders {
+		headers[k] = v
+	}
+	if _, ok := headers["Content-Type"]; !ok {
+		headers["Content-Type"] = "application/json"
+	}
+	return &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+			ImmediateResponse: &extProcPb.ImmediateResponse{
+				Status: &envoyTypePb.HttpStatus{Code: envoyTypePb.StatusCode(resp.StatusCode)},
+				Headers: &extProcPb.HeaderMutation{
+					SetHeaders: buildEnvoyProxyHeaders([]*configPb.HeaderValueOption{}, flattenHeaderMap(headers)...),
+				},
+				Body: string(resp.Body),
+			},
+		},
+	}
+}
+
+func flattenHeaderMap(headers map[string]string) []string {
+	keyValues := make([]string, 0, len(headers)*2)
+	for k, v := range headers {
+		keyValues = append(keyValues, k, v)
+	}
+	return keyValues
+}
+
 // validateEmbeddingInput validates the input according to OpenAI embedding constraints
 func validateEmbeddingInput(embeddingObj openai.EmbeddingNewParams) error {
 	inputParam := embeddingObj.Input

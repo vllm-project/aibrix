@@ -676,3 +676,82 @@ func Test_handleRequestBody(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleRequestBody_ImmediateResponseBypassesTargetPodGuard(t *testing.T) {
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	mockRouter := new(mockRouter)
+
+	mockRouterProvider := func() (types.Router, error) {
+		return mockRouter, nil
+	}
+	routingalgorithms.Register(TestRouterAlgorithm, mockRouterProvider)
+	routingalgorithms.Init()
+
+	podList := &utils.PodArray{
+		Pods: []*v1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "prefill-pod", Namespace: "default"},
+				Status: v1.PodStatus{
+					PodIP:      "1.2.3.4",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "decode-pod", Namespace: "default"},
+				Status: v1.PodStatus{
+					PodIP:      "1.2.3.5",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				},
+			},
+		},
+	}
+
+	mockCache.On("HasModel", "test-model").Return(true)
+	mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+	mockCache.On("AddRequestCount", mock.Anything, "test-request-id", "test-model").Return(int64(7)).Once()
+
+	mockRouter.On("Route", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		ctx := args.Get(0).(*types.RoutingContext)
+		ctx.ImmediateResponse = &types.ImmediateHTTPResponse{
+			StatusCode: 200,
+			Headers: map[string]string{
+				"Content-Type": "application/json",
+			},
+			Body: []byte(`{"choices":[{"message":{"role":"assistant","content":"yes"},"finish_reason":"stop"}]}`),
+		}
+	}).Return("", nil).Once()
+
+	server := &Server{
+		cache: mockCache,
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), TestRouterAlgorithm, "", "", "test-request-id", "")
+	routingCtx.ReqPath = PathChatCompletions
+	routingCtx.ReqHeaders = map[string]string{
+		HeaderRoutingStrategy: string(TestRouterAlgorithm),
+	}
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{
+				Body: []byte(`{"model":"test-model","messages":[{"role":"user","content":"hello"}]}`),
+			},
+		},
+	}
+
+	resp, model, updatedCtx, stream, term := server.HandleRequestBody(routingCtx, "test-request-id", req, utils.User{})
+
+	assert.Equal(t, "test-model", model)
+	assert.False(t, stream)
+	assert.Equal(t, int64(7), term)
+	assert.Same(t, routingCtx, updatedCtx)
+	if assert.NotNil(t, resp.GetImmediateResponse()) {
+		assert.Equal(t, envoyTypePb.StatusCode_OK, resp.GetImmediateResponse().GetStatus().GetCode())
+		assert.Contains(t, resp.GetImmediateResponse().GetBody(), `"finish_reason":"stop"`)
+	}
+
+	mockCache.AssertExpectations(t)
+	mockRouter.AssertExpectations(t)
+}

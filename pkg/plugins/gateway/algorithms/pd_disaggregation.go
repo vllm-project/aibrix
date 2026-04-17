@@ -304,6 +304,9 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		}
 		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestSuccessTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRoutePrefillRequestSuccess, "status_code": "200"})
+		if ctx.ImmediateResponse != nil {
+			return "", nil
+		}
 	}
 
 	ctx.SetTargetPod(decodePod)

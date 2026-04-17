@@ -123,7 +123,7 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		go func() {
 			defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
 
-			if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
+			if _, _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
 				klog.ErrorS(err, "prefill_request_failed",
 					"request_id", routingCtx.RequestID,
 					"llm_engine", llmEngine,
@@ -174,7 +174,7 @@ func (r *pdRouter) handleSyncPrefill(
 	errorContext string) error {
 	defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
 
-	responseData, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
+	responseData, rawBody, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
 	if err != nil {
 		klog.ErrorS(err, "prefill_request_failed",
 			"request_id", routingCtx.RequestID,
@@ -183,6 +183,28 @@ func (r *pdRouter) handleSyncPrefill(
 			"prefill_pod_ip", prefillPod.Status.PodIP,
 			"elapsed", routingCtx.Elapsed(time.Now()))
 		return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
+	}
+
+	// TensorRT-LLM: prefill can already produce a terminal response (e.g. short tasks
+	// that finish within max_tokens=1). In that case, skip decode entirely and
+	// return the prefill response directly back to the client via gateway's
+	// ImmediateResponse path.
+	if llmEngine == TensorRTLLM && isPrefillResponseComplete(responseData) {
+		routingCtx.ImmediateResponse = &types.ImmediateHTTPResponse{
+			StatusCode: http.StatusOK,
+			Headers: map[string]string{
+				"Content-Type":   "application/json",
+				"x-prefill-only": "true",
+			},
+			Body: rawBody,
+		}
+		routingCtx.PrefillEndTime = time.Now()
+		fields = append(fields,
+			"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
+			"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
+			"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
+		klog.InfoS("prefill_complete_skip_decode", fields...)
+		return nil
 	}
 
 	if updateCtxFunc != nil {
@@ -282,13 +304,13 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 // GatewayPrefillRequestFailTotal before being returned as errors.
 // TRT-LLM responses are parsed with UseInt64=true to avoid float64 precision
 // loss on large integer fields such as disagg_request_id.
-func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingContext, payload []byte) (map[string]any, error) {
+func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingContext, payload []byte) (map[string]any, []byte, error) {
 	ctx, cancel := context.WithTimeout(routingCtx.Context, time.Duration(prefillRequestTimeout)*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create http prefill request: %w", err)
+		return nil, nil, fmt.Errorf("failed to create http prefill request: %w", err)
 	}
 
 	for key, value := range routingCtx.ReqHeaders {
@@ -302,7 +324,7 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 		status, code := metrics.HttpFailureStatusCode(ctx, err, nil)
 		metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": status, "status_code": code})
-		return nil, fmt.Errorf("failed to execute http prefill request: %w", err)
+		return nil, nil, fmt.Errorf("failed to execute http prefill request: %w", err)
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -310,14 +332,14 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read prefill response body: %w", err)
+		return nil, nil, fmt.Errorf("failed to read prefill response body: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		status, code := metrics.HttpFailureStatusCode(ctx, nil, resp)
 		metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": status, "status_code": code})
-		return nil, fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, body, fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	// TRT-LLM prefill responses contain large integer IDs in disaggregated_params;
@@ -330,10 +352,29 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 		errUnmarshal = sonic.Unmarshal(body, &responseData)
 	}
 	if errUnmarshal != nil {
-		return nil, fmt.Errorf("failed to unmarshal prefill response: %w", errUnmarshal)
+		return nil, body, fmt.Errorf("failed to unmarshal prefill response: %w", errUnmarshal)
 	}
 
-	return responseData, nil
+	return responseData, body, nil
+}
+
+// isPrefillResponseComplete returns true when a TensorRT-LLM prefill response already
+// contains a terminal generation, meaning the decode phase is unnecessary.
+//
+// TRT-LLM can return a terminal finish_reason (e.g. "stop") during a prefill capped
+// with max_tokens=1 for short tasks. When finish_reason is "length" (or "not_finished"),
+// decode is still needed to continue generation.
+func isPrefillResponseComplete(responseData map[string]any) bool {
+	choices, ok := responseData["choices"].([]any)
+	if !ok || len(choices) == 0 {
+		return false
+	}
+	choice, ok := choices[0].(map[string]any)
+	if !ok {
+		return false
+	}
+	finishReason, _ := choice["finish_reason"].(string)
+	return finishReason != "" && finishReason != "length" && finishReason != "not_finished"
 }
 
 // updateRoutingContextWithKVTransferParams merges vLLM KV-transfer metadata
