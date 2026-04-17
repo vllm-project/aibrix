@@ -96,6 +96,35 @@ SGLANG_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
     ),
 }
 
+# TRT-LLM metric standard rules
+# Note: TRT-LLM (trtllm-serve) emits metrics without a namespace prefix
+# (e.g., "e2e_request_latency_seconds" instead of "trtllm:e2e_request_latency_seconds").
+TRTLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
+    # Latency metrics - map to aibrix namespace
+    "e2e_request_latency_seconds": RenameStandardRule(
+        "e2e_request_latency_seconds", "aibrix:e2e_request_latency_seconds"
+    ),
+    "time_to_first_token_seconds": RenameStandardRule(
+        "time_to_first_token_seconds", "aibrix:time_to_first_token_seconds"
+    ),
+    "time_per_output_token_seconds": RenameStandardRule(
+        "time_per_output_token_seconds", "aibrix:time_per_output_token_seconds"
+    ),
+    # Request metrics
+    "request_success_total": RenameStandardRule(
+        "request_success_total", "aibrix:request_success_total"
+    ),
+    # Cache metrics
+    "kv_cache_utilization": RenameStandardRule(
+        "kv_cache_utilization", "aibrix:kv_cache_usage_perc"
+    ),
+    "kv_cache_hit_rate": RenameStandardRule(
+        "kv_cache_hit_rate", "aibrix:kv_cache_hit_rate"
+    ),
+    # Pass-through for debugging
+    "request_queue_time_seconds": PassthroughStandardRule("request_queue_time_seconds"),
+}
+
 # Enhanced vLLM rules with pass-through for debugging metrics
 ENHANCED_VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
     **VLLM_METRIC_STANDARD_RULES,
@@ -107,8 +136,6 @@ ENHANCED_VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
     ),
 }
 
-# TODO add more engine standard rules
-
 
 def get_metric_standard_rules(engine: str) -> Dict[str, StandardRule]:
     engine_lower = engine.lower()
@@ -116,7 +143,9 @@ def get_metric_standard_rules(engine: str) -> Dict[str, StandardRule]:
         return ENHANCED_VLLM_METRIC_STANDARD_RULES
     elif engine_lower == "sglang":
         return SGLANG_METRIC_STANDARD_RULES
+    elif engine_lower == "trtllm":
+        return TRTLLM_METRIC_STANDARD_RULES
     else:
         raise ValueError(
-            f"Engine {engine} is not supported. Supported engines: vllm, sglang"
+            f"Engine {engine} is not supported. Supported engines: vllm, sglang, trtllm"
         )

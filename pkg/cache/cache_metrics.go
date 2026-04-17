@@ -291,6 +291,17 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			model := parts[0]
 			metric := parts[1]
 
+			// Fallback: if the model name from raw metrics is invalid
+			// (e.g., "undefined" from TRT-LLM with absolute model paths),
+			// use the pod's authoritative label instead.
+			if model == "" || model == "undefined" {
+				if podModel, exists := pod.Pod.Labels[modelLabel]; exists && podModel != "" {
+					model = podModel
+					klog.V(4).InfoS("Using pod label as model name fallback",
+						"pod", pod.Name, "originalModel", parts[0], "resolvedModel", model)
+				}
+			}
+
 			if shouldSkipMetric(pod.Name, metric) {
 				continue
 			}
@@ -483,6 +494,15 @@ func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.Engine
 	for modelMetricKey, metricValue := range result.ModelMetrics {
 		// modelMetricKey format: "model/metric"
 		modelName, metricName := parseModelMetricKey(modelMetricKey)
+
+		// Fallback: if the model name from raw metrics is invalid
+		// (e.g., "undefined" from TRT-LLM with absolute model paths),
+		// use the pod's authoritative label instead.
+		if modelName == "" || modelName == "undefined" {
+			if podModel, exists := pod.Pod.Labels[constants.ModelLabelName]; exists && podModel != "" {
+				modelName = podModel
+			}
+		}
 
 		if metricDef, exists := metrics.Metrics[metricName]; exists {
 			err := c.updatePodRecord(pod, modelName, metricName, metricDef.MetricScope, metricValue)

@@ -157,7 +157,7 @@ class TestMultiEngineMetricsSupport:
             get_metric_standard_rules("tensorrt-llm")
 
         assert "tensorrt-llm" in str(exc_info.value)
-        assert "Supported engines: vllm, sglang" in str(exc_info.value)
+        assert "Supported engines: vllm, sglang, trtllm" in str(exc_info.value)
 
     def test_core_metrics_standardization(self):
         """Test that core metrics from both engines map to same aibrix namespace."""
@@ -213,6 +213,54 @@ class TestMultiEngineMetricsSupport:
             vllm_e2e_rule.new_name
             == sglang_e2e_rule.new_name
             == "aibrix:e2e_request_latency_seconds"
+        )
+
+    def test_trtllm_metrics_standardization(self):
+        """Test that trtllm metrics map to aibrix namespace correctly."""
+        trtllm_rules = get_metric_standard_rules("trtllm")
+
+        # Latency metrics should map to aibrix namespace
+        assert trtllm_rules["e2e_request_latency_seconds"].new_name == "aibrix:e2e_request_latency_seconds"
+        assert trtllm_rules["time_to_first_token_seconds"].new_name == "aibrix:time_to_first_token_seconds"
+        assert trtllm_rules["time_per_output_token_seconds"].new_name == "aibrix:time_per_output_token_seconds"
+
+        # Request metrics
+        assert trtllm_rules["request_success_total"].new_name == "aibrix:request_success_total"
+
+        # Cache metrics
+        assert trtllm_rules["kv_cache_utilization"].new_name == "aibrix:kv_cache_usage_perc"
+        assert trtllm_rules["kv_cache_hit_rate"].new_name == "aibrix:kv_cache_hit_rate"
+
+        # Passthrough metric
+        assert isinstance(trtllm_rules["request_queue_time_seconds"], PassthroughStandardRule)
+
+    def test_trtllm_case_insensitivity(self):
+        """Test trtllm engine name is case-insensitive."""
+        lower = get_metric_standard_rules("trtllm")
+        upper = get_metric_standard_rules("TRTLLM")
+        mixed = get_metric_standard_rules("TrtLLM")
+        assert lower.keys() == upper.keys() == mixed.keys()
+
+    def test_trtllm_cross_engine_latency_standardization(self):
+        """Test that trtllm latency metrics align with vllm/sglang standard names."""
+        vllm_rules = get_metric_standard_rules("vllm")
+        sglang_rules = get_metric_standard_rules("sglang")
+        trtllm_rules = get_metric_standard_rules("trtllm")
+
+        # e2e latency should map to same aibrix name across all engines
+        assert (
+            vllm_rules["vllm:e2e_request_latency_seconds"].new_name
+            == sglang_rules["sglang:e2e_request_latency_seconds"].new_name
+            == trtllm_rules["e2e_request_latency_seconds"].new_name
+            == "aibrix:e2e_request_latency_seconds"
+        )
+
+        # TTFT should map to same aibrix name across all engines
+        assert (
+            vllm_rules["vllm:time_to_first_token_seconds"].new_name
+            == sglang_rules["sglang:time_to_first_token_seconds"].new_name
+            == trtllm_rules["time_to_first_token_seconds"].new_name
+            == "aibrix:time_to_first_token_seconds"
         )
 
 
