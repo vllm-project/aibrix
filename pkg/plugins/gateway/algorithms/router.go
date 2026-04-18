@@ -190,7 +190,32 @@ func (m *multiStrategyRouter) Route(ctx *types.RoutingContext, readyPodList type
 		return "", err
 	}
 
+	// Store target pod for updating cache if needed
 	ctx.SetTargetPod(topPod)
+
+	// Update prefix cache indexer if the prefix-cache strategy is part of the multi-strategy
+	if pcScorer, ok := m.scorers["prefix-cache"]; ok {
+		if pcRouter, ok := pcScorer.(*prefixCacheRouter); ok {
+			tokenizerToUse := pcRouter.getTokenizerForRequest(ctx, readyPodList)
+			tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+			if err == nil {
+				prefixHashes := pcRouter.prefixCacheIndexer.GetPrefixHashes(tokens)
+				if len(prefixHashes) > 0 {
+					pcRouter.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, topPod.Name)
+				}
+			}
+		} else if pcRouterVal, ok := pcScorer.(prefixCacheRouter); ok {
+			tokenizerToUse := pcRouterVal.getTokenizerForRequest(ctx, readyPodList)
+			tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+			if err == nil {
+				prefixHashes := pcRouterVal.prefixCacheIndexer.GetPrefixHashes(tokens)
+				if len(prefixHashes) > 0 {
+					pcRouterVal.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, topPod.Name)
+				}
+			}
+		}
+	}
+
 	return ctx.TargetAddress(), nil
 }
 
