@@ -34,6 +34,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
     KVConnectorMetadata,
     KVConnectorRole,
+    KVConnectorWorkerMetadata,
 )
 from vllm.utils.math_utils import round_down, round_up
 from vllm.utils.torch_utils import get_kv_cache_torch_dtype
@@ -561,12 +562,45 @@ class AIBrixOffloadingConnectorMetadata(KVConnectorMetadata):
         return f"AIBrixOffloadingConnectorMetadata: {self.__dict__}"
 
 
+@dataclass
+class AIBrixWorkerMeta(KVConnectorWorkerMetadata):
+    """Worker-to-scheduler metadata reporting tokens saved to L1 cache."""
+
+    saved_tokens: dict[str, int] = field(default_factory=dict)
+
+    def aggregate(
+        self, other: "KVConnectorWorkerMetadata"
+    ) -> "KVConnectorWorkerMetadata":
+        """Aggregate by taking the minimum saved tokens per request
+        (conservative: all TP ranks must have saved for it to count)."""
+        if not isinstance(other, AIBrixWorkerMeta):
+            return self
+        merged = dict(self.saved_tokens)
+        for req_id, num_tokens in other.saved_tokens.items():
+            if req_id in merged:
+                merged[req_id] = min(merged[req_id], num_tokens)
+            else:
+                merged[req_id] = num_tokens
+        return AIBrixWorkerMeta(saved_tokens=merged)
+
+
 class AIBrixOffloadingConnectorScheduler:
     def __init__(self, config: "VllmConfig"):
         self.kv_role = config.kv_transfer_config.kv_role
         self.engine_block_ntokens = config.cache_config.block_size
 
         self._scheduler_meta = AIBrixOffloadingConnectorMetadata({})
+
+        # Track which vLLM block hashes are in external L1 cache.
+        # Uses vLLM's BlockHash (bytes), NOT AIBrix's FarmHash32 strings.
+        self._cached_block_hashes: set[bytes] = set()
+        # Keep block_hashes per request so we can map worker reports
+        # (req_id -> num_tokens_saved) to vLLM block hashes.
+        self._request_block_hashes: dict[str, list] = {}
+        # num_external_tokens promised to the scheduler per request.
+        # Populated by update_state_after_alloc, consumed by
+        # build_connector_meta to set load_len in worker metadata.
+        self._request_external_tokens: dict[str, int] = {}
 
     def build_connector_meta(
         self, scheduler_output: "SchedulerOutput"
@@ -589,11 +623,17 @@ class AIBrixOffloadingConnectorScheduler:
             (block_ids,) = req.block_ids
             slot_mapping = self._block_ids_to_slot_mapping(block_ids)
 
+            # load_len = num_external_tokens promised by scheduler via
+            # get_num_new_matched_tokens. Tells the worker how many tokens
+            # to load from L1 cache (vs recomputing).
+            load_len = self._request_external_tokens.pop(req_id, 0)
+
             self._scheduler_meta.upsert_request(
                 req_id,
                 prompt_len=prompt_len,
                 context_len=context_len,
                 query_len=query_len,
+                load_len=load_len,
                 seq_token_ids=(0, req.prompt_token_ids),
                 seq_slot_mapping=(0, slot_mapping),
                 state=AIBrixOffloadingConnectorRequestState.WAITING_FOR_RECV,
@@ -641,11 +681,14 @@ class AIBrixOffloadingConnectorScheduler:
             else:
                 seq_slot_mapping = None
 
+            load_len = self._request_external_tokens.pop(req_id, 0)
+
             self._scheduler_meta.upsert_request(
                 req_id,
                 prompt_len=prompt_len,
                 context_len=context_len,
                 query_len=query_len,
+                load_len=load_len,
                 seq_token_ids=None,
                 seq_slot_mapping=seq_slot_mapping,
                 state=AIBrixOffloadingConnectorRequestState.WAITING_FOR_RECV,
@@ -691,7 +734,26 @@ class AIBrixOffloadingConnectorScheduler:
         logger.debug("SCHEDULER: Request[id=%s] finished", req_id)
 
         self._scheduler_meta.finish_request(req_id)
+        self._request_block_hashes.pop(req_id, None)
+        self._request_external_tokens.pop(req_id, None)
         return False, None
+
+    def receive_connector_worker_meta(
+        self, worker_meta: Optional[KVConnectorWorkerMetadata]
+    ) -> None:
+        """Process worker metadata to update the scheduler-side cache tracker.
+
+        Maps {req_id: num_tokens_saved} from the worker to vLLM block
+        hashes, marking those blocks as cached for future
+        get_num_new_matched_tokens lookups.
+        """
+        if worker_meta is None or not isinstance(worker_meta, AIBrixWorkerMeta):
+            return
+        for req_id, num_tokens in worker_meta.saved_tokens.items():
+            block_hashes = self._request_block_hashes.get(req_id, [])
+            num_blocks = num_tokens // self.engine_block_ntokens
+            for i in range(min(num_blocks, len(block_hashes))):
+                self._cached_block_hashes.add(block_hashes[i])
 
     def _block_ids_to_slot_mapping(self, block_ids: list[int]) -> torch.Tensor:
         block_ids_tensor = torch.tensor(block_ids)
@@ -835,6 +897,8 @@ class AIBrixOffloadingConnectorWorker:
         self.v_scales: list[torch.Tensor] | None = None
 
         self._meta_cache: dict[str, AIBrixOffloadingConnectorCachedMeta] = {}
+        # Track tokens saved to L1 cache per request (for scheduler reporting)
+        self._newly_saved_tokens: dict[str, int] = {}
         # metrics
         self._metrics = AIBrixOffloadingConnectorMetrics(self.cache.metrics)
         logger.info(
@@ -935,10 +999,10 @@ class AIBrixOffloadingConnectorWorker:
 
         for seq_request_id, num_fetched_tokens in stats.items():
             seq_request_meta = metadata[seq_request_id]
-            # update seq_request_meta
-            seq_request_meta.query_len -= num_fetched_tokens
-            seq_request_meta.context_len += num_fetched_tokens
-
+            # NOTE: In the new flow (get_num_new_matched_tokens reports
+            # external hits to the scheduler), context_len and query_len
+            # are ALREADY adjusted by vLLM scheduler before we get here.
+            # We must NOT double-adjust them. We only transition state.
             seq_request_meta.state = (
                 AIBrixOffloadingConnectorRequestState.WAITING_FOR_SEND
             )
@@ -954,20 +1018,39 @@ class AIBrixOffloadingConnectorWorker:
         seq_cached_meta = self._meta_cache[seq_request_id]
         seq_all_tokens = seq_cached_meta.get_context_tokens_view()
         assert seq_all_tokens is not None, "seq_all_tokens is None"
+
+        # load_len is the number of tokens the scheduler promised are in
+        # the external L1 cache (via get_num_new_matched_tokens). These
+        # are already counted in context_len. We need to LOAD them from
+        # L1 into GPU KV buffer. Tokens to the LEFT of these are local
+        # (computed in a previous step).
+        load_len = seq_request_meta.load_len
         seq_context_len = seq_request_meta.context_len
-
         prompt_len = seq_request_meta.prompt_len
-        query_len = seq_request_meta.query_len
 
-        # align to block boundary
+        if load_len <= 0:
+            # Nothing to load from external cache
+            return 0
+
+        # Split: local_context is tokens computed locally; the last
+        # load_len tokens of context_len come from external cache.
+        local_context_len = seq_context_len - load_len
+        assert local_context_len >= 0, (
+            f"local_context_len={local_context_len} "
+            f"(context_len={seq_context_len}, load_len={load_len})"
+        )
+
+        # Align local context DOWN to block boundary. The load range
+        # starts here and must span full cache blocks.
         aligned_context_len = round_down(
-            seq_context_len, self.cache_block_ntokens
+            local_context_len, self.cache_block_ntokens
         )
-        actual_query_len = seq_context_len + query_len - aligned_context_len
+        # Account for unaligned portion of local context (partial block)
+        shift_len = local_context_len - aligned_context_len
+        # Total load range aligned to full cache blocks
         aligned_query_len = round_down(
-            actual_query_len, self.cache_block_ntokens
+            shift_len + load_len, self.cache_block_ntokens
         )
-        shift_len = seq_context_len - aligned_context_len
 
         assert prompt_len >= aligned_context_len + aligned_query_len, (
             f"{prompt_len}<{aligned_context_len}+{aligned_query_len}"
@@ -979,7 +1062,7 @@ class AIBrixOffloadingConnectorWorker:
         )
         if aligned_query_len < threshold:
             logger.debug(
-                "Skip Request[id=%s, context_len=%d, query_len=%d]",
+                "Skip Request[id=%s, context_len=%d, load_len=%d]",
                 seq_request_id,
                 aligned_context_len,
                 aligned_query_len,
@@ -1244,6 +1327,12 @@ class AIBrixOffloadingConnectorWorker:
             if put_ntokens != length:
                 break
 
+        # Track saved tokens for scheduler reporting via
+        # build_connector_worker_meta
+        if total_sent > 0:
+            prev = self._newly_saved_tokens.get(seq_request_id, 0)
+            self._newly_saved_tokens[seq_request_id] = prev + total_sent
+
         log_if(
             logger,
             logging.INFO,
@@ -1414,6 +1503,34 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
         """
         return None, None
 
+    def build_connector_worker_meta(
+        self,
+    ) -> Optional[KVConnectorWorkerMetadata]:
+        """Report tokens saved to L1 cache back to the scheduler so the
+        scheduler tracker (_cached_block_hashes) can be populated, making
+        subsequent get_num_new_matched_tokens lookups accurate."""
+        if self.connector_worker is None:
+            return None
+        saved = self.connector_worker._newly_saved_tokens
+        if not saved:
+            return None
+        meta = AIBrixWorkerMeta(saved_tokens=dict(saved))
+        saved.clear()
+        return meta
+
+    def update_connector_output(self, connector_output) -> None:
+        """Process worker-side output to update scheduler cache tracker.
+
+        Called by vLLM scheduler after each engine step. Extracts
+        kv_connector_worker_meta (AIBrixWorkerMeta) and forwards it to
+        the scheduler's receive_connector_worker_meta.
+        """
+        worker_meta = getattr(
+            connector_output, "kv_connector_worker_meta", None
+        )
+        if self.connector_scheduler is not None and worker_meta is not None:
+            self.connector_scheduler.receive_connector_worker_meta(worker_meta)
+
     # ==============================
     # Scheduler-side methods
     # ==============================
@@ -1427,20 +1544,45 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
         Get number of new tokens that can be loaded from the
         external KV cache beyond the num_computed_tokens.
 
-        Args:
-            request (Request): the request object.
-            num_computed_tokens (int): the number of locally
-                computed tokens for this request
-
-        Returns:
-            A tuple with the following elements:
-                - The number of tokens that can be loaded from the
-                  external KV cache beyond what is already computed.
-                - `True` if external KV cache tokens will be loaded
-                  asynchronously (between scheduler steps). Must be
-                  'False' if the first element is 0.
+        Uses the scheduler-side cache tracker (populated via
+        build_connector_worker_meta) to determine how many consecutive
+        blocks starting from num_computed_tokens are available in the
+        external L1 cache.
         """
-        return 0, False
+        if self.connector_scheduler is None:
+            return 0, False
+
+        scheduler = self.connector_scheduler
+
+        block_hashes = getattr(request, "block_hashes", None)
+        if not block_hashes:
+            return 0, False
+
+        # Save block_hashes for this request so we can map worker
+        # reports (req_id -> num_tokens_saved) to vLLM block hashes
+        req_id = getattr(request, "request_id", None)
+        if req_id is not None:
+            scheduler._request_block_hashes[req_id] = list(block_hashes)
+
+        block_size = scheduler.engine_block_ntokens
+
+        # Count how many consecutive blocks starting from
+        # num_computed_tokens are available in the external cache
+        start_block = num_computed_tokens // block_size
+        num_matched_blocks = 0
+
+        for i in range(start_block, len(block_hashes)):
+            if block_hashes[i] not in scheduler._cached_block_hashes:
+                break
+            num_matched_blocks += 1
+
+        num_matched_tokens = num_matched_blocks * block_size
+
+        # Don't exceed request length
+        max_matchable = request.num_tokens - num_computed_tokens
+        num_matched_tokens = min(num_matched_tokens, max_matchable)
+
+        return num_matched_tokens, False
 
     def update_state_after_alloc(
         self,
@@ -1451,19 +1593,16 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
         """
         Update KVConnector state after block allocation.
 
-        If get_num_new_matched_tokens previously returned True for a
-        request, this function may be called twice for that same request -
-        first when blocks are allocated for the connector tokens to be
-        asynchronously loaded into, and second when any additional blocks
-        are allocated, after the load/transfer is complete.
-
-        Args:
-            request (Request): the request object.
-            blocks (KVCacheBlocks): the blocks allocated for the request.
-            num_external_tokens (int): the number of tokens that will be
-                loaded from the external KV cache.
+        Stores num_external_tokens so build_connector_meta can pass
+        it to the worker via load_len (instructing the worker exactly
+        how many tokens to load from the external L1 cache).
         """
-        return
+        if self.connector_scheduler is None:
+            return
+        if num_external_tokens > 0:
+            self.connector_scheduler._request_external_tokens[
+                request.request_id
+            ] = num_external_tokens
 
     @delegate_to("connector_scheduler")
     def build_connector_meta(
