@@ -30,6 +30,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const prefixCacheWarmUpDelay = 3 * time.Second
+
 func TestStrategyRequiresCache(t *testing.T) {
 	req := "this is test message"
 	targetPod := getTargetPodFromChatCompletion(t, req, "least-request")
@@ -172,7 +174,7 @@ func TestMultiTurnConversation(t *testing.T) {
 		messages = append(messages, openai.AssistantMessage(chatCompletion.Choices[0].Message.Content))
 		if i == 1 {
 			targetPod = dst.Header.Get("target-pod")
-			time.Sleep(2 * time.Second)
+			time.Sleep(prefixCacheWarmUpDelay)
 		}
 
 		assert.Equal(t, targetPod, dst.Header.Get("target-pod"), "each multiturn conversation must route to same target pod")
@@ -194,7 +196,7 @@ func TestPrefixCacheRoutingConsistency(t *testing.T) {
 	require.NotEmpty(t, warmPod, "warm-up request returned no target-pod header")
 	t.Logf("warm-up routed to: %s", warmPod)
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(prefixCacheWarmUpDelay)
 
 	// All 10 subsequent requests with the same prefix must route to the same pod.
 	for i := 0; i < 10; i++ {

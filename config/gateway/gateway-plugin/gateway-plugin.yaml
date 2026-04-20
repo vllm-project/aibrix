@@ -106,7 +106,11 @@ spec:
               value: "2"
             - name: AIBRIX_PREFILL_REQUEST_TIMEOUT
               value: "60"
-            - name: AIBRIX_REDISSYNC_ENABLED
+            - name: AIBRIX_STATESYNC_ENABLED
+              value: "false"
+            - name: AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED
+              value: "false"
+            - name: AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER
               value: "false"
             # Uncomment to enable request tracing for GPU optimizer, default "false".
             # - name: AIBRIX_GPU_OPTIMIZER_TRACING_FLAG

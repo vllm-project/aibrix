@@ -18,9 +18,9 @@ spec:
           value: "100"
         - name: AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS
           value: "800"
-        - name: AIBRIX_REDISSYNC_ENABLED
+        - name: AIBRIX_STATESYNC_ENABLED
           value: "true"
-        - name: AIBRIX_REDISSYNC_SYNC_PERIOD
+        - name: AIBRIX_STATESYNC_SYNC_PERIOD
           value: "1s"
         - name: AIBRIX_PREFIX_CACHE_BLOCK_SIZE
           value: "4"

@@ -21,11 +21,12 @@ This document covers all environment variables used in the `pkg/plugins/gateway`
 
 ---
 
-## Redis Sync (`redissync/`)
+## Redis Sync (`statesync/`)
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
-| `AIBRIX_REDISSYNC_SYNC_PERIOD` | duration | `10s` | Interval at which gateway state is synced to Redis across replicas. | [redissync/redissync.go](redissync/redissync.go) |
+| `AIBRIX_STATESYNC_ENABLED` | bool | `false` | Enable cross-replica state sync via Redis. Must be `true` to activate the statesync manager. | [cmd/plugins/main.go](../../../cmd/plugins/main.go) |
+| `AIBRIX_STATESYNC_SYNC_PERIOD` | duration | `10s` | Interval at which gateway state is synced to Redis across replicas. | [statesync/redissync.go](statesync/redissync.go) |
 
 ---
 
