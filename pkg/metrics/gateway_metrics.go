@@ -225,3 +225,9 @@ var (
 		},
 	}
 )
+
+func init() {
+	for k, v := range GatewayMetrics {
+		Metrics[k] = v
+	}
+}

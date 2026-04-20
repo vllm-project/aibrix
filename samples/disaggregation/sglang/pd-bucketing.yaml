@@ -25,16 +25,27 @@ spec:
                 prometheus.io/scrape: "true"
                 prometheus.io/port: "30000"
                 prometheus.io/path: "/metrics"
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 0,
+                          "promptLenBucketMaxLength": 2048,
+                          "prefillScorePolicy": "least_request",
+                          "decodeScorePolicy": "least_request"
+                        }
+                      }
+                    }
+                  }
               labels:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
-                prompt-min-length: "0"
-                prompt-max-length: "2048"
             spec:
-              nodeSelector:
-                kubernetes.io/hostname: 10.0.151.187
               containers:
                 - name: prefill
                   image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/sglang:v0.5.7-mooncake
@@ -155,16 +166,27 @@ spec:
                 prometheus.io/scrape: "true"
                 prometheus.io/port: "30000"
                 prometheus.io/path: "/metrics"
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 0,
+                          "promptLenBucketMaxLength": 2048,
+                          "prefillScorePolicy": "least_request",
+                          "decodeScorePolicy": "least_request"
+                        }
+                      }
+                    }
+                  }
               labels:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
-                prompt-min-length: "0"
-                prompt-max-length: "2048"
             spec:
-              nodeSelector:
-                kubernetes.io/hostname: 10.0.151.187
               containers:
                 - name: decode
                   image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/sglang:v0.5.7-mooncake
@@ -304,16 +326,27 @@ spec:
                 prometheus.io/scrape: "true"
                 prometheus.io/port: "30000"
                 prometheus.io/path: "/metrics"
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 2049,
+                          "promptLenBucketMaxLength": 4096,
+                          "prefillScorePolicy": "prefix_cache",
+                          "decodeScorePolicy": "load_balancing"
+                        }
+                      }
+                    }
+                  }
               labels:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
-                prompt-min-length: "2049"
-                prompt-max-length: "4096"
             spec:
-              nodeSelector:
-                kubernetes.io/hostname: 10.0.151.187
               containers:
                 - name: prefill
                   image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/sglang:v0.5.7-mooncake
@@ -434,16 +467,27 @@ spec:
                 prometheus.io/scrape: "true"
                 prometheus.io/port: "30000"
                 prometheus.io/path: "/metrics"
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 2049,
+                          "promptLenBucketMaxLength": 4096,
+                          "prefillScorePolicy": "prefix_cache",
+                          "decodeScorePolicy": "load_balancing"
+                        }
+                      }
+                    }
+                  }
               labels:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
-                prompt-min-length: "2049"
-                prompt-max-length: "4096"
             spec:
-              nodeSelector:
-                kubernetes.io/hostname: 10.0.151.187
               containers:
                 - name: decode
                   image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/sglang:v0.5.7-mooncake
@@ -580,20 +624,28 @@ spec:
           template:
             metadata:
               annotations:
-                annotations:
                 prometheus.io/scrape: "true"
                 prometheus.io/port: "30000"
                 prometheus.io/path: "/metrics"
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 0,
+                          "combined": true
+                        }
+                      }
+                    }
+                  }
               labels:
                 model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
-                prompt-min-length: "0"
-                model.aibrix.ai/combined: "true"
             spec:
-              nodeSelector:
-                kubernetes.io/hostname: 10.1.9.155
               containers:
                 - name: combined
                   image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/sglang:v0.5.7-mooncake

@@ -40,9 +40,12 @@ func Test_ValidateRequestBody(t *testing.T) {
 		statusCode  envoyTypePb.StatusCode
 	}{
 		{
+			// Unknown paths return 501 Not Implemented. Previously the outer JSON unmarshal
+			// ran before the switch and accidentally returned 400 for empty bodies; now the
+			// switch default correctly returns 501.
 			message:     "unknown path",
 			requestPath: "/v1/unknown",
-			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			statusCode:  envoyTypePb.StatusCode_NotImplemented,
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal error",
@@ -81,8 +84,9 @@ func Test_ValidateRequestBody(t *testing.T) {
 			requestPath: "/v1/chat/completions",
 			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": [{"type": "text", "text": "say this is test"}, {"type": "text", "text": "say this is test"}]}]}`),
 			model:       "llama2-7b",
-			messages:    "this is system [{\"text\":\"say this is test\",\"type\":\"text\"},{\"text\":\"say this is test\",\"type\":\"text\"}]",
-			statusCode:  envoyTypePb.StatusCode_OK,
+			// parseChatMessages writes raw JSON bytes directly, preserving the original field order from the request.
+			messages:   "this is system [{\"type\": \"text\", \"text\": \"say this is test\"}, {\"type\": \"text\", \"text\": \"say this is test\"}]",
+			statusCode: envoyTypePb.StatusCode_OK,
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal valid messages with stop string param",
@@ -130,6 +134,16 @@ func Test_ValidateRequestBody(t *testing.T) {
 			message:     "/v1/chat/completions valid request body",
 			user:        utils.User{Tpm: 1},
 			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": true}, "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
+			stream:      true,
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/messages valid request body (same as chat completions)",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/messages",
 			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": true}, "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
 			stream:      true,
 			model:       "llama2-7b",

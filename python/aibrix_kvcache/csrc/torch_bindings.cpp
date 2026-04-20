@@ -19,7 +19,8 @@ TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _cache_ops), cache_ops) {
   // Cache ops
   cache_ops.def(
       "reshape_and_cache_multi_layer(Tensor[] offload_kv_cache_blocks,"
-      "                              Tensor(b!)[] key_caches,"
+      "                              Tensor(b!)[] kv_caches,"
+      "                              bool kv_layout_blocks_first,"
       "                              Tensor slot_mapping,"
       "                              SymInt block_size,"
       "                              str kv_cache_dtype,"
@@ -30,7 +31,8 @@ TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _cache_ops), cache_ops) {
 
   cache_ops.def(
       "reshape_and_offload_multi_layer(Tensor(a!)[] offload_kv_cache_blocks,"
-      "                                Tensor[] key_caches,"
+      "                                Tensor[] kv_caches,"
+      "                                bool kv_layout_blocks_first,"
       "                                Tensor slot_mapping,"
       "                                SymInt block_size,"
       "                                str kv_cache_dtype,"

@@ -1,0 +1,188 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: qwen2-5-7b-stormservice
+  labels:
+    model.aibrix.ai/name: qwen2.5-7b
+    model.aibrix.ai/port: "8000"
+    model.aibrix.ai/metrics-port: "8000"
+    model.aibrix.ai/engine: vllm
+    adapter.model.aibrix.ai/enabled: "true"
+  annotations:
+    model.aibrix.ai/sidecar-injection: "true"
+    # Could be replaced with your runtime image
+    model.aibrix.ai/sidecar-runtime-image: "aibrix-cn-beijing.cr.volces.com/aibrix/runtime:v0.6.0"
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: qwen2.5-7b
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: qwen2.5-7b
+        model.aibrix.ai/port: "8000"
+        model.aibrix.ai/metrics-port: "8000"
+        model.aibrix.ai/engine: vllm
+        adapter.model.aibrix.ai/enabled: "true"
+    spec:
+      roles:
+        - name: worker
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: qwen2.5-7b
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/metrics-port: "8000"
+                model.aibrix.ai/engine: vllm
+                adapter.model.aibrix.ai/enabled: "true"
+              annotations:
+                prometheus.io/path: "/metrics"
+                prometheus.io/port: "8000"
+                prometheus.io/scrape: "true"
+            spec:
+              volumes:
+                - name: model-cache
+                  emptyDir: {}
+              initContainers:
+                - name: init-model-and-loras
+                  image: aibrix-cn-beijing.cr.volces.com/aibrix/runtime:v0.6.0
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      set -eu
+                      # Optionally download LoRA artifacts here (example). Uncomment to enable:
+                      echo "[init] download lora..."
+                      # aibrix_download --model-uri s3://<YOUR_MODEL> --local-dir "/models/loras/"
+                      echo "[init] done."
+                  env:
+                    - name: DOWNLOADER_MODEL_NAME
+                      value: qwen2.5-7b
+                    - name: DOWNLOADER_NUM_THREADS
+                      value: "16"
+                    - name: DOWNLOADER_ALLOW_FILE_SUFFIX
+                      value: json, safetensors, bin, py
+                    - name: TOS_ACCESS_KEY
+                      valueFrom:
+                        secretKeyRef:
+                          name: tos-credential
+                          key: TOS_ACCESS_KEY
+                    - name: TOS_SECRET_KEY
+                      valueFrom:
+                        secretKeyRef:
+                          name: tos-credential
+                          key: TOS_SECRET_KEY
+                    - name: TOS_ENDPOINT
+                      value: https://tos-s3-cn-beijing.volces.com
+                    - name: TOS_REGION
+                      value: cn-beijing
+                  volumeMounts:
+                    - mountPath: /models
+                      name: model-vol
+
+              containers:
+                - name: vllm
+                  image: aibrix-public-release-cn-beijing.cr.volces.com/vllm/vllm-openai:0.11.0
+                  command:
+                    - "vllm"
+                    - "serve"
+                    - "/models/Qwen2.5-7B-Instruct/"
+                    - "--host"
+                    - "0.0.0.0"
+                    - "--port"
+                    - "8000"
+                    - "--served-model-name"
+                    - "qwen2.5-7b"
+                    - "--tensor-parallel-size"
+                    - "2"
+                    - "--distributed-executor-backend"
+                    - "mp"
+                    - "--gpu-memory-utilization"
+                    - "0.75"
+                    - "--max-model-len"
+                    - "4096"
+                    - "--max-num-seqs"
+                    - "16"
+                    - "--max-num-batched-tokens"
+                    - "4096"
+                    - "--enable-lora"
+                    - "--max-loras"
+                    - "2"
+                    - "--max-lora-rank"
+                    - "64"
+                    - "--max-cpu-loras"
+                    - "4"
+                    - "--fully-sharded-loras"
+                  env:
+                    - name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
+                      value: "True"
+                    - name: VLLM_LORA_MODULES_LOADING_TIMEOUT
+                      value: "300"
+                  ports:
+                    - containerPort: 8000
+                      protocol: TCP
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "2"
+                      cpu: "12"
+                      memory: "48G"
+                    requests:
+                      nvidia.com/gpu: "2"
+                      cpu: "12"
+                      memory: "48G"
+                  volumeMounts:
+                    - name: model-vol
+                      mountPath: /models
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 600
+                    periodSeconds: 30
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 300
+                    periodSeconds: 30
+              volumes:
+                - name: model-vol
+                  emptyDir: {}
+                - emptyDir:
+                    medium: Memory
+                  name: shared-mem
+---
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelAdapter
+metadata:
+  name: qwen2-5-7b-lora
+  namespace: default
+  labels:
+    # same as the name
+    model.aibrix.ai/name: "qwen2-5-7b-lora"
+    model.aibrix.ai/port: "8000"
+spec:
+  baseModel: qwen2.5-7b
+  podSelector:
+    matchLabels:
+      model.aibrix.ai/name: qwen2.5-7b
+      adapter.model.aibrix.ai/enabled: "true"
+  artifactURL: "s3://aibrix-example-model-artifacts/Qwen2.5-7B-LoRA/"
+  # Create a Secret with the same name in the cluster (same namespace as this ModelAdapter) to access S3:
+  # apiVersion: v1
+  # kind: Secret
+  # metadata:
+  #   name: aws-credential
+  # type: Opaque
+  # stringData:
+  #   aws_access_key_id: "YOUR_AWS_ACCESS_KEY_ID"
+  #   aws_secret_access_key: "YOUR_AWS_SECRET_ACCESS_KEY"
+  #   aws_session_token: "YOUR_AWS_SESSION_TOKEN" # Optional; required for temporary STS credentials (e.g., assumed IAM role)
+  #   aws_region: "us-east-1"
+  credentialsSecretRef:
+    name: aws-credential

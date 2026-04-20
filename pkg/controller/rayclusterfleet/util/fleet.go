@@ -413,12 +413,12 @@ func SetReplicasAnnotations(rs *orchestrationv1alpha1.RayClusterReplicaSet, desi
 	if rs.Annotations == nil {
 		rs.Annotations = make(map[string]string)
 	}
-	desiredString := fmt.Sprintf("%d", desiredReplicas)
+	desiredString := strconv.FormatInt(int64(desiredReplicas), 10)
 	if hasString := rs.Annotations[DesiredReplicasAnnotation]; hasString != desiredString {
 		rs.Annotations[DesiredReplicasAnnotation] = desiredString
 		updated = true
 	}
-	maxString := fmt.Sprintf("%d", maxReplicas)
+	maxString := strconv.FormatInt(int64(maxReplicas), 10)
 	if hasString := rs.Annotations[MaxReplicasAnnotation]; hasString != maxString {
 		rs.Annotations[MaxReplicasAnnotation] = maxString
 		updated = true
@@ -431,11 +431,11 @@ func ReplicasAnnotationsNeedUpdate(rs *orchestrationv1alpha1.RayClusterReplicaSe
 	if rs.Annotations == nil {
 		return true
 	}
-	desiredString := fmt.Sprintf("%d", desiredReplicas)
+	desiredString := strconv.FormatInt(int64(desiredReplicas), 10)
 	if hasString := rs.Annotations[DesiredReplicasAnnotation]; hasString != desiredString {
 		return true
 	}
-	maxString := fmt.Sprintf("%d", maxReplicas)
+	maxString := strconv.FormatInt(int64(maxReplicas), 10)
 	if hasString := rs.Annotations[MaxReplicasAnnotation]; hasString != maxString {
 		return true
 	}

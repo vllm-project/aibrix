@@ -46,4 +46,4 @@ RUN DIST_DIR=$(${PYTHON_BIN} -m pip show vllm | grep "Location:" | awk '{print $
     
 RUN rm -rf /tmp/aibrix
 
-ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+ENTRYPOINT ["vllm", "serve"]

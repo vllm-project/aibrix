@@ -62,12 +62,12 @@ func (r throughputRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types
 	scored := make([]bool, len(pods))
 
 	for i, pod := range pods {
-		promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgPromptThroughputToksPerS)
+		promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgPromptToksPerReq)
 		if err != nil {
 			scored[i] = false
 			continue
 		}
-		generationThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
+		generationThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationToksPerReq)
 		if err != nil {
 			scored[i] = false
 			continue

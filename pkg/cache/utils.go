@@ -76,6 +76,69 @@ func buildMetricLabels(pod *Pod, engineType string, model string) ([]string, []s
 	return labelNames, labelValues
 }
 
+func mergeLabelPairs(primaryNames, primaryValues, secondaryNames, secondaryValues []string) ([]string, []string) {
+	pLen := len(primaryNames)
+	if len(primaryValues) < pLen {
+		klog.Warningf("primary labels length mismatch: names=%d, values=%d", pLen, len(primaryValues))
+		pLen = len(primaryValues)
+	}
+	sLen := len(secondaryNames)
+	if len(secondaryValues) < sLen {
+		klog.Warningf("secondary labels length mismatch: names=%d, values=%d", sLen, len(secondaryValues))
+		sLen = len(secondaryValues)
+	}
+
+	secondaryMap := make(map[string]string, sLen)
+	secondaryOrder := make([]string, 0, sLen)
+	for i := 0; i < sLen; i++ {
+		n := secondaryNames[i]
+		if n == "" {
+			continue
+		}
+		if _, exists := secondaryMap[n]; !exists {
+			secondaryOrder = append(secondaryOrder, n)
+		}
+		secondaryMap[n] = secondaryValues[i] // last-wins
+	}
+
+	outNames := make([]string, 0, pLen+len(secondaryOrder))
+	outValues := make([]string, 0, pLen+len(secondaryOrder))
+	seen := make(map[string]struct{}, pLen+len(secondaryOrder))
+
+	// primary first, but allow secondary override
+	for i := 0; i < pLen; i++ {
+		n := primaryNames[i]
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		v := primaryValues[i]
+		if sv, ok := secondaryMap[n]; ok {
+			v = sv
+		}
+		outNames = append(outNames, n)
+		outValues = append(outValues, v)
+	}
+
+	// then add secondary-only labels (use map value to respect last-wins)
+	for _, n := range secondaryOrder {
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		outNames = append(outNames, n)
+		outValues = append(outValues, secondaryMap[n])
+	}
+
+	return outNames, outValues
+}
+
 func shouldSkipMetric(podName string, metricName string) bool {
 	if strings.Contains(podName, "prefill") && isDecodeOnlyMetric(metricName) {
 		return true
@@ -159,6 +222,74 @@ func (c *Store) calculatePerSecondRate(pod *Pod, modelName, metricName string, c
 	ratePerSecond := valueDiff / timeDiff
 
 	return ratePerSecond
+}
+
+// calculateRate1m calculates the per-second rate of a monotonically increasing counter
+// over an approximate 1-minute window. It is designed for gateway-tracked counters
+// (e.g. completedRequests) that are available even when engine metrics are not.
+//
+// Snapshots are throttled to ~5-second intervals so the 50ms metric refresh loop
+// does not flood the history buffer. The baseline is the snapshot closest to
+// 1 minute ago; if less than 1 minute of history exists, the oldest available
+// snapshot is used. Returns -1 when insufficient data is available.
+func (c *Store) calculateRate1m(pod *Pod, metricName string, currentValue float64) float64 {
+	key := fmt.Sprintf("%s//%s", pod.Name, metricName)
+	now := time.Now()
+
+	const (
+		snapshotInterval = 5 * time.Second // throttle to avoid snapshot flood
+		windowTarget     = 1 * time.Minute // desired look-back window
+		historyMaxAge    = 3 * time.Minute // keep 3 minutes of history
+		historyMaxCount  = 36              // 5s × 36 = 3 minutes
+		minElapsed       = 10.0            // seconds; discard rates with too little data
+	)
+
+	rateCalculator.mu.Lock()
+	defer rateCalculator.mu.Unlock()
+
+	history := rateCalculator.history[key]
+
+	// Only append a new snapshot when enough time has elapsed since the last one.
+	if len(history) == 0 || now.Sub(history[len(history)-1].Timestamp) >= snapshotInterval {
+		history = append(history, MetricSnapshot{Value: currentValue, Timestamp: now})
+	}
+	history = cleanupOldSnapshots(history, now, historyMaxAge, historyMaxCount)
+	rateCalculator.history[key] = history
+
+	if len(history) < 2 {
+		return -1
+	}
+
+	// Find the snapshot whose timestamp is closest to (now - 1 minute).
+	// If we have less than 1 minute of history, this naturally falls back
+	// to the oldest snapshot in the buffer.
+	target := now.Add(-windowTarget)
+	base := &history[0]
+	for i := 1; i < len(history)-1; i++ {
+		if absDuration(history[i].Timestamp.Sub(target)) < absDuration(base.Timestamp.Sub(target)) {
+			base = &history[i]
+		}
+	}
+
+	elapsed := now.Sub(base.Timestamp).Seconds()
+	if elapsed < minElapsed {
+		return -1
+	}
+
+	delta := currentValue - base.Value
+	if delta < 0 {
+		// Counter should never decrease; treat as a reset and use current value as delta.
+		delta = currentValue
+	}
+
+	return delta / elapsed
+}
+
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
 }
 
 // cleanupOldSnapshots removes snapshots that are too old or exceed the maximum count

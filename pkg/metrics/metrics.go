@@ -29,6 +29,7 @@ const (
 	E2ERequestLatencySeconds        = "e2e_request_latency_seconds"
 	RequestQueueTimeSeconds         = "request_queue_time_seconds"
 	RequestInferenceTimeSeconds     = "request_inference_time_seconds"
+	PerStageReqLatencySeconds       = "per_stage_req_latency_seconds"
 	HTTPRequestDurationSeconds      = "http_request_duration_seconds"
 	HTTPRequestDurationHighRSeconds = "http_request_duration_highr_seconds"
 
@@ -49,6 +50,7 @@ const (
 	RequestMaxNumGenerationTokens = "request_max_num_generation_tokens"
 
 	KVCacheUsagePerc                = "kv_cache_usage_perc"
+	KVCacheHitRate                  = "kv_cache_hit_rate"
 	NixlNumFailedTransfers          = "nixl_num_failed_transfers_total"
 	NixlNumFailedNotifications      = "nixl_num_failed_notifications_total"
 	PrefixCacheHitTotal             = "prefix_cache_hits_total"
@@ -83,8 +85,9 @@ const (
 	RunningLoraAdapters                  = "running_lora_adapters"
 	VTCBucketSizeActive                  = "vtc_bucket_size_active"
 	// Realtime metrics
-	RealtimeNumRequestsRunning = "realtime_num_requests_running"
-	RealtimeNormalizedPendings = "realtime_normalized_pendings"
+	RealtimeNumRequestsRunning         = "realtime_num_requests_running"
+	RealtimeNormalizedPendings         = "realtime_normalized_pendings"
+	RealtimeRunningRequestsDrainRate1m = "realtime_running_requests_drain_rate_1m"
 
 	// error to read metrics from backend
 	PrometheusQueryFail       = "prometheus_query_fail"
@@ -177,6 +180,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:num_requests_success_total",
 				"sglang": "sglang:num_requests_total",
+				"trtllm": "trtllm_request_success_total",
 			},
 			Description: "Number of successful requests",
 		},
@@ -212,6 +216,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:e2e_request_latency_seconds",
 				"sglang": "sglang:e2e_request_latency_seconds",
+				"trtllm": "trtllm_e2e_request_latency_seconds",
 			},
 			Description: "End-to-end request latency in seconds",
 		},
@@ -222,7 +227,8 @@ var (
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_queue_time_seconds",
+				"vllm":   "vllm:request_queue_time_seconds",
+				"trtllm": "trtllm_request_queue_time_seconds",
 			},
 			Description: "Request queue time in seconds",
 		},
@@ -236,6 +242,17 @@ var (
 				"vllm": "vllm:request_inference_time_seconds",
 			},
 			Description: "Request inference time in seconds",
+		},
+		PerStageReqLatencySeconds: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Histogram,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"sglang": "sglang:per_stage_req_latency_seconds",
+			},
+			Description: "Per-stage request latency in seconds",
 		},
 		HTTPRequestDurationSeconds: {
 			MetricScope:  PodMetricScope,
@@ -334,6 +351,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:time_to_first_token_seconds",
 				"sglang": "sglang:time_to_first_token_seconds",
+				"trtllm": "trtllm_time_to_first_token_seconds",
 			},
 			Description: "Time to first token in seconds",
 		},
@@ -346,6 +364,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:time_per_output_token_seconds",
 				"sglang": "sglang:inter_token_latency_seconds",
+				"trtllm": "trtllm_time_per_output_token_seconds",
 			},
 			Description: "Time per output token in seconds",
 		},
@@ -358,6 +377,7 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:inter_token_latency_seconds",
 				"sglang": "sglang:inter_token_latency_seconds",
+				"trtllm": "trtllm_time_per_output_token_seconds",
 			},
 			Description: "Inter-token latency in seconds",
 		},
@@ -438,9 +458,21 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:kv_cache_usage_perc",
 				"sglang": "sglang:token_usage", // Based on https://github.com/sgl-project/sglang/issues/5979
+				"trtllm": "trtllm_kv_cache_utilization",
 				"xllm":   "kv_cache_utilization",
 			},
 			Description: "KV-cache usage. 1 means 100 percent usage.",
+		},
+		KVCacheHitRate: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"trtllm": "trtllm_kv_cache_hit_rate",
+			},
+			Description: "KV-cache hit rate. 1 means all lookups hit cache.",
 		},
 		PrefixCacheQueriesTotal: {
 			MetricScope:  PodModelMetricScope,

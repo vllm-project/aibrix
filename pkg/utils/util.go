@@ -311,3 +311,20 @@ func CryptoShuffle[T any](slice []T) {
 		slice[i], slice[j] = slice[j], slice[i]
 	}
 }
+
+func HasVolume(vols []v1.Volume, name string) bool {
+	for _, v := range vols {
+		if v.Name == name {
+			return true
+		}
+	}
+	return false
+}
+func HasVolumeMount(mounts []v1.VolumeMount, name, path string) bool {
+	for _, m := range mounts {
+		if m.Name == name && m.MountPath == path {
+			return true
+		}
+	}
+	return false
+}

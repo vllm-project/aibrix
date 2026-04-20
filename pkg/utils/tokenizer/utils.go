@@ -20,8 +20,8 @@ import (
 	"encoding/binary"
 )
 
-// intToByteArray converts int array to byte array in BigEndian format
-func intToByteArray(intArray []int) []byte {
+// IntToByteArray converts int array to byte array in BigEndian format
+func IntToByteArray(intArray []int) []byte {
 	// Pre-allocate buffer for better performance
 	buf := make([]byte, len(intArray)*4)
 	for i, num := range intArray {

@@ -156,3 +156,69 @@ A sample output would look like:
 ```
 
 More examples could be found [here](https://github.com/vllm-project/aibrix/issues/1512).
+
+## Audio Transcription and Translation
+
+AIBrix gateway exposes OpenAI-compatible `/v1/audio/transcriptions` and `/v1/audio/translations` endpoints backed by [Qwen2-Audio-7B-Instruct](https://huggingface.co/Qwen/Qwen2-Audio-7B-Instruct).
+
+### Deploy the model
+
+```bash
+kubectl apply -f vllm/qwen-audio.yaml
+```
+
+### Forward AIBrix port
+
+```bash
+kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80
+```
+
+### Transcription
+
+Transcription converts audio to text in the source language.
+
+**Note:** Audio endpoints require `multipart/form-data`. Do **not** set `-H "Content-Type: application/json"`.
+
+```bash
+curl http://localhost:8888/v1/audio/transcriptions \
+  -F file=@audio.mp3 \
+  -F model=qwen-audio-7b \
+  -F response_format=json
+```
+
+Using the Python script:
+
+```bash
+python send_audio.py audio.mp3 --mode transcribe --model qwen-audio-7b
+# With optional language hint:
+python send_audio.py audio.mp3 --mode transcribe --model qwen-audio-7b --language zh
+```
+
+Sample output:
+
+```json
+{"text": "欢迎使用 AIBrix 语音转录服务。"}
+```
+
+### Translation
+
+Translation converts audio to English text.
+
+```bash
+curl http://localhost:8888/v1/audio/translations \
+  -F file=@audio.mp3 \
+  -F model=qwen-audio-7b \
+  -F response_format=json
+```
+
+Using the Python script:
+
+```bash
+python send_audio.py audio.mp3 --mode translate --model qwen-audio-7b
+```
+
+Sample output:
+
+```json
+{"text": "Welcome to the AIBrix speech transcription service."}
+```

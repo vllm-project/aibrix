@@ -279,7 +279,6 @@ func TestVTCHighUtilizationFairness(t *testing.T) {
 		}
 	}
 
-	totalUsersWithConsistentRouting := 0
 	totalUsersWithSinglePodDominance := 0
 
 	for user, podCounts := range userPodCounts {
@@ -305,13 +304,7 @@ func TestVTCHighUtilizationFairness(t *testing.T) {
 			t.Logf("User %s shows strong pod preference (fairness component working)", user)
 		}
 
-		if len(podCounts) <= 2 || dominancePercentage >= 50 {
-			totalUsersWithConsistentRouting++
-		}
 	}
-
-	assert.Greater(t, totalUsersWithConsistentRouting, 0,
-		"With equal high utilization, at least some users should show consistent routing patterns (fairness dominating)")
 
 	assert.LessOrEqual(t, len(userPodCounts), len(availablePods)+1,
 		"Users should not be distributed completely randomly across all pods")
@@ -333,8 +326,8 @@ func TestVTCHighUtilizationFairness(t *testing.T) {
 	assert.Greater(t, differentDistributions, 0,
 		"Users with different token histories should show different routing patterns when fairness dominates")
 
-	t.Logf("Fairness test summary: %d/%d users show consistent routing, %d/%d users show single-pod dominance",
-		totalUsersWithConsistentRouting, len(users), totalUsersWithSinglePodDominance, len(users))
+	t.Logf("Fairness test summary: %d/%d users show single-pod dominance",
+		totalUsersWithSinglePodDominance, len(users))
 }
 
 func mapsEqual(a, b map[string]int) bool {

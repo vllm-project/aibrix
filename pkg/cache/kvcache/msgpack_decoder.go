@@ -21,6 +21,7 @@ import (
 	"time"
 
 	msgpack "github.com/vmihailenco/msgpack/v5"
+	"k8s.io/klog/v2"
 )
 
 // DecodeEventBatch parses a raw msgpack batch of events.
@@ -35,7 +36,15 @@ func DecodeEventBatch(
 	if err := msgpack.Unmarshal(data, &rawBatch); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal event batch: %w", err)
 	}
-	if len(rawBatch) != 2 {
+	// if size of rawBatch is 3, the third element is the data parallel rank
+	// data_parallel_rank is not used in aibrix now
+	if len(rawBatch) == 3 {
+		if data_parallel_rank, err := parseInt(rawBatch[2]); err != nil {
+			return nil, fmt.Errorf("data_parallel_rank is not an int: %T", rawBatch[2])
+		} else {
+			klog.V(4).Infof("event has data_parallel_rank: %d", data_parallel_rank)
+		}
+	} else if len(rawBatch) != 2 {
 		return nil, fmt.Errorf("expected 2 elements in batch (ts, events), got %d", len(rawBatch))
 	}
 
@@ -97,13 +106,13 @@ func parseEventArray(arr []interface{}) (KVEvent, error) {
 		}
 
 		// 1: block_hashes
-		blockHashes, err := toInt64Slice(arr[1])
+		blockHashes, err := toBlockHashSlice(arr[1])
 		if err != nil {
 			return nil, fmt.Errorf("invalid block_hashes: %w", err)
 		}
 
 		// 2: parent_block_hash
-		parentHash, err := toInt64Ptr(arr[2])
+		parentHash, err := toBlockHashPtr(arr[2])
 		if err != nil {
 			return nil, fmt.Errorf("invalid parent_block_hash: %w", err)
 		}
@@ -148,7 +157,7 @@ func parseEventArray(arr []interface{}) (KVEvent, error) {
 			return nil, fmt.Errorf("BlockRemoved expects ≥2 fields, got %d", len(arr))
 		}
 
-		blockHashes, err := toInt64Slice(arr[1])
+		blockHashes, err := toBlockHashSlice(arr[1])
 		if err != nil {
 			return nil, fmt.Errorf("invalid block_hashes: %w", err)
 		}
@@ -188,6 +197,128 @@ func applyBatchMetadata(evt KVEvent, ts time.Time, model, pod string) {
 		e.ModelName = model
 		e.PodName = pod
 	}
+}
+
+// toBlockHashSlice converts block_hashes field to []int64.
+// Supports both legacy int64 format and new bytes format from vLLM PR #23673.
+// This function handles the conversion at decode time, keeping the rest of the codebase simple.
+func toBlockHashSlice(v any) ([]int64, error) {
+	raw, ok := v.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("expected []interface{}, got %T", v)
+	}
+
+	out := make([]int64, len(raw))
+	for i, x := range raw {
+		hash, err := parseBlockHashToInt64(x)
+		if err != nil {
+			return nil, fmt.Errorf("block_hashes[%d]: %w", i, err)
+		}
+		out[i] = hash
+	}
+	return out, nil
+}
+
+// bytesToInt64 converts a byte array to int64 using big-endian encoding.
+// If the byte array is shorter than 8 bytes, it pads with leading zeros.
+func bytesToInt64(b []byte) int64 {
+	if len(b) >= 8 {
+		// Use first 8 bytes for both 8-byte and 32-byte formats
+		return int64(binary.BigEndian.Uint64(b[:8]))
+	}
+	// Unexpected short byte array: pad with leading zeros for big-endian
+	padded := make([]byte, 8)
+	copy(padded[8-len(b):], b)
+	return int64(binary.BigEndian.Uint64(padded))
+}
+
+// parseBlockHashToInt64 parses a single block hash and converts it to int64.
+// Supports:
+// 1. int64 types (legacy format from old vLLM) → used directly
+// 2. []byte (new format from vLLM PR #23673):
+//   - 8 bytes: big-endian int64
+//   - 32 bytes: SHA-256, uses first 8 bytes
+//
+// 3. string (msgpack may decode bytes as string) → same as []byte
+//
+// Using the first 8 bytes of SHA-256 provides sufficient uniqueness:
+// - Collision probability ≈ 1/2^64 ≈ 10^-19 (extremely low)
+// - In typical scenarios (thousands to millions of blocks), collisions are virtually impossible
+func parseBlockHashToInt64(v any) (int64, error) {
+	switch x := v.(type) {
+	case []byte:
+		return bytesToInt64(x), nil
+
+	case string:
+		// msgpack may decode bytes as string
+		return bytesToInt64([]byte(x)), nil
+
+	// Legacy format: integer types → convert to int64
+	case int64:
+		return x, nil
+
+	case uint64:
+		return int64(x), nil
+
+	case int:
+		return int64(x), nil
+
+	case uint:
+		return int64(x), nil
+
+	case int8:
+		return int64(x), nil
+
+	case int16:
+		return int64(x), nil
+
+	case int32:
+		return int64(x), nil
+
+	case uint8:
+		return int64(x), nil
+
+	case uint16:
+		return int64(x), nil
+
+	case uint32:
+		return int64(x), nil
+
+	// Floating-point types (for backward compatibility with msgpack decoding)
+	case float32:
+		f := float64(x)
+		if f < math.MinInt64 || f > math.MaxInt64 {
+			return 0, fmt.Errorf("float32 out of int64 range: %f", f)
+		}
+		if f != math.Trunc(f) {
+			return 0, fmt.Errorf("float32 has fractional part: %f", f)
+		}
+		return int64(f), nil
+
+	case float64:
+		if x < math.MinInt64 || x > math.MaxInt64 {
+			return 0, fmt.Errorf("float64 out of int64 range: %f", x)
+		}
+		if x != math.Trunc(x) {
+			return 0, fmt.Errorf("float64 has fractional part: %f", x)
+		}
+		return int64(x), nil
+
+	default:
+		return 0, fmt.Errorf("unsupported block hash type: %T", v)
+	}
+}
+
+// toBlockHashPtr converts a single block hash (can be nil) to *int64
+func toBlockHashPtr(v any) (*int64, error) {
+	if v == nil {
+		return nil, nil
+	}
+	hash, err := parseBlockHashToInt64(v)
+	if err != nil {
+		return nil, err
+	}
+	return &hash, nil
 }
 
 func toInt64Slice(v any) ([]int64, error) {

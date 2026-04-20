@@ -70,9 +70,8 @@ spec:
           image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai-aibrix-kvcache:v0.10.2-20251022
           imagePullPolicy: Always
           command:
-            - python3
-            - -m
-            - vllm.entrypoints.openai.api_server
+            - vllm
+            - serve
             - --port
             - "8000"
             - --uvicorn-log-level

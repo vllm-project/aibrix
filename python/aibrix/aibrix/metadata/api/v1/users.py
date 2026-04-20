@@ -14,11 +14,11 @@
 
 from typing import Optional
 
-import redis.asyncio as redis
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from aibrix.logger import init_logger
+from aibrix.metadata.store import MetadataStore
 
 logger = init_logger(__name__)
 router = APIRouter()
@@ -54,27 +54,27 @@ class UserResponse(BaseModel):
 
 
 def _gen_key(name: str) -> str:
-    """Generate Redis key for user.
+    """Generate storage key for user.
 
     Args:
         name: User name
 
     Returns:
-        Redis key in format: aibrix-users/{name}
+        Storage key in format: aibrix-users/{name}
     """
     return f"aibrix-users/{name}"
 
 
-async def _get_redis_client(request: Request) -> redis.Redis:
-    """Get Redis client from app state.
+def _get_metadata_store(request: Request) -> MetadataStore:
+    """Get metadata store from app state.
 
     Args:
         request: FastAPI request object
 
     Returns:
-        Redis client instance
+        MetadataStore instance
     """
-    return request.app.state.redis_client
+    return request.app.state.metadata_store
 
 
 @router.post("/CreateUser")
@@ -90,17 +90,16 @@ async def create_user(request: Request, user: User) -> UserResponse:
     Returns:
         UserResponse with creation status
     """
-    redis_client = await _get_redis_client(request)
+    store = _get_metadata_store(request)
     key = _gen_key(user.name)
 
     # Check if user exists
-    exists = await redis_client.exists(key)
-    if exists:
+    if await store.exists(key):
         logger.info(f"User already exists: {user.name}")
         return UserResponse(message=f"User: {user.name} exists", user=user)
 
     # Store user as JSON
-    await redis_client.set(key, user.model_dump_json())
+    await store.set(key, user.model_dump_json())
 
     logger.info(f"Created user: {user.name}, rpm={user.rpm}, tpm={user.tpm}")
     return UserResponse(message=f"Created User: {user.name}", user=user)
@@ -120,10 +119,10 @@ async def read_user(request: Request, user: User) -> UserResponse:
     Raises:
         HTTPException: 404 if user not found
     """
-    redis_client = await _get_redis_client(request)
+    store = _get_metadata_store(request)
     key = _gen_key(user.name)
 
-    data = await redis_client.get(key)
+    data = await store.get(key)
     if not data:
         logger.warning(f"User not found: {user.name}")
         raise HTTPException(status_code=404, detail="user does not exist")
@@ -149,17 +148,16 @@ async def update_user(request: Request, user: User) -> UserResponse:
     Raises:
         HTTPException: 404 if user not found
     """
-    redis_client = await _get_redis_client(request)
+    store = _get_metadata_store(request)
     key = _gen_key(user.name)
 
     # Check if user exists
-    exists = await redis_client.exists(key)
-    if not exists:
+    if not await store.exists(key):
         logger.warning(f"Cannot update non-existent user: {user.name}")
         raise HTTPException(status_code=404, detail=f"User: {user.name} does not exist")
 
     # Update user
-    await redis_client.set(key, user.model_dump_json())
+    await store.set(key, user.model_dump_json())
 
     logger.info(f"Updated user: {user.name}, rpm={user.rpm}, tpm={user.tpm}")
     return UserResponse(message=f"Updated User: {user.name}", user=user)
@@ -179,17 +177,16 @@ async def delete_user(request: Request, user: User) -> UserResponse:
     Raises:
         HTTPException: 404 if user not found
     """
-    redis_client = await _get_redis_client(request)
+    store = _get_metadata_store(request)
     key = _gen_key(user.name)
 
     # Check if user exists
-    exists = await redis_client.exists(key)
-    if not exists:
+    if not await store.exists(key):
         logger.warning(f"Cannot delete non-existent user: {user.name}")
         raise HTTPException(status_code=404, detail=f"User: {user.name} does not exist")
 
     # Delete user
-    await redis_client.delete(key)
+    await store.delete(key)
 
     logger.info(f"Deleted user: {user.name}")
     return UserResponse(message=f"Deleted User: {user.name}", user=user)
