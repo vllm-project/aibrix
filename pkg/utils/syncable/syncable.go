@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package syncable defines the interface for state that can be synced across
 // replicas (e.g. via Redis). Implement this in the package that owns the state;
-// the sync engine (e.g. redissync) depends on this package only.
+// the sync engine (e.g. statesync) depends on this package only.
 package syncable
 
 import "context"

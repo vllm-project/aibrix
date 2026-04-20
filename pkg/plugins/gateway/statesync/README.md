@@ -1,4 +1,4 @@
-# redissync
+# statesync
 
 Generic Redis-backed state sync for multiple gateway (or other) replicas. Uses **per-entity keys** with `SETEX` (per-record TTL), `MGET` (batched), and `SCAN` (enumeration). Keys are namespaced via a hash tag (`aibrix:{namespace}:e:{id}`). No PUB/SUB.
 
@@ -14,17 +14,17 @@ Redis key format: `aibrix:{namespace}:e:{entityId}` — `{namespace}` is the has
 
 ### Prefix cache (gateway default wiring)
 
-With `AIBRIX_REDISSYNC_ENABLED=true`, `cmd/plugins/main.go`:
+With `AIBRIX_STATESYNC_ENABLED=true`, `cmd/plugins/main.go`:
 
 1. Calls `table.EnableDeltaSync()` to activate dirty tracking on `PrefixHashTable` (no-op cost when disabled).
 2. Registers `PrefixHashTableSyncable` with the manager.
 3. Relies on **periodic delta push + pull** — `Put` is not called on every `AddPrefix`.
 
-This gives eventual consistency with staleness bounded by the sync interval and per-key TTL. For faster cross-replica visibility you can call `syncManager.Put(ctx, "prefixcache", blockIDStr, data)` on the `*redissync.RedisSync` using bytes from `EncodeBlockForSync` after each `AddPrefix` (higher Redis write load trade-off).
+This gives eventual consistency with staleness bounded by the sync interval and per-key TTL. For faster cross-replica visibility you can call `syncManager.Put(ctx, "prefixcache", blockIDStr, data)` on the `*statesync.RedisSync` using bytes from `EncodeBlockForSync` after each `AddPrefix` (higher Redis write load trade-off).
 
 ### Delta sync and LRU eviction
 
-`EnableDeltaSync()` must be called on `PrefixHashTable` before it is registered with `*redissync.RedisSync`; without it, dirty tracking is inactive and `GetDeltaForSync` always returns an empty delta. If a block is marked dirty then **evicted locally** before the next successful push, `GetDeltaForSync` skips it silently. The corresponding Redis key remains until the per-entity TTL expires. Strong delete propagation is not guaranteed for evicted entries.
+`EnableDeltaSync()` must be called on `PrefixHashTable` before it is registered with `*statesync.RedisSync`; without it, dirty tracking is inactive and `GetDeltaForSync` always returns an empty delta. If a block is marked dirty then **evicted locally** before the next successful push, `GetDeltaForSync` skips it silently. The corresponding Redis key remains until the per-entity TTL expires. Strong delete propagation is not guaranteed for evicted entries.
 
 ## Diagrams
 
@@ -49,9 +49,9 @@ sequenceDiagram
 
 ---
 
-## Adopting redissync in a new component
+## Adopting statesync in a new component
 
-Changes live **only in the package that owns the state**. The `redissync` package stays generic and never imports component types.
+Changes live **only in the package that owns the state**. The `statesync` package stays generic and never imports component types.
 
 ### 1. Implement `syncable.Syncable`
 
@@ -79,15 +79,15 @@ Optional interfaces:
 
 ### 3. Expose a constructor returning `syncable.Syncable`
 
-Return an adapter that holds a pointer to your state and implements the interface. Callers pass it to `(*redissync.RedisSync).Register(...)`.
+Return an adapter that holds a pointer to your state and implements the interface. Callers pass it to `(*statesync.RedisSync).Register(...)`.
 
 ### 4. Wire in the process entry point
 
 ```go
-rs := redissync.New(redisClient,
-    redissync.WithSyncPeriod(30*time.Second), // optional; default 10s
-    redissync.WithOpTimeout(15*time.Second),  // optional; default 30s
-    redissync.WithKeyPrefix("myapp"),         // optional; default "aibrix"
+rs := statesync.New(redisClient,
+    statesync.WithSyncPeriod(30*time.Second), // optional; default 10s
+    statesync.WithOpTimeout(15*time.Second),  // optional; default 30s
+    statesync.WithKeyPrefix("myapp"),         // optional; default "aibrix"
 )
 // Register all Syncables before Start.
 rs.Register(mypkg.NewMyStateSyncable(myState))
@@ -97,7 +97,7 @@ rs.Start()
 rs.Stop() // blocks until the sync loop exits or stop-wait timeout (default 90s)
 ```
 
-Available `redissync.New` options:
+Available `statesync.New` options:
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -135,7 +135,7 @@ import (
 
 const tokenTrackerNamespace = "token_tracker"
 
-// TokenTrackerSyncable adapts TokenTracker for redissync.
+// TokenTrackerSyncable adapts TokenTracker for statesync.
 type TokenTrackerSyncable struct {
     Tracker *TokenTracker
 }
@@ -176,7 +176,7 @@ func (s *TokenTrackerSyncable) ApplyRemote(ctx context.Context, id string, data 
 ### Step 2 – Wire in the entry point
 
 ```go
-rs := redissync.New(redisClient, redissync.WithSyncPeriod(30*time.Second))
+rs := statesync.New(redisClient, statesync.WithSyncPeriod(30*time.Second))
 rs.Register(prefixcacheindexer.NewPrefixHashTableSyncable(prefixHashTable))
 rs.Register(vtc.NewTokenTrackerSyncable(tokenTracker))
 rs.Start()
@@ -188,7 +188,7 @@ defer rs.Stop()
 If you want other replicas to see a change before the next periodic push:
 
 ```go
-func (t *TokenTracker) RecordUse(ctx context.Context, id int64, rs *redissync.RedisSync) {
+func (t *TokenTracker) RecordUse(ctx context.Context, id int64, rs *statesync.RedisSync) {
     t.mu.Lock()
     t.entries[id] = time.Now()
     t.mu.Unlock()

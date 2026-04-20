@@ -85,7 +85,7 @@ func (c *PrefixHashTable) GetSnapshotForSync(ctx context.Context) (map[string][]
 }
 
 // EncodeBlockForSync returns the serialized form of the block for the given
-// block hash, or nil if not present. Use with redissync.Sync.Put for optional
+// block hash, or nil if not present. Use with statesync.Sync.Put for optional
 // write-through after AddPrefix; default gateway wiring uses periodic delta push only.
 func (c *PrefixHashTable) EncodeBlockForSync(blockHash uint64) ([]byte, bool) {
 	c.mu.RLock()
@@ -212,13 +212,13 @@ func (c *PrefixHashTable) ApplyRemoteForSync(ctx context.Context, id string, dat
 const prefixCacheNamespace = "prefixcache"
 
 // PrefixHashTableSyncable adapts PrefixHashTable to syncable.Syncable so it can
-// be registered with redissync.Manager for cross-replica sync.
+// be registered with statesync.Manager for cross-replica sync.
 type PrefixHashTableSyncable struct {
 	Table *PrefixHashTable
 }
 
 // NewPrefixHashTableSyncable returns a Syncable for the given table. Register
-// it with redissync.Manager. EncodeBlockForSync supports optional write-through;
+// it with statesync.Manager. EncodeBlockForSync supports optional write-through;
 // default integration uses periodic delta sync only.
 func NewPrefixHashTableSyncable(table *PrefixHashTable) syncable.Syncable {
 	return &PrefixHashTableSyncable{Table: table}

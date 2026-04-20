@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package redissync provides a generic Redis-backed state sync layer for use
+// Package statesync provides a generic Redis-backed state sync layer for use
 // across multiple gateway (or other) replicas. State is stored as one Redis
 // key per entity (aibrix:{namespace}:e:{entityId}) with per-record TTL so each
 // record expires independently. Uses SET/SETEX, GET, DEL, and SCAN (or ISCAN). No PUB/SUB.
@@ -29,7 +29,7 @@ limitations under the License.
 //
 // Example: prefixcacheindexer.NewPrefixHashTableSyncable(table) implements
 // syncable.Syncable; EncodeBlockForSync supports optional per-block Put for write-through.
-package redissync
+package statesync
 
 import (
 	"context"
@@ -59,7 +59,7 @@ const (
 )
 
 var (
-	syncPeriod = utils.LoadEnvDuration("AIBRIX_REDISSYNC_SYNC_PERIOD", defaultSyncPeriod)
+	syncPeriod = utils.LoadEnvDuration("AIBRIX_STATESYNC_SYNC_PERIOD", defaultSyncPeriod)
 )
 
 // RedisSync stores one Redis key per entity with per-record TTL. Key format
@@ -314,9 +314,8 @@ func (r *RedisSync) Pull(ctx context.Context, s syncable.Syncable) error {
 			return err
 		}
 	}
-	klog.Info("\n")
+
 	klog.V(4).InfoS("redissync pull complete", "namespace", namespace, "keys", totalKeys, "duration", time.Since(pullStart))
-	klog.Info("\n")
 	return nil
 }
 

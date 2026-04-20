@@ -82,7 +82,7 @@ func NewPrefixHashTable() *PrefixHashTable {
 }
 
 // EnableDeltaSync initializes dirty-set tracking so GetDeltaForSync/ClearDirtyForSync
-// can be used. Call this once before registering with redissync.Manager. It is safe
+// can be used. Call this once before registering with statesync.Manager. It is safe
 // to call multiple times; subsequent calls are no-ops.
 func (c *PrefixHashTable) EnableDeltaSync() {
 	c.mu.Lock()
