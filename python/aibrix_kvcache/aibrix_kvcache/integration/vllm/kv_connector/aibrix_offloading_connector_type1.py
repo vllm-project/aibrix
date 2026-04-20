@@ -571,16 +571,22 @@ class AIBrixWorkerMeta(KVConnectorWorkerMetadata):
     def aggregate(
         self, other: "KVConnectorWorkerMetadata"
     ) -> "KVConnectorWorkerMetadata":
-        """Aggregate by taking the minimum saved tokens per request
-        (conservative: all TP ranks must have saved for it to count)."""
+        """Aggregate by taking the intersection of saved_tokens across TP
+        ranks and the minimum count per request.
+
+        For Tensor Parallel setups, a block is only usable if ALL ranks
+        successfully saved it to the external L1 cache. Using a union would
+        incorrectly mark blocks as cached when only some ranks saved,
+        leading to load failures on ranks that missed the save.
+        """
         if not isinstance(other, AIBrixWorkerMeta):
             return self
-        merged = dict(self.saved_tokens)
-        for req_id, num_tokens in other.saved_tokens.items():
-            if req_id in merged:
-                merged[req_id] = min(merged[req_id], num_tokens)
-            else:
-                merged[req_id] = num_tokens
+        # Intersection: only keep req_ids present in BOTH metadata sets
+        merged = {
+            req_id: min(num_tokens, other.saved_tokens[req_id])
+            for req_id, num_tokens in self.saved_tokens.items()
+            if req_id in other.saved_tokens
+        }
         return AIBrixWorkerMeta(saved_tokens=merged)
 
 
@@ -899,6 +905,12 @@ class AIBrixOffloadingConnectorWorker:
         self._meta_cache: dict[str, AIBrixOffloadingConnectorCachedMeta] = {}
         # Track tokens saved to L1 cache per request (for scheduler reporting)
         self._newly_saved_tokens: dict[str, int] = {}
+        # Track vLLM block_ids where cache.acquire() returned less than the
+        # scheduler promised (eviction race). These are reported via
+        # get_block_ids_with_load_errors() so vLLM can roll back
+        # num_computed_tokens and re-schedule for recompute
+        # (when kv_load_failure_policy="recompute", the default).
+        self._failed_load_block_ids: set[int] = set()
         # metrics
         self._metrics = AIBrixOffloadingConnectorMetrics(self.cache.metrics)
         logger.info(
@@ -1157,6 +1169,24 @@ class AIBrixOffloadingConnectorWorker:
             seq_context_len,
             seq_recv_len,
         )
+
+        # Detect partial load (eviction race): scheduler promised more
+        # tokens than the worker was able to load. Report the vLLM
+        # block_ids we failed to load so vLLM rolls back
+        # num_computed_tokens and re-schedules those tokens for compute.
+        if seq_recv_len < aligned_query_len:
+            block_size = self.engine_block_ntokens
+            first_failed = aligned_context_len + seq_recv_len
+            last_failed = aligned_context_len + aligned_query_len
+            slot_mapping = seq_cached_meta.context_slot_mapping
+            first_block = first_failed // block_size
+            last_block = last_failed // block_size
+            for blk_idx in range(first_block, last_block):
+                token_offset = blk_idx * block_size
+                if 0 <= token_offset < len(slot_mapping):
+                    slot = int(slot_mapping[token_offset].item())
+                    block_id = slot // block_size
+                    self._failed_load_block_ids.add(block_id)
 
         if self._metrics.time_measurement_enabled:
             end.record()
@@ -1492,16 +1522,26 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
         """
         Notifies worker-side connector ids of requests that have
         finished generating tokens.
-
-        Returns:
-            ids of requests that have finished asynchronous transfer
-            (requests that previously returned True from request_finished()),
-            tuple of (sending/saving ids, recving/loading ids or
-            (recving/loading id, num. of recv'ed/loaded tokens) pairs).
-            The finished saves/sends req ids must belong to a set provided in a
-            call to this method (this call or a prior one).
         """
         return None, None
+
+    def get_block_ids_with_load_errors(self) -> set[int]:
+        """Report vLLM block_ids that the scheduler promised as cached
+        but the worker failed to load (e.g., evicted from L1 between the
+        scheduler tracker update and the worker acquire call).
+
+        vLLM invalidates these blocks, rolls back num_computed_tokens,
+        and re-schedules the affected tokens for recomputation
+        (when kv_load_failure_policy="recompute", the default).
+        This keeps the scheduler-side _cached_block_hashes tracker
+        eventually-consistent with the actual L1 cache state without
+        requiring a tight eviction-notification channel.
+        """
+        if self.connector_worker is None:
+            return set()
+        result = set(self.connector_worker._failed_load_block_ids)
+        self.connector_worker._failed_load_block_ids.clear()
+        return result
 
     def build_connector_worker_meta(
         self,

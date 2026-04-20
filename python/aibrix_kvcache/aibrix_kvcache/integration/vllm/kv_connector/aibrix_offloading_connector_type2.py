@@ -297,6 +297,21 @@ class AIBrixOffloadingConnectorWorker(AIBrixOffloadingConnectorWorkerType1):
             seq_recv_len,
         )
 
+        # Detect partial load (eviction race) — see Type1 comment
+        if seq_recv_len < aligned_query_len:
+            block_size = self.engine_block_ntokens
+            first_failed = aligned_context_len + seq_recv_len
+            last_failed = aligned_context_len + aligned_query_len
+            slot_mapping = seq_cached_meta.context_slot_mapping
+            first_block = first_failed // block_size
+            last_block = last_failed // block_size
+            for blk_idx in range(first_block, last_block):
+                token_offset = blk_idx * block_size
+                if 0 <= token_offset < len(slot_mapping):
+                    slot = int(slot_mapping[token_offset].item())
+                    block_id = slot // block_size
+                    self._failed_load_block_ids.add(block_id)
+
         if self._metrics.time_measurement_enabled:
             end = time.perf_counter()
             lat_ms = (end - start) * 1000
@@ -754,20 +769,22 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
         )
         self.connector_worker.wait_for_save(self._connector_metadata)
 
+    def get_block_ids_with_load_errors(self) -> set[int]:
+        """Report vLLM block_ids the worker failed to load (eviction race).
+        See AIBrixOffloadingConnector (type1) for full doc.
+        """
+        if self.connector_worker is None:
+            return set()
+        result = set(self.connector_worker._failed_load_block_ids)
+        self.connector_worker._failed_load_block_ids.clear()
+        return result
+
     def get_finished(
         self, finished_req_ids: set[str]
     ) -> tuple[Optional[set[str]], Optional[set[str | tuple[str, int]]]]:
         """
         Notifies worker-side connector ids of requests that have
         finished generating tokens.
-
-        Returns:
-            ids of requests that have finished asynchronous transfer
-            (requests that previously returned True from request_finished()),
-            tuple of (sending/saving ids, recving/loading ids or
-            (recving/loading id, num. of recv'ed/loaded tokens) pairs).
-            The finished saves/sends req ids must belong to a set provided in a
-            call to this method (this call or a prior one).
         """
         return None, None
 
