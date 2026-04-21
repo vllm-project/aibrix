@@ -31,6 +31,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
@@ -53,7 +54,7 @@ func BenchmarkScorePrefillPods(b *testing.B) {
 			router := &pdRouter{
 				prefillPolicy:         newPrefixCachePrefillPolicy(benchmarkPrefixTable),
 				prefixCacheIndexer:    benchmarkPrefixTable,
-				prefillRequestTracker: NewPrefillRequestTracker(),
+				prefillRequestTracker: pd.NewPrefillRequestTracker(),
 			}
 
 			ctx := types.NewRoutingContext(
@@ -170,7 +171,7 @@ func BenchmarkDoPrefillRequest(b *testing.B) {
 			defer server.Close()
 
 			router := &pdRouter{
-				prefillRequestTracker: NewPrefillRequestTracker(),
+				prefillRequestTracker: pd.NewPrefillRequestTracker(),
 				httpClient:            server.Client(),
 			}
 			prefillPod := benchmarkPDPods(engine, "prefill", 1, 1)[0]

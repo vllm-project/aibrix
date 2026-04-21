@@ -17,18 +17,14 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -65,9 +61,6 @@ const (
 	PromptLenBucketMinLength      string                 = "prompt-len-bucket-min-length"
 	PromptLenBucketMaxLength      string                 = "prompt-len-bucket-max-length"
 	defaultPrefillRequestTimeout  int                    = 30
-
-	prefillScorePolicyPrefixCache  = "prefix_cache"
-	prefillScorePolicyLeastRequest = "least_request"
 
 	defaultPrefillLoadImbalanceMinSpread      int32   = 16
 	defaultDecodeLoadImbalanceMinSpread       float64 = 16
@@ -108,7 +101,7 @@ var (
 	// KV transfer backend: "shfs" (GPU/SHFS) or "nixl" (Neuron)
 	aibrixKVConnectorType string = utils.LoadEnv("AIBRIX_KV_CONNECTOR_TYPE", KVConnectorTypeSHFS)
 	// prefill pod scoring strategy: "prefix_cache" or "least_request"
-	aibrixPrefillScorePolicy string = utils.LoadEnv("AIBRIX_PREFILL_SCORE_POLICY", prefillScorePolicyPrefixCache)
+	aibrixPrefillScorePolicy string = utils.LoadEnv("AIBRIX_PREFILL_SCORE_POLICY", pd.PrefillScorePolicyPrefixCache)
 	// decode pod scoring strategy: "load_balancing" or "least_request"
 	aibrixDecodeScorePolicy string = utils.LoadEnv("AIBRIX_DECODE_SCORE_POLICY", pd.ScorePolicyLoadBalancing)
 )
@@ -157,7 +150,7 @@ func parsePDAlgorithmConfig(raw json.RawMessage) *pdAlgorithmConfig {
 // (stored on the router at startup). Empty or missing fields keep the env-based policies.
 // A non-empty decodeScorePolicy that is not recognized returns an error so routing does not
 // silently run with a different policy than the user configured.
-func (r *pdRouter) effectiveScorePolicies(routingCtx *types.RoutingContext) (prefillScorePolicy, pd.DecodeScorePolicy, error) {
+func (r *pdRouter) effectiveScorePolicies(routingCtx *types.RoutingContext) (pd.PrefillScorePolicy, pd.DecodeScorePolicy, error) {
 	prefill := r.prefillPolicy
 	decode := r.decodePolicy
 	if routingCtx.ConfigProfile == nil || len(routingCtx.ConfigProfile.RoutingConfig) == 0 {
@@ -166,14 +159,14 @@ func (r *pdRouter) effectiveScorePolicies(routingCtx *types.RoutingContext) (pre
 	cfg := parsePDAlgorithmConfig(routingCtx.ConfigProfile.RoutingConfig)
 	if s := strings.TrimSpace(cfg.PrefillScorePolicy); s != "" {
 		switch s {
-		case prefillScorePolicyLeastRequest:
-			prefill = &leastRequestPrefillPolicy{}
-		case prefillScorePolicyPrefixCache:
+		case pd.PrefillScorePolicyLeastRequest:
+			prefill = pd.NewLeastRequestPrefillPolicy()
+		case pd.PrefillScorePolicyPrefixCache:
 			prefill = newPrefixCachePrefillPolicy(r.prefixCacheIndexer)
 		default:
 			klog.InfoS("unknown prefillScorePolicy in routingConfig, keeping env-based policy",
 				"request_id", routingCtx.RequestID, "value", s,
-				"valid", []string{prefillScorePolicyPrefixCache, prefillScorePolicyLeastRequest})
+				"valid", []string{pd.PrefillScorePolicyPrefixCache, pd.PrefillScorePolicyLeastRequest})
 			prefill = r.prefillPolicy
 		}
 	}
@@ -190,55 +183,32 @@ func (r *pdRouter) effectiveScorePolicies(routingCtx *types.RoutingContext) (pre
 	if strings.TrimSpace(cfg.PrefillScorePolicy) != "" || strings.TrimSpace(cfg.DecodeScorePolicy) != "" {
 		klog.V(4).InfoS("pd score policies from model config profile routingConfig",
 			"request_id", routingCtx.RequestID,
-			"prefill_policy", prefill.name(), "decode_policy", decode.Name())
+			"prefill_policy", prefill.Name(), "decode_policy", decode.Name())
 	}
 	return prefill, decode, nil
 }
 
 type pdRouter struct {
 	cache                 cache.Cache
-	prefillPolicy         prefillScorePolicy
+	prefillPolicy         pd.PrefillScorePolicy
 	decodePolicy          pd.DecodeScorePolicy
 	prefixCacheIndexer    *prefixcacheindexer.PrefixHashTable
-	prefillRequestTracker *PrefillRequestTracker
-	pendingDecodeTracker  *PendingDecodeTracker
+	prefillRequestTracker *pd.PrefillRequestTracker
+	pendingDecodeTracker  *pd.PendingDecodeTracker
 	httpClient            *http.Client
 	prefixUpdateCh        chan prefixUpdateJob
 	countersMu            sync.RWMutex
 	selectionCounts       map[string]int64
 }
 
-// PrefillRequestTracker manages prefill-specific request counts
-type PrefillRequestTracker struct {
-	// Map of pod name -> active prefill request count
-	podRequestCounts sync.Map // map[string]*int32
-	// Map of request ID -> pod name for cleanup
-	requestToPod sync.Map // map[string]string
-}
-
-// PendingDecodeTracker tracks decode pods that have been selected but whose
-// RealtimeNumRequestsRunning has not yet been incremented by AddRequestCount.
-// This bridges the gap between decode pod selection and the actual decode
-// request starting, preventing concurrent requests from all routing to the
-// same decode pod during the prefill phase.
-type PendingDecodeTracker struct {
-	// Map of pod name -> pending decode request count
-	podRequestCounts sync.Map // map[string]*atomic.Int32
-	// Map of request ID -> pod name for cleanup
-	requestToPod sync.Map // map[string]string
-}
-
-func newPrefixCachePrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable) prefillScorePolicy {
+func newPrefixCachePrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable) pd.PrefillScorePolicy {
 	var tok tokenizer.Tokenizer
 	if tokenizerType == tokenizerTypeTiktoken {
 		tok = tokenizer.NewTiktokenTokenizer()
 	} else {
 		tok = tokenizer.NewCharacterTokenizer()
 	}
-	return &prefixCachePrefillPolicy{
-		tok:                tok,
-		prefixCacheIndexer: sharedPrefixTable,
-	}
+	return pd.NewPrefixCachePrefillPolicy(tok, sharedPrefixTable)
 }
 
 func NewPDRouter() (types.Router, error) {
@@ -250,19 +220,19 @@ func NewPDRouter() (types.Router, error) {
 
 	sharedPrefixTable := prefixcacheindexer.GetSharedPrefixHashTable()
 
-	var policy prefillScorePolicy
+	var policy pd.PrefillScorePolicy
 	switch aibrixPrefillScorePolicy {
-	case prefillScorePolicyLeastRequest:
-		policy = &leastRequestPrefillPolicy{}
-	case prefillScorePolicyPrefixCache:
+	case pd.PrefillScorePolicyLeastRequest:
+		policy = pd.NewLeastRequestPrefillPolicy()
+	case pd.PrefillScorePolicyPrefixCache:
 		policy = newPrefixCachePrefillPolicy(sharedPrefixTable)
 	default:
 		klog.InfoS("pd_router unknown AIBRIX_PREFILL_SCORE_POLICY, using prefix_cache",
 			"value", aibrixPrefillScorePolicy,
-			"valid", []string{prefillScorePolicyPrefixCache, prefillScorePolicyLeastRequest})
+			"valid", []string{pd.PrefillScorePolicyPrefixCache, pd.PrefillScorePolicyLeastRequest})
 		policy = newPrefixCachePrefillPolicy(sharedPrefixTable)
 	}
-	klog.InfoS("pd_router prefill score policy", "policy", policy.name())
+	klog.InfoS("pd_router prefill score policy", "policy", policy.Name())
 
 	decodePol, _, unknownDecode := pd.ResolveDecodePolicy(aibrixDecodeScorePolicy)
 	if unknownDecode {
@@ -288,8 +258,8 @@ func NewPDRouter() (types.Router, error) {
 		prefillPolicy:         policy,
 		decodePolicy:          decodePol,
 		prefixCacheIndexer:    sharedPrefixTable,
-		prefillRequestTracker: NewPrefillRequestTracker(),
-		pendingDecodeTracker:  NewPendingDecodeTracker(),
+		prefillRequestTracker: pd.NewPrefillRequestTracker(),
+		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
 		httpClient:            httpClient,
 		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
 		selectionCounts:       make(map[string]int64),
@@ -297,14 +267,6 @@ func NewPDRouter() (types.Router, error) {
 
 	pdRouter.startPrefixUpdater()
 	return &pdRouter, nil
-}
-
-// NewPrefillRequestTracker creates a new prefill request tracker
-func NewPrefillRequestTracker() *PrefillRequestTracker {
-	return &PrefillRequestTracker{
-		podRequestCounts: sync.Map{},
-		requestToPod:     sync.Map{},
-	}
 }
 
 func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
@@ -565,94 +527,15 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	return nil, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
 }
 
-// prefillScorer is a request-scoped scorer created by prefillScorePolicy. prepare for a single request.
-// Each call to prepare returns a fresh instance; no state is shared across requests.
-type prefillScorer interface {
-	// scorePod returns the score for a single pod (lower is better).
-	scorePod(pod *v1.Pod, reqCnt, maxRequestCount float64) float64
-	// prefixHashes returns token-prefix hashes for cache warming, or nil if not applicable.
-	prefixHashes() []uint64
-}
-
-// prefillScorePolicy is the stateless scoring strategy for prefill pod selection.
-// The policy itself holds only immutable config (e.g. client handles).
-// All per-request state is captured inside the prefillScorer returned by prepare.
-// Implement this interface to add a new policy; register it in NewPDRouter via AIBRIX_PREFILL_SCORE_POLICY.
-type prefillScorePolicy interface {
-	// prepare is called once per request. It returns a request-scoped prefillScorer
-	// whose state is not shared with any other request.
-	// pods and readyPodsMap represent the same set; readyPodsMap is provided for O(1) lookups.
-	// Returns an error only if scoring cannot proceed at all (e.g. tokenization failure).
-	prepare(routingCtx *types.RoutingContext, pods []*v1.Pod, readyPodsMap map[string]struct{}) (prefillScorer, error)
-	// name returns the policy identifier used in log lines.
-	name() string
-}
-
-// prefixCachePrefillPolicy is a stateless policy that scores pods by prefix-cache match
-// percentage plus normalised request count: score = (100 - matchPercent) * 0.1 + reqCnt / maxReqCnt
-type prefixCachePrefillPolicy struct {
-	tok                tokenizer.Tokenizer
-	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
-}
-
-func (p *prefixCachePrefillPolicy) prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (prefillScorer, error) {
-	tokens, err := p.tok.TokenizeInputText(routingCtx.Message)
-	if err != nil {
-		return nil, err
-	}
-	matchedPods, hashes := p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
-	return &prefixCacheScorer{matchedPods: matchedPods, hashes: hashes}, nil
-}
-
-func (p *prefixCachePrefillPolicy) name() string { return prefillScorePolicyPrefixCache }
-
-// prefixCacheScorer is the request-scoped scorer produced by prefixCachePrefillPolicy.
-type prefixCacheScorer struct {
-	matchedPods map[string]int
-	hashes      []uint64
-}
-
-func (s *prefixCacheScorer) prefixHashes() []uint64 { return s.hashes }
-
-func (s *prefixCacheScorer) scorePod(pod *v1.Pod, reqCnt, maxRequestCount float64) float64 {
-	matchPct := float64(s.matchedPods[pod.Name])
-	score := (100-matchPct)*.1 + reqCnt/maxRequestCount
-	klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
-		"policy", prefillScorePolicyPrefixCache,
-		"score", fmt.Sprintf("(100 - %f) * 0.1 + %f / %f", matchPct, reqCnt, maxRequestCount),
-		"prefix_match_percent", matchPct,
-		"running_reqs", reqCnt, "max_running_reqs", maxRequestCount)
-	return score
-}
-
-// leastRequestPrefillPolicy is a stateless policy that scores pods by raw running request count.
-// No prefix-cache state is consulted; the scorer returned is a zero-size struct.
-type leastRequestPrefillPolicy struct{}
-
-func (p *leastRequestPrefillPolicy) prepare(_ *types.RoutingContext, _ []*v1.Pod, _ map[string]struct{}) (prefillScorer, error) {
-	return leastRequestScorer{}, nil
-}
-
-func (p *leastRequestPrefillPolicy) name() string { return prefillScorePolicyLeastRequest }
-
-// leastRequestScorer is the request-scoped scorer produced by leastRequestPrefillPolicy.
-type leastRequestScorer struct{}
-
-func (s leastRequestScorer) prefixHashes() []uint64 { return nil }
-
-func (s leastRequestScorer) scorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
-	klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
-		"policy", prefillScorePolicyLeastRequest,
-		"running_reqs", reqCnt)
-	return reqCnt
-}
-
-// scorePrefillPods computes per-roleset prefill scores using the configured prefillScorePolicy.
-// It handles the shared bookkeeping (request counts, mean/stddev filter, roleset tracking)
-// and delegates per-pod scoring to the policy.
-func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, prefillPolicy prefillScorePolicy) (map[string]*Scores, float64, []uint64) {
+// scorePrefillPods scores candidate prefill pods using prefillPolicy. Pods whose
+// running-request count exceeds mean+stddev*factor are skipped as overloaded.
+// Returns a per-roleset map of the best (lowest-score) pod, the global max score
+// used by finalPDScore for normalization, and the prefix hashes from the scorer.
+func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, prefillPolicy pd.PrefillScorePolicy) (map[string]*Scores, float64, []uint64) {
 	if prefillPolicy == nil {
-		prefillPolicy = r.prefillPolicy
+		klog.ErrorS(nil, "scorePrefillPods called with nil prefillPolicy; this is a programming error",
+			"request_id", routingCtx.RequestID)
+		return nil, 0, nil
 	}
 	utils.CryptoShuffle(prefillPods)
 
@@ -674,10 +557,10 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 	meanRequestCount := mean(requestCounts)
 	stdDevRequestCount := standardDeviation(requestCounts)
 
-	scorer, err := prefillPolicy.prepare(routingCtx, prefillPods, readyPodsMap)
+	scorer, err := prefillPolicy.Prepare(routingCtx, prefillPods, readyPodsMap)
 	if err != nil {
 		klog.ErrorS(err, "prefill scorer preparation failed",
-			"request_id", routingCtx.RequestID, "policy", prefillPolicy.name(), "model", routingCtx.Model)
+			"request_id", routingCtx.RequestID, "policy", prefillPolicy.Name(), "model", routingCtx.Model)
 		return nil, 0, nil
 	}
 
@@ -693,7 +576,7 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 			continue
 		}
 
-		score := scorer.scorePod(pod, reqCnt, maxRequestCount)
+		score := scorer.ScorePod(pod, reqCnt, maxRequestCount)
 		if existing, exists := prefillScores[rolesetName]; !exists || score < existing.Score {
 			prefillScores[rolesetName] = &Scores{Pod: pod, Score: score}
 		}
@@ -702,10 +585,13 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 		}
 	}
 
-	return prefillScores, maxPrefillScore, scorer.prefixHashes()
+	return prefillScores, maxPrefillScore, scorer.PrefixHashes()
 }
 
-// scoreDecodePods scores decode pods using the configured pd.DecodeScorePolicy (default load_balancing).
+// scoreDecodePods scores candidate decode pods using policy, falling back to
+// load_balancing for a nil policy or for individual pods whose primary score is
+// invalid (NaN). Returns a DecodeScoreRun with the best (lowest-score) pod per
+// roleset and the global max score used by finalPDScore for normalization.
 func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDecodePods []*v1.Pod,
 	maxRequestCount float64, maxThroughput float64, maxFreeGPUUsage float64,
 	podRequestCounts map[string]float64, podThroughputs map[string]float64, podFreeGpuUsage map[string]float64,
@@ -764,6 +650,10 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 	return out
 }
 
+// finalPDScore selects the winning prefill/decode pod pair by normalizing each
+// roleset's prefill and decode scores by their respective maxima and picking the
+// roleset with the lowest combined score. Enqueues a prefix-cache update and
+// emits selection metrics before returning.
 func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	prefixHashes []uint64,
 	prefillScores map[string]*Scores, maxPrefillScore float64,
@@ -825,376 +715,6 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	return targetPrefillPod, targetDecodePod, nil
 }
 
-func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod *v1.Pod, llmEngine string) error {
-	// Prepare prefill request payload
-	payload, err := r.preparePrefillPayload(routingCtx, prefillPod, llmEngine)
-	if err != nil {
-		return fmt.Errorf("failed to prepare prefill payload for request %s: %w", routingCtx.RequestID, err)
-	}
-
-	// Execute HTTP request
-	apiURL := fmt.Sprintf("http://%s:%d%s",
-		prefillPod.Status.PodIP,
-		utils.GetModelPortForPod(routingCtx.RequestID, prefillPod),
-		routingCtx.ReqPath)
-
-	prefillPol, decodePol, polErr := r.effectiveScorePolicies(routingCtx)
-	prefillScorePolicyName := prefillScorePolicyPrefixCache
-	if r.prefillPolicy != nil {
-		prefillScorePolicyName = r.prefillPolicy.name()
-	}
-	if polErr == nil && prefillPol != nil {
-		prefillScorePolicyName = prefillPol.name()
-	}
-
-	decodeScorePolicyName := string(pd.DecodePolicyLoadBalancing)
-	if r.decodePolicy != nil {
-		decodeScorePolicyName = string(r.decodePolicy.Name())
-	}
-	if polErr == nil && decodePol != nil {
-		decodeScorePolicyName = string(decodePol.Name())
-	}
-
-	fields := []interface{}{
-		"request_id", routingCtx.RequestID,
-		"llm_engine", llmEngine,
-		"model_name", routingCtx.Model,
-		"prefill_pod", prefillPod.Name,
-		"prefill_url", apiURL,
-		"prefill_score_policy", prefillScorePolicyName,
-		"decode_score_policy", decodeScorePolicyName,
-		"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name),
-	}
-	klog.InfoS("prefill_request_start", fields...)
-	if len(fields) >= 2 {
-		fields = fields[:len(fields)-2]
-	}
-
-	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name)
-	routingCtx.PrefillStartTime = time.Now()
-
-	switch llmEngine {
-	case SGLangEngine:
-		// For SGLang, use async prefill - the bootstrap mechanism (bootstrap_host/port/room)
-		// coordinates between prefill and decode pods, so we don't need to wait
-		go func() {
-			defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
-
-			if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
-				klog.ErrorS(err, "prefill_request_failed",
-					"request_id", routingCtx.RequestID,
-					"llm_engine", llmEngine,
-					"prefill_pod", prefillPod.Name,
-					"prefill_pod_ip", prefillPod.Status.PodIP,
-					"elapsed", routingCtx.Elapsed(time.Now()))
-				return
-			}
-
-			routingCtx.PrefillEndTime = time.Now()
-			fields = append(fields,
-				"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
-				"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
-				"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
-			klog.InfoS("prefill_request_end", fields...)
-		}()
-
-	case VLLMEngine:
-		// For vLLM, wait synchronously to get KV transfer params from response
-		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, r.updateRoutingContextWithKVTransferParams, "KV transfer params")
-
-	case TensorRTLLM:
-		// For TensorRT-LLM, wait synchronously to get disaggregated_params from response.
-		// The prefill response contains first_gen_tokens and opaque_state needed by the decode worker.
-		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, r.updateRoutingContextWithTRTDisaggParams, "TRT disagg params")
-
-	default:
-		// For unknown engines, use synchronous approach as a safe default
-		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, nil, "")
-	}
-
-	return nil
-}
-
-// handleSyncPrefill executes a synchronous prefill request, optionally calling updateCtxFunc
-// to process the response. Pass nil for updateCtxFunc when no response processing is needed.
-func (r *pdRouter) handleSyncPrefill(
-	routingCtx *types.RoutingContext,
-	prefillPod *v1.Pod,
-	llmEngine, apiURL string,
-	payload []byte,
-	fields []interface{},
-	updateCtxFunc func(*types.RoutingContext, map[string]any, *v1.Pod) error,
-	errorContext string) error {
-	defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
-
-	responseData, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
-	if err != nil {
-		klog.ErrorS(err, "prefill_request_failed",
-			"request_id", routingCtx.RequestID,
-			"llm_engine", llmEngine,
-			"prefill_pod", prefillPod.Name,
-			"prefill_pod_ip", prefillPod.Status.PodIP,
-			"elapsed", routingCtx.Elapsed(time.Now()))
-		return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
-	}
-
-	if updateCtxFunc != nil {
-		if err := updateCtxFunc(routingCtx, responseData, prefillPod); err != nil {
-			return fmt.Errorf("failed to update routing context with %s for request %s: %w", errorContext, routingCtx.RequestID, err)
-		}
-	}
-
-	routingCtx.PrefillEndTime = time.Now()
-	fields = append(fields,
-		"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
-		"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
-		"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
-	klog.InfoS("prefill_request_end", fields...)
-	return nil
-}
-
-func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *v1.Pod, llmEngine string) ([]byte, error) {
-	var completionRequest map[string]any
-	if err := sonic.Unmarshal(routingCtx.ReqBody, &completionRequest); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal prefill request body: %w", err)
-	}
-
-	// Handle SGLang specific configuration
-	if llmEngine == SGLangEngine {
-		completionRequest["bootstrap_host"] = pod.Status.PodIP
-		completionRequest["bootstrap_port"] = getSGLangBootstrapPort(pod)
-		completionRequest["bootstrap_room"] = rand.Int63n(1<<63 - 1)
-
-		// Create a copy of the request body
-		reqBody, err := sonic.Marshal(completionRequest)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal post prefill request body: %w", err)
-		}
-		bodyCopy := make([]byte, len(reqBody))
-		copy(bodyCopy, reqBody)
-		routingCtx.ReqBody = bodyCopy
-	}
-
-	// Add kv_transfer_params only for SHFS mode with vLLM
-	// For NIXL mode, the backend handles KV transfer via its own mechanism
-	if llmEngine == VLLMEngine && aibrixKVConnectorType == KVConnectorTypeSHFS {
-		completionRequest["kv_transfer_params"] = map[string]any{
-			"do_remote_decode":  true,
-			"do_remote_prefill": false,
-			"remote_engine_id":  nil,
-			"remote_block_ids":  nil,
-			"remote_host":       nil,
-			"remote_port":       nil,
-		}
-	}
-
-	if llmEngine == TensorRTLLM {
-		completionRequest["disaggregated_params"] = map[string]any{
-			"request_type":      "context_only",
-			"disagg_request_id": getDisaggRequestID(trtMachineID),
-		}
-	}
-
-	// Set prefill-specific parameters
-	completionRequest["max_tokens"] = 1
-	if llmEngine == TensorRTLLM {
-		delete(completionRequest, "max_completion_tokens")
-	} else {
-		completionRequest["max_completion_tokens"] = 1
-	}
-	completionRequest["stream"] = false
-	delete(completionRequest, "stream_options")
-
-	return sonic.Marshal(completionRequest)
-}
-
-func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingContext, payload []byte) (map[string]any, error) {
-	// Create request with context for cancellation support
-	ctx, cancel := context.WithTimeout(routingCtx.Context, time.Duration(prefillRequestTimeout)*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create http prefill request: %w", err)
-	}
-
-	// Set headers
-	for key, value := range routingCtx.ReqHeaders {
-		req.Header.Set(key, value)
-	}
-	req.Header.Set("content-type", "application/json")
-	req.Header.Set("X-Request-Id", routingCtx.RequestID)
-
-	// Use shared HTTP client with connection pooling
-	resp, err := r.httpClient.Do(req)
-	if err != nil {
-		status, code := metrics.HttpFailureStatusCode(ctx, err, nil)
-		metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
-			map[string]string{"status": status, "status_code": code})
-		return nil, fmt.Errorf("failed to execute http prefill request: %w", err)
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read prefill response body: %w", err)
-	}
-
-	// Check response status
-	if resp.StatusCode != http.StatusOK {
-		status, code := metrics.HttpFailureStatusCode(ctx, nil, resp)
-		metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
-			map[string]string{"status": status, "status_code": code})
-		return nil, fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Parse response JSON. TRT-LLM prefill returns large integer IDs in disaggregated_params; UseInt64 avoids float64 precision loss.
-	var responseData map[string]any
-	var errUnmarshal error
-	if routingCtx.Engine == TensorRTLLM {
-		errUnmarshal = sonicJSONInt64.Unmarshal(body, &responseData)
-	} else {
-		errUnmarshal = sonic.Unmarshal(body, &responseData)
-	}
-	if errUnmarshal != nil {
-		return nil, fmt.Errorf("failed to unmarshal prefill response: %w", errUnmarshal)
-	}
-
-	return responseData, nil
-}
-
-func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.RoutingContext, responseData map[string]any, prefillPod *v1.Pod) error {
-	// Parse the original request body
-	var originalRequest map[string]any
-	if err := sonic.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
-		return fmt.Errorf("failed to unmarshal original request body: %w", err)
-	}
-
-	// Handle NIXL mode (Neuron) - wrap entire prefill response in disagg_prefill_resp
-	if aibrixKVConnectorType == KVConnectorTypeNIXL {
-		// For NIXL, wrap the entire prefill response for decode to process
-		// This is the format expected by Neuron's NixlConnector
-		originalRequest["disagg_prefill_resp"] = responseData
-
-		// Marshal the updated request body
-		updatedReqBody, err := sonic.Marshal(originalRequest)
-		if err != nil {
-			return fmt.Errorf("failed to marshal updated request body: %w", err)
-		}
-
-		// Update routing context with new request body
-		routingCtx.ReqBody = updatedReqBody
-
-		klog.InfoS("updated routing context with disagg_prefill_resp (NIXL mode)",
-			"request_id", routingCtx.RequestID,
-			"prefill_pod", prefillPod.Name,
-			"prefill_host", prefillPod.Status.PodIP,
-			"kv_connector_type", aibrixKVConnectorType)
-	} else {
-		// SHFS mode (default) - use kv_transfer_params with remote_host
-		// Extract kv_transfer_params from prefill response
-		kvTransferParams, exists := responseData["kv_transfer_params"]
-		if !exists {
-			klog.InfoS("no kv_transfer_params in prefill response", "request_id", routingCtx.RequestID)
-			return nil
-		}
-
-		// Update request body with KV transfer params from prefill response
-		originalRequest["kv_transfer_params"] = kvTransferParams
-
-		// Add prefill host information
-		kvTransferParamsMap, ok := kvTransferParams.(map[string]any)
-		if !ok {
-			return fmt.Errorf("kv_transfer_params has unexpected type %T, expected map[string]any", kvTransferParams)
-		}
-		kvTransferParamsMap["remote_host"] = prefillPod.Status.PodIP
-
-		// Marshal the updated request body
-		updatedReqBody, err := sonic.Marshal(originalRequest)
-		if err != nil {
-			return fmt.Errorf("failed to marshal updated request body: %w", err)
-		}
-
-		// Update routing context with new request body
-		routingCtx.ReqBody = updatedReqBody
-
-		klog.InfoS("updated routing context with kv_transfer_params (SHFS mode)",
-			"request_id", routingCtx.RequestID,
-			"prefill_pod", prefillPod.Name,
-			"prefill_host", prefillPod.Status.PodIP,
-			"kv_connector_type", aibrixKVConnectorType)
-	}
-
-	return nil
-}
-
-func (r *pdRouter) updateRoutingContextWithTRTDisaggParams(routingCtx *types.RoutingContext, responseData map[string]any, prefillPod *v1.Pod) error {
-	// Parse the original request body
-	var originalRequest map[string]any
-	if err := sonicJSONInt64.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
-		return fmt.Errorf("failed to unmarshal original request body: %w", err)
-	}
-
-	// Extract disaggregated_params from prefill response.
-	// TRT-LLM may return it at the top level or inside choices[0].
-	var disaggParams any
-	var exists bool
-
-	disaggParams, exists = responseData["disaggregated_params"]
-	if !exists {
-		// Fallback: check choices[0] (TRT-LLM serializes handler output as a choice)
-		if choices, ok := responseData["choices"].([]any); ok && len(choices) > 0 {
-			if choice, ok := choices[0].(map[string]any); ok {
-				disaggParams, exists = choice["disaggregated_params"]
-			}
-		}
-	}
-
-	if !exists {
-		klog.InfoS("no disaggregated_params in TRT prefill response", "request_id", routingCtx.RequestID)
-		return nil
-	}
-
-	disaggParamsMap, ok := disaggParams.(map[string]any)
-	if !ok {
-		return fmt.Errorf("disaggregated_params has unexpected type %T, expected map[string]any", disaggParams)
-	}
-
-	// Override request_type to generation_only for the decode request
-	disaggParamsMap["request_type"] = "generation_only"
-	originalRequest["disaggregated_params"] = disaggParamsMap
-
-	// Prefill response includes the canonical prompt_token_ids (top-level). Route it based on request path:
-	// - /v1/completions: set prompt directly from token ids.
-	// - /v1/chat/completions: set prompt_token_ids field.
-	if pti, ok := responseData["prompt_token_ids"]; ok && pti != nil {
-		if ids, ok := anySliceForJSON(pti); ok {
-			if routingCtx.ReqPath == "/v1/completions" {
-				originalRequest["prompt"] = ids
-			} else if routingCtx.ReqPath == "/v1/chat/completions" {
-				originalRequest["prompt_token_ids"] = ids
-			}
-		}
-	}
-
-	updatedReqBody, err := sonic.Marshal(originalRequest)
-	if err != nil {
-		return fmt.Errorf("failed to marshal updated request body: %w", err)
-	}
-
-	routingCtx.ReqBody = updatedReqBody
-
-	klog.InfoS("updated routing context with disaggregated_params (TensorRT-LLM)",
-		"request_id", routingCtx.RequestID,
-		"prefill_pod", prefillPod.Name,
-		"prefill_host", prefillPod.Status.PodIP)
-
-	return nil
-}
-
 func (r *pdRouter) SubscribedMetrics() []string {
 	return []string{}
 }
@@ -1230,43 +750,6 @@ func (r *pdRouter) enqueuePrefixUpdate(prefixHashes []uint64, model, pod string)
 	}
 }
 
-func getLLMEngine(pod *v1.Pod, labelName string, defaultValue string) string {
-	labelTarget, ok := pod.Labels[labelName]
-	if !ok {
-		return defaultValue
-	}
-	return labelTarget
-}
-
-func getSGLangBootstrapPort(pod *v1.Pod) int64 {
-	if portStr, exists := pod.Annotations[SGLangBootstrapPortIdentifier]; exists {
-		if port, err := strconv.ParseInt(portStr, 10, 32); err == nil {
-			return port
-		}
-	}
-	return SGLangBootstrapPort // Default port
-}
-
-// validateAndGetLLMEngine validates that all prefill pods use the same engine and returns it.
-func validateAndGetLLMEngine(prefillPods []*v1.Pod) (string, error) {
-	if len(prefillPods) == 0 {
-		return "", fmt.Errorf("no prefill pods provided")
-	}
-
-	firstEngine := getLLMEngine(prefillPods[0], LLMEngineIdentifier, VLLMEngine)
-
-	// Validate all pods use the same engine
-	for i := 1; i < len(prefillPods); i++ {
-		engine := getLLMEngine(prefillPods[i], LLMEngineIdentifier, VLLMEngine)
-		if engine != firstEngine {
-			return "", fmt.Errorf("inconsistent LLM engines detected: pod %s has %s, pod %s has %s",
-				prefillPods[0].Name, firstEngine, prefillPods[i].Name, engine)
-		}
-	}
-
-	return firstEngine, nil
-}
-
 // isPodWithHTTPServer checks if a pod should be selected for routing.
 // In multi-node tensor parallelism setups (e.g., TP=16 with node_rank=0 and node_rank=1),
 // only pods with stormservice.orchestration.aibrix.ai/pod-group-index="0" (corresponding to node_rank=0) run the HTTP server.
@@ -1279,127 +762,6 @@ func isPodWithHTTPServer(pod *v1.Pod) bool {
 	}
 	// Only include pods from node_rank=0 which have the HTTP server
 	return podGroupIndex == "0"
-}
-
-func (t *PrefillRequestTracker) AddPrefillRequest(requestID, podName string) {
-	countInterface, _ := t.podRequestCounts.LoadOrStore(podName, &atomic.Int32{})
-	count := countInterface.(*atomic.Int32)
-
-	// Increment counter
-	newCount := count.Add(1)
-
-	// Track request to pod mapping for cleanup
-	t.requestToPod.Store(requestID, podName)
-
-	klog.V(4).InfoS("prefill_request_added",
-		"request_id", requestID,
-		"pod_name", podName,
-		"new_count", newCount)
-}
-
-func (t *PrefillRequestTracker) RemovePrefillRequest(requestID string) {
-	podNameInterface, exists := t.requestToPod.LoadAndDelete(requestID)
-	if !exists {
-		klog.V(4).InfoS("prefill_request_not_found_for_removal", "request_id", requestID)
-		return
-	}
-
-	podName := podNameInterface.(string)
-	countInterface, exists := t.podRequestCounts.Load(podName)
-	if !exists {
-		klog.V(4).InfoS("pod_counter_not_found", "pod_name", podName, "request_id", requestID)
-		return
-	}
-
-	count := countInterface.(*atomic.Int32)
-	newCount := count.Add(-1)
-
-	// Ensure count doesn't go below zero
-	if newCount < 0 {
-		count.Store(0)
-		newCount = 0
-	}
-
-	klog.V(4).InfoS("prefill_request_removed",
-		"request_id", requestID,
-		"pod_name", podName,
-		"new_count", newCount)
-}
-
-func (t *PrefillRequestTracker) GetPrefillRequestCountsForPods(pods []*v1.Pod) map[string]int32 {
-	counts := make(map[string]int32)
-	for _, pod := range pods {
-		countInterface, exists := t.podRequestCounts.Load(pod.Name)
-		if !exists {
-			counts[pod.Name] = 0
-		} else {
-			counts[pod.Name] = countInterface.(*atomic.Int32).Load()
-		}
-	}
-	return counts
-}
-
-func (t *PrefillRequestTracker) GetPrefillRequestCountsForPod(podname string) int {
-	countInterface, exists := t.podRequestCounts.Load(podname)
-	if !exists {
-		return 0
-	}
-	return int(countInterface.(*atomic.Int32).Load())
-}
-
-// NewPendingDecodeTracker creates a new pending decode tracker.
-func NewPendingDecodeTracker() *PendingDecodeTracker {
-	return &PendingDecodeTracker{}
-}
-
-func (t *PendingDecodeTracker) AddPendingDecode(requestID, podName string) {
-	if t == nil {
-		return
-	}
-	countInterface, _ := t.podRequestCounts.LoadOrStore(podName, &atomic.Int32{})
-	count := countInterface.(*atomic.Int32)
-	count.Add(1)
-	t.requestToPod.Store(requestID, podName)
-}
-
-func (t *PendingDecodeTracker) RemovePendingDecode(requestID string) {
-	if t == nil {
-		return
-	}
-	podNameInterface, exists := t.requestToPod.LoadAndDelete(requestID)
-	if !exists {
-		return
-	}
-	podName := podNameInterface.(string)
-	countInterface, exists := t.podRequestCounts.Load(podName)
-	if !exists {
-		return
-	}
-	count := countInterface.(*atomic.Int32)
-	if newCount := count.Add(-1); newCount < 0 {
-		// Do not Store(0): between Add(-1) and Store, another goroutine may Add(1), and Store(0)
-		// would erase that increment. Clamp to 0 only while the value is still negative (CAS loop).
-		for {
-			v := count.Load()
-			if v >= 0 {
-				return
-			}
-			if count.CompareAndSwap(v, 0) {
-				return
-			}
-		}
-	}
-}
-
-func (t *PendingDecodeTracker) GetPendingDecodeCount(podName string) float64 {
-	if t == nil {
-		return 0
-	}
-	countInterface, exists := t.podRequestCounts.Load(podName)
-	if !exists {
-		return 0
-	}
-	return float64(countInterface.(*atomic.Int32).Load())
 }
 
 func (r *pdRouter) isPodSuitableForPromptLength(routingCtx *types.RoutingContext, pod *v1.Pod, promptLength int) bool {
@@ -1419,15 +781,6 @@ func (r *pdRouter) isPodSuitableForPromptLength(routingCtx *types.RoutingContext
 	}
 
 	return promptLength >= minLength && promptLength <= maxLength
-}
-
-func isCombinedPod(routingCtx *types.RoutingContext, pod *v1.Pod) bool {
-	profile := configprofiles.ResolveProfileFromPod(pod, routingCtx.ReqConfigProfile)
-	if profile == nil {
-		return false
-	}
-	pdCfg := parsePDAlgorithmConfig(profile.RoutingConfig)
-	return pdCfg.Combined
 }
 
 // collectAndBucketPods partitions readyPods into prefill, decode, and combined
@@ -1538,6 +891,10 @@ func (r *pdRouter) collectAndBucketPods(routingCtx *types.RoutingContext, readyP
 	return prefillPods, decodePods, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods
 }
 
+// shouldPickCombined returns true when at least one combined pod is under low
+// load (request rate < defaultRequestRateLowLoadThreshold) and at least one
+// prefill or decode pod is over high load (> defaultRequestRateHighLoadThreshold).
+// The decode check is skipped when a prefill pod already qualifies as high-load.
 func (r *pdRouter) shouldPickCombined(routingCtx *types.RoutingContext, prefillPods, decodePods, combinedPods []*v1.Pod) bool {
 	combinedLowLoad := false
 	for _, combinePod := range combinedPods {
@@ -1573,6 +930,8 @@ func (r *pdRouter) shouldPickCombined(routingCtx *types.RoutingContext, prefillP
 	return (prefillHighLoad || decodeHighLoad) && combinedLowLoad
 }
 
+// scoreCombinedPods returns the combined pod with the lowest request-rate score.
+// Pods are shuffled before scoring so ties are broken randomly.
 func (r *pdRouter) scoreCombinedPods(routingCtx *types.RoutingContext, combinedPods []*v1.Pod) *v1.Pod {
 	utils.CryptoShuffle(combinedPods)
 	var bestPod *v1.Pod
@@ -1586,4 +945,50 @@ func (r *pdRouter) scoreCombinedPods(routingCtx *types.RoutingContext, combinedP
 		}
 	}
 	return bestPod
+}
+
+func isCombinedPod(routingCtx *types.RoutingContext, pod *v1.Pod) bool {
+	profile := configprofiles.ResolveProfileFromPod(pod, routingCtx.ReqConfigProfile)
+	if profile == nil {
+		return false
+	}
+	pdCfg := parsePDAlgorithmConfig(profile.RoutingConfig)
+	return pdCfg.Combined
+}
+
+func getLLMEngine(pod *v1.Pod, labelName string, defaultValue string) string {
+	labelTarget, ok := pod.Labels[labelName]
+	if !ok {
+		return defaultValue
+	}
+	return labelTarget
+}
+
+func getSGLangBootstrapPort(pod *v1.Pod) int64 {
+	if portStr, exists := pod.Annotations[SGLangBootstrapPortIdentifier]; exists {
+		if port, err := strconv.ParseInt(portStr, 10, 32); err == nil {
+			return port
+		}
+	}
+	return SGLangBootstrapPort // Default port
+}
+
+// validateAndGetLLMEngine validates that all prefill pods use the same engine and returns it.
+func validateAndGetLLMEngine(prefillPods []*v1.Pod) (string, error) {
+	if len(prefillPods) == 0 {
+		return "", fmt.Errorf("no prefill pods provided")
+	}
+
+	firstEngine := getLLMEngine(prefillPods[0], LLMEngineIdentifier, VLLMEngine)
+
+	// Validate all pods use the same engine
+	for i := 1; i < len(prefillPods); i++ {
+		engine := getLLMEngine(prefillPods[i], LLMEngineIdentifier, VLLMEngine)
+		if engine != firstEngine {
+			return "", fmt.Errorf("inconsistent LLM engines detected: pod %s has %s, pod %s has %s",
+				prefillPods[0].Name, firstEngine, prefillPods[i].Name, engine)
+		}
+	}
+
+	return firstEngine, nil
 }

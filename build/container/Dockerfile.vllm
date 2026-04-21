@@ -1,4 +1,4 @@
-ARG VLLM_VERSION=v0.10.2
+ARG VLLM_VERSION=v0.19.0
 
 # Extract torch version from the vLLM base image
 FROM vllm/vllm-openai:${VLLM_VERSION} AS torch-version
@@ -32,7 +32,7 @@ RUN cd /tmp/aibrix && \
 FROM vllm/vllm-openai:${VLLM_VERSION} AS vllm-openai
 
 ARG PYTHON_BIN=python3
-ARG VLLM_VERSION=v0.10.2
+ARG VLLM_VERSION=v0.19.0
 ARG NIXL_VERSION=0.7.1
 
 COPY --from=builder /tmp/aibrix /tmp/aibrix
@@ -40,14 +40,26 @@ COPY --from=builder /tmp/aibrix /tmp/aibrix
 RUN ${PYTHON_BIN} -m pip uninstall -y aibrix_kvcache && \
     ${PYTHON_BIN} -m pip install /tmp/aibrix/python/aibrix_kvcache/dist/*.whl
 
-# apply patch to vLLM
-RUN DIST_DIR=$(${PYTHON_BIN} -m pip show vllm | grep "Location:" | awk '{print $2}') && \
-    cd $DIST_DIR && \
-    patch -p 1 -l -i /tmp/aibrix/python/aibrix_kvcache/integration/vllm/patches/vllm_${VLLM_VERSION}-aibrix-kvcache.patch
+# apply patch to vLLM (only if patch file exists for this version)
+RUN PATCH_FILE="/tmp/aibrix/python/aibrix_kvcache/integration/vllm/patches/vllm_${VLLM_VERSION}-aibrix-kvcache.patch" && \
+    if [ -f "$PATCH_FILE" ]; then \
+      DIST_DIR=$(${PYTHON_BIN} -m pip show vllm | grep "Location:" | awk '{print $2}') && \
+      cd $DIST_DIR && \
+      patch -p 1 -l -i $PATCH_FILE; \
+    else \
+      echo "No patch file for vLLM ${VLLM_VERSION} — using monkey-patch mode (PR #2060)"; \
+    fi
 
 RUN rm -rf /tmp/aibrix
 
 RUN pip install nixl==${NIXL_VERSION} nixl-cu12==${NIXL_VERSION}
-RUN apt install iproute2 perftest ucx-utils iputils-ping net-tools -y
+# Install network debugging tools (non-critical — used for NIXL/RDMA debug)
+# Package availability varies across base image versions, so we make
+# this best-effort.
+RUN apt-get update && \
+    (apt-get install -y --no-install-recommends \
+        iproute2 perftest ucx-utils iputils-ping net-tools || \
+     echo "[WARN] Some debug packages not available; continuing") && \
+    rm -rf /var/lib/apt/lists/*
 
 ENTRYPOINT ["vllm", "serve"]
