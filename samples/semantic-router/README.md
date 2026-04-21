@@ -18,15 +18,7 @@ kubectl create secret generic hf-token-secret \
   -n vllm-semantic-router-system
 ```
 
-## 2) Apply Gateway API / Envoy resources
-
-From the repository root:
-
-```bash
-kubectl apply -f samples/semantic-router/gwapi-resources.yaml
-```
-
-## 3) Deploy backend model services
+## 2) Deploy backend model services
 
 These two model deployments are referenced by the router config (`*.default.svc.cluster.local`):
 
@@ -35,11 +27,19 @@ kubectl apply -f samples/semantic-router/models/llama3-8b-instruct.yaml
 kubectl apply -f samples/semantic-router/models/qwen3-8b.yaml
 ```
 
-## 4) Apply semantic-router manifests
+## 3) Apply semantic-router manifests
 
 ```bash
 kubectl apply -f samples/semantic-router/semantic-router-configmap.yaml
 kubectl apply -f samples/semantic-router/semantic-router.yaml
+```
+
+## 4) Apply Gateway API / Envoy resources
+
+From the repository root:
+
+```bash
+kubectl apply -f samples/semantic-router/gwapi-resources.yaml
 ```
 
 ## 5) Port-forward the Envoy service

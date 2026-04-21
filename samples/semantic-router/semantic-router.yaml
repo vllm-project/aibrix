@@ -146,7 +146,7 @@ spec:
       # secret automatically if HF_TOKEN is available in the test environment.
       containers:
       - name: semantic-router
-        image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-semantic-router:v0.2.0
+        image: ghcr.io/vllm-project/semantic-router/extproc:latest
         imagePullPolicy: IfNotPresent
         # --secure=false disables TLS on the gRPC ext_proc connection.
         # Acceptable for this sample (traffic stays in-cluster), but enable

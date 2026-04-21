@@ -28,39 +28,6 @@ spec:
         prometheus.io/port: "8000"
         prometheus.io/scrape: "true"
     spec:
-      initContainers:
-        - command:
-            - aibrix_download
-            - --model-uri
-            - tos://aibrix-artifact-testing/models/llama-3.1-8b-instruct/
-            - --local-dir
-            - /models/
-          env:
-            - name: DOWNLOADER_NUM_CONNECTIONS
-              value: "16"
-            - name: DOWNLOADER_NUM_THREADS
-              value: "16"
-            - name: DOWNLOADER_ALLOW_FILE_SUFFIX
-              value: json, safetensors
-            - name: TOS_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  key: TOS_ACCESS_KEY
-                  name: tos-credential
-            - name: TOS_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  key: TOS_SECRET_KEY
-                  name: tos-credential
-            - name: TOS_ENDPOINT
-              value: https://tos-s3-cn-beijing.ivolces.com
-            - name: TOS_REGION
-              value: cn-beijing
-          image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/runtime:v0.5.0
-          name: init-model
-          volumeMounts:
-            - mountPath: /models
-              name: model-hostpath
       containers:
         - name: vllm-openai
           image: aibrix-public-release-cn-beijing.cr.volces.com/vllm/vllm-openai:0.11.0
@@ -113,7 +80,7 @@ spec:
       volumes:
         - name: model-hostpath
           hostPath:
-            path: /root/models
+            path: /data01/models
             type: DirectoryOrCreate
 
 ---
