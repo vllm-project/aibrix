@@ -527,9 +527,10 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	return nil, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
 }
 
-// scorePrefillPods computes per-roleset prefill scores using the configured prefillScorePolicy.
-// It handles the shared bookkeeping (request counts, mean/stddev filter, roleset tracking)
-// and delegates per-pod scoring to the policy.
+// scorePrefillPods scores candidate prefill pods using prefillPolicy. Pods whose
+// running-request count exceeds mean+stddev*factor are skipped as overloaded.
+// Returns a per-roleset map of the best (lowest-score) pod, the global max score
+// used by finalPDScore for normalization, and the prefix hashes from the scorer.
 func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, prefillPolicy pd.PrefillScorePolicy) (map[string]*Scores, float64, []uint64) {
 	if prefillPolicy == nil {
 		klog.ErrorS(nil, "scorePrefillPods called with nil prefillPolicy; this is a programming error",
@@ -587,7 +588,10 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 	return prefillScores, maxPrefillScore, scorer.PrefixHashes()
 }
 
-// scoreDecodePods scores decode pods using the configured pd.DecodeScorePolicy (default load_balancing).
+// scoreDecodePods scores candidate decode pods using policy, falling back to
+// load_balancing for a nil policy or for individual pods whose primary score is
+// invalid (NaN). Returns a DecodeScoreRun with the best (lowest-score) pod per
+// roleset and the global max score used by finalPDScore for normalization.
 func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDecodePods []*v1.Pod,
 	maxRequestCount float64, maxThroughput float64, maxFreeGPUUsage float64,
 	podRequestCounts map[string]float64, podThroughputs map[string]float64, podFreeGpuUsage map[string]float64,
@@ -646,6 +650,10 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 	return out
 }
 
+// finalPDScore selects the winning prefill/decode pod pair by normalizing each
+// roleset's prefill and decode scores by their respective maxima and picking the
+// roleset with the lowest combined score. Enqueues a prefix-cache update and
+// emits selection metrics before returning.
 func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	prefixHashes []uint64,
 	prefillScores map[string]*Scores, maxPrefillScore float64,
@@ -883,6 +891,10 @@ func (r *pdRouter) collectAndBucketPods(routingCtx *types.RoutingContext, readyP
 	return prefillPods, decodePods, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods
 }
 
+// shouldPickCombined returns true when at least one combined pod is under low
+// load (request rate < defaultRequestRateLowLoadThreshold) and at least one
+// prefill or decode pod is over high load (> defaultRequestRateHighLoadThreshold).
+// The decode check is skipped when a prefill pod already qualifies as high-load.
 func (r *pdRouter) shouldPickCombined(routingCtx *types.RoutingContext, prefillPods, decodePods, combinedPods []*v1.Pod) bool {
 	combinedLowLoad := false
 	for _, combinePod := range combinedPods {
@@ -918,6 +930,8 @@ func (r *pdRouter) shouldPickCombined(routingCtx *types.RoutingContext, prefillP
 	return (prefillHighLoad || decodeHighLoad) && combinedLowLoad
 }
 
+// scoreCombinedPods returns the combined pod with the lowest request-rate score.
+// Pods are shuffled before scoring so ties are broken randomly.
 func (r *pdRouter) scoreCombinedPods(routingCtx *types.RoutingContext, combinedPods []*v1.Pod) *v1.Pod {
 	utils.CryptoShuffle(combinedPods)
 	var bestPod *v1.Pod

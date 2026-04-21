@@ -452,9 +452,10 @@ func (r *pdRouter) updateRoutingContextWithTRTDisaggParams(routingCtx *types.Rou
 
 	if pti, ok := responseData["prompt_token_ids"]; ok && pti != nil {
 		if ids, ok := anySliceForJSON(pti); ok {
-			if routingCtx.ReqPath == "/v1/completions" {
+			switch routingCtx.ReqPath {
+			case "/v1/completions":
 				originalRequest["prompt"] = ids
-			} else if routingCtx.ReqPath == "/v1/chat/completions" {
+			case "/v1/chat/completions":
 				originalRequest["prompt_token_ids"] = ids
 			}
 		}

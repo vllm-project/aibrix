@@ -29,8 +29,6 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// DecodePolicyName is the canonical identifier for a decode scoring policy,
-// used in env-var comparisons, log lines, and metrics labels.
 type DecodePolicyName string
 
 const (
@@ -43,9 +41,6 @@ const (
 	DecodePolicyLeastRequest DecodePolicyName = "least_request"
 )
 
-// ScorePolicy* are untyped string constants for use in env-var defaults and
-// config parsing (e.g. utils.LoadEnv("AIBRIX_DECODE_SCORE_POLICY", ScorePolicyLoadBalancing)).
-// For in-code comparisons prefer the typed DecodePolicyName constants.
 const (
 	ScorePolicyLoadBalancing = string(DecodePolicyLoadBalancing)
 	ScorePolicyLeastRequest  = string(DecodePolicyLeastRequest)

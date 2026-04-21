@@ -49,7 +49,7 @@ const (
 	PrefillScorePolicyLeastRequest = "least_request"
 )
 
-// PrefillScorer is a request-scoped scorer created by PrefillScorePolicy.Prepare
+// PrefillScorer is a request-scoped scorer created by PrefillScorePolicy. Prepare
 // for a single request. Each call to Prepare returns a fresh instance; no state
 // is shared across concurrent requests.
 type PrefillScorer interface {
