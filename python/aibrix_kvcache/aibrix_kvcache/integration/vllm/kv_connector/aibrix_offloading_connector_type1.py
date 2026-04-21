@@ -787,7 +787,7 @@ class AIBrixOffloadingConnectorScheduler:
             for i in range(min(num_blocks, len(block_hashes))):
                 self._cached_block_hashes.add(block_hashes[i])
         for req_id, num_tokens in worker_meta.failed_load_tokens.items():
-            block_hashes = self._request_block_hashes.get(req_id)
+            block_hashes = self._request_block_hashes.get(req_id, [])
             if not block_hashes:
                 continue
             failed_blocks = num_tokens // block_size

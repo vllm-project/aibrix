@@ -47,6 +47,7 @@ def _apply_gpu_model_runner_patches(module):
     # Source-patch detection: if vLLM itself has been patched to accept
     # load_results in _update_states, we skip the monkey-patch.
     import inspect
+
     sig = inspect.signature(GPUModelRunner._update_states)
     if "load_results" in sig.parameters:
         logger.info(
@@ -66,6 +67,7 @@ def _apply_gpu_model_runner_patches(module):
         # LOAD phase: fetch KV from external cache into GPU buffers
         if has_kv_transfer_group():
             from vllm.distributed.kv_transfer import get_kv_transfer_group
+
             kv_connector = get_kv_transfer_group()
             if scheduler_output.kv_connector_metadata is not None:
                 kv_connector.bind_connector_metadata(
@@ -81,6 +83,7 @@ def _apply_gpu_model_runner_patches(module):
         # cleared _connector_metadata by this point, so we re-bind it.
         if has_kv_transfer_group():
             from vllm.distributed.kv_transfer import get_kv_transfer_group
+
             kv_connector = get_kv_transfer_group()
             if scheduler_output.kv_connector_metadata is not None:
                 try:
@@ -89,9 +92,7 @@ def _apply_gpu_model_runner_patches(module):
                     )
                     kv_connector.wait_for_save()
                 except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "[AIBrix] wait_for_save failed: %r", e
-                    )
+                    logger.warning("[AIBrix] wait_for_save failed: %r", e)
 
         return result
 
