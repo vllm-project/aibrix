@@ -1,0 +1,491 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: semantic-router-config
+  namespace: vllm-semantic-router-system
+  labels:
+    helm.sh/chart: semantic-router-0.2.0
+    app.kubernetes.io/name: semantic-router
+    app.kubernetes.io/instance: semantic-router
+    app: semantic-router
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+data:
+  config.yaml: |
+    global:
+      integrations:
+        tools:
+          enabled: true
+          fallback_to_empty: true
+          similarity_threshold: 0.2
+          tools_db_path: config/tools_db.json
+          top_k: 3
+      router:
+        strategy: priority
+      services:
+        api:
+          batch_classification:
+            concurrency_threshold: 5
+            max_batch_size: 100
+            max_concurrency: 8
+            metrics:
+              detailed_goroutine_tracking: true
+              duration_buckets:
+              - 0.001
+              - 0.005
+              - 0.01
+              - 0.025
+              - 0.05
+              - 0.1
+              - 0.25
+              - 0.5
+              - 1
+              - 2.5
+              - 5
+              - 10
+              - 30
+              enabled: true
+              high_resolution_timing: false
+              sample_rate: 1
+              size_buckets:
+              - 1
+              - 2
+              - 5
+              - 10
+              - 20
+              - 50
+              - 100
+              - 200
+        observability:
+          tracing:
+            enabled: false
+            exporter:
+              endpoint: jaeger:4317
+              insecure: true
+              type: otlp
+            provider: opentelemetry
+            resource:
+              deployment_environment: development
+              service_name: vllm-semantic-router
+              service_version: v0.1.0
+            sampling:
+              rate: 1
+              type: always_on
+        response_api:
+          enabled: false
+          max_responses: 1000
+          store_backend: memory
+          ttl_seconds: 86400
+      stores:
+        memory:
+          embedding_model: mmbert
+        semantic_cache:
+          backend_type: memory
+          embedding_model: mmbert
+          enabled: true
+          eviction_policy: fifo
+          max_entries: 1000
+          similarity_threshold: 0.8
+          ttl_seconds: 3600
+        vector_store:
+          embedding_model: mmbert
+    listeners: []
+    providers:
+      defaults:
+        default_model: llama3-8b-instruct
+        default_reasoning_effort: high
+        reasoning_families:
+          deepseek:
+            parameter: thinking
+            type: chat_template_kwargs
+          gpt:
+            parameter: reasoning_effort
+            type: reasoning_effort
+          gpt-oss:
+            parameter: reasoning_effort
+            type: reasoning_effort
+          qwen3:
+            parameter: enable_thinking
+            type: chat_template_kwargs
+      models:
+      - backend_refs:
+        - endpoint: llama3-8b-instruct.default.svc.cluster.local:8000
+          name: aibrix-vllm
+          weight: 1
+        name: llama3-8b-instruct
+      - backend_refs:
+        - endpoint: qwen3-8b.default.svc.cluster.local:8000
+          name: aibrix-vllm
+          weight: 1
+        name: qwen3-8b
+        reasoning_family: qwen3
+    routing:
+      decisions:
+      - description: Business and management related queries
+        modelRefs:
+        - model: llama3-8b-instruct
+          use_reasoning: false
+        name: business_decision
+        plugins:
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are a senior business consultant and strategic advisor
+              with expertise in corporate strategy, operations management, financial analysis,
+              marketing, and organizational development. Provide practical, actionable
+              business advice backed by proven methodologies and industry best practices.
+              Consider market dynamics, competitive landscape, and stakeholder interests
+              in your recommendations.
+          type: system_prompt
+        priority: 10
+        rules:
+          conditions:
+          - name: business
+            type: domain
+          operator: OR
+      - description: Legal questions and law-related topics
+        modelRefs:
+        - model: llama3-8b-instruct
+          use_reasoning: false
+        name: law_decision
+        plugins:
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are a knowledgeable legal expert with comprehensive understanding
+              of legal principles, case law, statutory interpretation, and legal procedures
+              across multiple jurisdictions. Provide accurate legal information and analysis
+              while clearly stating that your responses are for informational purposes
+              only and do not constitute legal advice. Always recommend consulting with
+              qualified legal professionals for specific legal matters.
+          type: system_prompt
+        priority: 10
+        rules:
+          conditions:
+          - name: law
+            type: domain
+          operator: OR
+      - description: Psychology and mental health topics
+        modelRefs:
+        - model: llama3-8b-instruct
+          use_reasoning: false
+        name: psychology_decision
+        plugins:
+        - configuration:
+            enabled: true
+            similarity_threshold: 0.92
+          type: semantic-cache
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are a psychology expert with deep knowledge of cognitive
+              processes, behavioral patterns, mental health, developmental psychology,
+              social psychology, and therapeutic approaches. Provide evidence-based insights
+              grounded in psychological research and theory. When discussing mental health
+              topics, emphasize the importance of professional consultation and avoid
+              providing diagnostic or therapeutic advice.
+          type: system_prompt
+        priority: 10
+        rules:
+          conditions:
+          - name: psychology
+            type: domain
+          operator: OR
+      - description: Biology and life sciences questions
+        modelRefs:
+        - model: qwen3-8b
+          use_reasoning: true
+        name: biology_decision
+        plugins:
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are a biology expert with comprehensive knowledge spanning
+              molecular biology, genetics, cell biology, ecology, evolution, anatomy,
+              physiology, and biotechnology. Explain biological concepts with scientific
+              accuracy, use appropriate terminology, and provide examples from current
+              research. Connect biological principles to real-world applications and emphasize
+              the interconnectedness of biological systems.
+          type: system_prompt
+        priority: 10
+        rules:
+          conditions:
+          - name: biology
+            type: domain
+          operator: OR
+      - description: Chemistry and chemical sciences questions
+        modelRefs:
+        - model: qwen3-8b
+          use_reasoning: true
+        name: chemistry_decision
+        plugins:
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are a chemistry expert specializing in chemical reactions,
+              molecular structures, and laboratory techniques. Provide detailed, step-by-step
+              explanations.
+          type: system_prompt
+        priority: 10
+        rules:
+          conditions:
+          - name: chemistry
+            type: domain
+          operator: OR
+      - description: Historical questions and cultural topics
+        modelRefs:
+        - model: llama3-8b-instruct
+          use_reasoning: false
+        name: history_decision
+        plugins:
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are a historian with expertise across different time periods
+              and cultures. Provide accurate historical context and analysis.
+          type: system_prompt
+        priority: 10
+        rules:
+          conditions:
+          - name: history
+            type: domain
+          operator: OR
+      - description: General knowledge and miscellaneous topics
+        modelRefs:
+        - model: llama3-8b-instruct
+          use_reasoning: false
+        name: other_decision
+        plugins:
+        - configuration:
+            enabled: true
+            similarity_threshold: 0.75
+          type: semantic-cache
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are a helpful and knowledgeable assistant. Provide accurate,
+              helpful responses across a wide range of topics.
+          type: system_prompt
+        priority: 5
+        rules:
+          conditions:
+          - name: other
+            type: domain
+          operator: OR
+      - description: Health and medical information queries
+        modelRefs:
+        - model: llama3-8b-instruct
+          use_reasoning: false
+        name: health_decision
+        plugins:
+        - configuration:
+            enabled: true
+            similarity_threshold: 0.95
+          type: semantic-cache
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are a health and medical information expert with knowledge
+              of anatomy, physiology, diseases, treatments, preventive care, nutrition,
+              and wellness. Provide accurate, evidence-based health information while
+              emphasizing that your responses are for educational purposes only and should
+              never replace professional medical advice, diagnosis, or treatment. Always
+              encourage users to consult healthcare professionals for medical concerns
+              and emergencies.
+          type: system_prompt
+        priority: 10
+        rules:
+          conditions:
+          - name: health
+            type: domain
+          operator: OR
+      - description: Economics and financial topics
+        modelRefs:
+        - model: llama3-8b-instruct
+          use_reasoning: false
+        name: economics_decision
+        plugins:
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are an economics expert with deep understanding of microeconomics,
+              macroeconomics, econometrics, financial markets, monetary policy, fiscal
+              policy, international trade, and economic theory. Analyze economic phenomena
+              using established economic principles, provide data-driven insights, and
+              explain complex economic concepts in accessible terms. Consider both theoretical
+              frameworks and real-world applications in your responses.
+          type: system_prompt
+        priority: 10
+        rules:
+          conditions:
+          - name: economics
+            type: domain
+          operator: OR
+      - description: Mathematics and quantitative reasoning
+        modelRefs:
+        - model: qwen3-8b
+          use_reasoning: true
+        name: math_decision
+        plugins:
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are a mathematics expert. Provide step-by-step solutions,
+              show your work clearly, and explain mathematical concepts in an understandable
+              way.
+          type: system_prompt
+        priority: 10
+        rules:
+          conditions:
+          - name: math
+            type: domain
+          operator: OR
+      - description: Physics and physical sciences
+        modelRefs:
+        - model: qwen3-8b
+          use_reasoning: true
+        name: physics_decision
+        plugins:
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are a physics expert with deep understanding of physical
+              laws and phenomena. Provide clear explanations with mathematical derivations
+              when appropriate.
+          type: system_prompt
+        priority: 10
+        rules:
+          conditions:
+          - name: physics
+            type: domain
+          operator: OR
+      - description: Computer science and programming
+        modelRefs:
+        - model: qwen3-8b
+          use_reasoning: true
+        name: computer_science_decision
+        plugins:
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are a computer science expert with knowledge of algorithms,
+              data structures, programming languages, and software engineering. Provide
+              clear, practical solutions with code examples when helpful.
+          type: system_prompt
+        priority: 10
+        rules:
+          conditions:
+          - name: computer science
+            type: domain
+          operator: OR
+      - description: Philosophy and ethical questions
+        modelRefs:
+        - model: llama3-8b-instruct
+          use_reasoning: false
+        name: philosophy_decision
+        plugins:
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are a philosophy expert with comprehensive knowledge of
+              philosophical traditions, ethical theories, logic, metaphysics, epistemology,
+              political philosophy, and the history of philosophical thought. Engage with
+              complex philosophical questions by presenting multiple perspectives, analyzing
+              arguments rigorously, and encouraging critical thinking. Draw connections
+              between philosophical concepts and contemporary issues while maintaining
+              intellectual honesty about the complexity and ongoing nature of philosophical
+              debates.
+          type: system_prompt
+        priority: 10
+        rules:
+          conditions:
+          - name: philosophy
+            type: domain
+          operator: OR
+      - description: Engineering and technical problem-solving
+        modelRefs:
+        - model: qwen3-8b
+          use_reasoning: true
+        name: engineering_decision
+        plugins:
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are an engineering expert with knowledge across multiple
+              engineering disciplines including mechanical, electrical, civil, chemical,
+              software, and systems engineering. Apply engineering principles, design
+              methodologies, and problem-solving approaches to provide practical solutions.
+              Consider safety, efficiency, sustainability, and cost-effectiveness in your
+              recommendations. Use technical precision while explaining concepts clearly,
+              and emphasize the importance of proper engineering practices and standards.
+          type: system_prompt
+        priority: 10
+        rules:
+          conditions:
+          - name: engineering
+            type: domain
+          operator: OR
+      - description: Complex reasoning and multi-step thinking
+        modelRefs:
+        - model: qwen3-8b
+          use_reasoning: true
+        name: thinking_decision
+        plugins:
+        - configuration:
+            enabled: true
+            mode: replace
+            system_prompt: You are a thinking expert, should think multiple steps before
+              answering. Please answer the question step by step.
+          type: system_prompt
+        priority: 15
+        rules:
+          conditions:
+          - name: thinking
+            type: keyword
+          operator: OR
+      modelCards:
+      - loras:
+        - description: 'Specialized for science domains: biology, chemistry, physics,
+            health, engineering'
+          name: science-expert
+        - description: 'Optimized for social sciences: business, economics'
+          name: social-expert
+        - description: Fine-tuned for mathematics and quantitative reasoning
+          name: math-expert
+        - description: Specialized for legal questions and law-related topics
+          name: law-expert
+        - description: 'Optimized for humanities: psychology, history, philosophy'
+          name: humanities-expert
+        - description: General-purpose adapter for diverse topics
+          name: general-expert
+        name: llama3-8b-instruct
+      - name: qwen3-8b
+      signals:
+        domains:
+        - name: business
+        - name: law
+        - name: psychology
+        - name: biology
+        - name: chemistry
+        - name: history
+        - name: other
+        - name: health
+        - name: economics
+        - name: math
+        - name: physics
+        - name: computer science
+        - name: philosophy
+        - name: engineering
+        keywords:
+        - case_sensitive: false
+          keywords:
+          - urgent
+          - immediate
+          - asap
+          - think
+          - careful
+          name: thinking
+          operator: OR
+    version: v0.3
+  tools_db.json: |
+    [{"category":"weather","description":"Get current weather information, temperature, conditions, forecast for any location, city, or place. Check weather today, now, current conditions, temperature, rain, sun, cloudy, hot, cold, storm, snow","tags":["weather","temperature","forecast","climate"],"tool":{"function":{"description":"Get current weather information for a location","name":"get_weather","parameters":{"properties":{"location":{"description":"The city and state, e.g. San Francisco, CA","type":"string"},"unit":{"description":"Temperature unit","enum":["celsius","fahrenheit"],"type":"string"}},"required":["location"],"type":"object"}},"type":"function"}},{"category":"search","description":"Search the internet, web search, find information online, browse web content, lookup, research, google, find answers, discover, investigate","tags":["search","web","internet","information","browse"],"tool":{"function":{"description":"Search the web for information","name":"search_web","parameters":{"properties":{"num_results":{"default":5,"description":"Number of results to return","type":"integer"},"query":{"description":"The search query","type":"string"}},"required":["query"],"type":"object"}},"type":"function"}},{"category":"math","description":"Calculate mathematical expressions, solve math problems, arithmetic operations, compute numbers, addition, subtraction, multiplication, division, equations, formula","tags":["math","calculation","arithmetic","compute","numbers"],"tool":{"function":{"description":"Perform mathematical calculations","name":"calculate","parameters":{"properties":{"expression":{"description":"Mathematical expression to evaluate","type":"string"}},"required":["expression"],"type":"object"}},"type":"function"}},{"category":"communication","description":"Send email messages, email communication, contact people via email, mail, message, correspondence, notify, inform","tags":["email","send","communication","message","contact"],"tool":{"function":{"description":"Send an email message","name":"send_email","parameters":{"properties":{"body":{"description":"Email body content","type":"string"},"subject":{"description":"Email subject","type":"string"},"to":{"description":"Recipient email address","type":"string"}},"required":["to","subject","body"],"type":"object"}},"type":"function"}},{"category":"productivity","description":"Schedule meetings, create calendar events, set appointments, manage calendar, book time, plan meeting, organize schedule, reminder, agenda","tags":["calendar","event","meeting","appointment","schedule"],"tool":{"function":{"description":"Create a new calendar event or appointment","name":"create_calendar_event","parameters":{"properties":{"date":{"description":"Event date in YYYY-MM-DD format","type":"string"},"duration":{"description":"Duration in minutes","type":"integer"},"time":{"description":"Event time in HH:MM format","type":"string"},"title":{"description":"Event title","type":"string"}},"required":["title","date","time"],"type":"object"}},"type":"function"}}]

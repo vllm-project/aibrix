@@ -1,0 +1,259 @@
+---
+# Source: semantic-router/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: semantic-router
+  namespace: vllm-semantic-router-system
+  labels:
+    helm.sh/chart: semantic-router-0.2.0
+    app.kubernetes.io/name: semantic-router
+    app.kubernetes.io/instance: semantic-router
+    app: semantic-router
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: semantic-router/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: semantic-router
+  labels:
+    helm.sh/chart: semantic-router-0.2.0
+    app.kubernetes.io/name: semantic-router
+    app.kubernetes.io/instance: semantic-router
+    app: semantic-router
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  # Permissions for IntelligentPool CRD
+  - apiGroups:
+      - vllm.ai
+    resources:
+      - intelligentpools
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - vllm.ai
+    resources:
+      - intelligentpools/status
+    verbs:
+      - get
+      - update
+      - patch
+  # Permissions for IntelligentRoute CRD
+  - apiGroups:
+      - vllm.ai
+    resources:
+      - intelligentroutes
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - vllm.ai
+    resources:
+      - intelligentroutes/status
+    verbs:
+      - get
+      - update
+      - patch
+---
+# Source: semantic-router/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: semantic-router
+  labels:
+    helm.sh/chart: semantic-router-0.2.0
+    app.kubernetes.io/name: semantic-router
+    app.kubernetes.io/instance: semantic-router
+    app: semantic-router
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: semantic-router
+subjects:
+  - kind: ServiceAccount
+    name: semantic-router
+    namespace: vllm-semantic-router-system
+---
+# Source: semantic-router/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: semantic-router
+  namespace: vllm-semantic-router-system
+  labels:
+    helm.sh/chart: semantic-router-0.2.0
+    app.kubernetes.io/name: semantic-router
+    app.kubernetes.io/instance: semantic-router
+    app: semantic-router
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+  - port: 50051
+    targetPort: 50051
+    protocol: TCP
+    name: grpc
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: classify-api
+  selector:
+    app.kubernetes.io/name: semantic-router
+    app.kubernetes.io/instance: semantic-router
+    app: semantic-router
+---
+# Source: semantic-router/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: semantic-router-metrics
+  namespace: vllm-semantic-router-system
+  labels:
+    helm.sh/chart: semantic-router-0.2.0
+    app.kubernetes.io/name: semantic-router
+    app.kubernetes.io/instance: semantic-router
+    app: semantic-router
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    service: metrics
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9190
+    targetPort: 9190
+    protocol: TCP
+    name: metrics
+  selector:
+    app.kubernetes.io/name: semantic-router
+    app.kubernetes.io/instance: semantic-router
+    app: semantic-router
+---
+# Source: semantic-router/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: semantic-router
+  namespace: vllm-semantic-router-system
+  labels:
+    helm.sh/chart: semantic-router-0.2.0
+    app.kubernetes.io/name: semantic-router
+    app.kubernetes.io/instance: semantic-router
+    app: semantic-router
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: semantic-router
+      app.kubernetes.io/instance: semantic-router
+      app: semantic-router
+  template:
+    metadata:
+      annotations:
+        checksum/config: ca132650c82832a98074b4ed60f5dcddc608292c597e33ab3cde51ec1685e3a7
+      labels:
+        app.kubernetes.io/name: semantic-router
+        app.kubernetes.io/instance: semantic-router
+        app: semantic-router
+    spec:
+      serviceAccountName: semantic-router
+      securityContext:
+        {}
+      # Models are now automatically downloaded by the router at startup
+      # No initContainer is needed - the router uses its built-in Go-based
+      # modeldownload package to download models from HuggingFace based on
+      # the mom_registry configuration in config.yaml
+      # Note: HF_TOKEN secret (hf-token-secret) is still required for downloading
+      # gated models (e.g., embeddinggemma-300m). The E2E framework creates this
+      # secret automatically if HF_TOKEN is available in the test environment.
+      containers:
+      - name: semantic-router
+        image: "ghcr.io/vllm-project/semantic-router/extproc:latest"
+        imagePullPolicy: IfNotPresent
+        args:
+          - --secure=false
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: false
+        ports:
+        - containerPort: 50051
+          name: grpc
+          protocol: TCP
+        - containerPort: 9190
+          name: metrics
+          protocol: TCP
+        - containerPort: 8080
+          name: classify-api
+          protocol: TCP
+        env:
+          - name: LD_LIBRARY_PATH
+            value: /app/lib
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                key: token
+                name: hf-token-secret
+                optional: true
+          - name: HUGGINGFACE_HUB_TOKEN
+            valueFrom:
+              secretKeyRef:
+                key: token
+                name: hf-token-secret
+                optional: true
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config/config.yaml
+          subPath: config.yaml
+          readOnly: true
+        - name: config-volume
+          mountPath: /app/config/tools_db.json
+          subPath: tools_db.json
+          readOnly: true
+        - name: models-volume
+          mountPath: /app/models
+        # Startup probe for slow-starting containers (model loading takes ~60s with Gemma)
+        startupProbe:
+          tcpSocket:
+            port: 50051
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 360
+        livenessProbe:
+          tcpSocket:
+            port: 50051
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
+        readinessProbe:
+          tcpSocket:
+            port: 50051
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
+        resources:
+          limits:
+            cpu: "2"
+            memory: 7Gi
+          requests:
+            cpu: "1"
+            memory: 3Gi
+      volumes:
+      - name: config-volume
+        configMap:
+          name: semantic-router-config
+      - name: models-volume
+        hostPath:
+          path: /data01/models
+          type: DirectoryOrCreate
