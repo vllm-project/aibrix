@@ -444,6 +444,88 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	return ctx.TargetAddress(), nil
 }
 
+// ScoreAll computes the scores for all ready pods in a single batch operation.
+// We use prefix match percentage as the score. Higher is better.
+func (p prefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	pods := readyPodList.All()
+	scores := make([]float64, len(pods))
+	scored := make([]bool, len(pods))
+
+	if p.kvSyncRouter != nil {
+		return p.kvSyncRouter.ScoreAll(ctx, readyPodList)
+	}
+
+	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	readyPodsMap := map[string]struct{}{}
+	for _, pod := range pods {
+		readyPodsMap[pod.Name] = struct{}{}
+	}
+
+	matchedPods, _ := p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
+
+	for i, pod := range pods {
+		matchPercent := matchedPods[pod.Name]
+		scores[i] = float64(matchPercent)
+		scored[i] = true
+	}
+
+	return scores, scored, nil
+}
+
+// Polarity returns whether higher or lower score is better.
+func (p prefixCacheRouter) Polarity() Polarity {
+	return PolarityMost
+}
+
+// ScoreAll computes the scores for all ready pods in a single batch operation for KV sync router.
+func (k *kvSyncPrefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	pods := readyPodList.All()
+	scores := make([]float64, len(pods))
+	scored := make([]bool, len(pods))
+
+	modelName := ctx.Model
+	if modelName == "" && len(pods) > 0 {
+		modelName = pods[0].Labels[constants.ModelLabelName]
+	}
+
+	loraID := int64(-1)
+
+	tokenizerToUse := k.getTokenizerForRequest(ctx, readyPodList)
+	if tokenizerToUse == nil {
+		return nil, nil, fmt.Errorf("TokenizerPool not initialized for KV sync router")
+	}
+
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	readyPodsMap := map[string]struct{}{}
+	for _, pod := range pods {
+		podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+		readyPodsMap[podKey] = struct{}{}
+	}
+
+	if k.syncIndexer == nil {
+		return nil, nil, fmt.Errorf("sync indexer not available for KV sync routing")
+	}
+	matchedPods, _ := k.syncIndexer.MatchPrefix(modelName, loraID, tokens, readyPodsMap)
+
+	for i, pod := range pods {
+		podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+		matchPercent := matchedPods[podKey]
+		scores[i] = float64(matchPercent)
+		scored[i] = true
+	}
+
+	return scores, scored, nil
+}
+
 // Cleanup gracefully shuts down the TokenizerPool if it exists
 func (p *prefixCacheRouter) Cleanup() error {
 	if p.tokenizerPool != nil {

@@ -48,6 +48,31 @@ func NewLeastUtilRouter() (types.Router, error) {
 	}, nil
 }
 
+// ScoreAll computes the scores for all ready pods in a single batch operation.
+func (r leastUtilRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	pods := readyPodList.All()
+	scores := make([]float64, len(pods))
+	scored := make([]bool, len(pods))
+
+	for i, pod := range pods {
+		metricVal, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.EngineUtilization)
+		if err != nil {
+			klog.V(4).ErrorS(err, "failed to get metrics for pod")
+			continue
+		}
+		scores[i] = metricVal.GetSimpleValue()
+		scored[i] = true
+		klog.V(4).Infof("pod: %v, podIP: %v, engine utilization: %v", pod.Name, pod.Status.PodIP, scores[i])
+	}
+
+	return scores, scored, nil
+}
+
+// Polarity returns whether higher or lower score is better.
+func (r leastUtilRouter) Polarity() Polarity {
+	return PolarityLeast
+}
+
 func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	var targetPod *v1.Pod
 	minUtilization := math.MaxFloat64 // <= 1 in general
