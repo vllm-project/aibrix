@@ -55,7 +55,8 @@ func (r throughputRouter) Polarity() Polarity {
 	return PolarityLeast // Lower throughput (load) is better
 }
 
-// ScoreAll computes the estimated throughput for all pods
+// ScoreAll fetches the average prompt and generation tokens per request for all ready pods in a single batch operation.
+// It combines these values to provide a unified throughput score for the multi-strategy aggregator.
 func (r throughputRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	pods := readyPodList.All()
 	scores := make([]float64, len(pods))

@@ -49,7 +49,8 @@ func NewLeastKvCacheRouter() (types.Router, error) {
 	}, nil
 }
 
-// ScoreAll computes the scores for all ready pods in a single batch operation.
+// ScoreAll computes the combined GPU and CPU cache usage percentage for all ready pods in a single batch operation.
+// This combined metric allows the multi-strategy aggregator to evaluate the overall KV cache pressure on each pod.
 func (r leastKvCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	pods := readyPodList.All()
 	scores := make([]float64, len(pods))

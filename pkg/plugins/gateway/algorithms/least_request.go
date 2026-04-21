@@ -58,7 +58,8 @@ func (r *leastRequestRouter) Polarity() Polarity {
 	return PolarityLeast // The fewer requests, the better
 }
 
-// ScoreAll computes the raw score (number of requests) for all pods
+// ScoreAll computes the raw score (current active requests) for all ready pods in a single batch operation.
+// This allows the multi-strategy aggregator to normalize and weight the active load metric alongside other strategies.
 func (r *leastRequestRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	pods := readyPodList.All()
 	scores := make([]float64, len(pods))

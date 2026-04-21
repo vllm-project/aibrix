@@ -565,7 +565,8 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 	return ctx.TargetAddress(), nil
 }
 
-// ScoreAll computes the scores for all ready pods in a single batch operation.
+// ScoreAll traverses the prefix cache tree to find pods holding matching KV-cache blocks.
+// It assigns scores based on the match ratio and depth, allowing the multi-strategy aggregator to factor in data locality.
 func (p *prefixCacheAndLoadRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	readyPods := readyPodList.All()
 	scores := make([]float64, len(readyPods))

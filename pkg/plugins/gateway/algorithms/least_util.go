@@ -48,7 +48,8 @@ func NewLeastUtilRouter() (types.Router, error) {
 	}, nil
 }
 
-// ScoreAll computes the scores for all ready pods in a single batch operation.
+// ScoreAll fetches the engine utilization metric for all ready pods in a single batch operation.
+// This float value is used by the multi-strategy aggregator to evaluate the current utilization load of each pod.
 func (r leastUtilRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	pods := readyPodList.All()
 	scores := make([]float64, len(pods))
