@@ -19,8 +19,6 @@ logger = logging.getLogger(__name__)
 
 VLLM_V1_WORKER_GPU_MODEL_RUNNER_MODULE = "vllm.v1.worker.gpu_model_runner"
 
-_patches_applied = False
-
 
 def _apply_gpu_model_runner_patches(module):
     """Apply AIBrix patches to vLLM's GPUModelRunner.
@@ -98,7 +96,6 @@ def _apply_gpu_model_runner_patches(module):
         return result
 
     GPUModelRunner.execute_model = _patched_execute_model
-    GPUModelRunner._aibrix_patched = True
     logger.info("[AIBrix] GPUModelRunner monkey-patched successfully")
 
 
@@ -109,9 +106,6 @@ def aibrix_patch_vllm():
         _apply_gpu_model_runner_patches(module)
     except ImportError as e:
         logger.warning("[AIBrix] Failed to import gpu_model_runner: %s", e)
-
-    global _patches_applied
-    _patches_applied = True
 
 
 aibrix_patch_vllm()

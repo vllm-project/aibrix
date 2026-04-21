@@ -49,8 +49,14 @@ from .aibrix_offloading_connector_type1 import (
     AIBrixOffloadingConnectorMetadata,
     AIBrixOffloadingConnectorRequestMetadata,
     AIBrixOffloadingConnectorRequestState,
+    AIBrixWorkerMeta,
     delegate_to,
 )
+
+if TYPE_CHECKING:
+    from vllm.distributed.kv_transfer.kv_connector.v1.base import (
+        KVConnectorWorkerMetadata,
+    )
 from .aibrix_offloading_connector_type1 import (
     AIBrixOffloadingConnectorScheduler as AIBrixOffloadingConnectorSchedulerType1,  # noqa: E501
 )
@@ -299,18 +305,27 @@ class AIBrixOffloadingConnectorWorker(AIBrixOffloadingConnectorWorkerType1):
 
         # Detect partial load (eviction race) — see Type1 comment
         if seq_recv_len < aligned_query_len:
-            block_size = self.engine_block_ntokens
-            first_failed = aligned_context_len + seq_recv_len
-            last_failed = aligned_context_len + aligned_query_len
+            # Report failed tokens to scheduler so it can remove the
+            # corresponding block hashes from its tracker.
+            failed_tokens = aligned_query_len - seq_recv_len
+            if failed_tokens > 0:
+                prev = self._newly_failed_load_tokens.get(seq_request_id, 0)
+                self._newly_failed_load_tokens[seq_request_id] = (
+                    prev + failed_tokens
+                )
             slot_mapping = seq_cached_meta.context_slot_mapping
-            first_block = first_failed // block_size
-            last_block = last_failed // block_size
-            for blk_idx in range(first_block, last_block):
-                token_offset = blk_idx * block_size
-                if 0 <= token_offset < len(slot_mapping):
-                    slot = int(slot_mapping[token_offset].item())
-                    block_id = slot // block_size
-                    self._failed_load_block_ids.add(block_id)
+            if slot_mapping is not None:
+                block_size = self.engine_block_ntokens
+                first_failed = aligned_context_len + seq_recv_len
+                last_failed = aligned_context_len + aligned_query_len
+                first_block = first_failed // block_size
+                last_block = last_failed // block_size
+                for blk_idx in range(first_block, last_block):
+                    token_offset = blk_idx * block_size
+                    if 0 <= token_offset < len(slot_mapping):
+                        slot = int(slot_mapping[token_offset].item())
+                        block_id = slot // block_size
+                        self._failed_load_block_ids.add(block_id)
 
         if self._metrics.time_measurement_enabled:
             end = time.perf_counter()
@@ -600,10 +615,12 @@ class AIBrixOffloadingConnectorWorker(AIBrixOffloadingConnectorWorkerType1):
             total_sent += length
 
             # Track saved tokens for scheduler reporting via
-            # build_connector_worker_meta
-            if total_sent > 0:
+            # build_connector_worker_meta. Use per-block length (not
+            # cumulative total_sent) so the accounting stays correct
+            # if chunking is ever added to this path.
+            if length > 0:
                 prev = self._newly_saved_tokens.get(seq_request_id, 0)
-                self._newly_saved_tokens[seq_request_id] = prev + total_sent
+                self._newly_saved_tokens[seq_request_id] = prev + length
 
             log_if(
                 logger,
@@ -848,13 +865,15 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
         if self.connector_worker is None:
             return None
         saved = self.connector_worker._newly_saved_tokens
-        if not saved:
+        failed = self.connector_worker._newly_failed_load_tokens
+        if not saved and not failed:
             return None
-        from aibrix_kvcache.integration.vllm.kv_connector.aibrix_offloading_connector_type1 import (
-            AIBrixWorkerMeta,
+        meta = AIBrixWorkerMeta(
+            saved_tokens=dict(saved),
+            failed_load_tokens=dict(failed),
         )
-        meta = AIBrixWorkerMeta(saved_tokens=dict(saved))
         saved.clear()
+        failed.clear()
         return meta
 
     def update_connector_output(self, connector_output) -> None:
@@ -871,7 +890,15 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
         blocks: "KVCacheBlocks",
         num_external_tokens: int,
     ):
-        return
+        """Store num_external_tokens so build_connector_meta can pass it
+        to the worker via load_len (instructing the worker exactly how
+        many tokens to load from the external L1 cache)."""
+        if self.connector_scheduler is None:
+            return
+        if num_external_tokens > 0:
+            self.connector_scheduler._request_external_tokens[
+                request.request_id
+            ] = num_external_tokens
 
     @delegate_to("connector_scheduler")
     def build_connector_meta(

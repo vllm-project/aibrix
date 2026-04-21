@@ -564,30 +564,49 @@ class AIBrixOffloadingConnectorMetadata(KVConnectorMetadata):
 
 @dataclass
 class AIBrixWorkerMeta(KVConnectorWorkerMetadata):
-    """Worker-to-scheduler metadata reporting tokens saved to L1 cache."""
+    """Worker-to-scheduler metadata reporting L1 cache state changes.
+
+    - saved_tokens: tokens newly written to the external L1 cache
+    - failed_load_tokens: tokens the scheduler promised as cached but the
+      worker could not actually load (eviction race). The scheduler
+      removes the corresponding block hashes from its tracker so
+      subsequent get_num_new_matched_tokens lookups stay consistent.
+    """
 
     saved_tokens: dict[str, int] = field(default_factory=dict)
+    failed_load_tokens: dict[str, int] = field(default_factory=dict)
 
     def aggregate(
         self, other: "KVConnectorWorkerMetadata"
     ) -> "KVConnectorWorkerMetadata":
-        """Aggregate by taking the intersection of saved_tokens across TP
-        ranks and the minimum count per request.
+        """Aggregate across TP ranks.
 
-        For Tensor Parallel setups, a block is only usable if ALL ranks
-        successfully saved it to the external L1 cache. Using a union would
-        incorrectly mark blocks as cached when only some ranks saved,
-        leading to load failures on ranks that missed the save.
+        saved_tokens uses intersection + min(): a block only counts as
+        cached when ALL ranks reported saving it. Union would mark
+        blocks cached when only some ranks saved, causing load failures
+        on ranks that missed the save.
+
+        failed_load_tokens uses union + max(): if ANY rank failed to
+        load a block, the block is unusable for the whole TP group —
+        the scheduler must invalidate the corresponding hash for every
+        rank, not just the one that reported the failure.
         """
         if not isinstance(other, AIBrixWorkerMeta):
             return self
-        # Intersection: only keep req_ids present in BOTH metadata sets
-        merged = {
+        saved_merged = {
             req_id: min(num_tokens, other.saved_tokens[req_id])
             for req_id, num_tokens in self.saved_tokens.items()
             if req_id in other.saved_tokens
         }
-        return AIBrixWorkerMeta(saved_tokens=merged)
+        failed_merged = dict(self.failed_load_tokens)
+        for req_id, num_tokens in other.failed_load_tokens.items():
+            failed_merged[req_id] = max(
+                failed_merged.get(req_id, 0), num_tokens
+            )
+        return AIBrixWorkerMeta(
+            saved_tokens=saved_merged,
+            failed_load_tokens=failed_merged,
+        )
 
 
 class AIBrixOffloadingConnectorScheduler:
@@ -749,17 +768,35 @@ class AIBrixOffloadingConnectorScheduler:
     ) -> None:
         """Process worker metadata to update the scheduler-side cache tracker.
 
-        Maps {req_id: num_tokens_saved} from the worker to vLLM block
-        hashes, marking those blocks as cached for future
+        saved_tokens: maps {req_id: num_tokens_saved} from the worker to
+        vLLM block hashes, marking those blocks as cached for future
         get_num_new_matched_tokens lookups.
+
+        failed_load_tokens: maps {req_id: num_tokens_failed_to_load} from
+        the worker. The scheduler removes the corresponding block hashes
+        from its tracker so it stops promising stale entries. Partial
+        loads always fail at the tail of the promised range, so the
+        failing hashes are the last N of the request's block_hashes.
         """
         if worker_meta is None or not isinstance(worker_meta, AIBrixWorkerMeta):
             return
+        block_size = self.engine_block_ntokens
         for req_id, num_tokens in worker_meta.saved_tokens.items():
             block_hashes = self._request_block_hashes.get(req_id, [])
-            num_blocks = num_tokens // self.engine_block_ntokens
+            num_blocks = num_tokens // block_size
             for i in range(min(num_blocks, len(block_hashes))):
                 self._cached_block_hashes.add(block_hashes[i])
+        for req_id, num_tokens in worker_meta.failed_load_tokens.items():
+            block_hashes = self._request_block_hashes.get(req_id)
+            if not block_hashes:
+                continue
+            failed_blocks = num_tokens // block_size
+            if failed_blocks <= 0:
+                continue
+            # Remove the last failed_blocks entries — partial loads always
+            # fail at the tail of the range the scheduler promised.
+            for h in block_hashes[-failed_blocks:]:
+                self._cached_block_hashes.discard(h)
 
     def _block_ids_to_slot_mapping(self, block_ids: list[int]) -> torch.Tensor:
         block_ids_tensor = torch.tensor(block_ids)
@@ -905,6 +942,11 @@ class AIBrixOffloadingConnectorWorker:
         self._meta_cache: dict[str, AIBrixOffloadingConnectorCachedMeta] = {}
         # Track tokens saved to L1 cache per request (for scheduler reporting)
         self._newly_saved_tokens: dict[str, int] = {}
+        # Track tokens the scheduler promised as cached but the worker
+        # could not actually load (partial load / eviction race). Reported
+        # to the scheduler via AIBrixWorkerMeta.failed_load_tokens so it
+        # can remove the corresponding block hashes from its tracker.
+        self._newly_failed_load_tokens: dict[str, int] = {}
         # Track vLLM block_ids where cache.acquire() returned less than the
         # scheduler promised (eviction race). These are reported via
         # get_block_ids_with_load_errors() so vLLM can roll back
@@ -1175,18 +1217,27 @@ class AIBrixOffloadingConnectorWorker:
         # block_ids we failed to load so vLLM rolls back
         # num_computed_tokens and re-schedules those tokens for compute.
         if seq_recv_len < aligned_query_len:
-            block_size = self.engine_block_ntokens
-            first_failed = aligned_context_len + seq_recv_len
-            last_failed = aligned_context_len + aligned_query_len
+            # Report failed tokens to the scheduler so it can invalidate
+            # the corresponding block hashes in _cached_block_hashes.
+            failed_tokens = aligned_query_len - seq_recv_len
+            if failed_tokens > 0:
+                prev = self._newly_failed_load_tokens.get(seq_request_id, 0)
+                self._newly_failed_load_tokens[seq_request_id] = (
+                    prev + failed_tokens
+                )
             slot_mapping = seq_cached_meta.context_slot_mapping
-            first_block = first_failed // block_size
-            last_block = last_failed // block_size
-            for blk_idx in range(first_block, last_block):
-                token_offset = blk_idx * block_size
-                if 0 <= token_offset < len(slot_mapping):
-                    slot = int(slot_mapping[token_offset].item())
-                    block_id = slot // block_size
-                    self._failed_load_block_ids.add(block_id)
+            if slot_mapping is not None:
+                block_size = self.engine_block_ntokens
+                first_failed = aligned_context_len + seq_recv_len
+                last_failed = aligned_context_len + aligned_query_len
+                first_block = first_failed // block_size
+                last_block = last_failed // block_size
+                for blk_idx in range(first_block, last_block):
+                    token_offset = blk_idx * block_size
+                    if 0 <= token_offset < len(slot_mapping):
+                        slot = int(slot_mapping[token_offset].item())
+                        block_id = slot // block_size
+                        self._failed_load_block_ids.add(block_id)
 
         if self._metrics.time_measurement_enabled:
             end.record()
@@ -1546,16 +1597,26 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
     def build_connector_worker_meta(
         self,
     ) -> Optional[KVConnectorWorkerMetadata]:
-        """Report tokens saved to L1 cache back to the scheduler so the
-        scheduler tracker (_cached_block_hashes) can be populated, making
-        subsequent get_num_new_matched_tokens lookups accurate."""
+        """Report L1 cache state changes back to the scheduler:
+
+        - saved_tokens: tokens newly written to L1, so the scheduler can
+          mark the corresponding block hashes as cached.
+        - failed_load_tokens: tokens the scheduler promised as cached
+          but the worker could not load, so the scheduler can remove
+          those stale hashes from _cached_block_hashes.
+        """
         if self.connector_worker is None:
             return None
         saved = self.connector_worker._newly_saved_tokens
-        if not saved:
+        failed = self.connector_worker._newly_failed_load_tokens
+        if not saved and not failed:
             return None
-        meta = AIBrixWorkerMeta(saved_tokens=dict(saved))
+        meta = AIBrixWorkerMeta(
+            saved_tokens=dict(saved),
+            failed_load_tokens=dict(failed),
+        )
         saved.clear()
+        failed.clear()
         return meta
 
     def update_connector_output(self, connector_output) -> None:
