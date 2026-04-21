@@ -119,3 +119,56 @@ func (r *sessionAffinityRouter) fallbackRoute(ctx *types.RoutingContext, readyPo
 	}
 	return "", fmt.Errorf("no fallback pod found with a valid network address")
 }
+
+// ScoreAll computes the scores for all ready pods in a single batch operation.
+// The pod with session affinity will receive score 1, others will receive score 0.
+func (r *sessionAffinityRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	pods := readyPodList.All()
+	scores := make([]float64, len(pods))
+	scored := make([]bool, len(pods))
+
+	if ctx.ReqHeaders == nil {
+		for i := range pods {
+			scores[i] = 0
+			scored[i] = true
+		}
+		return scores, scored, nil
+	}
+
+	sessionID := ctx.ReqHeaders[sessionIDHeader]
+	var targetAddr string
+
+	if sessionID != "" {
+		decoded, err := base64.StdEncoding.DecodeString(sessionID)
+		if err != nil {
+			klog.V(4).ErrorS(err, "Invalid session ID format")
+		} else {
+			targetAddr = string(decoded)
+		}
+	}
+
+	for i, pod := range pods {
+		port := utils.GetModelPortForPod(ctx.RequestID, pod)
+		if port == 0 {
+			scores[i] = 0
+			scored[i] = true
+			continue
+		}
+
+		addr := net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(int(port)))
+		if targetAddr != "" && addr == targetAddr {
+			scores[i] = 1
+			r.setSessionHeader(ctx, addr)
+		} else {
+			scores[i] = 0
+		}
+		scored[i] = true
+	}
+
+	return scores, scored, nil
+}
+
+// Polarity returns whether higher or lower score is better.
+func (r *sessionAffinityRouter) Polarity() Polarity {
+	return PolarityMost
+}

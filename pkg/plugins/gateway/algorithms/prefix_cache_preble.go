@@ -565,6 +565,100 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 	return ctx.TargetAddress(), nil
 }
 
+// ScoreAll computes the scores for all ready pods in a single batch operation.
+func (p *prefixCacheAndLoadRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	readyPods := readyPodList.All()
+	scores := make([]float64, len(readyPods))
+	scored := make([]bool, len(readyPods))
+
+	var podUpdateNeeded bool
+	func() {
+		p.podsMu.RLock()
+		defer p.podsMu.RUnlock()
+		podUpdateNeeded = len(readyPods) != p.numPods
+	}()
+
+	if podUpdateNeeded {
+		p.podsMu.Lock()
+		p.updatePodSet(readyPods)
+		p.podsMu.Unlock()
+	}
+
+	tokens, err := utils.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	node, matchedTokens, _ := p.cache.AddPrefix(tokens, ctx.Model, "")
+	matchRatio := float64(len(matchedTokens)) / float64(len(tokens))
+	prefixRoutingThreshold := 0.5
+
+	if matchRatio > prefixRoutingThreshold {
+		var prefixMatches []prefixMatch
+		currentNode := node
+		for currentNode != nil {
+			if modelPods, ok := currentNode.GetModelToPods()[ctx.Model]; ok {
+				var nodePods []*v1.Pod
+				for podName := range modelPods {
+					for _, pod := range readyPods {
+						if pod.Name == podName {
+							nodePods = append(nodePods, pod)
+						}
+					}
+				}
+				if len(nodePods) > 0 {
+					prefixMatches = append(prefixMatches, prefixMatch{
+						node:        currentNode,
+						pods:        nodePods,
+						depth:       currentNode.GetDepth(),
+						matchLength: currentNode.ContextLength(),
+					})
+				}
+			}
+			currentNode = currentNode.GetParent()
+		}
+
+		sort.Slice(prefixMatches, func(i, j int) bool {
+			return prefixMatches[i].matchLength > prefixMatches[j].matchLength
+		})
+
+		if len(prefixMatches) > 0 {
+			longestMatch := prefixMatches[0]
+			matchedPodsSet := make(map[string]bool)
+			for _, pod := range longestMatch.pods {
+				matchedPodsSet[pod.Name] = true
+			}
+
+			for i, pod := range readyPods {
+				if matchedPodsSet[pod.Name] {
+					load := p.histogram.getPodLoad(pod)
+					// Smaller load is better, so we use load as score (polarity is least)
+					scores[i] = float64(load)
+					scored[i] = true
+				} else {
+					scored[i] = false
+				}
+			}
+			return scores, scored, nil
+		}
+	}
+
+	// Cost model based routing
+	podCosts := p.histogram.getCurrentAllocationCostPerPod()
+	for i, pod := range readyPods {
+		cost := podCosts[pod.Name]
+		scores[i] = cost
+		scored[i] = true
+	}
+
+	return scores, scored, nil
+}
+
+// Polarity returns whether higher or lower score is better.
+func (p *prefixCacheAndLoadRouter) Polarity() Polarity {
+	return PolarityLeast
+}
+
 // Compute the load in a pod fo a specific model based on the sliding window histogram
 func (h *SlidingWindowHistogram) getPodLoad(pod *v1.Pod) int {
 	h.mu.RLock()

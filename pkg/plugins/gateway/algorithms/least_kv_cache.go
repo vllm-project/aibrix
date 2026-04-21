@@ -49,6 +49,36 @@ func NewLeastKvCacheRouter() (types.Router, error) {
 	}, nil
 }
 
+// ScoreAll computes the scores for all ready pods in a single batch operation.
+func (r leastKvCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	pods := readyPodList.All()
+	scores := make([]float64, len(pods))
+	scored := make([]bool, len(pods))
+
+	for i, pod := range pods {
+		gpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.GPUCacheUsagePerc)
+		if err != nil {
+			klog.V(4).ErrorS(err, "failed to get GPU cache metrics")
+			continue
+		}
+		cpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.CPUCacheUsagePerc)
+		if err != nil {
+			klog.V(4).ErrorS(err, "failed to get CPU cache metrics")
+			continue
+		}
+		scores[i] = gpuCache.GetSimpleValue() + cpuCache.GetSimpleValue()
+		scored[i] = true
+		klog.V(4).Infof("pod: %v, podIP: %v, total cache: %v", pod.Name, pod.Status.PodIP, scores[i])
+	}
+
+	return scores, scored, nil
+}
+
+// Polarity returns whether higher or lower score is better.
+func (r leastKvCacheRouter) Polarity() Polarity {
+	return PolarityLeast
+}
+
 func (r leastKvCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	var targetPod *v1.Pod
 	minKvCache := math.MaxFloat64

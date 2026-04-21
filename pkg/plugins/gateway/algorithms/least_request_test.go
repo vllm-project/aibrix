@@ -93,7 +93,7 @@ func TestLeastRequest(t *testing.T) {
 				"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
 			},
 			expectErr:  false,
-			expectMsgs: []string{"2.2.2.2:8000"},
+			expectMsgs: []string{"1.1.1.1:8000"}, // Should pick p1 since p2 is unscored (worst score)
 		},
 		{
 			name: "all pods have no metrics",
