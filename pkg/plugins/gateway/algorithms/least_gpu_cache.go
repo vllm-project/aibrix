@@ -49,7 +49,8 @@ func NewLeastGpuCacheRouter() (types.Router, error) {
 	}, nil
 }
 
-// ScoreAll computes the scores for all ready pods in a single batch operation.
+// ScoreAll fetches the GPU cache usage percentage for all ready pods in a single batch operation.
+// This enables the multi-strategy aggregator to penalize or reward pods based on their available GPU cache capacity.
 func (r leastGpuCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	pods := readyPodList.All()
 	scores := make([]float64, len(pods))

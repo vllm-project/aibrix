@@ -444,8 +444,8 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	return ctx.TargetAddress(), nil
 }
 
-// ScoreAll computes the scores for all ready pods in a single batch operation.
-// We use prefix match percentage as the score. Higher is better.
+// ScoreAll traverses the Radix Tree to calculate the prefix match ratio (matched tokens / total tokens) for all ready pods.
+// Unlike simple metric fetching, this dynamically calculates the score based on the specific request's input tokens.
 func (p prefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	pods := readyPodList.All()
 	scores := make([]float64, len(pods))
