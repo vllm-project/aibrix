@@ -48,7 +48,8 @@ func NewLeastBusyTimeRouter() (types.Router, error) {
 	}, nil
 }
 
-// ScoreAll computes the scores for all ready pods in a single batch operation.
+// ScoreAll fetches the GPU busy time ratio for all ready pods in a single batch operation.
+// This provides the multi-strategy aggregator with a quantifiable metric representing the recent compute load on each pod.
 func (r leastBusyTimeRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	pods := readyPodList.All()
 	scores := make([]float64, len(pods))
