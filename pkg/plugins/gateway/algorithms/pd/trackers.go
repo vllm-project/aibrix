@@ -80,8 +80,19 @@ func (t *PrefillRequestTracker) RemovePrefillRequest(requestID string) {
 	newCount := count.Add(-1)
 
 	if newCount < 0 {
-		count.Store(0)
-		newCount = 0
+		// CAS loop: clamp to 0 only while the value is still negative so that
+		// a concurrent Add(1) is not silently erased by a plain Store(0).
+		for {
+			v := count.Load()
+			if v >= 0 {
+				newCount = v
+				break
+			}
+			if count.CompareAndSwap(v, 0) {
+				newCount = 0
+				break
+			}
+		}
 	}
 
 	klog.V(4).InfoS("prefill_request_removed",
