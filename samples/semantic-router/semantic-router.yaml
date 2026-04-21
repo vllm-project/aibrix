@@ -167,8 +167,6 @@ spec:
         app: semantic-router
     spec:
       serviceAccountName: semantic-router
-      securityContext:
-        {}
       # Models are now automatically downloaded by the router at startup
       # No initContainer is needed - the router uses its built-in Go-based
       # modeldownload package to download models from HuggingFace based on
@@ -178,13 +176,10 @@ spec:
       # secret automatically if HF_TOKEN is available in the test environment.
       containers:
       - name: semantic-router
-        image: "ghcr.io/vllm-project/semantic-router/extproc:latest"
+        image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-semantic-router:v0.2.0
         imagePullPolicy: IfNotPresent
         args:
           - --secure=false
-        securityContext:
-          allowPrivilegeEscalation: false
-          runAsNonRoot: false
         ports:
         - containerPort: 50051
           name: grpc
