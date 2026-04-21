@@ -406,26 +406,34 @@ func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
 func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error) {
 	algStr := string(ctx.Algorithm)
 
-	// Check if it's a multi-strategy (contains ',' or ':')
-	if strings.Contains(algStr, ",") || strings.Contains(algStr, ":") {
-		cfg, err := ParseMultiRouterConfig(algStr)
+	// Check if it's a multi-strategy config or if we can use multi-strategy wrapper for single strategies
+	cfg, err := ParseMultiRouterConfig(algStr)
+	if err == nil {
+		multiRouter, err := newMultiStrategyRouter(cfg, rm, ctx)
 		if err == nil {
-			multiRouter, err := newMultiStrategyRouter(cfg, rm, ctx)
-			if err == nil {
-				return multiRouter, nil
-			}
-			klog.Warningf("Failed to initialize multi-strategy router for %s, requestID: %s: %v, fallback to %s", algStr, ctx.RequestID, err, RouterRandom)
-			return RandomRouter, nil
+			return multiRouter, nil
 		}
+		// If multi-router initialization fails (e.g. strategy doesn't implement ScoreAll),
+		// we log a debug message and fall back to the traditional single strategy provider below.
+		klog.V(4).Infof("Cannot use multi-strategy router for %s: %v, falling back to legacy single strategy", algStr, err)
+
+		// If the parser recognized exactly one valid strategy (e.g. it was an exclusive strategy like "pd"
+		// or just a single strategy that doesn't support ScoreAll), we fallback to that specific strategy.
+		if len(cfg.Items) == 1 {
+			algStr = cfg.Items[0].Name
+		}
+	} else {
+		klog.Warningf("Failed to parse multi-strategy config '%s': %v. Falling back to random.", algStr, err)
+		return RandomRouter, nil
 	}
 
-	// Single strategy
+	// Legacy Single strategy fallback
 	rm.routerMu.RLock()
 	defer rm.routerMu.RUnlock()
-	if provider, ok := rm.routerFactory[ctx.Algorithm]; ok {
+	if provider, ok := rm.routerFactory[types.RoutingAlgorithm(algStr)]; ok {
 		return provider(ctx)
 	} else {
-		klog.Warningf("Unsupported router strategy: %s, use %s instead.", ctx.Algorithm, RouterRandom)
+		klog.Warningf("Unsupported router strategy: %s, use %s instead.", algStr, RouterRandom)
 		return RandomRouter, nil
 	}
 }
