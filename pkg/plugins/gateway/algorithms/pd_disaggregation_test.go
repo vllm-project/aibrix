@@ -523,7 +523,7 @@ func TestScorePrefillPods_LeastRequestPolicy(t *testing.T) {
 
 	makeRouter := func(tracker *pd.PrefillRequestTracker) *pdRouter {
 		return &pdRouter{
-			prefillPolicy:         &pd.LeastRequestPrefillPolicy{},
+			prefillPolicy:         pd.NewLeastRequestPrefillPolicy(),
 			prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 			prefillRequestTracker: tracker,
 		}
@@ -695,7 +695,7 @@ func TestScoreDecodePods(t *testing.T) {
 
 func TestEffectiveScorePoliciesFromRoutingConfig(t *testing.T) {
 	r := &pdRouter{
-		prefillPolicy:      &pd.LeastRequestPrefillPolicy{},
+		prefillPolicy:      pd.NewLeastRequestPrefillPolicy(),
 		decodePolicy:       pd.LoadBalancingDecodePolicy{},
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 	}
@@ -707,21 +707,19 @@ func TestEffectiveScorePoliciesFromRoutingConfig(t *testing.T) {
 	}
 	pre, dec, err := r.effectiveScorePolicies(ctx)
 	assert.NoError(t, err)
-	_, isPrefix := pre.(*pd.PrefixCachePrefillPolicy)
-	assert.True(t, isPrefix, "routingConfig should override prefill to prefix_cache")
+	assert.Equal(t, pd.PrefillScorePolicyPrefixCache, pre.Name(), "routingConfig should override prefill to prefix_cache")
 	assert.Equal(t, pd.DecodePolicyLeastRequest, dec.Name())
 
 	ctxNoProfile := &types.RoutingContext{RequestID: "req-env"}
 	pre2, dec2, err2 := r.effectiveScorePolicies(ctxNoProfile)
 	assert.NoError(t, err2)
-	_, isLR := pre2.(*pd.LeastRequestPrefillPolicy)
-	assert.True(t, isLR, "without profile use router env defaults")
+	assert.Equal(t, pd.PrefillScorePolicyLeastRequest, pre2.Name(), "without profile use router env defaults")
 	assert.Equal(t, pd.DecodePolicyLoadBalancing, dec2.Name())
 }
 
 func TestEffectiveScorePoliciesUnknownDecodeScorePolicy(t *testing.T) {
 	r := &pdRouter{
-		prefillPolicy: &pd.LeastRequestPrefillPolicy{},
+		prefillPolicy: pd.NewLeastRequestPrefillPolicy(),
 		decodePolicy:  pd.LoadBalancingDecodePolicy{},
 	}
 	ctx := &types.RoutingContext{

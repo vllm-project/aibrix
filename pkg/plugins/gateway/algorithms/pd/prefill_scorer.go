@@ -55,7 +55,9 @@ const (
 type PrefillScorer interface {
 	// ScorePod returns a score for pod (lower is better). reqCnt is the pod's
 	// current running-request count; maxRequestCount is the maximum across all
-	// candidate pods and is used for normalization.
+	// candidate pods and is used for normalization. Implementations may use pod
+	// for logging or metadata lookups (e.g. prefix_cache); implementations that
+	// score purely by count (e.g. least_request) may ignore it.
 	ScorePod(pod *v1.Pod, reqCnt, maxRequestCount float64) float64
 
 	// PrefixHashes returns the token-prefix hashes used to warm the prefix-cache
@@ -83,7 +85,7 @@ type PrefillScorePolicy interface {
 	Name() string
 }
 
-// PrefixCachePrefillPolicy scores prefill pods by prefix-cache hit percentage
+// prefixCachePrefillPolicy scores prefill pods by prefix-cache hit percentage
 // combined with their current running-request count:
 //
 //	score = (100 - matchPercent) * 0.1 + reqCnt / maxReqCnt
@@ -93,16 +95,16 @@ type PrefillScorePolicy interface {
 // 10.0 from the cache term, making it significantly less preferred.
 //
 // The policy is stateless: tok and prefixCacheIndexer are read-only handles
-// shared across all requests.
-type PrefixCachePrefillPolicy struct {
+// shared across all requests. Obtain an instance via NewPrefixCachePrefillPolicy.
+type prefixCachePrefillPolicy struct {
 	tok                tokenizer.Tokenizer
 	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
 }
 
-// NewPrefixCachePrefillPolicy constructs a PrefixCachePrefillPolicy with the
-// given tokenizer and shared prefix-hash table.
+// NewPrefixCachePrefillPolicy constructs a prefix_cache PrefillScorePolicy with
+// the given tokenizer and shared prefix-hash table.
 func NewPrefixCachePrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *prefixcacheindexer.PrefixHashTable) PrefillScorePolicy {
-	return &PrefixCachePrefillPolicy{
+	return &prefixCachePrefillPolicy{
 		tok:                tok,
 		prefixCacheIndexer: prefixCacheIndexer,
 	}
@@ -111,7 +113,7 @@ func NewPrefixCachePrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *pr
 // Prepare tokenizes routingCtx.Message, performs a prefix-cache lookup against
 // the ready-pod set, and returns a prefixCacheScorer populated with the match
 // percentages and prefix hashes for the request.
-func (p *PrefixCachePrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
+func (p *prefixCachePrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
 	tokens, err := p.tok.TokenizeInputText(routingCtx.Message)
 	if err != nil {
 		return nil, err
@@ -120,7 +122,7 @@ func (p *PrefixCachePrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ [
 	return &prefixCacheScorer{matchedPods: matchedPods, hashes: hashes}, nil
 }
 
-func (p *PrefixCachePrefillPolicy) Name() string { return PrefillScorePolicyPrefixCache }
+func (p *prefixCachePrefillPolicy) Name() string { return PrefillScorePolicyPrefixCache }
 
 // prefixCacheScorer is the request-scoped scorer produced by PrefixCachePrefillPolicy.
 // matchedPods maps pod name → prefix-match percentage (0–100); hashes are the
@@ -143,20 +145,26 @@ func (s *prefixCacheScorer) ScorePod(pod *v1.Pod, reqCnt, maxRequestCount float6
 	return score
 }
 
-// LeastRequestPrefillPolicy scores prefill pods solely by their running-request
+// leastRequestPrefillPolicy scores prefill pods solely by their running-request
 // count with no prefix-cache consultation. It is suitable when prefix-cache
 // locality is not important or when a tokenizer is unavailable.
 //
 // The scorer returned by Prepare is a zero-size struct; no per-request
-// allocation is needed.
-type LeastRequestPrefillPolicy struct{}
+// allocation is needed. Obtain an instance via NewLeastRequestPrefillPolicy.
+type leastRequestPrefillPolicy struct{}
+
+// NewLeastRequestPrefillPolicy returns a least_request PrefillScorePolicy that
+// routes to the pod with the fewest active prefill requests.
+func NewLeastRequestPrefillPolicy() PrefillScorePolicy {
+	return &leastRequestPrefillPolicy{}
+}
 
 // Prepare returns a leastRequestScorer; no tokenization or cache lookup is performed.
-func (p *LeastRequestPrefillPolicy) Prepare(_ *types.RoutingContext, _ []*v1.Pod, _ map[string]struct{}) (PrefillScorer, error) {
+func (p *leastRequestPrefillPolicy) Prepare(_ *types.RoutingContext, _ []*v1.Pod, _ map[string]struct{}) (PrefillScorer, error) {
 	return leastRequestScorer{}, nil
 }
 
-func (p *LeastRequestPrefillPolicy) Name() string { return PrefillScorePolicyLeastRequest }
+func (p *leastRequestPrefillPolicy) Name() string { return PrefillScorePolicyLeastRequest }
 
 // leastRequestScorer is the request-scoped scorer produced by LeastRequestPrefillPolicy.
 type leastRequestScorer struct{}

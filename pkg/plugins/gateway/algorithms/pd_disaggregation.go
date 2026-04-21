@@ -160,7 +160,7 @@ func (r *pdRouter) effectiveScorePolicies(routingCtx *types.RoutingContext) (pd.
 	if s := strings.TrimSpace(cfg.PrefillScorePolicy); s != "" {
 		switch s {
 		case pd.PrefillScorePolicyLeastRequest:
-			prefill = &pd.LeastRequestPrefillPolicy{}
+			prefill = pd.NewLeastRequestPrefillPolicy()
 		case pd.PrefillScorePolicyPrefixCache:
 			prefill = newPrefixCachePrefillPolicy(r.prefixCacheIndexer)
 		default:
@@ -223,7 +223,7 @@ func NewPDRouter() (types.Router, error) {
 	var policy pd.PrefillScorePolicy
 	switch aibrixPrefillScorePolicy {
 	case pd.PrefillScorePolicyLeastRequest:
-		policy = &pd.LeastRequestPrefillPolicy{}
+		policy = pd.NewLeastRequestPrefillPolicy()
 	case pd.PrefillScorePolicyPrefixCache:
 		policy = newPrefixCachePrefillPolicy(sharedPrefixTable)
 	default:
@@ -532,7 +532,9 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 // and delegates per-pod scoring to the policy.
 func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, prefillPolicy pd.PrefillScorePolicy) (map[string]*Scores, float64, []uint64) {
 	if prefillPolicy == nil {
-		prefillPolicy = r.prefillPolicy
+		klog.ErrorS(nil, "scorePrefillPods called with nil prefillPolicy; this is a programming error",
+			"request_id", routingCtx.RequestID)
+		return nil, 0, nil
 	}
 	utils.CryptoShuffle(prefillPods)
 
