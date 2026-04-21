@@ -21,6 +21,11 @@ data:
           tools_db_path: config/tools_db.json
           top_k: 3
       router:
+        # "priority" strategy: the decision with the highest priority value wins.
+        # When multiple decisions share the same priority (e.g. business and economics
+        # both sit at priority 10), the first matching decision in declaration order
+        # is selected. Reorder decisions or assign distinct priorities to control
+        # tie-breaking explicitly.
         strategy: priority
       services:
         api:
@@ -121,6 +126,12 @@ data:
         reasoning_family: qwen3
     routing:
       decisions:
+      # Overlap note: "business" and "economics" both route to llama3-8b-instruct at
+      # priority 10. Queries about financial analysis, markets, or corporate finance
+      # may match either domain. "business_decision" is declared first, so it wins
+      # the tie and its system prompt (consultant persona) is applied. If you prefer
+      # economics queries to use the economist persona, raise economics_decision's
+      # priority above 10 or move it before business_decision in this list.
       - description: Business and management related queries
         modelRefs:
         - model: llama3-8b-instruct
@@ -299,6 +310,8 @@ data:
           - name: health
             type: domain
           operator: OR
+      # See overlap note above business_decision. Both decisions reach the same model;
+      # the only consequence of the tie is which system prompt is applied.
       - description: Economics and financial topics
         modelRefs:
         - model: llama3-8b-instruct
@@ -477,15 +490,210 @@ data:
         - name: philosophy
         - name: engineering
         keywords:
+        # These keywords are intentionally narrow to avoid false-positive routing
+        # to the reasoning model. Broad words like "think" or "careful" would match
+        # ordinary prose ("I think...", "be careful") and silently upgrade every
+        # such request to the slower qwen3-8b chain-of-thought path.
+        # Trade-off: users who want step-by-step reasoning must include one of
+        # these explicit signals in their prompt, or route via the math/physics/
+        # computer-science/engineering domains which always use reasoning.
         - case_sensitive: false
           keywords:
-          - urgent
-          - immediate
-          - asap
-          - think
-          - careful
+          - step by step
+          - think step
+          - chain of thought
+          - reason through
+          - show your work
+          - walk me through
           name: thinking
           operator: OR
     version: v0.3
   tools_db.json: |
-    [{"category":"weather","description":"Get current weather information, temperature, conditions, forecast for any location, city, or place. Check weather today, now, current conditions, temperature, rain, sun, cloudy, hot, cold, storm, snow","tags":["weather","temperature","forecast","climate"],"tool":{"function":{"description":"Get current weather information for a location","name":"get_weather","parameters":{"properties":{"location":{"description":"The city and state, e.g. San Francisco, CA","type":"string"},"unit":{"description":"Temperature unit","enum":["celsius","fahrenheit"],"type":"string"}},"required":["location"],"type":"object"}},"type":"function"}},{"category":"search","description":"Search the internet, web search, find information online, browse web content, lookup, research, google, find answers, discover, investigate","tags":["search","web","internet","information","browse"],"tool":{"function":{"description":"Search the web for information","name":"search_web","parameters":{"properties":{"num_results":{"default":5,"description":"Number of results to return","type":"integer"},"query":{"description":"The search query","type":"string"}},"required":["query"],"type":"object"}},"type":"function"}},{"category":"math","description":"Calculate mathematical expressions, solve math problems, arithmetic operations, compute numbers, addition, subtraction, multiplication, division, equations, formula","tags":["math","calculation","arithmetic","compute","numbers"],"tool":{"function":{"description":"Perform mathematical calculations","name":"calculate","parameters":{"properties":{"expression":{"description":"Mathematical expression to evaluate","type":"string"}},"required":["expression"],"type":"object"}},"type":"function"}},{"category":"communication","description":"Send email messages, email communication, contact people via email, mail, message, correspondence, notify, inform","tags":["email","send","communication","message","contact"],"tool":{"function":{"description":"Send an email message","name":"send_email","parameters":{"properties":{"body":{"description":"Email body content","type":"string"},"subject":{"description":"Email subject","type":"string"},"to":{"description":"Recipient email address","type":"string"}},"required":["to","subject","body"],"type":"object"}},"type":"function"}},{"category":"productivity","description":"Schedule meetings, create calendar events, set appointments, manage calendar, book time, plan meeting, organize schedule, reminder, agenda","tags":["calendar","event","meeting","appointment","schedule"],"tool":{"function":{"description":"Create a new calendar event or appointment","name":"create_calendar_event","parameters":{"properties":{"date":{"description":"Event date in YYYY-MM-DD format","type":"string"},"duration":{"description":"Duration in minutes","type":"integer"},"time":{"description":"Event time in HH:MM format","type":"string"},"title":{"description":"Event title","type":"string"}},"required":["title","date","time"],"type":"object"}},"type":"function"}}]
+    [
+      {
+        "category": "weather",
+        "description": "Get current weather information, temperature, conditions, forecast for any location, city, or place. Check weather today, now, current conditions, temperature, rain, sun, cloudy, hot, cold, storm, snow",
+        "tags": [
+          "weather",
+          "temperature",
+          "forecast",
+          "climate"
+        ],
+        "tool": {
+          "function": {
+            "description": "Get current weather information for a location",
+            "name": "get_weather",
+            "parameters": {
+              "properties": {
+                "location": {
+                  "description": "The city and state, e.g. San Francisco, CA",
+                  "type": "string"
+                },
+                "unit": {
+                  "description": "Temperature unit",
+                  "enum": [
+                    "celsius",
+                    "fahrenheit"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "location"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      },
+      {
+        "category": "search",
+        "description": "Search the internet, web search, find information online, browse web content, lookup, research, google, find answers, discover, investigate",
+        "tags": [
+          "search",
+          "web",
+          "internet",
+          "information",
+          "browse"
+        ],
+        "tool": {
+          "function": {
+            "description": "Search the web for information",
+            "name": "search_web",
+            "parameters": {
+              "properties": {
+                "num_results": {
+                  "default": 5,
+                  "description": "Number of results to return",
+                  "type": "integer"
+                },
+                "query": {
+                  "description": "The search query",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "query"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      },
+      {
+        "category": "math",
+        "description": "Calculate mathematical expressions, solve math problems, arithmetic operations, compute numbers, addition, subtraction, multiplication, division, equations, formula",
+        "tags": [
+          "math",
+          "calculation",
+          "arithmetic",
+          "compute",
+          "numbers"
+        ],
+        "tool": {
+          "function": {
+            "description": "Perform mathematical calculations",
+            "name": "calculate",
+            "parameters": {
+              "properties": {
+                "expression": {
+                  "description": "Mathematical expression to evaluate",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "expression"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      },
+      {
+        "category": "communication",
+        "description": "Send email messages, email communication, contact people via email, mail, message, correspondence, notify, inform",
+        "tags": [
+          "email",
+          "send",
+          "communication",
+          "message",
+          "contact"
+        ],
+        "tool": {
+          "function": {
+            "description": "Send an email message",
+            "name": "send_email",
+            "parameters": {
+              "properties": {
+                "body": {
+                  "description": "Email body content",
+                  "type": "string"
+                },
+                "subject": {
+                  "description": "Email subject",
+                  "type": "string"
+                },
+                "to": {
+                  "description": "Recipient email address",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "to",
+                "subject",
+                "body"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      },
+      {
+        "category": "productivity",
+        "description": "Schedule meetings, create calendar events, set appointments, manage calendar, book time, plan meeting, organize schedule, reminder, agenda",
+        "tags": [
+          "calendar",
+          "event",
+          "meeting",
+          "appointment",
+          "schedule"
+        ],
+        "tool": {
+          "function": {
+            "description": "Create a new calendar event or appointment",
+            "name": "create_calendar_event",
+            "parameters": {
+              "properties": {
+                "date": {
+                  "description": "Event date in YYYY-MM-DD format",
+                  "type": "string"
+                },
+                "duration": {
+                  "description": "Duration in minutes",
+                  "type": "integer"
+                },
+                "time": {
+                  "description": "Event time in HH:MM format",
+                  "type": "string"
+                },
+                "title": {
+                  "description": "Event title",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "date",
+                "time"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      }
+    ]

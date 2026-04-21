@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: qwen3-8b
+  namespace: default
   labels:
     model.aibrix.ai/name: qwen3-8b
     model.aibrix.ai/port: "8000"

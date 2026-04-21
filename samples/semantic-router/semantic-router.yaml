@@ -1,30 +1,25 @@
 ---
-# Source: semantic-router/templates/serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: semantic-router
   namespace: vllm-semantic-router-system
   labels:
-    helm.sh/chart: semantic-router-0.2.0
     app.kubernetes.io/name: semantic-router
-    app.kubernetes.io/instance: semantic-router
+    app.kubernetes.io/version: "v0.2.0"
     app: semantic-router
-    app.kubernetes.io/version: "latest"
-    app.kubernetes.io/managed-by: Helm
 ---
-# Source: semantic-router/templates/clusterrole.yaml
+# ClusterRole (not Role) is required because IntelligentPool and IntelligentRoute
+# CRDs are cluster-scoped resources — the router must be able to watch them
+# across all namespaces. If your CRDs are namespace-scoped, replace this with a
+# Role + RoleBinding scoped to vllm-semantic-router-system.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: semantic-router
   labels:
-    helm.sh/chart: semantic-router-0.2.0
     app.kubernetes.io/name: semantic-router
-    app.kubernetes.io/instance: semantic-router
     app: semantic-router
-    app.kubernetes.io/version: "latest"
-    app.kubernetes.io/managed-by: Helm
 rules:
   # Permissions for IntelligentPool CRD
   - apiGroups:
@@ -61,18 +56,13 @@ rules:
       - update
       - patch
 ---
-# Source: semantic-router/templates/clusterrolebinding.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: semantic-router
   labels:
-    helm.sh/chart: semantic-router-0.2.0
     app.kubernetes.io/name: semantic-router
-    app.kubernetes.io/instance: semantic-router
     app: semantic-router
-    app.kubernetes.io/version: "latest"
-    app.kubernetes.io/managed-by: Helm
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -82,19 +72,14 @@ subjects:
     name: semantic-router
     namespace: vllm-semantic-router-system
 ---
-# Source: semantic-router/templates/service.yaml
 apiVersion: v1
 kind: Service
 metadata:
   name: semantic-router
   namespace: vllm-semantic-router-system
   labels:
-    helm.sh/chart: semantic-router-0.2.0
     app.kubernetes.io/name: semantic-router
-    app.kubernetes.io/instance: semantic-router
     app: semantic-router
-    app.kubernetes.io/version: "latest"
-    app.kubernetes.io/managed-by: Helm
 spec:
   type: ClusterIP
   ports:
@@ -108,22 +93,16 @@ spec:
     name: classify-api
   selector:
     app.kubernetes.io/name: semantic-router
-    app.kubernetes.io/instance: semantic-router
     app: semantic-router
 ---
-# Source: semantic-router/templates/service.yaml
 apiVersion: v1
 kind: Service
 metadata:
   name: semantic-router-metrics
   namespace: vllm-semantic-router-system
   labels:
-    helm.sh/chart: semantic-router-0.2.0
     app.kubernetes.io/name: semantic-router
-    app.kubernetes.io/instance: semantic-router
     app: semantic-router
-    app.kubernetes.io/version: "latest"
-    app.kubernetes.io/managed-by: Helm
     service: metrics
 spec:
   type: ClusterIP
@@ -134,36 +113,27 @@ spec:
     name: metrics
   selector:
     app.kubernetes.io/name: semantic-router
-    app.kubernetes.io/instance: semantic-router
     app: semantic-router
 ---
-# Source: semantic-router/templates/deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: semantic-router
   namespace: vllm-semantic-router-system
   labels:
-    helm.sh/chart: semantic-router-0.2.0
     app.kubernetes.io/name: semantic-router
-    app.kubernetes.io/instance: semantic-router
+    app.kubernetes.io/version: "v0.2.0"
     app: semantic-router
-    app.kubernetes.io/version: "latest"
-    app.kubernetes.io/managed-by: Helm
 spec:
   replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: semantic-router
-      app.kubernetes.io/instance: semantic-router
       app: semantic-router
   template:
     metadata:
-      annotations:
-        checksum/config: ca132650c82832a98074b4ed60f5dcddc608292c597e33ab3cde51ec1685e3a7
       labels:
         app.kubernetes.io/name: semantic-router
-        app.kubernetes.io/instance: semantic-router
         app: semantic-router
     spec:
       serviceAccountName: semantic-router
@@ -178,6 +148,9 @@ spec:
       - name: semantic-router
         image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-semantic-router:v0.2.0
         imagePullPolicy: IfNotPresent
+        # --secure=false disables TLS on the gRPC ext_proc connection.
+        # Acceptable for this sample (traffic stays in-cluster), but enable
+        # TLS (remove this flag) before deploying to production.
         args:
           - --secure=false
         ports:

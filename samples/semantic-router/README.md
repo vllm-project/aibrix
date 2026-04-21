@@ -5,11 +5,13 @@ This sample deploys semantic routing with a single entry model (`MoM`) that rout
 - `qwen3-8b` for math-oriented prompts (`use_reasoning: true`)
 - `llama3-8b-instruct` for business-oriented prompts (`use_reasoning: false`)
 
-## 1) Create Hugging Face token secret
+## 1) Create namespace and Hugging Face token secret
 
-Set your token first, then create the secret:
+Create the namespace first, then the secret:
 
 ```bash
+kubectl create namespace vllm-semantic-router-system
+
 export HF_TOKEN="<your-huggingface-token>"
 kubectl create secret generic hf-token-secret \
   --from-literal=token="${HF_TOKEN}" \
@@ -50,7 +52,33 @@ export ENVOY_SERVICE=$(kubectl get svc -n envoy-gateway-system \
 kubectl port-forward -n envoy-gateway-system "svc/${ENVOY_SERVICE}" 8080:80
 ```
 
-## 6) Test semantic routing
+## 6) Routing rules
+
+The router classifies each prompt into a domain (or keyword match) and forwards to the
+appropriate model. All 15 rules defined in `semantic-router-configmap.yaml`:
+
+| Domain / keyword | Match type | Model | Reasoning | Priority |
+|------------------|------------|-------|-----------|----------|
+| `thinking` (keywords: *step by step, think step, chain of thought, reason through, show your work, walk me through*) | keyword | `qwen3-8b` | on | 15 |
+| `business` | domain | `llama3-8b-instruct` | off | 10 |
+| `law` | domain | `llama3-8b-instruct` | off | 10 |
+| `psychology` | domain | `llama3-8b-instruct` | off | 10 |
+| `biology` | domain | `qwen3-8b` | on | 10 |
+| `chemistry` | domain | `qwen3-8b` | on | 10 |
+| `history` | domain | `llama3-8b-instruct` | off | 10 |
+| `health` | domain | `llama3-8b-instruct` | off | 10 |
+| `economics` | domain | `llama3-8b-instruct` | off | 10 |
+| `math` | domain | `qwen3-8b` | on | 10 |
+| `physics` | domain | `qwen3-8b` | on | 10 |
+| `computer science` | domain | `qwen3-8b` | on | 10 |
+| `philosophy` | domain | `llama3-8b-instruct` | off | 10 |
+| `engineering` | domain | `qwen3-8b` | on | 10 |
+| `other` (catch-all) | domain | `llama3-8b-instruct` | off | 5 |
+
+Higher priority rules are evaluated first. Routing is determined by the router's domain
+classifier; the `thinking` keyword rule takes precedence over all domain rules.
+
+## 7) Test semantic routing
 
 ### Math prompt -> `qwen3-8b`
 

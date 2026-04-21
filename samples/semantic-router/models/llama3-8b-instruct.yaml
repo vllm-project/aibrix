@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: llama3-8b-instruct
+  namespace: default
   labels:
     model.aibrix.ai/name: llama3-8b-instruct
     model.aibrix.ai/port: "8000"
