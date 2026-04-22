@@ -18,7 +18,7 @@ import enum
 import logging
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Optional, Type, TypeVar
 
 import numpy as np
 import torch
@@ -1274,6 +1274,42 @@ class AIBrixOffloadingConnectorWorker:
                 10,
             )
 
+    def wait_for_layer_load(
+        self,
+        metadata: AIBrixOffloadingConnectorMetadata,
+        layer_name: str,
+    ) -> None:
+        """Layer-wise load is not supported by the Type1 (sync) worker.
+
+        Subclasses that implement async layer-wise loading (e.g. Type2)
+        must override this method. The Connector interface declares it
+        here so that the shared `AIBrixOffloadingConnector` Connector
+        class can call `self.connector_worker.wait_for_layer_load(...)`
+        without mypy complaining — at runtime, Type1 never reaches this
+        path because Type1.Connector's wait_for_layer_load is a no-op
+        stub.
+        """
+        raise NotImplementedError(
+            "Layer-wise load is not supported by the sync Type1 worker"
+        )
+
+    def save_kv_layer(
+        self,
+        metadata: AIBrixOffloadingConnectorMetadata,
+        layer_name: str,
+        kv_layer: torch.Tensor,
+        attn_metadata: "AttentionMetadata",
+    ) -> None:
+        """Layer-wise save is not supported by the Type1 (sync) worker.
+
+        Subclasses that implement async layer-wise saving (e.g. Type2)
+        must override this method. See wait_for_layer_load above for the
+        rationale for defining the stub at this level.
+        """
+        raise NotImplementedError(
+            "Layer-wise save is not supported by the sync Type1 worker"
+        )
+
     def _send_kv_sync_impl(
         self,
         seq_request_meta: AIBrixOffloadingConnectorRequestMetadata,
@@ -1442,8 +1478,12 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
     # Subclasses override these class attributes to plug in their own
     # Scheduler/Worker implementations while inheriting the full
     # connector contract. Used by __init__ below.
-    SCHEDULER_CLASS: type = AIBrixOffloadingConnectorScheduler
-    WORKER_CLASS: type = AIBrixOffloadingConnectorWorker
+    SCHEDULER_CLASS: Type["AIBrixOffloadingConnectorScheduler"] = (
+        AIBrixOffloadingConnectorScheduler
+    )
+    WORKER_CLASS: Type["AIBrixOffloadingConnectorWorker"] = (
+        AIBrixOffloadingConnectorWorker
+    )
 
     def __init__(
         self,
