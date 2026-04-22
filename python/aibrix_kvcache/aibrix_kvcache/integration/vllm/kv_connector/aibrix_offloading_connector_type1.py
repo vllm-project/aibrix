@@ -1439,6 +1439,12 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
     to the kv cache offloading service.
     """
 
+    # Subclasses override these class attributes to plug in their own
+    # Scheduler/Worker implementations while inheriting the full
+    # connector contract. Used by __init__ below.
+    SCHEDULER_CLASS: type = AIBrixOffloadingConnectorScheduler
+    WORKER_CLASS: type = AIBrixOffloadingConnectorWorker
+
     def __init__(
         self,
         config: "VllmConfig",
@@ -1455,11 +1461,9 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
 
         self.connector_worker: Optional[AIBrixOffloadingConnectorWorker] = None
         if role == KVConnectorRole.SCHEDULER:
-            self.connector_scheduler = AIBrixOffloadingConnectorScheduler(
-                config
-            )
+            self.connector_scheduler = self.SCHEDULER_CLASS(config)
         elif role == KVConnectorRole.WORKER:
-            self.connector_worker = AIBrixOffloadingConnectorWorker(config)
+            self.connector_worker = self.WORKER_CLASS(config)
 
     # ==============================
     # Worker-side methods
