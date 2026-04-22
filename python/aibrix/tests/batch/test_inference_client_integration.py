@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from aibrix.batch.job_driver import (
     InferenceEngineClient,
+    JobDriver,
     MockInferenceEngineClient,
     ProxyInferenceEngineClient,
 )
@@ -68,6 +71,17 @@ class TestInferenceClientIntegration:
         client = InferenceEngineClient()
         with pytest.raises(NotImplementedError):
             await client.inference_request("/test", {})
+
+    @pytest.mark.asyncio
+    async def test_job_driver_requires_explicit_inference_client(self):
+        """Test that job execution fails fast when no inference client is configured."""
+        driver = JobDriver(progress_manager=MagicMock(), inference_client=None)
+
+        with pytest.raises(
+            RuntimeError,
+            match="Inference client is not configured for batch execution",
+        ):
+            await driver.execute_worker("job-123")
 
     @pytest.mark.asyncio
     async def test_retry_behavior_demonstration(self):
