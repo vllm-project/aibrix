@@ -52,6 +52,10 @@ const (
 	HeaderModel              = "model"
 	HeaderExternalFilter     = "external-filter"
 	HeaderConfigProfile      = "config-profile"
+	// HeaderSessionID is the header used for session affinity routing.
+	// NOTE: If you change this value, you MUST also update sessionIDHeader in
+	// pkg/plugins/gateway/algorithms/simple_session_affinity.go
+	HeaderSessionID = "x-session-id"
 
 	// RPM & TPM Update Errors
 	HeaderUpdateTPM        = "x-update-tpm"
