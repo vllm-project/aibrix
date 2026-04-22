@@ -8,12 +8,20 @@ This document explains the high-level architecture of the semantic router, how i
 Client
   │
   ▼
-Envoy Gateway (aibrix-eg)  ←── EnvoyPatchPolicy injects ext_proc filter
+Envoy Gateway (aibrix-eg)  ←── EnvoyPatchPolicy injects ext_proc filters
   │
   │  gRPC (ext_proc protocol, port 50051)
   ▼
-Semantic Router (vllm-semantic-router-system)
+Semantic Router (vllm-semantic-router-system, ext_proc)
   │  classifies prompt → selects decision → rewrites request
+  │  replaces model field: MoM → selected model (e.g. qwen3-8b, llama3-8b-instruct)
+  │
+  │  returns mutated request to Envoy
+  ▼
+AIBrix Gateway Plugins (aibrix-gateway-plugins, ext_proc)
+  │  applies gateway-level plugins (rate limiting, auth, etc.)
+  │
+  ▼
   ├──► llama3-8b-instruct.default.svc.cluster.local:8000
   └──► qwen3-8b.default.svc.cluster.local:8000
 ```
@@ -101,6 +109,11 @@ The router mounts the `semantic-router-config` ConfigMap at `/app/config/config.
         - Inject reasoning parameters if use_reasoning: true (see below)
 
 4. Router  ──ProcessingResponse (mutated headers + mutated body)──►  Envoy
+
+4a. Envoy  ──ProcessingRequest (mutated headers + body)──►  AIBrix Gateway Plugins (ext_proc)
+    (rate limiting, auth, and other gateway-level plugins applied here)
+
+4b. AIBrix Gateway Plugins  ──ProcessingResponse──►  Envoy
 
 5. Envoy   ──POST /v1/chat/completions──►  Backend model service
            { "model": "qwen3-8b", "messages": [{"role":"system",...}, ...],
