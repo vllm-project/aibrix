@@ -97,6 +97,9 @@ SGLANG_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
 }
 
 # TRT-LLM metric standard rules
+# Note: the current mapping is intentionally limited to the metrics AIBrix
+# consumes today. Additional TRT-LLM metrics can be standardized later as new
+# autoscaling or observability use cases require them.
 # Note: TRT-LLM (trtllm-serve) emits metrics without a namespace prefix
 # (e.g., "e2e_request_latency_seconds" instead of "trtllm:e2e_request_latency_seconds").
 TRTLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
@@ -121,7 +124,7 @@ TRTLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
     "kv_cache_hit_rate": RenameStandardRule(
         "kv_cache_hit_rate", "aibrix:kv_cache_hit_rate"
     ),
-    # Pass-through for debugging
+    # Keep the native TRT-LLM name until we define a cross-engine aibrix metric.
     "request_queue_time_seconds": PassthroughStandardRule("request_queue_time_seconds"),
 }
 

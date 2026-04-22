@@ -77,6 +77,82 @@ func TestUpdatePodRecord(t *testing.T) {
 	require.True(t, ok)
 }
 
+func TestUpdatePodMetricsFromTypedResultModelFallback(t *testing.T) {
+	tests := []struct {
+		name      string
+		rawModel  string
+		wantModel string
+	}{
+		{
+			name:      "keeps valid model name",
+			rawModel:  "raw-model",
+			wantModel: "raw-model",
+		},
+		{
+			name:      "falls back for empty model name",
+			rawModel:  "",
+			wantModel: "pod-model",
+		},
+		{
+			name:      "falls back for undefined model name",
+			rawModel:  undefinedMetricLabelValue,
+			wantModel: "pod-model",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &Store{}
+			pod := &Pod{
+				Pod: &v1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "p1",
+						Namespace: "default",
+						Labels: map[string]string{
+							modelLabel: "pod-model",
+						},
+					},
+				},
+			}
+			result := &metrics.EngineMetricsResult{
+				ModelMetrics: map[string]metrics.MetricValue{
+					store.getPodModelMetricName(tt.rawModel, metrics.NumRequestsWaiting): &metrics.SimpleMetricValue{Value: 1},
+				},
+			}
+
+			store.updatePodMetricsFromTypedResult(pod, result)
+
+			_, ok := pod.ModelMetrics.Load(store.getPodModelMetricName(tt.wantModel, metrics.NumRequestsWaiting))
+			require.True(t, ok)
+		})
+	}
+}
+
+func TestSanitizeMetricLabelsFallback(t *testing.T) {
+	pod := &Pod{
+		Pod: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "p1",
+				Namespace: "default",
+				Labels: map[string]string{
+					modelLabel:  "pod-model",
+					engineLabel: "trtllm",
+				},
+			},
+		},
+	}
+
+	sanitized := sanitizeMetricLabels(pod, map[string]string{
+		"model_name":  undefinedMetricLabelValue,
+		"engine_type": "",
+		"instance":    "pod:8000",
+	})
+
+	require.Equal(t, "pod-model", sanitized["model_name"])
+	require.Equal(t, "trtllm", sanitized["engine_type"])
+	require.Equal(t, "pod:8000", sanitized["instance"])
+}
+
 func TestMetricRoleFilters(t *testing.T) {
 	require.True(t, isPrefillOnlyMetric(metrics.TimeToFirstTokenSeconds))
 	require.False(t, isPrefillOnlyMetric(metrics.GenerationTokenTotal))

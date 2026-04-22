@@ -220,19 +220,36 @@ class TestMultiEngineMetricsSupport:
         trtllm_rules = get_metric_standard_rules("trtllm")
 
         # Latency metrics should map to aibrix namespace
-        assert trtllm_rules["e2e_request_latency_seconds"].new_name == "aibrix:e2e_request_latency_seconds"
-        assert trtllm_rules["time_to_first_token_seconds"].new_name == "aibrix:time_to_first_token_seconds"
-        assert trtllm_rules["time_per_output_token_seconds"].new_name == "aibrix:time_per_output_token_seconds"
+        assert (
+            trtllm_rules["e2e_request_latency_seconds"].new_name
+            == "aibrix:e2e_request_latency_seconds"
+        )
+        assert (
+            trtllm_rules["time_to_first_token_seconds"].new_name
+            == "aibrix:time_to_first_token_seconds"
+        )
+        assert (
+            trtllm_rules["time_per_output_token_seconds"].new_name
+            == "aibrix:time_per_output_token_seconds"
+        )
 
         # Request metrics
-        assert trtllm_rules["request_success_total"].new_name == "aibrix:request_success_total"
+        assert (
+            trtllm_rules["request_success_total"].new_name
+            == "aibrix:request_success_total"
+        )
 
         # Cache metrics
-        assert trtllm_rules["kv_cache_utilization"].new_name == "aibrix:kv_cache_usage_perc"
+        assert (
+            trtllm_rules["kv_cache_utilization"].new_name
+            == "aibrix:kv_cache_usage_perc"
+        )
         assert trtllm_rules["kv_cache_hit_rate"].new_name == "aibrix:kv_cache_hit_rate"
 
         # Passthrough metric
-        assert isinstance(trtllm_rules["request_queue_time_seconds"], PassthroughStandardRule)
+        assert isinstance(
+            trtllm_rules["request_queue_time_seconds"], PassthroughStandardRule
+        )
 
     def test_trtllm_case_insensitivity(self):
         """Test trtllm engine name is case-insensitive."""
