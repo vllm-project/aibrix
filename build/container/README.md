@@ -13,7 +13,7 @@ enhanced with AIBrix capabilities:
 
 | Upstream Image | AIBrix Enhanced Image                                          | Description |
 |----------------|----------------------------------------------------------------|-------------|
-| `vllm/vllm-openai:v0.10.2` | `aibrix/vllm-openai:v0.10.2-aibrix-v0.5.0-nixl-0.7.1-20251123` | vLLM base + AIBrix KVCache + UCX/NIXL networking |
+| `vllm/vllm-openai:v0.10.2` | `aibrix/vllm-openai:v0.10.2-aibrix-v0.5.0-nixl-0.7.1-20251123` | vLLM base + vLLM-Omni + AIBrix KVCache + UCX/NIXL networking |
 | `lmsysorg/sglang:v0.5.5.post3` | `aibrix/sglang:v0.5.5.post3-aibrix-v0.5.0-nixl-0.7.1-20251123` | SGLang base + AIBrix KVCache + UCX/NIXL networking |
 
 **AIBrix images** extend upstream inference engines with:
@@ -75,6 +75,7 @@ All build arguments are optional and have sensible defaults:
 | `AIBRIX_BRANCH` | `v0.5.0` | AIBrix release tag or branch to build from |
 | `NIXL_VERSION` | `0.7.1` | NIXL networking library version |
 | `AIBRIX_REPO` | `https://github.com/vllm-project/aibrix` | AIBrix repository URL |
+| `VLLM_OMNI_VERSION` | `0.19.0rc1` | vllm-omni version; pass `--omni` at runtime to activate |
 
 ## Release History
 
@@ -90,6 +91,7 @@ AIBrix maintains stable image releases with tested component combinations:
 | AIBrix KVCache | v0.5.0  | v0.5.0       | KV cache disaggregation support |
 | NIXL           | 0.7.1   | 0.7.1        | UCX-based RDMA networking       |
 | UCX            | 1.19.0  | 1.19.0       | Pre-installed for debugging     |
+| vllm-omni      | 0.19.0rc1 | -          | Activate with `--omni` at runtime |
 
 **Recommended Tags:**
 - `aibrix/vllm-openai:v0.10.2-aibrix-v0.5.0-nixl-0.7.1-20251123`
