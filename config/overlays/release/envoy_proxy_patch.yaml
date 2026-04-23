@@ -39,6 +39,6 @@ spec:
                           cpu: 2
                           memory: 8Gi
                     - name: shutdown-manager
-                      image: envoyproxy/gateway:v1.2.8
+                      image: envoyproxy/gateway:v1.6.3
       envoyPDB:
         minAvailable: 1
