@@ -26,6 +26,8 @@ from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 
+PART_SUFFIX = ".part"
+
 
 class ArtifactDownloader(ABC):
     """Base class for artifact downloaders."""
@@ -130,7 +132,9 @@ class S3ArtifactDownloader(ArtifactDownloader):
                 destination_file = os.path.join(
                     local_path, os.path.basename(object_key)
                 )
-                s3_client.download_file(bucket_name, object_key, destination_file)
+                tmp_file = destination_file + PART_SUFFIX
+                s3_client.download_file(bucket_name, object_key, tmp_file)
+                os.replace(tmp_file, destination_file)
                 logger.info(f"Downloaded S3 file to {destination_file}")
 
             return local_path
@@ -170,8 +174,10 @@ class S3ArtifactDownloader(ArtifactDownloader):
                 # Ensure directory exists
                 self._ensure_directory(os.path.dirname(local_file_path))
 
-                # Download file
-                s3_client.download_file(bucket_name, key, local_file_path)
+                # Download file atomically
+                tmp_file = local_file_path + PART_SUFFIX
+                s3_client.download_file(bucket_name, key, tmp_file)
+                os.replace(tmp_file, local_file_path)
                 logger.debug(f"Downloaded {key} to {local_file_path}")
 
         logger.info(f"Downloaded S3 directory {prefix} to {local_path}")
@@ -255,8 +261,10 @@ class GCSArtifactDownloader(ArtifactDownloader):
                     # Ensure directory exists
                     self._ensure_directory(os.path.dirname(local_file_path))
 
-                    # Download file
-                    blob.download_to_filename(local_file_path)
+                    # Download file atomically
+                    tmp_file = local_file_path + PART_SUFFIX
+                    blob.download_to_filename(tmp_file)
+                    os.replace(tmp_file, local_file_path)
                     logger.debug(f"Downloaded {blob.name} to {local_file_path}")
 
                 logger.info(f"Downloaded GCS directory {blob_name} to {local_path}")
@@ -264,7 +272,9 @@ class GCSArtifactDownloader(ArtifactDownloader):
                 # Download single file
                 blob = bucket.blob(blob_name)
                 destination_file = os.path.join(local_path, os.path.basename(blob_name))
-                blob.download_to_filename(destination_file)
+                tmp_file = destination_file + PART_SUFFIX
+                blob.download_to_filename(tmp_file)
+                os.replace(tmp_file, destination_file)
                 logger.info(f"Downloaded GCS file to {destination_file}")
 
             return local_path
@@ -367,7 +377,7 @@ class TOSArtifactDownloader(ArtifactDownloader):
                 destination_file = os.path.join(
                     local_path, os.path.basename(object_key)
                 )
-                tmp_file = destination_file + ".part"
+                tmp_file = destination_file + PART_SUFFIX
                 await asyncio.to_thread(
                     client.download_file,
                     bucket=bucket_name,
@@ -412,7 +422,7 @@ class TOSArtifactDownloader(ArtifactDownloader):
             local_file_path = os.path.join(local_path, relative_path)
             os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
 
-            tmp_file = local_file_path + ".part"
+            tmp_file = local_file_path + PART_SUFFIX
             client.download_file(bucket=bucket_name, key=key, file_path=tmp_file)
             os.replace(tmp_file, local_file_path)
 
@@ -523,19 +533,63 @@ class HTTPArtifactDownloader(ArtifactDownloader):
         parsed = urlparse(source_url)
         filename = os.path.basename(parsed.path) or "downloaded_file"
         destination_file = os.path.join(local_path, filename)
+        tmp_file = destination_file + PART_SUFFIX
+        etag_file = tmp_file + ".etag"
 
         try:
+            # Check for an existing partial download to resume.
+            # Use try/except rather than exists()+getsize() to avoid TOCTOU races.
+            try:
+                existing_size = os.path.getsize(tmp_file)
+            except FileNotFoundError:
+                existing_size = 0
+
+            request_headers = dict(headers)
+            if existing_size > 0:
+                request_headers["Range"] = f"bytes={existing_size}-"
+                # If-Range ensures the server returns 200 (restart) if the
+                # remote file has changed since the partial download began,
+                # preventing corruption from appending mismatched data.
+                try:
+                    with open(etag_file, encoding="utf-8") as f:
+                        stored_etag = f.read().strip()
+                    if stored_etag:
+                        request_headers["If-Range"] = stored_etag
+                except FileNotFoundError:
+                    pass
+
             async with httpx.AsyncClient(follow_redirects=True) as client:
                 async with client.stream(
-                    "GET", source_url, headers=headers
+                    "GET", source_url, headers=request_headers
                 ) as response:
-                    response.raise_for_status()
+                    if existing_size > 0 and response.status_code == 206:
+                        # Server confirmed range is valid; append to partial file
+                        open_mode = "ab"
+                    else:
+                        # Full download: either fresh start, server ignored Range,
+                        # or If-Range mismatch (file changed on server)
+                        response.raise_for_status()
+                        open_mode = "wb"
+                        # Store ETag so a future interrupted download can use If-Range
+                        etag = response.headers.get("etag")
+                        if etag:
+                            with open(etag_file, "w", encoding="utf-8") as f:
+                                f.write(etag)
+                        else:
+                            try:
+                                os.remove(etag_file)
+                            except FileNotFoundError:
+                                pass
 
-                    # Download file
-                    with open(destination_file, "wb") as f:
+                    with open(tmp_file, open_mode) as f:
                         async for chunk in response.aiter_bytes(chunk_size=8192):
                             f.write(chunk)
 
+            os.replace(tmp_file, destination_file)
+            try:
+                os.remove(etag_file)
+            except FileNotFoundError:
+                pass
             logger.info(f"Downloaded HTTP file to {destination_file}")
             return local_path
 
