@@ -168,14 +168,17 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
             else:
                 num_fetched_tokens = stats.get(seq_request_id, 0)
 
-            # Scheduler already set context_len/query_len correctly
-            # (via get_num_new_matched_tokens). Don't double-adjust.
             if num_fetched_tokens > 0:
                 stats[seq_request_id] = num_fetched_tokens
-            self._send_lengths[seq_request_id] = (
-                seq_request_meta.context_len,
-                seq_request_meta.query_len,
-            )
+                self._send_lengths[seq_request_id] = (
+                    seq_request_meta.context_len + num_fetched_tokens,
+                    seq_request_meta.query_len - num_fetched_tokens,
+                )
+            else:
+                self._send_lengths[seq_request_id] = (
+                    seq_request_meta.context_len,
+                    seq_request_meta.query_len,
+                )
 
             seq_request_meta.state = (
                 AIBrixOffloadingConnectorRequestState.WAITING_FOR_SEND
@@ -199,29 +202,20 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         seq_cached_meta = self._meta_cache[seq_request_id]
         seq_all_tokens = seq_cached_meta.get_context_tokens_view()
         assert seq_all_tokens is not None, "seq_all_tokens is None"
-
-        # Use load_len (tokens promised to scheduler as external hits)
-        # instead of query_len (tokens to compute). See Type1 comment.
-        load_len = seq_request_meta.load_len
         seq_context_len = seq_request_meta.context_len
+
         prompt_len = seq_request_meta.prompt_len
+        query_len = seq_request_meta.query_len
 
-        if load_len <= 0:
-            return 0
-
-        local_context_len = seq_context_len - load_len
-        assert local_context_len >= 0, (
-            f"local_context_len={local_context_len} "
-            f"(context_len={seq_context_len}, load_len={load_len})"
-        )
-
+        # align to block boundary
         aligned_context_len = round_down(
-            local_context_len, self.cache_block_ntokens
+            seq_context_len, self.cache_block_ntokens
         )
-        shift_len = local_context_len - aligned_context_len
+        actual_query_len = seq_context_len + query_len - aligned_context_len
         aligned_query_len = round_down(
-            shift_len + load_len, self.cache_block_ntokens
+            actual_query_len, self.cache_block_ntokens
         )
+        shift_len = seq_context_len - aligned_context_len
 
         assert prompt_len >= aligned_context_len + aligned_query_len, (
             f"{prompt_len}<{aligned_context_len}+{aligned_query_len}"
@@ -233,7 +227,7 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         )
         if aligned_query_len < threshold:
             logger.debug(
-                "Skip Request[id=%s, context_len=%d, load_len=%d]",
+                "Skip Request[id=%s, context_len=%d, query_len=%d]",
                 seq_request_id,
                 aligned_context_len,
                 aligned_query_len,
@@ -286,30 +280,6 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
             seq_context_len,
             seq_recv_len,
         )
-
-        # Detect partial load (eviction race) — see Type1 comment
-        if seq_recv_len < aligned_query_len:
-            # Report failed tokens to scheduler so it can remove the
-            # corresponding block hashes from its tracker.
-            failed_tokens = aligned_query_len - seq_recv_len
-            if failed_tokens > 0:
-                prev = self._newly_failed_load_tokens.get(seq_request_id, 0)
-                self._newly_failed_load_tokens[seq_request_id] = (
-                    prev + failed_tokens
-                )
-            slot_mapping = seq_cached_meta.context_slot_mapping
-            if slot_mapping is not None:
-                block_size = self.engine_block_ntokens
-                first_failed = aligned_context_len + seq_recv_len
-                last_failed = aligned_context_len + aligned_query_len
-                first_block = first_failed // block_size
-                last_block = last_failed // block_size
-                for blk_idx in range(first_block, last_block):
-                    token_offset = blk_idx * block_size
-                    if 0 <= token_offset < len(slot_mapping):
-                        slot = int(slot_mapping[token_offset].item())
-                        block_id = slot // block_size
-                        self._failed_load_block_ids.add(block_id)
 
         if self._metrics.time_measurement_enabled:
             end = time.perf_counter()
@@ -597,14 +567,6 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
             )
         else:
             total_sent += length
-
-            # Track saved tokens for scheduler reporting via
-            # build_connector_worker_meta. Use per-block length (not
-            # cumulative total_sent) so the accounting stays correct
-            # if chunking is ever added to this path.
-            if length > 0:
-                prev = self._newly_saved_tokens.get(seq_request_id, 0)
-                self._newly_saved_tokens[seq_request_id] = prev + length
 
             log_if(
                 logger,
