@@ -49,10 +49,10 @@ from .aibrix_offloading_connector_type1 import (
     AIBrixOffloadingConnectorRequestState,
 )
 from .aibrix_offloading_connector_type1 import (
-    AIBrixOffloadingConnectorScheduler as AIBrixOffloadingConnectorSchedulerType1,  # noqa: E501
+    AIBrixOffloadingConnectorScheduler as Type1Scheduler,
 )
 from .aibrix_offloading_connector_type1 import (
-    AIBrixOffloadingConnectorWorker as AIBrixOffloadingConnectorWorkerType1,
+    AIBrixOffloadingConnectorWorker as Type1Worker,
 )
 
 if TYPE_CHECKING:
@@ -68,14 +68,12 @@ OFFLOADING_CONNECTOR_SUPPORTED_ATTN_BACKENDS = {
 }
 
 
-class AIBrixOffloadingConnectorScheduler(
-    AIBrixOffloadingConnectorSchedulerType1
-):
+class AIBrixOffloadingConnectorScheduler(Type1Scheduler):
     def __init__(self, config: "VllmConfig"):
         super().__init__(config)
 
 
-class AIBrixOffloadingConnectorWorker(AIBrixOffloadingConnectorWorkerType1):
+class AIBrixOffloadingConnectorWorker(Type1Worker):
     """AIBrixOffloadingConnectorWorker carries out the data-plane operations."""
 
     def __init__(self, config: "VllmConfig"):

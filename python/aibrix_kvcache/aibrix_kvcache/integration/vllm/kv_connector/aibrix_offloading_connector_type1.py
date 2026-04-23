@@ -18,7 +18,15 @@ import enum
 import logging
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Callable, Optional, Type, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    ClassVar,
+    Optional,
+    Type,
+    TypeVar,
+)
 
 import numpy as np
 import torch
@@ -1289,6 +1297,12 @@ class AIBrixOffloadingConnectorWorker:
         path because Type1.Connector's wait_for_layer_load is a no-op
         stub.
         """
+        # NOTE: unreachable in Type1 execution paths. self.connector_worker
+        # is typed as Type1.Worker in the shared Connector __init__, so
+        # this stub exists purely as type-checker scaffolding for the
+        # Type2 override's self.connector_worker.wait_for_layer_load(...)
+        # call — at runtime, Type1.Connector's wait_for_layer_load is a
+        # no-op and never dispatches here.
         raise NotImplementedError(
             "Layer-wise load is not supported by the sync Type1 worker"
         )
@@ -1306,6 +1320,9 @@ class AIBrixOffloadingConnectorWorker:
         must override this method. See wait_for_layer_load above for the
         rationale for defining the stub at this level.
         """
+        # NOTE: unreachable in Type1 execution paths — same reason as
+        # wait_for_layer_load above. Exists only so the shared Connector's
+        # Type2 override type-checks against self.connector_worker.
         raise NotImplementedError(
             "Layer-wise save is not supported by the sync Type1 worker"
         )
@@ -1478,10 +1495,10 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
     # Subclasses override these class attributes to plug in their own
     # Scheduler/Worker implementations while inheriting the full
     # connector contract. Used by __init__ below.
-    SCHEDULER_CLASS: Type["AIBrixOffloadingConnectorScheduler"] = (
+    SCHEDULER_CLASS: ClassVar[Type["AIBrixOffloadingConnectorScheduler"]] = (
         AIBrixOffloadingConnectorScheduler
     )
-    WORKER_CLASS: Type["AIBrixOffloadingConnectorWorker"] = (
+    WORKER_CLASS: ClassVar[Type["AIBrixOffloadingConnectorWorker"]] = (
         AIBrixOffloadingConnectorWorker
     )
 
