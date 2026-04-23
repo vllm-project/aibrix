@@ -587,11 +587,12 @@ func (p *PodSetRoleSyncer) cleanupOrphanPods(ctx context.Context, roleSet *orche
 }
 
 // isOwnedByRoleSet checks whether a Pod's controller OwnerReference points to the given RoleSet.
-func isOwnedByRoleSet(pod *v1.Pod, roleSet *orchestrationv1alpha1.RoleSet) bool {
-	for _, ref := range pod.OwnerReferences {
+func isOwnedByRoleSet(obj client.Object, roleSet *orchestrationv1alpha1.RoleSet) bool {
+	for _, ref := range obj.GetOwnerReferences() {
 		if ref.Controller != nil && *ref.Controller &&
+			ref.APIVersion == orchestrationv1alpha1.SchemeGroupVersion.String() &&
 			ref.Kind == orchestrationv1alpha1.RoleSetKind &&
-			ref.Name == roleSet.Name {
+			ref.UID == roleSet.UID {
 			return true
 		}
 	}
