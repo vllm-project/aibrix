@@ -43,6 +43,17 @@ type PodSetRoleSyncer struct {
 }
 
 func (p *PodSetRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+	// Clean up orphan Pods left by the old StatefulRoleSyncer/StatelessRoleSyncer
+	// when podGroupSize was switched from <=1 to >1.
+	cleaned, err := p.cleanupOrphanPods(ctx, roleSet, role)
+	if err != nil {
+		return false, err
+	}
+	if cleaned {
+		klog.Infof("[PodSetRoleSyncer.Scale] cleaned orphan pods for roleset %s/%s role %s, waiting for next reconcile", roleSet.Namespace, roleSet.Name, role.Name)
+		return true, nil
+	}
+
 	var podSetsToCreate, podSetsToDelete []*orchestrationv1alpha1.PodSet
 	allPodSets, err := getRolePodSets(ctx, p.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
@@ -543,4 +554,46 @@ func deletePodSetsInBatch(ctx context.Context, cli client.Client, podSets []*orc
 		}
 	}
 	return len(podSets), nil
+}
+
+// cleanupOrphanPods detects and deletes Pods that were directly created by the old
+// StatefulRoleSyncer/StatelessRoleSyncer (OwnerRef → RoleSet) when podGroupSize switches
+// from <=1 to >1. Returns true if any orphan Pods were deleted.
+func (p *PodSetRoleSyncer) cleanupOrphanPods(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+	allPods, err := getRolePods(ctx, p.cli, roleSet.Namespace, roleSet.Name, role.Name)
+	if err != nil {
+		return false, err
+	}
+
+	var orphanPods []*v1.Pod
+	for _, pod := range allPods {
+		if isOwnedByRoleSet(pod, roleSet) {
+			orphanPods = append(orphanPods, pod)
+		}
+	}
+
+	if len(orphanPods) == 0 {
+		return false, nil
+	}
+
+	klog.Infof("[PodSetRoleSyncer.cleanupOrphanPods] found %d orphan pods for roleset %s/%s role %s, cleaning up",
+		len(orphanPods), roleSet.Namespace, roleSet.Name, role.Name)
+	for _, pod := range orphanPods {
+		if err := p.cli.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// isOwnedByRoleSet checks whether a Pod's controller OwnerReference points to the given RoleSet.
+func isOwnedByRoleSet(pod *v1.Pod, roleSet *orchestrationv1alpha1.RoleSet) bool {
+	for _, ref := range pod.OwnerReferences {
+		if ref.Controller != nil && *ref.Controller &&
+			ref.Kind == orchestrationv1alpha1.RoleSetKind &&
+			ref.Name == roleSet.Name {
+			return true
+		}
+	}
+	return false
 }
