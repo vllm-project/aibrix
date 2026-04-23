@@ -21,6 +21,7 @@ import (
 	"strconv"
 
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,6 +48,17 @@ type StatefulRoleSyncer struct {
 }
 
 func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+	// Clean up orphan PodSets left by the old PodSetRoleSyncer
+	// when podGroupSize was switched from >1 to <=1.
+	cleaned, err := cleanupOrphanPodSets(ctx, s.cli, roleSet, role)
+	if err != nil {
+		return false, err
+	}
+	if cleaned {
+		klog.V(4).Infof("[StatefulRoleSyncer.Scale] cleaned orphan podsets for roleset %s/%s role %s, waiting for next reconcile", roleSet.Namespace, roleSet.Name, role.Name)
+		return true, nil
+	}
+
 	var podsToCreate, podsToDelete []*v1.Pod
 	allPods, err := getRolePods(ctx, s.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
@@ -379,6 +391,17 @@ type StatelessRoleSyncer struct {
 }
 
 func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+	// Clean up orphan PodSets left by the old PodSetRoleSyncer
+	// when podGroupSize was switched from >1 to <=1.
+	cleaned, err := cleanupOrphanPodSets(ctx, s.cli, roleSet, role)
+	if err != nil {
+		return false, err
+	}
+	if cleaned {
+		klog.V(4).Infof("[StatelessRoleSyncer.Scale] cleaned orphan podsets for roleset %s/%s role %s, waiting for next reconcile", roleSet.Namespace, roleSet.Name, role.Name)
+		return true, nil
+	}
+
 	var toCreate, toDelete []*v1.Pod
 	allPods, err := getRolePods(ctx, s.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
@@ -642,4 +665,34 @@ func GetRoleSyncer(cli client.Client, role *orchestrationv1alpha1.RoleSpec) Role
 		cli:             cli,
 		computeHashFunc: ctrlutil.ComputeHash,
 	}
+}
+
+// cleanupOrphanPodSets detects and deletes PodSets that were created by the old
+// PodSetRoleSyncer when podGroupSize switches from >1 to <=1.
+// Returns true if any orphan PodSets were deleted.
+func cleanupOrphanPodSets(ctx context.Context, cli client.Client, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+	allPodSets, err := getRolePodSets(ctx, cli, roleSet.Namespace, roleSet.Name, role.Name)
+	if err != nil {
+		return false, err
+	}
+
+	var orphanPodSets []*orchestrationv1alpha1.PodSet
+	for _, podSet := range allPodSets {
+		if isOwnedByRoleSet(podSet, roleSet) {
+			orphanPodSets = append(orphanPodSets, podSet)
+		}
+	}
+
+	if len(orphanPodSets) == 0 {
+		return false, nil
+	}
+
+	klog.V(4).Infof("[cleanupOrphanPodSets] found %d orphan podsets for roleset %s/%s role %s, cleaning up",
+		len(orphanPodSets), roleSet.Namespace, roleSet.Name, role.Name)
+	for _, podSet := range orphanPodSets {
+		if err := cli.Delete(ctx, podSet); err != nil && !apierrors.IsNotFound(err) {
+			return true, err
+		}
+	}
+	return true, nil
 }
