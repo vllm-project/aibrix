@@ -42,8 +42,26 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
     KVConnectorMetadata,
     KVConnectorRole,
-    KVConnectorWorkerMetadata,
 )
+
+try:
+    from vllm.distributed.kv_transfer.kv_connector.v1.base import (
+        KVConnectorWorkerMetadata,
+    )
+except ImportError:
+    # vLLM versions that predate the worker-meta feedback API
+    # (e.g. the 0.10.x line pinned in aibrix_kvcache's test.txt) don't
+    # expose KVConnectorWorkerMetadata. Keep the module importable with
+    # a lightweight stand-in; at runtime the save/load path that
+    # depends on worker metadata only runs on a vLLM that does expose
+    # the real class, so the stand-in is never actually used for
+    # dispatch — it exists purely so `AIBrixWorkerMeta` below has a
+    # valid base class and the type annotations resolve.
+    class KVConnectorWorkerMetadata:  # type: ignore[no-redef]
+        """Fallback base class for vLLM versions without native
+        KVConnectorWorkerMetadata. See comment above the try/except."""
+
+
 from vllm.utils.math_utils import round_down, round_up
 from vllm.utils.torch_utils import get_kv_cache_torch_dtype
 from vllm.v1.attention.backends.flash_attn import FlashAttentionBackend
