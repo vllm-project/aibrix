@@ -474,4 +474,3 @@ func TestCleanupOrphanPods_Idempotent(t *testing.T) {
 	require.NoError(t, err, "cleanup should not return error when no orphan Pods exist")
 	assert.False(t, cleaned, "cleanup should report no change when no orphan Pods exist")
 }
-
