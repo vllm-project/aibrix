@@ -269,5 +269,5 @@ func TestPrefixCache_ScoreAll(t *testing.T) {
 	assert.True(t, hasPositiveScore)
 
 	// Check polarity
-	assert.Equal(t, PolarityMost, prefixCacheRouter.Polarity())
+	assert.Equal(t, types.PolarityMost, prefixCacheRouter.Polarity())
 }

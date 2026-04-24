@@ -169,6 +169,6 @@ func (r *sessionAffinityRouter) ScoreAll(ctx *types.RoutingContext, readyPodList
 }
 
 // Polarity returns whether higher or lower score is better.
-func (r *sessionAffinityRouter) Polarity() Polarity {
-	return PolarityMost
+func (r *sessionAffinityRouter) Polarity() types.Polarity {
+	return types.PolarityMost
 }

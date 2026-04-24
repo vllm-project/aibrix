@@ -649,7 +649,7 @@ func TestVTCBasic_ScoreAll(t *testing.T) {
 		assert.True(t, s)
 	}
 
-	assert.Equal(t, 0, router.Polarity())
+	assert.Equal(t, types.PolarityLeast, router.Polarity())
 }
 
 func createTestPodsForMetrics(count int) []*v1.Pod {

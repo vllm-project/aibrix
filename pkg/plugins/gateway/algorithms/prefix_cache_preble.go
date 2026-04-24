@@ -656,8 +656,8 @@ func (p *prefixCacheAndLoadRouter) ScoreAll(ctx *types.RoutingContext, readyPodL
 }
 
 // Polarity returns whether higher or lower score is better.
-func (p *prefixCacheAndLoadRouter) Polarity() Polarity {
-	return PolarityLeast
+func (p *prefixCacheAndLoadRouter) Polarity() types.Polarity {
+	return types.PolarityLeast
 }
 
 // Compute the load in a pod fo a specific model based on the sliding window histogram

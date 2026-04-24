@@ -478,8 +478,8 @@ func (p prefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList type
 }
 
 // Polarity returns whether higher or lower score is better.
-func (p prefixCacheRouter) Polarity() Polarity {
-	return PolarityMost
+func (p prefixCacheRouter) Polarity() types.Polarity {
+	return types.PolarityMost
 }
 
 // ScoreAll computes the scores for all ready pods in a single batch operation for KV sync router.

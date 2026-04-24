@@ -87,12 +87,12 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	// Resolve model config profile from annotation and apply overrides
 	applyConfigProfile(routingCtx, podsArr.All())
 
-	// Derive and validate routing strategy (headers -> profile -> env); return 400 on invalid
+	// Derive and validate routing strategy (headers -> profile -> env); fallback to random on invalid
 	if strategy, enabled := deriveRoutingStrategyFromContext(routingCtx); enabled {
 		var ok bool
 		if routingAlgorithm, ok = routing.Validate(strategy); !ok {
-			klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", strategy)
-			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategy %s", strategy), "", "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
+			klog.InfoS("incorrect routing strategy, falling back to random", "requestID", requestID, "routing-strategy", strategy)
+			routingAlgorithm = routing.RouterRandom
 		}
 		routingCtx.Algorithm = routingAlgorithm
 	}

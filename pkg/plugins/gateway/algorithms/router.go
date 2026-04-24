@@ -35,19 +35,6 @@ const (
 	RouterNotSet = ""
 )
 
-type Polarity int
-
-const (
-	PolarityLeast Polarity = iota // Lower score is better
-	PolarityMost                  // Higher score is better
-)
-
-// PodScorer defines the interface for strategies that support soft-scoring
-type PodScorer interface {
-	ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) (scores []float64, scored []bool, err error)
-	Polarity() Polarity
-}
-
 var (
 	ErrInitTimeout           = errors.New("router initialization timeout")
 	ErrFallbackNotSupported  = errors.New("router not support fallback")
@@ -139,12 +126,12 @@ func ParseMultiRouterConfig(routerStr string) (*MultiRouterConfig, error) {
 // multiStrategyRouter coordinates multiple sub-routers and selects a pod via soft-scoring
 type multiStrategyRouter struct {
 	config  *MultiRouterConfig
-	scorers map[string]PodScorer
+	scorers map[string]types.PodScorer
 }
 
 // newMultiStrategyRouter initializes a new multiStrategyRouter based on the parsed config
 func newMultiStrategyRouter(config *MultiRouterConfig, rm *RouterManager, ctx *types.RoutingContext) (*multiStrategyRouter, error) {
-	scorers := make(map[string]PodScorer)
+	scorers := make(map[string]types.PodScorer)
 
 	for _, item := range config.Items {
 		rm.routerMu.RLock()
@@ -160,9 +147,9 @@ func newMultiStrategyRouter(config *MultiRouterConfig, rm *RouterManager, ctx *t
 			return nil, fmt.Errorf("failed to initialize strategy %s: %v", item.Name, err)
 		}
 
-		scorer, ok := router.(PodScorer)
+		scorer, ok := router.(types.PodScorer)
 		if !ok {
-			return nil, fmt.Errorf("strategy %s does not implement PodScorer interface", item.Name)
+			return nil, fmt.Errorf("strategy %s does not implement types.PodScorer interface", item.Name)
 		}
 		scorers[item.Name] = scorer
 	}
@@ -313,7 +300,7 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 }
 
 // normalizeScoresArray maps raw values to a [0, 1] scale.
-func (m *multiStrategyRouter) normalizeScoresArray(scores []float64, scored []bool, polarity Polarity) []float64 {
+func (m *multiStrategyRouter) normalizeScoresArray(scores []float64, scored []bool, polarity types.Polarity) []float64 {
 	normScores := make([]float64, len(scores))
 
 	minVal := math.MaxFloat64
@@ -348,7 +335,7 @@ func (m *multiStrategyRouter) normalizeScoresArray(scores []float64, scored []bo
 			continue
 		}
 
-		if polarity == PolarityLeast {
+		if polarity == types.PolarityLeast {
 			// Reverse score if smaller is better: (max - s) / (max - min)
 			normScores[i] = (maxVal - scores[i]) / (maxVal - minVal)
 		} else {

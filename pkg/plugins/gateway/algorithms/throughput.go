@@ -51,8 +51,8 @@ func NewThroughputRouter() (types.Router, error) {
 }
 
 // Polarity returns the polarity for throughput strategy
-func (r throughputRouter) Polarity() Polarity {
-	return PolarityLeast // Lower throughput (load) is better
+func (r throughputRouter) Polarity() types.Polarity {
+	return types.PolarityLeast // Lower throughput (load) is better
 }
 
 // ScoreAll fetches the average prompt and generation tokens per request for all ready pods in a single batch operation.

@@ -132,8 +132,8 @@ func TestSessionAffinity_ScoreAll(t *testing.T) {
 	podList := newMockPodList([]*v1.Pod{podA, podB}, nil)
 	router, _ := NewSessionAffinityRouter()
 
-	// Need to assert router satisfies PodScorer interface
-	scorer, ok := router.(PodScorer)
+	// Need to assert router satisfies types.PodScorer interface
+	scorer, ok := router.(types.PodScorer)
 	assert.True(t, ok)
 
 	// 1. Without session ID
@@ -157,5 +157,5 @@ func TestSessionAffinity_ScoreAll(t *testing.T) {
 	assert.Equal(t, float64(0), scores[1]) // pB score should be 0
 
 	// Check polarity
-	assert.Equal(t, PolarityMost, scorer.Polarity())
+	assert.Equal(t, types.PolarityMost, scorer.Polarity())
 }

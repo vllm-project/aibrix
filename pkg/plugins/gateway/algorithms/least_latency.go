@@ -49,8 +49,8 @@ func NewLeastExpectedLatencyRouter() (types.Router, error) {
 }
 
 // Polarity returns the polarity for least-latency strategy
-func (r leastExpectedLatencyRouter) Polarity() Polarity {
-	return PolarityLeast // The lower the expected latency, the better
+func (r leastExpectedLatencyRouter) Polarity() types.Polarity {
+	return types.PolarityLeast // The lower the expected latency, the better
 }
 
 // ScoreAll computes the expected latency for all pods

@@ -54,8 +54,8 @@ func NewLeastRequestRouter() (types.Router, error) {
 }
 
 // Polarity returns the polarity for least-request strategy
-func (r *leastRequestRouter) Polarity() Polarity {
-	return PolarityLeast // The fewer requests, the better
+func (r *leastRequestRouter) Polarity() types.Polarity {
+	return types.PolarityLeast // The fewer requests, the better
 }
 
 // ScoreAll computes the raw score (current active requests) for all ready pods in a single batch operation.

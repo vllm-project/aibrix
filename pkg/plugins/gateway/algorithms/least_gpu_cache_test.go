@@ -180,5 +180,5 @@ func TestLeastGpuCache_ScoreAll(t *testing.T) {
 	assert.InDelta(t, 0.8, scores[1], 0.001)
 
 	// Check polarity
-	assert.Equal(t, PolarityLeast, r.Polarity())
+	assert.Equal(t, types.PolarityLeast, r.Polarity())
 }

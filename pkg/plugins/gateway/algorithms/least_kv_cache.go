@@ -76,8 +76,8 @@ func (r leastKvCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 }
 
 // Polarity returns whether higher or lower score is better.
-func (r leastKvCacheRouter) Polarity() Polarity {
-	return PolarityLeast
+func (r leastKvCacheRouter) Polarity() types.Polarity {
+	return types.PolarityLeast
 }
 
 func (r leastKvCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {

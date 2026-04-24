@@ -71,8 +71,8 @@ func (r leastGpuCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList ty
 }
 
 // Polarity returns whether higher or lower score is better.
-func (r leastGpuCacheRouter) Polarity() Polarity {
-	return PolarityLeast
+func (r leastGpuCacheRouter) Polarity() types.Polarity {
+	return types.PolarityLeast
 }
 
 func (r leastGpuCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {

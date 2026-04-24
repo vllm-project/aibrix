@@ -70,8 +70,8 @@ func (r leastUtilRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.
 }
 
 // Polarity returns whether higher or lower score is better.
-func (r leastUtilRouter) Polarity() Polarity {
-	return PolarityLeast
+func (r leastUtilRouter) Polarity() types.Polarity {
+	return types.PolarityLeast
 }
 
 func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {

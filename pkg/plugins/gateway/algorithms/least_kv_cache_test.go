@@ -207,5 +207,5 @@ func TestLeastKvCache_ScoreAll(t *testing.T) {
 	}
 
 	// Check polarity
-	assert.Equal(t, PolarityLeast, r.Polarity())
+	assert.Equal(t, types.PolarityLeast, r.Polarity())
 }

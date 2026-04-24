@@ -188,7 +188,7 @@ func (w wrapper) Len() int                           { return len(w.pods) }
 // Fake scorer for integration testing
 type fakeScorer struct {
 	scores   map[*v1.Pod]float64
-	polarity Polarity
+	polarity types.Polarity
 }
 
 func (f *fakeScorer) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
@@ -211,7 +211,7 @@ func (f *fakeScorer) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodL
 	return scores, scored, nil
 }
 
-func (f *fakeScorer) Polarity() Polarity {
+func (f *fakeScorer) Polarity() types.Polarity {
 	return f.polarity
 }
 
@@ -225,16 +225,16 @@ func TestScoreAndRank(t *testing.T) {
 	tests := []struct {
 		name          string
 		cfg           *MultiRouterConfig
-		scorers       map[string]PodScorer
+		scorers       map[string]types.PodScorer
 		expectedWin   string
 		expectedScore map[string]float64
 	}{
 		{
 			name: "1) Single Strategy, HigherIsBetter, normal distribution",
 			cfg:  &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
-			scorers: map[string]PodScorer{
+			scorers: map[string]types.PodScorer{
 				"s1": &fakeScorer{
-					polarity: PolarityMost,
+					polarity: types.PolarityMost,
 					scores:   map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30}, // min=10, max=30
 				},
 			},
@@ -248,9 +248,9 @@ func TestScoreAndRank(t *testing.T) {
 		{
 			name: "2) Single Strategy, LowerIsBetter, normal distribution",
 			cfg:  &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
-			scorers: map[string]PodScorer{
+			scorers: map[string]types.PodScorer{
 				"s1": &fakeScorer{
-					polarity: PolarityLeast,
+					polarity: types.PolarityLeast,
 					scores:   map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30}, // min=10, max=30
 				},
 			},
@@ -264,13 +264,13 @@ func TestScoreAndRank(t *testing.T) {
 		{
 			name: "3) Multiple Strategies + different weight coefficients",
 			cfg:  &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 2}, {Name: "s2", Coefficient: 8}}},
-			scorers: map[string]PodScorer{
+			scorers: map[string]types.PodScorer{
 				"s1": &fakeScorer{ // HigherIsBetter
-					polarity: PolarityMost,
+					polarity: types.PolarityMost,
 					scores:   map[*v1.Pod]float64{podA: 100, podB: 50, podC: 0}, // A=1.0, B=0.5, C=0.0
 				},
 				"s2": &fakeScorer{ // LowerIsBetter
-					polarity: PolarityLeast,
+					polarity: types.PolarityLeast,
 					scores:   map[*v1.Pod]float64{podA: 30, podB: 20, podC: 10}, // A=0.0, B=0.5, C=1.0
 				},
 			},
@@ -288,15 +288,15 @@ func TestScoreAndRank(t *testing.T) {
 		{
 			name: "4) Unscored pods have 0 normalized score, but still participate in other strategies",
 			cfg:  &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}, {Name: "s2", Coefficient: 1}}},
-			scorers: map[string]PodScorer{
+			scorers: map[string]types.PodScorer{
 				"s1": &fakeScorer{ // HigherIsBetter
-					polarity: PolarityMost,
+					polarity: types.PolarityMost,
 					// podC is NaN -> scored=false
 					scores: map[*v1.Pod]float64{podA: 100, podB: 50, podC: math.NaN()},
 					// A=1.0, B=0.0, C=0.0 (penalty)
 				},
 				"s2": &fakeScorer{ // HigherIsBetter
-					polarity: PolarityMost,
+					polarity: types.PolarityMost,
 					scores:   map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30},
 					// A=0.0, B=0.5, C=1.0
 				},
@@ -316,14 +316,14 @@ func TestScoreAndRank(t *testing.T) {
 		{
 			name: "5) Strategy with all pods unscored contributes 0 to all pods",
 			cfg:  &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}, {Name: "s2", Coefficient: 1}}},
-			scorers: map[string]PodScorer{
+			scorers: map[string]types.PodScorer{
 				"s1": &fakeScorer{ // HigherIsBetter
-					polarity: PolarityMost,
+					polarity: types.PolarityMost,
 					// All NaN -> scored=false for all -> all 0.0
 					scores: map[*v1.Pod]float64{podA: math.NaN(), podB: math.NaN(), podC: math.NaN()},
 				},
 				"s2": &fakeScorer{ // HigherIsBetter
-					polarity: PolarityMost,
+					polarity: types.PolarityMost,
 					scores:   map[*v1.Pod]float64{podA: 10, podB: 30, podC: 20},
 					// A=0.0, B=1.0, C=0.5
 				},
@@ -342,9 +342,9 @@ func TestScoreAndRank(t *testing.T) {
 		{
 			name: "6) max==min gives normalized score 1.0 (for scored pods only)",
 			cfg:  &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
-			scorers: map[string]PodScorer{
+			scorers: map[string]types.PodScorer{
 				"s1": &fakeScorer{ // HigherIsBetter
-					polarity: PolarityMost,
+					polarity: types.PolarityMost,
 					// A,B are 10. C is NaN.
 					scores: map[*v1.Pod]float64{podA: 10, podB: 10, podC: math.NaN()},
 				},
@@ -360,13 +360,13 @@ func TestScoreAndRank(t *testing.T) {
 		{
 			name: "7) Default weight coefficient is 1", // Tested by parsing logic mainly, but we can verify it here if config is provided.
 			cfg:  &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}, {Name: "s2", Coefficient: 3}}},
-			scorers: map[string]PodScorer{
+			scorers: map[string]types.PodScorer{
 				"s1": &fakeScorer{
-					polarity: PolarityMost,
+					polarity: types.PolarityMost,
 					scores:   map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30}, // A=0, B=0.5, C=1.0
 				},
 				"s2": &fakeScorer{
-					polarity: PolarityLeast,
+					polarity: types.PolarityLeast,
 					scores:   map[*v1.Pod]float64{podA: 10, podB: 20, podC: 30}, // A=1.0, B=0.5, C=0.0
 				},
 			},
@@ -711,9 +711,9 @@ func TestMultiStrategyRouter_Route(t *testing.T) {
 
 	readyPodList := wrapper{[]*v1.Pod{podA, podB}}
 
-	scorers := map[string]PodScorer{
+	scorers := map[string]types.PodScorer{
 		"strategy1": &fakeScorer{
-			polarity: PolarityMost,
+			polarity: types.PolarityMost,
 			scores: map[*v1.Pod]float64{
 				podA: 100,
 				podB: 50,
@@ -853,7 +853,7 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		targetIP, err := router.Route(ctx, pods)
 		assert.NoError(t, err)
 
-		// Throughput now uses PolarityLeast (lower accumulated throughput is better)
+		// Throughput now uses types.PolarityLeast (lower accumulated throughput is better)
 		// podB has lower throughput scores than podA (10/5 vs 100/50), so podB is better for throughput.
 		// Total: podA = 0, podB = 10 -> podB wins!
 		assert.Contains(t, targetIP, "2.2.2.2")
@@ -1061,10 +1061,10 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		// Expected Calculation:
 		// 1. prefix-cache (weight 6): No cache match seeded. Min=0, Max=0. Both pods get normalized score 1.0.
 		//    Weighted: A = 6.0, B = 6.0
-		// 2. least-request (weight 1): Pod A=10, Pod B=2. (PolarityLeast). Max=10, Min=2.
+		// 2. least-request (weight 1): Pod A=10, Pod B=2. (types.PolarityLeast). Max=10, Min=2.
 		//    Pod A: (10-10)/8 = 0.0. Pod B: (10-2)/8 = 1.0.
 		//    Weighted: A = 0.0, B = 1.0
-		// 3. throughput (weight 1): Pod A=250, Pod B=25. (PolarityLeast). Max=250, Min=25.
+		// 3. throughput (weight 1): Pod A=250, Pod B=25. (types.PolarityLeast). Max=250, Min=25.
 		//    Pod A: (250-250)/225 = 0.0. Pod B: (250-25)/225 = 1.0.
 		//    Weighted: A = 0.0, B = 1.0
 		//

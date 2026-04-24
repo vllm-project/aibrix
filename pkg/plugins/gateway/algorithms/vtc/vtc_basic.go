@@ -274,8 +274,8 @@ func (r *BasicVTCRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.
 }
 
 // Polarity returns whether higher or lower score is better.
-func (r *BasicVTCRouter) Polarity() int {
-	return 0 // 0 maps to PolarityLeast
+func (r *BasicVTCRouter) Polarity() types.Polarity {
+	return types.PolarityLeast
 }
 
 func (r *BasicVTCRouter) SubscribedMetrics() []string {
