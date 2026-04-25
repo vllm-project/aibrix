@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -578,23 +579,11 @@ func (p *PodSetRoleSyncer) cleanupOrphanPods(ctx context.Context, roleSet *orche
 
 	klog.V(4).Infof("[PodSetRoleSyncer.cleanupOrphanPods] found %d orphan pods for roleset %s/%s role %s, cleaning up",
 		len(orphanPods), roleSet.Namespace, roleSet.Name, role.Name)
+	var errs []error
 	for _, pod := range orphanPods {
 		if err := p.cli.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
-			return true, err
+			errs = append(errs, err)
 		}
 	}
-	return true, nil
-}
-
-// isOwnedByRoleSet checks whether an object's controller OwnerReference points to the given RoleSet.
-func isOwnedByRoleSet(obj client.Object, roleSet *orchestrationv1alpha1.RoleSet) bool {
-	for _, ref := range obj.GetOwnerReferences() {
-		if ref.Controller != nil && *ref.Controller &&
-			ref.APIVersion == orchestrationv1alpha1.SchemeGroupVersion.String() &&
-			ref.Kind == orchestrationv1alpha1.RoleSetKind &&
-			ref.UID == roleSet.UID {
-			return true
-		}
-	}
-	return false
+	return true, utilerrors.NewAggregate(errs)
 }

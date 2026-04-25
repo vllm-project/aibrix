@@ -23,6 +23,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -689,10 +690,11 @@ func cleanupOrphanPodSets(ctx context.Context, cli client.Client, roleSet *orche
 
 	klog.V(4).Infof("[cleanupOrphanPodSets] found %d orphan podsets for roleset %s/%s role %s, cleaning up",
 		len(orphanPodSets), roleSet.Namespace, roleSet.Name, role.Name)
+	var errs []error
 	for _, podSet := range orphanPodSets {
 		if err := cli.Delete(ctx, podSet); err != nil && !apierrors.IsNotFound(err) {
-			return true, err
+			errs = append(errs, err)
 		}
 	}
-	return true, nil
+	return true, utilerrors.NewAggregate(errs)
 }

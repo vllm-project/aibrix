@@ -411,6 +411,19 @@ func deletePodsInBatch(ctx context.Context, cli client.Client, podsToDelete []*v
 	})
 }
 
+// isOwnedByRoleSet checks whether an object's controller OwnerReference points to the given RoleSet.
+func isOwnedByRoleSet(obj client.Object, roleSet *orchestrationv1alpha1.RoleSet) bool {
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.Controller != nil && *ref.Controller &&
+			ref.APIVersion == orchestrationv1alpha1.SchemeGroupVersion.String() &&
+			ref.Kind == orchestrationv1alpha1.RoleSetKind &&
+			ref.UID == roleSet.UID {
+			return true
+		}
+	}
+	return false
+}
+
 func sortRolesByUpgradeOrder(roles []orchestrationv1alpha1.RoleSpec) []orchestrationv1alpha1.RoleSpec {
 	sortedRoles := make([]orchestrationv1alpha1.RoleSpec, len(roles))
 	copy(sortedRoles, roles)
