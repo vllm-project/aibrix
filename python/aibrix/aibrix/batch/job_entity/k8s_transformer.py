@@ -56,6 +56,10 @@ class JobAnnotationKey(str, Enum):
     ERROR_FILE_ID = f"{JOB_ANNOTATION_PREFIX}error-file-id"
     TEMP_ERROR_FILE_ID = f"{JOB_ANNOTATION_PREFIX}temp-error-file-id"
 
+    MODEL_TEMPLATE_NAME = f"{JOB_ANNOTATION_PREFIX}model-template-name"
+    PROFILE_NAME = f"{JOB_ANNOTATION_PREFIX}profile-name"
+    OVERRIDES = f"{JOB_ANNOTATION_PREFIX}overrides"  # JSON-encoded
+
     # Status persistence annotations
     JOB_STATE = f"{JOB_ANNOTATION_PREFIX}state"
     CONDITION = f"{JOB_ANNOTATION_PREFIX}condition"
@@ -152,7 +156,23 @@ class BatchJobTransformer:
                 opts_key = key[len(JobAnnotationKey.OPTS_PREFIX.value) :]
                 batch_opts[opts_key] = value
 
-        # Use BatchJobSpec.from_strings for validation and creation
+        # Template / profile selection. All optional;
+        # absence means batch was created before the template feature
+        # or via the legacy hardcoded yaml path.
+        template_name = annotations.get(JobAnnotationKey.MODEL_TEMPLATE_NAME.value)
+        profile_name = annotations.get(JobAnnotationKey.PROFILE_NAME.value)
+        overrides_raw = annotations.get(JobAnnotationKey.OVERRIDES.value)
+        overrides_dict = None
+        if overrides_raw:
+            try:
+                overrides_dict = json.loads(overrides_raw)
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    "Failed to parse overrides annotation; treating as None",
+                    error=str(e),
+                    annotation_value=overrides_raw,
+                )  # type: ignore[call-arg]
+
         return BatchJobSpec(
             input_file_id=input_file_id,
             endpoint=endpoint,
@@ -163,6 +183,9 @@ class BatchJobTransformer:
             ),
             metadata=batch_metadata if batch_metadata else None,
             opts=batch_opts if batch_opts else None,
+            model_template_name=template_name,
+            profile_name=profile_name,
+            overrides=overrides_dict,
         )
 
     @classmethod

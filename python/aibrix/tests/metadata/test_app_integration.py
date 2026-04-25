@@ -55,7 +55,15 @@ def test_build_app_with_k8s_job():
         e2e_test=False,
     )
 
-    with patch("aibrix.metadata.app.JobCache"):
+    # build_app constructs ConfigMap-backed template / profile registries
+    # and calls reload() on each, which would hit the K8s API. Stub
+    # them out here since this test only exercises wiring.
+    with (
+        patch("aibrix.metadata.app.JobCache"),
+        patch("aibrix.metadata.app.k8s_client.CoreV1Api"),
+        patch("aibrix.metadata.app.k8s_template_registry"),
+        patch("aibrix.metadata.app.k8s_profile_registry"),
+    ):
         app = build_app(args)
 
     # App should have kopf operator wrapper
@@ -110,7 +118,12 @@ def test_status_endpoint_with_k8s():
         e2e_test=False,
     )
 
-    with patch("aibrix.metadata.app.JobCache"):
+    with (
+        patch("aibrix.metadata.app.JobCache"),
+        patch("aibrix.metadata.app.k8s_client.CoreV1Api"),
+        patch("aibrix.metadata.app.k8s_template_registry"),
+        patch("aibrix.metadata.app.k8s_profile_registry"),
+    ):
         app = build_app(args)
 
     client = TestClient(app)

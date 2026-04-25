@@ -13,17 +13,12 @@
 # limitations under the License.
 
 import asyncio
-import uuid
-from pathlib import Path
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 import kopf
-import yaml
 from kubernetes import client
 from kubernetes.client.rest import ApiException
 
-import aibrix.batch.storage.batch_metastore as metastore
-import aibrix.batch.storage.batch_storage as storage
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobSpec,
@@ -35,10 +30,9 @@ from aibrix.batch.job_entity import (
     JobEntityManager,
     k8s_job_to_batch_job,
 )
+from aibrix.batch.manifest import JobManifestRenderer
+from aibrix.batch.template import ProfileRegistry, TemplateRegistry
 from aibrix.logger import init_logger
-from aibrix.storage import StorageType
-
-from .utils import merge_yaml_object
 
 # If you installed kopf[uvloop], kopf will likely set this up.
 # Otherwise, you can explicitly set it:
@@ -72,12 +66,23 @@ class JobCache(JobEntityManager):
     interface to provide standardized job management capabilities.
     """
 
-    def __init__(self, template_patch_path: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        template_registry: TemplateRegistry,
+        profile_registry: ProfileRegistry,
+    ) -> None:
         """Initialize the job cache.
 
         Args:
-            template_path: Optional path to custom k8s job template YAML file.
-                          If None, uses the default template.
+            template_registry: Loaded ModelDeploymentTemplate registry.
+                Caller must have invoked reload() at least once.
+            profile_registry: Loaded BatchProfile registry. Caller must
+                have invoked reload() at least once.
+
+        The legacy hardcoded ``k8s_job_template.yaml`` and
+        ``k8s_job_*_patch.yaml`` files are no longer used; manifest
+        generation is fully driven by the registries via
+        :class:`JobManifestRenderer`.
         """
         # Cache of BatchJob objects keyed by batch ID (K8s UID)
         self.active_jobs: Dict[str, BatchJob] = {}
@@ -96,75 +101,17 @@ class JobCache(JobEntityManager):
             Callable[[BatchJob], Coroutine[Any, Any, bool]]
         ] = None
 
-        # Load Kubernetes Job template once at initialization
-        template_dir = Path(__file__).parent.parent / "setting"
-
-        try:
-            path = template_dir / "k8s_job_template.yaml"
-            with open(path, "r") as f:
-                self.job_template = yaml.safe_load(f)
-            logger.info(
-                "Kubernetes Job template loaded successfully",
-                template_path=str(path),
-            )  # type: ignore[call-arg]
-
-            # Apply customize job patch
-            if template_patch_path:
-                path = template_patch_path
-                with open(path, "r") as f:
-                    self.job_template = merge_yaml_object(
-                        self.job_template, yaml.safe_load(f), False
-                    )
-                logger.info(
-                    "Kubernetes Job template (customize) loaded successfully",
-                    template_path=str(path),
-                )  # type: ignore[call-arg]
-
-            # Apply s3 config patch
-            self.storage_patches = {}
-            path = template_dir / "k8s_job_s3_patch.yaml"
-            with open(path, "r") as f:
-                self.storage_patches[StorageType.S3.value] = yaml.safe_load(f)
-            logger.info(
-                "Kubernetes Job storage patch (s3) loaded successfully",
-                template_path=str(path),
-                storage=StorageType.S3,
-            )  # type: ignore[call-arg]
-
-            # Apply tos config patch
-            path = template_dir / "k8s_job_tos_patch.yaml"
-            with open(path, "r") as f:
-                self.storage_patches[StorageType.TOS.value] = yaml.safe_load(f)
-            logger.info(
-                "Kubernetes Job storage patch (tos) loaded successfully",
-                template_path=str(path),
-                storage=StorageType.TOS,
-            )  # type: ignore[call-arg]
-
-            # Apply redis config patch
-            path = template_dir / "k8s_job_redis_patch.yaml"
-            with open(path, "r") as f:
-                self.storage_patches[StorageType.REDIS.value] = yaml.safe_load(f)
-            logger.info(
-                "Kubernetes Job storage patch (redis) loaded successfully",
-                template_path=str(path),
-                storage=StorageType.REDIS,
-            )  # type: ignore[call-arg]
-        except FileNotFoundError:
-            logger.error(
-                "Kubernetes Job template not found",
-                template_path=str(path),
-                operation="__init__",
-            )  # type: ignore[call-arg]
-            raise RuntimeError(f"Job template not found at {str(path)}")
-        except yaml.YAMLError as e:
-            logger.error(
-                "Failed to parse Kubernetes Job template",
-                error=str(e),
-                template_path=str(path),
-                operation="__init__",
-            )  # type: ignore[call-arg]
-            raise RuntimeError(f"Invalid YAML in job template: {e}")
+        # Both registries are required; pass empty registries explicitly if
+        # operating in a degraded / test mode.
+        self._template_registry = template_registry
+        self._profile_registry = profile_registry
+        self._renderer = JobManifestRenderer(template_registry, profile_registry)
+        logger.info(
+            "JobCache initialized with ConfigMap-driven renderer",
+            active_templates=len(template_registry.all_active()),
+            profiles=len(profile_registry.all()),
+            default_profile=profile_registry.default_name(),
+        )  # type: ignore[call-arg]
 
         self.batch_v1_api = client.BatchV1Api()
         self.core_v1_api = client.CoreV1Api()
@@ -655,117 +602,35 @@ class JobCache(JobEntityManager):
         parallelism: Optional[int] = None,
         prepared_job: Optional[BatchJob] = None,
     ) -> Dict[str, Any]:
-        """Convert BatchJobSpec to Kubernetes Job manifest using pre-loaded template.
+        """Render the K8s Job manifest from BatchJobSpec via the ConfigMap-driven renderer.
+
+        All manifest layout (system base, engine container, storage env,
+        per-batch annotations) is delegated to :class:`JobManifestRenderer`.
+        See ``python/aibrix/aibrix/batch/manifest/renderer.py``.
 
         Args:
-            job_spec: BatchJobSpec to convert.
-            job_name: Optional job name, will generate one if not provided.
+            session_id: Session identifier for tracking and annotation persistence.
+            job_spec: BatchJobSpec to convert. Must carry ``model_template_name``;
+                otherwise the renderer raises (legacy yaml path is removed).
+            job_name: Optional job name; renderer generates one if not provided.
+            parallelism: Optional override for parallelism / completions.
             prepared_job: Optional BatchJob with file IDs to add to pod annotations.
 
         Returns:
-            Kubernetes V1Job object.
+            Dict ready for ``BatchV1Api.create_namespaced_job(body=...)``.
+
+        Raises:
+            RenderError (and subclasses): if template/profile is missing or
+                the request violates currently supportable values.
+                Callers should surface as 400-class errors.
         """
-        # Generate unique job name
-        if job_name is None:
-            job_name = f"batch-{uuid.uuid4().hex[:8]}"
-
-        # Create pod annotations from job spec
-        pod_annotations: Dict[str, str] = {
-            JobAnnotationKey.SESSION_ID.value: session_id,
-            JobAnnotationKey.INPUT_FILE_ID.value: job_spec.input_file_id,
-            JobAnnotationKey.ENDPOINT.value: job_spec.endpoint,
-        }
-
-        # Add batch metadata as pod annotations
-        if job_spec.metadata:
-            for key, value in job_spec.metadata.items():
-                pod_annotations[f"{JobAnnotationKey.METADATA_PREFIX.value}{key}"] = (
-                    value
-                )
-
-        # Add batch opts as pod annotations
-        if job_spec.opts:
-            for key, value in job_spec.opts.items():
-                pod_annotations[f"{JobAnnotationKey.OPTS_PREFIX.value}{key}"] = value
-
-        # Add file IDs from prepared job if provided
-        suspend = True
-        if prepared_job and prepared_job.status:
-            if prepared_job.status.output_file_id:
-                pod_annotations[JobAnnotationKey.OUTPUT_FILE_ID.value] = (
-                    prepared_job.status.output_file_id
-                )
-            else:
-                suspend = False
-
-            if prepared_job.status.temp_output_file_id:
-                pod_annotations[JobAnnotationKey.TEMP_OUTPUT_FILE_ID.value] = (
-                    prepared_job.status.temp_output_file_id
-                )
-            else:
-                suspend = False
-
-            if prepared_job.status.error_file_id:
-                pod_annotations[JobAnnotationKey.ERROR_FILE_ID.value] = (
-                    prepared_job.status.error_file_id
-                )
-            else:
-                suspend = False
-
-            if prepared_job.status.temp_error_file_id:
-                pod_annotations[JobAnnotationKey.TEMP_ERROR_FILE_ID.value] = (
-                    prepared_job.status.temp_error_file_id
-                )
-            else:
-                suspend = False
-
-        job_patch: Dict[str, Any] = {
-            "metadata": {
-                "name": job_name,
-                # Minimal job-level annotations - most metadata moved to pod
-                "annotations": {
-                    "batch.job.aibrix.ai/managed-by": "aibrix",
-                },
-            },
-            "spec": {
-                "template": {
-                    "metadata": {
-                        "annotations": pod_annotations,
-                    },
-                },
-                "activeDeadlineSeconds": job_spec.completion_window,
-                "suspend": suspend,
-            },
-        }
-        if parallelism is not None:
-            job_patch["spec"]["parallelism"] = parallelism
-            job_patch["spec"]["completions"] = parallelism
-        # Use pre-loaded template (deep copy to avoid modifying the original)
-        job_template = merge_yaml_object(self.job_template, job_patch)
-
-        # Merge storage env
-        if (
-            storage_patch := self.storage_patches.get(storage.get_storage_type().value)
-        ) is not None:
-            job_template = merge_yaml_object(job_template, storage_patch, False)
-        else:
-            logger.warning(
-                "No storage patch found", storage_type=storage.get_storage_type()
-            )  # type:ignore[call-arg]
-
-        # Merge metastore env
-        if (
-            metastore_patch := self.storage_patches.get(
-                metastore.get_metastore_type().value
-            )
-        ) is not None:
-            job_template = merge_yaml_object(job_template, metastore_patch, False)
-        else:
-            logger.warning(
-                "No metastore patch found", storage_type=metastore.get_metastore_type()
-            )  # type:ignore[call-arg]
-
-        return job_template
+        return self._renderer.render(
+            session_id=session_id,
+            spec=job_spec,
+            prepared_job=prepared_job,
+            parallelism=parallelism,
+            job_name=job_name,
+        )
 
 
 logger.info("kopf job handlers imported")
