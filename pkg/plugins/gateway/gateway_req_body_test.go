@@ -726,9 +726,11 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 	mockCache.On("HasModel", "test-model").Return(true).Once()
 	mockCache.On("ListPodsByModel", "test-model").Return(podList, nil).Once()
 
-	// checkModelRPS should run and allow request.
+	// enforceModelRPS should check current usage and then pre-charge (+1).
 	mockModelRL.On("Get", mock.Anything, "test-model_MODEL_RPS_CURRENT").Return(int64(0), nil).Once()
-	// Routing then fails, so incrModelRPS should not execute.
+	mockModelRL.On("Incr", mock.Anything, "test-model_MODEL_RPS_CURRENT", int64(1)).Return(int64(1), nil).Once()
+	// Routing then fails, so deferred compensation should refund (-1).
+	mockModelRL.On("Incr", mock.Anything, "test-model_MODEL_RPS_CURRENT", int64(-1)).Return(int64(0), nil).Once()
 	mockRouter.On("Route", mock.Anything, mock.Anything).Return("", errors.New("route selection failed")).Once()
 
 	server := &Server{
@@ -755,7 +757,6 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 	assert.NotNil(t, resp)
 	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())
 	assert.Equal(t, int64(0), term, "failed routing path should not add request trace term")
-	mockModelRL.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
 	mockCache.AssertNotCalled(t, "AddRequestCount", mock.Anything, mock.Anything, mock.Anything)
 	mockCache.AssertExpectations(t)
 	mockRouter.AssertExpectations(t)

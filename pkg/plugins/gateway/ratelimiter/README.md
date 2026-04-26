@@ -74,13 +74,17 @@ Keys follow the pattern `aibrix_model:{modelName}_MODEL_RPS_CURRENT:{timebin}`. 
 
 The active profile is selected by passing the `config-profile` request header. If no profile is active or `requestsPerSecond` is unset, the RPS check is skipped entirely.
 
-#### Two-phase enforcement
+#### Enforcement flow
 
-Per-model RPS enforcement is split across two call sites in `HandleRequestBody` to avoid charging quota for requests that fail during routing:
+Per-model RPS enforcement is handled in `HandleRequestBody` via `enforceModelRPS` and a deferred compensation step:
 
-1. **`checkModelRPS`** — called before routing. Uses `Get` to read the current counter and rejects with HTTP 429 if `current >= limit`. Does not write.
-2. **`incrModelRPS`** — called after routing succeeds (after `AddRequestCount`). Uses `Incr` to charge the quota only once a pod has been selected and the request is being forwarded.
+1. **Pre-routing gate (`enforceModelRPS`)** — called before routing. It:
+   - reads current usage with `Get`
+   - rejects with HTTP 429 if `current >= limit`
+   - pre-charges quota with `Incr(..., +1)` when allowed
+2. **Deferred compensation (`decrModelRPS`)** — armed immediately after a successful pre-charge. If routing later fails, the deferred call refunds quota with `Incr(..., -1)`.
+3. **Success path** — after routing succeeds and request accounting is attached, compensation is disabled, so the pre-charge remains counted.
 
-This means requests rejected by routing errors (no available pods, invalid strategy, etc.) do not consume the per-model RPS budget.
+This keeps rejected requests from permanently consuming RPS budget while still enforcing limits early.
 
-**Tradeoff:** the check-then-increment sequence has a small TOCTOU race — concurrent requests that both read the same counter value before either increments can both pass the gate. In practice the race window is a single Redis round-trip and the over-admission is bounded to the number of concurrent inflight requests, which is acceptable for typical RPS values.
+**Tradeoff:** the check-then-increment gate has a small TOCTOU race. Concurrent requests can observe the same pre-increment value and both pass before their increments land. In practice, the race window is one Redis round-trip and over-admission is bounded by concurrent in-flight requests.
