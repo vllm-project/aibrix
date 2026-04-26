@@ -105,6 +105,7 @@ func (s *Server) StartGRPC(addr string) error {
 	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
 	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.cfg.MetadataServiceURL, s.cfg.DefaultBatchModelDeploymentTemplate))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
+	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))
 	pb.RegisterAPIKeyServiceServer(s.grpcServer, handler.NewAPIKeyHandler(s.store))
 	pb.RegisterSecretServiceServer(s.grpcServer, handler.NewSecretHandler(s.store))
 	pb.RegisterQuotaServiceServer(s.grpcServer, handler.NewQuotaHandler(s.store))
@@ -129,6 +130,7 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 		pb.RegisterDeploymentServiceHandlerFromEndpoint,
 		pb.RegisterJobServiceHandlerFromEndpoint,
 		pb.RegisterModelServiceHandlerFromEndpoint,
+		pb.RegisterModelDeploymentTemplateServiceHandlerFromEndpoint,
 		pb.RegisterAPIKeyServiceHandlerFromEndpoint,
 		pb.RegisterSecretServiceHandlerFromEndpoint,
 		pb.RegisterQuotaServiceHandlerFromEndpoint,

@@ -12,13 +12,14 @@ import { SettingsSidebar } from './components/Settings';
 import type { SettingsTab } from './components/Settings';
 import { ModelLibrary } from './components/ModelLibrary';
 import { ModelDetail } from './components/ModelDetail';
+import { CreateModelDeploymentTemplate } from './components/CreateModelDeploymentTemplate';
 import { Playground } from './components/Playground';
 import { ApiKeysPage } from './components/settings/ApiKeysPage';
 import { SecretsPage } from './components/settings/SecretsPage';
 import { QuotasPage } from './components/settings/QuotasPage';
 import { Toast } from './components/settings/Toast';
 
-export type Page = 'home' | 'batch-jobs' | 'job-detail' | 'create-job' | 'deployments' | 'deployment-detail' | 'create-deployment' | 'settings' | 'model-library' | 'model-detail' | 'playground' | 'lora';
+export type Page = 'home' | 'batch-jobs' | 'job-detail' | 'create-job' | 'deployments' | 'deployment-detail' | 'create-deployment' | 'settings' | 'model-library' | 'model-detail' | 'model-template-form' | 'playground' | 'lora';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<Page>('batch-jobs');
@@ -26,6 +27,7 @@ export default function App() {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('api-keys');
   const [toast, setToast] = useState<{ message: string; subtitle?: string } | null>(null);
 
@@ -72,7 +74,36 @@ export default function App() {
       case 'model-library':
         return <ModelLibrary onSelectModel={(id) => handleNavigate('model-detail', id)} />;
       case 'model-detail':
-        return <ModelDetail modelId={selectedModelId} onBack={() => handleNavigate('model-library')} />;
+        return (
+          <ModelDetail
+            modelId={selectedModelId}
+            onBack={() => handleNavigate('model-library')}
+            onCreateTemplate={(id) => {
+              setSelectedModelId(id);
+              setEditingTemplateId(null);
+              setPreviousPage('model-detail');
+              setCurrentPage('model-template-form');
+            }}
+            onEditTemplate={(id, templateId) => {
+              setSelectedModelId(id);
+              setEditingTemplateId(templateId);
+              setPreviousPage('model-detail');
+              setCurrentPage('model-template-form');
+            }}
+          />
+        );
+      case 'model-template-form':
+        if (!selectedModelId) {
+          return <div className="p-8 text-sm text-gray-500">No model selected.</div>;
+        }
+        return (
+          <CreateModelDeploymentTemplate
+            modelId={selectedModelId}
+            templateId={editingTemplateId ?? undefined}
+            onBack={() => handleNavigate('model-detail', selectedModelId)}
+            onSaved={() => handleNavigate('model-detail', selectedModelId)}
+          />
+        );
       case 'playground':
         return <Playground onNavigateToModel={(id) => handleNavigate('model-detail', id)} />;
       case 'lora':

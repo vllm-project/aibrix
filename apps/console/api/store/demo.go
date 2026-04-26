@@ -24,6 +24,7 @@ func (s *MemoryStore) loadDemoData() {
 	s.loadDemoDeployments()
 	s.loadDemoJobs()
 	s.loadDemoModels()
+	s.loadDemoModelDeploymentTemplates()
 	s.loadDemoAPIKeys()
 	s.loadDemoSecrets()
 	s.loadDemoQuotas()
@@ -68,93 +69,227 @@ func (s *MemoryStore) loadDemoJobs() {
 func (s *MemoryStore) loadDemoModels() {
 	s.models = []*pb.Model{
 		{
-			Id: "model-minimax-m2.5", Name: "MiniMax-M2.5", Provider: "MiniMax",
+			Id: "model-minimax-m2.5", Name: "MiniMax-M2.5",
 			IconBg: "bg-red-100", IconText: "M", IconTextColor: "text-red-600",
 			Categories: []string{"LLM"}, IsNew: true,
 			Pricing:       &pb.ModelPricing{UncachedInput: "$0.30/M", CachedInput: "$0.03/M", Output: "$1.20/M"},
 			ContextLength: "192k Context",
 			Description:   "MiniMax-M2.5 is a powerful language model designed for complex reasoning and code generation tasks.",
-			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 10, 2026", Kind: "Base model", ProviderName: "MiniMax", HuggingFace: "minimax/MiniMax-M2.5"},
+			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 10, 2026", ProviderName: "MiniMax", HuggingFace: "minimax/MiniMax-M2.5"},
 			Specification: &pb.ModelSpecification{Parameters: "250B"},
 			Tags:          []string{"Serverless"},
 		},
 		{
-			Id: "model-glm-5", Name: "GLM-5", Provider: "Z.ai",
+			Id: "model-glm-5", Name: "GLM-5",
 			IconBg: "bg-green-100", IconText: "Z", IconTextColor: "text-green-700",
 			Categories: []string{"LLM"}, IsNew: true,
 			Pricing:       &pb.ModelPricing{UncachedInput: "$1.00/M", CachedInput: "$0.20/M", Output: "$3.20/M"},
 			ContextLength: "198k Context",
 			Description:   "GLM-5 is Z.ai's SOTA model targeting complex systems engineering and long-horizon agentic tasks.",
-			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 12, 2026", Kind: "Base model", ProviderName: "Z.ai", HuggingFace: "zai-org/GLM-5"},
+			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 12, 2026", ProviderName: "Z.ai", HuggingFace: "zai-org/GLM-5"},
 			Specification: &pb.ModelSpecification{MixtureOfExperts: true, Parameters: "700B"},
 			Tags:          []string{"Serverless"},
 		},
 		{
-			Id: "model-kimi-k2.5", Name: "Kimi K2.5", Provider: "Moonshot AI",
+			Id: "model-kimi-k2.5", Name: "Kimi K2.5",
 			IconBg: "bg-gray-100", IconText: "K", IconTextColor: "text-gray-800",
 			Categories: []string{"LLM", "Vision"}, IsNew: true,
 			Pricing:       &pb.ModelPricing{UncachedInput: "$0.60/M", CachedInput: "$0.10/M", Output: "$3.00/M"},
 			ContextLength: "256k Context",
 			Description:   "Kimi K2.5 is a multimodal language model from Moonshot AI that supports both text and vision inputs.",
-			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 8, 2026", Kind: "Base model", ProviderName: "Moonshot AI", HuggingFace: "moonshot/kimi-k2.5"},
+			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 8, 2026", ProviderName: "Moonshot AI", HuggingFace: "moonshot/kimi-k2.5"},
 			Specification: &pb.ModelSpecification{MixtureOfExperts: true, Parameters: "400B"},
 			Tags:          []string{"Serverless", "Tunable"},
 		},
 		{
-			Id: "model-deepseek-v3.2", Name: "Deepseek v3.2", Provider: "DeepSeek",
+			Id: "model-deepseek-v3.2", Name: "Deepseek v3.2",
 			IconBg: "bg-purple-100", IconText: "D", IconTextColor: "text-purple-700",
 			Categories:    []string{"LLM"},
 			Pricing:       &pb.ModelPricing{UncachedInput: "$0.56/M"},
 			ContextLength: "128k Context",
 			Description:   "Deepseek v3.2 is the latest iteration of the DeepSeek language model series.",
-			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Jan 25, 2026", Kind: "Base model", ProviderName: "DeepSeek", HuggingFace: "deepseek-ai/deepseek-v3.2"},
+			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Jan 25, 2026", ProviderName: "DeepSeek", HuggingFace: "deepseek-ai/deepseek-v3.2"},
 			Specification: &pb.ModelSpecification{MixtureOfExperts: true, Parameters: "671B"},
 			Tags:          []string{"Serverless"},
 		},
 		{
-			Id: "model-llama-3.3-70b", Name: "Llama 3.3 70B Instruct", Provider: "Meta",
+			Id: "model-llama-3.3-70b", Name: "Llama 3.3 70B Instruct",
 			IconBg: "bg-blue-100", IconText: "L", IconTextColor: "text-blue-700",
 			Categories:    []string{"LLM"},
 			Pricing:       &pb.ModelPricing{UncachedInput: "$0.20/M", Output: "$0.20/M"},
 			ContextLength: "128k Context",
 			Description:   "Meta's Llama 3.3 70B Instruct model is optimized for instruction following and multi-turn dialogue.",
-			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Dec 10, 2025", Kind: "Base model", ProviderName: "Meta", HuggingFace: "meta-llama/Llama-3.3-70B-Instruct"},
+			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Dec 10, 2025", ProviderName: "Meta", HuggingFace: "meta-llama/Llama-3.3-70B-Instruct"},
 			Specification: &pb.ModelSpecification{Parameters: "70B"},
 			Tags:          []string{"Serverless", "Tunable", "Function Calling"},
 		},
 		// Audio
 		{
-			Id: "model-whisper-v3-large", Name: "Whisper V3 Large", Provider: "OpenAI",
+			Id: "model-whisper-v3-large", Name: "Whisper V3 Large",
 			IconBg: "bg-gray-100", IconText: "W", IconTextColor: "text-gray-700",
 			Categories:    []string{"Audio"},
 			Pricing:       &pb.ModelPricing{PerMinute: "$0.0015/minute"},
 			Description:   "OpenAI's Whisper V3 Large is a general-purpose speech recognition model.",
-			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Oct 20, 2025", Kind: "Base model", ProviderName: "OpenAI", HuggingFace: "openai/whisper-large-v3"},
+			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Oct 20, 2025", ProviderName: "OpenAI", HuggingFace: "openai/whisper-large-v3"},
 			Specification: &pb.ModelSpecification{Calibrated: true, Parameters: "1.5B"},
 			Tags:          []string{"Serverless"},
 		},
 		// Image
 		{
-			Id: "model-flux-kontext-pro", Name: "FLUX.1 Kontext Pro", Provider: "Black Forest Labs",
+			Id: "model-flux-kontext-pro", Name: "FLUX.1 Kontext Pro",
 			IconBg: "bg-gray-200", IconText: "△", IconTextColor: "text-gray-700",
 			Categories:    []string{"Image"},
-			Pricing:       &pb.ModelPricing{PerEa: "$0.04/ea"},
+			Pricing:       &pb.ModelPricing{PerImage: "$0.04/ea"},
 			Description:   "FLUX.1 Kontext Pro is a professional-grade image generation model.",
-			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 1, 2026", Kind: "Base model", ProviderName: "Black Forest Labs"},
+			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 1, 2026", ProviderName: "Black Forest Labs"},
 			Specification: &pb.ModelSpecification{Parameters: "12B"},
 			Tags:          []string{"Serverless"},
 		},
 		// Embedding
 		{
-			Id: "model-nomic-embed-text", Name: "Nomic Embed Text v1.5", Provider: "Nomic AI",
+			Id: "model-nomic-embed-text", Name: "Nomic Embed Text v1.5",
 			IconBg: "bg-teal-100", IconText: "N", IconTextColor: "text-teal-700",
 			Categories:    []string{"Embedding"},
-			Pricing:       &pb.ModelPricing{PerTokens: "$0.008/M Tokens"},
+			Pricing:       &pb.ModelPricing{UncachedInput: "$0.008/M"},
 			ContextLength: "8k Context",
 			Description:   "Nomic Embed Text v1.5 is a lightweight, high-performance text embedding model.",
-			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Sep 1, 2025", Kind: "Base model", ProviderName: "Nomic AI", HuggingFace: "nomic-ai/nomic-embed-text-v1.5"},
+			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Sep 1, 2025", ProviderName: "Nomic AI", HuggingFace: "nomic-ai/nomic-embed-text-v1.5"},
 			Specification: &pb.ModelSpecification{Parameters: "137M"},
 			Tags:          []string{"Serverless"},
+		},
+	}
+}
+
+func (s *MemoryStore) loadDemoModelDeploymentTemplates() {
+	now := "2026-04-26T00:00:00Z"
+
+	s.templates = []*pb.ModelDeploymentTemplate{
+		{
+			Id:        "tpl-llama3-70b-prod",
+			Name:      "llama3-70b-prod",
+			Version:   "v1.3.0",
+			Status:    "active",
+			ModelId:   "model-llama-3.3-70b",
+			CreatedAt: now,
+			UpdatedAt: now,
+			Spec: &pb.ModelDeploymentTemplateSpec{
+				Engine: &pb.EngineSpec{
+					Type:                "vllm",
+					Version:             "0.6.3",
+					Image:               "vllm/vllm-openai:v0.6.3",
+					Invocation:          "http_server",
+					ServeArgs:           []string{"--port=8000", "--enable-prefix-caching", "--enable-chunked-prefill"},
+					HealthEndpoint:      "/health",
+					ReadyTimeoutSeconds: 600,
+				},
+				ModelSource: &pb.ModelSourceSpec{
+					Type:             "s3",
+					Uri:              "s3://aibrix-models/llama3-70b-instruct/",
+					TokenizerPath:    "tokenizer/",
+					ChatTemplatePath: "templates/llama3.jinja",
+				},
+				Accelerator: &pb.AcceleratorSpec{
+					Type:         "H100-SXM",
+					Count:        4,
+					Interconnect: "nvlink",
+					VramGb:       80,
+					SkuHint:      "aws/p5.48xlarge",
+				},
+				Parallelism: &pb.ParallelismSpec{Tp: 4, Pp: 1, Dp: 1},
+				EngineArgs: map[string]string{
+					"max_num_batched_tokens":  "32768",
+					"max_num_seqs":            "256",
+					"max_model_len":           "32768",
+					"gpu_memory_utilization":  "0.92",
+					"enable_prefix_caching":   "true",
+					"enable_chunked_prefill":  "true",
+				},
+				Quantization: &pb.QuantizationSpec{Weight: "fp8", KvCache: "fp8_e4m3"},
+				ProviderConfig: &pb.ProviderConfig{
+					Type:  "k8s",
+					Extra: map[string]string{"namespace": "aibrix-inference", "service_account": "aibrix-engine"},
+				},
+				SupportedEndpoints: []string{"/v1/chat/completions", "/v1/completions"},
+				DeploymentMode:     "dedicated",
+			},
+		},
+		{
+			Id:        "tpl-llama3-70b-dev",
+			Name:      "llama3-70b-dev",
+			Version:   "v0.2.0",
+			Status:    "active",
+			ModelId:   "model-llama-3.3-70b",
+			CreatedAt: now,
+			UpdatedAt: now,
+			Spec: &pb.ModelDeploymentTemplateSpec{
+				Engine: &pb.EngineSpec{
+					Type:           "vllm",
+					Version:        "0.6.3",
+					Image:          "vllm/vllm-openai:v0.6.3",
+					Invocation:     "http_server",
+					ServeArgs:      []string{"--port=8000", "--enable-prefix-caching"},
+					HealthEndpoint: "/health",
+				},
+				ModelSource: &pb.ModelSourceSpec{
+					Type:     "huggingface",
+					Uri:      "meta-llama/Llama-3.3-70B-Instruct",
+					Revision: "main",
+				},
+				Accelerator: &pb.AcceleratorSpec{Type: "L40S", Count: 4, VramGb: 48},
+				Parallelism: &pb.ParallelismSpec{Tp: 4, Pp: 1, Dp: 1},
+				EngineArgs: map[string]string{
+					"max_num_batched_tokens": "8192",
+					"max_num_seqs":           "64",
+					"max_model_len":          "8192",
+					"gpu_memory_utilization": "0.90",
+					"enable_prefix_caching":  "true",
+				},
+				Quantization: &pb.QuantizationSpec{Weight: "bf16"},
+				ProviderConfig: &pb.ProviderConfig{
+					Type:  "k8s",
+					Extra: map[string]string{"namespace": "aibrix-inference"},
+				},
+				SupportedEndpoints: []string{"/v1/chat/completions", "/v1/completions"},
+				DeploymentMode:     "dedicated",
+			},
+		},
+		{
+			Id:        "tpl-deepseek-v32-prod",
+			Name:      "deepseek-v3.2-prod",
+			Version:   "v1.0.0",
+			Status:    "active",
+			ModelId:   "model-deepseek-v3.2",
+			CreatedAt: now,
+			UpdatedAt: now,
+			Spec: &pb.ModelDeploymentTemplateSpec{
+				Engine: &pb.EngineSpec{
+					Type:           "vllm",
+					Version:        "0.6.3",
+					Image:          "vllm/vllm-openai:v0.6.3",
+					Invocation:     "http_server",
+					ServeArgs:      []string{"--port=8000", "--enable-prefix-caching"},
+					HealthEndpoint: "/health",
+				},
+				ModelSource: &pb.ModelSourceSpec{
+					Type: "huggingface",
+					Uri:  "deepseek-ai/deepseek-v3.2",
+				},
+				Accelerator: &pb.AcceleratorSpec{Type: "H200", Count: 8, Interconnect: "nvlink", VramGb: 141},
+				Parallelism: &pb.ParallelismSpec{Tp: 8, Pp: 1, Dp: 1},
+				EngineArgs: map[string]string{
+					"max_num_seqs":           "128",
+					"max_model_len":          "128000",
+					"gpu_memory_utilization": "0.93",
+					"enable_prefix_caching":  "true",
+				},
+				Quantization: &pb.QuantizationSpec{Weight: "fp8"},
+				ProviderConfig: &pb.ProviderConfig{
+					Type:  "k8s",
+					Extra: map[string]string{"namespace": "aibrix-inference"},
+				},
+				SupportedEndpoints: []string{"/v1/chat/completions", "/v1/completions"},
+				DeploymentMode:     "dedicated",
+			},
 		},
 	}
 }
