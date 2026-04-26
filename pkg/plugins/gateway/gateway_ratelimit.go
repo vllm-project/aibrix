@@ -23,6 +23,7 @@ import (
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -105,6 +106,48 @@ func (s *Server) checkTPM(ctx context.Context, username string, tpmLimit int64) 
 
 	if tpmCurrent >= tpmLimit {
 		return envoyTypePb.StatusCode_TooManyRequests, fmt.Errorf("user: %v has exceeded TPM: %v", username, tpmLimit)
+	}
+
+	return envoyTypePb.StatusCode_OK, nil
+}
+
+// enforceModelRPS checks and increments the per-model RPS counter when a limit is configured.
+// Returns a non-nil error response if the limit is exceeded or the counter cannot be updated.
+func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) *extProcPb.ProcessingResponse {
+	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
+		return nil
+	}
+	code, err := s.checkModelRPS(ctx, model, routingCtx.ConfigProfile.RequestsPerSecond)
+	if err != nil {
+		errorCode := ""
+		if code == envoyTypePb.StatusCode_TooManyRequests {
+			errorCode = ErrorCodeRateLimitExceeded
+		}
+		return buildErrorResponse(code, err.Error(), errorCode, "", HeaderErrorModelRPSExceeded, "true")
+	}
+	if code, err = s.incrModelRPS(ctx, model); err != nil {
+		return buildErrorResponse(code, err.Error(), "", "", HeaderErrorIncrModelRPS, "true")
+	}
+	return nil
+}
+
+func (s *Server) checkModelRPS(ctx context.Context, model string, rpsLimit int64) (envoyTypePb.StatusCode, error) {
+	rpsCurrent, err := s.modelRateLimiter.Get(ctx, fmt.Sprintf("%v_MODEL_RPS_CURRENT", model))
+	if err != nil {
+		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get RPS for model: %v", model)
+	}
+
+	if rpsCurrent >= rpsLimit {
+		return envoyTypePb.StatusCode_TooManyRequests, fmt.Errorf("model: %v has exceeded RPS: %v", model, rpsLimit)
+	}
+
+	return envoyTypePb.StatusCode_OK, nil
+}
+
+func (s *Server) incrModelRPS(ctx context.Context, model string) (envoyTypePb.StatusCode, error) {
+	_, err := s.modelRateLimiter.Incr(ctx, fmt.Sprintf("%v_MODEL_RPS_CURRENT", model), 1)
+	if err != nil {
+		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to increment RPS for model: %v", model)
 	}
 
 	return envoyTypePb.StatusCode_OK, nil

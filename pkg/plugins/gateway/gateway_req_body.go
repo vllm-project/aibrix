@@ -107,6 +107,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		headers = buildEnvoyProxyHeaders(headers, ":path", rewritePath)
 	}
 
+	// Enforce per-model RPS limit from config profile
+	if errRes = s.enforceModelRPS(ctx, model, routingCtx); errRes != nil {
+		return errRes, model, routingCtx, stream, term
+	}
+
 	if routingAlgorithm == routing.RouterNotSet {
 		if err := s.validateHTTPRouteStatus(ctx, model); err != nil {
 			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, err.Error(), ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, routingCtx, stream, term

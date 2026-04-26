@@ -29,6 +29,10 @@ spec:
               },
               "throughput": {
                 "routingStrategy": "throughput"
+              },
+              "rps-limited": {
+                "routingStrategy": "least-request",
+                "requestsPerSecond": 1
               }
             }
           }

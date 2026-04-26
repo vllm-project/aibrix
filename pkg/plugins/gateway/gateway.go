@@ -62,6 +62,7 @@ const (
 type Server struct {
 	redisClient         *redis.Client
 	ratelimiter         ratelimiter.RateLimiter
+	modelRateLimiter    ratelimiter.RateLimiter
 	client              kubernetes.Interface
 	gatewayClient       gatewayapi.Interface
 	requestCountTracker map[string]int
@@ -96,10 +97,13 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		panic(err)
 	}
 	var r ratelimiter.RateLimiter
+	var mr ratelimiter.RateLimiter
 	if redisClient != nil {
 		r = ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
+		mr = ratelimiter.NewRedisAccountRateLimiter("aibrix_model", redisClient, 1*time.Second)
 	} else {
 		r = ratelimiter.NewNoopRateLimiter()
+		mr = ratelimiter.NewNoopRateLimiter()
 	}
 
 	// Initialize the routers
@@ -108,6 +112,7 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 	return &Server{
 		redisClient:         redisClient,
 		ratelimiter:         r,
+		modelRateLimiter:    mr,
 		client:              client,
 		gatewayClient:       gatewayClient,
 		requestCountTracker: map[string]int{},
