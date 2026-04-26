@@ -107,8 +107,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		headers = buildEnvoyProxyHeaders(headers, ":path", rewritePath)
 	}
 
-	// Enforce per-model RPS limit from config profile
-	if errRes = s.enforceModelRPS(ctx, model, routingCtx); errRes != nil {
+	// Reject early if the per-model RPS limit is already reached; increment happens
+	// after routing succeeds so failed routing attempts don't consume quota.
+	if errRes = s.checkModelRPS(ctx, model, routingCtx); errRes != nil {
 		return errRes, model, routingCtx, stream, term
 	}
 
@@ -149,6 +150,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 	routingCtx.RequestEndTime = time.Now()
 	term = s.cache.AddRequestCount(routingCtx, requestID, model)
+
+	// Routing succeeded — now charge the RPS quota.
+	if errRes = s.incrModelRPS(ctx, model, routingCtx); errRes != nil {
+		return errRes, model, routingCtx, stream, term
+	}
 
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestBody{

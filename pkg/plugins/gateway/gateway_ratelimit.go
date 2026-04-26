@@ -111,25 +111,39 @@ func (s *Server) checkTPM(ctx context.Context, username string, tpmLimit int64) 
 	return envoyTypePb.StatusCode_OK, nil
 }
 
-// enforceModelRPS atomically increments the per-model RPS counter and rejects the request
-// if the new value exceeds the configured limit. Increment-first ensures a single Redis
-// round-trip and eliminates the check-then-act race present in a read-then-increment approach.
-func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) *extProcPb.ProcessingResponse {
+// checkModelRPS returns a rejection response if the current per-model RPS counter has
+// reached the configured limit. It does not increment; call incrModelRPS after routing
+// succeeds so that requests failing during routing do not consume quota.
+func (s *Server) checkModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) *extProcPb.ProcessingResponse {
 	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
 		return nil
 	}
 	limit := routingCtx.ConfigProfile.RequestsPerSecond
-	key := fmt.Sprintf("%v_MODEL_RPS_CURRENT", model)
-	current, err := s.modelRateLimiter.Incr(ctx, key, 1)
+	current, err := s.modelRateLimiter.Get(ctx, fmt.Sprintf("%v_MODEL_RPS_CURRENT", model))
+	if err != nil {
+		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+			fmt.Sprintf("fail to get RPS for model: %v", model),
+			"", "", HeaderErrorModelRPSExceeded, "true")
+	}
+	if current >= limit {
+		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
+			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
+			ErrorCodeRateLimitExceeded, "", HeaderErrorModelRPSExceeded, "true")
+	}
+	return nil
+}
+
+// incrModelRPS increments the per-model RPS counter. Call this only after routing
+// succeeds to avoid charging quota for requests that never reached the backend.
+func (s *Server) incrModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) *extProcPb.ProcessingResponse {
+	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
+		return nil
+	}
+	_, err := s.modelRateLimiter.Incr(ctx, fmt.Sprintf("%v_MODEL_RPS_CURRENT", model), 1)
 	if err != nil {
 		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			fmt.Sprintf("fail to increment RPS for model: %v", model),
 			"", "", HeaderErrorIncrModelRPS, "true")
-	}
-	if current > limit {
-		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
-			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
-			ErrorCodeRateLimitExceeded, "", HeaderErrorModelRPSExceeded, "true")
 	}
 	return nil
 }

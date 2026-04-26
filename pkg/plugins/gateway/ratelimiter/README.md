@@ -73,3 +73,14 @@ Keys follow the pattern `aibrix_model:{modelName}_MODEL_RPS_CURRENT:{timebin}`. 
 ```
 
 The active profile is selected by passing the `config-profile` request header. If no profile is active or `requestsPerSecond` is unset, the RPS check is skipped entirely.
+
+#### Two-phase enforcement
+
+Per-model RPS enforcement is split across two call sites in `HandleRequestBody` to avoid charging quota for requests that fail during routing:
+
+1. **`checkModelRPS`** — called before routing. Uses `Get` to read the current counter and rejects with HTTP 429 if `current >= limit`. Does not write.
+2. **`incrModelRPS`** — called after routing succeeds (after `AddRequestCount`). Uses `Incr` to charge the quota only once a pod has been selected and the request is being forwarded.
+
+This means requests rejected by routing errors (no available pods, invalid strategy, etc.) do not consume the per-model RPS budget.
+
+**Tradeoff:** the check-then-increment sequence has a small TOCTOU race — concurrent requests that both read the same counter value before either increments can both pass the gate. In practice the race window is a single Redis round-trip and the over-admission is bounded to the number of concurrent inflight requests, which is acceptable for typical RPS values.
