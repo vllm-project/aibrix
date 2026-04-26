@@ -36,9 +36,9 @@ async def test_rbac_resources_exist(k8s_config, ensure_job_rbac, test_namespace)
     expected_sa_name = "unittest-job-reader-sa"
 
     # Verify the fixture returns the correct service account name
-    assert (
-        service_account_name == expected_sa_name
-    ), f"Expected {expected_sa_name}, got {service_account_name}"
+    assert service_account_name == expected_sa_name, (
+        f"Expected {expected_sa_name}, got {service_account_name}"
+    )
     print(f"✓ Fixture returned correct service account name: {service_account_name}")
 
     # Check that unittest-job-reader-sa service account exists

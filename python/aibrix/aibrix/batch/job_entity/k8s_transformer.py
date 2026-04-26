@@ -58,8 +58,10 @@ class JobAnnotationKey(str, Enum):
     TEMP_ERROR_FILE_ID = f"{JOB_ANNOTATION_PREFIX}temp-error-file-id"
 
     MODEL_TEMPLATE_NAME = f"{JOB_ANNOTATION_PREFIX}model-template-name"
+    MODEL_TEMPLATE_VERSION = f"{JOB_ANNOTATION_PREFIX}model-template-version"
     PROFILE_NAME = f"{JOB_ANNOTATION_PREFIX}profile-name"
-    OVERRIDES = f"{JOB_ANNOTATION_PREFIX}overrides"  # JSON-encoded
+    TEMPLATE_OVERRIDES = f"{JOB_ANNOTATION_PREFIX}template-overrides"  # JSON-encoded
+    PROFILE_OVERRIDES = f"{JOB_ANNOTATION_PREFIX}profile-overrides"  # JSON-encoded
 
     # Status persistence annotations
     JOB_STATE = f"{JOB_ANNOTATION_PREFIX}state"
@@ -162,18 +164,28 @@ class BatchJobTransformer:
         # absence means batch was created before the template feature
         # or via the legacy hardcoded yaml path.
         template_name = annotations.get(JobAnnotationKey.MODEL_TEMPLATE_NAME.value)
+        template_version = annotations.get(
+            JobAnnotationKey.MODEL_TEMPLATE_VERSION.value
+        )
         profile_name = annotations.get(JobAnnotationKey.PROFILE_NAME.value)
-        overrides_raw = annotations.get(JobAnnotationKey.OVERRIDES.value)
-        overrides_dict = None
-        if overrides_raw:
+
+        def _decode(key: JobAnnotationKey) -> Optional[Dict[str, Any]]:
+            raw = annotations.get(key.value)
+            if not raw:
+                return None
             try:
-                overrides_dict = json.loads(overrides_raw)
+                return json.loads(raw)
             except json.JSONDecodeError as e:
                 logger.warning(
                     "Failed to parse overrides annotation; treating as None",
+                    annotation_key=key.value,
                     error=str(e),
-                    annotation_value=overrides_raw,
+                    annotation_value=raw,
                 )  # type: ignore[call-arg]
+                return None
+
+        template_overrides = _decode(JobAnnotationKey.TEMPLATE_OVERRIDES)
+        profile_overrides = _decode(JobAnnotationKey.PROFILE_OVERRIDES)
 
         return BatchJobSpec(
             input_file_id=input_file_id,
@@ -186,8 +198,10 @@ class BatchJobTransformer:
             metadata=batch_metadata if batch_metadata else None,
             opts=batch_opts if batch_opts else None,
             model_template_name=template_name,
+            model_template_version=template_version,
             profile_name=profile_name,
-            overrides=overrides_dict,
+            template_overrides=template_overrides,
+            profile_overrides=profile_overrides,
         )
 
     @classmethod

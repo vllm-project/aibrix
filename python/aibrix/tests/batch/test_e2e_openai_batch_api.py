@@ -76,7 +76,7 @@ def generate_batch_input_data(
     lines = []
     for i in range(num_requests):
         request = {
-            "custom_id": f"request-{i+1}",
+            "custom_id": f"request-{i + 1}",
             "method": "POST",
             "url": endpoint,
             "body": copy.deepcopy(sample_body),
@@ -102,11 +102,11 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
             required_fields = ["id", "custom_id", "response"]
             for field in required_fields:
                 if field not in output:
-                    print(f"Missing required field '{field}' in response {i+1}")
+                    print(f"Missing required field '{field}' in response {i + 1}")
                     return False
 
             # Verify custom_id matches expected pattern
-            expected_custom_id = f"request-{i+1}"
+            expected_custom_id = f"request-{i + 1}"
             if output["custom_id"] != expected_custom_id:
                 print(
                     f"Expected custom_id '{expected_custom_id}', got '{output['custom_id']}'"
@@ -118,7 +118,7 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
             for field in required_fields:
                 if field not in response:
                     print(
-                        f"Missing required field 'response.{field}' in response {i+1}"
+                        f"Missing required field 'response.{field}' in response {i + 1}"
                     )
                     return False
 
@@ -127,12 +127,12 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
             for field in required_fields:
                 if field not in body:
                     print(
-                        f"Missing required field 'response.body.{field}' in response {i+1}"
+                        f"Missing required field 'response.body.{field}' in response {i + 1}"
                     )
                     return False
 
         except json.JSONDecodeError as e:
-            print(f"Invalid JSON in output line {i+1}: {e}")
+            print(f"Invalid JSON in output line {i + 1}: {e}")
             return False
 
     return True
@@ -158,9 +158,9 @@ async def test_openai_batch_api_e2e():
         data = {"purpose": "batch"}
 
         upload_response = client.post("/v1/files", files=files, data=data)
-        assert (
-            upload_response.status_code == 200
-        ), f"File upload failed: {upload_response.text}"
+        assert upload_response.status_code == 200, (
+            f"File upload failed: {upload_response.text}"
+        )
 
         upload_result = upload_response.json()
         assert upload_result["object"] == "file"
@@ -180,9 +180,9 @@ async def test_openai_batch_api_e2e():
         }
 
         batch_response = client.post("/v1/batches", json=batch_request)
-        assert (
-            batch_response.status_code == 200
-        ), f"Batch creation failed: {batch_response.text}"
+        assert batch_response.status_code == 200, (
+            f"Batch creation failed: {batch_response.text}"
+        )
 
         batch_result = batch_response.json()
         assert batch_result["object"] == "batch"
@@ -200,9 +200,9 @@ async def test_openai_batch_api_e2e():
 
         for attempt in range(max_polls):
             status_response = client.get(f"/v1/batches/{batch_id}")
-            assert (
-                status_response.status_code == 200
-            ), f"Status check failed: {status_response.text}"
+            assert status_response.status_code == 200, (
+                f"Status check failed: {status_response.text}"
+            )
 
             status_result = status_response.json()
             current_status = status_result["status"]
@@ -212,9 +212,9 @@ async def test_openai_batch_api_e2e():
             if current_status == "completed":
                 print("✅ Batch job completed successfully!")
                 output_file_id = status_result["output_file_id"]
-                assert (
-                    output_file_id is not None
-                ), "Expected output_file_id for completed batch"
+                assert output_file_id is not None, (
+                    "Expected output_file_id for completed batch"
+                )
 
                 request_counts = status_result.get("request_counts")
                 assert request_counts is not None
@@ -241,18 +241,18 @@ async def test_openai_batch_api_e2e():
         print("Step 4: Downloading and verifying output...")
 
         output_response = client.get(f"/v1/files/{output_file_id}/content")
-        assert (
-            output_response.status_code == 200
-        ), f"Output download failed: {output_response.text}"
+        assert output_response.status_code == 200, (
+            f"Output download failed: {output_response.text}"
+        )
 
         output_content = output_response.content.decode("utf-8")
         assert output_content, "Output file is empty"
 
         # Verify output content structure
         is_valid = verify_batch_output_content(output_content, 3)
-        assert (
-            is_valid
-        ), f"Output content verification failed. Content:\n{output_content}"
+        assert is_valid, (
+            f"Output content verification failed. Content:\n{output_content}"
+        )
 
         print("✅ Output downloaded and verified successfully!")
         print(f"Output content preview:\n{output_content[:200]}...")
@@ -261,9 +261,9 @@ async def test_openai_batch_api_e2e():
         print("Step 5: Testing batch list API...")
 
         list_response = client.get("/v1/batches")
-        assert (
-            list_response.status_code == 200
-        ), f"Batch list failed: {list_response.text}"
+        assert list_response.status_code == 200, (
+            f"Batch list failed: {list_response.text}"
+        )
 
         list_result = list_response.json()
         assert list_result["object"] == "list"
@@ -309,9 +309,9 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
         data = {"purpose": "batch"}
 
         upload_response = client.post("/v1/files", files=files, data=data)
-        assert (
-            upload_response.status_code == 200
-        ), f"File upload failed: {upload_response.text}"
+        assert upload_response.status_code == 200, (
+            f"File upload failed: {upload_response.text}"
+        )
 
         upload_result = upload_response.json()
         input_file_id = upload_result["id"]
@@ -327,9 +327,9 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
         }
 
         batch_response = client.post("/v1/batches", json=batch_request)
-        assert (
-            batch_response.status_code == 200
-        ), f"Batch creation failed: {batch_response.text}"
+        assert batch_response.status_code == 200, (
+            f"Batch creation failed: {batch_response.text}"
+        )
 
         batch_result = batch_response.json()
         assert "id" in batch_result
@@ -349,9 +349,9 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
         preparation_polls = 5
         for attempt in range(preparation_polls):
             status_response = client.get(f"/v1/batches/{batch_id}")
-            assert (
-                status_response.status_code == 200
-            ), f"Status check failed: {status_response.text}"
+            assert status_response.status_code == 200, (
+                f"Status check failed: {status_response.text}"
+            )
 
             status_result = status_response.json()
             current_status = status_result["status"]
@@ -414,9 +414,9 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
 
                 # Verify status_result
                 output_file_id = status_result["output_file_id"]
-                assert (
-                    output_file_id is not None
-                ), "Expected output_file_id for completed batch"
+                assert output_file_id is not None, (
+                    "Expected output_file_id for completed batch"
+                )
 
                 request_counts = status_result.get("request_counts")
                 assert request_counts is not None
@@ -445,18 +445,18 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
         print("Step 6: Downloading and verifying output...")
 
         output_response = client.get(f"/v1/files/{output_file_id}/content")
-        assert (
-            output_response.status_code == 200
-        ), f"Output download failed: {output_response.text}"
+        assert output_response.status_code == 200, (
+            f"Output download failed: {output_response.text}"
+        )
 
         output_content = output_response.content.decode("utf-8")
         assert output_content, "Output file is empty"
 
         # Verify output content structure
         is_valid = verify_batch_output_content(output_content, 10)
-        assert (
-            is_valid
-        ), f"Output content verification failed. Content:\n{output_content}"
+        assert is_valid, (
+            f"Output content verification failed. Content:\n{output_content}"
+        )
 
         print("✅ Output downloaded and verified successfully!")
         print(f"Output content preview:\n{output_content[:200]}...")
@@ -509,9 +509,9 @@ async def test_openai_batch_api_multi_endpoint(endpoint: str):
         data = {"purpose": "batch"}
 
         upload_response = client.post("/v1/files", files=files, data=data)
-        assert (
-            upload_response.status_code == 200
-        ), f"[{endpoint}] File upload failed: {upload_response.text}"
+        assert upload_response.status_code == 200, (
+            f"[{endpoint}] File upload failed: {upload_response.text}"
+        )
 
         input_file_id = upload_response.json()["id"]
 
@@ -523,9 +523,9 @@ async def test_openai_batch_api_multi_endpoint(endpoint: str):
         }
 
         batch_response = client.post("/v1/batches", json=batch_request)
-        assert (
-            batch_response.status_code == 200
-        ), f"[{endpoint}] Batch creation failed: {batch_response.text}"
+        assert batch_response.status_code == 200, (
+            f"[{endpoint}] Batch creation failed: {batch_response.text}"
+        )
 
         batch_result = batch_response.json()
         assert batch_result["endpoint"] == endpoint
@@ -565,9 +565,9 @@ async def test_openai_batch_api_multi_endpoint(endpoint: str):
 
         output_content = output_response.content.decode("utf-8")
         assert output_content, f"[{endpoint}] Output file is empty"
-        assert verify_batch_output_content(
-            output_content, num_requests
-        ), f"[{endpoint}] Output verification failed"
+        assert verify_batch_output_content(output_content, num_requests), (
+            f"[{endpoint}] Output verification failed"
+        )
 
         await app.state.batch_driver.clear_job(batch_id)
 

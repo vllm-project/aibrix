@@ -531,23 +531,54 @@ class BatchProfileList(_Strict):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Per-batch overrides (used by extra_body.aibrix.overrides)
+# Per-batch overrides
+#
+# Each reference (model_template / profile) carries its OWN overrides
+# namespace. This is the nested "B" contract documented in the console
+# proto (apps/console/api/proto/console/v1/console.proto). A flat
+# OverridesSpec with engine_args + scheduling siblings used to live here;
+# it was ambiguous about which side each field overrode and is now split
+# in two so the structure self-documents what gets patched.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class OverridesSpec(_Strict):
-    """User-supplied per-batch overrides.
+class TemplateOverridesSpec(_Strict):
+    """User-supplied per-batch overrides applied on top of a ModelDeploymentTemplate.
 
-    Only an allowlisted subset of template/profile fields can be
-    overridden by end users at submission time. Sensitive fields
-    (image, accelerator type, provider) are not user-overridable;
-    administrators must change them via ConfigMap.
+    Allowlist today: ``engine_args`` only. Sensitive fields (image,
+    accelerator type, parallelism, provider) are not user-overridable;
+    administrators must change them via the template ConfigMap.
+
+    Wire shape (under ``extra_body.aibrix.model_template.overrides``)::
+
+        {"engine_args": {"max_num_seqs": 512}}
+
+    Unknown keys are rejected at parse time (extra='forbid' via _Strict).
     """
 
     engine_args: Optional[EngineArgsSpec] = Field(
         default=None,
         description="Override engine tuning flags. Merged into template.engine_args.",
     )
+
+
+class ProfileOverridesSpec(_Strict):
+    """User-supplied per-batch overrides applied on top of a BatchProfile.
+
+    Allowlist today: ``scheduling`` only. Storage, quota, and credentials
+    references are profile-managed; users cannot relocate batches into
+    different buckets or bypass quota at submission time.
+
+    Wire shape (under ``extra_body.aibrix.profile.overrides``)::
+
+        {"scheduling": {"max_concurrency": 32}}
+
+    Today the renderer only honours the profile's completion_window and
+    drops the rest with a warning at load time; the override field is
+    accepted (and roundtripped) for forward compatibility with the
+    deadline-aware scheduler.
+    """
+
     scheduling: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Subset of SchedulingSpec fields to override on this batch",
@@ -577,4 +608,5 @@ class ResolvedJobSpec(_Strict):
     profile_name: str
     template_spec: ModelDeploymentTemplateSpec
     profile_spec: BatchProfileSpec
-    applied_overrides: Optional[OverridesSpec] = None
+    applied_template_overrides: Optional[TemplateOverridesSpec] = None
+    applied_profile_overrides: Optional[ProfileOverridesSpec] = None
