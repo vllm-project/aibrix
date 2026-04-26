@@ -142,6 +142,29 @@ class BatchJobSpec(NoExtraBaseModel):
         description="System-only options for internal use (e.g., fail_after_n_requests)",
     )
 
+    # Set by Metadata Service when extra_body.aibrix.* is parsed at batch
+    # creation. Values are looked up by TemplateRegistry / ProfileRegistry.
+    # Stored as raw strings so this model has no dependency on the template
+    # schema package (avoids circular imports). Validation against actual
+    # template/profile existence happens upstream.
+    model_template_name: Optional[str] = Field(
+        default=None,
+        description="Name of ModelDeploymentTemplate to use. Required at "
+        "render time; if absent the renderer raises and the request is "
+        "rejected as 400. Optional on the type only because legacy "
+        "deserialization paths (e.g. K8s annotations on pre-template "
+        "batches) can land here without it.",
+    )
+    profile_name: Optional[str] = Field(
+        default=None,
+        description="Name of BatchProfile to apply; None means use system default.",
+    )
+    overrides: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Raw user-supplied overrides from extra_body.aibrix.overrides. "
+        "Validated against OverridesSpec schema upstream by the resolver.",
+    )
+
     @classmethod
     def from_strings(
         cls,
@@ -150,6 +173,9 @@ class BatchJobSpec(NoExtraBaseModel):
         completion_window: str = CompletionWindow.TWENTY_FOUR_HOURS.value,
         metadata: Optional[Dict[str, str]] = None,
         opts: Optional[Dict[str, str]] = None,
+        model_template_name: Optional[str] = None,
+        profile_name: Optional[str] = None,
+        overrides: Optional[Dict[str, Any]] = None,
     ) -> "BatchJobSpec":
         """Create BatchJobSpec from string parameters with validation.
 
@@ -159,6 +185,9 @@ class BatchJobSpec(NoExtraBaseModel):
             completion_window: The completion window as string
             metadata: Optional metadata dictionary
             opts: Optional system options dictionary
+            model_template_name: Optional ModelDeploymentTemplate name
+            profile_name: Optional BatchProfile name
+            overrides: Optional raw OverridesSpec dict
 
         Returns:
             BatchJobSpec instance
@@ -182,6 +211,9 @@ class BatchJobSpec(NoExtraBaseModel):
             completion_window=validated_completion_window.expires_at(),
             metadata=metadata,
             opts=opts,
+            model_template_name=model_template_name,
+            profile_name=profile_name,
+            overrides=overrides,
         )
 
     @staticmethod
