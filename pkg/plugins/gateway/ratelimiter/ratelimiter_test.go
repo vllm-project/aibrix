@@ -18,6 +18,7 @@ package ratelimiter
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -109,5 +110,43 @@ func TestRedisRateLimiter_GetLimitUsesStaticKey(t *testing.T) {
 	got, err := rl.GetLimit(ctx, limitKey)
 	require.NoError(t, err)
 	assert.Equal(t, int64(42), got)
+}
+
+func TestRedisRateLimiter_ConcurrentIncrements(t *testing.T) {
+	client := setupRedisForTest(t)
+	rl := NewRedisAccountRateLimiter("ratelimiter_test", client, 5*time.Second)
+	typed := rl.(*redisRateLimiter)
+
+	ctx := context.Background()
+	key := "burst_MODEL_RPS_CURRENT"
+	redisKey := typed.genKey(key)
+	t.Cleanup(func() {
+		_ = client.Del(ctx, redisKey).Err()
+	})
+
+	const workers = 64
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	errCh := make(chan error, workers)
+
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			_, err := rl.Incr(ctx, key, 1)
+			if err != nil {
+				errCh <- err
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+
+	got, err := rl.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Equal(t, int64(workers), got, "all concurrent increments should be reflected")
 }
 

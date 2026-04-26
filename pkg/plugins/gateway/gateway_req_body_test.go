@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -675,4 +677,87 @@ func Test_handleRequestBody(t *testing.T) {
 			mockRouter.AssertExpectations(subtest)
 		})
 	}
+}
+
+func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	mockRouter := new(mockRouter)
+	mockModelRL := &mockRateLimiter{}
+
+	mockRouterProvider := func() (types.Router, error) {
+		return mockRouter, nil
+	}
+	routingalgorithms.Register(TestRouterAlgorithm, mockRouterProvider)
+	routingalgorithms.Init()
+
+	// Config profile enables model RPS checks.
+	profileJSON := `{"defaultProfile":"rps-limited","profiles":{"rps-limited":{"requestsPerSecond":5}}}`
+	podList := &utils.PodArray{
+		Pods: []*v1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-a",
+					Annotations: map[string]string{
+						constants.ModelAnnoConfig: profileJSON,
+					},
+				},
+				Status: v1.PodStatus{
+					PodIP:      "1.2.3.4",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-b",
+					Annotations: map[string]string{
+						constants.ModelAnnoConfig: profileJSON,
+					},
+				},
+				Status: v1.PodStatus{
+					PodIP:      "4.5.6.7",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				},
+			},
+		},
+	}
+
+	mockCache.On("HasModel", "test-model").Return(true).Once()
+	mockCache.On("ListPodsByModel", "test-model").Return(podList, nil).Once()
+
+	// checkModelRPS should run and allow request.
+	mockModelRL.On("Get", mock.Anything, "test-model_MODEL_RPS_CURRENT").Return(int64(0), nil).Once()
+	// Routing then fails, so incrModelRPS should not execute.
+	mockRouter.On("Route", mock.Anything, mock.Anything).Return("", errors.New("route selection failed")).Once()
+
+	server := &Server{
+		cache:             mockCache,
+		modelRateLimiter:  mockModelRL,
+		gatewayClient:     nil, // not used for explicit routing strategy path
+		requestCountTracker: map[string]int{},
+	}
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{
+				Body: []byte(`{"model":"test-model","messages":[{"role":"user","content":"test"}]}`),
+			},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathChatCompletions
+	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(TestRouterAlgorithm)
+
+	resp, _, _, _, term := server.HandleRequestBody(routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	assert.NotNil(t, resp)
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())
+	assert.Equal(t, int64(0), term, "failed routing path should not add request trace term")
+	mockModelRL.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
+	mockCache.AssertNotCalled(t, "AddRequestCount", mock.Anything, mock.Anything, mock.Anything)
+	mockCache.AssertExpectations(t)
+	mockRouter.AssertExpectations(t)
+	mockModelRL.AssertExpectations(t)
 }
