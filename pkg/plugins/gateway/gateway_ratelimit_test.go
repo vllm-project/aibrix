@@ -136,73 +136,6 @@ func TestCheckTPM(t *testing.T) {
 	})
 }
 
-func TestCheckModelRPS(t *testing.T) {
-	t.Run("get failure returns internal server error", func(t *testing.T) {
-		rl := &mockRateLimiter{}
-		rl.On("Get", mock.Anything, "llama_MODEL_RPS_CURRENT").Return(int64(0), errors.New("redis down")).Once()
-
-		s := &Server{modelRateLimiter: rl}
-		code, err := s.checkModelRPS(context.Background(), "llama", 5)
-
-		assert.Equal(t, envoyTypePb.StatusCode_InternalServerError, code)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "fail to get RPS for model: llama")
-		rl.AssertExpectations(t)
-	})
-
-	t.Run("exceeding limit returns too many requests", func(t *testing.T) {
-		rl := &mockRateLimiter{}
-		rl.On("Get", mock.Anything, "llama_MODEL_RPS_CURRENT").Return(int64(5), nil).Once()
-
-		s := &Server{modelRateLimiter: rl}
-		code, err := s.checkModelRPS(context.Background(), "llama", 5)
-
-		assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, code)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "has exceeded RPS")
-		rl.AssertExpectations(t)
-	})
-
-	t.Run("below limit returns ok", func(t *testing.T) {
-		rl := &mockRateLimiter{}
-		rl.On("Get", mock.Anything, "llama_MODEL_RPS_CURRENT").Return(int64(4), nil).Once()
-
-		s := &Server{modelRateLimiter: rl}
-		code, err := s.checkModelRPS(context.Background(), "llama", 5)
-
-		assert.Equal(t, envoyTypePb.StatusCode_OK, code)
-		assert.NoError(t, err)
-		rl.AssertExpectations(t)
-	})
-}
-
-func TestIncrModelRPS(t *testing.T) {
-	t.Run("increment failure returns internal server error", func(t *testing.T) {
-		rl := &mockRateLimiter{}
-		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(0), errors.New("redis down")).Once()
-
-		s := &Server{modelRateLimiter: rl}
-		code, err := s.incrModelRPS(context.Background(), "llama")
-
-		assert.Equal(t, envoyTypePb.StatusCode_InternalServerError, code)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "fail to increment RPS for model: llama")
-		rl.AssertExpectations(t)
-	})
-
-	t.Run("increment success returns ok", func(t *testing.T) {
-		rl := &mockRateLimiter{}
-		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(3), nil).Once()
-
-		s := &Server{modelRateLimiter: rl}
-		code, err := s.incrModelRPS(context.Background(), "llama")
-
-		assert.Equal(t, envoyTypePb.StatusCode_OK, code)
-		assert.NoError(t, err)
-		rl.AssertExpectations(t)
-	})
-}
-
 func TestEnforceModelRPS(t *testing.T) {
 	t.Run("nil config profile skips enforcement", func(t *testing.T) {
 		s := &Server{modelRateLimiter: &mockRateLimiter{}}
@@ -220,30 +153,8 @@ func TestEnforceModelRPS(t *testing.T) {
 		assert.Nil(t, resp)
 	})
 
-	t.Run("check failure returns 429 with model-rps header", func(t *testing.T) {
-		rl := &mockRateLimiter{}
-		rl.On("Get", mock.Anything, "llama_MODEL_RPS_CURRENT").Return(int64(2), nil).Once()
-
-		s := &Server{modelRateLimiter: rl}
-		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
-
-		resp := s.enforceModelRPS(context.Background(), "llama", rc)
-		if assert.NotNil(t, resp) {
-			imm := resp.GetImmediateResponse()
-			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
-			assert.Contains(t, imm.GetBody(), ErrorCodeRateLimitExceeded)
-			assert.Contains(t, imm.GetBody(), "exceeded RPS")
-			if assert.NotEmpty(t, imm.GetHeaders().GetSetHeaders()) {
-				assert.Equal(t, HeaderErrorModelRPSExceeded, imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetKey())
-				assert.Equal(t, "true", string(imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetRawValue()))
-			}
-		}
-		rl.AssertExpectations(t)
-	})
-
 	t.Run("increment failure returns 500 with incr header", func(t *testing.T) {
 		rl := &mockRateLimiter{}
-		rl.On("Get", mock.Anything, "llama_MODEL_RPS_CURRENT").Return(int64(1), nil).Once()
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(0), errors.New("redis down")).Once()
 
 		s := &Server{modelRateLimiter: rl}
@@ -262,10 +173,44 @@ func TestEnforceModelRPS(t *testing.T) {
 		rl.AssertExpectations(t)
 	})
 
-	t.Run("success returns nil", func(t *testing.T) {
+	t.Run("exceeding limit returns 429 with model-rps header", func(t *testing.T) {
 		rl := &mockRateLimiter{}
-		rl.On("Get", mock.Anything, "llama_MODEL_RPS_CURRENT").Return(int64(1), nil).Once()
+		// counter was already at limit; after increment it is limit+1
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(3), nil).Once()
+
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
+
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
+		if assert.NotNil(t, resp) {
+			imm := resp.GetImmediateResponse()
+			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
+			assert.Contains(t, imm.GetBody(), ErrorCodeRateLimitExceeded)
+			assert.Contains(t, imm.GetBody(), "exceeded RPS")
+			if assert.NotEmpty(t, imm.GetHeaders().GetSetHeaders()) {
+				assert.Equal(t, HeaderErrorModelRPSExceeded, imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetKey())
+				assert.Equal(t, "true", string(imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetRawValue()))
+			}
+		}
+		rl.AssertExpectations(t)
+	})
+
+	t.Run("at-limit increment is accepted", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		// counter moves from 0 to exactly the limit — still within budget
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(2), nil).Once()
+
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
+
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
+		assert.Nil(t, resp)
+		rl.AssertExpectations(t)
+	})
+
+	t.Run("below limit returns nil", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(1), nil).Once()
 
 		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}

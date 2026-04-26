@@ -111,44 +111,25 @@ func (s *Server) checkTPM(ctx context.Context, username string, tpmLimit int64) 
 	return envoyTypePb.StatusCode_OK, nil
 }
 
-// enforceModelRPS checks and increments the per-model RPS counter when a limit is configured.
-// Returns a non-nil error response if the limit is exceeded or the counter cannot be updated.
+// enforceModelRPS atomically increments the per-model RPS counter and rejects the request
+// if the new value exceeds the configured limit. Increment-first ensures a single Redis
+// round-trip and eliminates the check-then-act race present in a read-then-increment approach.
 func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) *extProcPb.ProcessingResponse {
 	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
 		return nil
 	}
-	code, err := s.checkModelRPS(ctx, model, routingCtx.ConfigProfile.RequestsPerSecond)
+	limit := routingCtx.ConfigProfile.RequestsPerSecond
+	key := fmt.Sprintf("%v_MODEL_RPS_CURRENT", model)
+	current, err := s.modelRateLimiter.Incr(ctx, key, 1)
 	if err != nil {
-		errorCode := ""
-		if code == envoyTypePb.StatusCode_TooManyRequests {
-			errorCode = ErrorCodeRateLimitExceeded
-		}
-		return buildErrorResponse(code, err.Error(), errorCode, "", HeaderErrorModelRPSExceeded, "true")
+		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+			fmt.Sprintf("fail to increment RPS for model: %v", model),
+			"", "", HeaderErrorIncrModelRPS, "true")
 	}
-	if code, err = s.incrModelRPS(ctx, model); err != nil {
-		return buildErrorResponse(code, err.Error(), "", "", HeaderErrorIncrModelRPS, "true")
+	if current > limit {
+		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
+			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
+			ErrorCodeRateLimitExceeded, "", HeaderErrorModelRPSExceeded, "true")
 	}
 	return nil
-}
-
-func (s *Server) checkModelRPS(ctx context.Context, model string, rpsLimit int64) (envoyTypePb.StatusCode, error) {
-	rpsCurrent, err := s.modelRateLimiter.Get(ctx, fmt.Sprintf("%v_MODEL_RPS_CURRENT", model))
-	if err != nil {
-		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get RPS for model: %v", model)
-	}
-
-	if rpsCurrent >= rpsLimit {
-		return envoyTypePb.StatusCode_TooManyRequests, fmt.Errorf("model: %v has exceeded RPS: %v", model, rpsLimit)
-	}
-
-	return envoyTypePb.StatusCode_OK, nil
-}
-
-func (s *Server) incrModelRPS(ctx context.Context, model string) (envoyTypePb.StatusCode, error) {
-	_, err := s.modelRateLimiter.Incr(ctx, fmt.Sprintf("%v_MODEL_RPS_CURRENT", model), 1)
-	if err != nil {
-		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to increment RPS for model: %v", model)
-	}
-
-	return envoyTypePb.StatusCode_OK, nil
 }
