@@ -279,6 +279,47 @@ class RequestCountStats(NoExtraBaseModel):
     failed: int = Field(default=0, description="Number of requests that have failed")
 
 
+class InputTokensDetails(NoExtraBaseModel):
+    """Token-count breakdown for the input side of a batch.
+
+    Mirrors the OpenAI Batch API's ``input_tokens_details`` shape;
+    ``cached_tokens`` is the count of input tokens served from the
+    engine's prefix cache (only meaningful when prefix caching is on).
+    """
+
+    cached_tokens: int = Field(default=0, ge=0)
+
+
+class OutputTokensDetails(NoExtraBaseModel):
+    """Token-count breakdown for the output side of a batch.
+
+    ``reasoning_tokens`` are the chain-of-thought tokens emitted by
+    reasoning-class models (o1-style). For non-reasoning models this
+    stays at zero.
+    """
+
+    reasoning_tokens: int = Field(default=0, ge=0)
+
+
+class BatchUsage(NoExtraBaseModel):
+    """Aggregated token usage for a batch.
+
+    Matches the OpenAI Batch API's ``usage`` object (added 2025-09)
+    so it can be returned verbatim. Note that the engine's per-request
+    response uses the ``prompt_tokens`` / ``completion_tokens`` naming;
+    the worker maps those to ``input_tokens`` / ``output_tokens`` when
+    accumulating into this object.
+    """
+
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    input_tokens_details: InputTokensDetails = Field(default_factory=InputTokensDetails)
+    output_tokens_details: OutputTokensDetails = Field(
+        default_factory=OutputTokensDetails
+    )
+
+
 class BatchJobError(Exception):
     """Represents an error that occurred during batch job processing."""
 
@@ -415,6 +456,14 @@ class BatchJobStatus(NoExtraBaseModel):
         default_factory=RequestCountStats,
         alias="requestCounts",
         description="Statistics on the processing of the batch",
+    )
+
+    usage: Optional[BatchUsage] = Field(
+        default=None,
+        description=(
+            "Aggregated token usage. Populated by the worker as it processes "
+            "requests; absent until the first progress flush."
+        ),
     )
 
     # Timestamps

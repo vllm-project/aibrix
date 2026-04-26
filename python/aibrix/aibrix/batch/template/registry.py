@@ -263,12 +263,6 @@ def _warn_deferred_profile_fields(p: BatchProfile) -> List[str]:
             "scheduling.retry_policy is accepted but not yet honored "
             "(smart-client retry is not yet implemented)"
         )
-    if spec.openai_service_tier_alias is not None:
-        warnings.append(
-            f"openai_service_tier_alias='{spec.openai_service_tier_alias.value}' "
-            f"is accepted but the OpenAI service_tier mapping is not yet "
-            f"implemented"
-        )
 
     return warnings
 

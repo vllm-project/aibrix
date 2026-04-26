@@ -28,6 +28,7 @@ from .batch_job import (
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    BatchUsage,
     CompletionWindow,
     Condition,
     ConditionStatus,
@@ -69,6 +70,7 @@ class JobAnnotationKey(str, Enum):
     FINALIZING_AT = f"{JOB_ANNOTATION_PREFIX}finalizing-at"
     FINALIZED_AT = f"{JOB_ANNOTATION_PREFIX}finalized-at"
     ERRORS = f"{JOB_ANNOTATION_PREFIX}errors"
+    USAGE = f"{JOB_ANNOTATION_PREFIX}usage"  # JSON-encoded BatchUsage
 
 
 class BatchJobTransformer:
@@ -503,6 +505,17 @@ class BatchJobTransformer:
                 request_counts_data
             )
 
+        # Persist token usage (mirrors OpenAI Batch usage object). Stored
+        # as a single JSON annotation so it can be migrated wholesale to
+        # S3 metadata.json later. Only emitted when at least one token
+        # has been counted to avoid bloating annotations on empty jobs.
+        if job_status.usage is not None and (
+            job_status.usage.input_tokens > 0 or job_status.usage.output_tokens > 0
+        ):
+            annotations[JobAnnotationKey.USAGE.value] = (
+                job_status.usage.model_dump_json(exclude_none=True)
+            )
+
         # Persist timestamps (only if they exist)
         timestamp_mappings = [
             (job_status.in_progress_at, JobAnnotationKey.IN_PROGRESS_AT),
@@ -565,6 +578,18 @@ class BatchJobTransformer:
                 )
             except (json.JSONDecodeError, KeyError) as e:
                 logger.warning("Failed to parse persisted request counts", error=str(e))  # type: ignore[call-arg]
+
+        # Update token usage if persisted (mirrors OpenAI Batch `usage` object)
+        if (
+            persisted_usage := annotations.get(JobAnnotationKey.USAGE.value)
+        ) is not None:
+            try:
+                job_status.usage = BatchUsage.model_validate_json(persisted_usage)
+            except Exception as e:
+                logger.warning(
+                    "Failed to parse persisted usage; treating as None",
+                    error=str(e),
+                )  # type: ignore[call-arg]
 
         # Update timestamps if persisted
         timestamp_mappings = [
