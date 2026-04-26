@@ -48,34 +48,19 @@ func (s *MemoryStore) loadDemoDeployments() {
 }
 
 func (s *MemoryStore) loadDemoJobs() {
-	s.jobs = []*pb.Job{
-		{
-			Id:             "job-1",
-			Name:           "gsm-8k-20260118",
-			InferenceId:    "vpswvq8h",
-			Model:          "qwen2p5-32b-instruct",
-			ModelId:        "qwen1zp5-32b-instruct",
-			InputDataset:   "demo-gsm8k-math-dataset-1000",
-			InputDatasetId: "demo-gsm8k-math-dataset-1000",
-			CreateDate:     "Jan 18, 2026",
-			CreateTime:     "3:37 PM",
-			CreatedBy:      "demo@aibrix.ai",
-			Status:         "Completed",
-			FullPath:       "accounts/aibrix/batchInference/27a6ee2c",
+	// The store only persists Console-owned fields. OpenAI Batch state for
+	// these demo IDs is synthesized by the JobHandler dev fallback when the
+	// metadata service is unreachable.
+	s.jobs = map[string]*pb.Job{
+		"batch_demo_27a6ee2c": {
+			Id:        "batch_demo_27a6ee2c",
+			Name:      "gsm-8k-20260118",
+			CreatedBy: "demo@aibrix.ai",
 		},
-		{
-			Id:             "job-2",
-			Name:           "gsm-8k-20260118-v2",
-			InferenceId:    "abc12345",
-			Model:          "qwen2p5-32b-instruct",
-			ModelId:        "qwen1zp5-32b-instruct",
-			InputDataset:   "demo-gsm8k-math-dataset-1000",
-			InputDatasetId: "demo-gsm8k-math-dataset-1000",
-			CreateDate:     "Jan 18, 2026",
-			CreateTime:     "4:15 PM",
-			CreatedBy:      "demo@aibrix.ai",
-			Status:         "Validating",
-			FullPath:       "accounts/aibrix/batchInference/a0b13ef5",
+		"batch_demo_a0b13ef5": {
+			Id:        "batch_demo_a0b13ef5",
+			Name:      "gsm-8k-20260118-v2",
+			CreatedBy: "demo@aibrix.ai",
 		},
 	}
 }

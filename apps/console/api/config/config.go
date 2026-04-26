@@ -37,6 +37,10 @@ type Config struct {
 	GatewayEndpoint string
 	// MetadataServiceURL is the metadata service URL for file proxy operations.
 	MetadataServiceURL string
+	// DefaultBatchModelDeploymentTemplate is injected as aibrix.model_template
+	// on CreateJob requests when the caller does not provide one. Temporary
+	// stop-gap until the Model entity carries a per-model batch_template.
+	DefaultBatchModelDeploymentTemplate string
 
 	// GRPCAddr is the listen address for the gRPC server.
 	GRPCAddr string
@@ -102,25 +106,26 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		StoreType:            envOrDefault("STORE_TYPE", "memory"),
-		MySQLDSN:             envOrDefault("MYSQL_DSN", ""),
-		GatewayEndpoint:      envOrDefault("GATEWAY_ENDPOINT", "http://localhost:8888"),
-		MetadataServiceURL:   envOrDefault("METADATA_SERVICE_URL", "http://localhost:8000"),
-		GRPCAddr:             envOrDefault("GRPC_ADDR", ":50060"),
-		HTTPAddr:             envOrDefault("HTTP_ADDR", ":8090"),
-		AuthMode:             authMode,
-		OIDCIssuerURL:        envOrDefault("OIDC_ISSUER_URL", ""),
-		OIDCClientID:         envOrDefault("OIDC_CLIENT_ID", ""),
-		OIDCClientSecret:     envOrDefault("OIDC_CLIENT_SECRET", ""),
-		OIDCRedirectURL:      envOrDefault("OIDC_REDIRECT_URL", "http://localhost:8090/api/v1/auth/callback"),
-		SessionSecret:        sessionSecret,
-		SecretsEncryptionKey: encryptionKey,
-		DevUserName:          envOrDefault("DEV_USER_NAME", "Test User"),
-		DevUserEmail:         envOrDefault("DEV_USER_EMAIL", "test@aibrix.ai"),
-		BasicUsername:        envOrDefault("BASIC_USERNAME", ""),
-		BasicPassword:        envOrDefault("BASIC_PASSWORD", ""),
-		StaticFilesDir:       envOrDefault("STATIC_FILES_DIR", ""),
-		AllowedOrigins:       envOrDefault("ALLOWED_ORIGINS", ""),
+		StoreType:                           envOrDefault("STORE_TYPE", "memory"),
+		MySQLDSN:                            envOrDefault("MYSQL_DSN", ""),
+		GatewayEndpoint:                     envOrDefault("GATEWAY_ENDPOINT", "http://localhost:8888"),
+		MetadataServiceURL:                  envOrDefault("METADATA_SERVICE_URL", "http://localhost:8000"),
+		DefaultBatchModelDeploymentTemplate: envOrDefault("DEFAULT_BATCH_MODEL_DEPLOYMENT_TEMPLATE", ""),
+		GRPCAddr:                            envOrDefault("GRPC_ADDR", ":50060"),
+		HTTPAddr:                            envOrDefault("HTTP_ADDR", ":8090"),
+		AuthMode:                            authMode,
+		OIDCIssuerURL:                       envOrDefault("OIDC_ISSUER_URL", ""),
+		OIDCClientID:                        envOrDefault("OIDC_CLIENT_ID", ""),
+		OIDCClientSecret:                    envOrDefault("OIDC_CLIENT_SECRET", ""),
+		OIDCRedirectURL:                     envOrDefault("OIDC_REDIRECT_URL", "http://localhost:8090/api/v1/auth/callback"),
+		SessionSecret:                       sessionSecret,
+		SecretsEncryptionKey:                encryptionKey,
+		DevUserName:                         envOrDefault("DEV_USER_NAME", "Test User"),
+		DevUserEmail:                        envOrDefault("DEV_USER_EMAIL", "test@aibrix.ai"),
+		BasicUsername:                       envOrDefault("BASIC_USERNAME", ""),
+		BasicPassword:                       envOrDefault("BASIC_PASSWORD", ""),
+		StaticFilesDir:                      envOrDefault("STATIC_FILES_DIR", ""),
+		AllowedOrigins:                      envOrDefault("ALLOWED_ORIGINS", ""),
 	}, nil
 }
 

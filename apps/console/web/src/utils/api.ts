@@ -38,15 +38,29 @@ export interface UserInfo {
   name: string;
 }
 
+export type JobEndpoint =
+  | '/v1/chat/completions'
+  | '/v1/completions'
+  | '/v1/embeddings';
+
 export interface CreateJobRequest {
-  model: string;
-  datasetId: string;
-  displayName: string;
+  inputDataset: string;
+  endpoint: JobEndpoint;
+  completionWindow?: '24h';
+  name: string;
+  // Reserved fields — Console contract keeps them for future per-batch
+  // overrides. Backend currently does not forward them.
   maxTokens?: number;
   temperature?: number;
   topP?: number;
   n?: number;
-  quantization?: string;
+}
+
+export interface ListJobsResponse {
+  jobs: Job[];
+  firstId?: string;
+  lastId?: string;
+  hasMore: boolean;
 }
 
 export interface CreateDeploymentRequest {
@@ -147,11 +161,17 @@ function buildQuery(params: Record<string, string | undefined>): string {
 }
 
 // --- Jobs ---
+//
+// The Console BFF (`/api/v1/jobs`) proxies to the metadata service
+// `/v1/batches` API and merges with Console-side fields persisted in the
+// store. The Job shape is a superset of OpenAI Batch.
 
-export async function listJobs(search?: string, status?: string): Promise<Job[]> {
-  const query = buildQuery({ search, status });
-  const data = await apiFetch<{ jobs: Job[] }>(`/api/v1/jobs${query}`);
-  return data.jobs || [];
+export async function listJobs(params?: { after?: string; limit?: number }): Promise<ListJobsResponse> {
+  const query = buildQuery({
+    after: params?.after,
+    limit: params?.limit !== undefined ? String(params.limit) : undefined,
+  });
+  return apiFetch<ListJobsResponse>(`/api/v1/jobs${query}`);
 }
 
 export async function getJob(id: string): Promise<Job> {
@@ -162,6 +182,13 @@ export async function createJob(req: CreateJobRequest): Promise<Job> {
   return apiFetch<Job>('/api/v1/jobs', {
     method: 'POST',
     body: JSON.stringify(camelToSnake(req)),
+  });
+}
+
+export async function cancelJob(id: string): Promise<Job> {
+  return apiFetch<Job>(`/api/v1/jobs/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+    body: '{}',
   });
 }
 
