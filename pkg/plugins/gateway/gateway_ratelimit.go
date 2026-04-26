@@ -25,6 +25,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"k8s.io/klog/v2"
 )
 
 func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extProcPb.ProcessingResponse, error) {
@@ -111,15 +112,17 @@ func (s *Server) checkTPM(ctx context.Context, username string, tpmLimit int64) 
 	return envoyTypePb.StatusCode_OK, nil
 }
 
-// checkModelRPS returns a rejection response if the current per-model RPS counter has
-// reached the configured limit. It does not increment; call incrModelRPS after routing
-// succeeds so that requests failing during routing do not consume quota.
-func (s *Server) checkModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) *extProcPb.ProcessingResponse {
+// enforceModelRPS checks the current per-model RPS counter and increments it atomically.
+// Returns a rejection response if the limit is already reached, or an error response if
+// the Redis operation fails. On routing failure after this call, use decrModelRPS to
+// return the quota.
+func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) *extProcPb.ProcessingResponse {
 	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
 		return nil
 	}
 	limit := routingCtx.ConfigProfile.RequestsPerSecond
-	current, err := s.modelRateLimiter.Get(ctx, fmt.Sprintf("%v_MODEL_RPS_CURRENT", model))
+	key := fmt.Sprintf("%v_MODEL_RPS_CURRENT", model)
+	current, err := s.modelRateLimiter.Get(ctx, key)
 	if err != nil {
 		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			fmt.Sprintf("fail to get RPS for model: %v", model),
@@ -130,20 +133,22 @@ func (s *Server) checkModelRPS(ctx context.Context, model string, routingCtx *ty
 			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
 			ErrorCodeRateLimitExceeded, "", HeaderErrorModelRPSExceeded, "true")
 	}
-	return nil
-}
-
-// incrModelRPS increments the per-model RPS counter. Call this only after routing
-// succeeds to avoid charging quota for requests that never reached the backend.
-func (s *Server) incrModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) *extProcPb.ProcessingResponse {
-	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
-		return nil
-	}
-	_, err := s.modelRateLimiter.Incr(ctx, fmt.Sprintf("%v_MODEL_RPS_CURRENT", model), 1)
-	if err != nil {
+	if _, err = s.modelRateLimiter.Incr(ctx, key, 1); err != nil {
 		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			fmt.Sprintf("fail to increment RPS for model: %v", model),
 			"", "", HeaderErrorIncrModelRPS, "true")
 	}
 	return nil
+}
+
+// decrModelRPS decrements the per-model RPS counter by 1. Call this when a routing
+// failure occurs after enforceModelRPS has already incremented the counter, so that
+// requests which never reached the backend do not consume quota.
+func (s *Server) decrModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) {
+	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
+		return
+	}
+	if _, err := s.modelRateLimiter.Incr(ctx, fmt.Sprintf("%v_MODEL_RPS_CURRENT", model), -1); err != nil {
+		klog.ErrorS(err, "fail to decrement RPS for model", "model", model)
+	}
 }

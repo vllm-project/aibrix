@@ -137,15 +137,16 @@ func TestCheckTPM(t *testing.T) {
 	})
 }
 
-func TestCheckModelRPS(t *testing.T) {
+func TestEnforceModelRPS(t *testing.T) {
 	t.Run("nil config profile skips check", func(t *testing.T) {
 		rl := &mockRateLimiter{}
 		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{}
 
-		resp := s.checkModelRPS(context.Background(), "llama", rc)
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
 		assert.Nil(t, resp)
 		rl.AssertNotCalled(t, "Get", mock.Anything, mock.Anything)
+		rl.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("non-positive rps skips check", func(t *testing.T) {
@@ -153,9 +154,10 @@ func TestCheckModelRPS(t *testing.T) {
 		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 0}}
 
-		resp := s.checkModelRPS(context.Background(), "llama", rc)
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
 		assert.Nil(t, resp)
 		rl.AssertNotCalled(t, "Get", mock.Anything, mock.Anything)
+		rl.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("negative rps skips check", func(t *testing.T) {
@@ -163,9 +165,10 @@ func TestCheckModelRPS(t *testing.T) {
 		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: -1}}
 
-		resp := s.checkModelRPS(context.Background(), "llama", rc)
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
 		assert.Nil(t, resp)
 		rl.AssertNotCalled(t, "Get", mock.Anything, mock.Anything)
+		rl.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("get failure returns 500 with model-rps header", func(t *testing.T) {
@@ -175,7 +178,7 @@ func TestCheckModelRPS(t *testing.T) {
 		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
 
-		resp := s.checkModelRPS(context.Background(), "llama", rc)
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
 		if assert.NotNil(t, resp) {
 			imm := resp.GetImmediateResponse()
 			require.NotNil(t, imm)
@@ -187,16 +190,17 @@ func TestCheckModelRPS(t *testing.T) {
 			}
 		}
 		rl.AssertExpectations(t)
+		rl.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
 	})
 
-	t.Run("exceeding limit returns 429 with model-rps header", func(t *testing.T) {
+	t.Run("exceeding limit returns 429 and does not increment", func(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Get", mock.Anything, "llama_MODEL_RPS_CURRENT").Return(int64(2), nil).Once()
 
 		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
 
-		resp := s.checkModelRPS(context.Background(), "llama", rc)
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
 		if assert.NotNil(t, resp) {
 			imm := resp.GetImmediateResponse()
 			require.NotNil(t, imm)
@@ -209,50 +213,18 @@ func TestCheckModelRPS(t *testing.T) {
 			}
 		}
 		rl.AssertExpectations(t)
+		rl.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
 	})
 
-	t.Run("below limit returns nil", func(t *testing.T) {
+	t.Run("incr failure returns 500 with incr header", func(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Get", mock.Anything, "llama_MODEL_RPS_CURRENT").Return(int64(1), nil).Once()
-
-		s := &Server{modelRateLimiter: rl}
-		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
-
-		resp := s.checkModelRPS(context.Background(), "llama", rc)
-		assert.Nil(t, resp)
-		rl.AssertExpectations(t)
-	})
-}
-
-func TestIncrModelRPS(t *testing.T) {
-	t.Run("nil config profile skips increment", func(t *testing.T) {
-		rl := &mockRateLimiter{}
-		s := &Server{modelRateLimiter: rl}
-		rc := &types.RoutingContext{}
-
-		resp := s.incrModelRPS(context.Background(), "llama", rc)
-		assert.Nil(t, resp)
-		rl.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
-	})
-
-	t.Run("non-positive rps skips increment", func(t *testing.T) {
-		rl := &mockRateLimiter{}
-		s := &Server{modelRateLimiter: rl}
-		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 0}}
-
-		resp := s.incrModelRPS(context.Background(), "llama", rc)
-		assert.Nil(t, resp)
-		rl.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
-	})
-
-	t.Run("increment failure returns 500 with incr header", func(t *testing.T) {
-		rl := &mockRateLimiter{}
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(0), errors.New("redis down")).Once()
 
 		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
 
-		resp := s.incrModelRPS(context.Background(), "llama", rc)
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
 		if assert.NotNil(t, resp) {
 			imm := resp.GetImmediateResponse()
 			require.NotNil(t, imm)
@@ -266,15 +238,58 @@ func TestIncrModelRPS(t *testing.T) {
 		rl.AssertExpectations(t)
 	})
 
-	t.Run("increment success returns nil", func(t *testing.T) {
+	t.Run("below limit increments and returns nil", func(t *testing.T) {
 		rl := &mockRateLimiter{}
-		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(1), nil).Once()
+		rl.On("Get", mock.Anything, "llama_MODEL_RPS_CURRENT").Return(int64(1), nil).Once()
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(2), nil).Once()
 
 		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
 
-		resp := s.incrModelRPS(context.Background(), "llama", rc)
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
 		assert.Nil(t, resp)
+		rl.AssertExpectations(t)
+	})
+}
+
+func TestDecrModelRPS(t *testing.T) {
+	t.Run("nil config profile skips decrement", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{}
+
+		s.decrModelRPS(context.Background(), "llama", rc)
+		rl.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
+	})
+
+	t.Run("non-positive rps skips decrement", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 0}}
+
+		s.decrModelRPS(context.Background(), "llama", rc)
+		rl.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
+	})
+
+	t.Run("decrement calls incr with -1", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(-1)).Return(int64(0), nil).Once()
+
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
+
+		s.decrModelRPS(context.Background(), "llama", rc)
+		rl.AssertExpectations(t)
+	})
+
+	t.Run("decrement failure is logged and does not panic", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(-1)).Return(int64(0), errors.New("redis down")).Once()
+
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
+
+		s.decrModelRPS(context.Background(), "llama", rc)
 		rl.AssertExpectations(t)
 	})
 }
