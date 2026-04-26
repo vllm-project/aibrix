@@ -1,0 +1,67 @@
+# Sample ConfigMap holding BatchProfile definitions.
+#
+# The data block carries a top-level dict with two keys:
+#   default: name of the profile applied when a request omits one (optional)
+#   items:   list of profiles
+#
+# Each item maps 1:1 to a future CRD instance. Future CRD migration
+# moves 'default' to a separate config (label or small status field).
+#
+# Notes:
+#   - Fixed name: aibrix-batch-profiles / aibrix-system.
+#
+# See docs/source/features/batch-templates.rst for the full guide.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aibrix-batch-profiles
+  namespace: aibrix-system
+  labels:
+    app.kubernetes.io/component: batch
+    app.kubernetes.io/managed-by: aibrix
+data:
+  profiles.yaml: |
+    default: prod-24h
+    items:
+      # ───────────────────────────────────────────────────────────────
+      # Production profile: full-size batches, S3 prod bucket, 24h SLO.
+      # ───────────────────────────────────────────────────────────────
+      - name: prod-24h
+        spec:
+          storage:
+            backend: s3
+            bucket: aibrix-batch-prod
+            region: us-east-1
+            credentials_secret_ref: aibrix-s3-credentials
+          scheduling:
+            completion_window: 24h
+            priority: normal
+            max_concurrency: 256
+            request_timeout_seconds: 600
+          quota:
+            max_requests_per_batch: 100000
+            max_input_size_mb: 500
+            max_output_size_gb: 20
+          openai_service_tier_alias: batch
+
+      # ───────────────────────────────────────────────────────────────
+      # Development profile: smaller batches, S3 dev bucket, faster SLO.
+      # ───────────────────────────────────────────────────────────────
+      - name: dev
+        spec:
+          storage:
+            backend: s3
+            bucket: aibrix-batch-dev
+            region: us-east-1
+            credentials_secret_ref: aibrix-s3-credentials-dev
+          scheduling:
+            completion_window: 4h           # accepted, treated as 24h until Phase 4
+            priority: high                  # accepted, ignored in Phase 1
+            max_concurrency: 32
+            request_timeout_seconds: 120
+          quota:
+            max_requests_per_batch: 5000
+            max_input_size_mb: 50
+            max_output_size_gb: 2
+          openai_service_tier_alias: flex

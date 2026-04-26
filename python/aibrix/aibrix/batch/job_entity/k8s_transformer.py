@@ -28,6 +28,7 @@ from .batch_job import (
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    BatchUsage,
     CompletionWindow,
     Condition,
     ConditionStatus,
@@ -56,6 +57,10 @@ class JobAnnotationKey(str, Enum):
     ERROR_FILE_ID = f"{JOB_ANNOTATION_PREFIX}error-file-id"
     TEMP_ERROR_FILE_ID = f"{JOB_ANNOTATION_PREFIX}temp-error-file-id"
 
+    MODEL_TEMPLATE_NAME = f"{JOB_ANNOTATION_PREFIX}model-template-name"
+    PROFILE_NAME = f"{JOB_ANNOTATION_PREFIX}profile-name"
+    OVERRIDES = f"{JOB_ANNOTATION_PREFIX}overrides"  # JSON-encoded
+
     # Status persistence annotations
     JOB_STATE = f"{JOB_ANNOTATION_PREFIX}state"
     CONDITION = f"{JOB_ANNOTATION_PREFIX}condition"
@@ -65,6 +70,7 @@ class JobAnnotationKey(str, Enum):
     FINALIZING_AT = f"{JOB_ANNOTATION_PREFIX}finalizing-at"
     FINALIZED_AT = f"{JOB_ANNOTATION_PREFIX}finalized-at"
     ERRORS = f"{JOB_ANNOTATION_PREFIX}errors"
+    USAGE = f"{JOB_ANNOTATION_PREFIX}usage"  # JSON-encoded BatchUsage
 
 
 class BatchJobTransformer:
@@ -152,7 +158,23 @@ class BatchJobTransformer:
                 opts_key = key[len(JobAnnotationKey.OPTS_PREFIX.value) :]
                 batch_opts[opts_key] = value
 
-        # Use BatchJobSpec.from_strings for validation and creation
+        # Template / profile selection. All optional;
+        # absence means batch was created before the template feature
+        # or via the legacy hardcoded yaml path.
+        template_name = annotations.get(JobAnnotationKey.MODEL_TEMPLATE_NAME.value)
+        profile_name = annotations.get(JobAnnotationKey.PROFILE_NAME.value)
+        overrides_raw = annotations.get(JobAnnotationKey.OVERRIDES.value)
+        overrides_dict = None
+        if overrides_raw:
+            try:
+                overrides_dict = json.loads(overrides_raw)
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    "Failed to parse overrides annotation; treating as None",
+                    error=str(e),
+                    annotation_value=overrides_raw,
+                )  # type: ignore[call-arg]
+
         return BatchJobSpec(
             input_file_id=input_file_id,
             endpoint=endpoint,
@@ -163,6 +185,9 @@ class BatchJobTransformer:
             ),
             metadata=batch_metadata if batch_metadata else None,
             opts=batch_opts if batch_opts else None,
+            model_template_name=template_name,
+            profile_name=profile_name,
+            overrides=overrides_dict,
         )
 
     @classmethod
@@ -480,6 +505,17 @@ class BatchJobTransformer:
                 request_counts_data
             )
 
+        # Persist token usage (mirrors OpenAI Batch usage object). Stored
+        # as a single JSON annotation so it can be migrated wholesale to
+        # S3 metadata.json later. Only emitted when at least one token
+        # has been counted to avoid bloating annotations on empty jobs.
+        if job_status.usage is not None and (
+            job_status.usage.input_tokens > 0 or job_status.usage.output_tokens > 0
+        ):
+            annotations[JobAnnotationKey.USAGE.value] = (
+                job_status.usage.model_dump_json(exclude_none=True)
+            )
+
         # Persist timestamps (only if they exist)
         timestamp_mappings = [
             (job_status.in_progress_at, JobAnnotationKey.IN_PROGRESS_AT),
@@ -542,6 +578,18 @@ class BatchJobTransformer:
                 )
             except (json.JSONDecodeError, KeyError) as e:
                 logger.warning("Failed to parse persisted request counts", error=str(e))  # type: ignore[call-arg]
+
+        # Update token usage if persisted (mirrors OpenAI Batch `usage` object)
+        if (
+            persisted_usage := annotations.get(JobAnnotationKey.USAGE.value)
+        ) is not None:
+            try:
+                job_status.usage = BatchUsage.model_validate_json(persisted_usage)
+            except Exception as e:
+                logger.warning(
+                    "Failed to parse persisted usage; treating as None",
+                    error=str(e),
+                )  # type: ignore[call-arg]
 
         # Update timestamps if persisted
         timestamp_mappings = [

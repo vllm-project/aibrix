@@ -1,0 +1,61 @@
+# Test fixture: minimal ModelDeploymentTemplate + BatchProfile ConfigMaps
+# for unit tests. Uses mock engine (no real GPU required) and a local
+# storage backend.
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aibrix-model-deployment-templates
+  namespace: aibrix-system
+data:
+  templates.yaml: |
+    - name: mock-vllm
+      version: v0.0.1
+      status: active
+      spec:
+        engine:
+          type: mock
+          version: "0.1.0"
+          image: "aibrix/vllm-mock:nightly"
+          invocation: http_server
+          health_endpoint: /ready
+        model_source:
+          type: local
+          uri: /models/mock
+        accelerator:
+          type: cpu
+          count: 1
+        parallelism:
+          tp: 1
+        provider_config:
+          type: k8s
+          namespace: default
+        supported_endpoints:
+          - /v1/chat/completions
+          - /v1/embeddings
+        deployment_mode: dedicated
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aibrix-batch-profiles
+  namespace: aibrix-system
+data:
+  profiles.yaml: |
+    default: unittest
+    items:
+      - name: unittest
+        spec:
+          storage:
+            backend: local
+            bucket: /tmp/aibrix-batch-test
+          scheduling:
+            completion_window: 24h
+            max_concurrency: 4
+            request_timeout_seconds: 30
+          quota:
+            max_requests_per_batch: 100
+            max_input_size_mb: 1
+            max_output_size_gb: 1
