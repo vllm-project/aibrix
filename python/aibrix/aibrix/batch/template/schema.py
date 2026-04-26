@@ -474,26 +474,20 @@ class QuotaSpec(_Strict):
     max_output_size_gb: int = Field(default=10, ge=1)
 
 
-class OpenAIServiceTier(str, Enum):
-    """Mirror of OpenAI service_tier field for compatibility."""
-
-    PRIORITY = "priority"
-    STANDARD = "standard"
-    FLEX = "flex"
-    BATCH = "batch"
-    SCALE = "scale"
-
-
 class BatchProfileSpec(_Strict):
-    """Full batch profile body."""
+    """Full batch profile body.
+
+    Note on naming: AIBrix BatchProfile is independent from OpenAI's
+    ``service_tier``. ``service_tier`` is a field on OpenAI's synchronous
+    endpoints (chat/completions, responses), not on the Batch object.
+    Profiles are an AIBrix-native abstraction; admins may name profiles
+    after tier-like terms (priority/flex/batch) for ergonomics, but
+    there is no OpenAI compatibility being claimed at the field level.
+    """
 
     storage: StorageSpec
     scheduling: SchedulingSpec = Field(default_factory=SchedulingSpec)
     quota: QuotaSpec = Field(default_factory=QuotaSpec)
-    openai_service_tier_alias: Optional[OpenAIServiceTier] = Field(
-        default=None,
-        description="If set, batches with matching service_tier auto-select this profile",
-    )
 
 
 class BatchProfile(_Strict):

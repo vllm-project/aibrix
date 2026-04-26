@@ -28,7 +28,9 @@ from aibrix.batch.job_entity import (
     BatchJobEndpoint,
     BatchJobError,
     BatchJobSpec,
+    BatchJobState,
     BatchJobStatus,
+    BatchUsage,
     CompletionWindow,
 )
 from aibrix.batch.manifest import RenderError
@@ -378,6 +380,15 @@ class BatchResponse(BaseModel):
     id: str = Field(description="The unique identifier for the batch")
     object: str = Field(default="batch", description="The object type")
     endpoint: str = Field(description="The API endpoint used for the batch")
+    model: Optional[str] = Field(
+        default=None,
+        description=(
+            "Model identifier the batch was submitted with. Mirrors the "
+            "OpenAI Batch object's optional ``model`` field. AIBrix "
+            "reports the resolved ModelDeploymentTemplate name (e.g. "
+            "'llama3-70b-prod')."
+        ),
+    )
     errors: Optional[BatchErrors] = Field(
         default=None, description="List of errors that occurred during processing"
     )
@@ -415,6 +426,14 @@ class BatchResponse(BaseModel):
     )
     request_counts: Optional[BatchRequestCounts] = Field(
         default=None, description="Statistics on the processing of the batch"
+    )
+    usage: Optional[BatchUsage] = Field(
+        default=None,
+        description=(
+            "Aggregated token usage. Mirrors the OpenAI Batch API field "
+            "added in 2025-09. Absent until the worker has flushed at "
+            "least one progress checkpoint."
+        ),
     )
     metadata: Optional[Dict[str, str]] = Field(
         default=None, description="Batch metadata"
@@ -458,7 +477,15 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
     total_hours = delta.total_seconds() / 3600
     completion_window = f"{int(total_hours)}h"
 
-    state = status.state.value
+    # Map the internal state machine to OpenAI's 8-state enum:
+    #   {validating, failed, in_progress, finalizing, completed, expired,
+    #    cancelling, cancelled}
+    # Two internal states have no direct OpenAI counterpart:
+    #   - CREATED: batch just created, validation not yet started — surfaced
+    #     to clients as 'validating' since they cannot distinguish it from
+    #     in-flight validation.
+    #   - FINALIZED: terminal umbrella state; the actual outcome lives in
+    #     `status.condition` (completed / failed / expired / cancelled).
     if status.finished:
         condition = status.condition
         if condition is None:
@@ -470,10 +497,15 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
             )  # type:ignore[call-arg]
             raise ValueError("job finalized without condition")
         state = condition.value
+    elif status.state == BatchJobState.CREATED:
+        state = BatchJobState.VALIDATING.value
+    else:
+        state = status.state.value
 
     return BatchResponse(
         id=status.job_id,
         endpoint=spec.endpoint,
+        model=spec.model_template_name,
         errors=BatchErrors(data=status.errors) if status.errors else None,
         input_file_id=spec.input_file_id,
         completion_window=completion_window,
@@ -490,6 +522,7 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
         cancelling_at=dt_to_unix(status.cancelling_at),
         cancelled_at=dt_to_unix(status.cancelled_at),
         request_counts=request_counts,
+        usage=status.usage,
         metadata=spec.metadata,
     )
 
