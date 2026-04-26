@@ -54,6 +54,11 @@ export interface CreateJobRequest {
   temperature?: number;
   topP?: number;
   n?: number;
+  // ModelDeploymentTemplate binding picked by the create-job wizard. The SDK
+  // path may omit these and rely on metadata-service-side resolution via
+  // extra_body.aibrix.model_template.
+  modelTemplateName?: string;
+  modelTemplateVersion?: string;
 }
 
 export interface ListJobsResponse {

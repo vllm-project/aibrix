@@ -168,6 +168,11 @@ message Job {
   // Console-owned fields (persisted in the store)
   string name = 100;             // display name; resolved from metadata.display_name
   string created_by = 101;       // Console user that created the job
+  // Resolved deployment-template binding. Populated from the user's
+  // template selection in the create-job flow; empty for legacy jobs and
+  // SDK-path jobs that pin templates through extra_body.aibrix instead.
+  string model_template_name = 102;
+  string model_template_version = 103;
 }
 
 message JobRequestCounts {
@@ -203,6 +208,13 @@ message CreateJobRequest {
   string endpoint = 2;           // e.g. /v1/chat/completions
   string completion_window = 3;  // e.g. "24h"
   string name = 4;               // display name (stored in metadata.display_name)
+
+  // ModelDeploymentTemplate binding. Required for new jobs created via the
+  // console UI (the wizard picks a template after the model); the SDK path
+  // remains free to omit them and rely on metadata-service-side resolution
+  // through extra_body.aibrix.model_template.
+  string model_template_name = 5;
+  string model_template_version = 6;  // optional; "" = latest active
 
   // Optional batch-wide inference parameter overrides. Currently NOT applied
   // by the handler — per-request values from the JSONL body take precedence.

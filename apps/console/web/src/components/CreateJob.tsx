@@ -1,6 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, Search, Upload, Check, X, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
-import { createJob, uploadFile, listModels as apiListModels, JobEndpoint } from '../utils/api';
+import { ChevronLeft, Search, Upload, Check, X, AlertCircle, CheckCircle2, Loader2, Cpu, Layers as LayersIcon } from 'lucide-react';
+import {
+  createJob,
+  uploadFile,
+  listModels as apiListModels,
+  listModelDeploymentTemplates,
+  JobEndpoint,
+} from '../utils/api';
+import type { ModelDeploymentTemplate } from '../utils/api';
 import { validateBatchFile, generateJobDisplayName, ValidationResult } from '../utils/batchValidation';
 import { Model } from '../data/mockData';
 
@@ -14,9 +21,13 @@ function parseNumber(value: string): number | undefined {
   return isNaN(n) ? undefined : n;
 }
 
+type Step = 'model' | 'template' | 'dataset' | 'settings';
+const STEP_INDEX: Record<Step, number> = { model: 1, template: 2, dataset: 3, settings: 4 };
+
 export function CreateJob({ onBack }: CreateJobProps) {
-  const [currentStep, setCurrentStep] = useState<'model' | 'dataset' | 'settings'>('model');
+  const [currentStep, setCurrentStep] = useState<Step>('model');
   const [selectedModel, setSelectedModel] = useState('');
+  const [selectedModelId, setSelectedModelId] = useState('');
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [maxTokens, setMaxTokens] = useState('');
@@ -27,6 +38,12 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [models, setModels] = useState<Model[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelSearchQuery, setModelSearchQuery] = useState('');
+
+  // Template selection
+  const [templates, setTemplates] = useState<ModelDeploymentTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [templatesError, setTemplatesError] = useState<string | null>(null);
+  const [selectedTemplate, setSelectedTemplate] = useState<ModelDeploymentTemplate | null>(null);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadedFileId, setUploadedFileId] = useState<string | null>(null);
@@ -56,6 +73,51 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const filteredModels = models.filter(m =>
     m.name.toLowerCase().includes(modelSearchQuery.toLowerCase())
   );
+
+  const handleSelectModel = (model: Model) => {
+    setSelectedModel(model.name);
+    setSelectedModelId(model.id);
+    setShowModelDropdown(false);
+    setModelSearchQuery('');
+    setDisplayName(generateJobDisplayName(model.name));
+    // Reset downstream state when model changes
+    setSelectedTemplate(null);
+    setTemplates([]);
+    setTemplatesError(null);
+    setCurrentStep('template');
+
+    // Load templates for this model
+    setTemplatesLoading(true);
+    listModelDeploymentTemplates(model.id, 'active')
+      .then((tpls) => {
+        setTemplates(tpls);
+        if (tpls.length === 0) {
+          setTemplatesError(
+            `No active deployment templates registered for ${model.name}. ` +
+              `Create one from the model detail page before submitting a batch job.`,
+          );
+        }
+      })
+      .catch((err) => {
+        setTemplatesError(`Failed to load templates: ${err instanceof Error ? err.message : String(err)}`);
+        setTemplates([]);
+      })
+      .finally(() => setTemplatesLoading(false));
+
+    // Re-validate already-selected file against the new model
+    if (selectedFile) {
+      setValidating(true);
+      validateBatchFile(selectedFile, model.name).then((r) => {
+        setValidation(r);
+        setValidating(false);
+      });
+    }
+  };
+
+  const handleSelectTemplate = (tpl: ModelDeploymentTemplate) => {
+    setSelectedTemplate(tpl);
+    setCurrentStep('dataset');
+  };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -122,6 +184,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
 
   const canSubmit =
     selectedModel &&
+    selectedTemplate &&
     !submitting &&
     !hasParamErrors &&
     displayName.trim() !== '' &&
@@ -158,6 +221,8 @@ export function CreateJob({ onBack }: CreateJobProps) {
         endpoint,
         completionWindow: '24h',
         name: displayName,
+        modelTemplateName: selectedTemplate?.name,
+        modelTemplateVersion: selectedTemplate?.version,
         ...(maxTokens.trim() !== '' && { maxTokens: parseNumber(maxTokens) }),
         ...(temperature.trim() !== '' && { temperature: parseNumber(temperature) }),
         ...(topP.trim() !== '' && { topP: parseNumber(topP) }),
@@ -233,21 +298,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
                             filteredModels.map((model) => (
                               <button
                                 key={model.id}
-                                onClick={() => {
-                                  setSelectedModel(model.name);
-                                  setShowModelDropdown(false);
-                                  setCurrentStep('dataset');
-                                  setModelSearchQuery('');
-                                  setDisplayName(generateJobDisplayName(model.name));
-                                  // Re-validate file if already selected
-                                  if (selectedFile) {
-                                    setValidating(true);
-                                    validateBatchFile(selectedFile, model.name).then(r => {
-                                      setValidation(r);
-                                      setValidating(false);
-                                    });
-                                  }
-                                }}
+                                onClick={() => handleSelectModel(model)}
                                 className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 rounded flex items-center gap-2"
                               >
                                 <div className="w-5 h-5 rounded-full bg-teal-50 flex items-center justify-center">
@@ -278,15 +329,86 @@ export function CreateJob({ onBack }: CreateJobProps) {
             )}
           </div>
 
-          {/* Step 2: Dataset */}
+          {/* Step 2: Deployment Template */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <div className="flex items-center gap-3 mb-4">
-              <div className={`w-6 h-6 rounded-full flex items-center justify-center text-sm ${
-                currentStep === 'settings' ? 'bg-teal-600 text-white' :
-                currentStep === 'dataset' ? 'bg-teal-600 text-white' :
-                'bg-gray-200 text-gray-500'
-              }`}>
-                {currentStep === 'settings' ? <Check className="w-4 h-4" /> : '2'}
+              <div
+                className={`w-6 h-6 rounded-full flex items-center justify-center text-sm ${
+                  STEP_INDEX[currentStep] > STEP_INDEX.template
+                    ? 'bg-teal-600 text-white'
+                    : currentStep === 'template'
+                      ? 'bg-teal-600 text-white'
+                      : 'bg-gray-200 text-gray-500'
+                }`}
+              >
+                {STEP_INDEX[currentStep] > STEP_INDEX.template ? (
+                  <Check className="w-4 h-4" />
+                ) : (
+                  '2'
+                )}
+              </div>
+              <h2>Deployment Template</h2>
+            </div>
+
+            {currentStep === 'template' && (
+              <div>
+                <p className="text-sm text-gray-500 mb-4">
+                  Pick the engine + accelerator + tuning preset this batch should run on.
+                  Templates are curated per model from the Model Library.
+                </p>
+                {templatesLoading ? (
+                  <div className="flex items-center gap-2 text-sm text-gray-500 py-6 justify-center">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Loading templates for {selectedModel}...
+                  </div>
+                ) : templatesError ? (
+                  <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
+                    <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                    <div>{templatesError}</div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {templates.map((tpl) => (
+                      <TemplateCard
+                        key={tpl.id}
+                        template={tpl}
+                        selected={selectedTemplate?.id === tpl.id}
+                        onSelect={() => handleSelectTemplate(tpl)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {STEP_INDEX[currentStep] > STEP_INDEX.template && selectedTemplate && (
+              <SelectedTemplateSummary
+                template={selectedTemplate}
+                onChange={() => {
+                  setSelectedTemplate(null);
+                  setCurrentStep('template');
+                }}
+              />
+            )}
+          </div>
+
+          {/* Step 3: Dataset */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div
+                className={`w-6 h-6 rounded-full flex items-center justify-center text-sm ${
+                  STEP_INDEX[currentStep] > STEP_INDEX.dataset
+                    ? 'bg-teal-600 text-white'
+                    : currentStep === 'dataset'
+                      ? 'bg-teal-600 text-white'
+                      : 'bg-gray-200 text-gray-500'
+                }`}
+              >
+                {STEP_INDEX[currentStep] > STEP_INDEX.dataset ? (
+                  <Check className="w-4 h-4" />
+                ) : (
+                  '3'
+                )}
               </div>
               <h2>Dataset</h2>
             </div>
@@ -394,29 +516,37 @@ export function CreateJob({ onBack }: CreateJobProps) {
                 </button>
 
                 {currentStep === 'dataset' && (
-                  <button
-                    onClick={() => setCurrentStep('settings')}
-                    disabled={selectedFile != null && !validation?.valid}
-                    className={`w-full mt-4 px-4 py-2 rounded-lg text-sm text-white ${
-                      selectedFile != null && !validation?.valid
-                        ? 'bg-teal-400 cursor-not-allowed'
-                        : 'bg-teal-600 hover:bg-teal-700'
-                    }`}
-                  >
-                    Continue
-                  </button>
+                  <div className="flex gap-3 mt-4">
+                    <button
+                      onClick={() => setCurrentStep('template')}
+                      className="px-6 py-2 border border-gray-200 rounded-lg text-sm hover:bg-gray-50"
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={() => setCurrentStep('settings')}
+                      disabled={selectedFile != null && !validation?.valid}
+                      className={`flex-1 px-4 py-2 rounded-lg text-sm text-white ${
+                        selectedFile != null && !validation?.valid
+                          ? 'bg-teal-400 cursor-not-allowed'
+                          : 'bg-teal-600 hover:bg-teal-700'
+                      }`}
+                    >
+                      Continue
+                    </button>
+                  </div>
                 )}
               </div>
             )}
           </div>
 
-          {/* Step 3: Settings */}
+          {/* Step 4: Settings */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <div className="flex items-center gap-3 mb-4">
               <div className={`w-6 h-6 rounded-full flex items-center justify-center text-sm ${
                 currentStep === 'settings' ? 'bg-teal-600 text-white' : 'bg-gray-200 text-gray-500'
               }`}>
-                3
+                4
               </div>
               <h2>Settings</h2>
             </div>
@@ -594,6 +724,37 @@ export function CreateJob({ onBack }: CreateJobProps) {
             </div>
           )}
 
+          {currentStep === 'template' && (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+              <h3 className="mb-3">Why a deployment template?</h3>
+              <ul className="space-y-2 text-sm text-gray-500">
+                <li className="flex gap-2">
+                  <span className="text-teal-500">&#8226;</span>
+                  <span>
+                    A template binds the model to a specific engine version, accelerator
+                    SKU, parallelism, and tuning preset — so two batches against the same
+                    model run on identical, reproducible hardware.
+                  </span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="text-teal-500">&#8226;</span>
+                  <span>
+                    Each card is one curated combination. Pick the one that matches your
+                    throughput / cost target; advanced overrides land in a follow-up step.
+                  </span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="text-teal-500">&#8226;</span>
+                  <span>
+                    Templates are managed by admins on each model's detail page. If
+                    nothing fits, ask for a new template instead of forking the
+                    underlying spec — that's the audit / cost-attribution path.
+                  </span>
+                </li>
+              </ul>
+            </div>
+          )}
+
           {currentStep === 'dataset' && (
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
               <h3 className="mb-3">Dataset Selection</h3>
@@ -683,6 +844,106 @@ export function CreateJob({ onBack }: CreateJobProps) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function TemplateCard({
+  template,
+  selected,
+  onSelect,
+}: {
+  template: ModelDeploymentTemplate;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const a = template.spec?.accelerator;
+  const e = template.spec?.engine;
+  const p = template.spec?.parallelism;
+  const q = template.spec?.quantization;
+  const endpoints = template.spec?.supportedEndpoints ?? [];
+
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`text-left border rounded-xl p-4 transition-all ${
+        selected
+          ? 'border-teal-500 bg-teal-50/40 ring-2 ring-teal-500/20'
+          : 'border-gray-200 hover:border-gray-300'
+      }`}
+    >
+      <div className="flex items-start justify-between mb-2">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-900">{template.name}</span>
+            <span className="text-xs text-gray-400">{template.version}</span>
+          </div>
+        </div>
+        {selected && (
+          <CheckCircle2 className="w-4 h-4 text-teal-600 shrink-0" />
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-xs text-gray-600 mb-2">
+        <div className="flex items-center gap-1.5">
+          <Cpu className="w-3 h-3 text-gray-400" />
+          {e?.type ?? '—'} {e?.version ?? ''}
+        </div>
+        <div>
+          {a?.type ?? '—'} × {a?.count ?? '?'}
+          {a?.interconnect ? ` (${a.interconnect})` : ''}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <LayersIcon className="w-3 h-3 text-gray-400" />
+          TP={p?.tp ?? 1} PP={p?.pp ?? 1} DP={p?.dp ?? 1}
+        </div>
+        <div>
+          {q?.weight ? `weight=${q.weight}` : 'bf16'}
+          {q?.kvCache ? ` / kv=${q.kvCache}` : ''}
+        </div>
+      </div>
+      {endpoints.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {endpoints.map((ep) => (
+            <span
+              key={ep}
+              className="px-1.5 py-0.5 bg-gray-50 text-[10px] text-gray-600 rounded font-mono"
+            >
+              {ep}
+            </span>
+          ))}
+        </div>
+      )}
+    </button>
+  );
+}
+
+function SelectedTemplateSummary({
+  template,
+  onChange,
+}: {
+  template: ModelDeploymentTemplate;
+  onChange: () => void;
+}) {
+  const a = template.spec?.accelerator;
+  const e = template.spec?.engine;
+  return (
+    <div className="text-sm text-gray-700 bg-gray-50 p-3 rounded-lg flex items-center justify-between">
+      <div className="flex items-center gap-2 min-w-0">
+        <CheckCircle2 className="w-4 h-4 text-teal-600 shrink-0" />
+        <span className="font-medium">{template.name}</span>
+        <span className="text-xs text-gray-400">{template.version}</span>
+        <span className="text-xs text-gray-500 truncate">
+          · {e?.type ?? '—'} on {a?.type ?? '?'} × {a?.count ?? '?'}
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={onChange}
+        className="text-xs text-teal-600 hover:text-teal-700 shrink-0 ml-3"
+      >
+        Change
+      </button>
     </div>
   );
 }

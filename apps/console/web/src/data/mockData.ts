@@ -51,6 +51,10 @@ export interface Job {
   // Console-side fields persisted in the Console store
   name: string;
   createdBy: string;
+  // Resolved deployment-template binding. Populated when the user picks a
+  // template in the create-job wizard; empty for legacy/SDK-path jobs.
+  modelTemplateName?: string;
+  modelTemplateVersion?: string;
 }
 
 export interface Deployment {

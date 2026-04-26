@@ -484,10 +484,15 @@ type Job struct {
 	Usage         *JobUsage         `protobuf:"bytes,20,opt,name=usage,proto3" json:"usage,omitempty"`
 	Metadata      map[string]string `protobuf:"bytes,21,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Console-owned fields (persisted in the store)
-	Name          string `protobuf:"bytes,100,opt,name=name,proto3" json:"name,omitempty"`                            // display name; resolved from metadata.display_name
-	CreatedBy     string `protobuf:"bytes,101,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"` // Console user that created the job
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Name      string `protobuf:"bytes,100,opt,name=name,proto3" json:"name,omitempty"`                            // display name; resolved from metadata.display_name
+	CreatedBy string `protobuf:"bytes,101,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"` // Console user that created the job
+	// Resolved deployment-template binding. Populated from the user's
+	// template selection in the create-job flow; empty for legacy jobs and
+	// SDK-path jobs that pin templates through extra_body.aibrix instead.
+	ModelTemplateName    string `protobuf:"bytes,102,opt,name=model_template_name,json=modelTemplateName,proto3" json:"model_template_name,omitempty"`
+	ModelTemplateVersion string `protobuf:"bytes,103,opt,name=model_template_version,json=modelTemplateVersion,proto3" json:"model_template_version,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *Job) Reset() {
@@ -677,6 +682,20 @@ func (x *Job) GetName() string {
 func (x *Job) GetCreatedBy() string {
 	if x != nil {
 		return x.CreatedBy
+	}
+	return ""
+}
+
+func (x *Job) GetModelTemplateName() string {
+	if x != nil {
+		return x.ModelTemplateName
+	}
+	return ""
+}
+
+func (x *Job) GetModelTemplateVersion() string {
+	if x != nil {
+		return x.ModelTemplateVersion
 	}
 	return ""
 }
@@ -971,6 +990,12 @@ type CreateJobRequest struct {
 	Endpoint         string                 `protobuf:"bytes,2,opt,name=endpoint,proto3" json:"endpoint,omitempty"`                                         // e.g. /v1/chat/completions
 	CompletionWindow string                 `protobuf:"bytes,3,opt,name=completion_window,json=completionWindow,proto3" json:"completion_window,omitempty"` // e.g. "24h"
 	Name             string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`                                                 // display name (stored in metadata.display_name)
+	// ModelDeploymentTemplate binding. Required for new jobs created via the
+	// console UI (the wizard picks a template after the model); the SDK path
+	// remains free to omit them and rely on metadata-service-side resolution
+	// through extra_body.aibrix.model_template.
+	ModelTemplateName    string `protobuf:"bytes,5,opt,name=model_template_name,json=modelTemplateName,proto3" json:"model_template_name,omitempty"`
+	ModelTemplateVersion string `protobuf:"bytes,6,opt,name=model_template_version,json=modelTemplateVersion,proto3" json:"model_template_version,omitempty"` // optional; "" = latest active
 	// Optional batch-wide inference parameter overrides. Currently NOT applied
 	// by the handler — per-request values from the JSONL body take precedence.
 	// Reserved here so the Console contract is stable; future versions will
@@ -1037,6 +1062,20 @@ func (x *CreateJobRequest) GetCompletionWindow() string {
 func (x *CreateJobRequest) GetName() string {
 	if x != nil {
 		return x.Name
+	}
+	return ""
+}
+
+func (x *CreateJobRequest) GetModelTemplateName() string {
+	if x != nil {
+		return x.ModelTemplateName
+	}
+	return ""
+}
+
+func (x *CreateJobRequest) GetModelTemplateVersion() string {
+	if x != nil {
+		return x.ModelTemplateVersion
 	}
 	return ""
 }
@@ -3439,7 +3478,7 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\x11enable_multi_lora\x18\n" +
 	" \x01(\bR\x0fenableMultiLora\")\n" +
 	"\x17DeleteDeploymentRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\xe1\x06\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xc7\a\n" +
 	"\x03Job\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06object\x18\x02 \x01(\tR\x06object\x12\x1a\n" +
@@ -3468,7 +3507,9 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\bmetadata\x18\x15 \x03(\v2\x1d.console.v1.Job.MetadataEntryR\bmetadata\x12\x12\n" +
 	"\x04name\x18d \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
-	"created_by\x18e \x01(\tR\tcreatedBy\x1a;\n" +
+	"created_by\x18e \x01(\tR\tcreatedBy\x12.\n" +
+	"\x13model_template_name\x18f \x01(\tR\x11modelTemplateName\x124\n" +
+	"\x16model_template_version\x18g \x01(\tR\x14modelTemplateVersion\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"^\n" +
@@ -3489,12 +3530,14 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\alast_id\x18\x03 \x01(\tR\x06lastId\x12\x19\n" +
 	"\bhas_more\x18\x04 \x01(\bR\ahasMore\"\x1f\n" +
 	"\rGetJobRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\xbb\x02\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xa1\x03\n" +
 	"\x10CreateJobRequest\x12#\n" +
 	"\rinput_dataset\x18\x01 \x01(\tR\finputDataset\x12\x1a\n" +
 	"\bendpoint\x18\x02 \x01(\tR\bendpoint\x12+\n" +
 	"\x11completion_window\x18\x03 \x01(\tR\x10completionWindow\x12\x12\n" +
-	"\x04name\x18\x04 \x01(\tR\x04name\x12\"\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\x12.\n" +
+	"\x13model_template_name\x18\x05 \x01(\tR\x11modelTemplateName\x124\n" +
+	"\x16model_template_version\x18\x06 \x01(\tR\x14modelTemplateVersion\x12\"\n" +
 	"\n" +
 	"max_tokens\x18\n" +
 	" \x01(\x05H\x00R\tmaxTokens\x88\x01\x01\x12%\n" +
