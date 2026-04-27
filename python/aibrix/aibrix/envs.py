@@ -107,6 +107,15 @@ STORAGE_REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 STORAGE_REDIS_DB = int(os.getenv("REDIS_DB", 0))
 STORAGE_REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
+# Batch job state document store (A.2).
+# When enabled, JobCache writes every BatchJob status mutation to a
+# document in object storage and the metadata API serves point reads
+# from it. K8s Job annotations no longer carry runtime status; only
+# the immutable spec annotations the worker reads via the downward API
+# remain. Off means status stays purely in the JobManager in-process
+# pool (legacy single-replica behavior).
+BATCH_JOB_STORE_ENABLED = _is_true(os.getenv("AIBRIX_BATCH_JOB_STORE_ENABLED", "0"))
+
 # Metric Standardizing Related Config
 # Scrape config
 METRIC_SCRAPE_PATH = os.getenv("METRIC_SCRAPE_PATH", "/metrics")

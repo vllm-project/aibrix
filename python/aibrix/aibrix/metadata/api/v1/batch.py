@@ -34,6 +34,7 @@ from aibrix.batch.job_entity import (
     CompletionWindow,
 )
 from aibrix.batch.manifest import RenderError
+from aibrix.batch.store import BatchJobStore
 from aibrix.batch.template import (
     ProfileOverridesSpec,
     ProfileRegistry,
@@ -712,6 +713,29 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+async def _resolve_batch_job(request: Request, batch_id: str) -> Optional[BatchJob]:
+    """Resolve a BatchJob by id, store-first with JobManager fallback.
+
+    When ``app.state.batch_job_store`` is configured (A.2 read-flip phase),
+    the store is the source of truth and is consulted first. The fallback
+    to ``JobManager.get_job`` covers the brief window between K8s
+    ``create_namespaced_job`` returning and the kopf ADDED handler
+    persisting the document, since the metadata service seeds the
+    JobManager pool synchronously on POST.
+
+    When the store is not configured, behavior is identical to reading
+    from JobManager directly.
+    """
+    store: Optional[BatchJobStore] = getattr(request.app.state, "batch_job_store", None)
+    if store is not None:
+        job = await store.get(batch_id)
+        if job is not None:
+            return job
+
+    batch_driver: BatchDriver = request.app.state.batch_driver
+    return await batch_driver.run_coroutine(batch_driver.job_manager.get_job(batch_id))
+
+
 @router.get("/{batch_id}")
 async def get_batch(request: Request, batch_id: str) -> BatchResponse:
     """Retrieve a batch by ID.
@@ -720,15 +744,9 @@ async def get_batch(request: Request, batch_id: str) -> BatchResponse:
     request counts, and timestamps.
     """
     try:
-        # Get job controller from app state
-        batch_driver: BatchDriver = request.app.state.batch_driver
-
         logger.debug("Retrieving batch", batch_id=batch_id)  # type: ignore[call-arg]
 
-        # Get job from manager
-        job = await batch_driver.run_coroutine(
-            batch_driver.job_manager.get_job(batch_id)
-        )
+        job = await _resolve_batch_job(request, batch_id)
         if not job:
             logger.warning("Batch not found", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=404, detail="Batch not found")
@@ -757,15 +775,15 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
 
         logger.info("Cancelling batch", batch_id=batch_id)  # type: ignore[call-arg]
 
-        # Check if job exists
-        job = await batch_driver.run_coroutine(
-            batch_driver.job_manager.get_job(batch_id)
-        )
+        # Check if job exists (store-first read).
+        job = await _resolve_batch_job(request, batch_id)
         if not job:
             logger.warning("Batch not found for cancellation", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=404, detail="Batch not found")
 
-        # Cancel the job
+        # Cancel the job. JobManager.cancel_job drives the K8s suspend
+        # patch and the status write to the BatchJobStore via
+        # JobCache._put_to_store.
         success = await batch_driver.run_coroutine(
             batch_driver.job_manager.cancel_job(batch_id)
         )
@@ -773,10 +791,8 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
             logger.warning("Failed to cancel batch", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=400, detail="Batch cannot be cancelled")
 
-        # Get updated job status
-        updated_job = await batch_driver.run_coroutine(
-            batch_driver.job_manager.get_job(batch_id)
-        )
+        # Get updated job status (store-first again).
+        updated_job = await _resolve_batch_job(request, batch_id)
         if not updated_job:
             logger.error("Job not found after cancellation", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=500, detail="Internal server error")
@@ -812,9 +828,13 @@ async def list_batches(
 
         logger.debug("Listing batches", after=after, limit=limit)  # type: ignore[call-arg]
 
-        # Get all jobs from the manager
-        # Note: This is a simple implementation. In production, you'd want
-        # proper pagination and filtering in the JobManager
+        # List still goes through JobManager. Adding a list_by_prefix to
+        # BatchJobStore would require either an eagerly-maintained index
+        # (Redis ZSET keyed by created_at) or an S3 list-objects walk;
+        # the latter does not fit the current cursor-based pagination
+        # cheaply. Point reads already serve from the store, so the
+        # tradeoff only hurts the rare list call.
+        # TODO(A.2 follow-up): wire list to BatchJobStore via an index.
         all_jobs: List[BatchJob] = await batch_driver.run_coroutine(
             batch_driver.job_manager.list_jobs()
         )

@@ -1176,3 +1176,71 @@ def test_unknown_conditions_ignored():
 
     condition = batch_job.status.conditions[0]
     assert condition.type == ConditionType.COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# State derivation when JOB_STATE annotation is absent.
+#
+# K8s Job annotations are no longer the authoritative carrier of batch
+# status, so the transformer must rebuild a sane BatchJob purely from
+# K8s-native conditions when the JOB_STATE annotation is missing.
+# ---------------------------------------------------------------------------
+
+
+def test_state_falls_back_to_created_when_annotation_absent_and_no_conditions():
+    """No JOB_STATE annotation and no terminal K8s condition: the
+    steady-state observation for a just-created Job. Must yield
+    CREATED rather than crash or invent a transient state."""
+    from aibrix.batch.job_entity.k8s_transformer import BatchJobTransformer
+
+    state, ts = BatchJobTransformer._map_k8s_phase_to_batch_state(
+        annotations={}, conditions=None
+    )
+    assert state == BatchJobState.CREATED
+    assert ts is None
+
+
+def test_state_advances_to_finalizing_when_terminal_condition_appears():
+    """A terminal K8s condition (Complete / Failed / Suspended) must
+    surface as FINALIZING regardless of whether the JOB_STATE
+    annotation is present. This is what closes the gap between K8s
+    native progress and the BatchJob state machine once the annotation
+    echo is no longer driving updates."""
+    from aibrix.batch.job_entity.k8s_transformer import BatchJobTransformer
+
+    cond = SimpleNamespace(last_transition_time="2024-01-01T00:00:00Z")
+    state, ts = BatchJobTransformer._map_k8s_phase_to_batch_state(
+        annotations={}, conditions=[cond]
+    )
+    assert state == BatchJobState.FINALIZING
+    assert ts == cond.last_transition_time
+
+
+def test_explicit_terminal_annotation_still_wins_over_fallback():
+    """A terminal JOB_STATE annotation (rare; legacy or
+    third-party-managed Job) must be respected; the K8s-condition
+    fallback only kicks in when the annotation is missing."""
+    from aibrix.batch.job_entity import JobAnnotationKey
+    from aibrix.batch.job_entity.k8s_transformer import BatchJobTransformer
+
+    state, _ = BatchJobTransformer._map_k8s_phase_to_batch_state(
+        annotations={JobAnnotationKey.JOB_STATE.value: BatchJobState.FINALIZED.value},
+        conditions=None,
+    )
+    assert state == BatchJobState.FINALIZED
+
+
+def test_in_progress_annotation_with_conditions_advances_to_finalizing():
+    """Pre-existing path: an IN_PROGRESS annotation with a terminal
+    condition advances to FINALIZING. Pinned here to guard against the
+    fallback inadvertently shadowing the annotated path."""
+    from aibrix.batch.job_entity import JobAnnotationKey
+    from aibrix.batch.job_entity.k8s_transformer import BatchJobTransformer
+
+    cond = SimpleNamespace(last_transition_time="2024-01-01T00:00:00Z")
+    state, ts = BatchJobTransformer._map_k8s_phase_to_batch_state(
+        annotations={JobAnnotationKey.JOB_STATE.value: BatchJobState.IN_PROGRESS.value},
+        conditions=[cond],
+    )
+    assert state == BatchJobState.FINALIZING
+    assert ts == cond.last_transition_time
