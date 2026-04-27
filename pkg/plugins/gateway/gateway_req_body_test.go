@@ -32,7 +32,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
-	"github.com/vllm-project/aibrix/pkg/metrics"
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -269,7 +268,55 @@ func Test_handleRequestBody(t *testing.T) {
 			},
 		},
 		{
-			name:        "invalid routing strategy - should fallback to random",
+			name:        "invalid multi-routing strategy - should return 400 BadRequest",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "least-request:1,invalid-strategy:2",
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
+						{
+							ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
+							Status: v1.PodStatus{
+								PodIP:      "1.2.3.4",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_BadRequest,
+				model:      "test-model",
+				stream:     false,
+				term:       0,
+				routingCtx: &types.RoutingContext{},
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				// buildErrorResponse returns x-error-routing: true (no Content-Type in headers)
+				headers := resp.GetImmediateResponse().GetHeaders().GetSetHeaders()
+				assert.GreaterOrEqual(t, len(headers), 1)
+				foundErrorRouting := false
+				for _, h := range headers {
+					if h.Header.Key == HeaderErrorRouting && string(h.Header.RawValue) == "true" {
+						foundErrorRouting = true
+						break
+					}
+				}
+				assert.True(t, foundErrorRouting, "expected x-error-routing header")
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+				assert.NotNil(t, routingCtx)
+			},
+		},
+		{
+			name:        "invalid routing strategy from Context Profile - should return 400 BadRequest",
 			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
 			user: utils.User{
 				Name: "test-user",
@@ -289,38 +336,31 @@ func Test_handleRequestBody(t *testing.T) {
 					},
 				}
 				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
-				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
-				mockCache.On("GetMetricValueByPod", "pod-1", "default", metrics.RealtimeNumRequestsRunning).Return(&metrics.SimpleMetricValue{Value: 0}, nil)
 			},
 			expected: testResponse{
-				statusCode: envoyTypePb.StatusCode_OK,
+				statusCode: envoyTypePb.StatusCode_BadRequest,
 				model:      "test-model",
 				stream:     false,
-				term:       1,
-				routingCtx: &types.RoutingContext{RequestID: "test-request-id"},
+				term:       0,
+				routingCtx: &types.RoutingContext{},
 			},
 			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
-				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
-				headers := resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders()
-				foundRoutingStrategy := false
-				foundTargetPod := false
-				for _, header := range headers {
-					if header.Header.Key == HeaderRoutingStrategy {
-						foundRoutingStrategy = true
-						assert.Equal(t, string(routingalgorithms.RouterRandom), string(header.Header.RawValue))
-					}
-					if header.Header.Key == HeaderTargetPod {
-						foundTargetPod = true
-						assert.Equal(t, "1.2.3.4:8000", string(header.Header.RawValue))
+				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				// buildErrorResponse returns x-error-routing: true (no Content-Type in headers)
+				headers := resp.GetImmediateResponse().GetHeaders().GetSetHeaders()
+				assert.GreaterOrEqual(t, len(headers), 1)
+				foundErrorRouting := false
+				for _, h := range headers {
+					if h.Header.Key == HeaderErrorRouting && string(h.Header.RawValue) == "true" {
+						foundErrorRouting = true
+						break
 					}
 				}
-				assert.True(t, foundRoutingStrategy, "HeaderRoutingStrategy not found")
-				assert.True(t, foundTargetPod, "HeaderTargetPod not found")
+				assert.True(t, foundErrorRouting, "expected x-error-routing header")
 				assert.Equal(t, tt.expected.model, model)
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
 				assert.NotNil(t, routingCtx)
-				assert.Equal(t, routingalgorithms.RouterRandom, routingCtx.Algorithm)
 			},
 		},
 		{

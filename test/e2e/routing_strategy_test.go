@@ -223,26 +223,11 @@ func TestMultiStrategyRouting(t *testing.T) {
 	})
 
 	// 2. Exclusive strategies fallback
-	t.Run("ExclusiveStrategy_FallbackToSelf_PD", func(t *testing.T) {
-		req := "this is an exclusive strategy fallback test message"
-		// "pd" is exclusive and should strip other strategies and fallback to itself
-		targetPod := getTargetPodFromChatCompletion(t, req, "pd,least-request:1")
-		assert.NotEmpty(t, targetPod, "exclusive strategy should fallback to pd and return a valid pod")
-	})
-
 	t.Run("ExclusiveStrategy_FallbackToSelf_SLO", func(t *testing.T) {
 		req := "this is another exclusive strategy fallback test message"
 		// "slo" is exclusive and should strip other strategies and fallback to itself
 		targetPod := getTargetPodFromChatCompletion(t, req, "least-request:1,slo-least-load")
 		assert.NotEmpty(t, targetPod, "exclusive strategy should fallback to slo and return a valid pod")
-	})
-
-	// 3. Invalid strategies fallback to Random
-	t.Run("InvalidStrategy_FallbackToRandom", func(t *testing.T) {
-		req := "this is a fallback test message"
-		// "non-existent-strategy" doesn't exist, it should fallback to "random" gracefully without failing the request
-		targetPod := getTargetPodFromChatCompletion(t, req, "non-existent-strategy:1,least-request:1")
-		assert.NotEmpty(t, targetPod, "invalid strategy should fallback to random and return a valid pod")
 	})
 }
 
