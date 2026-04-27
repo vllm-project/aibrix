@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from aibrix.batch.job_entity import (
     BatchJob,
@@ -111,10 +111,11 @@ class EndpointNotSupported(RenderError):
 
 
 class ForbiddenOverride(RenderError):
-    def __init__(self, field: str):
+    def __init__(self, field: str, allowed: Iterable[str]):
+        allowed_list = ", ".join(f"'{a}'" for a in sorted(allowed))
         super().__init__(
             f"override field '{field}' is not in the override allowlist; "
-            f"only 'engine_args' may be overridden"
+            f"only {allowed_list} may be overridden"
         )
 
 
@@ -494,7 +495,10 @@ class JobManifestRenderer:
         if template_overrides:
             for key in template_overrides:
                 if key not in _TEMPLATE_OVERRIDE_ALLOWLIST:
-                    raise ForbiddenOverride(f"model_template.overrides.{key}")
+                    raise ForbiddenOverride(
+                        f"model_template.overrides.{key}",
+                        _TEMPLATE_OVERRIDE_ALLOWLIST,
+                    )
             ea_override = template_overrides.get("engine_args")
             if ea_override:
                 manifest = self._apply_engine_args_override(
@@ -504,7 +508,10 @@ class JobManifestRenderer:
         if profile_overrides:
             for key in profile_overrides:
                 if key not in _PROFILE_OVERRIDE_ALLOWLIST:
-                    raise ForbiddenOverride(f"profile.overrides.{key}")
+                    raise ForbiddenOverride(
+                        f"profile.overrides.{key}",
+                        _PROFILE_OVERRIDE_ALLOWLIST,
+                    )
             # scheduling override is roundtripped via annotations in
             # _apply_per_batch; nothing to mutate on the manifest itself.
 

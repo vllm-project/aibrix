@@ -226,7 +226,13 @@ class TestTemplateOverridesSpec:
 class TestProfileOverridesSpec:
     def test_scheduling_override_accepted(self):
         ovr = ProfileOverridesSpec(scheduling={"max_concurrency": 32})
-        assert ovr.scheduling == {"max_concurrency": 32}
+        assert ovr.scheduling is not None
+        assert ovr.scheduling.max_concurrency == 32
+        # Only the user-set field is preserved on the wire so partial
+        # overrides don't silently overwrite profile defaults downstream.
+        assert ovr.model_dump(exclude_unset=True) == {
+            "scheduling": {"max_concurrency": 32}
+        }
 
     def test_strict_rejects_template_side_keys(self):
         # engine_args belongs to the template namespace, not profile.

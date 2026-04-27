@@ -232,10 +232,10 @@ class TemplateRef(BaseModel):
 
         {
             "name": "llama3-70b-prod",
-            "version": "v1.3.0",      # optional; "" / null = latest active
-            "overrides": {            # optional, allowlisted
+            "version": "v1.3.0",  # optional; "" / null = latest active
+            "overrides": {  # optional, allowlisted
                 "engine_args": {"max_num_seqs": "512"}
-            }
+            },
         }
     """
 
@@ -267,9 +267,9 @@ class ProfileRef(BaseModel):
 
         {
             "name": "prod-24h",
-            "overrides": {                     # optional, allowlisted
+            "overrides": {  # optional, allowlisted
                 "scheduling": {"max_concurrency": 32}
-            }
+            },
         }
     """
 
@@ -378,8 +378,11 @@ class BatchSpec(BaseModel):
                 if (tref and tref.overrides)
                 else None
             ),
+            # exclude_unset preserves the "partial override" contract: we
+            # only forward fields the caller actually set, so the renderer
+            # doesn't silently overwrite profile defaults.
             profile_overrides=(
-                pref.overrides.model_dump(exclude_none=True)
+                pref.overrides.model_dump(exclude_unset=True)
                 if (pref and pref.overrides)
                 else None
             ),
@@ -416,7 +419,7 @@ def _validate_aibrix_extension(
         if resolved is None:
             available = template_registry.names()
             raise HTTPException(
-                status_code=404,
+                status_code=400,
                 detail=(
                     f"aibrix.model_template '{tref.name}@{tref.version}' not found. "
                     f"Templates with at least one active version: {available}"

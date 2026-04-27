@@ -26,7 +26,7 @@ when such fields carry non-default values.
 """
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
@@ -579,7 +579,7 @@ class ProfileOverridesSpec(_Strict):
     deadline-aware scheduler.
     """
 
-    scheduling: Optional[Dict[str, Any]] = Field(
+    scheduling: Optional[SchedulingSpec] = Field(
         default=None,
         description="Subset of SchedulingSpec fields to override on this batch",
     )

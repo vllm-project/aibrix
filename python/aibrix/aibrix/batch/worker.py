@@ -331,9 +331,9 @@ class BatchWorker:
 
     async def execute_batch_job(self, batch_job: BatchJob) -> str:
         """Execute the provided batch job."""
-        assert self.driver is not None, (
-            "Driver must be initialized before executing jobs"
-        )
+        assert (
+            self.driver is not None
+        ), "Driver must be initialized before executing jobs"
 
         job_id = batch_job.job_id
         if job_id is None:
@@ -390,9 +390,9 @@ class BatchWorker:
 
     async def wait_for_finalizing(self, job_id: str, max_wait: int = 600):
         """Wait for job to reach FINALIZING state."""
-        assert self.driver is not None, (
-            "Driver must be initialized before waiting for jobs"
-        )
+        assert (
+            self.driver is not None
+        ), "Driver must be initialized before waiting for jobs"
 
         start_time = time.time()
 
@@ -440,9 +440,9 @@ class BatchWorker:
                 return 1
 
             # Step 2: Wait for vLLM service to become ready
-            assert self.health_checker is not None, (
-                "Health checker should be initialized"
-            )
+            assert (
+                self.health_checker is not None
+            ), "Health checker should be initialized"
             if not await self.health_checker.wait_for_ready():
                 logger.error("vLLM service failed to become ready")
                 return 1
