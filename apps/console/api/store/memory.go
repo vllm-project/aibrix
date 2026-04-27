@@ -349,12 +349,26 @@ func (s *MemoryStore) UpdateModelDeploymentTemplate(_ context.Context, req *pb.U
 		if t.Id != req.GetId() || t.ModelId != req.GetModelId() {
 			continue
 		}
+		newName := t.Name
 		if req.GetName() != "" {
-			t.Name = req.GetName()
+			newName = req.GetName()
 		}
+		newVersion := t.Version
 		if req.GetVersion() != "" {
-			t.Version = req.GetVersion()
+			newVersion = req.GetVersion()
 		}
+		if newName != t.Name || newVersion != t.Version {
+			for _, other := range s.templates {
+				if other.Id == t.Id {
+					continue
+				}
+				if other.ModelId == t.ModelId && other.Name == newName && other.Version == newVersion {
+					return nil, status.Errorf(codes.AlreadyExists, "template %q@%q already exists for model %q", newName, newVersion, t.ModelId)
+				}
+			}
+		}
+		t.Name = newName
+		t.Version = newVersion
 		if req.GetStatus() != "" {
 			t.Status = req.GetStatus()
 		}

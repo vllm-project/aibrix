@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, Save, Trash2 } from 'lucide-react';
 import {
   createModelDeploymentTemplate,
@@ -615,8 +615,26 @@ function EngineArgsSection({
     onChange(next);
   };
 
+  // Stable per-row IDs for React keys. Using the editable map key as the React
+  // `key` would unmount/remount the input on every keystroke and drop focus —
+  // we mint an ID once per row and migrate it across renames.
+  const rowIdsRef = useRef<Map<string, string>>(new Map());
+  const rowIdFor = (k: string) => {
+    let id = rowIdsRef.current.get(k);
+    if (!id) {
+      id = `row_${Math.random().toString(36).slice(2, 10)}`;
+      rowIdsRef.current.set(k, id);
+    }
+    return id;
+  };
+
   const renameKey = (oldKey: string, newKey: string) => {
     if (newKey === oldKey) return;
+    const id = rowIdsRef.current.get(oldKey);
+    if (id) {
+      rowIdsRef.current.delete(oldKey);
+      if (newKey) rowIdsRef.current.set(newKey, id);
+    }
     const next = { ...args };
     if (oldKey in next) {
       const v = next[oldKey];
@@ -687,8 +705,8 @@ function EngineArgsSection({
           <p className="text-xs text-gray-400">No custom flags set.</p>
         ) : (
           <div className="space-y-2">
-            {customEntries.map(([k, v], idx) => (
-              <div key={`${k}-${idx}`} className="flex items-center gap-2">
+            {customEntries.map(([k, v]) => (
+              <div key={rowIdFor(k)} className="flex items-center gap-2">
                 <input
                   type="text"
                   value={k}
