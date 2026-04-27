@@ -454,21 +454,40 @@ func (x *DeleteDeploymentRequest) GetId() string {
 }
 
 type Job struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name           string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	InferenceId    string                 `protobuf:"bytes,3,opt,name=inference_id,json=inferenceId,proto3" json:"inference_id,omitempty"`
-	Model          string                 `protobuf:"bytes,4,opt,name=model,proto3" json:"model,omitempty"`
-	ModelId        string                 `protobuf:"bytes,5,opt,name=model_id,json=modelId,proto3" json:"model_id,omitempty"`
-	InputDataset   string                 `protobuf:"bytes,6,opt,name=input_dataset,json=inputDataset,proto3" json:"input_dataset,omitempty"`
-	InputDatasetId string                 `protobuf:"bytes,7,opt,name=input_dataset_id,json=inputDatasetId,proto3" json:"input_dataset_id,omitempty"`
-	CreateDate     string                 `protobuf:"bytes,8,opt,name=create_date,json=createDate,proto3" json:"create_date,omitempty"`
-	CreateTime     string                 `protobuf:"bytes,9,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
-	CreatedBy      string                 `protobuf:"bytes,10,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"`
-	Status         string                 `protobuf:"bytes,11,opt,name=status,proto3" json:"status,omitempty"` // "Completed", "Validating", "Failed"
-	FullPath       string                 `protobuf:"bytes,12,opt,name=full_path,json=fullPath,proto3" json:"full_path,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Identity
+	Id     string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Object string `protobuf:"bytes,2,opt,name=object,proto3" json:"object,omitempty"` // mirrors OpenAI's "batch"
+	// Configuration. Console-side names; the handler maps input_dataset /
+	// output_dataset / error_dataset to OpenAI's input_file_id / output_file_id /
+	// error_file_id when calling the metadata service.
+	Endpoint         string `protobuf:"bytes,3,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	Model            string `protobuf:"bytes,4,opt,name=model,proto3" json:"model,omitempty"`
+	InputDataset     string `protobuf:"bytes,5,opt,name=input_dataset,json=inputDataset,proto3" json:"input_dataset,omitempty"`
+	CompletionWindow string `protobuf:"bytes,6,opt,name=completion_window,json=completionWindow,proto3" json:"completion_window,omitempty"`
+	// 8-state OpenAI status:
+	// validating | in_progress | finalizing | completed | failed | expired | cancelling | cancelled
+	Status        string `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`
+	OutputDataset string `protobuf:"bytes,8,opt,name=output_dataset,json=outputDataset,proto3" json:"output_dataset,omitempty"`
+	ErrorDataset  string `protobuf:"bytes,9,opt,name=error_dataset,json=errorDataset,proto3" json:"error_dataset,omitempty"`
+	// Unix-second timestamps
+	CreatedAt     int64             `protobuf:"varint,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	InProgressAt  int64             `protobuf:"varint,11,opt,name=in_progress_at,json=inProgressAt,proto3" json:"in_progress_at,omitempty"`
+	ExpiresAt     int64             `protobuf:"varint,12,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	FinalizingAt  int64             `protobuf:"varint,13,opt,name=finalizing_at,json=finalizingAt,proto3" json:"finalizing_at,omitempty"`
+	CompletedAt   int64             `protobuf:"varint,14,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
+	FailedAt      int64             `protobuf:"varint,15,opt,name=failed_at,json=failedAt,proto3" json:"failed_at,omitempty"`
+	ExpiredAt     int64             `protobuf:"varint,16,opt,name=expired_at,json=expiredAt,proto3" json:"expired_at,omitempty"`
+	CancellingAt  int64             `protobuf:"varint,17,opt,name=cancelling_at,json=cancellingAt,proto3" json:"cancelling_at,omitempty"`
+	CancelledAt   int64             `protobuf:"varint,18,opt,name=cancelled_at,json=cancelledAt,proto3" json:"cancelled_at,omitempty"`
+	RequestCounts *JobRequestCounts `protobuf:"bytes,19,opt,name=request_counts,json=requestCounts,proto3" json:"request_counts,omitempty"`
+	Usage         *JobUsage         `protobuf:"bytes,20,opt,name=usage,proto3" json:"usage,omitempty"`
+	Metadata      map[string]string `protobuf:"bytes,21,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Console-owned fields (persisted in the store)
+	Name          string `protobuf:"bytes,100,opt,name=name,proto3" json:"name,omitempty"`                            // display name; resolved from metadata.display_name
+	CreatedBy     string `protobuf:"bytes,101,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"` // Console user that created the job
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Job) Reset() {
@@ -508,16 +527,16 @@ func (x *Job) GetId() string {
 	return ""
 }
 
-func (x *Job) GetName() string {
+func (x *Job) GetObject() string {
 	if x != nil {
-		return x.Name
+		return x.Object
 	}
 	return ""
 }
 
-func (x *Job) GetInferenceId() string {
+func (x *Job) GetEndpoint() string {
 	if x != nil {
-		return x.InferenceId
+		return x.Endpoint
 	}
 	return ""
 }
@@ -529,13 +548,6 @@ func (x *Job) GetModel() string {
 	return ""
 }
 
-func (x *Job) GetModelId() string {
-	if x != nil {
-		return x.ModelId
-	}
-	return ""
-}
-
 func (x *Job) GetInputDataset() string {
 	if x != nil {
 		return x.InputDataset
@@ -543,30 +555,9 @@ func (x *Job) GetInputDataset() string {
 	return ""
 }
 
-func (x *Job) GetInputDatasetId() string {
+func (x *Job) GetCompletionWindow() string {
 	if x != nil {
-		return x.InputDatasetId
-	}
-	return ""
-}
-
-func (x *Job) GetCreateDate() string {
-	if x != nil {
-		return x.CreateDate
-	}
-	return ""
-}
-
-func (x *Job) GetCreateTime() string {
-	if x != nil {
-		return x.CreateTime
-	}
-	return ""
-}
-
-func (x *Job) GetCreatedBy() string {
-	if x != nil {
-		return x.CreatedBy
+		return x.CompletionWindow
 	}
 	return ""
 }
@@ -578,24 +569,249 @@ func (x *Job) GetStatus() string {
 	return ""
 }
 
-func (x *Job) GetFullPath() string {
+func (x *Job) GetOutputDataset() string {
 	if x != nil {
-		return x.FullPath
+		return x.OutputDataset
 	}
 	return ""
 }
 
+func (x *Job) GetErrorDataset() string {
+	if x != nil {
+		return x.ErrorDataset
+	}
+	return ""
+}
+
+func (x *Job) GetCreatedAt() int64 {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return 0
+}
+
+func (x *Job) GetInProgressAt() int64 {
+	if x != nil {
+		return x.InProgressAt
+	}
+	return 0
+}
+
+func (x *Job) GetExpiresAt() int64 {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return 0
+}
+
+func (x *Job) GetFinalizingAt() int64 {
+	if x != nil {
+		return x.FinalizingAt
+	}
+	return 0
+}
+
+func (x *Job) GetCompletedAt() int64 {
+	if x != nil {
+		return x.CompletedAt
+	}
+	return 0
+}
+
+func (x *Job) GetFailedAt() int64 {
+	if x != nil {
+		return x.FailedAt
+	}
+	return 0
+}
+
+func (x *Job) GetExpiredAt() int64 {
+	if x != nil {
+		return x.ExpiredAt
+	}
+	return 0
+}
+
+func (x *Job) GetCancellingAt() int64 {
+	if x != nil {
+		return x.CancellingAt
+	}
+	return 0
+}
+
+func (x *Job) GetCancelledAt() int64 {
+	if x != nil {
+		return x.CancelledAt
+	}
+	return 0
+}
+
+func (x *Job) GetRequestCounts() *JobRequestCounts {
+	if x != nil {
+		return x.RequestCounts
+	}
+	return nil
+}
+
+func (x *Job) GetUsage() *JobUsage {
+	if x != nil {
+		return x.Usage
+	}
+	return nil
+}
+
+func (x *Job) GetMetadata() map[string]string {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *Job) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Job) GetCreatedBy() string {
+	if x != nil {
+		return x.CreatedBy
+	}
+	return ""
+}
+
+type JobRequestCounts struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Total         int32                  `protobuf:"varint,1,opt,name=total,proto3" json:"total,omitempty"`
+	Completed     int32                  `protobuf:"varint,2,opt,name=completed,proto3" json:"completed,omitempty"`
+	Failed        int32                  `protobuf:"varint,3,opt,name=failed,proto3" json:"failed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JobRequestCounts) Reset() {
+	*x = JobRequestCounts{}
+	mi := &file_console_v1_console_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JobRequestCounts) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JobRequestCounts) ProtoMessage() {}
+
+func (x *JobRequestCounts) ProtoReflect() protoreflect.Message {
+	mi := &file_console_v1_console_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JobRequestCounts.ProtoReflect.Descriptor instead.
+func (*JobRequestCounts) Descriptor() ([]byte, []int) {
+	return file_console_v1_console_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *JobRequestCounts) GetTotal() int32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+func (x *JobRequestCounts) GetCompleted() int32 {
+	if x != nil {
+		return x.Completed
+	}
+	return 0
+}
+
+func (x *JobRequestCounts) GetFailed() int32 {
+	if x != nil {
+		return x.Failed
+	}
+	return 0
+}
+
+type JobUsage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	InputTokens   int64                  `protobuf:"varint,1,opt,name=input_tokens,json=inputTokens,proto3" json:"input_tokens,omitempty"`
+	OutputTokens  int64                  `protobuf:"varint,2,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
+	TotalTokens   int64                  `protobuf:"varint,3,opt,name=total_tokens,json=totalTokens,proto3" json:"total_tokens,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JobUsage) Reset() {
+	*x = JobUsage{}
+	mi := &file_console_v1_console_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JobUsage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JobUsage) ProtoMessage() {}
+
+func (x *JobUsage) ProtoReflect() protoreflect.Message {
+	mi := &file_console_v1_console_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JobUsage.ProtoReflect.Descriptor instead.
+func (*JobUsage) Descriptor() ([]byte, []int) {
+	return file_console_v1_console_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *JobUsage) GetInputTokens() int64 {
+	if x != nil {
+		return x.InputTokens
+	}
+	return 0
+}
+
+func (x *JobUsage) GetOutputTokens() int64 {
+	if x != nil {
+		return x.OutputTokens
+	}
+	return 0
+}
+
+func (x *JobUsage) GetTotalTokens() int64 {
+	if x != nil {
+		return x.TotalTokens
+	}
+	return 0
+}
+
 type ListJobsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Search        string                 `protobuf:"bytes,1,opt,name=search,proto3" json:"search,omitempty"`
-	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	After         string                 `protobuf:"bytes,1,opt,name=after,proto3" json:"after,omitempty"` // pagination cursor (metadata service)
+	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListJobsRequest) Reset() {
 	*x = ListJobsRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[7]
+	mi := &file_console_v1_console_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -607,7 +823,7 @@ func (x *ListJobsRequest) String() string {
 func (*ListJobsRequest) ProtoMessage() {}
 
 func (x *ListJobsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[7]
+	mi := &file_console_v1_console_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -620,33 +836,36 @@ func (x *ListJobsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListJobsRequest.ProtoReflect.Descriptor instead.
 func (*ListJobsRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{7}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{9}
 }
 
-func (x *ListJobsRequest) GetSearch() string {
+func (x *ListJobsRequest) GetAfter() string {
 	if x != nil {
-		return x.Search
+		return x.After
 	}
 	return ""
 }
 
-func (x *ListJobsRequest) GetStatus() string {
+func (x *ListJobsRequest) GetLimit() int32 {
 	if x != nil {
-		return x.Status
+		return x.Limit
 	}
-	return ""
+	return 0
 }
 
 type ListJobsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Jobs          []*Job                 `protobuf:"bytes,1,rep,name=jobs,proto3" json:"jobs,omitempty"`
+	FirstId       string                 `protobuf:"bytes,2,opt,name=first_id,json=firstId,proto3" json:"first_id,omitempty"`
+	LastId        string                 `protobuf:"bytes,3,opt,name=last_id,json=lastId,proto3" json:"last_id,omitempty"`
+	HasMore       bool                   `protobuf:"varint,4,opt,name=has_more,json=hasMore,proto3" json:"has_more,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListJobsResponse) Reset() {
 	*x = ListJobsResponse{}
-	mi := &file_console_v1_console_proto_msgTypes[8]
+	mi := &file_console_v1_console_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -658,7 +877,7 @@ func (x *ListJobsResponse) String() string {
 func (*ListJobsResponse) ProtoMessage() {}
 
 func (x *ListJobsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[8]
+	mi := &file_console_v1_console_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -671,7 +890,7 @@ func (x *ListJobsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListJobsResponse.ProtoReflect.Descriptor instead.
 func (*ListJobsResponse) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{8}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ListJobsResponse) GetJobs() []*Job {
@@ -679,6 +898,27 @@ func (x *ListJobsResponse) GetJobs() []*Job {
 		return x.Jobs
 	}
 	return nil
+}
+
+func (x *ListJobsResponse) GetFirstId() string {
+	if x != nil {
+		return x.FirstId
+	}
+	return ""
+}
+
+func (x *ListJobsResponse) GetLastId() string {
+	if x != nil {
+		return x.LastId
+	}
+	return ""
+}
+
+func (x *ListJobsResponse) GetHasMore() bool {
+	if x != nil {
+		return x.HasMore
+	}
+	return false
 }
 
 type GetJobRequest struct {
@@ -690,7 +930,7 @@ type GetJobRequest struct {
 
 func (x *GetJobRequest) Reset() {
 	*x = GetJobRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[9]
+	mi := &file_console_v1_console_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -702,7 +942,7 @@ func (x *GetJobRequest) String() string {
 func (*GetJobRequest) ProtoMessage() {}
 
 func (x *GetJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[9]
+	mi := &file_console_v1_console_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -715,7 +955,7 @@ func (x *GetJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetJobRequest.ProtoReflect.Descriptor instead.
 func (*GetJobRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{9}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetJobRequest) GetId() string {
@@ -726,22 +966,26 @@ func (x *GetJobRequest) GetId() string {
 }
 
 type CreateJobRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Model         string                 `protobuf:"bytes,1,opt,name=model,proto3" json:"model,omitempty"`
-	DatasetId     string                 `protobuf:"bytes,2,opt,name=dataset_id,json=datasetId,proto3" json:"dataset_id,omitempty"`
-	DisplayName   string                 `protobuf:"bytes,3,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
-	MaxTokens     *int32                 `protobuf:"varint,4,opt,name=max_tokens,json=maxTokens,proto3,oneof" json:"max_tokens,omitempty"`
-	Temperature   *float64               `protobuf:"fixed64,5,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
-	TopP          *float64               `protobuf:"fixed64,6,opt,name=top_p,json=topP,proto3,oneof" json:"top_p,omitempty"`
-	N             *int32                 `protobuf:"varint,7,opt,name=n,proto3,oneof" json:"n,omitempty"`
-	Quantization  string                 `protobuf:"bytes,8,opt,name=quantization,proto3" json:"quantization,omitempty"`
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	InputDataset     string                 `protobuf:"bytes,1,opt,name=input_dataset,json=inputDataset,proto3" json:"input_dataset,omitempty"`             // Console naming; handler maps to OpenAI input_file_id
+	Endpoint         string                 `protobuf:"bytes,2,opt,name=endpoint,proto3" json:"endpoint,omitempty"`                                         // e.g. /v1/chat/completions
+	CompletionWindow string                 `protobuf:"bytes,3,opt,name=completion_window,json=completionWindow,proto3" json:"completion_window,omitempty"` // e.g. "24h"
+	Name             string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`                                                 // display name (stored in metadata.display_name)
+	// Optional batch-wide inference parameter overrides. Currently NOT applied
+	// by the handler — per-request values from the JSONL body take precedence.
+	// Reserved here so the Console contract is stable; future versions will
+	// route these into aibrix.overrides.engine_args.
+	MaxTokens     *int32   `protobuf:"varint,10,opt,name=max_tokens,json=maxTokens,proto3,oneof" json:"max_tokens,omitempty"`
+	Temperature   *float64 `protobuf:"fixed64,11,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
+	TopP          *float64 `protobuf:"fixed64,12,opt,name=top_p,json=topP,proto3,oneof" json:"top_p,omitempty"`
+	N             *int32   `protobuf:"varint,13,opt,name=n,proto3,oneof" json:"n,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateJobRequest) Reset() {
 	*x = CreateJobRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[10]
+	mi := &file_console_v1_console_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -753,7 +997,7 @@ func (x *CreateJobRequest) String() string {
 func (*CreateJobRequest) ProtoMessage() {}
 
 func (x *CreateJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[10]
+	mi := &file_console_v1_console_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -766,26 +1010,33 @@ func (x *CreateJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateJobRequest.ProtoReflect.Descriptor instead.
 func (*CreateJobRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{10}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{12}
 }
 
-func (x *CreateJobRequest) GetModel() string {
+func (x *CreateJobRequest) GetInputDataset() string {
 	if x != nil {
-		return x.Model
+		return x.InputDataset
 	}
 	return ""
 }
 
-func (x *CreateJobRequest) GetDatasetId() string {
+func (x *CreateJobRequest) GetEndpoint() string {
 	if x != nil {
-		return x.DatasetId
+		return x.Endpoint
 	}
 	return ""
 }
 
-func (x *CreateJobRequest) GetDisplayName() string {
+func (x *CreateJobRequest) GetCompletionWindow() string {
 	if x != nil {
-		return x.DisplayName
+		return x.CompletionWindow
+	}
+	return ""
+}
+
+func (x *CreateJobRequest) GetName() string {
+	if x != nil {
+		return x.Name
 	}
 	return ""
 }
@@ -818,9 +1069,46 @@ func (x *CreateJobRequest) GetN() int32 {
 	return 0
 }
 
-func (x *CreateJobRequest) GetQuantization() string {
+type CancelJobRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelJobRequest) Reset() {
+	*x = CancelJobRequest{}
+	mi := &file_console_v1_console_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelJobRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelJobRequest) ProtoMessage() {}
+
+func (x *CancelJobRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_console_v1_console_proto_msgTypes[13]
 	if x != nil {
-		return x.Quantization
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelJobRequest.ProtoReflect.Descriptor instead.
+func (*CancelJobRequest) Descriptor() ([]byte, []int) {
+	return file_console_v1_console_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *CancelJobRequest) GetId() string {
+	if x != nil {
+		return x.Id
 	}
 	return ""
 }
@@ -847,7 +1135,7 @@ type Model struct {
 
 func (x *Model) Reset() {
 	*x = Model{}
-	mi := &file_console_v1_console_proto_msgTypes[11]
+	mi := &file_console_v1_console_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -859,7 +1147,7 @@ func (x *Model) String() string {
 func (*Model) ProtoMessage() {}
 
 func (x *Model) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[11]
+	mi := &file_console_v1_console_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -872,7 +1160,7 @@ func (x *Model) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Model.ProtoReflect.Descriptor instead.
 func (*Model) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{11}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *Model) GetId() string {
@@ -988,7 +1276,7 @@ type ModelPricing struct {
 
 func (x *ModelPricing) Reset() {
 	*x = ModelPricing{}
-	mi := &file_console_v1_console_proto_msgTypes[12]
+	mi := &file_console_v1_console_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1000,7 +1288,7 @@ func (x *ModelPricing) String() string {
 func (*ModelPricing) ProtoMessage() {}
 
 func (x *ModelPricing) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[12]
+	mi := &file_console_v1_console_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1013,7 +1301,7 @@ func (x *ModelPricing) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelPricing.ProtoReflect.Descriptor instead.
 func (*ModelPricing) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{12}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ModelPricing) GetUncachedInput() string {
@@ -1078,7 +1366,7 @@ type ModelMetadata struct {
 
 func (x *ModelMetadata) Reset() {
 	*x = ModelMetadata{}
-	mi := &file_console_v1_console_proto_msgTypes[13]
+	mi := &file_console_v1_console_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1090,7 +1378,7 @@ func (x *ModelMetadata) String() string {
 func (*ModelMetadata) ProtoMessage() {}
 
 func (x *ModelMetadata) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[13]
+	mi := &file_console_v1_console_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1103,7 +1391,7 @@ func (x *ModelMetadata) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelMetadata.ProtoReflect.Descriptor instead.
 func (*ModelMetadata) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{13}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ModelMetadata) GetState() string {
@@ -1152,7 +1440,7 @@ type ModelSpecification struct {
 
 func (x *ModelSpecification) Reset() {
 	*x = ModelSpecification{}
-	mi := &file_console_v1_console_proto_msgTypes[14]
+	mi := &file_console_v1_console_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1164,7 +1452,7 @@ func (x *ModelSpecification) String() string {
 func (*ModelSpecification) ProtoMessage() {}
 
 func (x *ModelSpecification) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[14]
+	mi := &file_console_v1_console_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1177,7 +1465,7 @@ func (x *ModelSpecification) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelSpecification.ProtoReflect.Descriptor instead.
 func (*ModelSpecification) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{14}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ModelSpecification) GetCalibrated() bool {
@@ -1211,7 +1499,7 @@ type ListModelsRequest struct {
 
 func (x *ListModelsRequest) Reset() {
 	*x = ListModelsRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[15]
+	mi := &file_console_v1_console_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1223,7 +1511,7 @@ func (x *ListModelsRequest) String() string {
 func (*ListModelsRequest) ProtoMessage() {}
 
 func (x *ListModelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[15]
+	mi := &file_console_v1_console_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1236,7 +1524,7 @@ func (x *ListModelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListModelsRequest.ProtoReflect.Descriptor instead.
 func (*ListModelsRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{15}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ListModelsRequest) GetSearch() string {
@@ -1262,7 +1550,7 @@ type ListModelsResponse struct {
 
 func (x *ListModelsResponse) Reset() {
 	*x = ListModelsResponse{}
-	mi := &file_console_v1_console_proto_msgTypes[16]
+	mi := &file_console_v1_console_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1274,7 +1562,7 @@ func (x *ListModelsResponse) String() string {
 func (*ListModelsResponse) ProtoMessage() {}
 
 func (x *ListModelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[16]
+	mi := &file_console_v1_console_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1287,7 +1575,7 @@ func (x *ListModelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListModelsResponse.ProtoReflect.Descriptor instead.
 func (*ListModelsResponse) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{16}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ListModelsResponse) GetModels() []*Model {
@@ -1306,7 +1594,7 @@ type GetModelRequest struct {
 
 func (x *GetModelRequest) Reset() {
 	*x = GetModelRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[17]
+	mi := &file_console_v1_console_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1318,7 +1606,7 @@ func (x *GetModelRequest) String() string {
 func (*GetModelRequest) ProtoMessage() {}
 
 func (x *GetModelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[17]
+	mi := &file_console_v1_console_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1331,7 +1619,7 @@ func (x *GetModelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetModelRequest.ProtoReflect.Descriptor instead.
 func (*GetModelRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{17}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *GetModelRequest) GetId() string {
@@ -1353,7 +1641,7 @@ type APIKey struct {
 
 func (x *APIKey) Reset() {
 	*x = APIKey{}
-	mi := &file_console_v1_console_proto_msgTypes[18]
+	mi := &file_console_v1_console_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1365,7 +1653,7 @@ func (x *APIKey) String() string {
 func (*APIKey) ProtoMessage() {}
 
 func (x *APIKey) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[18]
+	mi := &file_console_v1_console_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1378,7 +1666,7 @@ func (x *APIKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use APIKey.ProtoReflect.Descriptor instead.
 func (*APIKey) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{18}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *APIKey) GetId() string {
@@ -1417,7 +1705,7 @@ type ListAPIKeysRequest struct {
 
 func (x *ListAPIKeysRequest) Reset() {
 	*x = ListAPIKeysRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[19]
+	mi := &file_console_v1_console_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1429,7 +1717,7 @@ func (x *ListAPIKeysRequest) String() string {
 func (*ListAPIKeysRequest) ProtoMessage() {}
 
 func (x *ListAPIKeysRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[19]
+	mi := &file_console_v1_console_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1442,7 +1730,7 @@ func (x *ListAPIKeysRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAPIKeysRequest.ProtoReflect.Descriptor instead.
 func (*ListAPIKeysRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{19}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{22}
 }
 
 type ListAPIKeysResponse struct {
@@ -1454,7 +1742,7 @@ type ListAPIKeysResponse struct {
 
 func (x *ListAPIKeysResponse) Reset() {
 	*x = ListAPIKeysResponse{}
-	mi := &file_console_v1_console_proto_msgTypes[20]
+	mi := &file_console_v1_console_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1466,7 +1754,7 @@ func (x *ListAPIKeysResponse) String() string {
 func (*ListAPIKeysResponse) ProtoMessage() {}
 
 func (x *ListAPIKeysResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[20]
+	mi := &file_console_v1_console_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1479,7 +1767,7 @@ func (x *ListAPIKeysResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAPIKeysResponse.ProtoReflect.Descriptor instead.
 func (*ListAPIKeysResponse) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{20}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ListAPIKeysResponse) GetApiKeys() []*APIKey {
@@ -1498,7 +1786,7 @@ type CreateAPIKeyRequest struct {
 
 func (x *CreateAPIKeyRequest) Reset() {
 	*x = CreateAPIKeyRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[21]
+	mi := &file_console_v1_console_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1510,7 +1798,7 @@ func (x *CreateAPIKeyRequest) String() string {
 func (*CreateAPIKeyRequest) ProtoMessage() {}
 
 func (x *CreateAPIKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[21]
+	mi := &file_console_v1_console_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1523,7 +1811,7 @@ func (x *CreateAPIKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAPIKeyRequest.ProtoReflect.Descriptor instead.
 func (*CreateAPIKeyRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{21}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *CreateAPIKeyRequest) GetName() string {
@@ -1543,7 +1831,7 @@ type CreateAPIKeyResponse struct {
 
 func (x *CreateAPIKeyResponse) Reset() {
 	*x = CreateAPIKeyResponse{}
-	mi := &file_console_v1_console_proto_msgTypes[22]
+	mi := &file_console_v1_console_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1555,7 +1843,7 @@ func (x *CreateAPIKeyResponse) String() string {
 func (*CreateAPIKeyResponse) ProtoMessage() {}
 
 func (x *CreateAPIKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[22]
+	mi := &file_console_v1_console_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1568,7 +1856,7 @@ func (x *CreateAPIKeyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAPIKeyResponse.ProtoReflect.Descriptor instead.
 func (*CreateAPIKeyResponse) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{22}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CreateAPIKeyResponse) GetApiKey() *APIKey {
@@ -1594,7 +1882,7 @@ type DeleteAPIKeyRequest struct {
 
 func (x *DeleteAPIKeyRequest) Reset() {
 	*x = DeleteAPIKeyRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[23]
+	mi := &file_console_v1_console_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1606,7 +1894,7 @@ func (x *DeleteAPIKeyRequest) String() string {
 func (*DeleteAPIKeyRequest) ProtoMessage() {}
 
 func (x *DeleteAPIKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[23]
+	mi := &file_console_v1_console_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1619,7 +1907,7 @@ func (x *DeleteAPIKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteAPIKeyRequest.ProtoReflect.Descriptor instead.
 func (*DeleteAPIKeyRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{23}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *DeleteAPIKeyRequest) GetId() string {
@@ -1639,7 +1927,7 @@ type Secret struct {
 
 func (x *Secret) Reset() {
 	*x = Secret{}
-	mi := &file_console_v1_console_proto_msgTypes[24]
+	mi := &file_console_v1_console_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1651,7 +1939,7 @@ func (x *Secret) String() string {
 func (*Secret) ProtoMessage() {}
 
 func (x *Secret) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[24]
+	mi := &file_console_v1_console_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1664,7 +1952,7 @@ func (x *Secret) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Secret.ProtoReflect.Descriptor instead.
 func (*Secret) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{24}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *Secret) GetId() string {
@@ -1690,7 +1978,7 @@ type ListSecretsRequest struct {
 
 func (x *ListSecretsRequest) Reset() {
 	*x = ListSecretsRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[25]
+	mi := &file_console_v1_console_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1702,7 +1990,7 @@ func (x *ListSecretsRequest) String() string {
 func (*ListSecretsRequest) ProtoMessage() {}
 
 func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[25]
+	mi := &file_console_v1_console_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1715,7 +2003,7 @@ func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecretsRequest.ProtoReflect.Descriptor instead.
 func (*ListSecretsRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{25}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ListSecretsRequest) GetSearch() string {
@@ -1734,7 +2022,7 @@ type ListSecretsResponse struct {
 
 func (x *ListSecretsResponse) Reset() {
 	*x = ListSecretsResponse{}
-	mi := &file_console_v1_console_proto_msgTypes[26]
+	mi := &file_console_v1_console_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1746,7 +2034,7 @@ func (x *ListSecretsResponse) String() string {
 func (*ListSecretsResponse) ProtoMessage() {}
 
 func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[26]
+	mi := &file_console_v1_console_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1759,7 +2047,7 @@ func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecretsResponse.ProtoReflect.Descriptor instead.
 func (*ListSecretsResponse) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{26}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ListSecretsResponse) GetSecrets() []*Secret {
@@ -1779,7 +2067,7 @@ type CreateSecretRequest struct {
 
 func (x *CreateSecretRequest) Reset() {
 	*x = CreateSecretRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[27]
+	mi := &file_console_v1_console_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1791,7 +2079,7 @@ func (x *CreateSecretRequest) String() string {
 func (*CreateSecretRequest) ProtoMessage() {}
 
 func (x *CreateSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[27]
+	mi := &file_console_v1_console_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1804,7 +2092,7 @@ func (x *CreateSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSecretRequest.ProtoReflect.Descriptor instead.
 func (*CreateSecretRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{27}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *CreateSecretRequest) GetName() string {
@@ -1830,7 +2118,7 @@ type DeleteSecretRequest struct {
 
 func (x *DeleteSecretRequest) Reset() {
 	*x = DeleteSecretRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[28]
+	mi := &file_console_v1_console_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1842,7 +2130,7 @@ func (x *DeleteSecretRequest) String() string {
 func (*DeleteSecretRequest) ProtoMessage() {}
 
 func (x *DeleteSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[28]
+	mi := &file_console_v1_console_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1855,7 +2143,7 @@ func (x *DeleteSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSecretRequest.ProtoReflect.Descriptor instead.
 func (*DeleteSecretRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{28}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *DeleteSecretRequest) GetId() string {
@@ -1879,7 +2167,7 @@ type Quota struct {
 
 func (x *Quota) Reset() {
 	*x = Quota{}
-	mi := &file_console_v1_console_proto_msgTypes[29]
+	mi := &file_console_v1_console_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1891,7 +2179,7 @@ func (x *Quota) String() string {
 func (*Quota) ProtoMessage() {}
 
 func (x *Quota) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[29]
+	mi := &file_console_v1_console_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1904,7 +2192,7 @@ func (x *Quota) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Quota.ProtoReflect.Descriptor instead.
 func (*Quota) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{29}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *Quota) GetId() string {
@@ -1958,7 +2246,7 @@ type ListQuotasRequest struct {
 
 func (x *ListQuotasRequest) Reset() {
 	*x = ListQuotasRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[30]
+	mi := &file_console_v1_console_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1970,7 +2258,7 @@ func (x *ListQuotasRequest) String() string {
 func (*ListQuotasRequest) ProtoMessage() {}
 
 func (x *ListQuotasRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[30]
+	mi := &file_console_v1_console_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1983,7 +2271,7 @@ func (x *ListQuotasRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListQuotasRequest.ProtoReflect.Descriptor instead.
 func (*ListQuotasRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{30}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ListQuotasRequest) GetSearch() string {
@@ -2002,7 +2290,7 @@ type ListQuotasResponse struct {
 
 func (x *ListQuotasResponse) Reset() {
 	*x = ListQuotasResponse{}
-	mi := &file_console_v1_console_proto_msgTypes[31]
+	mi := &file_console_v1_console_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2014,7 +2302,7 @@ func (x *ListQuotasResponse) String() string {
 func (*ListQuotasResponse) ProtoMessage() {}
 
 func (x *ListQuotasResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[31]
+	mi := &file_console_v1_console_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2027,7 +2315,7 @@ func (x *ListQuotasResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListQuotasResponse.ProtoReflect.Descriptor instead.
 func (*ListQuotasResponse) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{31}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ListQuotasResponse) GetQuotas() []*Quota {
@@ -2079,46 +2367,74 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\x11enable_multi_lora\x18\n" +
 	" \x01(\bR\x0fenableMultiLora\")\n" +
 	"\x17DeleteDeploymentRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\xe2\x02\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xe1\x06\n" +
 	"\x03Job\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\x12!\n" +
-	"\finference_id\x18\x03 \x01(\tR\vinferenceId\x12\x14\n" +
-	"\x05model\x18\x04 \x01(\tR\x05model\x12\x19\n" +
-	"\bmodel_id\x18\x05 \x01(\tR\amodelId\x12#\n" +
-	"\rinput_dataset\x18\x06 \x01(\tR\finputDataset\x12(\n" +
-	"\x10input_dataset_id\x18\a \x01(\tR\x0einputDatasetId\x12\x1f\n" +
-	"\vcreate_date\x18\b \x01(\tR\n" +
-	"createDate\x12\x1f\n" +
-	"\vcreate_time\x18\t \x01(\tR\n" +
-	"createTime\x12\x1d\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
+	"\x06object\x18\x02 \x01(\tR\x06object\x12\x1a\n" +
+	"\bendpoint\x18\x03 \x01(\tR\bendpoint\x12\x14\n" +
+	"\x05model\x18\x04 \x01(\tR\x05model\x12#\n" +
+	"\rinput_dataset\x18\x05 \x01(\tR\finputDataset\x12+\n" +
+	"\x11completion_window\x18\x06 \x01(\tR\x10completionWindow\x12\x16\n" +
+	"\x06status\x18\a \x01(\tR\x06status\x12%\n" +
+	"\x0eoutput_dataset\x18\b \x01(\tR\routputDataset\x12#\n" +
+	"\rerror_dataset\x18\t \x01(\tR\ferrorDataset\x12\x1d\n" +
 	"\n" +
-	"created_by\x18\n" +
-	" \x01(\tR\tcreatedBy\x12\x16\n" +
-	"\x06status\x18\v \x01(\tR\x06status\x12\x1b\n" +
-	"\tfull_path\x18\f \x01(\tR\bfullPath\"A\n" +
-	"\x0fListJobsRequest\x12\x16\n" +
-	"\x06search\x18\x01 \x01(\tR\x06search\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"7\n" +
+	"created_at\x18\n" +
+	" \x01(\x03R\tcreatedAt\x12$\n" +
+	"\x0ein_progress_at\x18\v \x01(\x03R\finProgressAt\x12\x1d\n" +
+	"\n" +
+	"expires_at\x18\f \x01(\x03R\texpiresAt\x12#\n" +
+	"\rfinalizing_at\x18\r \x01(\x03R\ffinalizingAt\x12!\n" +
+	"\fcompleted_at\x18\x0e \x01(\x03R\vcompletedAt\x12\x1b\n" +
+	"\tfailed_at\x18\x0f \x01(\x03R\bfailedAt\x12\x1d\n" +
+	"\n" +
+	"expired_at\x18\x10 \x01(\x03R\texpiredAt\x12#\n" +
+	"\rcancelling_at\x18\x11 \x01(\x03R\fcancellingAt\x12!\n" +
+	"\fcancelled_at\x18\x12 \x01(\x03R\vcancelledAt\x12C\n" +
+	"\x0erequest_counts\x18\x13 \x01(\v2\x1c.console.v1.JobRequestCountsR\rrequestCounts\x12*\n" +
+	"\x05usage\x18\x14 \x01(\v2\x14.console.v1.JobUsageR\x05usage\x129\n" +
+	"\bmetadata\x18\x15 \x03(\v2\x1d.console.v1.Job.MetadataEntryR\bmetadata\x12\x12\n" +
+	"\x04name\x18d \x01(\tR\x04name\x12\x1d\n" +
+	"\n" +
+	"created_by\x18e \x01(\tR\tcreatedBy\x1a;\n" +
+	"\rMetadataEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"^\n" +
+	"\x10JobRequestCounts\x12\x14\n" +
+	"\x05total\x18\x01 \x01(\x05R\x05total\x12\x1c\n" +
+	"\tcompleted\x18\x02 \x01(\x05R\tcompleted\x12\x16\n" +
+	"\x06failed\x18\x03 \x01(\x05R\x06failed\"u\n" +
+	"\bJobUsage\x12!\n" +
+	"\finput_tokens\x18\x01 \x01(\x03R\vinputTokens\x12#\n" +
+	"\routput_tokens\x18\x02 \x01(\x03R\foutputTokens\x12!\n" +
+	"\ftotal_tokens\x18\x03 \x01(\x03R\vtotalTokens\"=\n" +
+	"\x0fListJobsRequest\x12\x14\n" +
+	"\x05after\x18\x01 \x01(\tR\x05after\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\x05R\x05limit\"\x86\x01\n" +
 	"\x10ListJobsResponse\x12#\n" +
-	"\x04jobs\x18\x01 \x03(\v2\x0f.console.v1.JobR\x04jobs\"\x1f\n" +
+	"\x04jobs\x18\x01 \x03(\v2\x0f.console.v1.JobR\x04jobs\x12\x19\n" +
+	"\bfirst_id\x18\x02 \x01(\tR\afirstId\x12\x17\n" +
+	"\alast_id\x18\x03 \x01(\tR\x06lastId\x12\x19\n" +
+	"\bhas_more\x18\x04 \x01(\bR\ahasMore\"\x1f\n" +
 	"\rGetJobRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\xb5\x02\n" +
-	"\x10CreateJobRequest\x12\x14\n" +
-	"\x05model\x18\x01 \x01(\tR\x05model\x12\x1d\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xbb\x02\n" +
+	"\x10CreateJobRequest\x12#\n" +
+	"\rinput_dataset\x18\x01 \x01(\tR\finputDataset\x12\x1a\n" +
+	"\bendpoint\x18\x02 \x01(\tR\bendpoint\x12+\n" +
+	"\x11completion_window\x18\x03 \x01(\tR\x10completionWindow\x12\x12\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\x12\"\n" +
 	"\n" +
-	"dataset_id\x18\x02 \x01(\tR\tdatasetId\x12!\n" +
-	"\fdisplay_name\x18\x03 \x01(\tR\vdisplayName\x12\"\n" +
-	"\n" +
-	"max_tokens\x18\x04 \x01(\x05H\x00R\tmaxTokens\x88\x01\x01\x12%\n" +
-	"\vtemperature\x18\x05 \x01(\x01H\x01R\vtemperature\x88\x01\x01\x12\x18\n" +
-	"\x05top_p\x18\x06 \x01(\x01H\x02R\x04topP\x88\x01\x01\x12\x11\n" +
-	"\x01n\x18\a \x01(\x05H\x03R\x01n\x88\x01\x01\x12\"\n" +
-	"\fquantization\x18\b \x01(\tR\fquantizationB\r\n" +
+	"max_tokens\x18\n" +
+	" \x01(\x05H\x00R\tmaxTokens\x88\x01\x01\x12%\n" +
+	"\vtemperature\x18\v \x01(\x01H\x01R\vtemperature\x88\x01\x01\x12\x18\n" +
+	"\x05top_p\x18\f \x01(\x01H\x02R\x04topP\x88\x01\x01\x12\x11\n" +
+	"\x01n\x18\r \x01(\x05H\x03R\x01n\x88\x01\x01B\r\n" +
 	"\v_max_tokensB\x0e\n" +
 	"\f_temperatureB\b\n" +
 	"\x06_top_pB\x04\n" +
-	"\x02_n\"\xea\x03\n" +
+	"\x02_n\"\"\n" +
+	"\x10CancelJobRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xea\x03\n" +
 	"\x05Model\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
@@ -2213,12 +2529,13 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\x0fListDeployments\x12\".console.v1.ListDeploymentsRequest\x1a#.console.v1.ListDeploymentsResponse\"\x1b\x82\xd3\xe4\x93\x02\x15\x12\x13/api/v1/deployments\x12k\n" +
 	"\rGetDeployment\x12 .console.v1.GetDeploymentRequest\x1a\x16.console.v1.Deployment\" \x82\xd3\xe4\x93\x02\x1a\x12\x18/api/v1/deployments/{id}\x12o\n" +
 	"\x10CreateDeployment\x12#.console.v1.CreateDeploymentRequest\x1a\x16.console.v1.Deployment\"\x1e\x82\xd3\xe4\x93\x02\x18:\x01*\"\x13/api/v1/deployments\x12q\n" +
-	"\x10DeleteDeployment\x12#.console.v1.DeleteDeploymentRequest\x1a\x16.google.protobuf.Empty\" \x82\xd3\xe4\x93\x02\x1a*\x18/api/v1/deployments/{id}2\x8f\x02\n" +
+	"\x10DeleteDeployment\x12#.console.v1.DeleteDeploymentRequest\x1a\x16.google.protobuf.Empty\" \x82\xd3\xe4\x93\x02\x1a*\x18/api/v1/deployments/{id}2\xf0\x02\n" +
 	"\n" +
 	"JobService\x12[\n" +
 	"\bListJobs\x12\x1b.console.v1.ListJobsRequest\x1a\x1c.console.v1.ListJobsResponse\"\x14\x82\xd3\xe4\x93\x02\x0e\x12\f/api/v1/jobs\x12O\n" +
 	"\x06GetJob\x12\x19.console.v1.GetJobRequest\x1a\x0f.console.v1.Job\"\x19\x82\xd3\xe4\x93\x02\x13\x12\x11/api/v1/jobs/{id}\x12S\n" +
-	"\tCreateJob\x12\x1c.console.v1.CreateJobRequest\x1a\x0f.console.v1.Job\"\x17\x82\xd3\xe4\x93\x02\x11:\x01*\"\f/api/v1/jobs2\xcc\x01\n" +
+	"\tCreateJob\x12\x1c.console.v1.CreateJobRequest\x1a\x0f.console.v1.Job\"\x17\x82\xd3\xe4\x93\x02\x11:\x01*\"\f/api/v1/jobs\x12_\n" +
+	"\tCancelJob\x12\x1c.console.v1.CancelJobRequest\x1a\x0f.console.v1.Job\"#\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/api/v1/jobs/{id}/cancel2\xcc\x01\n" +
 	"\fModelService\x12c\n" +
 	"\n" +
 	"ListModels\x12\x1d.console.v1.ListModelsRequest\x1a\x1e.console.v1.ListModelsResponse\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/api/v1/models\x12W\n" +
@@ -2247,7 +2564,7 @@ func file_console_v1_console_proto_rawDescGZIP() []byte {
 	return file_console_v1_console_proto_rawDescData
 }
 
-var file_console_v1_console_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_console_v1_console_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
 var file_console_v1_console_proto_goTypes = []any{
 	(*Deployment)(nil),              // 0: console.v1.Deployment
 	(*ListDeploymentsRequest)(nil),  // 1: console.v1.ListDeploymentsRequest
@@ -2256,81 +2573,90 @@ var file_console_v1_console_proto_goTypes = []any{
 	(*CreateDeploymentRequest)(nil), // 4: console.v1.CreateDeploymentRequest
 	(*DeleteDeploymentRequest)(nil), // 5: console.v1.DeleteDeploymentRequest
 	(*Job)(nil),                     // 6: console.v1.Job
-	(*ListJobsRequest)(nil),         // 7: console.v1.ListJobsRequest
-	(*ListJobsResponse)(nil),        // 8: console.v1.ListJobsResponse
-	(*GetJobRequest)(nil),           // 9: console.v1.GetJobRequest
-	(*CreateJobRequest)(nil),        // 10: console.v1.CreateJobRequest
-	(*Model)(nil),                   // 11: console.v1.Model
-	(*ModelPricing)(nil),            // 12: console.v1.ModelPricing
-	(*ModelMetadata)(nil),           // 13: console.v1.ModelMetadata
-	(*ModelSpecification)(nil),      // 14: console.v1.ModelSpecification
-	(*ListModelsRequest)(nil),       // 15: console.v1.ListModelsRequest
-	(*ListModelsResponse)(nil),      // 16: console.v1.ListModelsResponse
-	(*GetModelRequest)(nil),         // 17: console.v1.GetModelRequest
-	(*APIKey)(nil),                  // 18: console.v1.APIKey
-	(*ListAPIKeysRequest)(nil),      // 19: console.v1.ListAPIKeysRequest
-	(*ListAPIKeysResponse)(nil),     // 20: console.v1.ListAPIKeysResponse
-	(*CreateAPIKeyRequest)(nil),     // 21: console.v1.CreateAPIKeyRequest
-	(*CreateAPIKeyResponse)(nil),    // 22: console.v1.CreateAPIKeyResponse
-	(*DeleteAPIKeyRequest)(nil),     // 23: console.v1.DeleteAPIKeyRequest
-	(*Secret)(nil),                  // 24: console.v1.Secret
-	(*ListSecretsRequest)(nil),      // 25: console.v1.ListSecretsRequest
-	(*ListSecretsResponse)(nil),     // 26: console.v1.ListSecretsResponse
-	(*CreateSecretRequest)(nil),     // 27: console.v1.CreateSecretRequest
-	(*DeleteSecretRequest)(nil),     // 28: console.v1.DeleteSecretRequest
-	(*Quota)(nil),                   // 29: console.v1.Quota
-	(*ListQuotasRequest)(nil),       // 30: console.v1.ListQuotasRequest
-	(*ListQuotasResponse)(nil),      // 31: console.v1.ListQuotasResponse
-	(*emptypb.Empty)(nil),           // 32: google.protobuf.Empty
+	(*JobRequestCounts)(nil),        // 7: console.v1.JobRequestCounts
+	(*JobUsage)(nil),                // 8: console.v1.JobUsage
+	(*ListJobsRequest)(nil),         // 9: console.v1.ListJobsRequest
+	(*ListJobsResponse)(nil),        // 10: console.v1.ListJobsResponse
+	(*GetJobRequest)(nil),           // 11: console.v1.GetJobRequest
+	(*CreateJobRequest)(nil),        // 12: console.v1.CreateJobRequest
+	(*CancelJobRequest)(nil),        // 13: console.v1.CancelJobRequest
+	(*Model)(nil),                   // 14: console.v1.Model
+	(*ModelPricing)(nil),            // 15: console.v1.ModelPricing
+	(*ModelMetadata)(nil),           // 16: console.v1.ModelMetadata
+	(*ModelSpecification)(nil),      // 17: console.v1.ModelSpecification
+	(*ListModelsRequest)(nil),       // 18: console.v1.ListModelsRequest
+	(*ListModelsResponse)(nil),      // 19: console.v1.ListModelsResponse
+	(*GetModelRequest)(nil),         // 20: console.v1.GetModelRequest
+	(*APIKey)(nil),                  // 21: console.v1.APIKey
+	(*ListAPIKeysRequest)(nil),      // 22: console.v1.ListAPIKeysRequest
+	(*ListAPIKeysResponse)(nil),     // 23: console.v1.ListAPIKeysResponse
+	(*CreateAPIKeyRequest)(nil),     // 24: console.v1.CreateAPIKeyRequest
+	(*CreateAPIKeyResponse)(nil),    // 25: console.v1.CreateAPIKeyResponse
+	(*DeleteAPIKeyRequest)(nil),     // 26: console.v1.DeleteAPIKeyRequest
+	(*Secret)(nil),                  // 27: console.v1.Secret
+	(*ListSecretsRequest)(nil),      // 28: console.v1.ListSecretsRequest
+	(*ListSecretsResponse)(nil),     // 29: console.v1.ListSecretsResponse
+	(*CreateSecretRequest)(nil),     // 30: console.v1.CreateSecretRequest
+	(*DeleteSecretRequest)(nil),     // 31: console.v1.DeleteSecretRequest
+	(*Quota)(nil),                   // 32: console.v1.Quota
+	(*ListQuotasRequest)(nil),       // 33: console.v1.ListQuotasRequest
+	(*ListQuotasResponse)(nil),      // 34: console.v1.ListQuotasResponse
+	nil,                             // 35: console.v1.Job.MetadataEntry
+	(*emptypb.Empty)(nil),           // 36: google.protobuf.Empty
 }
 var file_console_v1_console_proto_depIdxs = []int32{
 	0,  // 0: console.v1.ListDeploymentsResponse.deployments:type_name -> console.v1.Deployment
-	6,  // 1: console.v1.ListJobsResponse.jobs:type_name -> console.v1.Job
-	12, // 2: console.v1.Model.pricing:type_name -> console.v1.ModelPricing
-	13, // 3: console.v1.Model.metadata:type_name -> console.v1.ModelMetadata
-	14, // 4: console.v1.Model.specification:type_name -> console.v1.ModelSpecification
-	11, // 5: console.v1.ListModelsResponse.models:type_name -> console.v1.Model
-	18, // 6: console.v1.ListAPIKeysResponse.api_keys:type_name -> console.v1.APIKey
-	18, // 7: console.v1.CreateAPIKeyResponse.api_key:type_name -> console.v1.APIKey
-	24, // 8: console.v1.ListSecretsResponse.secrets:type_name -> console.v1.Secret
-	29, // 9: console.v1.ListQuotasResponse.quotas:type_name -> console.v1.Quota
-	1,  // 10: console.v1.DeploymentService.ListDeployments:input_type -> console.v1.ListDeploymentsRequest
-	3,  // 11: console.v1.DeploymentService.GetDeployment:input_type -> console.v1.GetDeploymentRequest
-	4,  // 12: console.v1.DeploymentService.CreateDeployment:input_type -> console.v1.CreateDeploymentRequest
-	5,  // 13: console.v1.DeploymentService.DeleteDeployment:input_type -> console.v1.DeleteDeploymentRequest
-	7,  // 14: console.v1.JobService.ListJobs:input_type -> console.v1.ListJobsRequest
-	9,  // 15: console.v1.JobService.GetJob:input_type -> console.v1.GetJobRequest
-	10, // 16: console.v1.JobService.CreateJob:input_type -> console.v1.CreateJobRequest
-	15, // 17: console.v1.ModelService.ListModels:input_type -> console.v1.ListModelsRequest
-	17, // 18: console.v1.ModelService.GetModel:input_type -> console.v1.GetModelRequest
-	19, // 19: console.v1.APIKeyService.ListAPIKeys:input_type -> console.v1.ListAPIKeysRequest
-	21, // 20: console.v1.APIKeyService.CreateAPIKey:input_type -> console.v1.CreateAPIKeyRequest
-	23, // 21: console.v1.APIKeyService.DeleteAPIKey:input_type -> console.v1.DeleteAPIKeyRequest
-	25, // 22: console.v1.SecretService.ListSecrets:input_type -> console.v1.ListSecretsRequest
-	27, // 23: console.v1.SecretService.CreateSecret:input_type -> console.v1.CreateSecretRequest
-	28, // 24: console.v1.SecretService.DeleteSecret:input_type -> console.v1.DeleteSecretRequest
-	30, // 25: console.v1.QuotaService.ListQuotas:input_type -> console.v1.ListQuotasRequest
-	2,  // 26: console.v1.DeploymentService.ListDeployments:output_type -> console.v1.ListDeploymentsResponse
-	0,  // 27: console.v1.DeploymentService.GetDeployment:output_type -> console.v1.Deployment
-	0,  // 28: console.v1.DeploymentService.CreateDeployment:output_type -> console.v1.Deployment
-	32, // 29: console.v1.DeploymentService.DeleteDeployment:output_type -> google.protobuf.Empty
-	8,  // 30: console.v1.JobService.ListJobs:output_type -> console.v1.ListJobsResponse
-	6,  // 31: console.v1.JobService.GetJob:output_type -> console.v1.Job
-	6,  // 32: console.v1.JobService.CreateJob:output_type -> console.v1.Job
-	16, // 33: console.v1.ModelService.ListModels:output_type -> console.v1.ListModelsResponse
-	11, // 34: console.v1.ModelService.GetModel:output_type -> console.v1.Model
-	20, // 35: console.v1.APIKeyService.ListAPIKeys:output_type -> console.v1.ListAPIKeysResponse
-	22, // 36: console.v1.APIKeyService.CreateAPIKey:output_type -> console.v1.CreateAPIKeyResponse
-	32, // 37: console.v1.APIKeyService.DeleteAPIKey:output_type -> google.protobuf.Empty
-	26, // 38: console.v1.SecretService.ListSecrets:output_type -> console.v1.ListSecretsResponse
-	24, // 39: console.v1.SecretService.CreateSecret:output_type -> console.v1.Secret
-	32, // 40: console.v1.SecretService.DeleteSecret:output_type -> google.protobuf.Empty
-	31, // 41: console.v1.QuotaService.ListQuotas:output_type -> console.v1.ListQuotasResponse
-	26, // [26:42] is the sub-list for method output_type
-	10, // [10:26] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	7,  // 1: console.v1.Job.request_counts:type_name -> console.v1.JobRequestCounts
+	8,  // 2: console.v1.Job.usage:type_name -> console.v1.JobUsage
+	35, // 3: console.v1.Job.metadata:type_name -> console.v1.Job.MetadataEntry
+	6,  // 4: console.v1.ListJobsResponse.jobs:type_name -> console.v1.Job
+	15, // 5: console.v1.Model.pricing:type_name -> console.v1.ModelPricing
+	16, // 6: console.v1.Model.metadata:type_name -> console.v1.ModelMetadata
+	17, // 7: console.v1.Model.specification:type_name -> console.v1.ModelSpecification
+	14, // 8: console.v1.ListModelsResponse.models:type_name -> console.v1.Model
+	21, // 9: console.v1.ListAPIKeysResponse.api_keys:type_name -> console.v1.APIKey
+	21, // 10: console.v1.CreateAPIKeyResponse.api_key:type_name -> console.v1.APIKey
+	27, // 11: console.v1.ListSecretsResponse.secrets:type_name -> console.v1.Secret
+	32, // 12: console.v1.ListQuotasResponse.quotas:type_name -> console.v1.Quota
+	1,  // 13: console.v1.DeploymentService.ListDeployments:input_type -> console.v1.ListDeploymentsRequest
+	3,  // 14: console.v1.DeploymentService.GetDeployment:input_type -> console.v1.GetDeploymentRequest
+	4,  // 15: console.v1.DeploymentService.CreateDeployment:input_type -> console.v1.CreateDeploymentRequest
+	5,  // 16: console.v1.DeploymentService.DeleteDeployment:input_type -> console.v1.DeleteDeploymentRequest
+	9,  // 17: console.v1.JobService.ListJobs:input_type -> console.v1.ListJobsRequest
+	11, // 18: console.v1.JobService.GetJob:input_type -> console.v1.GetJobRequest
+	12, // 19: console.v1.JobService.CreateJob:input_type -> console.v1.CreateJobRequest
+	13, // 20: console.v1.JobService.CancelJob:input_type -> console.v1.CancelJobRequest
+	18, // 21: console.v1.ModelService.ListModels:input_type -> console.v1.ListModelsRequest
+	20, // 22: console.v1.ModelService.GetModel:input_type -> console.v1.GetModelRequest
+	22, // 23: console.v1.APIKeyService.ListAPIKeys:input_type -> console.v1.ListAPIKeysRequest
+	24, // 24: console.v1.APIKeyService.CreateAPIKey:input_type -> console.v1.CreateAPIKeyRequest
+	26, // 25: console.v1.APIKeyService.DeleteAPIKey:input_type -> console.v1.DeleteAPIKeyRequest
+	28, // 26: console.v1.SecretService.ListSecrets:input_type -> console.v1.ListSecretsRequest
+	30, // 27: console.v1.SecretService.CreateSecret:input_type -> console.v1.CreateSecretRequest
+	31, // 28: console.v1.SecretService.DeleteSecret:input_type -> console.v1.DeleteSecretRequest
+	33, // 29: console.v1.QuotaService.ListQuotas:input_type -> console.v1.ListQuotasRequest
+	2,  // 30: console.v1.DeploymentService.ListDeployments:output_type -> console.v1.ListDeploymentsResponse
+	0,  // 31: console.v1.DeploymentService.GetDeployment:output_type -> console.v1.Deployment
+	0,  // 32: console.v1.DeploymentService.CreateDeployment:output_type -> console.v1.Deployment
+	36, // 33: console.v1.DeploymentService.DeleteDeployment:output_type -> google.protobuf.Empty
+	10, // 34: console.v1.JobService.ListJobs:output_type -> console.v1.ListJobsResponse
+	6,  // 35: console.v1.JobService.GetJob:output_type -> console.v1.Job
+	6,  // 36: console.v1.JobService.CreateJob:output_type -> console.v1.Job
+	6,  // 37: console.v1.JobService.CancelJob:output_type -> console.v1.Job
+	19, // 38: console.v1.ModelService.ListModels:output_type -> console.v1.ListModelsResponse
+	14, // 39: console.v1.ModelService.GetModel:output_type -> console.v1.Model
+	23, // 40: console.v1.APIKeyService.ListAPIKeys:output_type -> console.v1.ListAPIKeysResponse
+	25, // 41: console.v1.APIKeyService.CreateAPIKey:output_type -> console.v1.CreateAPIKeyResponse
+	36, // 42: console.v1.APIKeyService.DeleteAPIKey:output_type -> google.protobuf.Empty
+	29, // 43: console.v1.SecretService.ListSecrets:output_type -> console.v1.ListSecretsResponse
+	27, // 44: console.v1.SecretService.CreateSecret:output_type -> console.v1.Secret
+	36, // 45: console.v1.SecretService.DeleteSecret:output_type -> google.protobuf.Empty
+	34, // 46: console.v1.QuotaService.ListQuotas:output_type -> console.v1.ListQuotasResponse
+	30, // [30:47] is the sub-list for method output_type
+	13, // [13:30] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_console_v1_console_proto_init() }
@@ -2338,14 +2664,14 @@ func file_console_v1_console_proto_init() {
 	if File_console_v1_console_proto != nil {
 		return
 	}
-	file_console_v1_console_proto_msgTypes[10].OneofWrappers = []any{}
+	file_console_v1_console_proto_msgTypes[12].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_console_v1_console_proto_rawDesc), len(file_console_v1_console_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   32,
+			NumMessages:   36,
 			NumExtensions: 0,
 			NumServices:   6,
 		},

@@ -30,10 +30,16 @@ type Store interface {
 	CreateDeployment(ctx context.Context, req *pb.CreateDeploymentRequest) (*pb.Deployment, error)
 	DeleteDeployment(ctx context.Context, id string) error
 
-	// Jobs
-	ListJobs(ctx context.Context, search, status string) ([]*pb.Job, error)
-	GetJob(ctx context.Context, id string) (*pb.Job, error)
-	CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*pb.Job, error)
+	// Jobs — store persists only the Console-owned fields of *pb.Job
+	// (id, created_by, future: organization, tags, ...). OpenAI Batch fields
+	// on the passed-in *pb.Job (status, usage, request_counts, timestamps,
+	// etc.) are ignored on write and left at their zero values on read; the
+	// JobHandler aggregates store output with state fetched from the metadata
+	// service /v1/batches API to produce the wire-level *pb.Job.
+	UpsertJob(ctx context.Context, job *pb.Job) error
+	GetJob(ctx context.Context, id string) (*pb.Job, error) // (nil, nil) when not found
+	ListJobs(ctx context.Context, ids []string) (map[string]*pb.Job, error)
+	DeleteJob(ctx context.Context, id string) error
 
 	// Models
 	ListModels(ctx context.Context, search, category string) ([]*pb.Model, error)

@@ -253,6 +253,7 @@ const (
 	JobService_ListJobs_FullMethodName  = "/console.v1.JobService/ListJobs"
 	JobService_GetJob_FullMethodName    = "/console.v1.JobService/GetJob"
 	JobService_CreateJob_FullMethodName = "/console.v1.JobService/CreateJob"
+	JobService_CancelJob_FullMethodName = "/console.v1.JobService/CancelJob"
 )
 
 // JobServiceClient is the client API for JobService service.
@@ -262,6 +263,7 @@ type JobServiceClient interface {
 	ListJobs(ctx context.Context, in *ListJobsRequest, opts ...grpc.CallOption) (*ListJobsResponse, error)
 	GetJob(ctx context.Context, in *GetJobRequest, opts ...grpc.CallOption) (*Job, error)
 	CreateJob(ctx context.Context, in *CreateJobRequest, opts ...grpc.CallOption) (*Job, error)
+	CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*Job, error)
 }
 
 type jobServiceClient struct {
@@ -302,6 +304,16 @@ func (c *jobServiceClient) CreateJob(ctx context.Context, in *CreateJobRequest, 
 	return out, nil
 }
 
+func (c *jobServiceClient) CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*Job, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Job)
+	err := c.cc.Invoke(ctx, JobService_CancelJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // JobServiceServer is the server API for JobService service.
 // All implementations must embed UnimplementedJobServiceServer
 // for forward compatibility.
@@ -309,6 +321,7 @@ type JobServiceServer interface {
 	ListJobs(context.Context, *ListJobsRequest) (*ListJobsResponse, error)
 	GetJob(context.Context, *GetJobRequest) (*Job, error)
 	CreateJob(context.Context, *CreateJobRequest) (*Job, error)
+	CancelJob(context.Context, *CancelJobRequest) (*Job, error)
 	mustEmbedUnimplementedJobServiceServer()
 }
 
@@ -327,6 +340,9 @@ func (UnimplementedJobServiceServer) GetJob(context.Context, *GetJobRequest) (*J
 }
 func (UnimplementedJobServiceServer) CreateJob(context.Context, *CreateJobRequest) (*Job, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateJob not implemented")
+}
+func (UnimplementedJobServiceServer) CancelJob(context.Context, *CancelJobRequest) (*Job, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelJob not implemented")
 }
 func (UnimplementedJobServiceServer) mustEmbedUnimplementedJobServiceServer() {}
 func (UnimplementedJobServiceServer) testEmbeddedByValue()                    {}
@@ -403,6 +419,24 @@ func _JobService_CreateJob_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _JobService_CancelJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(JobServiceServer).CancelJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: JobService_CancelJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(JobServiceServer).CancelJob(ctx, req.(*CancelJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // JobService_ServiceDesc is the grpc.ServiceDesc for JobService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -421,6 +455,10 @@ var JobService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateJob",
 			Handler:    _JobService_CreateJob_Handler,
+		},
+		{
+			MethodName: "CancelJob",
+			Handler:    _JobService_CancelJob_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

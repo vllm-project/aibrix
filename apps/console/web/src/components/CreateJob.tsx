@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { ChevronLeft, Search, Upload, Check, X, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
-import { createJob, uploadFile, listModels as apiListModels } from '../utils/api';
+import { createJob, uploadFile, listModels as apiListModels, JobEndpoint } from '../utils/api';
 import { validateBatchFile, generateJobDisplayName, ValidationResult } from '../utils/batchValidation';
 import { Model } from '../data/mockData';
 
@@ -149,10 +149,15 @@ export function CreateJob({ onBack }: CreateJobProps) {
         }
       }
 
+      // Pick the endpoint from JSONL validation; default to chat completions.
+      const endpoint: JobEndpoint =
+        (validation?.endpoints[0] as JobEndpoint | undefined) || '/v1/chat/completions';
+
       await createJob({
-        model: selectedModel,
-        displayName: displayName,
-        datasetId: datasetId || '',
+        inputDataset: datasetId || '',
+        endpoint,
+        completionWindow: '24h',
+        name: displayName,
         ...(maxTokens.trim() !== '' && { maxTokens: parseNumber(maxTokens) }),
         ...(temperature.trim() !== '' && { temperature: parseNumber(temperature) }),
         ...(topP.trim() !== '' && { topP: parseNumber(topP) }),

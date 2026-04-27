@@ -1,16 +1,56 @@
+// JobStatus mirrors the OpenAI Batch 8-state enum returned by the metadata
+// service. Console renders these as-is; product-side groupings (active /
+// terminal etc.) live in component logic.
+export type JobStatus =
+  | 'validating'
+  | 'in_progress'
+  | 'finalizing'
+  | 'completed'
+  | 'failed'
+  | 'expired'
+  | 'cancelling'
+  | 'cancelled';
+
+export interface JobUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+export interface JobRequestCounts {
+  total: number;
+  completed: number;
+  failed: number;
+}
+
+// Job is the Console BFF's view of a batch — superset of OpenAI Batch.
+// Timestamps are unix seconds.
 export interface Job {
   id: string;
-  name: string;
-  inferenceId: string;
+  object: string;
+  endpoint: string;
   model: string;
-  modelId: string;
   inputDataset: string;
-  inputDatasetId: string;
-  createDate: string;
-  createTime: string;
+  completionWindow: string;
+  status: JobStatus;
+  outputDataset?: string;
+  errorDataset?: string;
+  createdAt: number;
+  inProgressAt?: number;
+  expiresAt?: number;
+  finalizingAt?: number;
+  completedAt?: number;
+  failedAt?: number;
+  expiredAt?: number;
+  cancellingAt?: number;
+  cancelledAt?: number;
+  requestCounts?: JobRequestCounts;
+  usage?: JobUsage;
+  metadata?: Record<string, string>;
+
+  // Console-side fields persisted in the Console store
+  name: string;
   createdBy: string;
-  status: 'Completed' | 'Validating' | 'Failed';
-  fullPath: string;
 }
 
 export interface Deployment {
@@ -64,34 +104,39 @@ export interface Model {
   tags: string[];
 }
 
+// Mock jobs used as a fallback when the Console BFF is unreachable
+// (e.g. local dev without the metadata service running).
 export const mockJobs: Job[] = [
   {
-    id: 'job-1',
-    name: 'gsm-8k-20260118',
-    inferenceId: 'vpswvq8h',
+    id: 'batch_demo_27a6ee2c',
+    object: 'batch',
+    endpoint: '/v1/chat/completions',
     model: 'qwen2p5-32b-instruct',
-    modelId: 'qwen1zp5-32b-instruct',
-    inputDataset: 'demo-gsm8k-math-dataset-1000',
-    inputDatasetId: 'demo-gsm8k-math-dataset-1000',
-    createDate: 'Jan 18, 2026',
-    createTime: '3:37 PM',
-    createdBy: 'seedjeffwan@gmail.com',
-    status: 'Completed',
-    fullPath: 'accounts/aibrix/batchInference/27a6ee2c',
+    inputDataset: 'file-demo-gsm8k-math-dataset-1000',
+    completionWindow: '24h',
+    status: 'completed',
+    outputDataset: 'file-demo-output-27a6ee2c',
+    createdAt: 1737230220,
+    inProgressAt: 1737230400,
+    expiresAt: 1737316620,
+    completedAt: 1737231240,
+    requestCounts: { total: 1000, completed: 1000, failed: 0 },
+    usage: { inputTokens: 476498, outputTokens: 16856, totalTokens: 493354 },
+    name: 'gsm-8k-20260118',
+    createdBy: 'demo@aibrix.ai',
   },
   {
-    id: 'job-2',
-    name: 'gsm-8k-20260118-v2',
-    inferenceId: 'abc12345',
+    id: 'batch_demo_a0b13ef5',
+    object: 'batch',
+    endpoint: '/v1/chat/completions',
     model: 'qwen2p5-32b-instruct',
-    modelId: 'qwen1zp5-32b-instruct',
-    inputDataset: 'demo-gsm8k-math-dataset-1000',
-    inputDatasetId: 'demo-gsm8k-math-dataset-1000',
-    createDate: 'Jan 18, 2026',
-    createTime: '4:15 PM',
-    createdBy: 'seedjeffwan@gmail.com',
-    status: 'Validating',
-    fullPath: 'accounts/aibrix/batchInference/a0b13ef5',
+    inputDataset: 'file-demo-gsm8k-math-dataset-1000',
+    completionWindow: '24h',
+    status: 'validating',
+    createdAt: 1737232500,
+    expiresAt: 1737318900,
+    name: 'gsm-8k-20260118-v2',
+    createdBy: 'demo@aibrix.ai',
   },
 ];
 

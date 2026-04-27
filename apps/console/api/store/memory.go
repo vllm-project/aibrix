@@ -34,7 +34,7 @@ import (
 type MemoryStore struct {
 	mu          sync.RWMutex
 	deployments []*pb.Deployment
-	jobs        []*pb.Job
+	jobs        map[string]*pb.Job // id → Console-side fields only
 	models      []*pb.Model
 	apiKeys     []*apiKeyEntry
 	secrets     []*secretEntry
@@ -140,66 +140,54 @@ func (s *MemoryStore) DeleteDeployment(_ context.Context, id string) error {
 	return status.Errorf(codes.NotFound, "deployment %q not found", id)
 }
 
-// --- Jobs ---
+// --- Jobs (Console-side fields only) ---
 
-func (s *MemoryStore) ListJobs(_ context.Context, search, statusFilter string) ([]*pb.Job, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if search == "" && statusFilter == "" {
-		return s.jobs, nil
+func (s *MemoryStore) UpsertJob(_ context.Context, job *pb.Job) error {
+	if job == nil || job.Id == "" {
+		return status.Error(codes.InvalidArgument, "job id is required")
 	}
-
-	result := make([]*pb.Job, 0)
-	for _, j := range s.jobs {
-		if statusFilter != "" && !strings.EqualFold(j.Status, statusFilter) {
-			continue
-		}
-		if search != "" {
-			q := strings.ToLower(search)
-			if !strings.Contains(strings.ToLower(j.Name), q) &&
-				!strings.Contains(strings.ToLower(j.InferenceId), q) &&
-				!strings.Contains(strings.ToLower(j.CreatedBy), q) {
-				continue
-			}
-		}
-		result = append(result, j)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.jobs == nil {
+		s.jobs = map[string]*pb.Job{}
 	}
-	return result, nil
+	// Persist only Console-owned fields; ignore OpenAI Batch state on write.
+	s.jobs[job.Id] = &pb.Job{
+		Id:        job.Id,
+		Name:      job.Name,
+		CreatedBy: job.CreatedBy,
+	}
+	return nil
 }
 
 func (s *MemoryStore) GetJob(_ context.Context, id string) (*pb.Job, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	for _, j := range s.jobs {
-		if j.Id == id {
-			return j, nil
-		}
+	j, ok := s.jobs[id]
+	if !ok {
+		return nil, nil
 	}
-	return nil, status.Errorf(codes.NotFound, "job %q not found", id)
+	// Return a fresh struct so callers can mutate it freely.
+	return &pb.Job{Id: j.Id, Name: j.Name, CreatedBy: j.CreatedBy}, nil
 }
 
-func (s *MemoryStore) CreateJob(_ context.Context, req *pb.CreateJobRequest) (*pb.Job, error) {
+func (s *MemoryStore) ListJobs(_ context.Context, ids []string) (map[string]*pb.Job, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]*pb.Job, len(ids))
+	for _, id := range ids {
+		if j, ok := s.jobs[id]; ok {
+			out[id] = &pb.Job{Id: j.Id, Name: j.Name, CreatedBy: j.CreatedBy}
+		}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) DeleteJob(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	now := time.Now()
-	j := &pb.Job{
-		Id:             s.genID(),
-		Name:           req.DisplayName,
-		InferenceId:    randomString(8),
-		Model:          req.Model,
-		ModelId:        strings.ToLower(strings.ReplaceAll(req.Model, " ", "-")),
-		InputDataset:   req.DatasetId,
-		InputDatasetId: req.DatasetId,
-		CreateDate:     now.Format("Jan 02, 2006"),
-		CreateTime:     now.Format("3:04 PM"),
-		Status:         "Validating",
-		FullPath:       fmt.Sprintf("accounts/aibrix/batchInference/%s", randomString(8)),
-	}
-	s.jobs = append(s.jobs, j)
-	return j, nil
+	delete(s.jobs, id)
+	return nil
 }
 
 // --- Models ---

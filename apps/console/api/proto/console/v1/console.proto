@@ -97,6 +97,12 @@ message DeleteDeploymentRequest {
 
 // =============================================================================
 // Job Service (Batch Inference)
+//
+// Job is the Console product abstraction over OpenAI Batch — a superset that
+// exposes every OpenAI Batch field plus Console-owned fields (name,
+// created_by, ...). The JobService handler proxies to the metadata service
+// /v1/batches API and aggregates the OpenAI Batch response with Console-side
+// fields persisted in the store.
 // =============================================================================
 
 service JobService {
@@ -118,30 +124,74 @@ service JobService {
       body: "*"
     };
   }
+
+  rpc CancelJob(CancelJobRequest) returns (Job) {
+    option (google.api.http) = {
+      post: "/api/v1/jobs/{id}/cancel"
+      body: "*"
+    };
+  }
 }
 
 message Job {
+  // Identity
   string id = 1;
-  string name = 2;
-  string inference_id = 3;
+  string object = 2;             // mirrors OpenAI's "batch"
+
+  // Configuration. Console-side names; the handler maps input_dataset /
+  // output_dataset / error_dataset to OpenAI's input_file_id / output_file_id /
+  // error_file_id when calling the metadata service.
+  string endpoint = 3;
   string model = 4;
-  string model_id = 5;
-  string input_dataset = 6;
-  string input_dataset_id = 7;
-  string create_date = 8;
-  string create_time = 9;
-  string created_by = 10;
-  string status = 11; // "Completed", "Validating", "Failed"
-  string full_path = 12;
+  string input_dataset = 5;
+  string completion_window = 6;
+  // 8-state OpenAI status:
+  // validating | in_progress | finalizing | completed | failed | expired | cancelling | cancelled
+  string status = 7;
+  string output_dataset = 8;
+  string error_dataset = 9;
+
+  // Unix-second timestamps
+  int64 created_at = 10;
+  int64 in_progress_at = 11;
+  int64 expires_at = 12;
+  int64 finalizing_at = 13;
+  int64 completed_at = 14;
+  int64 failed_at = 15;
+  int64 expired_at = 16;
+  int64 cancelling_at = 17;
+  int64 cancelled_at = 18;
+  JobRequestCounts request_counts = 19;
+  JobUsage usage = 20;
+  map<string, string> metadata = 21;
+
+  // Console-owned fields (persisted in the store)
+  string name = 100;             // display name; resolved from metadata.display_name
+  string created_by = 101;       // Console user that created the job
+}
+
+message JobRequestCounts {
+  int32 total = 1;
+  int32 completed = 2;
+  int32 failed = 3;
+}
+
+message JobUsage {
+  int64 input_tokens = 1;
+  int64 output_tokens = 2;
+  int64 total_tokens = 3;
 }
 
 message ListJobsRequest {
-  string search = 1;
-  string status = 2;
+  string after = 1;              // pagination cursor (metadata service)
+  int32 limit = 2;
 }
 
 message ListJobsResponse {
   repeated Job jobs = 1;
+  string first_id = 2;
+  string last_id = 3;
+  bool has_more = 4;
 }
 
 message GetJobRequest {
@@ -149,14 +199,23 @@ message GetJobRequest {
 }
 
 message CreateJobRequest {
-  string model = 1;
-  string dataset_id = 2;
-  string display_name = 3;
-  optional int32 max_tokens = 4;
-  optional double temperature = 5;
-  optional double top_p = 6;
-  optional int32 n = 7;
-  string quantization = 8;
+  string input_dataset = 1;      // Console naming; handler maps to OpenAI input_file_id
+  string endpoint = 2;           // e.g. /v1/chat/completions
+  string completion_window = 3;  // e.g. "24h"
+  string name = 4;               // display name (stored in metadata.display_name)
+
+  // Optional batch-wide inference parameter overrides. Currently NOT applied
+  // by the handler — per-request values from the JSONL body take precedence.
+  // Reserved here so the Console contract is stable; future versions will
+  // route these into aibrix.overrides.engine_args.
+  optional int32 max_tokens = 10;
+  optional double temperature = 11;
+  optional double top_p = 12;
+  optional int32 n = 13;
+}
+
+message CancelJobRequest {
+  string id = 1;
 }
 
 // =============================================================================
