@@ -416,25 +416,35 @@ class BatchJobTransformer:
         A special case is cancelling in progress, where state is finalizing, but we need to confirm the
         finalizing time by check the time the job is suspended.
 
+        As of A.2 the JOB_STATE annotation is no longer authoritative
+        and is generally absent. When it is missing, fall through to the
+        K8s-native condition signal: a terminal condition implies
+        FINALIZING; otherwise the Job is CREATED. The kopf-driven
+        ``active_jobs`` view is reconciled with the BatchJobStore via a
+        monotonicity check in ``job_updated_handler``, so this fallback
+        only ever lifts state — it never regresses one.
+
         Returns:
             state: BatchJobState
             finalizing_time: datetime, optional
         """
-        # If state available, respect it.
         state_value = annotations.get(JobAnnotationKey.JOB_STATE.value)
         if state_value:
             state = BatchJobState(state_value)
             if state not in [BatchJobState.IN_PROGRESS, BatchJobState.FINALIZING]:
                 return state, None
-        else:
-            state = BatchJobState.CREATED
-            return state, None
+            if conditions and len(conditions) > 0:
+                return BatchJobState.FINALIZING, conditions[0].last_transition_time
+            return BatchJobState.IN_PROGRESS, None
 
-        # 1. If ConditionTypes are available, the state should always be FINALIZING
+        # JOB_STATE annotation absent (PR4 slim mode): rely solely on
+        # K8s-native conditions. A terminal condition (Complete / Failed
+        # / Suspended) means the underlying Job has stopped advancing on
+        # its own and the AIBrix state machine is at FINALIZING; without
+        # any condition we assume CREATED.
         if conditions and len(conditions) > 0:
             return BatchJobState.FINALIZING, conditions[0].last_transition_time
-
-        return BatchJobState.IN_PROGRESS, None
+        return BatchJobState.CREATED, None
 
     @classmethod
     def _safe_get_attr(cls, obj: Any, attr: str, default: Any = None) -> Any:

@@ -25,6 +25,7 @@ from kubernetes import config
 from aibrix import envs
 from aibrix.batch import BatchDriver
 from aibrix.batch.job_entity import JobEntityManager
+from aibrix.batch.store import BatchJobStore, ObjectBatchJobStore
 from aibrix.batch.template import (
     k8s_profile_registry,
     k8s_template_registry,
@@ -199,10 +200,29 @@ def build_app(args: argparse.Namespace, params={}):
             app.state.template_registry = template_registry
             app.state.profile_registry = profile_registry
 
+            batch_job_store: Optional[BatchJobStore] = None
+            if envs.BATCH_JOB_STORE_ENABLED:
+                # Reuse the same backing storage as batch payloads. The
+                # store namespaces its keys under ``batches/`` so it does
+                # not collide with payload files (root-level) or metastore
+                # locks (``batch:...`` colon-prefixed).
+                batch_job_store = ObjectBatchJobStore(
+                    create_storage(settings.STORAGE_TYPE, **params)
+                )
+                logger.info(  # type: ignore[call-arg]
+                    "BatchJobStore enabled",
+                    storage_type=settings.STORAGE_TYPE.value,
+                )
+
             job_entity_manager = JobCache(
                 template_registry=template_registry,
                 profile_registry=profile_registry,
+                batch_job_store=batch_job_store,
             )
+            # Expose the store so API handlers can read from it
+            # directly. When None, handlers fall through to the
+            # JobManager in-memory pool (legacy mode).
+            app.state.batch_job_store = batch_job_store
         app.state.batch_driver = BatchDriver(
             job_entity_manager,
             storage_type=settings.STORAGE_TYPE,
