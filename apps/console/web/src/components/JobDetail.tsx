@@ -251,6 +251,15 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                 <div className="text-gray-500 mb-1">Endpoint</div>
                 <code className="text-sm bg-gray-100 px-2 py-1 rounded-md">{job.endpoint}</code>
               </div>
+              {job.modelTemplateName && (
+                <div>
+                  <div className="text-gray-500 mb-1">Deployment Template</div>
+                  <code className="text-sm bg-gray-100 px-2 py-1 rounded-md">
+                    {job.modelTemplateName}
+                    {job.modelTemplateVersion ? ` @ ${job.modelTemplateVersion}` : ''}
+                  </code>
+                </div>
+              )}
               <div>
                 <div className="text-gray-500 mb-1">Input Dataset</div>
                 <code className="text-sm bg-gray-100 px-2 py-1 rounded-md">{job.inputDataset}</code>

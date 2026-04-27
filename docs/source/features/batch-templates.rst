@@ -48,8 +48,8 @@ Architecture
      |                          |
      | kubectl apply -f         | client.batches.create(
      |    templates.yaml        |     extra_body={"aibrix": {
-     |    profiles.yaml         |       "model_template": "llama3-70b-prod",
-     |                          |       "profile": "prod-24h",
+     |    profiles.yaml         |       "model_template": {"name": "llama3-70b-prod"},
+     |                          |       "profile":        {"name": "prod-24h"},
      v                          |     }})
    ConfigMaps                   |
      (aibrix-system)            v
@@ -94,7 +94,10 @@ Quick Start
           metadata={"team": "ml-platform"},
           extra_body={
               "aibrix": {
-                  "model_template": "llama3-70b-prod",
+                  "model_template": {
+                      "name": "llama3-70b-prod",
+                      # "version": "v1.3.0",  # optional; "" / omit = latest active
+                  },
                   # 'profile' is optional; default profile applies if omitted
               }
           },
@@ -242,30 +245,48 @@ User-Facing Fields in ``extra_body.aibrix``
 -------------------------------------------
 
 End users select templates and profiles via OpenAI SDK's
-``extra_body`` mechanism. Schema:
+``extra_body`` mechanism. Each reference is a nested object with its
+own ``overrides`` namespace; this layout is the authoritative contract
+documented in ``apps/console/api/proto/console/v1/console.proto``.
 
 .. code-block:: python
 
    extra_body = {
        "aibrix": {
-           "model_template": "llama3-70b-prod",   # required
-           "profile": "prod-24h",                  # optional, falls back to default
-           "overrides": {                          # optional, allowlisted
-               "engine_args": {"max_num_seqs": 512},
+           "model_template": {
+               "name":    "llama3-70b-prod",   # required
+               "version": "v1.3.0",            # optional; "" / omit = latest active
+               "overrides": {                  # optional, allowlisted
+                   "engine_args": {"max_num_seqs": 512},
+               },
+           },
+           "profile": {
+               "name": "prod-24h",             # required when block present
+               "overrides": {                  # optional, allowlisted
+                   "scheduling": {"max_concurrency": 32},
+               },
            },
        }
    }
 
-**Override allowlist:**
+**Override allowlists** (unknown keys are rejected with 400, never
+silently dropped):
 
-- ``engine_args``: any field present in ``EngineArgsSpec``. Merged into
-  ``template.spec.engine_args``.
-- ``scheduling``: a subset of ``SchedulingSpec`` fields. Merged into
-  ``profile.spec.scheduling``.
+- ``model_template.overrides.engine_args``: any field present in
+  ``EngineArgsSpec``. Merged into ``template.spec.engine_args`` at render
+  time.
+- ``profile.overrides.scheduling``: a subset of ``SchedulingSpec``
+  fields. Roundtripped via annotations; the deadline-aware scheduler
+  consumes it once that work lands.
 
 Sensitive fields (``image``, ``accelerator.type``, ``provider_config``,
 ``model_source``) are **not** user-overridable. Administrators must
 update the ConfigMap to change them.
+
+Inline ``model_template_spec`` is intentionally not supported.
+Templates are the curated security/cost gate; allowing inline would
+let users bypass image / GPU SKU / namespace controls and would shatter
+audit and cost-attribution by template name.
 
 
 Admin Workflow

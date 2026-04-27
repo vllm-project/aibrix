@@ -35,8 +35,9 @@ from aibrix.batch.job_entity import (
 )
 from aibrix.batch.manifest import RenderError
 from aibrix.batch.template import (
-    OverridesSpec,
+    ProfileOverridesSpec,
     ProfileRegistry,
+    TemplateOverridesSpec,
     TemplateRegistry,
 )
 from aibrix.logger import init_logger
@@ -224,19 +225,84 @@ async def _validate_batch_input_file(
 # OpenAI Batch API request/response models
 
 
+class TemplateRef(BaseModel):
+    """Reference to a ModelDeploymentTemplate registered via ConfigMap.
+
+    Wire shape (under ``extra_body.aibrix.model_template``)::
+
+        {
+            "name": "llama3-70b-prod",
+            "version": "v1.3.0",  # optional; "" / null = latest active
+            "overrides": {  # optional, allowlisted
+                "engine_args": {"max_num_seqs": "512"}
+            },
+        }
+    """
+
+    model_config = {"extra": "forbid"}  # reject unknown keys, no silent drops
+
+    name: str = Field(
+        description="ModelDeploymentTemplate name registered via ConfigMap",
+    )
+    version: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional template version pin. Empty / null resolves to the "
+            "latest active version of the named template."
+        ),
+    )
+    overrides: Optional[TemplateOverridesSpec] = Field(
+        default=None,
+        description=(
+            "Allowlisted overrides applied on top of the resolved template "
+            "spec at render time."
+        ),
+    )
+
+
+class ProfileRef(BaseModel):
+    """Reference to a BatchProfile registered via ConfigMap.
+
+    Wire shape (under ``extra_body.aibrix.profile``)::
+
+        {
+            "name": "prod-24h",
+            "overrides": {  # optional, allowlisted
+                "scheduling": {"max_concurrency": 32}
+            },
+        }
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: str = Field(description="BatchProfile name registered via ConfigMap")
+    overrides: Optional[ProfileOverridesSpec] = Field(
+        default=None,
+        description=(
+            "Allowlisted overrides applied on top of the resolved profile "
+            "spec at render time."
+        ),
+    )
+
+
 class AibrixExtension(BaseModel):
     """AIBrix extension fields carried under extra_body.aibrix.
 
-    model_template (required for rendering),
-    profile (optional, falls back to registry default),
-    overrides (optional, allowlisted at render time).
+    Authoritative shape is documented in
+    apps/console/api/proto/console/v1/console.proto under
+    "Batch SDK contract (forward reference)". Keep these two in sync.
 
-    OpenAI SDK users transmit this via:
+    OpenAI SDK users transmit this via::
 
         client.batches.create(
             input_file_id="...",
             endpoint="/v1/chat/completions",
-            extra_body={"aibrix": {"model_template": "llama3-70b-prod"}},
+            extra_body={
+                "aibrix": {
+                    "model_template": {"name": "llama3-70b-prod"},
+                    "profile": {"name": "prod-24h"},
+                }
+            },
         )
 
     A request omitting ``aibrix.model_template`` is rejected at render
@@ -245,19 +311,22 @@ class AibrixExtension(BaseModel):
     must register at least one ModelDeploymentTemplate via the
     ConfigMap to accept any batch. See
     docs/source/features/batch-templates.rst.
+
+    Inline ``model_template_spec`` is intentionally NOT supported.
+    Templates are the curated security/cost gate; bypassing them via
+    inline spec would leak image / GPU SKU / namespace control to
+    users and shatter audit by template name.
     """
 
-    model_template: Optional[str] = Field(
+    model_config = {"extra": "forbid"}
+
+    model_template: Optional[TemplateRef] = Field(
         default=None,
-        description="ModelDeploymentTemplate name registered via ConfigMap",
+        description="ModelDeploymentTemplate reference (name + optional version + overrides)",
     )
-    profile: Optional[str] = Field(
+    profile: Optional[ProfileRef] = Field(
         default=None,
-        description="BatchProfile name; falls back to registry default if omitted",
-    )
-    overrides: Optional[OverridesSpec] = Field(
-        default=None,
-        description="Per-batch overrides, allowlisted by renderer (currently engine_args only)",
+        description="BatchProfile reference; falls back to registry default if omitted",
     )
 
 
@@ -291,18 +360,30 @@ class BatchSpec(BaseModel):
     @classmethod
     def newBatchJobSpec(cls, spec: "BatchSpec") -> BatchJobSpec:
         ext = spec.aibrix
+        tref = ext.model_template if ext else None
+        pref = ext.profile if ext else None
         return BatchJobSpec(
             input_file_id=spec.input_file_id,
             endpoint=spec.endpoint.value,
             completion_window=spec.completion_window.expires_at(),
             metadata=spec.metadata,
-            model_template_name=(ext.model_template if ext else None),
-            profile_name=(ext.profile if ext else None),
-            # OverridesSpec -> dict so BatchJobSpec.overrides stays
-            # decoupled from the template package (avoids circular import).
-            overrides=(
-                ext.overrides.model_dump(exclude_none=True)
-                if (ext and ext.overrides)
+            model_template_name=(tref.name if tref else None),
+            model_template_version=(tref.version if tref else None),
+            profile_name=(pref.name if pref else None),
+            # Overrides are carried as plain dicts on BatchJobSpec to keep
+            # that model decoupled from the template package (avoids a
+            # circular import). They are re-validated by the renderer.
+            template_overrides=(
+                tref.overrides.model_dump(exclude_none=True)
+                if (tref and tref.overrides)
+                else None
+            ),
+            # exclude_unset preserves the "partial override" contract: we
+            # only forward fields the caller actually set, so the renderer
+            # doesn't silently overwrite profile defaults.
+            profile_overrides=(
+                pref.overrides.model_dump(exclude_unset=True)
+                if (pref and pref.overrides)
                 else None
             ),
         )
@@ -331,23 +412,38 @@ def _validate_aibrix_extension(
     if template_registry is None:
         return  # registries not yet configured; defer to renderer
 
-    if template_registry.get(extension.model_template) is None:
-        available = template_registry.names()
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"aibrix.model_template '{extension.model_template}' not found. "
-                f"Active templates: {available}"
-            ),
-        )
+    tref = extension.model_template
+    if tref.version:
+        # Pin: must match exactly
+        resolved = template_registry.get_by_version(tref.name, tref.version)
+        if resolved is None:
+            available = template_registry.names()
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"aibrix.model_template '{tref.name}@{tref.version}' not found. "
+                    f"Templates with at least one active version: {available}"
+                ),
+            )
+    else:
+        if template_registry.get(tref.name) is None:
+            available = template_registry.names()
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"aibrix.model_template '{tref.name}' has no active version. "
+                    f"Templates with at least one active version: {available}"
+                ),
+            )
 
     if extension.profile is not None and profile_registry is not None:
-        if profile_registry.get(extension.profile) is None:
+        pref = extension.profile
+        if profile_registry.get(pref.name) is None:
             available = profile_registry.names()
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"aibrix.profile '{extension.profile}' not found. "
+                    f"aibrix.profile '{pref.name}' not found. "
                     f"Available profiles: {available}"
                 ),
             )
