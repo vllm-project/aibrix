@@ -576,9 +576,9 @@ class JobCache(JobEntityManager):
         here.
         """
         job_status: BatchJobStatus = job.status
-        assert (
-            job_status.in_progress_at is not None
-        ), "AssertError: Job must be set as in progress before setting as ready"
+        assert job_status.in_progress_at is not None, (
+            "AssertError: Job must be set as in progress before setting as ready"
+        )
 
         return {
             "metadata": {

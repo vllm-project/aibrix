@@ -226,13 +226,15 @@ class TestLocalStorage:
             assert (
                 local_storage.base_path in full_path.parents
                 or full_path == local_storage.base_path
-            ), f"Path {full_path} should be within base directory {local_storage.base_path}"
+            ), (
+                f"Path {full_path} should be within base directory {local_storage.base_path}"
+            )
 
             # Verify the path doesn't contain traversal patterns
             relative_path = full_path.relative_to(local_storage.base_path)
-            assert ".." not in str(
-                relative_path
-            ), f"Sanitized path should not contain '..' but got: {relative_path}"
+            assert ".." not in str(relative_path), (
+                f"Sanitized path should not contain '..' but got: {relative_path}"
+            )
 
             # Should be retrievable with the original key
             result = await local_storage.get_object(key)
@@ -240,11 +242,11 @@ class TestLocalStorage:
 
             # Verify the actual stored filename matches expected sanitized version
             expected_sanitized = expected_sanitized_keys[i]
-            assert str(
-                relative_path
-            ).startswith(
+            assert str(relative_path).startswith(
                 expected_sanitized.replace("/", os.sep)
-            ), f"Expected sanitized key '{expected_sanitized}' but got '{relative_path}'"
+            ), (
+                f"Expected sanitized key '{expected_sanitized}' but got '{relative_path}'"
+            )
 
             # Cleanup
             await local_storage.delete_object(key)

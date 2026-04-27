@@ -90,9 +90,9 @@ class TestGenerateFilename:
 
         for dangerous_key, expected in zip(dangerous_keys, expected_results):
             result = generate_filename(dangerous_key)
-            assert (
-                result == expected
-            ), f"Expected {expected} but got {result} for key {dangerous_key}"
+            assert result == expected, (
+                f"Expected {expected} but got {result} for key {dangerous_key}"
+            )
 
     def test_empty_or_dangerous_only_keys(self):
         """Test keys that are empty or contain only dangerous patterns."""
@@ -108,9 +108,9 @@ class TestGenerateFilename:
 
         for key in dangerous_only_keys:
             result = generate_filename(key)
-            assert (
-                result == "safe_key"
-            ), f"Expected 'safe_key' but got '{result}' for key '{key}'"
+            assert result == "safe_key", (
+                f"Expected 'safe_key' but got '{result}' for key '{key}'"
+            )
 
     def test_key_with_existing_extension_no_content_type_override(self):
         """Test that keys with existing extensions don't get additional extensions."""
@@ -155,9 +155,9 @@ class TestSanitizeKey:
 
         for input_key, expected in test_cases:
             result = _sanitize_key(input_key)
-            assert (
-                result == expected
-            ), f"Expected {expected} but got {result} for {input_key}"
+            assert result == expected, (
+                f"Expected {expected} but got {result} for {input_key}"
+            )
 
     def test_windows_path_traversal(self):
         """Test removal of Windows-style path traversal."""
@@ -170,9 +170,9 @@ class TestSanitizeKey:
 
         for input_key, expected in test_cases:
             result = _sanitize_key(input_key)
-            assert (
-                result == expected
-            ), f"Expected {expected} but got {result} for {input_key}"
+            assert result == expected, (
+                f"Expected {expected} but got {result} for {input_key}"
+            )
 
     def test_absolute_path_removal(self):
         """Test removal of absolute path indicators."""
@@ -185,9 +185,9 @@ class TestSanitizeKey:
 
         for input_key, expected in test_cases:
             result = _sanitize_key(input_key)
-            assert (
-                result == expected
-            ), f"Expected {expected} but got {result} for {input_key}"
+            assert result == expected, (
+                f"Expected {expected} but got {result} for {input_key}"
+            )
 
     def test_dot_patterns(self):
         """Test handling of various dot patterns."""
@@ -200,9 +200,9 @@ class TestSanitizeKey:
 
         for input_key, expected in test_cases:
             result = _sanitize_key(input_key)
-            assert (
-                result == expected
-            ), f"Expected {expected} but got {result} for {input_key}"
+            assert result == expected, (
+                f"Expected {expected} but got {result} for {input_key}"
+            )
 
     def test_empty_and_dangerous_only_inputs(self):
         """Test inputs that are empty or contain only dangerous patterns."""
@@ -221,9 +221,9 @@ class TestSanitizeKey:
 
         for input_key in dangerous_only_inputs:
             result = _sanitize_key(input_key)
-            assert (
-                result == "safe_key"
-            ), f"Expected 'safe_key' but got '{result}' for dangerous input '{input_key}'"
+            assert result == "safe_key", (
+                f"Expected 'safe_key' but got '{result}' for dangerous input '{input_key}'"
+            )
 
     def test_mixed_separators(self):
         """Test handling of mixed path separators."""
@@ -235,9 +235,9 @@ class TestSanitizeKey:
 
         for input_key, expected in test_cases:
             result = _sanitize_key(input_key)
-            assert (
-                result == expected
-            ), f"Expected {expected} but got {result} for {input_key}"
+            assert result == expected, (
+                f"Expected {expected} but got {result} for {input_key}"
+            )
 
     def test_special_characters_preserved(self):
         """Test that safe special characters are preserved."""
@@ -255,9 +255,9 @@ class TestSanitizeKey:
 
         for input_key, expected in test_cases:
             result = _sanitize_key(input_key)
-            assert (
-                result == expected
-            ), f"Expected {expected} but got {result} for {input_key}"
+            assert result == expected, (
+                f"Expected {expected} but got {result} for {input_key}"
+            )
 
     def test_tilde_handling(self):
         """Test handling of tilde characters in paths."""
@@ -272,6 +272,6 @@ class TestSanitizeKey:
 
         for input_key, expected in test_cases:
             result = _sanitize_key(input_key)
-            assert (
-                result == expected
-            ), f"Expected {expected} but got {result} for {input_key}"
+            assert result == expected, (
+                f"Expected {expected} but got {result} for {input_key}"
+            )
