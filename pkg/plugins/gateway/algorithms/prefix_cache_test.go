@@ -62,8 +62,10 @@ func Test_PrefixCacheE2E(t *testing.T) {
 		// No KV sync router, uses original implementation
 	}
 
+	const testInputStr = "abcdegfh"
+
 	// no prefix match -> select least request pod
-	input := "abcdegfh"
+	input := testInputStr
 	// pre_request_count: [p1: 0, p2: 0, p3: 0, p4: 0]
 	// post_request_count: [p1: 0, p2: 0, p3: 0, p4: 1(abcdefgh)]
 	t.Log(input)
@@ -88,7 +90,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	t.Log(p3)
 
 	// prefix match, load balanced -> select cached pod
-	input = "abcdegfh"
+	input = testInputStr
 	// pre_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 1(abcdefgh)]
 	// post_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 2(abcdefgh)]
 	t.Log(input)
@@ -240,7 +242,8 @@ func TestPrefixCache_ScoreAll(t *testing.T) {
 	}
 
 	// Make an initial request to route to p1 so that it caches the prefix
-	input := "abcdegfh"
+	const testInputStr2 = "abcdegfh"
+	input := testInputStr2
 	ctx1 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r1", "")
 	_, err = prefixCacheRouter.Route(ctx1, podList)
 	assert.NoError(t, err)

@@ -151,7 +151,7 @@ func TestSessionAffinity_ScoreAll(t *testing.T) {
 	ctx2.ReqHeaders = make(map[string]string)
 	ctx2.ReqHeaders[sessionIDHeader] = base64.StdEncoding.EncodeToString([]byte("1.1.1.1:8000"))
 
-	scores, scored, err = scorer.ScoreAll(ctx2, podList)
+	scores, _, err = scorer.ScoreAll(ctx2, podList)
 	assert.NoError(t, err)
 	assert.Equal(t, float64(1), scores[0]) // pA score should be 1
 	assert.Equal(t, float64(0), scores[1]) // pB score should be 0
