@@ -734,9 +734,9 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 	mockRouter.On("Route", mock.Anything, mock.Anything).Return("", errors.New("route selection failed")).Once()
 
 	server := &Server{
-		cache:             mockCache,
-		modelRateLimiter:  mockModelRL,
-		gatewayClient:     nil, // not used for explicit routing strategy path
+		cache:               mockCache,
+		modelRateLimiter:    mockModelRL,
+		gatewayClient:       nil, // not used for explicit routing strategy path
 		requestCountTracker: map[string]int{},
 	}
 

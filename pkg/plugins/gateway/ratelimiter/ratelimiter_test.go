@@ -149,4 +149,3 @@ func TestRedisRateLimiter_ConcurrentIncrements(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(workers), got, "all concurrent increments should be reflected")
 }
-
