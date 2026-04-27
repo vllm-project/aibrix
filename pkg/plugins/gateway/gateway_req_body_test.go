@@ -726,10 +726,9 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 	mockCache.On("HasModel", "test-model").Return(true).Once()
 	mockCache.On("ListPodsByModel", "test-model").Return(podList, nil).Once()
 
-	// enforceModelRPS should check current usage and then pre-charge (+1).
-	mockModelRL.On("Get", mock.Anything, "test-model_MODEL_RPS_CURRENT").Return(int64(0), nil).Once()
+	// enforceModelRPS atomically pre-charges (+1); routing then fails so the deferred
+	// compensation refunds (-1).
 	mockModelRL.On("Incr", mock.Anything, "test-model_MODEL_RPS_CURRENT", int64(1)).Return(int64(1), nil).Once()
-	// Routing then fails, so deferred compensation should refund (-1).
 	mockModelRL.On("Incr", mock.Anything, "test-model_MODEL_RPS_CURRENT", int64(-1)).Return(int64(0), nil).Once()
 	mockRouter.On("Route", mock.Anything, mock.Anything).Return("", errors.New("route selection failed")).Once()
 

@@ -107,13 +107,12 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		headers = buildEnvoyProxyHeaders(headers, ":path", rewritePath)
 	}
 
-	// Enforce per-model RPS limit from config profile
 	if errRes = s.enforceModelRPS(ctx, model, routingCtx); errRes != nil {
 		return errRes, model, routingCtx, stream, term
 	}
-	rpsCharged := true
+	needsRollback := true
 	defer func() {
-		if rpsCharged {
+		if needsRollback {
 			s.decrModelRPS(ctx, model, routingCtx)
 		}
 	}()
@@ -153,7 +152,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			"target_pod", targetPodName, "target_pod_ip", targetPodIP, "outstanding_requests", request_count, "routing_time_taken", routingDelay)
 	}
 
-	rpsCharged = false
+	needsRollback = false
 	routingCtx.RequestEndTime = time.Now()
 	term = s.cache.AddRequestCount(routingCtx, requestID, model)
 

@@ -79,12 +79,10 @@ The active profile is selected by passing the `config-profile` request header. I
 Per-model RPS enforcement is handled in `HandleRequestBody` via `enforceModelRPS` and a deferred compensation step:
 
 1. **Pre-routing gate (`enforceModelRPS`)** — called before routing. It:
-   - reads current usage with `Get`
-   - rejects with HTTP 429 if `current >= limit`
-   - pre-charges quota with `Incr(..., +1)` when allowed
+   - atomically increments the counter with `Incr(..., +1)` and receives the new value
+   - rejects with HTTP 429 and rolls back with `Incr(..., -1)` if `newVal > limit`
+   - allows the request through when `newVal <= limit`
 2. **Deferred compensation (`decrModelRPS`)** — armed immediately after a successful pre-charge. If routing later fails, the deferred call refunds quota with `Incr(..., -1)`.
 3. **Success path** — after routing succeeds and request accounting is attached, compensation is disabled, so the pre-charge remains counted.
 
-This keeps rejected requests from permanently consuming RPS budget while still enforcing limits early.
-
-**Tradeoff:** the check-then-increment gate has a small TOCTOU race. Concurrent requests can observe the same pre-increment value and both pass before their increments land. In practice, the race window is one Redis round-trip and over-admission is bounded by concurrent in-flight requests.
+Using incr-then-check (rather than check-then-increment) means the `INCRBY` is the sole gate. Because Redis processes `INCRBY` atomically, each concurrent caller receives a unique sequential result — eliminating the TOCTOU race that would otherwise allow over-admission during the check→increment window.

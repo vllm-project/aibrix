@@ -145,7 +145,6 @@ func TestEnforceModelRPS(t *testing.T) {
 
 		resp := s.enforceModelRPS(context.Background(), "llama", rc)
 		assert.Nil(t, resp)
-		rl.AssertNotCalled(t, "Get", mock.Anything, mock.Anything)
 		rl.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
 	})
 
@@ -156,7 +155,6 @@ func TestEnforceModelRPS(t *testing.T) {
 
 		resp := s.enforceModelRPS(context.Background(), "llama", rc)
 		assert.Nil(t, resp)
-		rl.AssertNotCalled(t, "Get", mock.Anything, mock.Anything)
 		rl.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
 	})
 
@@ -167,58 +165,11 @@ func TestEnforceModelRPS(t *testing.T) {
 
 		resp := s.enforceModelRPS(context.Background(), "llama", rc)
 		assert.Nil(t, resp)
-		rl.AssertNotCalled(t, "Get", mock.Anything, mock.Anything)
-		rl.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
-	})
-
-	t.Run("get failure returns 500 with model-rps header", func(t *testing.T) {
-		rl := &mockRateLimiter{}
-		rl.On("Get", mock.Anything, "llama_MODEL_RPS_CURRENT").Return(int64(0), errors.New("redis down")).Once()
-
-		s := &Server{modelRateLimiter: rl}
-		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
-
-		resp := s.enforceModelRPS(context.Background(), "llama", rc)
-		if assert.NotNil(t, resp) {
-			imm := resp.GetImmediateResponse()
-			require.NotNil(t, imm)
-			assert.Equal(t, envoyTypePb.StatusCode_InternalServerError, imm.GetStatus().GetCode())
-			assert.Contains(t, imm.GetBody(), "fail to get RPS for model: llama")
-			if assert.NotEmpty(t, imm.GetHeaders().GetSetHeaders()) {
-				assert.Equal(t, HeaderErrorModelRPSExceeded, imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetKey())
-				assert.Equal(t, "true", string(imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetRawValue()))
-			}
-		}
-		rl.AssertExpectations(t)
-		rl.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
-	})
-
-	t.Run("exceeding limit returns 429 and does not increment", func(t *testing.T) {
-		rl := &mockRateLimiter{}
-		rl.On("Get", mock.Anything, "llama_MODEL_RPS_CURRENT").Return(int64(2), nil).Once()
-
-		s := &Server{modelRateLimiter: rl}
-		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
-
-		resp := s.enforceModelRPS(context.Background(), "llama", rc)
-		if assert.NotNil(t, resp) {
-			imm := resp.GetImmediateResponse()
-			require.NotNil(t, imm)
-			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
-			assert.Contains(t, imm.GetBody(), ErrorCodeRateLimitExceeded)
-			assert.Contains(t, imm.GetBody(), "exceeded RPS")
-			if assert.NotEmpty(t, imm.GetHeaders().GetSetHeaders()) {
-				assert.Equal(t, HeaderErrorModelRPSExceeded, imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetKey())
-				assert.Equal(t, "true", string(imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetRawValue()))
-			}
-		}
-		rl.AssertExpectations(t)
 		rl.AssertNotCalled(t, "Incr", mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("incr failure returns 500 with incr header", func(t *testing.T) {
 		rl := &mockRateLimiter{}
-		rl.On("Get", mock.Anything, "llama_MODEL_RPS_CURRENT").Return(int64(1), nil).Once()
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(0), errors.New("redis down")).Once()
 
 		s := &Server{modelRateLimiter: rl}
@@ -238,9 +189,48 @@ func TestEnforceModelRPS(t *testing.T) {
 		rl.AssertExpectations(t)
 	})
 
+	t.Run("exceeding limit returns 429 and decrements counter", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(3), nil).Once()
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(-1)).Return(int64(2), nil).Once()
+
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
+
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
+		if assert.NotNil(t, resp) {
+			imm := resp.GetImmediateResponse()
+			require.NotNil(t, imm)
+			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
+			assert.Contains(t, imm.GetBody(), ErrorCodeRateLimitExceeded)
+			assert.Contains(t, imm.GetBody(), "exceeded RPS")
+			if assert.NotEmpty(t, imm.GetHeaders().GetSetHeaders()) {
+				assert.Equal(t, HeaderErrorModelRPSExceeded, imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetKey())
+				assert.Equal(t, "true", string(imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetRawValue()))
+			}
+		}
+		rl.AssertExpectations(t)
+	})
+
+	t.Run("exceeding limit rollback failure is logged but still returns 429", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(3), nil).Once()
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(-1)).Return(int64(0), errors.New("redis down")).Once()
+
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
+
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
+		if assert.NotNil(t, resp) {
+			imm := resp.GetImmediateResponse()
+			require.NotNil(t, imm)
+			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
+		}
+		rl.AssertExpectations(t)
+	})
+
 	t.Run("below limit increments and returns nil", func(t *testing.T) {
 		rl := &mockRateLimiter{}
-		rl.On("Get", mock.Anything, "llama_MODEL_RPS_CURRENT").Return(int64(1), nil).Once()
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(2), nil).Once()
 
 		s := &Server{modelRateLimiter: rl}

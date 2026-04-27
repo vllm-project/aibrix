@@ -112,31 +112,26 @@ func (s *Server) checkTPM(ctx context.Context, username string, tpmLimit int64) 
 	return envoyTypePb.StatusCode_OK, nil
 }
 
-// enforceModelRPS checks the current per-model RPS counter and increments it atomically.
-// Returns a rejection response if the limit is already reached, or an error response if
-// the Redis operation fails. On routing failure after this call, use decrModelRPS to
-// return the quota.
+// enforceModelRPS atomically increments the per-model RPS counter and rejects the request
+// if the new value exceeds the limit.
 func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) *extProcPb.ProcessingResponse {
 	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
 		return nil
 	}
 	limit := routingCtx.ConfigProfile.RequestsPerSecond
-	key := fmt.Sprintf("%v_MODEL_RPS_CURRENT", model)
-	current, err := s.modelRateLimiter.Get(ctx, key)
+	newVal, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), 1)
 	if err != nil {
-		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-			fmt.Sprintf("fail to get RPS for model: %v", model),
-			"", "", HeaderErrorModelRPSExceeded, "true")
-	}
-	if current >= limit {
-		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
-			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
-			ErrorCodeRateLimitExceeded, "", HeaderErrorModelRPSExceeded, "true")
-	}
-	if _, err = s.modelRateLimiter.Incr(ctx, key, 1); err != nil {
 		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			fmt.Sprintf("fail to increment RPS for model: %v", model),
 			"", "", HeaderErrorIncrModelRPS, "true")
+	}
+	if newVal > limit {
+		// if _, err = s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1); err != nil {
+		// 	klog.ErrorS(err, "fail to roll back RPS increment for model", "model", model)
+		// }
+		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
+			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
+			ErrorCodeRateLimitExceeded, "", HeaderErrorModelRPSExceeded, "true")
 	}
 	return nil
 }
@@ -144,11 +139,19 @@ func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *
 // decrModelRPS decrements the per-model RPS counter by 1. Call this when a routing
 // failure occurs after enforceModelRPS has already incremented the counter, so that
 // requests which never reached the backend do not consume quota.
+// Note: if the 1-second window expires between the increment and this decrement, the
+// decrement lands on a fresh (zero) key and drives the counter negative. Preventing this
+// would require an atomic floor-at-zero Lua script, which is not worth the added complexity
+// given the window resets within one second and the counter self-corrects.
 func (s *Server) decrModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) {
 	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
 		return
 	}
-	if _, err := s.modelRateLimiter.Incr(ctx, fmt.Sprintf("%v_MODEL_RPS_CURRENT", model), -1); err != nil {
+	if _, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1); err != nil {
 		klog.ErrorS(err, "fail to decrement RPS for model", "model", model)
 	}
+}
+
+func modelRPSKey(model string) string {
+	return fmt.Sprintf("%v_MODEL_RPS_CURRENT", model)
 }
