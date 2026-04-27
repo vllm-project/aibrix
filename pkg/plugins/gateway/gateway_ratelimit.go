@@ -126,9 +126,6 @@ func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *
 			"", "", HeaderErrorIncrModelRPS, "true")
 	}
 	if newVal > limit {
-		// if _, err = s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1); err != nil {
-		// 	klog.ErrorS(err, "fail to roll back RPS increment for model", "model", model)
-		// }
 		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
 			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
 			ErrorCodeRateLimitExceeded, "", HeaderErrorModelRPSExceeded, "true")

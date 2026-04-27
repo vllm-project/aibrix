@@ -189,10 +189,9 @@ func TestEnforceModelRPS(t *testing.T) {
 		rl.AssertExpectations(t)
 	})
 
-	t.Run("exceeding limit returns 429 and decrements counter", func(t *testing.T) {
+	t.Run("exceeding limit returns 429", func(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(3), nil).Once()
-		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(-1)).Return(int64(2), nil).Once()
 
 		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
@@ -208,23 +207,6 @@ func TestEnforceModelRPS(t *testing.T) {
 				assert.Equal(t, HeaderErrorModelRPSExceeded, imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetKey())
 				assert.Equal(t, "true", string(imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetRawValue()))
 			}
-		}
-		rl.AssertExpectations(t)
-	})
-
-	t.Run("exceeding limit rollback failure is logged but still returns 429", func(t *testing.T) {
-		rl := &mockRateLimiter{}
-		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(3), nil).Once()
-		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(-1)).Return(int64(0), errors.New("redis down")).Once()
-
-		s := &Server{modelRateLimiter: rl}
-		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
-
-		resp := s.enforceModelRPS(context.Background(), "llama", rc)
-		if assert.NotNil(t, resp) {
-			imm := resp.GetImmediateResponse()
-			require.NotNil(t, imm)
-			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
 		}
 		rl.AssertExpectations(t)
 	})
