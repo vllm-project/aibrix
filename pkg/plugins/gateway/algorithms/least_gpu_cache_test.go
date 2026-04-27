@@ -171,13 +171,16 @@ func TestLeastGpuCache_ScoreAll(t *testing.T) {
 	assert.Equal(t, 2, len(scores))
 	assert.Equal(t, 2, len(scored))
 
-	// pA has metrics
-	assert.True(t, scored[0])
-	assert.InDelta(t, 0.1, scores[0], 0.001)
-
-	// pB has metrics
-	assert.True(t, scored[1])
-	assert.InDelta(t, 0.8, scores[1], 0.001)
+	pods := podsFromCache(c).All()
+	for i, p := range pods {
+		if p.Name == "pA" {
+			assert.True(t, scored[i])
+			assert.InDelta(t, 0.1, scores[i], 0.001)
+		} else if p.Name == "pB" {
+			assert.True(t, scored[i])
+			assert.InDelta(t, 0.8, scores[i], 0.001)
+		}
+	}
 
 	// Check polarity
 	assert.Equal(t, types.PolarityLeast, r.Polarity())
