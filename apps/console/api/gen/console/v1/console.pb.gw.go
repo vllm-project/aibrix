@@ -365,6 +365,326 @@ func local_request_ModelService_GetModel_0(ctx context.Context, marshaler runtim
 	return msg, metadata, err
 }
 
+var filter_ModelDeploymentTemplateService_ListModelDeploymentTemplates_0 = &utilities.DoubleArray{Encoding: map[string]int{"model_id": 0}, Base: []int{1, 1, 0}, Check: []int{0, 1, 2}}
+
+func request_ModelDeploymentTemplateService_ListModelDeploymentTemplates_0(ctx context.Context, marshaler runtime.Marshaler, client ModelDeploymentTemplateServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq ListModelDeploymentTemplatesRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["model_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "model_id")
+	}
+	protoReq.ModelId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "model_id", err)
+	}
+	if err := req.ParseForm(); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_ModelDeploymentTemplateService_ListModelDeploymentTemplates_0); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	msg, err := client.ListModelDeploymentTemplates(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_ModelDeploymentTemplateService_ListModelDeploymentTemplates_0(ctx context.Context, marshaler runtime.Marshaler, server ModelDeploymentTemplateServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq ListModelDeploymentTemplatesRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["model_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "model_id")
+	}
+	protoReq.ModelId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "model_id", err)
+	}
+	if err := req.ParseForm(); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_ModelDeploymentTemplateService_ListModelDeploymentTemplates_0); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	msg, err := server.ListModelDeploymentTemplates(ctx, &protoReq)
+	return msg, metadata, err
+}
+
+func request_ModelDeploymentTemplateService_GetModelDeploymentTemplate_0(ctx context.Context, marshaler runtime.Marshaler, client ModelDeploymentTemplateServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetModelDeploymentTemplateRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["model_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "model_id")
+	}
+	protoReq.ModelId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "model_id", err)
+	}
+	val, ok = pathParams["id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "id")
+	}
+	protoReq.Id, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "id", err)
+	}
+	msg, err := client.GetModelDeploymentTemplate(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_ModelDeploymentTemplateService_GetModelDeploymentTemplate_0(ctx context.Context, marshaler runtime.Marshaler, server ModelDeploymentTemplateServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetModelDeploymentTemplateRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["model_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "model_id")
+	}
+	protoReq.ModelId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "model_id", err)
+	}
+	val, ok = pathParams["id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "id")
+	}
+	protoReq.Id, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "id", err)
+	}
+	msg, err := server.GetModelDeploymentTemplate(ctx, &protoReq)
+	return msg, metadata, err
+}
+
+func request_ModelDeploymentTemplateService_CreateModelDeploymentTemplate_0(ctx context.Context, marshaler runtime.Marshaler, client ModelDeploymentTemplateServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq CreateModelDeploymentTemplateRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["model_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "model_id")
+	}
+	protoReq.ModelId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "model_id", err)
+	}
+	msg, err := client.CreateModelDeploymentTemplate(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_ModelDeploymentTemplateService_CreateModelDeploymentTemplate_0(ctx context.Context, marshaler runtime.Marshaler, server ModelDeploymentTemplateServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq CreateModelDeploymentTemplateRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["model_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "model_id")
+	}
+	protoReq.ModelId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "model_id", err)
+	}
+	msg, err := server.CreateModelDeploymentTemplate(ctx, &protoReq)
+	return msg, metadata, err
+}
+
+func request_ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_0(ctx context.Context, marshaler runtime.Marshaler, client ModelDeploymentTemplateServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq UpdateModelDeploymentTemplateRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["model_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "model_id")
+	}
+	protoReq.ModelId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "model_id", err)
+	}
+	val, ok = pathParams["id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "id")
+	}
+	protoReq.Id, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "id", err)
+	}
+	msg, err := client.UpdateModelDeploymentTemplate(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_0(ctx context.Context, marshaler runtime.Marshaler, server ModelDeploymentTemplateServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq UpdateModelDeploymentTemplateRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["model_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "model_id")
+	}
+	protoReq.ModelId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "model_id", err)
+	}
+	val, ok = pathParams["id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "id")
+	}
+	protoReq.Id, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "id", err)
+	}
+	msg, err := server.UpdateModelDeploymentTemplate(ctx, &protoReq)
+	return msg, metadata, err
+}
+
+func request_ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_0(ctx context.Context, marshaler runtime.Marshaler, client ModelDeploymentTemplateServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq DeleteModelDeploymentTemplateRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["model_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "model_id")
+	}
+	protoReq.ModelId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "model_id", err)
+	}
+	val, ok = pathParams["id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "id")
+	}
+	protoReq.Id, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "id", err)
+	}
+	msg, err := client.DeleteModelDeploymentTemplate(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_0(ctx context.Context, marshaler runtime.Marshaler, server ModelDeploymentTemplateServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq DeleteModelDeploymentTemplateRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["model_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "model_id")
+	}
+	protoReq.ModelId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "model_id", err)
+	}
+	val, ok = pathParams["id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "id")
+	}
+	protoReq.Id, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "id", err)
+	}
+	msg, err := server.DeleteModelDeploymentTemplate(ctx, &protoReq)
+	return msg, metadata, err
+}
+
+var filter_ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_0 = &utilities.DoubleArray{Encoding: map[string]int{"model_id": 0, "name": 1}, Base: []int{1, 1, 2, 0, 0}, Check: []int{0, 1, 1, 2, 3}}
+
+func request_ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_0(ctx context.Context, marshaler runtime.Marshaler, client ModelDeploymentTemplateServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq ResolveModelDeploymentTemplateRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["model_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "model_id")
+	}
+	protoReq.ModelId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "model_id", err)
+	}
+	val, ok = pathParams["name"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "name")
+	}
+	protoReq.Name, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "name", err)
+	}
+	if err := req.ParseForm(); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_0); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	msg, err := client.ResolveModelDeploymentTemplate(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_0(ctx context.Context, marshaler runtime.Marshaler, server ModelDeploymentTemplateServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq ResolveModelDeploymentTemplateRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["model_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "model_id")
+	}
+	protoReq.ModelId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "model_id", err)
+	}
+	val, ok = pathParams["name"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "name")
+	}
+	protoReq.Name, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "name", err)
+	}
+	if err := req.ParseForm(); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_0); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	msg, err := server.ResolveModelDeploymentTemplate(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_APIKeyService_ListAPIKeys_0(ctx context.Context, marshaler runtime.Marshaler, client APIKeyServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq ListAPIKeysRequest
@@ -792,6 +1112,136 @@ func RegisterModelServiceHandlerServer(ctx context.Context, mux *runtime.ServeMu
 			return
 		}
 		forward_ModelService_GetModel_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+
+	return nil
+}
+
+// RegisterModelDeploymentTemplateServiceHandlerServer registers the http handlers for service ModelDeploymentTemplateService to "mux".
+// UnaryRPC     :call ModelDeploymentTemplateServiceServer directly.
+// StreamingRPC :currently unsupported pending https://github.com/grpc/grpc-go/issues/906.
+// Note that using this registration option will cause many gRPC library features to stop working. Consider using RegisterModelDeploymentTemplateServiceHandlerFromEndpoint instead.
+// GRPC interceptors will not work for this type of registration. To use interceptors, you must use the "runtime.WithMiddlewares" option in the "runtime.NewServeMux" call.
+func RegisterModelDeploymentTemplateServiceHandlerServer(ctx context.Context, mux *runtime.ServeMux, server ModelDeploymentTemplateServiceServer) error {
+	mux.Handle(http.MethodGet, pattern_ModelDeploymentTemplateService_ListModelDeploymentTemplates_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/console.v1.ModelDeploymentTemplateService/ListModelDeploymentTemplates", runtime.WithHTTPPathPattern("/api/v1/models/{model_id}/deployment-templates"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ModelDeploymentTemplateService_ListModelDeploymentTemplates_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ModelDeploymentTemplateService_ListModelDeploymentTemplates_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodGet, pattern_ModelDeploymentTemplateService_GetModelDeploymentTemplate_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/console.v1.ModelDeploymentTemplateService/GetModelDeploymentTemplate", runtime.WithHTTPPathPattern("/api/v1/models/{model_id}/deployment-templates/{id}"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ModelDeploymentTemplateService_GetModelDeploymentTemplate_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ModelDeploymentTemplateService_GetModelDeploymentTemplate_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodPost, pattern_ModelDeploymentTemplateService_CreateModelDeploymentTemplate_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/console.v1.ModelDeploymentTemplateService/CreateModelDeploymentTemplate", runtime.WithHTTPPathPattern("/api/v1/models/{model_id}/deployment-templates"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ModelDeploymentTemplateService_CreateModelDeploymentTemplate_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ModelDeploymentTemplateService_CreateModelDeploymentTemplate_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodPut, pattern_ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/console.v1.ModelDeploymentTemplateService/UpdateModelDeploymentTemplate", runtime.WithHTTPPathPattern("/api/v1/models/{model_id}/deployment-templates/{id}"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodDelete, pattern_ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/console.v1.ModelDeploymentTemplateService/DeleteModelDeploymentTemplate", runtime.WithHTTPPathPattern("/api/v1/models/{model_id}/deployment-templates/{id}"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodGet, pattern_ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/console.v1.ModelDeploymentTemplateService/ResolveModelDeploymentTemplate", runtime.WithHTTPPathPattern("/api/v1/models/{model_id}/deployment-templates/by-name/{name}"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
 
 	return nil
@@ -1290,6 +1740,165 @@ var (
 var (
 	forward_ModelService_ListModels_0 = runtime.ForwardResponseMessage
 	forward_ModelService_GetModel_0   = runtime.ForwardResponseMessage
+)
+
+// RegisterModelDeploymentTemplateServiceHandlerFromEndpoint is same as RegisterModelDeploymentTemplateServiceHandler but
+// automatically dials to "endpoint" and closes the connection when "ctx" gets done.
+func RegisterModelDeploymentTemplateServiceHandlerFromEndpoint(ctx context.Context, mux *runtime.ServeMux, endpoint string, opts []grpc.DialOption) (err error) {
+	conn, err := grpc.NewClient(endpoint, opts...)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			if cerr := conn.Close(); cerr != nil {
+				grpclog.Errorf("Failed to close conn to %s: %v", endpoint, cerr)
+			}
+			return
+		}
+		go func() {
+			<-ctx.Done()
+			if cerr := conn.Close(); cerr != nil {
+				grpclog.Errorf("Failed to close conn to %s: %v", endpoint, cerr)
+			}
+		}()
+	}()
+	return RegisterModelDeploymentTemplateServiceHandler(ctx, mux, conn)
+}
+
+// RegisterModelDeploymentTemplateServiceHandler registers the http handlers for service ModelDeploymentTemplateService to "mux".
+// The handlers forward requests to the grpc endpoint over "conn".
+func RegisterModelDeploymentTemplateServiceHandler(ctx context.Context, mux *runtime.ServeMux, conn *grpc.ClientConn) error {
+	return RegisterModelDeploymentTemplateServiceHandlerClient(ctx, mux, NewModelDeploymentTemplateServiceClient(conn))
+}
+
+// RegisterModelDeploymentTemplateServiceHandlerClient registers the http handlers for service ModelDeploymentTemplateService
+// to "mux". The handlers forward requests to the grpc endpoint over the given implementation of "ModelDeploymentTemplateServiceClient".
+// Note: the gRPC framework executes interceptors within the gRPC handler. If the passed in "ModelDeploymentTemplateServiceClient"
+// doesn't go through the normal gRPC flow (creating a gRPC client etc.) then it will be up to the passed in
+// "ModelDeploymentTemplateServiceClient" to call the correct interceptors. This client ignores the HTTP middlewares.
+func RegisterModelDeploymentTemplateServiceHandlerClient(ctx context.Context, mux *runtime.ServeMux, client ModelDeploymentTemplateServiceClient) error {
+	mux.Handle(http.MethodGet, pattern_ModelDeploymentTemplateService_ListModelDeploymentTemplates_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/console.v1.ModelDeploymentTemplateService/ListModelDeploymentTemplates", runtime.WithHTTPPathPattern("/api/v1/models/{model_id}/deployment-templates"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ModelDeploymentTemplateService_ListModelDeploymentTemplates_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ModelDeploymentTemplateService_ListModelDeploymentTemplates_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodGet, pattern_ModelDeploymentTemplateService_GetModelDeploymentTemplate_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/console.v1.ModelDeploymentTemplateService/GetModelDeploymentTemplate", runtime.WithHTTPPathPattern("/api/v1/models/{model_id}/deployment-templates/{id}"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ModelDeploymentTemplateService_GetModelDeploymentTemplate_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ModelDeploymentTemplateService_GetModelDeploymentTemplate_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodPost, pattern_ModelDeploymentTemplateService_CreateModelDeploymentTemplate_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/console.v1.ModelDeploymentTemplateService/CreateModelDeploymentTemplate", runtime.WithHTTPPathPattern("/api/v1/models/{model_id}/deployment-templates"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ModelDeploymentTemplateService_CreateModelDeploymentTemplate_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ModelDeploymentTemplateService_CreateModelDeploymentTemplate_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodPut, pattern_ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/console.v1.ModelDeploymentTemplateService/UpdateModelDeploymentTemplate", runtime.WithHTTPPathPattern("/api/v1/models/{model_id}/deployment-templates/{id}"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodDelete, pattern_ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/console.v1.ModelDeploymentTemplateService/DeleteModelDeploymentTemplate", runtime.WithHTTPPathPattern("/api/v1/models/{model_id}/deployment-templates/{id}"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodGet, pattern_ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/console.v1.ModelDeploymentTemplateService/ResolveModelDeploymentTemplate", runtime.WithHTTPPathPattern("/api/v1/models/{model_id}/deployment-templates/by-name/{name}"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	return nil
+}
+
+var (
+	pattern_ModelDeploymentTemplateService_ListModelDeploymentTemplates_0   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 2, 4}, []string{"api", "v1", "models", "model_id", "deployment-templates"}, ""))
+	pattern_ModelDeploymentTemplateService_GetModelDeploymentTemplate_0     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 2, 4, 1, 0, 4, 1, 5, 5}, []string{"api", "v1", "models", "model_id", "deployment-templates", "id"}, ""))
+	pattern_ModelDeploymentTemplateService_CreateModelDeploymentTemplate_0  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 2, 4}, []string{"api", "v1", "models", "model_id", "deployment-templates"}, ""))
+	pattern_ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_0  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 2, 4, 1, 0, 4, 1, 5, 5}, []string{"api", "v1", "models", "model_id", "deployment-templates", "id"}, ""))
+	pattern_ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_0  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 2, 4, 1, 0, 4, 1, 5, 5}, []string{"api", "v1", "models", "model_id", "deployment-templates", "id"}, ""))
+	pattern_ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 2, 4, 2, 5, 1, 0, 4, 1, 5, 6}, []string{"api", "v1", "models", "model_id", "deployment-templates", "by-name", "name"}, ""))
+)
+
+var (
+	forward_ModelDeploymentTemplateService_ListModelDeploymentTemplates_0   = runtime.ForwardResponseMessage
+	forward_ModelDeploymentTemplateService_GetModelDeploymentTemplate_0     = runtime.ForwardResponseMessage
+	forward_ModelDeploymentTemplateService_CreateModelDeploymentTemplate_0  = runtime.ForwardResponseMessage
+	forward_ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_0  = runtime.ForwardResponseMessage
+	forward_ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_0  = runtime.ForwardResponseMessage
+	forward_ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_0 = runtime.ForwardResponseMessage
 )
 
 // RegisterAPIKeyServiceHandlerFromEndpoint is same as RegisterAPIKeyServiceHandler but

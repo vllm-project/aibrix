@@ -100,7 +100,7 @@ function ModelSelector({
     (m) =>
       m.categories.includes('LLM') &&
       (m.name.toLowerCase().includes(search.toLowerCase()) ||
-        m.provider.toLowerCase().includes(search.toLowerCase()))
+        m.metadata.providerName.toLowerCase().includes(search.toLowerCase()))
   );
 
   return (
@@ -164,7 +164,7 @@ function ModelSelector({
                       </span>
                     )}
                   </div>
-                  <div className="text-xs text-gray-400">{m.provider}</div>
+                  <div className="text-xs text-gray-400">{m.metadata.providerName}</div>
                 </div>
                 {m.id === selectedModel.id && (
                   <Check className="w-4 h-4 text-teal-500 flex-shrink-0" />
