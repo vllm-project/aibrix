@@ -53,7 +53,7 @@ func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1
 	// when podGroupSize was switched from >1 to <=1.
 	cleaned, err := cleanupOrphanPodSets(ctx, s.cli, roleSet, role)
 	if err != nil {
-		return false, err
+		return cleaned, err
 	}
 	if cleaned {
 		klog.V(4).Infof("[StatefulRoleSyncer.Scale] cleaned orphan podsets for roleset %s/%s role %s, waiting for next reconcile", roleSet.Namespace, roleSet.Name, role.Name)
@@ -396,7 +396,7 @@ func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv
 	// when podGroupSize was switched from >1 to <=1.
 	cleaned, err := cleanupOrphanPodSets(ctx, s.cli, roleSet, role)
 	if err != nil {
-		return false, err
+		return cleaned, err
 	}
 	if cleaned {
 		klog.V(4).Infof("[StatelessRoleSyncer.Scale] cleaned orphan podsets for roleset %s/%s role %s, waiting for next reconcile", roleSet.Namespace, roleSet.Name, role.Name)
@@ -692,6 +692,7 @@ func cleanupOrphanPodSets(ctx context.Context, cli client.Client, roleSet *orche
 		len(orphanPodSets), roleSet.Namespace, roleSet.Name, role.Name)
 	var errs []error
 	for _, podSet := range orphanPodSets {
+		// Child Pods will be garbage collected via OwnerReferences by the Kubernetes GC.
 		if err := cli.Delete(ctx, podSet); err != nil && !apierrors.IsNotFound(err) {
 			errs = append(errs, err)
 		}

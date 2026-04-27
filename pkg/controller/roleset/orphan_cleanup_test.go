@@ -18,6 +18,7 @@ package roleset
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,6 +31,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
@@ -261,15 +263,13 @@ func TestStatefulRoleSyncer_Scale_CleansUpOrphanPodSets(t *testing.T) {
 	tests := []struct {
 		name              string
 		description       string
-		existingPods      []client.Object
 		existingPodSets   []client.Object
 		expectedScaled    bool
 		expectedPodSetCnt int
 	}{
 		{
-			name:         "cleans up orphan PodSets when switching to Pod mode",
-			description:  "When podGroupSize changes from 3 to 1, old PodSets should be deleted",
-			existingPods: []client.Object{},
+			name:        "cleans up orphan PodSets when switching to Pod mode",
+			description: "When podGroupSize changes from 3 to 1, old PodSets should be deleted",
 			existingPodSets: []client.Object{
 				newOrphanPodSet("podset-0", "test-ns", "worker", "test-roleset", testRoleSetUID),
 			},
@@ -279,15 +279,13 @@ func TestStatefulRoleSyncer_Scale_CleansUpOrphanPodSets(t *testing.T) {
 		{
 			name:              "no orphan PodSets - normal Pod scale proceeds",
 			description:       "When no orphan PodSets exist, Scale should proceed normally",
-			existingPods:      []client.Object{},
 			existingPodSets:   []client.Object{},
 			expectedScaled:    true,
 			expectedPodSetCnt: 0,
 		},
 		{
-			name:         "cleans multiple orphan PodSets",
-			description:  "Multiple orphan PodSets should all be cleaned up",
-			existingPods: []client.Object{},
+			name:        "cleans multiple orphan PodSets",
+			description: "Multiple orphan PodSets should all be cleaned up",
 			existingPodSets: []client.Object{
 				newOrphanPodSet("podset-0", "test-ns", "worker", "test-roleset", testRoleSetUID),
 				newOrphanPodSet("podset-1", "test-ns", "worker", "test-roleset", testRoleSetUID),
@@ -296,9 +294,8 @@ func TestStatefulRoleSyncer_Scale_CleansUpOrphanPodSets(t *testing.T) {
 			expectedPodSetCnt: 0,
 		},
 		{
-			name:         "does not clean up PodSets owned by different RoleSet UID",
-			description:  "PodSets owned by a RoleSet with the same name but different UID should not be deleted",
-			existingPods: []client.Object{},
+			name:        "does not clean up PodSets owned by different RoleSet UID",
+			description: "PodSets owned by a RoleSet with the same name but different UID should not be deleted",
 			existingPodSets: []client.Object{
 				newOrphanPodSet("podset-0", "test-ns", "worker", "test-roleset", "different-uid"),
 			},
@@ -309,13 +306,9 @@ func TestStatefulRoleSyncer_Scale_CleansUpOrphanPodSets(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var allObjects []client.Object
-			allObjects = append(allObjects, tt.existingPods...)
-			allObjects = append(allObjects, tt.existingPodSets...)
-
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
-				WithObjects(allObjects...).
+				WithObjects(tt.existingPodSets...).
 				Build()
 
 			roleSet := newOrphanTestRoleSet("test-roleset", "test-ns")
@@ -377,6 +370,16 @@ func TestStatelessRoleSyncer_Scale_CleansUpOrphanPodSets(t *testing.T) {
 			name:              "no orphan PodSets - normal Pod scale proceeds",
 			description:       "When no orphan PodSets exist, Scale should proceed normally",
 			existingPodSets:   []client.Object{},
+			expectedScaled:    true,
+			expectedPodSetCnt: 0,
+		},
+		{
+			name:        "cleans multiple orphan PodSets",
+			description: "Multiple orphan PodSets should all be cleaned up",
+			existingPodSets: []client.Object{
+				newOrphanPodSet("podset-0", "test-ns", "worker", "test-roleset", testRoleSetUID),
+				newOrphanPodSet("podset-1", "test-ns", "worker", "test-roleset", testRoleSetUID),
+			},
 			expectedScaled:    true,
 			expectedPodSetCnt: 0,
 		},
@@ -465,12 +468,93 @@ func TestCleanupOrphanPods_Idempotent(t *testing.T) {
 		Replicas: ptr.To(int32(1)),
 	}
 
-	syncer := &PodSetRoleSyncer{
-		cli:             fakeClient,
-		computeHashFunc: fakeComputeHashFunc,
-	}
-
-	cleaned, err := syncer.cleanupOrphanPods(ctx, roleSet, role)
+	cleaned, err := cleanupOrphanPods(ctx, fakeClient, roleSet, role)
 	require.NoError(t, err, "cleanup should not return error when no orphan Pods exist")
 	assert.False(t, cleaned, "cleanup should report no change when no orphan Pods exist")
+}
+
+func TestCleanupOrphanPods_PartialDeletionFailure(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+
+	pods := []client.Object{
+		newOrphanPod("pod-0", "test-ns", "worker", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
+		newOrphanPod("pod-1", "test-ns", "worker", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
+		newOrphanPod("pod-2", "test-ns", "worker", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
+	}
+
+	deleteCalls := 0
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pods...).
+		Build()
+	interceptedClient := interceptor.NewClient(fakeClient, interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			deleteCalls++
+			if obj.GetName() == "pod-1" {
+				return fmt.Errorf("simulated transient error")
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	})
+
+	roleSet := newOrphanTestRoleSet("test-roleset", "test-ns")
+	role := &orchestrationv1alpha1.RoleSpec{
+		Name:     "worker",
+		Replicas: ptr.To(int32(1)),
+	}
+
+	cleaned, err := cleanupOrphanPods(ctx, interceptedClient, roleSet, role)
+	assert.True(t, cleaned, "should report state change even on partial failure")
+	require.Error(t, err, "should return aggregated error")
+	assert.Contains(t, err.Error(), "simulated transient error")
+	assert.Equal(t, 3, deleteCalls, "should attempt to delete all orphan pods, not stop at first error")
+
+	// pod-0 and pod-2 should be deleted, pod-1 should remain
+	finalPods := &v1.PodList{}
+	require.NoError(t, fakeClient.List(ctx, finalPods, client.InNamespace("test-ns")))
+	assert.Equal(t, 1, len(finalPods.Items), "only the pod that failed to delete should remain")
+	assert.Equal(t, "pod-1", finalPods.Items[0].Name)
+}
+
+func TestCleanupOrphanPodSets_PartialDeletionFailure(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+
+	podSets := []client.Object{
+		newOrphanPodSet("podset-0", "test-ns", "worker", "test-roleset", testRoleSetUID),
+		newOrphanPodSet("podset-1", "test-ns", "worker", "test-roleset", testRoleSetUID),
+	}
+
+	deleteCalls := 0
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(podSets...).
+		Build()
+	interceptedClient := interceptor.NewClient(fakeClient, interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			deleteCalls++
+			if obj.GetName() == "podset-0" {
+				return fmt.Errorf("simulated transient error")
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	})
+
+	roleSet := newOrphanTestRoleSet("test-roleset", "test-ns")
+	role := &orchestrationv1alpha1.RoleSpec{
+		Name:     "worker",
+		Replicas: ptr.To(int32(1)),
+	}
+
+	cleaned, err := cleanupOrphanPodSets(ctx, interceptedClient, roleSet, role)
+	assert.True(t, cleaned, "should report state change even on partial failure")
+	require.Error(t, err, "should return aggregated error")
+	assert.Contains(t, err.Error(), "simulated transient error")
+	assert.Equal(t, 2, deleteCalls, "should attempt to delete all orphan podsets")
+
+	finalPodSets := &orchestrationv1alpha1.PodSetList{}
+	require.NoError(t, fakeClient.List(ctx, finalPodSets, client.InNamespace("test-ns")))
+	assert.Equal(t, 1, len(finalPodSets.Items), "only the podset that failed to delete should remain")
+	assert.Equal(t, "podset-0", finalPodSets.Items[0].Name)
 }
