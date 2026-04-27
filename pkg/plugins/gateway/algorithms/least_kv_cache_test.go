@@ -177,11 +177,11 @@ func TestLeastKvCache_ScoreAll(t *testing.T) {
 		"m1",
 		map[string]map[string]metrics.MetricValue{
 			"pA": {
-				metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1},
+				metrics.KVCacheUsagePerc:  &metrics.SimpleMetricValue{Value: 0.1},
 				metrics.CPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1},
 			},
 			"pB": {
-				metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.5},
+				metrics.KVCacheUsagePerc:  &metrics.SimpleMetricValue{Value: 0.5},
 				metrics.CPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.0},
 			},
 		})
