@@ -962,19 +962,14 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 
 	// 5. E2E Test: Invalid configuration format fallback
 	t.Run("E2E_MultiStrategy_Invalid_Format_Fallback", func(t *testing.T) {
-		// "invalid-strategy:1" is not registered. It should fallback to the RandomRouter
+		// "invalid-strategy:1" is not registered. It should return an error to preserve 400 Bad Request.
 		algString := "least-request:1,invalid-strategy:1"
 		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algString), model, "", "req5", "")
 
 		router, err := rm.Select(ctx)
-		assert.NoError(t, err)
-
-		// Should fallback to random router, not multiStrategyRouter
-		_, isMulti := router.(*multiStrategyRouter)
-		assert.False(t, isMulti, "Expected fallback to non-multiStrategyRouter")
-
-		_, isRandom := router.(*randomRouter)
-		assert.True(t, isRandom, "Expected fallback to randomRouter")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported router strategy")
+		assert.Nil(t, router)
 	})
 
 	// 6. E2E Test: Session Affinity combined with Least Request
