@@ -180,26 +180,13 @@ func (m *multiStrategyRouter) Route(ctx *types.RoutingContext, readyPodList type
 	// Store target pod for updating cache if needed
 	ctx.SetTargetPod(topPod)
 
-	// Update prefix cache indexer if the prefix-cache strategy is part of the multi-strategy
-	if pcScorer, ok := m.scorers["prefix-cache"]; ok {
-		if pcRouter, ok := pcScorer.(*prefixCacheRouter); ok {
-			tokenizerToUse := pcRouter.getTokenizerForRequest(ctx, readyPodList)
-			tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
-			if err == nil {
-				prefixHashes := pcRouter.prefixCacheIndexer.GetPrefixHashes(tokens)
-				if len(prefixHashes) > 0 {
-					pcRouter.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, topPod.Name)
-				}
-			}
-		} else if pcRouterVal, ok := pcScorer.(prefixCacheRouter); ok {
-			tokenizerToUse := pcRouterVal.getTokenizerForRequest(ctx, readyPodList)
-			tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
-			if err == nil {
-				prefixHashes := pcRouterVal.prefixCacheIndexer.GetPrefixHashes(tokens)
-				if len(prefixHashes) > 0 {
-					pcRouterVal.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, topPod.Name)
-				}
-			}
+	for name, scorer := range m.scorers {
+		updater, ok := scorer.(types.PostRouteUpdater)
+		if !ok {
+			continue
+		}
+		if err := updater.PostRouteUpdate(ctx, readyPodList, topPod); err != nil {
+			return "", fmt.Errorf("post-route update for strategy %s failed: %w", name, err)
 		}
 	}
 
@@ -309,7 +296,7 @@ func (m *multiStrategyRouter) normalizeScoresArray(scores []float64, scored []bo
 
 	// Find min and max for scored pods
 	for i, isScored := range scored {
-		if isScored && !math.IsNaN(scores[i]) {
+		if isScored && isFiniteScore(scores[i]) {
 			if scores[i] < minVal {
 				minVal = scores[i]
 			}
@@ -325,7 +312,7 @@ func (m *multiStrategyRouter) normalizeScoresArray(scores []float64, scored []bo
 	}
 
 	for i, isScored := range scored {
-		if !isScored || math.IsNaN(scores[i]) {
+		if !isScored || !isFiniteScore(scores[i]) {
 			normScores[i] = 0.0 // worst score for unscored pods
 			continue
 		}
@@ -345,6 +332,10 @@ func (m *multiStrategyRouter) normalizeScoresArray(scores []float64, scored []bo
 	}
 
 	return normScores
+}
+
+func isFiniteScore(score float64) bool {
+	return !math.IsNaN(score) && !math.IsInf(score, 0)
 }
 
 type RouterManager struct {
@@ -393,16 +384,18 @@ func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
 func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error) {
 	algStr := string(ctx.Algorithm)
 
-	// Check if it's a multi-strategy config or if we can use multi-strategy wrapper for single strategies
+	// Check if it's a multi-strategy config.
 	cfg, err := ParseMultiRouterConfig(algStr)
 	if err == nil {
-		multiRouter, err := newMultiStrategyRouter(cfg, rm, ctx)
-		if err == nil {
-			return multiRouter, nil
+		if len(cfg.Items) > 1 {
+			multiRouter, err := newMultiStrategyRouter(cfg, rm, ctx)
+			if err == nil {
+				return multiRouter, nil
+			}
+			// If multi-router initialization fails (e.g. strategy doesn't implement ScoreAll),
+			// we log a debug message and fall back to the traditional single strategy provider below.
+			klog.V(4).Infof("Cannot use multi-strategy router for %s: %v, falling back to legacy single strategy", algStr, err)
 		}
-		// If multi-router initialization fails (e.g. strategy doesn't implement ScoreAll),
-		// we log a debug message and fall back to the traditional single strategy provider below.
-		klog.V(4).Infof("Cannot use multi-strategy router for %s: %v, falling back to legacy single strategy", algStr, err)
 
 		// If the parser recognized exactly one valid strategy (e.g. it was an exclusive strategy like "pd"
 		// or just a single strategy that doesn't support ScoreAll), we fallback to that specific strategy.

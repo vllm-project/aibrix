@@ -436,12 +436,31 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 		return "", errors.New("no target pod found")
 	}
 
-	if len(prefixHashes) > 0 {
-		p.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Name)
+	if err := p.PostRouteUpdate(ctx, readyPodList, targetPod); err != nil {
+		return "", err
 	}
 
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
+}
+
+func (p prefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) error {
+	if p.kvSyncRouter != nil {
+		return nil
+	}
+
+	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return err
+	}
+
+	prefixHashes := p.prefixCacheIndexer.GetPrefixHashes(tokens)
+	if len(prefixHashes) > 0 {
+		p.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Name)
+	}
+
+	return nil
 }
 
 // ScoreAll traverses the Radix Tree to calculate the prefix match ratio (matched tokens / total tokens) for all ready pods.

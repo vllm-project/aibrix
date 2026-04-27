@@ -215,6 +215,28 @@ func (f *fakeScorer) Polarity() types.Polarity {
 	return f.polarity
 }
 
+type fakeScoreableRouter struct {
+	fakeScorer
+}
+
+func (f *fakeScoreableRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	pod := readyPodList.All()[0]
+	ctx.SetTargetPod(pod)
+	return ctx.TargetAddress(), nil
+}
+
+type fakeScorerWithPostRoute struct {
+	fakeScorer
+	called          bool
+	calledTargetPod *v1.Pod
+}
+
+func (f *fakeScorerWithPostRoute) PostRouteUpdate(_ *types.RoutingContext, _ types.PodList, targetPod *v1.Pod) error {
+	f.called = true
+	f.calledTargetPod = targetPod
+	return nil
+}
+
 func TestScoreAndRank(t *testing.T) {
 	podA := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "podA"}}
 	podB := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "podB"}}
@@ -413,6 +435,64 @@ func TestScoreAndRank(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNormalizeScoresArrayHandlesInfiniteValues(t *testing.T) {
+	m := &multiStrategyRouter{}
+	normScores := m.normalizeScoresArray(
+		[]float64{math.Inf(1), 20, 10, math.Inf(-1)},
+		[]bool{true, true, true, true},
+		types.PolarityMost,
+	)
+
+	assert.Equal(t, 0.0, normScores[0])
+	assert.InDelta(t, 1.0, normScores[1], 1e-9)
+	assert.InDelta(t, 0.0, normScores[2], 1e-9)
+	assert.Equal(t, 0.0, normScores[3])
+}
+
+func TestMultiStrategyRouterRoute_PostRouteUpdate(t *testing.T) {
+	podA := newPod("pod-a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podB := newPod("pod-b", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	postRouteScorer := &fakeScorerWithPostRoute{
+		fakeScorer: fakeScorer{
+			polarity: types.PolarityMost,
+			scores:   map[*v1.Pod]float64{podA: 1, podB: 2},
+		},
+	}
+
+	m := &multiStrategyRouter{
+		config: &MultiRouterConfig{Items: []RouterItem{{Name: "post-route", Coefficient: 1}}},
+		scorers: map[string]types.PodScorer{
+			"post-route": postRouteScorer,
+		},
+	}
+
+	ctx := types.NewRoutingContext(context.Background(), RouterNotSet, "test-model", "hello", "req-post-route", "")
+	address, err := m.Route(ctx, wrapper{pods: []*v1.Pod{podA, podB}})
+	assert.NoError(t, err)
+	assert.Equal(t, "2.2.2.2:8000", address)
+	assert.True(t, postRouteScorer.called)
+	assert.Same(t, podB, postRouteScorer.calledTargetPod)
+	assert.Equal(t, "pod-b", ctx.TargetPod().Name)
+}
+
+func TestSelectSingleStrategyUsesLegacyRouter(t *testing.T) {
+	rm := NewRouterManager()
+	expectedRouter := &fakeScoreableRouter{}
+	rm.RegisterProvider(types.RoutingAlgorithm("scoreable-test-router"), func(_ *types.RoutingContext) (types.Router, error) {
+		return expectedRouter, nil
+	})
+
+	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("scoreable-test-router"), "test-model", "hello", "req-select", "")
+	router, err := rm.Select(ctx)
+	assert.NoError(t, err)
+
+	_, isMultiStrategy := router.(*multiStrategyRouter)
+	assert.False(t, isMultiStrategy)
+	actualRouter, ok := router.(*fakeScoreableRouter)
+	assert.True(t, ok)
+	assert.Same(t, expectedRouter, actualRouter)
 }
 
 func podsFromCache(c *cache.Store) *utils.PodArray {

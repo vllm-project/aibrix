@@ -110,7 +110,12 @@ func (r leastExpectedLatencyRouter) ScoreAll(ctx *types.RoutingContext, readyPod
 			scored[i] = false
 			continue
 		}
-		prefillLatency := prefillTimeMetric.GetHistogramValue().GetMean() / avgPromptTokens * guessPromptTokens
+		prefillTimeHistogram := prefillTimeMetric.GetHistogramValue()
+		if prefillTimeHistogram == nil {
+			scored[i] = false
+			continue
+		}
+		prefillLatency := prefillTimeHistogram.GetMean() / avgPromptTokens * guessPromptTokens
 
 		avgGenTokensMetric, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationToksPerReq)
 		if err != nil {
@@ -127,7 +132,12 @@ func (r leastExpectedLatencyRouter) ScoreAll(ctx *types.RoutingContext, readyPod
 			scored[i] = false
 			continue
 		}
-		decodeLatency := decodeTimeMetric.GetHistogramValue().GetMean() / avgGenerationTokens * guessGenerationTokens
+		decodeTimeHistogram := decodeTimeMetric.GetHistogramValue()
+		if decodeTimeHistogram == nil {
+			scored[i] = false
+			continue
+		}
+		decodeLatency := decodeTimeHistogram.GetMean() / avgGenerationTokens * guessGenerationTokens
 
 		scores[i] = queuingLatencyMetric.GetSimpleValue() + prefillLatency + decodeLatency
 		scored[i] = true

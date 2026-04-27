@@ -67,6 +67,12 @@ type PodScorer interface {
 	Polarity() Polarity
 }
 
+// PostRouteUpdater defines the interface for strategies that need to update
+// internal state after a target pod has been selected.
+type PostRouteUpdater interface {
+	PostRouteUpdate(ctx *RoutingContext, readyPodList PodList, targetPod *v1.Pod) error
+}
+
 // RoutingContext encapsulates the context information required for routing.
 // It can be extended with more fields as needed in the future.
 type RoutingContext struct {

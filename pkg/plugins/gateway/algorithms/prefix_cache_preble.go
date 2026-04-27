@@ -434,6 +434,26 @@ func (p *prefixCacheAndLoadRouter) updatePodSet(readyPods []*v1.Pod) {
 	}
 }
 
+func readyPodsByName(readyPods []*v1.Pod) map[string]*v1.Pod {
+	indexed := make(map[string]*v1.Pod, len(readyPods))
+	for _, pod := range readyPods {
+		indexed[pod.Name] = pod
+	}
+	return indexed
+}
+
+func collectMatchedReadyPods(modelPods map[string]time.Time, readyPodsByName map[string]*v1.Pod) ([]*v1.Pod, []string) {
+	matchedPods := make([]*v1.Pod, 0, len(modelPods))
+	matchedPodNames := make([]string, 0, len(modelPods))
+	for podName := range modelPods {
+		if pod, exists := readyPodsByName[podName]; exists {
+			matchedPods = append(matchedPods, pod)
+			matchedPodNames = append(matchedPodNames, podName)
+		}
+	}
+	return matchedPods, matchedPodNames
+}
+
 func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	readyPods := readyPodList.All()
 	var podUpdateNeeded bool
@@ -457,23 +477,18 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 	}
 
 	node, matchedTokens, _ := p.cache.AddPrefix(tokens, ctx.Model, "")
+	readyPodsMap := readyPodsByName(readyPods)
 	var matchedPods []*v1.Pod
 	var matchedPodsNames []string
 	if modelPods, ok := node.GetModelToPods()[ctx.Model]; ok {
-		readyPodsMap := make(map[string]*v1.Pod)
-		for _, pod := range readyPods {
-			readyPodsMap[pod.Name] = pod
-		}
-		for podName := range modelPods {
-			if pod, exists := readyPodsMap[podName]; exists {
-				matchedPods = append(matchedPods, pod)
-				matchedPodsNames = append(matchedPodsNames, podName)
-			}
-		}
+		matchedPods, matchedPodsNames = collectMatchedReadyPods(modelPods, readyPodsMap)
 	}
 
 	var targetPod *v1.Pod
-	matchRatio := float64(len(matchedTokens)) / float64(len(tokens))
+	matchRatio := 0.0
+	if len(tokens) > 0 {
+		matchRatio = float64(len(matchedTokens)) / float64(len(tokens))
+	}
 	prefixRoutingThreshold := 0.5
 	klog.InfoS("requestID: %s, Matched tokens/Total tokens: %d/%d, Matching ratio: %.0f%%, len(matchedPodsNames): %d, matchedPodsNames: %v", "requestID", ctx.RequestID, "matchedTokens", len(matchedTokens), "totalTokens", len(tokens), "matchingRatio", matchRatio*100, "matchedPodsNamesCount", len(matchedPods), "matchedPodsNames", matchedPodsNames)
 
@@ -484,14 +499,7 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 		currentNode := node
 		for currentNode != nil {
 			if modelPods, ok := currentNode.GetModelToPods()[ctx.Model]; ok {
-				var nodePods []*v1.Pod
-				for podName := range modelPods {
-					for _, pod := range readyPods {
-						if pod.Name == podName {
-							nodePods = append(nodePods, pod)
-						}
-					}
-				}
+				nodePods, _ := collectMatchedReadyPods(modelPods, readyPodsMap)
 				if len(nodePods) > 0 {
 					prefixMatches = append(prefixMatches, prefixMatch{
 						node:        currentNode,
@@ -552,7 +560,35 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 		return "", fmt.Errorf("no suitable pod found")
 	}
 
-	// Update pod mapping in ALL nodes from matched node to root
+	if err := p.PostRouteUpdate(ctx, readyPodList, targetPod); err != nil {
+		return "", err
+	}
+
+	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
+}
+
+func (p *prefixCacheAndLoadRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) error {
+	readyPods := readyPodList.All()
+	var podUpdateNeeded bool
+	func() {
+		p.podsMu.RLock()
+		defer p.podsMu.RUnlock()
+		podUpdateNeeded = len(readyPods) != p.numPods
+	}()
+
+	if podUpdateNeeded {
+		p.podsMu.Lock()
+		p.updatePodSet(readyPods)
+		p.podsMu.Unlock()
+	}
+
+	tokens, err := utils.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return err
+	}
+
+	node, _, _ := p.cache.AddPrefix(tokens, ctx.Model, "")
 	currentNode := node
 	for currentNode != nil {
 		currentNode.AddOrUpdatePodForModel(ctx.Model, targetPod.Name, time.Now())
@@ -560,9 +596,7 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 	}
 
 	p.histogram.update(time.Now(), node, node, targetPod.Name, decodingLength)
-
-	ctx.SetTargetPod(targetPod)
-	return ctx.TargetAddress(), nil
+	return nil
 }
 
 // ScoreAll traverses the prefix cache tree to find pods holding matching KV-cache blocks.
@@ -591,22 +625,19 @@ func (p *prefixCacheAndLoadRouter) ScoreAll(ctx *types.RoutingContext, readyPodL
 	}
 
 	node, matchedTokens, _ := p.cache.AddPrefix(tokens, ctx.Model, "")
-	matchRatio := float64(len(matchedTokens)) / float64(len(tokens))
+	matchRatio := 0.0
+	if len(tokens) > 0 {
+		matchRatio = float64(len(matchedTokens)) / float64(len(tokens))
+	}
 	prefixRoutingThreshold := 0.5
+	readyPodsMap := readyPodsByName(readyPods)
 
 	if matchRatio > prefixRoutingThreshold {
 		var prefixMatches []prefixMatch
 		currentNode := node
 		for currentNode != nil {
 			if modelPods, ok := currentNode.GetModelToPods()[ctx.Model]; ok {
-				var nodePods []*v1.Pod
-				for podName := range modelPods {
-					for _, pod := range readyPods {
-						if pod.Name == podName {
-							nodePods = append(nodePods, pod)
-						}
-					}
-				}
+				nodePods, _ := collectMatchedReadyPods(modelPods, readyPodsMap)
 				if len(nodePods) > 0 {
 					prefixMatches = append(prefixMatches, prefixMatch{
 						node:        currentNode,
