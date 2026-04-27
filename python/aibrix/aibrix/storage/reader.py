@@ -108,10 +108,8 @@ class Reader:
             #   bytes_read <= size_limiter
             # else:
             #   bytes_read + bytes_to_read <= size_limiter
-            self._size_limiter = (
-                lambda bytes_read, bytes_to_read: bytes_read
-                + (bytes_to_read if bytes_read > 0 else 0)
-                <= size_limiter
+            self._size_limiter = lambda bytes_read, bytes_to_read: (
+                bytes_read + (bytes_to_read if bytes_read > 0 else 0) <= size_limiter
             )
         else:
             self._size_limiter = size_limiter
