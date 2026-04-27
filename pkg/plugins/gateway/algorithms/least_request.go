@@ -68,7 +68,9 @@ func (r *leastRequestRouter) ScoreAll(ctx *types.RoutingContext, readyPodList ty
 	for i, pod := range pods {
 		runningReq, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
 		if err != nil {
-			scored[i] = false
+			// If a pod has no metrics yet, we assume it has 0 requests to absorb cold-start traffic.
+			scores[i] = 0.0
+			scored[i] = true
 		} else {
 			scores[i] = runningReq.GetSimpleValue()
 			scored[i] = true

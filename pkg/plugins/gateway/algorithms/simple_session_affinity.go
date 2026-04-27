@@ -26,6 +26,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
@@ -158,7 +159,6 @@ func (r *sessionAffinityRouter) ScoreAll(ctx *types.RoutingContext, readyPodList
 		addr := net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(int(port)))
 		if targetAddr != "" && addr == targetAddr {
 			scores[i] = 1
-			r.setSessionHeader(ctx, addr)
 		} else {
 			scores[i] = 0
 		}
@@ -171,4 +171,16 @@ func (r *sessionAffinityRouter) ScoreAll(ctx *types.RoutingContext, readyPodList
 // Polarity returns whether higher or lower score is better.
 func (r *sessionAffinityRouter) Polarity() types.Polarity {
 	return types.PolarityMost
+}
+
+// PostRouteUpdate ensures the session header is set on the response *after* the final target pod is chosen.
+// This is necessary for multi-strategy routing where ScoreAll is read-only.
+func (r *sessionAffinityRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) error {
+	port := utils.GetModelPortForPod(ctx.RequestID, targetPod)
+	if port == 0 {
+		return nil
+	}
+	addr := net.JoinHostPort(targetPod.Status.PodIP, strconv.Itoa(int(port)))
+	r.setSessionHeader(ctx, addr)
+	return nil
 }

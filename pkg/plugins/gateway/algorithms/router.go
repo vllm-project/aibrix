@@ -180,16 +180,6 @@ func (m *multiStrategyRouter) Route(ctx *types.RoutingContext, readyPodList type
 	// Store target pod for updating cache if needed
 	ctx.SetTargetPod(topPod)
 
-	for name, scorer := range m.scorers {
-		updater, ok := scorer.(types.PostRouteUpdater)
-		if !ok {
-			continue
-		}
-		if err := updater.PostRouteUpdate(ctx, readyPodList, topPod); err != nil {
-			return "", fmt.Errorf("post-route update for strategy %s failed: %w", name, err)
-		}
-	}
-
 	return ctx.TargetAddress(), nil
 }
 
@@ -281,7 +271,19 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 		logBuilder.WriteString(fmt.Sprintf("  [%s] Pod: %-30s | FinalScore: %.4f | Details: %s\n",
 			winnerFlag, pod.Name, finalScores[pod], strings.Join(diags[pod].StrategyLog, ", ")))
 	}
-	klog.Info(logBuilder.String())
+	klog.V(4).Info(logBuilder.String())
+
+	// 6. Post-route execution (for strategies that need to inject headers or update state)
+	// (Note: The existing loop handles PostRouteUpdate. We can expand it later if needed.)
+	for name, scorer := range m.scorers {
+		updater, ok := scorer.(types.PostRouteUpdater)
+		if !ok {
+			continue
+		}
+		if err := updater.PostRouteUpdate(ctx, readyPodList, winner); err != nil {
+			return nil, nil, fmt.Errorf("post-route update for strategy %s failed: %w", name, err)
+		}
+	}
 
 	return winner, finalScores, nil
 }
@@ -403,8 +405,9 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 			algStr = cfg.Items[0].Name
 		}
 	} else {
-		klog.Warningf("Failed to parse multi-strategy config '%s': %v. Falling back to random.", algStr, err)
-		return RandomRouter, nil
+		// Log the error but don't fallback to Random. Allow the request to fail down the line,
+		// preserving the HTTP 400 Bad Request API contract.
+		klog.Warningf("Failed to parse multi-strategy config '%s': %v", algStr, err)
 	}
 
 	// Legacy Single strategy fallback
@@ -413,8 +416,8 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 	if provider, ok := rm.routerFactory[types.RoutingAlgorithm(algStr)]; ok {
 		return provider(ctx)
 	} else {
-		klog.Warningf("Unsupported router strategy: %s, use %s instead.", algStr, RouterRandom)
-		return RandomRouter, nil
+		// Return an error rather than falling back to random to preserve 400 Bad Request
+		return nil, fmt.Errorf("unsupported router strategy: %s", algStr)
 	}
 }
 func Select(ctx *types.RoutingContext) (types.Router, error) {
