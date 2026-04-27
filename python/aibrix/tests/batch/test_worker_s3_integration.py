@@ -527,9 +527,9 @@ class TestWorkerS3Integration:
                 )  # Show first 10
 
             # We expect all requests to be completed
-            assert (
-                completed_count == expected_count
-            ), f"Expected {expected_count} completed requests, but found {completed_count}"
+            assert completed_count == expected_count, (
+                f"Expected {expected_count} completed requests, but found {completed_count}"
+            )
 
         except Exception as e:
             logger.warning(f"Could not verify Redis completion keys: {e}")

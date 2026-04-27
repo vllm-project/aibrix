@@ -696,9 +696,9 @@ class TestReader:
         assert reconstructed_data == large_data
 
         # Verify multiple read calls (streaming behavior)
-        assert (
-            len(tracking_io.read_calls) > 1
-        ), f"Expected multiple read calls, got {len(tracking_io.read_calls)}: {tracking_io.read_calls[:5]}"
+        assert len(tracking_io.read_calls) > 1, (
+            f"Expected multiple read calls, got {len(tracking_io.read_calls)}: {tracking_io.read_calls[:5]}"
+        )
 
         # Verify chunks are roughly the expected size
         assert len(chunks) > 10, "Expected many chunks for large data"

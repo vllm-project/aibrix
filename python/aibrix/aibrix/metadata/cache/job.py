@@ -568,9 +568,9 @@ class JobCache(JobEntityManager):
         """
         # Use pre-loaded template (deep copy to avoid modifying the original)
         job_status: BatchJobStatus = job.status
-        assert (
-            job_status.in_progress_at is not None
-        ), "AssertError: Job must be set as in progress before setting as ready"
+        assert job_status.in_progress_at is not None, (
+            "AssertError: Job must be set as in progress before setting as ready"
+        )
 
         patch_annotations = BatchJobTransformer.create_status_annotations(job_status)
         patch_body = {
