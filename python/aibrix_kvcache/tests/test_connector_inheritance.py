@@ -138,6 +138,41 @@ def test_type2_connector_inherits_from_type1_connector():
     )
 
 
+def test_type1_scheduler_init_assigns_tracker_enabled():
+    """The Scheduler must compute ``_tracker_enabled`` in ``__init__``
+    by checking the ``AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND`` env. If a
+    future change drops or renames that gate, the scheduler tracker
+    could be enabled in L2-backed deployments and clobber the
+    worker-reconciliation contract.
+    """
+    tree = _parse(TYPE1_SRC)
+    scheduler = _find_class(tree, "AIBrixOffloadingConnectorScheduler")
+    assert scheduler is not None, (
+        "AIBrixOffloadingConnectorScheduler not found in type1 source"
+    )
+
+    # Find the __init__ method and inspect its body.
+    init_fn = None
+    for node in scheduler.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "__init__":
+            init_fn = node
+            break
+    assert init_fn is not None, "Scheduler.__init__ not found"
+
+    # Walk the init body looking for ``self._tracker_enabled = ...``
+    # whose RHS references AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND.
+    init_src = ast.unparse(init_fn)
+    assert "self._tracker_enabled" in init_src, (
+        "Scheduler.__init__ does not assign self._tracker_enabled — "
+        "the L2 gate is missing"
+    )
+    assert "AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND" in init_src, (
+        "Scheduler.__init__ does not reference "
+        "AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND — the gate is no longer "
+        "driven by the documented env variable"
+    )
+
+
 def test_type2_scheduler_and_worker_inherit_from_type1():
     """Type2's Scheduler / Worker must inherit from their Type1
     counterparts (aliased as Type1Scheduler / Type1Worker in type2).
