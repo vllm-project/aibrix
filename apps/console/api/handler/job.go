@@ -161,9 +161,17 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	}
 
 	// AIBrix extension fields ride along via OpenAI's `extra_body` channel.
+	// The console wizard always picks a template (model_template_name); legacy
+	// callers may still hit this path with empty fields, in which case we fall
+	// back to the configured default.
 	var opts []option.RequestOption
-	if h.defaultModelDeploymentTemplate != "" {
-		opts = append(opts, option.WithJSONSet("aibrix.model_template", h.defaultModelDeploymentTemplate))
+	if req.ModelTemplateName != "" {
+		opts = append(opts, option.WithJSONSet("aibrix.model_template.name", req.ModelTemplateName))
+		if req.ModelTemplateVersion != "" {
+			opts = append(opts, option.WithJSONSet("aibrix.model_template.version", req.ModelTemplateVersion))
+		}
+	} else if h.defaultModelDeploymentTemplate != "" {
+		opts = append(opts, option.WithJSONSet("aibrix.model_template.name", h.defaultModelDeploymentTemplate))
 	}
 
 	batch, err := h.openai.Batches.New(ctx, params, opts...)
@@ -172,9 +180,11 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	}
 
 	overlay := &pb.Job{
-		Id:        batch.ID,
-		Name:      req.Name,
-		CreatedBy: currentUserEmail(ctx),
+		Id:                   batch.ID,
+		Name:                 req.Name,
+		CreatedBy:            currentUserEmail(ctx),
+		ModelTemplateName:    req.ModelTemplateName,
+		ModelTemplateVersion: req.ModelTemplateVersion,
 	}
 	if err := h.store.UpsertJob(ctx, overlay); err != nil {
 		// Don't fail the request: the metadata service already created the
@@ -285,6 +295,12 @@ func mergeJob(b *openai.Batch, overlay *pb.Job) *pb.Job {
 		}
 		if overlay.CreatedBy != "" {
 			job.CreatedBy = overlay.CreatedBy
+		}
+		if overlay.ModelTemplateName != "" {
+			job.ModelTemplateName = overlay.ModelTemplateName
+		}
+		if overlay.ModelTemplateVersion != "" {
+			job.ModelTemplateVersion = overlay.ModelTemplateVersion
 		}
 		if job.Id == "" {
 			job.Id = overlay.Id
