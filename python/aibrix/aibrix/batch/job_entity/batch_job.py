@@ -674,7 +674,23 @@ class BatchJob(NoExtraBaseModel):
     def new_local(
         cls,
         spec: BatchJobSpec,
+        request_count: int = 0,
     ) -> "BatchJob":
+        # Pre-seed request_counts.total from the validated input line
+        # count so it is fixed at job creation, matching OpenAI Batch
+        # API semantics. When 0 (caller didn't validate upfront), the
+        # JobMetaInfo falls back to the legacy "discover total while
+        # streaming" behavior.
+        request_counts = (
+            RequestCountStats(total=request_count) if request_count > 0 else None
+        )
+        status_kwargs: Dict[str, Any] = {
+            "jobID": str(uuid.uuid4()),
+            "state": BatchJobState.CREATED,
+            "createdAt": datetime.now(timezone.utc),
+        }
+        if request_counts is not None:
+            status_kwargs["requestCounts"] = request_counts
         return cls(
             typeMeta=TypeMeta(apiVersion="", kind="LocalBatchJob"),
             metadata=ObjectMeta(
@@ -683,11 +699,7 @@ class BatchJob(NoExtraBaseModel):
                 deletionTimestamp=None,
             ),
             spec=spec,
-            status=BatchJobStatus(
-                jobID=str(uuid.uuid4()),
-                state=BatchJobState.CREATED,
-                createdAt=datetime.now(timezone.utc),
-            ),
+            status=BatchJobStatus(**status_kwargs),
         )
 
     @property

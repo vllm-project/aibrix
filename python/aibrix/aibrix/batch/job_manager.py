@@ -286,12 +286,13 @@ class JobManager(JobProgressManager):
         meta_data: dict,
         timeout: float = 30.0,
         initial_state: BatchJobState = BatchJobState.CREATED,
+        request_count: int = 0,
     ) -> str:
         job_spec = BatchJobSpec.from_strings(
             input_file_id, api_endpoint, completion_window, meta_data
         )
         return await self.create_job_with_spec(
-            session_id, job_spec, timeout, initial_state
+            session_id, job_spec, timeout, initial_state, request_count
         )
 
     async def create_job_with_spec(
@@ -300,6 +301,7 @@ class JobManager(JobProgressManager):
         job_spec: BatchJobSpec,
         timeout: float = 30.0,
         initial_state: BatchJobState = BatchJobState.CREATED,
+        request_count: int = 0,
     ) -> str:
         """
         Async job creation that waits for job ID to be available.
@@ -374,7 +376,7 @@ class JobManager(JobProgressManager):
                 self._creating_jobs.pop(session_id, None)
 
         # Local job handling.
-        job = BatchJob.new_local(job_spec)
+        job = BatchJob.new_local(job_spec, request_count=request_count)
         job.status.state = initial_state
         await self.job_committed_handler(job)
 
