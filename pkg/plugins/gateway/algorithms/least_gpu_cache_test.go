@@ -166,21 +166,26 @@ func TestLeastGpuCache_ScoreAll(t *testing.T) {
 	r := leastGpuCacheRouter{cache: c}
 	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
 
-	scores, scored, err := r.ScoreAll(ctx, podsFromCache(c))
+	podList := podsFromCache(c)
+	scores, scored, err := r.ScoreAll(ctx, podList)
 	assert.NoError(t, err)
 	assert.Equal(t, 2, len(scores))
 	assert.Equal(t, 2, len(scored))
 
-	pods := podsFromCache(c).All()
+	pods := podList.All()
+	// Create a map to verify results independently of slice ordering
+	podScores := make(map[string]float64)
+	podScored := make(map[string]bool)
 	for i, p := range pods {
-		if p.Name == "pA" {
-			assert.True(t, scored[i])
-			assert.InDelta(t, 0.1, scores[i], 0.001)
-		} else if p.Name == "pB" {
-			assert.True(t, scored[i])
-			assert.InDelta(t, 0.8, scores[i], 0.001)
-		}
+		podScores[p.Name] = scores[i]
+		podScored[p.Name] = scored[i]
 	}
+
+	assert.True(t, podScored["pA"])
+	assert.InDelta(t, 0.1, podScores["pA"], 0.001)
+
+	assert.True(t, podScored["pB"])
+	assert.InDelta(t, 0.8, podScores["pB"], 0.001)
 
 	// Check polarity
 	assert.Equal(t, types.PolarityLeast, r.Polarity())

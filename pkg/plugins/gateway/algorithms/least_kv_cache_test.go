@@ -189,11 +189,12 @@ func TestLeastKvCache_ScoreAll(t *testing.T) {
 	r := leastKvCacheRouter{cache: c}
 	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
 
-	scores, scored, err := r.ScoreAll(ctx, podsFromCache(c))
+	podList := podsFromCache(c)
+	scores, scored, err := r.ScoreAll(ctx, podList)
 	assert.NoError(t, err)
 	assert.Equal(t, 3, len(scores))
 
-	pods := podsFromCache(c).All()
+	pods := podList.All()
 	// Create a map to verify results independently of slice ordering
 	podScores := make(map[string]float64)
 	podScored := make(map[string]bool)
