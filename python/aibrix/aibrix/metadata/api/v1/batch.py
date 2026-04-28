@@ -676,11 +676,14 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
             request_count=request_count,
         )  # type: ignore[call-arg]
 
-        # Create job using JobManager
+        # Create job using JobManager. Pass the validated input line
+        # count so request_counts.total is fixed at creation, matching
+        # OpenAI Batch API semantics.
         job_id = await batch_driver.run_coroutine(
             batch_driver.job_manager.create_job_with_spec(
                 session_id=session_id,
                 job_spec=batch_request,
+                request_count=request_count,
             )
         )
 

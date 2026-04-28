@@ -103,6 +103,7 @@ pytest-tornasync = "0.6.0.post2"
 pytest-trio = "0.8.0"
 pytest-twisted = "1.14.3"
 twisted = "25.5.0"
+openai = "^2.32.0"
 
 [build-system]
 requires = ["poetry-core", "poetry-dynamic-versioning"]

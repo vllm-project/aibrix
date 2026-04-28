@@ -25,6 +25,11 @@ from kubernetes import config
 
 from aibrix import envs
 from aibrix.batch import BatchDriver
+from aibrix.batch.job_driver import (
+    EchoInferenceEngineClient,
+    InferenceEngineClient,
+    ProxyInferenceEngineClient,
+)
 from aibrix.batch.job_entity import JobEntityManager
 from aibrix.batch.store import BatchJobStore, ObjectBatchJobStore
 from aibrix.batch.template import (
@@ -209,6 +214,29 @@ def build_app(args: argparse.Namespace, params={}):
     app.include_router(users.router, tags=["users"])
     logger.info("User CRUD API mounted")
 
+    # Resolve the inference client up front so misconfigurations fail
+    # at startup instead of later when a request hits the scheduler.
+    # Only meaningful when the batch API is enabled and the driver
+    # owns its own scheduler (i.e. not K8s mode).
+    inference_client: Optional[InferenceEngineClient] = None
+    dry_run = getattr(args, "dry_run", False)
+    if not args.disable_batch_api and not args.enable_k8s_job:
+        if dry_run:
+            inference_client = EchoInferenceEngineClient()
+            logger.warning(
+                "DRY RUN MODE — outputs are echoed inputs, not real model "
+                "completions. Refuses to write to non-local storage."
+            )
+        elif endpoint_url := os.environ.get("INFERENCE_ENGINE_ENDPOINT"):
+            inference_client = ProxyInferenceEngineClient(endpoint_url)
+        else:
+            sys.stderr.write(
+                "ERROR: no inference backend configured. Pass --dry-run "
+                "for echo, set INFERENCE_ENGINE_ENDPOINT for an external "
+                "engine, or pass --enable-k8s-job to provision workers.\n"
+            )
+            sys.exit(2)
+
     # Initialize batches API
     if not args.disable_batch_api:
         job_entity_manager: Optional[JobEntityManager] = None
@@ -220,8 +248,9 @@ def build_app(args: argparse.Namespace, params={}):
             # so an admin who has not yet applied templates gets a
             # helpful render-time error rather than a startup crash.
             core_v1 = k8s_client.CoreV1Api()
-            template_registry = k8s_template_registry(core_v1)
-            profile_registry = k8s_profile_registry(core_v1)
+            registry_ns = getattr(args, "k8s_namespace", "default")
+            template_registry = k8s_template_registry(core_v1, namespace=registry_ns)
+            profile_registry = k8s_profile_registry(core_v1, namespace=registry_ns)
             template_registry.reload()
             profile_registry.reload()
             app.state.template_registry = template_registry
@@ -271,7 +300,7 @@ def build_app(args: argparse.Namespace, params={}):
             job_entity_manager,
             storage_type=settings.STORAGE_TYPE,
             metastore_type=settings.METASTORE_TYPE,
-            llm_engine_endpoint=os.environ.get("INFERENCE_ENGINE_ENDPOINT"),
+            inference_client=inference_client,
             stand_alone=True,
             params=params,
         )
@@ -325,6 +354,20 @@ def main():
         help="Enable native kubernetes jobs as the job executor",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help=(
+            "Bundle for dev/CI: forces local storage and metastore, uses an "
+            "echo inference client (responses are the request body verbatim, "
+            "NOT real model completions). Refuses to combine with "
+            "--enable-k8s-job. Not crash-safe: in-process multipart upload "
+            "ids are kept in memory only, so if the server is killed mid-batch "
+            "the partial output is unrecoverable. Use a real K8s deployment "
+            "with BatchJobStore for crash-safe long-running batches."
+        ),
+    )
+    parser.add_argument(
         "--k8s-namespace",
         type=str,
         default="default",
@@ -374,6 +417,16 @@ def main():
             "--disable-file-api requires --disable-batch-api: the batch "
             "API needs the files API for input/output."
         )
+
+    if args.dry_run:
+        if args.enable_k8s_job:
+            parser.error("--dry-run is incompatible with --enable-k8s-job")
+        # Bundle: dry-run forces local storage so a stray AWS_* / TOS_*
+        # in the environment doesn't accidentally write to a real bucket.
+        from aibrix.storage import StorageType  # local import: avoid cycle
+
+        settings.STORAGE_TYPE = StorageType.LOCAL
+        settings.METASTORE_TYPE = StorageType.LOCAL
 
     global logger
     logging_basic_config(settings)

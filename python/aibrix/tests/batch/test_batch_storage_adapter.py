@@ -80,13 +80,15 @@ async def test_finalize_job_output_data_corrects_counts_from_metastore(mock_stor
     """Test that finalize_job_output_data correctly calculates counts from metastore keys."""
     adapter = BatchStorageAdapter(mock_storage)
 
-    # Create job with incorrect initial counts
+    # Create job with incorrect initial counts. ``total`` left at 0 to
+    # exercise the legacy "infer total from metastore" path; if total is
+    # already set at job creation it is preserved through finalize.
     batch_job = create_test_batch_job(
         job_id="job-123",
         launched=10,  # Wrong - should be corrected to 3 based on metastore
         completed=5,  # Wrong - should be corrected to 2 based on metadata
         failed=2,  # Wrong - should be corrected to 1 based on metadata
-        total=15,  # Wrong - should be corrected to 5 based on max index
+        total=0,  # Unset - inferred to 5 based on max index (4) + 1
     )
 
     # Mock metastore keys for indices 0, 2, 4 (non-consecutive to test max calculation)
@@ -216,8 +218,8 @@ async def test_finalize_job_output_data_handles_empty_metastore(mock_storage):
     """Test handling when no keys are found in metastore."""
     adapter = BatchStorageAdapter(mock_storage)
     batch_job = create_test_batch_job(
-        job_id="job-789", launched=5, total=10
-    )  # Initial wrong counts
+        job_id="job-789", launched=5, total=0
+    )  # Initial wrong counts (total=0 to exercise inference path)
 
     with patch(
         "aibrix.batch.storage.adapter.list_metastore_keys", new_callable=AsyncMock
@@ -414,8 +416,8 @@ async def test_finalize_job_output_data_single_request(mock_storage):
     """Test edge case with single request (index 0 only)."""
     adapter = BatchStorageAdapter(mock_storage)
     batch_job = create_test_batch_job(
-        job_id="job-single", launched=10, total=20
-    )  # Wrong initial counts
+        job_id="job-single", launched=10, total=0
+    )  # Wrong initial counts (total=0 to exercise inference path)
 
     expected_keys = [f"batch:{batch_job.job_id}:done/0"]
 
