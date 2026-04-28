@@ -89,8 +89,17 @@ class Optimizer:
                 self._workload_distribution_template[signature] += (
                     profile.rate / covered_request_rate
                 )  # type: ignore
+                signature_expr = DelayedLog(lambda: self._log_signature_expr(signature))
+                capacity_expr = DelayedLog(lambda: self._log_capacity(signature))
+                modified_rps = (
+                    self._workload_distribution_template[signature] * total_request_rate
+                )
                 logger.debug(
-                    f"Resolved {profile} to signature={signature}, output-input={DelayedLog(lambda: self._log_signature_expr(signature))}, modified-rps={self._workload_distribution_template[signature]*total_request_rate}, overall-rps={total_request_rate}, capacity={DelayedLog(lambda: self._log_capacity(signature))}"
+                    f"Resolved {profile} to signature={signature}, "
+                    f"output-input={signature_expr}, "
+                    f"modified-rps={modified_rps}, "
+                    f"overall-rps={total_request_rate}, "
+                    f"capacity={capacity_expr}"
                 )
             except Exception as e:
                 logger.error(

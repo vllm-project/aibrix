@@ -13,7 +13,7 @@ export function Home() {
       .catch(() => setDeploymentCount(0));
 
     listJobs()
-      .then(j => setJobCount(j.length))
+      .then(res => setJobCount(res.jobs.length))
       .catch(() => setJobCount(0));
 
     listModels()

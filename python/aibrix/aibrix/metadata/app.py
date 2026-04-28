@@ -12,18 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import sys
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
+from kubernetes import client as k8s_client
 from kubernetes import config
 
 from aibrix import envs
 from aibrix.batch import BatchDriver
 from aibrix.batch.job_entity import JobEntityManager
+from aibrix.batch.store import BatchJobStore, ObjectBatchJobStore
+from aibrix.batch.template import (
+    k8s_profile_registry,
+    k8s_template_registry,
+)
 from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files, models, users
 from aibrix.metadata.cache import JobCache
@@ -180,8 +186,43 @@ def build_app(args: argparse.Namespace, params={}):
     if not args.disable_batch_api:
         job_entity_manager: Optional[JobEntityManager] = None
         if args.enable_k8s_job:
-            # Get template_path from params if provided
-            job_entity_manager = JobCache(template_patch_path=args.k8s_job_patch)
+            # Build ConfigMap-driven registries before
+            # constructing JobCache. Both ConfigMaps must exist in
+            # aibrix-system; reload() on each materializes the in-memory
+            # cache. A 404 is treated as 'empty registry' by the source,
+            # so an admin who has not yet applied templates gets a
+            # helpful render-time error rather than a startup crash.
+            core_v1 = k8s_client.CoreV1Api()
+            template_registry = k8s_template_registry(core_v1)
+            profile_registry = k8s_profile_registry(core_v1)
+            template_registry.reload()
+            profile_registry.reload()
+            app.state.template_registry = template_registry
+            app.state.profile_registry = profile_registry
+
+            batch_job_store: Optional[BatchJobStore] = None
+            if envs.BATCH_JOB_STORE_ENABLED:
+                # Reuse the same backing storage as batch payloads. The
+                # store namespaces its keys under ``batches/`` so it does
+                # not collide with payload files (root-level) or metastore
+                # locks (``batch:...`` colon-prefixed).
+                batch_job_store = ObjectBatchJobStore(
+                    create_storage(settings.STORAGE_TYPE, **params)
+                )
+                logger.info(  # type: ignore[call-arg]
+                    "BatchJobStore enabled",
+                    storage_type=settings.STORAGE_TYPE.value,
+                )
+
+            job_entity_manager = JobCache(
+                template_registry=template_registry,
+                profile_registry=profile_registry,
+                batch_job_store=batch_job_store,
+            )
+            # Expose the store so API handlers can read from it
+            # directly. When None, handlers fall through to the
+            # JobManager in-memory pool (legacy mode).
+            app.state.batch_job_store = batch_job_store
         app.state.batch_driver = BatchDriver(
             job_entity_manager,
             storage_type=settings.STORAGE_TYPE,
@@ -246,9 +287,13 @@ def main():
     )
     parser.add_argument(
         "--k8s-job-patch",
-        type=Path,
+        # Removed in favor of ModelDeploymentTemplate / BatchProfile.
+        # Kept as an accepted-but-rejected CLI argument so
+        # old startup scripts fail loudly with a useful migration message
+        # instead of silently producing the wrong manifest.
+        type=str,
         default=None,
-        help="Patch to customize k8s job template",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--kopf-startup-timeout",
@@ -269,6 +314,20 @@ def main():
         help="Enable features for e2e test",
     )
     args = parser.parse_args()
+
+    if args.k8s_job_patch is not None:
+        # The legacy yaml-patch mechanism was removed when manifests
+        # became driven by the ConfigMap-backed ModelDeploymentTemplate
+        # registry. Fail loudly so admins running old startup scripts
+        # know to migrate rather than silently producing the wrong manifest.
+        sys.stderr.write(
+            "ERROR: --k8s-job-patch is no longer supported. The manifest "
+            "template is now driven by the ConfigMaps "
+            "'aibrix-model-deployment-templates' and "
+            "'aibrix-batch-profiles' in the 'aibrix-system' namespace. "
+            "See docs/source/features/batch-templates.rst for migration.\n"
+        )
+        sys.exit(2)
 
     global logger
     logging_basic_config(settings)

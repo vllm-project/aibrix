@@ -222,60 +222,29 @@ func (s *MySQLStore) DeleteDeployment(ctx context.Context, id string) error {
 	return nil
 }
 
-// --- Jobs ---
+// --- Jobs (Console-side fields only) ---
 
-func (s *MySQLStore) ListJobs(ctx context.Context, search, statusFilter string) ([]*pb.Job, error) {
-	query := `SELECT id, name, inference_id, model, model_id,
-	                  input_dataset, input_dataset_id, create_date, create_time,
-	                  created_by, status, full_path
-	           FROM jobs WHERE 1=1`
-	var args []interface{}
-
-	if statusFilter != "" {
-		query += " AND LOWER(status) = LOWER(?)"
-		args = append(args, statusFilter)
+func (s *MySQLStore) UpsertJob(ctx context.Context, job *pb.Job) error {
+	if job == nil || job.Id == "" {
+		return status.Error(codes.InvalidArgument, "job id is required")
 	}
-	if search != "" {
-		like := "%" + search + "%"
-		query += " AND (name LIKE ? OR inference_id LIKE ? OR created_by LIKE ?)"
-		args = append(args, like, like, like)
-	}
-	query += " ORDER BY created_at DESC"
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO jobs (id, name, created_by) VALUES (?, ?, ?)
+		 ON DUPLICATE KEY UPDATE name = VALUES(name), created_by = VALUES(created_by)`,
+		job.Id, job.Name, job.CreatedBy)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "list jobs: %v", err)
+		return status.Errorf(codes.Internal, "upsert job: %v", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	var result []*pb.Job
-	for rows.Next() {
-		j := &pb.Job{}
-		if err := rows.Scan(&j.Id, &j.Name, &j.InferenceId, &j.Model, &j.ModelId,
-			&j.InputDataset, &j.InputDatasetId, &j.CreateDate, &j.CreateTime,
-			&j.CreatedBy, &j.Status, &j.FullPath); err != nil {
-			return nil, status.Errorf(codes.Internal, "scan job: %v", err)
-		}
-		result = append(result, j)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, status.Errorf(codes.Internal, "iterate jobs: %v", err)
-	}
-	return result, nil
+	return nil
 }
 
 func (s *MySQLStore) GetJob(ctx context.Context, id string) (*pb.Job, error) {
 	j := &pb.Job{}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, inference_id, model, model_id,
-		        input_dataset, input_dataset_id, create_date, create_time,
-		        created_by, status, full_path
-		 FROM jobs WHERE id = ?`, id).
-		Scan(&j.Id, &j.Name, &j.InferenceId, &j.Model, &j.ModelId,
-			&j.InputDataset, &j.InputDatasetId, &j.CreateDate, &j.CreateTime,
-			&j.CreatedBy, &j.Status, &j.FullPath)
+		`SELECT id, name, created_by FROM jobs WHERE id = ?`, id).
+		Scan(&j.Id, &j.Name, &j.CreatedBy)
 	if err == sql.ErrNoRows {
-		return nil, status.Errorf(codes.NotFound, "job %q not found", id)
+		return nil, nil
 	}
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "get job: %v", err)
@@ -283,46 +252,51 @@ func (s *MySQLStore) GetJob(ctx context.Context, id string) (*pb.Job, error) {
 	return j, nil
 }
 
-func (s *MySQLStore) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*pb.Job, error) {
-	id := mysqlRandomString(36)
-	inferenceID := mysqlRandomString(8)
-	modelID := strings.ToLower(strings.ReplaceAll(req.Model, " ", "-"))
-	now := time.Now()
-	createDate := now.Format("Jan 02, 2006")
-	createTime := now.Format("3:04 PM")
-	fullPath := fmt.Sprintf("accounts/aibrix/batchInference/%s", mysqlRandomString(8))
-
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO jobs (id, name, inference_id, model, model_id,
-		                   input_dataset, input_dataset_id, create_date, create_time,
-		                   status, full_path)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, req.DisplayName, inferenceID, req.Model, modelID,
-		req.DatasetId, req.DatasetId, createDate, createTime,
-		"Validating", fullPath)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "create job: %v", err)
+func (s *MySQLStore) ListJobs(ctx context.Context, ids []string) (map[string]*pb.Job, error) {
+	out := make(map[string]*pb.Job, len(ids))
+	if len(ids) == 0 {
+		return out, nil
 	}
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, created_by FROM jobs WHERE id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list jobs: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		j := &pb.Job{}
+		if err := rows.Scan(&j.Id, &j.Name, &j.CreatedBy); err != nil {
+			return nil, status.Errorf(codes.Internal, "scan job: %v", err)
+		}
+		out[j.Id] = j
+	}
+	if err := rows.Err(); err != nil {
+		return nil, status.Errorf(codes.Internal, "iterate jobs: %v", err)
+	}
+	return out, nil
+}
 
-	return &pb.Job{
-		Id:             id,
-		Name:           req.DisplayName,
-		InferenceId:    inferenceID,
-		Model:          req.Model,
-		ModelId:        modelID,
-		InputDataset:   req.DatasetId,
-		InputDatasetId: req.DatasetId,
-		CreateDate:     createDate,
-		CreateTime:     createTime,
-		Status:         "Validating",
-		FullPath:       fullPath,
-	}, nil
+func (s *MySQLStore) DeleteJob(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM jobs WHERE id = ?`, id)
+	if err != nil {
+		return status.Errorf(codes.Internal, "delete job: %v", err)
+	}
+	return nil
 }
 
 // --- Models ---
 
 func (s *MySQLStore) ListModels(ctx context.Context, search, category string) ([]*pb.Model, error) {
-	query := `SELECT id, name, provider, icon_bg, icon_text, icon_text_color,
+	// `provider` column is retained for the legacy LIKE search path even though
+	// the proto field has been removed; metadata.provider_name is the canonical
+	// source. A future migration can drop the column entirely.
+	query := `SELECT id, name, icon_bg, icon_text, icon_text_color,
 	                  categories, is_new, pricing, context_length, description,
 	                  metadata, specification, tags
 	           FROM models WHERE 1=1`
@@ -362,7 +336,7 @@ func (s *MySQLStore) ListModels(ctx context.Context, search, category string) ([
 
 func (s *MySQLStore) GetModel(ctx context.Context, id string) (*pb.Model, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, provider, icon_bg, icon_text, icon_text_color,
+		`SELECT id, name, icon_bg, icon_text, icon_text_color,
 		        categories, is_new, pricing, context_length, description,
 		        metadata, specification, tags
 		 FROM models WHERE id = ?`, id)
@@ -388,7 +362,7 @@ func scanModel(rows *sql.Rows) (*pb.Model, error) {
 		tagsJSON        []byte
 		descriptionNull sql.NullString
 	)
-	if err := rows.Scan(&m.Id, &m.Name, &m.Provider, &m.IconBg, &m.IconText,
+	if err := rows.Scan(&m.Id, &m.Name, &m.IconBg, &m.IconText,
 		&m.IconTextColor, &categoriesJSON, &m.IsNew, &pricingJSON,
 		&m.ContextLength, &descriptionNull, &metadataJSON, &specJSON, &tagsJSON); err != nil {
 		return nil, err
@@ -410,7 +384,7 @@ func scanModelRow(row *sql.Row) (*pb.Model, error) {
 		tagsJSON        []byte
 		descriptionNull sql.NullString
 	)
-	if err := row.Scan(&m.Id, &m.Name, &m.Provider, &m.IconBg, &m.IconText,
+	if err := row.Scan(&m.Id, &m.Name, &m.IconBg, &m.IconText,
 		&m.IconTextColor, &categoriesJSON, &m.IsNew, &pricingJSON,
 		&m.ContextLength, &descriptionNull, &metadataJSON, &specJSON, &tagsJSON); err != nil {
 		return nil, err
@@ -419,6 +393,36 @@ func scanModelRow(row *sql.Row) (*pb.Model, error) {
 		m.Description = descriptionNull.String
 	}
 	return unmarshalModelJSON(m, categoriesJSON, pricingJSON, metadataJSON, specJSON, tagsJSON)
+}
+
+// --- Model Deployment Templates (MySQL) ---
+//
+// TODO: persistence not yet implemented for MySQL. Templates currently live
+// only in the memory store. When this lands, add a `model_deployment_templates`
+// table and JSON-encode the spec column.
+
+func (s *MySQLStore) ListModelDeploymentTemplates(_ context.Context, _ string, _ string, _ string) ([]*pb.ModelDeploymentTemplate, error) {
+	return nil, status.Error(codes.Unimplemented, "model deployment templates not yet supported by mysql store")
+}
+
+func (s *MySQLStore) GetModelDeploymentTemplate(_ context.Context, _ string, _ string) (*pb.ModelDeploymentTemplate, error) {
+	return nil, status.Error(codes.Unimplemented, "model deployment templates not yet supported by mysql store")
+}
+
+func (s *MySQLStore) CreateModelDeploymentTemplate(_ context.Context, _ *pb.CreateModelDeploymentTemplateRequest) (*pb.ModelDeploymentTemplate, error) {
+	return nil, status.Error(codes.Unimplemented, "model deployment templates not yet supported by mysql store")
+}
+
+func (s *MySQLStore) UpdateModelDeploymentTemplate(_ context.Context, _ *pb.UpdateModelDeploymentTemplateRequest) (*pb.ModelDeploymentTemplate, error) {
+	return nil, status.Error(codes.Unimplemented, "model deployment templates not yet supported by mysql store")
+}
+
+func (s *MySQLStore) DeleteModelDeploymentTemplate(_ context.Context, _ string, _ string) error {
+	return status.Error(codes.Unimplemented, "model deployment templates not yet supported by mysql store")
+}
+
+func (s *MySQLStore) ResolveModelDeploymentTemplate(_ context.Context, _ string, _ string, _ string) (*pb.ModelDeploymentTemplate, error) {
+	return nil, status.Error(codes.Unimplemented, "model deployment templates not yet supported by mysql store")
 }
 
 // unmarshalModelJSON unmarshals the JSON columns into the model's sub-messages.
@@ -657,22 +661,13 @@ func (s *MySQLStore) loadDemoDeployments() error {
 }
 
 func (s *MySQLStore) loadDemoJobs() error {
+	// The store only persists Console-owned fields (id, name, created_by).
+	// OpenAI Batch state for these demo IDs is synthesized by the JobHandler
+	// dev fallback when the metadata service is unreachable.
 	_, err := s.db.Exec(
-		`INSERT INTO jobs (id, name, inference_id, model, model_id,
-		                   input_dataset, input_dataset_id, create_date, create_time,
-		                   created_by, status, full_path)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
-		        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"job-1", "gsm-8k-20260118", "vpswvq8h",
-		"qwen2p5-32b-instruct", "qwen1zp5-32b-instruct",
-		"demo-gsm8k-math-dataset-1000", "demo-gsm8k-math-dataset-1000",
-		"Jan 18, 2026", "3:37 PM", "demo@aibrix.ai",
-		"Completed", "accounts/aibrix/batchInference/27a6ee2c",
-		"job-2", "gsm-8k-20260118-v2", "abc12345",
-		"qwen2p5-32b-instruct", "qwen1zp5-32b-instruct",
-		"demo-gsm8k-math-dataset-1000", "demo-gsm8k-math-dataset-1000",
-		"Jan 18, 2026", "4:15 PM", "demo@aibrix.ai",
-		"Validating", "accounts/aibrix/batchInference/a0b13ef5")
+		`INSERT INTO jobs (id, name, created_by) VALUES (?, ?, ?), (?, ?, ?)`,
+		"batch_demo_27a6ee2c", "gsm-8k-20260118", "demo@aibrix.ai",
+		"batch_demo_a0b13ef5", "gsm-8k-20260118-v2", "demo@aibrix.ai")
 	return err
 }
 
@@ -702,7 +697,7 @@ func (s *MySQLStore) loadDemoModels() error {
 			pricing:       &pb.ModelPricing{UncachedInput: "$0.30/M", CachedInput: "$0.03/M", Output: "$1.20/M"},
 			contextLength: "192k Context",
 			description:   "MiniMax-M2.5 is a powerful language model designed for complex reasoning and code generation tasks.",
-			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 10, 2026", Kind: "Base model", ProviderName: "MiniMax", HuggingFace: "minimax/MiniMax-M2.5"},
+			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 10, 2026", ProviderName: "MiniMax", HuggingFace: "minimax/MiniMax-M2.5"},
 			specification: &pb.ModelSpecification{Parameters: "250B"},
 			tags:          []string{"Serverless"},
 		},
@@ -713,7 +708,7 @@ func (s *MySQLStore) loadDemoModels() error {
 			pricing:       &pb.ModelPricing{UncachedInput: "$1.00/M", CachedInput: "$0.20/M", Output: "$3.20/M"},
 			contextLength: "198k Context",
 			description:   "GLM-5 is Z.ai's SOTA model targeting complex systems engineering and long-horizon agentic tasks.",
-			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 12, 2026", Kind: "Base model", ProviderName: "Z.ai", HuggingFace: "zai-org/GLM-5"},
+			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 12, 2026", ProviderName: "Z.ai", HuggingFace: "zai-org/GLM-5"},
 			specification: &pb.ModelSpecification{MixtureOfExperts: true, Parameters: "700B"},
 			tags:          []string{"Serverless"},
 		},
@@ -724,7 +719,7 @@ func (s *MySQLStore) loadDemoModels() error {
 			pricing:       &pb.ModelPricing{UncachedInput: "$0.60/M", CachedInput: "$0.10/M", Output: "$3.00/M"},
 			contextLength: "256k Context",
 			description:   "Kimi K2.5 is a multimodal language model from Moonshot AI that supports both text and vision inputs.",
-			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 8, 2026", Kind: "Base model", ProviderName: "Moonshot AI", HuggingFace: "moonshot/kimi-k2.5"},
+			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 8, 2026", ProviderName: "Moonshot AI", HuggingFace: "moonshot/kimi-k2.5"},
 			specification: &pb.ModelSpecification{MixtureOfExperts: true, Parameters: "400B"},
 			tags:          []string{"Serverless", "Tunable"},
 		},
@@ -735,7 +730,7 @@ func (s *MySQLStore) loadDemoModels() error {
 			pricing:       &pb.ModelPricing{UncachedInput: "$0.56/M"},
 			contextLength: "128k Context",
 			description:   "Deepseek v3.2 is the latest iteration of the DeepSeek language model series.",
-			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Jan 25, 2026", Kind: "Base model", ProviderName: "DeepSeek", HuggingFace: "deepseek-ai/deepseek-v3.2"},
+			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Jan 25, 2026", ProviderName: "DeepSeek", HuggingFace: "deepseek-ai/deepseek-v3.2"},
 			specification: &pb.ModelSpecification{MixtureOfExperts: true, Parameters: "671B"},
 			tags:          []string{"Serverless"},
 		},
@@ -746,7 +741,7 @@ func (s *MySQLStore) loadDemoModels() error {
 			pricing:       &pb.ModelPricing{UncachedInput: "$0.20/M", Output: "$0.20/M"},
 			contextLength: "128k Context",
 			description:   "Meta's Llama 3.3 70B Instruct model is optimized for instruction following and multi-turn dialogue.",
-			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Dec 10, 2025", Kind: "Base model", ProviderName: "Meta", HuggingFace: "meta-llama/Llama-3.3-70B-Instruct"},
+			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Dec 10, 2025", ProviderName: "Meta", HuggingFace: "meta-llama/Llama-3.3-70B-Instruct"},
 			specification: &pb.ModelSpecification{Parameters: "70B"},
 			tags:          []string{"Serverless", "Tunable", "Function Calling"},
 		},
@@ -756,7 +751,7 @@ func (s *MySQLStore) loadDemoModels() error {
 			categories:    []string{"Audio"},
 			pricing:       &pb.ModelPricing{PerMinute: "$0.0015/minute"},
 			description:   "OpenAI's Whisper V3 Large is a general-purpose speech recognition model.",
-			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Oct 20, 2025", Kind: "Base model", ProviderName: "OpenAI", HuggingFace: "openai/whisper-large-v3"},
+			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Oct 20, 2025", ProviderName: "OpenAI", HuggingFace: "openai/whisper-large-v3"},
 			specification: &pb.ModelSpecification{Calibrated: true, Parameters: "1.5B"},
 			tags:          []string{"Serverless"},
 		},
@@ -764,9 +759,9 @@ func (s *MySQLStore) loadDemoModels() error {
 			id: "model-flux-kontext-pro", name: "FLUX.1 Kontext Pro", provider: "Black Forest Labs",
 			iconBg: "bg-gray-200", iconText: "\u25b3", iconTextColor: "text-gray-700",
 			categories:    []string{"Image"},
-			pricing:       &pb.ModelPricing{PerEa: "$0.04/ea"},
+			pricing:       &pb.ModelPricing{PerImage: "$0.04/ea"},
 			description:   "FLUX.1 Kontext Pro is a professional-grade image generation model.",
-			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 1, 2026", Kind: "Base model", ProviderName: "Black Forest Labs"},
+			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 1, 2026", ProviderName: "Black Forest Labs"},
 			specification: &pb.ModelSpecification{Parameters: "12B"},
 			tags:          []string{"Serverless"},
 		},
@@ -774,10 +769,10 @@ func (s *MySQLStore) loadDemoModels() error {
 			id: "model-nomic-embed-text", name: "Nomic Embed Text v1.5", provider: "Nomic AI",
 			iconBg: "bg-teal-100", iconText: "N", iconTextColor: "text-teal-700",
 			categories:    []string{"Embedding"},
-			pricing:       &pb.ModelPricing{PerTokens: "$0.008/M Tokens"},
+			pricing:       &pb.ModelPricing{UncachedInput: "$0.008/M"},
 			contextLength: "8k Context",
 			description:   "Nomic Embed Text v1.5 is a lightweight, high-performance text embedding model.",
-			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Sep 1, 2025", Kind: "Base model", ProviderName: "Nomic AI", HuggingFace: "nomic-ai/nomic-embed-text-v1.5"},
+			metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Sep 1, 2025", ProviderName: "Nomic AI", HuggingFace: "nomic-ai/nomic-embed-text-v1.5"},
 			specification: &pb.ModelSpecification{Parameters: "137M"},
 			tags:          []string{"Serverless"},
 		},

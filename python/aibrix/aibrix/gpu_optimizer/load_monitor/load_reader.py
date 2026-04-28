@@ -262,7 +262,7 @@ class GatewayLoadReader:
             key = f"{self.prefix}{int(ts)}"
             if self.ver < 3:
                 # Legacy version has guarentee on the time of profile creation time, use one window before to make sure the profile is available.
-                key = f"{self.prefix}{int(ts-self.key_ts_alignment)}"
+                key = f"{self.prefix}{int(ts - self.key_ts_alignment)}"
             profiles = self.read_key(key, True)
             self.last_ts = ts
 

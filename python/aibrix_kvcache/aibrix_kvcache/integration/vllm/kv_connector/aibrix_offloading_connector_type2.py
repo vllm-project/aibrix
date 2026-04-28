@@ -16,7 +16,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Optional
 
 import torch
 import torch.distributed as dist
@@ -24,11 +24,6 @@ import torch.distributed as dist
 # from vllm.v1.attention.backends.flashinfer import FlashInferBackend
 # from vllm.v1.attention.backends.flex_attention import FlexAttentionBackend
 # from vllm.v1.attention.backends.triton_attn import TritonAttentionBackend
-from vllm.distributed.kv_transfer.kv_connector.v1.base import (
-    KVConnectorBase_V1,
-    KVConnectorMetadata,
-    KVConnectorRole,
-)
 from vllm.utils.math_utils import round_down
 from vllm.v1.attention.backends.flash_attn import FlashAttentionBackend
 from vllm.v1.attention.backends.flashinfer import FlashInferBackend
@@ -46,32 +41,23 @@ from aibrix_kvcache.common.absl_logging import (
 from aibrix_kvcache.profiling import tag_wrapper
 
 from .aibrix_offloading_connector_type1 import (
+    AIBrixOffloadingConnector as AIBrixOffloadingConnectorType1,
+)
+from .aibrix_offloading_connector_type1 import (
     AIBrixOffloadingConnectorMetadata,
     AIBrixOffloadingConnectorRequestMetadata,
     AIBrixOffloadingConnectorRequestState,
-    AIBrixWorkerMeta,
-    delegate_to,
-)
-
-if TYPE_CHECKING:
-    from vllm.distributed.kv_transfer.kv_connector.v1.base import (
-        KVConnectorWorkerMetadata,
-    )
-from .aibrix_offloading_connector_type1 import (
-    AIBrixOffloadingConnectorScheduler as AIBrixOffloadingConnectorSchedulerType1,  # noqa: E501
 )
 from .aibrix_offloading_connector_type1 import (
-    AIBrixOffloadingConnectorWorker as AIBrixOffloadingConnectorWorkerType1,
+    AIBrixOffloadingConnectorScheduler as Type1Scheduler,
+)
+from .aibrix_offloading_connector_type1 import (
+    AIBrixOffloadingConnectorWorker as Type1Worker,
 )
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
-    from vllm.forward_context import ForwardContext
     from vllm.v1.attention.backend import AttentionMetadata
-    from vllm.v1.core.kv_cache_manager import KVCacheBlocks
-    from vllm.v1.core.sched.output import SchedulerOutput
-    from vllm.v1.kv_cache_interface import KVCacheConfig
-    from vllm.v1.request import Request
 
 logger = getLogger(__name__)
 
@@ -82,14 +68,12 @@ OFFLOADING_CONNECTOR_SUPPORTED_ATTN_BACKENDS = {
 }
 
 
-class AIBrixOffloadingConnectorScheduler(
-    AIBrixOffloadingConnectorSchedulerType1
-):
+class AIBrixOffloadingConnectorScheduler(Type1Scheduler):
     def __init__(self, config: "VllmConfig"):
         super().__init__(config)
 
 
-class AIBrixOffloadingConnectorWorker(AIBrixOffloadingConnectorWorkerType1):
+class AIBrixOffloadingConnectorWorker(Type1Worker):
     """AIBrixOffloadingConnectorWorker carries out the data-plane operations."""
 
     def __init__(self, config: "VllmConfig"):
@@ -184,14 +168,17 @@ class AIBrixOffloadingConnectorWorker(AIBrixOffloadingConnectorWorkerType1):
             else:
                 num_fetched_tokens = stats.get(seq_request_id, 0)
 
-            # Scheduler already set context_len/query_len correctly
-            # (via get_num_new_matched_tokens). Don't double-adjust.
             if num_fetched_tokens > 0:
                 stats[seq_request_id] = num_fetched_tokens
-            self._send_lengths[seq_request_id] = (
-                seq_request_meta.context_len,
-                seq_request_meta.query_len,
-            )
+                self._send_lengths[seq_request_id] = (
+                    seq_request_meta.context_len + num_fetched_tokens,
+                    seq_request_meta.query_len - num_fetched_tokens,
+                )
+            else:
+                self._send_lengths[seq_request_id] = (
+                    seq_request_meta.context_len,
+                    seq_request_meta.query_len,
+                )
 
             seq_request_meta.state = (
                 AIBrixOffloadingConnectorRequestState.WAITING_FOR_SEND
@@ -215,29 +202,20 @@ class AIBrixOffloadingConnectorWorker(AIBrixOffloadingConnectorWorkerType1):
         seq_cached_meta = self._meta_cache[seq_request_id]
         seq_all_tokens = seq_cached_meta.get_context_tokens_view()
         assert seq_all_tokens is not None, "seq_all_tokens is None"
-
-        # Use load_len (tokens promised to scheduler as external hits)
-        # instead of query_len (tokens to compute). See Type1 comment.
-        load_len = seq_request_meta.load_len
         seq_context_len = seq_request_meta.context_len
+
         prompt_len = seq_request_meta.prompt_len
+        query_len = seq_request_meta.query_len
 
-        if load_len <= 0:
-            return 0
-
-        local_context_len = seq_context_len - load_len
-        assert local_context_len >= 0, (
-            f"local_context_len={local_context_len} "
-            f"(context_len={seq_context_len}, load_len={load_len})"
-        )
-
+        # align to block boundary
         aligned_context_len = round_down(
-            local_context_len, self.cache_block_ntokens
+            seq_context_len, self.cache_block_ntokens
         )
-        shift_len = local_context_len - aligned_context_len
+        actual_query_len = seq_context_len + query_len - aligned_context_len
         aligned_query_len = round_down(
-            shift_len + load_len, self.cache_block_ntokens
+            actual_query_len, self.cache_block_ntokens
         )
+        shift_len = seq_context_len - aligned_context_len
 
         assert prompt_len >= aligned_context_len + aligned_query_len, (
             f"{prompt_len}<{aligned_context_len}+{aligned_query_len}"
@@ -249,7 +227,7 @@ class AIBrixOffloadingConnectorWorker(AIBrixOffloadingConnectorWorkerType1):
         )
         if aligned_query_len < threshold:
             logger.debug(
-                "Skip Request[id=%s, context_len=%d, load_len=%d]",
+                "Skip Request[id=%s, context_len=%d, query_len=%d]",
                 seq_request_id,
                 aligned_context_len,
                 aligned_query_len,
@@ -302,30 +280,6 @@ class AIBrixOffloadingConnectorWorker(AIBrixOffloadingConnectorWorkerType1):
             seq_context_len,
             seq_recv_len,
         )
-
-        # Detect partial load (eviction race) — see Type1 comment
-        if seq_recv_len < aligned_query_len:
-            # Report failed tokens to scheduler so it can remove the
-            # corresponding block hashes from its tracker.
-            failed_tokens = aligned_query_len - seq_recv_len
-            if failed_tokens > 0:
-                prev = self._newly_failed_load_tokens.get(seq_request_id, 0)
-                self._newly_failed_load_tokens[seq_request_id] = (
-                    prev + failed_tokens
-                )
-            slot_mapping = seq_cached_meta.context_slot_mapping
-            if slot_mapping is not None:
-                block_size = self.engine_block_ntokens
-                first_failed = aligned_context_len + seq_recv_len
-                last_failed = aligned_context_len + aligned_query_len
-                first_block = first_failed // block_size
-                last_block = last_failed // block_size
-                for blk_idx in range(first_block, last_block):
-                    token_offset = blk_idx * block_size
-                    if 0 <= token_offset < len(slot_mapping):
-                        slot = int(slot_mapping[token_offset].item())
-                        block_id = slot // block_size
-                        self._failed_load_block_ids.add(block_id)
 
         if self._metrics.time_measurement_enabled:
             end = time.perf_counter()
@@ -614,14 +568,6 @@ class AIBrixOffloadingConnectorWorker(AIBrixOffloadingConnectorWorkerType1):
         else:
             total_sent += length
 
-            # Track saved tokens for scheduler reporting via
-            # build_connector_worker_meta. Use per-block length (not
-            # cumulative total_sent) so the accounting stays correct
-            # if chunking is ever added to this path.
-            if length > 0:
-                prev = self._newly_saved_tokens.get(seq_request_id, 0)
-                self._newly_saved_tokens[seq_request_id] = prev + length
-
             log_if(
                 logger,
                 logging.INFO,
@@ -641,98 +587,27 @@ class AIBrixOffloadingConnectorWorker(AIBrixOffloadingConnectorWorkerType1):
             )
 
 
-class AIBrixOffloadingConnector(KVConnectorBase_V1):
-    """AIBrixOffloadingConnector is a KVConnector that offloads KV caches
-    to the kv cache offloading service.
+class AIBrixOffloadingConnector(AIBrixOffloadingConnectorType1):
+    """Type2 offloading connector: adds async layer-wise load/save on
+    top of the sync Type1 connector.
+
+    All scheduler-side bookkeeping (get_num_new_matched_tokens,
+    update_state_after_alloc, build_connector_worker_meta, eviction
+    propagation, etc.) is inherited from AIBrixOffloadingConnectorType1.
+
+    Only the two layer-wise hooks that Type1 leaves as "Not supported"
+    stubs are overridden here with real implementations. The
+    SCHEDULER_CLASS and WORKER_CLASS class attributes plug the
+    Type2-specific Scheduler/Worker into the inherited __init__.
     """
 
-    def __init__(
-        self,
-        config: "VllmConfig",
-        role: KVConnectorRole,
-        kv_cache_config: Optional["KVCacheConfig"] = None,
-    ):
-        super().__init__(
-            vllm_config=config, role=role, kv_cache_config=kv_cache_config
-        )
-
-        self.connector_scheduler: Optional[
-            AIBrixOffloadingConnectorScheduler
-        ] = None
-
-        self.connector_worker: Optional[AIBrixOffloadingConnectorWorker] = None
-        if role == KVConnectorRole.SCHEDULER:
-            self.connector_scheduler = AIBrixOffloadingConnectorScheduler(
-                config
-            )
-        elif role == KVConnectorRole.WORKER:
-            self.connector_worker = AIBrixOffloadingConnectorWorker(config)
-
-    # ==============================
-    # Worker-side methods
-    # ==============================
-
-    @delegate_to("connector_worker")
-    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
-        """
-        Initialize with the KV caches. Useful for pre-registering the
-        KV Caches in the KVConnector (e.g. for NIXL).
-
-        Args: kv_caches:
-            dictionary of layer names, kv cache
-        """
-        pass
-
-    def start_load_kv_before_update(self, **kwargs) -> dict[str, int]:
-        """
-        Start loading the KV cache from the connector to vLLM's paged
-        KV buffer before gpu runner updating its states.
-
-        Args:
-            **kwargs: additional arguments for the load operation
-
-        Returns:
-            dict[str, int]: a dictionary of request ids and the number of
-            tokens loaded for each request.
-        """
-        assert self.connector_worker is not None
-        assert isinstance(
-            self._connector_metadata,
-            AIBrixOffloadingConnectorMetadata,
-        )
-        return self.connector_worker.start_load_kv_before_update(
-            self._connector_metadata
-        )
-
-    def start_load_kv(
-        self, forward_context: "ForwardContext", **kwargs
-    ) -> None:
-        """
-        Start loading the KV cache from the connector to vLLM's paged
-        KV buffer. This is called from the forward context before the
-        forward pass to enable async loading during model execution.
-
-        Args:
-            forward_context (ForwardContext): the forward context.
-            **kwargs: additional arguments for the load operation
-
-        Note:
-            The number of elements in kv_caches and layer_names should be
-            the same.
-
-        """
-        pass
+    SCHEDULER_CLASS = AIBrixOffloadingConnectorScheduler
+    WORKER_CLASS = AIBrixOffloadingConnectorWorker
 
     def wait_for_layer_load(self, layer_name: str) -> None:
-        """
-        Block until the KV for a specific layer is loaded into vLLM's
-        paged buffer. This is called from within attention layer to ensure
-        async copying from start_load_kv is complete.
-
-        This interface will be useful for layer-by-layer pipelining.
-
-        Args:
-            layer_name: the name of that layer
+        """Block until the KV for a specific layer is loaded into vLLM's
+        paged buffer. Called from within the attention layer to ensure
+        the async copy started by start_load_kv_before_update is done.
         """
         assert self.connector_worker is not None
         assert isinstance(
@@ -750,17 +625,9 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
         attn_metadata: "AttentionMetadata",
         **kwargs,
     ) -> None:
-        """
-        Start saving a layer of KV cache from vLLM's paged buffer
-        to the connector. This is called from within attention layer to
-        enable async copying during execution.
-
-        Args:
-            layer_name (str): the name of the layer.
-            kv_layer (torch.Tensor): the paged KV buffer of the current
-                layer in vLLM.
-            attn_metadata (AttentionMetadata): the attention metadata.
-            **kwargs: additional arguments for the save operation.
+        """Start saving a layer of KV cache from vLLM's paged buffer to
+        the connector. Called from within the attention layer to enable
+        async copying during execution.
         """
         assert self.connector_worker is not None
         assert isinstance(
@@ -770,165 +637,3 @@ class AIBrixOffloadingConnector(KVConnectorBase_V1):
         self.connector_worker.save_kv_layer(
             self._connector_metadata, layer_name, kv_layer, attn_metadata
         )
-
-    def wait_for_save(self) -> None:
-        """
-        Block until all the save operations is done. This is called
-        as the forward context exits to ensure that the async saving
-        from save_kv_layer is complete before finishing the forward.
-
-        This prevents overwrites of paged KV buffer before saving done.
-        """
-        assert self.connector_worker is not None
-        assert isinstance(
-            self._connector_metadata,
-            AIBrixOffloadingConnectorMetadata,
-        )
-        self.connector_worker.wait_for_save(self._connector_metadata)
-
-    def get_block_ids_with_load_errors(self) -> set[int]:
-        """Report vLLM block_ids the worker failed to load (eviction race).
-        See AIBrixOffloadingConnector (type1) for full doc.
-        """
-        if self.connector_worker is None:
-            return set()
-        result = set(self.connector_worker._failed_load_block_ids)
-        self.connector_worker._failed_load_block_ids.clear()
-        return result
-
-    def get_finished(
-        self, finished_req_ids: set[str]
-    ) -> tuple[Optional[set[str]], Optional[set[str | tuple[str, int]]]]:
-        """
-        Notifies worker-side connector ids of requests that have
-        finished generating tokens.
-        """
-        return None, None
-
-    # ==============================
-    # Scheduler-side methods
-    # ==============================
-
-    def get_num_new_matched_tokens(
-        self,
-        request: "Request",
-        num_computed_tokens: int,
-    ) -> tuple[int, bool]:
-        """
-        Get number of new tokens that can be loaded from the
-        external KV cache beyond the num_computed_tokens.
-
-        Uses the scheduler-side cache tracker (populated via
-        build_connector_worker_meta) to determine how many consecutive
-        blocks starting from num_computed_tokens are available in the
-        external L1 cache.
-        """
-        if self.connector_scheduler is None:
-            return 0, False
-
-        scheduler = self.connector_scheduler
-
-        block_hashes = getattr(request, "block_hashes", None)
-        if not block_hashes:
-            return 0, False
-
-        # Save block_hashes for this request so we can map worker
-        # reports (req_id -> num_tokens_saved) to vLLM block hashes
-        req_id = getattr(request, "request_id", None)
-        if req_id is not None:
-            scheduler._request_block_hashes[req_id] = list(block_hashes)
-
-        block_size = scheduler.engine_block_ntokens
-
-        # Count how many consecutive blocks starting from
-        # num_computed_tokens are available in the external cache
-        start_block = num_computed_tokens // block_size
-        num_matched_blocks = 0
-
-        for i in range(start_block, len(block_hashes)):
-            if block_hashes[i] not in scheduler._cached_block_hashes:
-                break
-            num_matched_blocks += 1
-
-        num_matched_tokens = num_matched_blocks * block_size
-
-        # Don't exceed request length
-        max_matchable = request.num_tokens - num_computed_tokens
-        num_matched_tokens = min(num_matched_tokens, max_matchable)
-
-        return num_matched_tokens, False
-
-    def build_connector_worker_meta(
-        self,
-    ) -> Optional["KVConnectorWorkerMetadata"]:
-        """Report tokens saved to L1 cache back to the scheduler."""
-        if self.connector_worker is None:
-            return None
-        saved = self.connector_worker._newly_saved_tokens
-        failed = self.connector_worker._newly_failed_load_tokens
-        if not saved and not failed:
-            return None
-        meta = AIBrixWorkerMeta(
-            saved_tokens=dict(saved),
-            failed_load_tokens=dict(failed),
-        )
-        saved.clear()
-        failed.clear()
-        return meta
-
-    def update_connector_output(self, connector_output) -> None:
-        """Process worker-side output to update scheduler cache tracker."""
-        worker_meta = getattr(
-            connector_output, "kv_connector_worker_meta", None
-        )
-        if self.connector_scheduler is not None and worker_meta is not None:
-            self.connector_scheduler.receive_connector_worker_meta(worker_meta)
-
-    def update_state_after_alloc(
-        self,
-        request: "Request",
-        blocks: "KVCacheBlocks",
-        num_external_tokens: int,
-    ):
-        """Store num_external_tokens so build_connector_meta can pass it
-        to the worker via load_len (instructing the worker exactly how
-        many tokens to load from the external L1 cache)."""
-        if self.connector_scheduler is None:
-            return
-        if num_external_tokens > 0:
-            self.connector_scheduler._request_external_tokens[
-                request.request_id
-            ] = num_external_tokens
-
-    @delegate_to("connector_scheduler")
-    def build_connector_meta(
-        self, scheduler_output: "SchedulerOutput"
-    ) -> KVConnectorMetadata:
-        """
-        Build the connector metadata for this step.
-
-        This function should NOT modify fields in the scheduler_output.
-        Also, calling this function will reset the state of the connector.
-
-        Args:
-            scheduler_output (SchedulerOutput): the scheduler output object.
-        """
-        pass
-
-    @delegate_to("connector_scheduler")
-    def request_finished(  # type: ignore
-        self,
-        request: "Request",
-        block_ids: list[int],
-    ) -> tuple[bool, Optional[dict[str, Any]]]:
-        """
-        Called when a request has finished, before its blocks are freed.
-
-        Returns:
-            True if the request is being saved/sent asynchronously and blocks
-            should not be freed until the request_id is returned from
-            get_finished().
-            Optional KVTransferParams to be included in the request outputs
-            returned by the engine.
-        """
-        pass

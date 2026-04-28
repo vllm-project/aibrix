@@ -253,6 +253,7 @@ const (
 	JobService_ListJobs_FullMethodName  = "/console.v1.JobService/ListJobs"
 	JobService_GetJob_FullMethodName    = "/console.v1.JobService/GetJob"
 	JobService_CreateJob_FullMethodName = "/console.v1.JobService/CreateJob"
+	JobService_CancelJob_FullMethodName = "/console.v1.JobService/CancelJob"
 )
 
 // JobServiceClient is the client API for JobService service.
@@ -262,6 +263,7 @@ type JobServiceClient interface {
 	ListJobs(ctx context.Context, in *ListJobsRequest, opts ...grpc.CallOption) (*ListJobsResponse, error)
 	GetJob(ctx context.Context, in *GetJobRequest, opts ...grpc.CallOption) (*Job, error)
 	CreateJob(ctx context.Context, in *CreateJobRequest, opts ...grpc.CallOption) (*Job, error)
+	CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*Job, error)
 }
 
 type jobServiceClient struct {
@@ -302,6 +304,16 @@ func (c *jobServiceClient) CreateJob(ctx context.Context, in *CreateJobRequest, 
 	return out, nil
 }
 
+func (c *jobServiceClient) CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*Job, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Job)
+	err := c.cc.Invoke(ctx, JobService_CancelJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // JobServiceServer is the server API for JobService service.
 // All implementations must embed UnimplementedJobServiceServer
 // for forward compatibility.
@@ -309,6 +321,7 @@ type JobServiceServer interface {
 	ListJobs(context.Context, *ListJobsRequest) (*ListJobsResponse, error)
 	GetJob(context.Context, *GetJobRequest) (*Job, error)
 	CreateJob(context.Context, *CreateJobRequest) (*Job, error)
+	CancelJob(context.Context, *CancelJobRequest) (*Job, error)
 	mustEmbedUnimplementedJobServiceServer()
 }
 
@@ -327,6 +340,9 @@ func (UnimplementedJobServiceServer) GetJob(context.Context, *GetJobRequest) (*J
 }
 func (UnimplementedJobServiceServer) CreateJob(context.Context, *CreateJobRequest) (*Job, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateJob not implemented")
+}
+func (UnimplementedJobServiceServer) CancelJob(context.Context, *CancelJobRequest) (*Job, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelJob not implemented")
 }
 func (UnimplementedJobServiceServer) mustEmbedUnimplementedJobServiceServer() {}
 func (UnimplementedJobServiceServer) testEmbeddedByValue()                    {}
@@ -403,6 +419,24 @@ func _JobService_CreateJob_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _JobService_CancelJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(JobServiceServer).CancelJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: JobService_CancelJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(JobServiceServer).CancelJob(ctx, req.(*CancelJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // JobService_ServiceDesc is the grpc.ServiceDesc for JobService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -421,6 +455,10 @@ var JobService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateJob",
 			Handler:    _JobService_CreateJob_Handler,
+		},
+		{
+			MethodName: "CancelJob",
+			Handler:    _JobService_CancelJob_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
@@ -561,6 +599,307 @@ var ModelService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetModel",
 			Handler:    _ModelService_GetModel_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "console/v1/console.proto",
+}
+
+const (
+	ModelDeploymentTemplateService_ListModelDeploymentTemplates_FullMethodName   = "/console.v1.ModelDeploymentTemplateService/ListModelDeploymentTemplates"
+	ModelDeploymentTemplateService_GetModelDeploymentTemplate_FullMethodName     = "/console.v1.ModelDeploymentTemplateService/GetModelDeploymentTemplate"
+	ModelDeploymentTemplateService_CreateModelDeploymentTemplate_FullMethodName  = "/console.v1.ModelDeploymentTemplateService/CreateModelDeploymentTemplate"
+	ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_FullMethodName  = "/console.v1.ModelDeploymentTemplateService/UpdateModelDeploymentTemplate"
+	ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_FullMethodName  = "/console.v1.ModelDeploymentTemplateService/DeleteModelDeploymentTemplate"
+	ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_FullMethodName = "/console.v1.ModelDeploymentTemplateService/ResolveModelDeploymentTemplate"
+)
+
+// ModelDeploymentTemplateServiceClient is the client API for ModelDeploymentTemplateService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type ModelDeploymentTemplateServiceClient interface {
+	ListModelDeploymentTemplates(ctx context.Context, in *ListModelDeploymentTemplatesRequest, opts ...grpc.CallOption) (*ListModelDeploymentTemplatesResponse, error)
+	GetModelDeploymentTemplate(ctx context.Context, in *GetModelDeploymentTemplateRequest, opts ...grpc.CallOption) (*ModelDeploymentTemplate, error)
+	CreateModelDeploymentTemplate(ctx context.Context, in *CreateModelDeploymentTemplateRequest, opts ...grpc.CallOption) (*ModelDeploymentTemplate, error)
+	UpdateModelDeploymentTemplate(ctx context.Context, in *UpdateModelDeploymentTemplateRequest, opts ...grpc.CallOption) (*ModelDeploymentTemplate, error)
+	DeleteModelDeploymentTemplate(ctx context.Context, in *DeleteModelDeploymentTemplateRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// Resolve looks up a template by (model_id, name, version). When `version`
+	// is empty, the server returns the latest active version of that name.
+	// 404 if no template matches; 409 if name has versions but none are active
+	// and version was not specified.
+	ResolveModelDeploymentTemplate(ctx context.Context, in *ResolveModelDeploymentTemplateRequest, opts ...grpc.CallOption) (*ModelDeploymentTemplate, error)
+}
+
+type modelDeploymentTemplateServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewModelDeploymentTemplateServiceClient(cc grpc.ClientConnInterface) ModelDeploymentTemplateServiceClient {
+	return &modelDeploymentTemplateServiceClient{cc}
+}
+
+func (c *modelDeploymentTemplateServiceClient) ListModelDeploymentTemplates(ctx context.Context, in *ListModelDeploymentTemplatesRequest, opts ...grpc.CallOption) (*ListModelDeploymentTemplatesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListModelDeploymentTemplatesResponse)
+	err := c.cc.Invoke(ctx, ModelDeploymentTemplateService_ListModelDeploymentTemplates_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *modelDeploymentTemplateServiceClient) GetModelDeploymentTemplate(ctx context.Context, in *GetModelDeploymentTemplateRequest, opts ...grpc.CallOption) (*ModelDeploymentTemplate, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ModelDeploymentTemplate)
+	err := c.cc.Invoke(ctx, ModelDeploymentTemplateService_GetModelDeploymentTemplate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *modelDeploymentTemplateServiceClient) CreateModelDeploymentTemplate(ctx context.Context, in *CreateModelDeploymentTemplateRequest, opts ...grpc.CallOption) (*ModelDeploymentTemplate, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ModelDeploymentTemplate)
+	err := c.cc.Invoke(ctx, ModelDeploymentTemplateService_CreateModelDeploymentTemplate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *modelDeploymentTemplateServiceClient) UpdateModelDeploymentTemplate(ctx context.Context, in *UpdateModelDeploymentTemplateRequest, opts ...grpc.CallOption) (*ModelDeploymentTemplate, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ModelDeploymentTemplate)
+	err := c.cc.Invoke(ctx, ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *modelDeploymentTemplateServiceClient) DeleteModelDeploymentTemplate(ctx context.Context, in *DeleteModelDeploymentTemplateRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *modelDeploymentTemplateServiceClient) ResolveModelDeploymentTemplate(ctx context.Context, in *ResolveModelDeploymentTemplateRequest, opts ...grpc.CallOption) (*ModelDeploymentTemplate, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ModelDeploymentTemplate)
+	err := c.cc.Invoke(ctx, ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ModelDeploymentTemplateServiceServer is the server API for ModelDeploymentTemplateService service.
+// All implementations must embed UnimplementedModelDeploymentTemplateServiceServer
+// for forward compatibility.
+type ModelDeploymentTemplateServiceServer interface {
+	ListModelDeploymentTemplates(context.Context, *ListModelDeploymentTemplatesRequest) (*ListModelDeploymentTemplatesResponse, error)
+	GetModelDeploymentTemplate(context.Context, *GetModelDeploymentTemplateRequest) (*ModelDeploymentTemplate, error)
+	CreateModelDeploymentTemplate(context.Context, *CreateModelDeploymentTemplateRequest) (*ModelDeploymentTemplate, error)
+	UpdateModelDeploymentTemplate(context.Context, *UpdateModelDeploymentTemplateRequest) (*ModelDeploymentTemplate, error)
+	DeleteModelDeploymentTemplate(context.Context, *DeleteModelDeploymentTemplateRequest) (*emptypb.Empty, error)
+	// Resolve looks up a template by (model_id, name, version). When `version`
+	// is empty, the server returns the latest active version of that name.
+	// 404 if no template matches; 409 if name has versions but none are active
+	// and version was not specified.
+	ResolveModelDeploymentTemplate(context.Context, *ResolveModelDeploymentTemplateRequest) (*ModelDeploymentTemplate, error)
+	mustEmbedUnimplementedModelDeploymentTemplateServiceServer()
+}
+
+// UnimplementedModelDeploymentTemplateServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedModelDeploymentTemplateServiceServer struct{}
+
+func (UnimplementedModelDeploymentTemplateServiceServer) ListModelDeploymentTemplates(context.Context, *ListModelDeploymentTemplatesRequest) (*ListModelDeploymentTemplatesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListModelDeploymentTemplates not implemented")
+}
+func (UnimplementedModelDeploymentTemplateServiceServer) GetModelDeploymentTemplate(context.Context, *GetModelDeploymentTemplateRequest) (*ModelDeploymentTemplate, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetModelDeploymentTemplate not implemented")
+}
+func (UnimplementedModelDeploymentTemplateServiceServer) CreateModelDeploymentTemplate(context.Context, *CreateModelDeploymentTemplateRequest) (*ModelDeploymentTemplate, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateModelDeploymentTemplate not implemented")
+}
+func (UnimplementedModelDeploymentTemplateServiceServer) UpdateModelDeploymentTemplate(context.Context, *UpdateModelDeploymentTemplateRequest) (*ModelDeploymentTemplate, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateModelDeploymentTemplate not implemented")
+}
+func (UnimplementedModelDeploymentTemplateServiceServer) DeleteModelDeploymentTemplate(context.Context, *DeleteModelDeploymentTemplateRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteModelDeploymentTemplate not implemented")
+}
+func (UnimplementedModelDeploymentTemplateServiceServer) ResolveModelDeploymentTemplate(context.Context, *ResolveModelDeploymentTemplateRequest) (*ModelDeploymentTemplate, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResolveModelDeploymentTemplate not implemented")
+}
+func (UnimplementedModelDeploymentTemplateServiceServer) mustEmbedUnimplementedModelDeploymentTemplateServiceServer() {
+}
+func (UnimplementedModelDeploymentTemplateServiceServer) testEmbeddedByValue() {}
+
+// UnsafeModelDeploymentTemplateServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to ModelDeploymentTemplateServiceServer will
+// result in compilation errors.
+type UnsafeModelDeploymentTemplateServiceServer interface {
+	mustEmbedUnimplementedModelDeploymentTemplateServiceServer()
+}
+
+func RegisterModelDeploymentTemplateServiceServer(s grpc.ServiceRegistrar, srv ModelDeploymentTemplateServiceServer) {
+	// If the following call panics, it indicates UnimplementedModelDeploymentTemplateServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&ModelDeploymentTemplateService_ServiceDesc, srv)
+}
+
+func _ModelDeploymentTemplateService_ListModelDeploymentTemplates_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListModelDeploymentTemplatesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ModelDeploymentTemplateServiceServer).ListModelDeploymentTemplates(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ModelDeploymentTemplateService_ListModelDeploymentTemplates_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ModelDeploymentTemplateServiceServer).ListModelDeploymentTemplates(ctx, req.(*ListModelDeploymentTemplatesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ModelDeploymentTemplateService_GetModelDeploymentTemplate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetModelDeploymentTemplateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ModelDeploymentTemplateServiceServer).GetModelDeploymentTemplate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ModelDeploymentTemplateService_GetModelDeploymentTemplate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ModelDeploymentTemplateServiceServer).GetModelDeploymentTemplate(ctx, req.(*GetModelDeploymentTemplateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ModelDeploymentTemplateService_CreateModelDeploymentTemplate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateModelDeploymentTemplateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ModelDeploymentTemplateServiceServer).CreateModelDeploymentTemplate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ModelDeploymentTemplateService_CreateModelDeploymentTemplate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ModelDeploymentTemplateServiceServer).CreateModelDeploymentTemplate(ctx, req.(*CreateModelDeploymentTemplateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateModelDeploymentTemplateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ModelDeploymentTemplateServiceServer).UpdateModelDeploymentTemplate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ModelDeploymentTemplateServiceServer).UpdateModelDeploymentTemplate(ctx, req.(*UpdateModelDeploymentTemplateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteModelDeploymentTemplateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ModelDeploymentTemplateServiceServer).DeleteModelDeploymentTemplate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ModelDeploymentTemplateServiceServer).DeleteModelDeploymentTemplate(ctx, req.(*DeleteModelDeploymentTemplateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveModelDeploymentTemplateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ModelDeploymentTemplateServiceServer).ResolveModelDeploymentTemplate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ModelDeploymentTemplateServiceServer).ResolveModelDeploymentTemplate(ctx, req.(*ResolveModelDeploymentTemplateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// ModelDeploymentTemplateService_ServiceDesc is the grpc.ServiceDesc for ModelDeploymentTemplateService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var ModelDeploymentTemplateService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "console.v1.ModelDeploymentTemplateService",
+	HandlerType: (*ModelDeploymentTemplateServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "ListModelDeploymentTemplates",
+			Handler:    _ModelDeploymentTemplateService_ListModelDeploymentTemplates_Handler,
+		},
+		{
+			MethodName: "GetModelDeploymentTemplate",
+			Handler:    _ModelDeploymentTemplateService_GetModelDeploymentTemplate_Handler,
+		},
+		{
+			MethodName: "CreateModelDeploymentTemplate",
+			Handler:    _ModelDeploymentTemplateService_CreateModelDeploymentTemplate_Handler,
+		},
+		{
+			MethodName: "UpdateModelDeploymentTemplate",
+			Handler:    _ModelDeploymentTemplateService_UpdateModelDeploymentTemplate_Handler,
+		},
+		{
+			MethodName: "DeleteModelDeploymentTemplate",
+			Handler:    _ModelDeploymentTemplateService_DeleteModelDeploymentTemplate_Handler,
+		},
+		{
+			MethodName: "ResolveModelDeploymentTemplate",
+			Handler:    _ModelDeploymentTemplateService_ResolveModelDeploymentTemplate_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

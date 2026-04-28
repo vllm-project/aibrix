@@ -142,6 +142,43 @@ class BatchJobSpec(NoExtraBaseModel):
         description="System-only options for internal use (e.g., fail_after_n_requests)",
     )
 
+    # Set by Metadata Service when extra_body.aibrix.* is parsed at batch
+    # creation. Values are looked up by TemplateRegistry / ProfileRegistry.
+    # Stored as raw strings/dicts so this model has no dependency on the
+    # template schema package (avoids circular imports). Validation
+    # against actual template/profile existence happens upstream; the
+    # renderer re-validates override dicts against the typed schemas.
+    model_template_name: Optional[str] = Field(
+        default=None,
+        description="Name of ModelDeploymentTemplate to use. Required at "
+        "render time; if absent the renderer raises and the request is "
+        "rejected as 400. Optional on the type only because legacy "
+        "deserialization paths (e.g. K8s annotations on pre-template "
+        "batches) can land here without it.",
+    )
+    model_template_version: Optional[str] = Field(
+        default=None,
+        description="Optional version pin for the named template. Empty / "
+        "None resolves to the registry's latest active version of "
+        "model_template_name at render time.",
+    )
+    profile_name: Optional[str] = Field(
+        default=None,
+        description="Name of BatchProfile to apply; None means use system default.",
+    )
+    template_overrides: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="User-supplied overrides applied on top of the resolved "
+        "template (extra_body.aibrix.model_template.overrides). Allowlisted "
+        "by the renderer; today only engine_args is honoured.",
+    )
+    profile_overrides: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="User-supplied overrides applied on top of the resolved "
+        "profile (extra_body.aibrix.profile.overrides). Allowlisted by the "
+        "renderer; today only scheduling is accepted (and roundtripped).",
+    )
+
     @classmethod
     def from_strings(
         cls,
@@ -150,6 +187,11 @@ class BatchJobSpec(NoExtraBaseModel):
         completion_window: str = CompletionWindow.TWENTY_FOUR_HOURS.value,
         metadata: Optional[Dict[str, str]] = None,
         opts: Optional[Dict[str, str]] = None,
+        model_template_name: Optional[str] = None,
+        model_template_version: Optional[str] = None,
+        profile_name: Optional[str] = None,
+        template_overrides: Optional[Dict[str, Any]] = None,
+        profile_overrides: Optional[Dict[str, Any]] = None,
     ) -> "BatchJobSpec":
         """Create BatchJobSpec from string parameters with validation.
 
@@ -159,6 +201,11 @@ class BatchJobSpec(NoExtraBaseModel):
             completion_window: The completion window as string
             metadata: Optional metadata dictionary
             opts: Optional system options dictionary
+            model_template_name: Optional ModelDeploymentTemplate name
+            model_template_version: Optional version pin (resolves "latest active" if None)
+            profile_name: Optional BatchProfile name
+            template_overrides: Optional raw TemplateOverridesSpec dict
+            profile_overrides: Optional raw ProfileOverridesSpec dict
 
         Returns:
             BatchJobSpec instance
@@ -182,6 +229,11 @@ class BatchJobSpec(NoExtraBaseModel):
             completion_window=validated_completion_window.expires_at(),
             metadata=metadata,
             opts=opts,
+            model_template_name=model_template_name,
+            model_template_version=model_template_version,
+            profile_name=profile_name,
+            template_overrides=template_overrides,
+            profile_overrides=profile_overrides,
         )
 
     @staticmethod
@@ -245,6 +297,47 @@ class RequestCountStats(NoExtraBaseModel):
         description="Number of requests that have been successfully completed",
     )
     failed: int = Field(default=0, description="Number of requests that have failed")
+
+
+class InputTokensDetails(NoExtraBaseModel):
+    """Token-count breakdown for the input side of a batch.
+
+    Mirrors the OpenAI Batch API's ``input_tokens_details`` shape;
+    ``cached_tokens`` is the count of input tokens served from the
+    engine's prefix cache (only meaningful when prefix caching is on).
+    """
+
+    cached_tokens: int = Field(default=0, ge=0)
+
+
+class OutputTokensDetails(NoExtraBaseModel):
+    """Token-count breakdown for the output side of a batch.
+
+    ``reasoning_tokens`` are the chain-of-thought tokens emitted by
+    reasoning-class models (o1-style). For non-reasoning models this
+    stays at zero.
+    """
+
+    reasoning_tokens: int = Field(default=0, ge=0)
+
+
+class BatchUsage(NoExtraBaseModel):
+    """Aggregated token usage for a batch.
+
+    Matches the OpenAI Batch API's ``usage`` object (added 2025-09)
+    so it can be returned verbatim. Note that the engine's per-request
+    response uses the ``prompt_tokens`` / ``completion_tokens`` naming;
+    the worker maps those to ``input_tokens`` / ``output_tokens`` when
+    accumulating into this object.
+    """
+
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    input_tokens_details: InputTokensDetails = Field(default_factory=InputTokensDetails)
+    output_tokens_details: OutputTokensDetails = Field(
+        default_factory=OutputTokensDetails
+    )
 
 
 class BatchJobError(Exception):
@@ -383,6 +476,14 @@ class BatchJobStatus(NoExtraBaseModel):
         default_factory=RequestCountStats,
         alias="requestCounts",
         description="Statistics on the processing of the batch",
+    )
+
+    usage: Optional[BatchUsage] = Field(
+        default=None,
+        description=(
+            "Aggregated token usage. Populated by the worker as it processes "
+            "requests; absent until the first progress flush."
+        ),
     )
 
     # Timestamps

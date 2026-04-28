@@ -14,7 +14,7 @@
 
 import asyncio
 import uuid
-from typing import Any, Optional
+from typing import Any, Dict, Optional, Set
 from urllib.parse import urljoin
 
 import httpx
@@ -26,6 +26,7 @@ from aibrix.batch.job_entity import (
     BatchJobError,
     BatchJobErrorCode,
     BatchJobState,
+    BatchUsage,
     ConditionType,
 )
 from aibrix.batch.job_progress_manager import JobProgressManager
@@ -84,6 +85,89 @@ class JobDriver:
         else:
             self._inference_client = inference_client
 
+        # Per-job token usage accumulators. Populated by inference responses
+        # in execute_worker. Idempotent on retry: each (job_id, custom_id)
+        # pair contributes at most once. The accumulated value is exposed
+        # via get_accumulated_usage() so persistence layers can flush it.
+        self._usage_by_job: Dict[str, BatchUsage] = {}
+        self._usage_counted_ids: Dict[str, Set[str]] = {}
+
+    def _accumulate_usage(
+        self, job_id: str, custom_id: Optional[str], raw_usage: Optional[dict]
+    ) -> None:
+        """Add a single response's usage to the running per-job total.
+
+        Maps OpenAI Completions naming (``prompt_tokens`` /
+        ``completion_tokens``) to OpenAI Batch naming (``input_tokens`` /
+        ``output_tokens``). Engine responses without a ``usage`` block
+        (some embedding endpoints, mock engines) are silently skipped.
+        Duplicate ``custom_id`` within the same job (e.g. on retry) is
+        skipped to avoid double-counting.
+        """
+        if not raw_usage or not isinstance(raw_usage, dict):
+            return
+
+        seen = self._usage_counted_ids.setdefault(job_id, set())
+        # custom_id is None means the response wasn't tagged; we still
+        # accumulate but cannot dedup. Most batch requests have one.
+        if custom_id is not None:
+            if custom_id in seen:
+                return
+            seen.add(custom_id)
+
+        usage = self._usage_by_job.setdefault(job_id, BatchUsage())
+        prompt = int(raw_usage.get("prompt_tokens") or 0)
+        completion = int(raw_usage.get("completion_tokens") or 0)
+        usage.input_tokens += prompt
+        usage.output_tokens += completion
+        usage.total_tokens += prompt + completion
+
+        prompt_details = raw_usage.get("prompt_tokens_details") or {}
+        if isinstance(prompt_details, dict):
+            usage.input_tokens_details.cached_tokens += int(
+                prompt_details.get("cached_tokens") or 0
+            )
+        completion_details = raw_usage.get("completion_tokens_details") or {}
+        if isinstance(completion_details, dict):
+            usage.output_tokens_details.reasoning_tokens += int(
+                completion_details.get("reasoning_tokens") or 0
+            )
+
+    def get_accumulated_usage(self, job_id: str) -> Optional[BatchUsage]:
+        """Return the running token usage for a job, or None if no
+        successful inference has been recorded yet."""
+        usage = self._usage_by_job.get(job_id)
+        if usage is None:
+            return None
+        # Hand out a copy so callers can't mutate the accumulator in place.
+        return usage.model_copy(deep=True)
+
+    def _drop_usage_state(self, job_id: str) -> None:
+        """Release per-job accumulator state. Call when the job is
+        finalized to bound memory in long-lived workers."""
+        self._usage_by_job.pop(job_id, None)
+        self._usage_counted_ids.pop(job_id, None)
+
+    async def _snapshot_usage_to_status(self, job_id: str) -> None:
+        """Push the current accumulator into the live BatchJob's status.
+
+        The progress_manager hands back a live reference, so mutating
+        ``status.usage`` here is observable to subsequent reads and to
+        any downstream serializer that snapshots the BatchJob (e.g.
+        the K8s annotation writer).
+
+        Called after every progress sync so usage is reflected in the
+        canonical state on each persistence flush, not only at
+        finalize_job. This also bounds the worst-case data loss to a
+        single in-flight progress window.
+        """
+        accumulated = self.get_accumulated_usage(job_id)
+        if accumulated is None:
+            return
+        current = await self._progress_manager.get_job(job_id)
+        if current is not None:
+            current.status.usage = accumulated
+
     async def execute_job(self, job_id):
         """
         Execute complete job workflow: prepare -> execute -> finalize.
@@ -120,6 +204,12 @@ class JobDriver:
                 job_id,
                 BatchJobError(code=BatchJobErrorCode.INFERENCE_FAILED, message=str(ex)),
             )
+            # Push whatever usage we did manage to count before failing,
+            # so the persisted status reflects the partial work.
+            await self._snapshot_usage_to_status(job_id)
+            # Bound memory: drop accumulator on failure paths too, not
+            # just on the happy-path finalize_job.
+            self._drop_usage_state(job_id)
 
         # Step 3: Aggregate outputs
         if job.status.state == BatchJobState.FINALIZING:
@@ -254,6 +344,16 @@ class JobDriver:
                     job.spec.endpoint, request_input["body"], job_id, line_no
                 )
 
+                # Accumulate token usage from successful responses. The
+                # engine's response shape follows OpenAI Completions
+                # (prompt_tokens / completion_tokens) which we map to
+                # OpenAI Batch naming (input_tokens / output_tokens) in
+                # _accumulate_usage. Failures contribute nothing.
+                if last_error is None and isinstance(request_output, dict):
+                    self._accumulate_usage(
+                        job_id, custom_id, request_output.get("usage")
+                    )
+
                 # Build standardized response
                 response = self._build_response(
                     custom_id, job_id, line_no, request_output, last_error
@@ -288,6 +388,11 @@ class JobDriver:
                 job, line_no = await self._sync_job_status_and_get_next_request(
                     job_id, last_line_no
                 )
+                # Reflect any usage counted during this request onto the
+                # live BatchJob immediately, so downstream persistence
+                # (annotation writes triggered by progress changes) sees
+                # the latest tally instead of waiting for finalize_job.
+                await self._snapshot_usage_to_status(job_id)
                 logger.debug(
                     "Confirmed next request",
                     job_id=job_id,
@@ -331,8 +436,20 @@ class JobDriver:
 
         await storage.finalize_job_output_data(job)
 
-        logger.debug("Finalized job", job_id=job.job_id)  # type: ignore[call-arg]
-        return await self._sync_job_status(job.job_id)
+        # status.job_id is Required[str], so prefer it over BatchJob.job_id
+        # which is Optional[str] (None until the K8s UID is assigned).
+        job_id = job.status.job_id
+
+        # Final snapshot: catch anything counted between the last
+        # per-request sync and now.
+        await self._snapshot_usage_to_status(job_id)
+
+        logger.debug("Finalized job", job_id=job_id)  # type: ignore[call-arg]
+        synced = await self._sync_job_status(job_id)
+        # Memory hygiene: drop the per-job accumulator now that the
+        # final usage is on the status object.
+        self._drop_usage_state(job_id)
+        return synced
 
     async def _retry_inference_request(
         self,

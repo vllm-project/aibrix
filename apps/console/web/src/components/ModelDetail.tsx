@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, Copy, Calendar, Box, Home as HomeIcon, Globe, Moon, Settings2, Layers, ChevronDown } from 'lucide-react';
-import { getModel } from '../utils/api';
+import { ArrowLeft, Copy, Calendar, Home as HomeIcon, Globe, Moon, Settings2, Layers, Plus, Cpu, Edit3, Trash2 } from 'lucide-react';
+import { getModel, listModelDeploymentTemplates, deleteModelDeploymentTemplate } from '../utils/api';
 import type { Model } from '../data/mockData';
+import type { ModelDeploymentTemplate } from '../utils/api';
 import { copyToClipboard } from '../utils/clipboard';
 
 interface ModelDetailProps {
   modelId: string | null;
   onBack: () => void;
+  onCreateTemplate?: (modelId: string) => void;
+  onEditTemplate?: (modelId: string, templateId: string) => void;
 }
 
 const languageTabs = ['Python', 'Typescript', 'Java', 'Go', 'Shell'] as const;
@@ -155,12 +158,25 @@ console.log(data);`;
   }
 }
 
-export function ModelDetail({ modelId, onBack }: ModelDetailProps) {
+export function ModelDetail({ modelId, onBack, onCreateTemplate, onEditTemplate }: ModelDetailProps) {
   const [activeLanguage, setActiveLanguage] = useState<Language>('Python');
   const [activeMode, setActiveMode] = useState<Mode>('Chat');
   const [copied, setCopied] = useState(false);
   const [model, setModel] = useState<Model | null>(null);
   const [loading, setLoading] = useState(true);
+  const [templates, setTemplates] = useState<ModelDeploymentTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+
+  const refreshTemplates = (id: string) => {
+    setTemplatesLoading(true);
+    listModelDeploymentTemplates(id)
+      .then(setTemplates)
+      .catch(err => {
+        console.error('Failed to fetch templates:', err);
+        setTemplates([]);
+      })
+      .finally(() => setTemplatesLoading(false));
+  };
 
   useEffect(() => {
     if (!modelId) {
@@ -175,7 +191,19 @@ export function ModelDetail({ modelId, onBack }: ModelDetailProps) {
         setModel(null);
       })
       .finally(() => setLoading(false));
+    refreshTemplates(modelId);
   }, [modelId]);
+
+  const handleDeleteTemplate = async (templateId: string) => {
+    if (!modelId) return;
+    if (!window.confirm('Delete this deployment template?')) return;
+    try {
+      await deleteModelDeploymentTemplate(modelId, templateId);
+      refreshTemplates(modelId);
+    } catch (err) {
+      console.error('Failed to delete template:', err);
+    }
+  };
 
   if (loading) {
     return (
@@ -209,7 +237,7 @@ export function ModelDetail({ modelId, onBack }: ModelDetailProps) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const hasPricing = model.pricing.uncachedInput || model.pricing.cachedInput || model.pricing.output || model.pricing.perMinute || model.pricing.perStep || model.pricing.perEa || model.pricing.perTokens;
+  const hasPricing = model.pricing.uncachedInput || model.pricing.cachedInput || model.pricing.output || model.pricing.perMinute || model.pricing.perImage;
 
   return (
     <div className="p-8">
@@ -234,7 +262,7 @@ export function ModelDetail({ modelId, onBack }: ModelDetailProps) {
               <span className="px-2 py-0.5 bg-teal-500 text-white text-xs rounded-full">NEW</span>
             )}
           </div>
-          <p className="text-sm text-gray-500">by {model.provider}</p>
+          <p className="text-sm text-gray-500">by {model.metadata.providerName}</p>
         </div>
       </div>
 
@@ -243,6 +271,112 @@ export function ModelDetail({ modelId, onBack }: ModelDetailProps) {
         <div className="flex-1 min-w-0">
           {/* Description */}
           <p className="text-sm text-gray-700 mb-8 leading-relaxed">{model.description}</p>
+
+          {/* Deployment Templates */}
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-lg mb-1">Deployment Templates</h2>
+                <p className="text-xs text-gray-500">
+                  Pre-configured engine + accelerator combinations for online serving and batch jobs.
+                </p>
+              </div>
+              {onCreateTemplate && modelId && (
+                <button
+                  onClick={() => onCreateTemplate(modelId)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Create Template
+                </button>
+              )}
+            </div>
+            {templatesLoading ? (
+              <p className="text-xs text-gray-400">Loading templates...</p>
+            ) : templates.length === 0 ? (
+              <div className="border border-dashed border-gray-200 rounded-xl p-6 text-center">
+                <p className="text-sm text-gray-500 mb-1">No deployment templates yet.</p>
+                <p className="text-xs text-gray-400">
+                  Create one to capture engine, accelerator, and tuning settings for this model.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                {templates.map((t) => {
+                  const a = t.spec?.accelerator;
+                  const e = t.spec?.engine;
+                  const p = t.spec?.parallelism;
+                  const q = t.spec?.quantization;
+                  return (
+                    <div
+                      key={t.id}
+                      className="border border-gray-200 rounded-xl p-4 hover:border-gray-300 transition-colors"
+                    >
+                      <div className="flex items-start justify-between mb-2">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm">{t.name}</span>
+                            <span className="text-xs text-gray-400">{t.version}</span>
+                            <span className={`px-1.5 py-0.5 text-[10px] rounded ${
+                              t.status === 'active' ? 'bg-green-50 text-green-700' :
+                              t.status === 'deprecated' ? 'bg-gray-100 text-gray-600' :
+                              'bg-amber-50 text-amber-700'
+                            }`}>
+                              {t.status}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {onEditTemplate && modelId && (
+                            <button
+                              onClick={() => onEditTemplate(modelId, t.id)}
+                              className="p-1 text-gray-400 hover:text-gray-700"
+                              title="Edit"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleDeleteTemplate(t.id)}
+                            className="p-1 text-gray-400 hover:text-red-600"
+                            title="Delete"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
+                        <div className="flex items-center gap-1.5">
+                          <Cpu className="w-3 h-3 text-gray-400" />
+                          {e?.type ?? '—'} {e?.version}
+                        </div>
+                        <div>
+                          {a?.type ?? '—'} × {a?.count ?? '?'}
+                          {a?.interconnect ? ` (${a.interconnect})` : ''}
+                        </div>
+                        <div>
+                          TP={p?.tp ?? 1} PP={p?.pp ?? 1} DP={p?.dp ?? 1}
+                        </div>
+                        <div>
+                          {q?.weight ? `weight=${q.weight}` : 'bf16'}
+                          {q?.kvCache ? ` / kv=${q.kvCache}` : ''}
+                        </div>
+                      </div>
+                      {t.spec?.supportedEndpoints && t.spec.supportedEndpoints.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {t.spec.supportedEndpoints.map((ep) => (
+                            <span key={ep} className="px-1.5 py-0.5 bg-gray-50 text-[10px] text-gray-600 rounded font-mono">
+                              {ep}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           {/* Estimated Cost */}
           {hasPricing && (
@@ -287,22 +421,10 @@ export function ModelDetail({ modelId, onBack }: ModelDetailProps) {
                     <div className="text-xs text-gray-500">Per minute</div>
                   </div>
                 )}
-                {model.pricing.perStep && (
+                {model.pricing.perImage && (
                   <div>
-                    <div className="text-xl">{model.pricing.perStep}</div>
-                    <div className="text-xs text-gray-500">Per step</div>
-                  </div>
-                )}
-                {model.pricing.perEa && (
-                  <div>
-                    <div className="text-xl">{model.pricing.perEa}</div>
+                    <div className="text-xl">{model.pricing.perImage}</div>
                     <div className="text-xs text-gray-500">Per image</div>
-                  </div>
-                )}
-                {model.pricing.perTokens && (
-                  <div>
-                    <div className="text-xl">{model.pricing.perTokens}</div>
-                    <div className="text-xs text-gray-500">Per token batch</div>
                   </div>
                 )}
               </div>
@@ -389,12 +511,6 @@ export function ModelDetail({ modelId, onBack }: ModelDetailProps) {
                   <Calendar className="w-4 h-4" /> Created on
                 </span>
                 <span>{model.metadata.createdOn}</span>
-              </div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="flex items-center gap-2 text-gray-500">
-                  <Box className="w-4 h-4" /> Kind
-                </span>
-                <span>{model.metadata.kind}</span>
               </div>
               <div className="flex items-center justify-between text-sm">
                 <span className="flex items-center gap-2 text-gray-500">

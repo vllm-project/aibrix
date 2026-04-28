@@ -61,7 +61,7 @@ def generate_batch_input_data(num_requests: int = 3) -> str:
     lines = []
     for i in range(num_requests):
         request = base_request.copy()
-        request["custom_id"] = f"request-{i+1}"
+        request["custom_id"] = f"request-{i + 1}"
         lines.append(json.dumps(request))
 
     return "\n".join(lines)
