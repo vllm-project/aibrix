@@ -17,7 +17,7 @@
 Exercises ``aibrix.metadata.api.v1.batch._resolve_batch_job`` directly
 with stubbed app state, so the test does not need a running FastAPI
 TestClient or a real ``BatchDriver``. The point is to pin down the
-store-first-with-JobManager-fallback contract that closes the
+metastore-first-with-JobManager-fallback contract that closes the
 submit -> kopf ADDED window.
 """
 
@@ -26,6 +26,7 @@ import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Optional
+from unittest.mock import patch
 
 # Set required environment variable before importing
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
@@ -43,7 +44,6 @@ from aibrix.batch.job_entity.batch_job import (
     RequestCountStats,
     TypeMeta,
 )
-from aibrix.batch.store import InMemoryBatchJobStore
 from aibrix.metadata.api.v1.batch import _resolve_batch_job
 
 
@@ -97,48 +97,54 @@ class _StubBatchDriver:
         return await coro
 
 
-def _make_request(*, store=None, manager_jobs: Optional[dict] = None):
+def _make_request(*, persist: bool, manager_jobs: Optional[dict] = None):
     state = SimpleNamespace(
         batch_driver=_StubBatchDriver(manager_jobs or {}),
+        batch_metastore_persist=persist,
     )
-    if store is not None:
-        state.batch_job_store = store
     return SimpleNamespace(app=SimpleNamespace(state=state))
 
 
 @pytest.mark.asyncio
-async def test_store_hit_returns_store_document():
-    store = InMemoryBatchJobStore()
+async def test_metastore_hit_returns_metastore_document():
     job = _make_job("batch-store-hit")
-    await store.put("batch-store-hit", job)
 
     # JobManager has nothing — proves we did not fall through.
-    request = _make_request(store=store, manager_jobs={})
+    request = _make_request(persist=True, manager_jobs={})
 
-    result = await _resolve_batch_job(request, "batch-store-hit")
+    async def fake_get(batch_id: str) -> Optional[BatchJob]:
+        return job if batch_id == "batch-store-hit" else None
+
+    with patch("aibrix.metadata.api.v1.batch.get_batch_job", side_effect=fake_get):
+        result = await _resolve_batch_job(request, "batch-store-hit")
     assert result is not None
     assert result.status.job_id == "batch-store-hit"
 
 
 @pytest.mark.asyncio
-async def test_store_miss_falls_back_to_job_manager():
-    """Covers the K8s submit -> kopf ADDED gap where the store has not
-    yet observed the new job but the metadata service already seeded its
-    JobManager pool synchronously on POST."""
-    store = InMemoryBatchJobStore()
+async def test_metastore_miss_falls_back_to_job_manager():
+    """Covers the K8s submit -> kopf ADDED gap where the metastore has
+    not yet observed the new job but the metadata service already
+    seeded its JobManager pool synchronously on POST."""
     job = _make_job("batch-gap")
-    request = _make_request(store=store, manager_jobs={"batch-gap": job})
+    request = _make_request(persist=True, manager_jobs={"batch-gap": job})
 
-    result = await _resolve_batch_job(request, "batch-gap")
+    async def fake_get(batch_id: str) -> Optional[BatchJob]:
+        return None
+
+    with patch("aibrix.metadata.api.v1.batch.get_batch_job", side_effect=fake_get):
+        result = await _resolve_batch_job(request, "batch-gap")
     assert result is not None
     assert result.status.job_id == "batch-gap"
 
 
 @pytest.mark.asyncio
-async def test_store_not_configured_uses_job_manager():
+async def test_persistence_off_uses_job_manager():
     job = _make_job("batch-no-store")
-    request = _make_request(store=None, manager_jobs={"batch-no-store": job})
+    request = _make_request(persist=False, manager_jobs={"batch-no-store": job})
 
+    # No patch needed: with persist=False, _resolve_batch_job must not
+    # call get_batch_job at all.
     result = await _resolve_batch_job(request, "batch-no-store")
     assert result is not None
     assert result.status.job_id == "batch-no-store"
@@ -146,30 +152,35 @@ async def test_store_not_configured_uses_job_manager():
 
 @pytest.mark.asyncio
 async def test_both_miss_returns_none():
-    store = InMemoryBatchJobStore()
-    request = _make_request(store=store, manager_jobs={})
+    request = _make_request(persist=True, manager_jobs={})
 
-    result = await _resolve_batch_job(request, "batch-missing")
+    async def fake_get(batch_id: str) -> Optional[BatchJob]:
+        return None
+
+    with patch("aibrix.metadata.api.v1.batch.get_batch_job", side_effect=fake_get):
+        result = await _resolve_batch_job(request, "batch-missing")
     assert result is None
 
 
 @pytest.mark.asyncio
-async def test_store_takes_precedence_over_job_manager():
-    """If the store has an updated copy and JobManager has stale state,
-    the read returns the store's view — that is the whole point of the
-    read flip."""
-    store = InMemoryBatchJobStore()
+async def test_metastore_takes_precedence_over_job_manager():
+    """If the metastore has an updated copy and JobManager has stale
+    state, the read returns the metastore's view — that is the whole
+    point of the read flip."""
     fresh = _make_job("batch-fresh")
     fresh.status.state = BatchJobState.FINALIZED
     fresh.status.request_counts.completed = 10
-    await store.put("batch-fresh", fresh)
 
     stale = _make_job("batch-fresh")
     stale.status.state = BatchJobState.IN_PROGRESS
     stale.status.request_counts.completed = 5
-    request = _make_request(store=store, manager_jobs={"batch-fresh": stale})
+    request = _make_request(persist=True, manager_jobs={"batch-fresh": stale})
 
-    result = await _resolve_batch_job(request, "batch-fresh")
+    async def fake_get(batch_id: str) -> Optional[BatchJob]:
+        return fresh if batch_id == "batch-fresh" else None
+
+    with patch("aibrix.metadata.api.v1.batch.get_batch_job", side_effect=fake_get):
+        result = await _resolve_batch_job(request, "batch-fresh")
     assert result is not None
     assert result.status.state == BatchJobState.FINALIZED
     assert result.status.request_counts.completed == 10

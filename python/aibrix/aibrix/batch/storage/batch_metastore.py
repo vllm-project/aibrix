@@ -15,6 +15,7 @@
 from typing import Optional, Tuple
 
 from aibrix import envs
+from aibrix.batch.job_entity.batch_job import BatchJob
 from aibrix.logger import init_logger
 from aibrix.storage import BaseStorage, StorageType, create_storage
 from aibrix.storage.base import PutObjectOptionsBuilder
@@ -191,6 +192,32 @@ async def unlock_request(key: str, status: str) -> bool:
         True if status was set successfully
     """
     return await set_metadata(key, status)
+
+
+async def put_batch_job(batch_id: str, job: BatchJob) -> None:
+    """Persist a BatchJob document under ``batchjob:<id>``.
+
+    Last-writer-wins. When the metastore is Redis-backed this is a
+    single SET; on file-backed metastores it is a small object write.
+    """
+    payload = job.model_dump_json(by_alias=True, exclude_none=True)
+    await set_metadata(f"batchjob:{batch_id}", payload)
+
+
+async def get_batch_job(batch_id: str) -> Optional[BatchJob]:
+    """Fetch a BatchJob document or ``None`` if absent."""
+    raw, exists = await get_metadata(f"batchjob:{batch_id}")
+    if not exists:
+        return None
+    return BatchJob.model_validate_json(raw)
+
+
+async def delete_batch_job(batch_id: str) -> None:
+    """Remove the BatchJob document. Silent no-op if absent."""
+    try:
+        await delete_metadata(f"batchjob:{batch_id}")
+    except FileNotFoundError:
+        return
 
 
 async def list_metastore_keys(prefix: str) -> list[str]:

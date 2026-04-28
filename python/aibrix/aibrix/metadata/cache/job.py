@@ -29,7 +29,10 @@ from aibrix.batch.job_entity import (
     k8s_job_to_batch_job,
 )
 from aibrix.batch.manifest import JobManifestRenderer
-from aibrix.batch.store import BatchJobStore
+from aibrix.batch.storage.batch_metastore import (
+    delete_batch_job,
+    put_batch_job,
+)
 from aibrix.batch.template import ProfileRegistry, TemplateRegistry
 from aibrix.logger import init_logger
 
@@ -69,7 +72,7 @@ class JobCache(JobEntityManager):
         self,
         template_registry: TemplateRegistry,
         profile_registry: ProfileRegistry,
-        batch_job_store: Optional[BatchJobStore] = None,
+        persist_to_metastore: bool = False,
     ) -> None:
         """Initialize the job cache.
 
@@ -78,18 +81,16 @@ class JobCache(JobEntityManager):
                 Caller must have invoked reload() at least once.
             profile_registry: Loaded BatchProfile registry. Caller must
                 have invoked reload() at least once.
-            batch_job_store: Optional document store that owns BatchJob
-                runtime status (state, conditions, request counts,
-                timestamps, errors, usage). When provided, every status
-                mutation is written here and the metadata API serves
-                point reads from it; K8s Job annotations carry only the
-                immutable spec the worker reads via downward API.
-                Status-write failures are propagated by ``_put_to_store``
-                so callers (including the synchronous /cancel path) see
-                store outages instead of silently leaving the in-memory
-                view ahead of disk. The kopf ADDED seed write keeps the
-                default swallow because the next event re-emits the
-                document.
+            persist_to_metastore: When True, every status mutation is
+                written via ``batch_metastore.put_batch_job`` and the
+                metadata API can serve point reads from there; K8s Job
+                annotations carry only the immutable spec the worker
+                reads via downward API. Status-write failures are
+                propagated by ``_put_to_store`` so callers (including
+                the synchronous /cancel path) see store outages instead
+                of silently leaving the in-memory view ahead of disk.
+                The kopf ADDED seed write keeps the default swallow
+                because the next event re-emits the document.
 
         The legacy hardcoded ``k8s_job_template.yaml`` and
         ``k8s_job_*_patch.yaml`` files are no longer used; manifest
@@ -99,10 +100,10 @@ class JobCache(JobEntityManager):
         # Cache of BatchJob objects keyed by batch ID (K8s UID)
         self.active_jobs: Dict[str, BatchJob] = {}
 
-        # Optional document store; when set, owns the runtime status
-        # half of the BatchJob and is the authoritative source for the
-        # metadata API.
-        self._batch_job_store = batch_job_store
+        # When True, every status mutation is mirrored to the batch
+        # metastore via the typed put_batch_job/delete_batch_job
+        # helpers. When False, the cache is the only source of truth.
+        self._persist_to_metastore = persist_to_metastore
 
         # Register this instance as the global job cache for kopf handlers
         set_global_job_cache(self)
@@ -140,29 +141,29 @@ class JobCache(JobEntityManager):
     async def _put_to_store(
         self, job: BatchJob, *, op: str, propagate: bool = False
     ) -> None:
-        """Persist a BatchJob status mutation to the document store.
+        """Persist a BatchJob status mutation to the batch metastore.
 
-        No-op when the store is not configured (legacy mode).
+        No-op when persist_to_metastore is False (legacy mode).
 
         Status-write callers (``update_job_status``, ``update_job_ready``,
-        ``cancel_job``) pass ``propagate=True`` because the store is the
-        only persistent record of those mutations: a swallowed failure
-        would leave ``active_jobs`` ahead of disk and surface as stale
-        reads after a restart. Eventual-consistency callers (the kopf
-        ADDED handler that seeds the initial document) keep the default
-        ``propagate=False`` since a missed write will be retried the
-        next time kopf re-emits the event.
+        ``cancel_job``) pass ``propagate=True`` because the metastore is
+        the only persistent record of those mutations: a swallowed
+        failure would leave ``active_jobs`` ahead of disk and surface
+        as stale reads after a restart. Eventual-consistency callers
+        (the kopf ADDED handler that seeds the initial document) keep
+        the default ``propagate=False`` since a missed write will be
+        retried the next time kopf re-emits the event.
 
         ``op`` tags the originating operation for log correlation.
         """
-        if self._batch_job_store is None:
+        if not self._persist_to_metastore:
             return
         batch_id = job.status.job_id
         try:
-            await self._batch_job_store.put(batch_id, job)
+            await put_batch_job(batch_id, job)
         except Exception as e:
             logger.warning(  # type: ignore[call-arg]
-                "BatchJobStore write failed",
+                "BatchJob metastore write failed",
                 job_id=batch_id,
                 op=op,
                 error=str(e),
@@ -172,20 +173,20 @@ class JobCache(JobEntityManager):
                 raise
 
     async def _delete_from_store(self, job: BatchJob) -> None:
-        """Remove a BatchJob document from the store.
+        """Remove a BatchJob document from the metastore.
 
         Best-effort cleanup that follows a real K8s ``delete`` op; the
-        K8s deletion is the authoritative signal, the store entry is a
-        leaked artifact at worst. Errors are logged and swallowed.
+        K8s deletion is the authoritative signal, the metastore entry
+        is a leaked artifact at worst. Errors are logged and swallowed.
         """
-        if self._batch_job_store is None:
+        if not self._persist_to_metastore:
             return
         batch_id = job.status.job_id
         try:
-            await self._batch_job_store.delete(batch_id)
+            await delete_batch_job(batch_id)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning(  # type: ignore[call-arg]
-                "BatchJobStore delete failed",
+                "BatchJob metastore delete failed",
                 job_id=batch_id,
                 error=str(e),
                 error_type=type(e).__name__,
