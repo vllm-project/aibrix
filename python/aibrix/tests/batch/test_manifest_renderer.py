@@ -268,7 +268,7 @@ class TestRendererOverrides:
             profiles=[_profile()],
         )
         spec = _spec()
-        spec.overrides = {"engine_args": {"max_num_seqs": 1024}}
+        spec.template_overrides = {"engine_args": {"max_num_seqs": 1024}}
         m = r.render(session_id="s1", spec=spec)
         engine = _engine_container(m)
         idx = engine["args"].index("--max-num-seqs")
@@ -280,7 +280,7 @@ class TestRendererOverrides:
             profiles=[_profile()],
         )
         spec = _spec()
-        spec.overrides = {"accelerator": {"count": 8}}
+        spec.template_overrides = {"accelerator": {"count": 8}}
         with pytest.raises(ForbiddenOverride):
             r.render(session_id="s1", spec=spec)
 
@@ -292,7 +292,7 @@ class TestRendererOverrides:
             profiles=[_profile()],
         )
         spec = _spec()
-        spec.overrides = {"engine_args": {"gpu_memory_utilization": 2.0}}
+        spec.template_overrides = {"engine_args": {"gpu_memory_utilization": 2.0}}
         # Renderer's merge step re-validates via EngineArgsSpec
         with pytest.raises(ValidationError):
             r.render(session_id="s1", spec=spec)
@@ -379,7 +379,8 @@ class TestRendererRoundtrip:
         )
         spec = _spec()
         spec.metadata = {"team": "x"}
-        spec.overrides = {"engine_args": {"max_num_seqs": 512}}
+        spec.template_overrides = {"engine_args": {"max_num_seqs": 512}}
+        spec.profile_overrides = {"scheduling": {"max_concurrency": 16}}
         m = r.render(session_id="s1", spec=spec)
         extracted = BatchJobTransformer._extract_batch_job_spec(
             m["spec"]["template"]["metadata"]["annotations"], m["spec"]
@@ -387,9 +388,13 @@ class TestRendererRoundtrip:
         assert extracted.input_file_id == spec.input_file_id
         assert extracted.endpoint == spec.endpoint
         assert extracted.model_template_name == "vllm-prod"
+        # The renderer roundtrips the resolved version even when the spec
+        # didn't pin one (the _vllm_template fixture defaults to "v1").
+        assert extracted.model_template_version == "v1"
         assert extracted.profile_name == "default-profile"
         assert extracted.metadata == {"team": "x"}
-        assert extracted.overrides == {"engine_args": {"max_num_seqs": 512}}
+        assert extracted.template_overrides == {"engine_args": {"max_num_seqs": 512}}
+        assert extracted.profile_overrides == {"scheduling": {"max_concurrency": 16}}
 
 
 class TestMetastoreEnv:
@@ -443,7 +448,7 @@ class TestMockEngineOverrideNoop:
             profiles=[_profile()],
         )
         spec = _spec(model_template="mock")
-        spec.overrides = {"engine_args": {"max_num_seqs": 256}}
+        spec.template_overrides = {"engine_args": {"max_num_seqs": 256}}
         m = r.render(session_id="s1", spec=spec)
         engine = _engine_container(m)
         # Mock engine args derived from serve_args / fallback only;

@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from aibrix.batch.job_entity import (
     BatchJob,
@@ -111,10 +111,11 @@ class EndpointNotSupported(RenderError):
 
 
 class ForbiddenOverride(RenderError):
-    def __init__(self, field: str):
+    def __init__(self, field: str, allowed: Iterable[str]):
+        allowed_list = ", ".join(f"'{a}'" for a in sorted(allowed))
         super().__init__(
             f"override field '{field}' is not in the override allowlist; "
-            f"only 'engine_args' may be overridden"
+            f"only {allowed_list} may be overridden"
         )
 
 
@@ -137,9 +138,11 @@ _ENGINE_CONTAINER_NAME = "llm-engine"
 _WORKER_IMAGE = "aibrix/runtime:nightly"
 _WORKER_ENTRYPOINT = "aibrix_batch_worker"
 
-# Override allowlist. Keys are top-level fields of OverridesSpec
-# that users may provide via extra_body.aibrix.overrides.
-_OVERRIDE_ALLOWLIST = {"engine_args"}
+# Override allowlists. Keys are top-level fields of TemplateOverridesSpec
+# / ProfileOverridesSpec that users may provide under
+# extra_body.aibrix.{model_template,profile}.overrides.
+_TEMPLATE_OVERRIDE_ALLOWLIST = {"engine_args"}
+_PROFILE_OVERRIDE_ALLOWLIST = {"scheduling"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -208,7 +211,12 @@ class JobManifestRenderer:
         manifest = self._system_base()
         manifest = self._apply_template(manifest, template)
         manifest = self._apply_profile(manifest, profile)
-        manifest = self._apply_overrides(manifest, template, spec.overrides)
+        manifest = self._apply_overrides(
+            manifest,
+            template,
+            template_overrides=spec.template_overrides,
+            profile_overrides=spec.profile_overrides,
+        )
         manifest = self._apply_per_batch(
             manifest,
             session_id=session_id,
@@ -231,9 +239,19 @@ class JobManifestRenderer:
                 "BatchJobSpec.model_template_name is required for "
                 "ConfigMap-driven rendering"
             )
-        template = self._templates.get(spec.model_template_name)
-        if template is None:
-            raise TemplateNotFound(spec.model_template_name)
+        # Pinned version => exact match; empty version => latest active.
+        if spec.model_template_version:
+            template = self._templates.get_by_version(
+                spec.model_template_name, spec.model_template_version
+            )
+            if template is None:
+                raise TemplateNotFound(
+                    f"{spec.model_template_name}@{spec.model_template_version}"
+                )
+        else:
+            template = self._templates.get(spec.model_template_name)
+            if template is None:
+                raise TemplateNotFound(spec.model_template_name)
 
         profile_name = spec.profile_name or self._profiles.default_name()
         if not profile_name:
@@ -457,26 +475,54 @@ class JobManifestRenderer:
         self,
         manifest: Dict[str, Any],
         template: ModelDeploymentTemplate,
-        overrides: Optional[Dict[str, Any]],
+        template_overrides: Optional[Dict[str, Any]],
+        profile_overrides: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """Apply allowlisted user overrides.
 
-        Allowlist: 'engine_args' only. Other top-level fields in the
-        overrides dict raise ForbiddenOverride. Validation of
-        engine_args values is delegated to EngineArgsSpec; invalid
+        Template allowlist: 'engine_args' only.
+        Profile allowlist:  'scheduling' only.
+
+        Unknown keys on either side raise ForbiddenOverride. Validation
+        of engine_args values is delegated to EngineArgsSpec; invalid
         values bubble up as ValidationError.
+
+        Profile.scheduling is currently accepted (and roundtripped via
+        annotations) but has no on-manifest effect — the deadline-aware
+        scheduler that consumes it has not landed yet. We still validate
+        the allowlist so unsupported keys cannot reach the worker.
         """
-        if not overrides:
-            return manifest
+        if template_overrides:
+            for key in template_overrides:
+                if key not in _TEMPLATE_OVERRIDE_ALLOWLIST:
+                    raise ForbiddenOverride(
+                        f"model_template.overrides.{key}",
+                        _TEMPLATE_OVERRIDE_ALLOWLIST,
+                    )
+            ea_override = template_overrides.get("engine_args")
+            if ea_override:
+                manifest = self._apply_engine_args_override(
+                    manifest, template, ea_override
+                )
 
-        for key in overrides.keys():
-            if key not in _OVERRIDE_ALLOWLIST:
-                raise ForbiddenOverride(key)
+        if profile_overrides:
+            for key in profile_overrides:
+                if key not in _PROFILE_OVERRIDE_ALLOWLIST:
+                    raise ForbiddenOverride(
+                        f"profile.overrides.{key}",
+                        _PROFILE_OVERRIDE_ALLOWLIST,
+                    )
+            # scheduling override is roundtripped via annotations in
+            # _apply_per_batch; nothing to mutate on the manifest itself.
 
-        ea_override = overrides.get("engine_args")
-        if not ea_override:
-            return manifest
+        return manifest
 
+    def _apply_engine_args_override(
+        self,
+        manifest: Dict[str, Any],
+        template: ModelDeploymentTemplate,
+        ea_override: Dict[str, Any],
+    ) -> Dict[str, Any]:
         # Mock engines ignore engine_args entirely (they only look at
         # serve_args); rather than silently no-op the user's override
         # we warn and skip the rebuild to keep the existing shell command
@@ -537,6 +583,15 @@ class JobManifestRenderer:
             pod_annotations[JobAnnotationKey.MODEL_TEMPLATE_NAME.value] = (
                 spec.model_template_name
             )
+        # Persist the resolved version (the actual concrete one used) so a
+        # reload sees the same template even if the registry's "latest
+        # active" pointer moves later. Falls back to the spec's pinned value
+        # when the resolver was bypassed.
+        resolved_version = template.version or spec.model_template_version
+        if resolved_version:
+            pod_annotations[JobAnnotationKey.MODEL_TEMPLATE_VERSION.value] = (
+                resolved_version
+            )
         if spec.profile_name:
             pod_annotations[JobAnnotationKey.PROFILE_NAME.value] = spec.profile_name
         elif self._profiles.default_name():
@@ -545,9 +600,13 @@ class JobManifestRenderer:
             pod_annotations[JobAnnotationKey.PROFILE_NAME.value] = (
                 self._profiles.default_name() or ""
             )
-        if spec.overrides:
-            pod_annotations[JobAnnotationKey.OVERRIDES.value] = json.dumps(
-                spec.overrides, sort_keys=True
+        if spec.template_overrides:
+            pod_annotations[JobAnnotationKey.TEMPLATE_OVERRIDES.value] = json.dumps(
+                spec.template_overrides, sort_keys=True
+            )
+        if spec.profile_overrides:
+            pod_annotations[JobAnnotationKey.PROFILE_OVERRIDES.value] = json.dumps(
+                spec.profile_overrides, sort_keys=True
             )
 
         # User-supplied metadata / opts.

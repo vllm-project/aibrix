@@ -34,9 +34,11 @@ from aibrix.batch.job_entity import (
     CompletionWindow,
 )
 from aibrix.batch.manifest import RenderError
+from aibrix.batch.storage.batch_metastore import get_batch_job
 from aibrix.batch.template import (
-    OverridesSpec,
+    ProfileOverridesSpec,
     ProfileRegistry,
+    TemplateOverridesSpec,
     TemplateRegistry,
 )
 from aibrix.logger import init_logger
@@ -224,19 +226,84 @@ async def _validate_batch_input_file(
 # OpenAI Batch API request/response models
 
 
+class TemplateRef(BaseModel):
+    """Reference to a ModelDeploymentTemplate registered via ConfigMap.
+
+    Wire shape (under ``extra_body.aibrix.model_template``)::
+
+        {
+            "name": "llama3-70b-prod",
+            "version": "v1.3.0",  # optional; "" / null = latest active
+            "overrides": {  # optional, allowlisted
+                "engine_args": {"max_num_seqs": "512"}
+            },
+        }
+    """
+
+    model_config = {"extra": "forbid"}  # reject unknown keys, no silent drops
+
+    name: str = Field(
+        description="ModelDeploymentTemplate name registered via ConfigMap",
+    )
+    version: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional template version pin. Empty / null resolves to the "
+            "latest active version of the named template."
+        ),
+    )
+    overrides: Optional[TemplateOverridesSpec] = Field(
+        default=None,
+        description=(
+            "Allowlisted overrides applied on top of the resolved template "
+            "spec at render time."
+        ),
+    )
+
+
+class ProfileRef(BaseModel):
+    """Reference to a BatchProfile registered via ConfigMap.
+
+    Wire shape (under ``extra_body.aibrix.profile``)::
+
+        {
+            "name": "prod-24h",
+            "overrides": {  # optional, allowlisted
+                "scheduling": {"max_concurrency": 32}
+            },
+        }
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: str = Field(description="BatchProfile name registered via ConfigMap")
+    overrides: Optional[ProfileOverridesSpec] = Field(
+        default=None,
+        description=(
+            "Allowlisted overrides applied on top of the resolved profile "
+            "spec at render time."
+        ),
+    )
+
+
 class AibrixExtension(BaseModel):
     """AIBrix extension fields carried under extra_body.aibrix.
 
-    model_template (required for rendering),
-    profile (optional, falls back to registry default),
-    overrides (optional, allowlisted at render time).
+    Authoritative shape is documented in
+    apps/console/api/proto/console/v1/console.proto under
+    "Batch SDK contract (forward reference)". Keep these two in sync.
 
-    OpenAI SDK users transmit this via:
+    OpenAI SDK users transmit this via::
 
         client.batches.create(
             input_file_id="...",
             endpoint="/v1/chat/completions",
-            extra_body={"aibrix": {"model_template": "llama3-70b-prod"}},
+            extra_body={
+                "aibrix": {
+                    "model_template": {"name": "llama3-70b-prod"},
+                    "profile": {"name": "prod-24h"},
+                }
+            },
         )
 
     A request omitting ``aibrix.model_template`` is rejected at render
@@ -245,19 +312,22 @@ class AibrixExtension(BaseModel):
     must register at least one ModelDeploymentTemplate via the
     ConfigMap to accept any batch. See
     docs/source/features/batch-templates.rst.
+
+    Inline ``model_template_spec`` is intentionally NOT supported.
+    Templates are the curated security/cost gate; bypassing them via
+    inline spec would leak image / GPU SKU / namespace control to
+    users and shatter audit by template name.
     """
 
-    model_template: Optional[str] = Field(
+    model_config = {"extra": "forbid"}
+
+    model_template: Optional[TemplateRef] = Field(
         default=None,
-        description="ModelDeploymentTemplate name registered via ConfigMap",
+        description="ModelDeploymentTemplate reference (name + optional version + overrides)",
     )
-    profile: Optional[str] = Field(
+    profile: Optional[ProfileRef] = Field(
         default=None,
-        description="BatchProfile name; falls back to registry default if omitted",
-    )
-    overrides: Optional[OverridesSpec] = Field(
-        default=None,
-        description="Per-batch overrides, allowlisted by renderer (currently engine_args only)",
+        description="BatchProfile reference; falls back to registry default if omitted",
     )
 
 
@@ -291,18 +361,30 @@ class BatchSpec(BaseModel):
     @classmethod
     def newBatchJobSpec(cls, spec: "BatchSpec") -> BatchJobSpec:
         ext = spec.aibrix
+        tref = ext.model_template if ext else None
+        pref = ext.profile if ext else None
         return BatchJobSpec(
             input_file_id=spec.input_file_id,
             endpoint=spec.endpoint.value,
             completion_window=spec.completion_window.expires_at(),
             metadata=spec.metadata,
-            model_template_name=(ext.model_template if ext else None),
-            profile_name=(ext.profile if ext else None),
-            # OverridesSpec -> dict so BatchJobSpec.overrides stays
-            # decoupled from the template package (avoids circular import).
-            overrides=(
-                ext.overrides.model_dump(exclude_none=True)
-                if (ext and ext.overrides)
+            model_template_name=(tref.name if tref else None),
+            model_template_version=(tref.version if tref else None),
+            profile_name=(pref.name if pref else None),
+            # Overrides are carried as plain dicts on BatchJobSpec to keep
+            # that model decoupled from the template package (avoids a
+            # circular import). They are re-validated by the renderer.
+            template_overrides=(
+                tref.overrides.model_dump(exclude_none=True)
+                if (tref and tref.overrides)
+                else None
+            ),
+            # exclude_unset preserves the "partial override" contract: we
+            # only forward fields the caller actually set, so the renderer
+            # doesn't silently overwrite profile defaults.
+            profile_overrides=(
+                pref.overrides.model_dump(exclude_unset=True)
+                if (pref and pref.overrides)
                 else None
             ),
         )
@@ -331,23 +413,38 @@ def _validate_aibrix_extension(
     if template_registry is None:
         return  # registries not yet configured; defer to renderer
 
-    if template_registry.get(extension.model_template) is None:
-        available = template_registry.names()
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"aibrix.model_template '{extension.model_template}' not found. "
-                f"Active templates: {available}"
-            ),
-        )
+    tref = extension.model_template
+    if tref.version:
+        # Pin: must match exactly
+        resolved = template_registry.get_by_version(tref.name, tref.version)
+        if resolved is None:
+            available = template_registry.names()
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"aibrix.model_template '{tref.name}@{tref.version}' not found. "
+                    f"Templates with at least one active version: {available}"
+                ),
+            )
+    else:
+        if template_registry.get(tref.name) is None:
+            available = template_registry.names()
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"aibrix.model_template '{tref.name}' has no active version. "
+                    f"Templates with at least one active version: {available}"
+                ),
+            )
 
     if extension.profile is not None and profile_registry is not None:
-        if profile_registry.get(extension.profile) is None:
+        pref = extension.profile
+        if profile_registry.get(pref.name) is None:
             available = profile_registry.names()
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"aibrix.profile '{extension.profile}' not found. "
+                    f"aibrix.profile '{pref.name}' not found. "
                     f"Available profiles: {available}"
                 ),
             )
@@ -579,11 +676,14 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
             request_count=request_count,
         )  # type: ignore[call-arg]
 
-        # Create job using JobManager
+        # Create job using JobManager. Pass the validated input line
+        # count so request_counts.total is fixed at creation, matching
+        # OpenAI Batch API semantics.
         job_id = await batch_driver.run_coroutine(
             batch_driver.job_manager.create_job_with_spec(
                 session_id=session_id,
                 job_spec=batch_request,
+                request_count=request_count,
             )
         )
 
@@ -616,6 +716,28 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+async def _resolve_batch_job(request: Request, batch_id: str) -> Optional[BatchJob]:
+    """Resolve a BatchJob by id, metastore-first with JobManager fallback.
+
+    When ``app.state.batch_metastore_persist`` is True (A.2 read-flip
+    phase), the batch metastore is the source of truth and is consulted
+    first. The fallback to ``JobManager.get_job`` covers the brief
+    window between K8s ``create_namespaced_job`` returning and the kopf
+    ADDED handler persisting the document, since the metadata service
+    seeds the JobManager pool synchronously on POST.
+
+    When persistence is off, behavior is identical to reading from
+    JobManager directly.
+    """
+    if getattr(request.app.state, "batch_metastore_persist", False):
+        job = await get_batch_job(batch_id)
+        if job is not None:
+            return job
+
+    batch_driver: BatchDriver = request.app.state.batch_driver
+    return await batch_driver.run_coroutine(batch_driver.job_manager.get_job(batch_id))
+
+
 @router.get("/{batch_id}")
 async def get_batch(request: Request, batch_id: str) -> BatchResponse:
     """Retrieve a batch by ID.
@@ -624,15 +746,9 @@ async def get_batch(request: Request, batch_id: str) -> BatchResponse:
     request counts, and timestamps.
     """
     try:
-        # Get job controller from app state
-        batch_driver: BatchDriver = request.app.state.batch_driver
-
         logger.debug("Retrieving batch", batch_id=batch_id)  # type: ignore[call-arg]
 
-        # Get job from manager
-        job = await batch_driver.run_coroutine(
-            batch_driver.job_manager.get_job(batch_id)
-        )
+        job = await _resolve_batch_job(request, batch_id)
         if not job:
             logger.warning("Batch not found", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=404, detail="Batch not found")
@@ -661,15 +777,15 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
 
         logger.info("Cancelling batch", batch_id=batch_id)  # type: ignore[call-arg]
 
-        # Check if job exists
-        job = await batch_driver.run_coroutine(
-            batch_driver.job_manager.get_job(batch_id)
-        )
+        # Check if job exists (store-first read).
+        job = await _resolve_batch_job(request, batch_id)
         if not job:
             logger.warning("Batch not found for cancellation", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=404, detail="Batch not found")
 
-        # Cancel the job
+        # Cancel the job. JobManager.cancel_job drives the K8s suspend
+        # patch and the status write to the BatchJobStore via
+        # JobCache._put_to_store.
         success = await batch_driver.run_coroutine(
             batch_driver.job_manager.cancel_job(batch_id)
         )
@@ -677,10 +793,8 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
             logger.warning("Failed to cancel batch", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=400, detail="Batch cannot be cancelled")
 
-        # Get updated job status
-        updated_job = await batch_driver.run_coroutine(
-            batch_driver.job_manager.get_job(batch_id)
-        )
+        # Get updated job status (store-first again).
+        updated_job = await _resolve_batch_job(request, batch_id)
         if not updated_job:
             logger.error("Job not found after cancellation", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=500, detail="Internal server error")
@@ -716,9 +830,13 @@ async def list_batches(
 
         logger.debug("Listing batches", after=after, limit=limit)  # type: ignore[call-arg]
 
-        # Get all jobs from the manager
-        # Note: This is a simple implementation. In production, you'd want
-        # proper pagination and filtering in the JobManager
+        # List still goes through JobManager. Adding a list_by_prefix to
+        # BatchJobStore would require either an eagerly-maintained index
+        # (Redis ZSET keyed by created_at) or an S3 list-objects walk;
+        # the latter does not fit the current cursor-based pagination
+        # cheaply. Point reads already serve from the store, so the
+        # tradeoff only hurts the rare list call.
+        # TODO(A.2 follow-up): wire list to BatchJobStore via an index.
         all_jobs: List[BatchJob] = await batch_driver.run_coroutine(
             batch_driver.job_manager.list_jobs()
         )

@@ -191,15 +191,14 @@ class MovingDBSCANClusterer:
         return self.clusterers[(self.frontier + 1) % len(self.clusterers)]
 
     def _get_points_window_cb(self, window: int) -> Callable[[DBSCANClusterer], bool]:
-        return (
-            lambda clusterer: clusterer.length >= window / self.buffer_size
+        return lambda clusterer: (
+            clusterer.length >= window / self.buffer_size
             and self.reason(f"reached {round(window / self.buffer_size)} points")
         )
 
     def _get_time_window_cb(self, window: float) -> Callable[[DBSCANClusterer], bool]:
-        return (
-            lambda clusterer: datetime.now().timestamp() - clusterer.created
-            >= window / self.buffer_size
+        return lambda clusterer: (
+            datetime.now().timestamp() - clusterer.created >= window / self.buffer_size
             and self.reason(
                 f"timeout after {round(window / self.buffer_size, 2)} seconds"
             )

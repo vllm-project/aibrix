@@ -36,9 +36,21 @@ logger = init_logger(__name__)
 
 
 class InferenceEngineClient:
+    """Abstract base for inference clients used by ``JobDriver``."""
+
     async def inference_request(self, endpoint: str, request_data):
-        """Send inference request to the LLM engine."""
-        await asyncio.sleep(constant.EXPIRE_INTERVAL)  # Simulate processing time
+        raise NotImplementedError(
+            "InferenceEngineClient is abstract; instantiate "
+            "ProxyInferenceEngineClient (production) or "
+            "EchoInferenceEngineClient (--dry-run) instead."
+        )
+
+
+class EchoInferenceEngineClient(InferenceEngineClient):
+    """Returns the request body verbatim. Only valid under --dry-run."""
+
+    async def inference_request(self, endpoint: str, request_data):
+        await asyncio.sleep(constant.EXPIRE_INTERVAL)
         return request_data
 
 
@@ -81,9 +93,12 @@ class JobDriver:
         """
         self._progress_manager = progress_manager
         if inference_client is None:
-            self._inference_client = InferenceEngineClient()
-        else:
-            self._inference_client = inference_client
+            raise ValueError(
+                "JobDriver requires an explicit inference_client. Pass "
+                "EchoInferenceEngineClient() for --dry-run or "
+                "ProxyInferenceEngineClient(url) for a real engine."
+            )
+        self._inference_client = inference_client
 
         # Per-job token usage accumulators. Populated by inference responses
         # in execute_worker. Idempotent on retry: each (job_id, custom_id)

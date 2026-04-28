@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,8 +35,9 @@ import (
 type MemoryStore struct {
 	mu          sync.RWMutex
 	deployments []*pb.Deployment
-	jobs        []*pb.Job
+	jobs        map[string]*pb.Job // id → Console-side fields only
 	models      []*pb.Model
+	templates   []*pb.ModelDeploymentTemplate
 	apiKeys     []*apiKeyEntry
 	secrets     []*secretEntry
 	quotas      []*pb.Quota
@@ -140,66 +142,54 @@ func (s *MemoryStore) DeleteDeployment(_ context.Context, id string) error {
 	return status.Errorf(codes.NotFound, "deployment %q not found", id)
 }
 
-// --- Jobs ---
+// --- Jobs (Console-side fields only) ---
 
-func (s *MemoryStore) ListJobs(_ context.Context, search, statusFilter string) ([]*pb.Job, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if search == "" && statusFilter == "" {
-		return s.jobs, nil
+func (s *MemoryStore) UpsertJob(_ context.Context, job *pb.Job) error {
+	if job == nil || job.Id == "" {
+		return status.Error(codes.InvalidArgument, "job id is required")
 	}
-
-	result := make([]*pb.Job, 0)
-	for _, j := range s.jobs {
-		if statusFilter != "" && !strings.EqualFold(j.Status, statusFilter) {
-			continue
-		}
-		if search != "" {
-			q := strings.ToLower(search)
-			if !strings.Contains(strings.ToLower(j.Name), q) &&
-				!strings.Contains(strings.ToLower(j.InferenceId), q) &&
-				!strings.Contains(strings.ToLower(j.CreatedBy), q) {
-				continue
-			}
-		}
-		result = append(result, j)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.jobs == nil {
+		s.jobs = map[string]*pb.Job{}
 	}
-	return result, nil
+	// Persist only Console-owned fields; ignore OpenAI Batch state on write.
+	s.jobs[job.Id] = &pb.Job{
+		Id:        job.Id,
+		Name:      job.Name,
+		CreatedBy: job.CreatedBy,
+	}
+	return nil
 }
 
 func (s *MemoryStore) GetJob(_ context.Context, id string) (*pb.Job, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	for _, j := range s.jobs {
-		if j.Id == id {
-			return j, nil
-		}
+	j, ok := s.jobs[id]
+	if !ok {
+		return nil, nil
 	}
-	return nil, status.Errorf(codes.NotFound, "job %q not found", id)
+	// Return a fresh struct so callers can mutate it freely.
+	return &pb.Job{Id: j.Id, Name: j.Name, CreatedBy: j.CreatedBy}, nil
 }
 
-func (s *MemoryStore) CreateJob(_ context.Context, req *pb.CreateJobRequest) (*pb.Job, error) {
+func (s *MemoryStore) ListJobs(_ context.Context, ids []string) (map[string]*pb.Job, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]*pb.Job, len(ids))
+	for _, id := range ids {
+		if j, ok := s.jobs[id]; ok {
+			out[id] = &pb.Job{Id: j.Id, Name: j.Name, CreatedBy: j.CreatedBy}
+		}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) DeleteJob(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	now := time.Now()
-	j := &pb.Job{
-		Id:             s.genID(),
-		Name:           req.DisplayName,
-		InferenceId:    randomString(8),
-		Model:          req.Model,
-		ModelId:        strings.ToLower(strings.ReplaceAll(req.Model, " ", "-")),
-		InputDataset:   req.DatasetId,
-		InputDatasetId: req.DatasetId,
-		CreateDate:     now.Format("Jan 02, 2006"),
-		CreateTime:     now.Format("3:04 PM"),
-		Status:         "Validating",
-		FullPath:       fmt.Sprintf("accounts/aibrix/batchInference/%s", randomString(8)),
-	}
-	s.jobs = append(s.jobs, j)
-	return j, nil
+	delete(s.jobs, id)
+	return nil
 }
 
 // --- Models ---
@@ -224,8 +214,12 @@ func (s *MemoryStore) ListModels(_ context.Context, search, category string) ([]
 		}
 		if search != "" {
 			q := strings.ToLower(search)
+			providerName := ""
+			if m.Metadata != nil {
+				providerName = m.Metadata.ProviderName
+			}
 			if !strings.Contains(strings.ToLower(m.Name), q) &&
-				!strings.Contains(strings.ToLower(m.Provider), q) {
+				!strings.Contains(strings.ToLower(providerName), q) {
 				continue
 			}
 		}
@@ -247,6 +241,235 @@ func (s *MemoryStore) GetModel(_ context.Context, id string) (*pb.Model, error) 
 		}
 	}
 	return nil, status.Errorf(codes.NotFound, "model %q not found", id)
+}
+
+// --- Model Deployment Templates ---
+
+// uuidV4 returns an RFC 4122 v4 UUID. Local helper to avoid an extra dependency.
+func uuidV4() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// rand.Read on crypto/rand only fails if the OS RNG is misconfigured;
+		// fall back to a timestamp-derived string so we never crash the server.
+		return fmt.Sprintf("uuid-%d", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func (s *MemoryStore) ListModelDeploymentTemplates(_ context.Context, modelID, statusFilter, name string) ([]*pb.ModelDeploymentTemplate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]*pb.ModelDeploymentTemplate, 0)
+	for _, t := range s.templates {
+		if modelID != "" && t.ModelId != modelID {
+			continue
+		}
+		if statusFilter != "" && !strings.EqualFold(t.Status, statusFilter) {
+			continue
+		}
+		if name != "" && t.Name != name {
+			continue
+		}
+		result = append(result, t)
+	}
+	return result, nil
+}
+
+func (s *MemoryStore) GetModelDeploymentTemplate(_ context.Context, modelID, id string) (*pb.ModelDeploymentTemplate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, t := range s.templates {
+		if t.Id == id && t.ModelId == modelID {
+			return t, nil
+		}
+	}
+	return nil, status.Errorf(codes.NotFound, "deployment template %q not found under model %q", id, modelID)
+}
+
+func (s *MemoryStore) CreateModelDeploymentTemplate(_ context.Context, req *pb.CreateModelDeploymentTemplateRequest) (*pb.ModelDeploymentTemplate, error) {
+	if req.GetName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "name is required")
+	}
+	if req.GetModelId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "model_id is required")
+	}
+	if req.GetSpec() == nil {
+		return nil, status.Error(codes.InvalidArgument, "spec is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	version := req.GetVersion()
+	if version == "" {
+		version = "v1.0.0"
+	}
+	templateStatus := req.GetStatus()
+	if templateStatus == "" {
+		templateStatus = "active"
+	}
+
+	for _, t := range s.templates {
+		if t.ModelId == req.GetModelId() && t.Name == req.GetName() && t.Version == version {
+			return nil, status.Errorf(codes.AlreadyExists, "template %q@%q already exists for model %q", req.GetName(), version, req.GetModelId())
+		}
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	t := &pb.ModelDeploymentTemplate{
+		Id:        uuidV4(),
+		Name:      req.GetName(),
+		Version:   version,
+		Status:    templateStatus,
+		ModelId:   req.GetModelId(),
+		Spec:      req.GetSpec(),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	s.templates = append(s.templates, t)
+	return t, nil
+}
+
+func (s *MemoryStore) UpdateModelDeploymentTemplate(_ context.Context, req *pb.UpdateModelDeploymentTemplateRequest) (*pb.ModelDeploymentTemplate, error) {
+	if req.GetId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if req.GetModelId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "model_id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, t := range s.templates {
+		if t.Id != req.GetId() || t.ModelId != req.GetModelId() {
+			continue
+		}
+		newName := t.Name
+		if req.GetName() != "" {
+			newName = req.GetName()
+		}
+		newVersion := t.Version
+		if req.GetVersion() != "" {
+			newVersion = req.GetVersion()
+		}
+		if newName != t.Name || newVersion != t.Version {
+			for _, other := range s.templates {
+				if other.Id == t.Id {
+					continue
+				}
+				if other.ModelId == t.ModelId && other.Name == newName && other.Version == newVersion {
+					return nil, status.Errorf(codes.AlreadyExists, "template %q@%q already exists for model %q", newName, newVersion, t.ModelId)
+				}
+			}
+		}
+		t.Name = newName
+		t.Version = newVersion
+		if req.GetStatus() != "" {
+			t.Status = req.GetStatus()
+		}
+		if req.GetSpec() != nil {
+			t.Spec = req.GetSpec()
+		}
+		t.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		return t, nil
+	}
+	return nil, status.Errorf(codes.NotFound, "deployment template %q not found under model %q", req.GetId(), req.GetModelId())
+}
+
+func (s *MemoryStore) DeleteModelDeploymentTemplate(_ context.Context, modelID, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, t := range s.templates {
+		if t.Id == id && t.ModelId == modelID {
+			s.templates = append(s.templates[:i], s.templates[i+1:]...)
+			return nil
+		}
+	}
+	return status.Errorf(codes.NotFound, "deployment template %q not found under model %q", id, modelID)
+}
+
+// compareVersions returns negative / 0 / positive for a vs b using a SemVer-ish
+// rule: split on ".", strip a leading "v", compare numerically when both sides
+// parse as ints, lexically otherwise. Good enough for "v1.3.0" vs "v0.2.0";
+// pre-release tags are not modeled.
+func compareVersions(a, b string) int {
+	norm := func(s string) []string {
+		s = strings.TrimPrefix(strings.TrimPrefix(s, "v"), "V")
+		return strings.Split(s, ".")
+	}
+	ap, bp := norm(a), norm(b)
+	for i := 0; i < len(ap) || i < len(bp); i++ {
+		var av, bv string
+		if i < len(ap) {
+			av = ap[i]
+		}
+		if i < len(bp) {
+			bv = bp[i]
+		}
+		ai, aerr := strconv.Atoi(av)
+		bi, berr := strconv.Atoi(bv)
+		if aerr == nil && berr == nil {
+			if ai != bi {
+				return ai - bi
+			}
+			continue
+		}
+		if av != bv {
+			if av < bv {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
+}
+
+func (s *MemoryStore) ResolveModelDeploymentTemplate(_ context.Context, modelID, name, version string) (*pb.ModelDeploymentTemplate, error) {
+	if name == "" {
+		return nil, status.Error(codes.InvalidArgument, "name is required")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if version != "" {
+		for _, t := range s.templates {
+			if t.ModelId == modelID && t.Name == name && t.Version == version {
+				return t, nil
+			}
+		}
+		return nil, status.Errorf(codes.NotFound, "no template %q@%q under model %q", name, version, modelID)
+	}
+
+	var (
+		latest    *pb.ModelDeploymentTemplate
+		anyByName bool
+	)
+	for _, t := range s.templates {
+		if t.ModelId != modelID || t.Name != name {
+			continue
+		}
+		anyByName = true
+		if !strings.EqualFold(t.Status, "active") {
+			continue
+		}
+		if latest == nil || compareVersions(t.Version, latest.Version) > 0 {
+			latest = t
+		}
+	}
+	if latest != nil {
+		return latest, nil
+	}
+	if anyByName {
+		return nil, status.Errorf(codes.FailedPrecondition, "template %q under model %q has no active version", name, modelID)
+	}
+	return nil, status.Errorf(codes.NotFound, "no template %q under model %q", name, modelID)
 }
 
 // --- API Keys ---

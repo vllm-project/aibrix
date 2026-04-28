@@ -144,9 +144,10 @@ class BatchJobSpec(NoExtraBaseModel):
 
     # Set by Metadata Service when extra_body.aibrix.* is parsed at batch
     # creation. Values are looked up by TemplateRegistry / ProfileRegistry.
-    # Stored as raw strings so this model has no dependency on the template
-    # schema package (avoids circular imports). Validation against actual
-    # template/profile existence happens upstream.
+    # Stored as raw strings/dicts so this model has no dependency on the
+    # template schema package (avoids circular imports). Validation
+    # against actual template/profile existence happens upstream; the
+    # renderer re-validates override dicts against the typed schemas.
     model_template_name: Optional[str] = Field(
         default=None,
         description="Name of ModelDeploymentTemplate to use. Required at "
@@ -155,14 +156,27 @@ class BatchJobSpec(NoExtraBaseModel):
         "deserialization paths (e.g. K8s annotations on pre-template "
         "batches) can land here without it.",
     )
+    model_template_version: Optional[str] = Field(
+        default=None,
+        description="Optional version pin for the named template. Empty / "
+        "None resolves to the registry's latest active version of "
+        "model_template_name at render time.",
+    )
     profile_name: Optional[str] = Field(
         default=None,
         description="Name of BatchProfile to apply; None means use system default.",
     )
-    overrides: Optional[Dict[str, Any]] = Field(
+    template_overrides: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Raw user-supplied overrides from extra_body.aibrix.overrides. "
-        "Validated against OverridesSpec schema upstream by the resolver.",
+        description="User-supplied overrides applied on top of the resolved "
+        "template (extra_body.aibrix.model_template.overrides). Allowlisted "
+        "by the renderer; today only engine_args is honoured.",
+    )
+    profile_overrides: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="User-supplied overrides applied on top of the resolved "
+        "profile (extra_body.aibrix.profile.overrides). Allowlisted by the "
+        "renderer; today only scheduling is accepted (and roundtripped).",
     )
 
     @classmethod
@@ -174,8 +188,10 @@ class BatchJobSpec(NoExtraBaseModel):
         metadata: Optional[Dict[str, str]] = None,
         opts: Optional[Dict[str, str]] = None,
         model_template_name: Optional[str] = None,
+        model_template_version: Optional[str] = None,
         profile_name: Optional[str] = None,
-        overrides: Optional[Dict[str, Any]] = None,
+        template_overrides: Optional[Dict[str, Any]] = None,
+        profile_overrides: Optional[Dict[str, Any]] = None,
     ) -> "BatchJobSpec":
         """Create BatchJobSpec from string parameters with validation.
 
@@ -186,8 +202,10 @@ class BatchJobSpec(NoExtraBaseModel):
             metadata: Optional metadata dictionary
             opts: Optional system options dictionary
             model_template_name: Optional ModelDeploymentTemplate name
+            model_template_version: Optional version pin (resolves "latest active" if None)
             profile_name: Optional BatchProfile name
-            overrides: Optional raw OverridesSpec dict
+            template_overrides: Optional raw TemplateOverridesSpec dict
+            profile_overrides: Optional raw ProfileOverridesSpec dict
 
         Returns:
             BatchJobSpec instance
@@ -212,8 +230,10 @@ class BatchJobSpec(NoExtraBaseModel):
             metadata=metadata,
             opts=opts,
             model_template_name=model_template_name,
+            model_template_version=model_template_version,
             profile_name=profile_name,
-            overrides=overrides,
+            template_overrides=template_overrides,
+            profile_overrides=profile_overrides,
         )
 
     @staticmethod
@@ -654,7 +674,23 @@ class BatchJob(NoExtraBaseModel):
     def new_local(
         cls,
         spec: BatchJobSpec,
+        request_count: int = 0,
     ) -> "BatchJob":
+        # Pre-seed request_counts.total from the validated input line
+        # count so it is fixed at job creation, matching OpenAI Batch
+        # API semantics. When 0 (caller didn't validate upfront), the
+        # JobMetaInfo falls back to the legacy "discover total while
+        # streaming" behavior.
+        request_counts = (
+            RequestCountStats(total=request_count) if request_count > 0 else None
+        )
+        status_kwargs: Dict[str, Any] = {
+            "jobID": str(uuid.uuid4()),
+            "state": BatchJobState.CREATED,
+            "createdAt": datetime.now(timezone.utc),
+        }
+        if request_counts is not None:
+            status_kwargs["requestCounts"] = request_counts
         return cls(
             typeMeta=TypeMeta(apiVersion="", kind="LocalBatchJob"),
             metadata=ObjectMeta(
@@ -663,11 +699,7 @@ class BatchJob(NoExtraBaseModel):
                 deletionTimestamp=None,
             ),
             spec=spec,
-            status=BatchJobStatus(
-                jobID=str(uuid.uuid4()),
-                state=BatchJobState.CREATED,
-                createdAt=datetime.now(timezone.utc),
-            ),
+            status=BatchJobStatus(**status_kwargs),
         )
 
     @property

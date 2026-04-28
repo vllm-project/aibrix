@@ -29,12 +29,13 @@ from aibrix.batch.template import (
     ModelDeploymentTemplateList,
     ModelSourceSpec,
     ModelSourceType,
-    OverridesSpec,
     ParallelismSpec,
+    ProfileOverridesSpec,
     ProviderConfig,
     ProviderType,
     StorageBackend,
     StorageSpec,
+    TemplateOverridesSpec,
     TemplateStatus,
 )
 
@@ -200,17 +201,43 @@ class TestBatchProfileList:
             )
 
 
-class TestOverridesSpec:
+class TestTemplateOverridesSpec:
     def test_engine_args_override_validates(self):
-        ovr = OverridesSpec(engine_args={"max_num_seqs": 1024})
+        ovr = TemplateOverridesSpec(engine_args={"max_num_seqs": 1024})
         assert ovr.engine_args.max_num_seqs == 1024
 
     def test_strict_rejects_unknown_top_level_field(self):
-        # Forbidden: 'accelerator' is sensitive and not in OverridesSpec
+        # Profile-side keys like 'scheduling' must not slip into the
+        # template namespace — that is precisely the ambiguity the split
+        # exists to remove.
         with pytest.raises(ValidationError):
-            OverridesSpec(accelerator={"count": 8})
+            TemplateOverridesSpec(scheduling={"max_concurrency": 32})
+        # Sensitive fields (accelerator, image, etc.) are also not in the
+        # template-side allowlist.
+        with pytest.raises(ValidationError):
+            TemplateOverridesSpec(accelerator={"count": 8})
 
     def test_engine_args_invalid_value_rejected_at_request_time(self):
         # gpu_memory_utilization > 1.0 must fail before reaching renderer
         with pytest.raises(ValidationError):
-            OverridesSpec(engine_args={"gpu_memory_utilization": 2.0})
+            TemplateOverridesSpec(engine_args={"gpu_memory_utilization": 2.0})
+
+
+class TestProfileOverridesSpec:
+    def test_scheduling_override_accepted(self):
+        ovr = ProfileOverridesSpec(scheduling={"max_concurrency": 32})
+        assert ovr.scheduling is not None
+        assert ovr.scheduling.max_concurrency == 32
+        # Only the user-set field is preserved on the wire so partial
+        # overrides don't silently overwrite profile defaults downstream.
+        assert ovr.model_dump(exclude_unset=True) == {
+            "scheduling": {"max_concurrency": 32}
+        }
+
+    def test_strict_rejects_template_side_keys(self):
+        # engine_args belongs to the template namespace, not profile.
+        with pytest.raises(ValidationError):
+            ProfileOverridesSpec(engine_args={"max_num_seqs": 1024})
+        # storage / quota are profile-managed but not user-overridable.
+        with pytest.raises(ValidationError):
+            ProfileOverridesSpec(storage={"bucket": "evil"})

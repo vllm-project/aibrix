@@ -438,7 +438,7 @@ def create_test_app(
             disable_batch_api=False,
             enable_k8s_job=enable_k8s_job,
             k8s_job_patch=None,  # accepted by parser but always None in tests
-            e2e_test=True,
+            dry_run=not enable_k8s_job,
         ),
         params,
     )

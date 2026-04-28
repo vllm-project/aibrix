@@ -30,14 +30,35 @@ type Store interface {
 	CreateDeployment(ctx context.Context, req *pb.CreateDeploymentRequest) (*pb.Deployment, error)
 	DeleteDeployment(ctx context.Context, id string) error
 
-	// Jobs
-	ListJobs(ctx context.Context, search, status string) ([]*pb.Job, error)
-	GetJob(ctx context.Context, id string) (*pb.Job, error)
-	CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*pb.Job, error)
+	// Jobs — store persists only the Console-owned fields of *pb.Job
+	// (id, created_by, future: organization, tags, ...). OpenAI Batch fields
+	// on the passed-in *pb.Job (status, usage, request_counts, timestamps,
+	// etc.) are ignored on write and left at their zero values on read; the
+	// JobHandler aggregates store output with state fetched from the metadata
+	// service /v1/batches API to produce the wire-level *pb.Job.
+	UpsertJob(ctx context.Context, job *pb.Job) error
+	GetJob(ctx context.Context, id string) (*pb.Job, error) // (nil, nil) when not found
+	ListJobs(ctx context.Context, ids []string) (map[string]*pb.Job, error)
+	DeleteJob(ctx context.Context, id string) error
 
 	// Models
 	ListModels(ctx context.Context, search, category string) ([]*pb.Model, error)
 	GetModel(ctx context.Context, id string) (*pb.Model, error)
+
+	// Model Deployment Templates. modelID is the parent — Get/Update/Delete
+	// validate that the addressed template actually belongs to it, returning
+	// NotFound otherwise so URLs are canonical.
+	//
+	// ResolveModelDeploymentTemplate looks up by (modelID, name, version);
+	// version="" means "latest active". This is the path used by clients
+	// that pin templates from outside the UI (e.g. batch SDK callers passing
+	// model_template / model_template_version).
+	ListModelDeploymentTemplates(ctx context.Context, modelID, statusFilter, name string) ([]*pb.ModelDeploymentTemplate, error)
+	GetModelDeploymentTemplate(ctx context.Context, modelID, id string) (*pb.ModelDeploymentTemplate, error)
+	CreateModelDeploymentTemplate(ctx context.Context, req *pb.CreateModelDeploymentTemplateRequest) (*pb.ModelDeploymentTemplate, error)
+	UpdateModelDeploymentTemplate(ctx context.Context, req *pb.UpdateModelDeploymentTemplateRequest) (*pb.ModelDeploymentTemplate, error)
+	DeleteModelDeploymentTemplate(ctx context.Context, modelID, id string) error
+	ResolveModelDeploymentTemplate(ctx context.Context, modelID, name, version string) (*pb.ModelDeploymentTemplate, error)
 
 	// API Keys
 	ListAPIKeys(ctx context.Context) ([]*pb.APIKey, error)
