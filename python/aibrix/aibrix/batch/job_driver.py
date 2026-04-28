@@ -37,7 +37,20 @@ logger = init_logger(__name__)
 
 class InferenceEngineClient:
     async def inference_request(self, endpoint: str, request_data):
-        """Send inference request to the LLM engine."""
+        """Send inference request to the LLM engine.
+
+        Subclasses must override this method to provide actual inference.
+        """
+        raise NotImplementedError(
+            "InferenceEngineClient.inference_request() must be implemented by a subclass. "
+            "Use ProxyInferenceEngineClient for real inference or MockInferenceEngineClient for testing."
+        )
+
+
+class MockInferenceEngineClient(InferenceEngineClient):
+    """Mock client that echoes request data. For testing only."""
+
+    async def inference_request(self, endpoint: str, request_data):
         await asyncio.sleep(constant.EXPIRE_INTERVAL)  # Simulate processing time
         return request_data
 
@@ -80,10 +93,7 @@ class JobDriver:
         * Call finalize_job() for Job finalizing. API server runs without scheduler will call this to aggregate outputs.
         """
         self._progress_manager = progress_manager
-        if inference_client is None:
-            self._inference_client = InferenceEngineClient()
-        else:
-            self._inference_client = inference_client
+        self._inference_client = inference_client
 
         # Per-job token usage accumulators. Populated by inference responses
         # in execute_worker. Idempotent on retry: each (job_id, custom_id)
@@ -242,6 +252,16 @@ class JobDriver:
         Execute worker logic: process requests without file preparation or finalization.
         This function only executes step 2 (the core execution loop).
         """
+        self._get_inference_client()
+
+        if isinstance(self._inference_client, MockInferenceEngineClient):
+            logger.warning(
+                "Using MockInferenceEngineClient for batch execution. "
+                "Inference responses will echo request data instead of model responses. "
+                "Configure a real LLM engine endpoint for production use.",
+                job_id=job_id,
+            )  # type: ignore[call-arg]
+
         # Verify job status and get minimum unfinished request id
         job, line_no = await self._get_next_request(job_id)
         if line_no < 0:
@@ -467,10 +487,11 @@ class JobDriver:
         """
         request_output = None
         last_error = None
+        inference_client = self._get_inference_client()
 
         for attempt in range(max_retries):
             try:
-                request_output = await self._inference_client.inference_request(
+                request_output = await inference_client.inference_request(
                     endpoint, request_data
                 )
                 break  # Success, exit retry loop
@@ -485,6 +506,14 @@ class JobDriver:
                     await asyncio.sleep(1 * (attempt + 1))  # Exponential backoff
 
         return request_output, last_error
+
+    def _get_inference_client(self) -> InferenceEngineClient:
+        if self._inference_client is None:
+            raise RuntimeError(
+                "Inference client is not configured for batch execution. "
+                "Inject an inference client explicitly before running the job."
+            )
+        return self._inference_client
 
     def _build_response(
         self,

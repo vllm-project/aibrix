@@ -22,6 +22,7 @@ import pytest
 
 import aibrix.batch.constant as constant
 from aibrix.batch.driver import BatchDriver
+from aibrix.batch.job_driver import MockInferenceEngineClient
 from aibrix.batch.job_entity import BatchJobErrorCode, BatchJobState, BatchJobStatus
 from aibrix.storage import StorageType
 
@@ -50,6 +51,7 @@ async def test_batch_driver_job_creation():
     driver = BatchDriver(
         storage_type=StorageType.LOCAL, metastore_type=StorageType.LOCAL
     )
+    driver._inference_client = MockInferenceEngineClient()
     await driver.start()
 
     # Test that driver is properly initialized
@@ -106,6 +108,7 @@ async def test_batch_driver_integration():
     driver = BatchDriver(
         storage_type=StorageType.LOCAL, metastore_type=StorageType.LOCAL
     )
+    driver._inference_client = MockInferenceEngineClient()
     await driver.start()
 
     # Create temporary input file
@@ -194,6 +197,7 @@ async def test_batch_driver_resuming():
     driver = BatchDriver(
         storage_type=StorageType.LOCAL, metastore_type=StorageType.LOCAL
     )
+    driver._inference_client = MockInferenceEngineClient()
     await driver.start()
 
     # Create temporary input file
@@ -335,6 +339,7 @@ async def test_batch_driver_stop_raises_exception_with_fail_after_n_requests():
         metastore_type=StorageType.LOCAL,
         stand_alone=False,
     )
+    driver._inference_client = MockInferenceEngineClient()
 
     # Create a temporary file for job input
     temp_file_descriptor, temp_path = tempfile.mkstemp(suffix=".jsonl")
