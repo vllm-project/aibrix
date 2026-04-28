@@ -152,14 +152,18 @@ func TestLeastUtil_ScoreAll(t *testing.T) {
 	scores, scored, err := r.ScoreAll(ctx, podArray)
 	assert.NoError(t, err)
 
-	for i, p := range podArray.Pods {
-		assert.True(t, scored[i])
-		if p.Name == "pA" {
-			assert.InDelta(t, 0.2, scores[i], 0.001)
-		} else if p.Name == "pB" {
-			assert.InDelta(t, 0.9, scores[i], 0.001)
-		}
+	podScores := make(map[string]float64)
+	podScored := make(map[string]bool)
+	for i, p := range podArray.All() {
+		podScores[p.Name] = scores[i]
+		podScored[p.Name] = scored[i]
 	}
+
+	assert.True(t, podScored["pA"])
+	assert.InDelta(t, 0.2, podScores["pA"], 0.001)
+
+	assert.True(t, podScored["pB"])
+	assert.InDelta(t, 0.9, podScores["pB"], 0.001)
 
 	assert.Equal(t, types.PolarityLeast, r.Polarity())
 }

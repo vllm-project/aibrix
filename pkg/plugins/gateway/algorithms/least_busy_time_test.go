@@ -255,19 +255,23 @@ func TestLeastBusyTime_ScoreAll(t *testing.T) {
 	r := leastBusyTimeRouter{cache: c}
 	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
 
-	scores, scored, err := r.ScoreAll(ctx, podsFromCache(c))
+	podList := podsFromCache(c)
+	scores, scored, err := r.ScoreAll(ctx, podList)
 	assert.NoError(t, err)
 
-	// Ensure that pB is the pod at index 0 and pA is the pod at index 1 or vice versa
-	pods := podsFromCache(c).All()
+	pods := podList.All()
+	// Create a map to verify results independently of slice ordering
+	podScores := make(map[string]float64)
+	podScored := make(map[string]bool)
 	for i, p := range pods {
-		if p.Name == "pA" {
-			assert.True(t, scored[i])
-			assert.InDelta(t, 0.3, scores[i], 0.001)
-		} else {
-			assert.False(t, scored[i])
-		}
+		podScores[p.Name] = scores[i]
+		podScored[p.Name] = scored[i]
 	}
+
+	assert.True(t, podScored["pA"])
+	assert.InDelta(t, 0.3, podScores["pA"], 0.001)
+
+	assert.False(t, podScored["pB"])
 
 	assert.Equal(t, types.PolarityLeast, r.Polarity())
 }
