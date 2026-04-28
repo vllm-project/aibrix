@@ -78,6 +78,8 @@ type RoutingContext struct {
 	PrefillStartTime time.Time // Time when prefill request is started.
 	PrefillEndTime   time.Time // Time consumed during prefill.
 
+	ImmediateResponse *ImmediateHTTPResponse
+
 	// RespHeaders holds response headers that the router intends to set.
 	// These are typically used to propagate control information back to the client,
 	// such as session affinity id.
@@ -331,6 +333,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ReqBody = []byte{}
 	r.PrefillStartTime = time.Time{}
 	r.PrefillEndTime = time.Time{}
+	r.ImmediateResponse = nil
 	// RoutedTime will not be reset, it must before ReqeustTime at this time.
 
 	r.RespHeaders = map[string]string{}

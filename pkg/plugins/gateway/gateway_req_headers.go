@@ -56,17 +56,20 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		case pathKey:
 			requestPath = string(n.RawValue)
 		case authorizationKey:
-			reqHeaders[n.Key] = string(n.RawValue)
+			// Normalize header keys to lower-case constants so downstream lookups
+			// (which use fixed lower-case keys) work regardless of upstream casing
+			// such as "Authorization" vs "authorization".
+			reqHeaders[authorizationKey] = string(n.RawValue)
 		case HeaderExternalFilter:
-			reqHeaders[n.Key] = string(n.RawValue)
+			reqHeaders[HeaderExternalFilter] = string(n.RawValue)
 		case contentTypeKey:
-			reqHeaders[n.Key] = string(n.RawValue)
+			reqHeaders[contentTypeKey] = string(n.RawValue)
 		case HeaderRoutingStrategy:
-			reqHeaders[n.Key] = string(n.RawValue)
+			reqHeaders[HeaderRoutingStrategy] = string(n.RawValue)
 		case HeaderConfigProfile:
 			reqConfigProfile = strings.TrimSpace(string(n.RawValue))
 		case HeaderSessionID:
-			reqHeaders[n.Key] = string(n.RawValue)
+			reqHeaders[HeaderSessionID] = string(n.RawValue)
 		}
 	}
 

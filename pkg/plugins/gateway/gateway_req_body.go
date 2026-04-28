@@ -67,6 +67,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 	routingCtx.Model = model
 	routingCtx.Message = message
+	routingCtx.Stream = stream
 	routingCtx.ReqBody = body.RequestBody.GetBody()
 
 	// early reject if model doesn't exist or no pods are ready
@@ -116,6 +117,17 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	} else {
 		externalFilter := routingCtx.ReqHeaders[HeaderExternalFilter]
 		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr, externalFilter)
+		if routingCtx.ImmediateResponse != nil {
+			klog.InfoS("prefill_only_response",
+				"request_id", requestID,
+				"model", model,
+				"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime))
+			routingCtx.RequestEndTime = time.Now()
+			term = s.cache.AddRequestCount(routingCtx, requestID, model)
+			return buildImmediateResponseFromHTTPResponse(routingCtx.ImmediateResponse, map[string]string{
+				HeaderRequestID: requestID,
+			}), model, routingCtx, stream, term
+		}
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingAlgorithm, "model", model, "routingDuration", routingCtx.GetRoutingDelay())
 			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, "error on selecting target pod", ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, routingCtx, stream, term

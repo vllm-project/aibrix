@@ -291,6 +291,14 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 	}
 
 	statusCode := strconv.Itoa(int(resp.GetImmediateResponse().GetStatus().GetCode()))
+	// ImmediateResponse is used for both error and success short-circuit returns
+	// (e.g. PD prefill-only completion). Only treat it as a failure metric when
+	// the status code is not 2xx.
+	if resp.GetImmediateResponse().GetStatus().GetCode() >= 200 && resp.GetImmediateResponse().GetStatus().GetCode() < 300 {
+		s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", statusCode)
+		return resp, nil
+	}
+
 	metricFail := getMetricErr(resp.GetImmediateResponse(), st.metricLabel)
 	s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, metricFail+"_fail", statusCode)
 

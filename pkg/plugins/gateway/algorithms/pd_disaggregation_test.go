@@ -1489,6 +1489,128 @@ func TestTensorRTIntegrationWithTestServer(t *testing.T) {
 	// Payload fields from the prefill response should be preserved
 }
 
+func TestTensorRTPrefillFinishReasonShortCircuit(t *testing.T) {
+	resp := `{
+		"choices":[
+			{
+				"message":{"role":"assistant","content":"yes"},
+				"finish_reason":"stop",
+				"disaggregated_params":{"request_type":"context_only","first_gen_tokens":[42]}
+			}
+		],
+		"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}
+	}`
+
+	ts := setupTestServer(t, http.StatusOK, resp, TensorRTLLM)
+	defer ts.Close()
+
+	prefillPods := []*v1.Pod{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "prefill-trt",
+			Labels: map[string]string{
+				LLMEngineIdentifier: TensorRTLLM,
+				PDRoleIdentifier:    "prefill",
+			},
+		},
+		Status: v1.PodStatus{
+			PodIP: "127.0.0.1",
+			Conditions: []v1.PodCondition{{
+				Type:   v1.PodReady,
+				Status: v1.ConditionTrue,
+			}},
+		},
+	}}
+
+	originalBody := []byte(`{"messages":[{"role":"user","content":"test"}],"model":"test-model"}`)
+	routingCtx := &types.RoutingContext{
+		RequestID:  "test-request",
+		Model:      "test-model",
+		ReqPath:    "/v1/chat/completions",
+		ReqBody:    append([]byte(nil), originalBody...),
+		ReqHeaders: map[string]string{"Authorization": "Bearer test"},
+		Context:    context.Background(),
+		Stream:     false,
+	}
+
+	router := &pdRouter{
+		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		cache:                 cache.NewWithPodsForTest(prefillPods, "test-model"),
+		prefillRequestTracker: pd.NewPrefillRequestTracker(),
+		httpClient:            &http.Client{},
+	}
+
+	err := router.doPrefillRequest(routingCtx, prefillPods[0], TensorRTLLM)
+	assert.NoError(t, err)
+	if assert.NotNil(t, routingCtx.ImmediateResponse) {
+		assert.Equal(t, http.StatusOK, routingCtx.ImmediateResponse.StatusCode)
+		assert.JSONEq(t, resp, string(routingCtx.ImmediateResponse.Body))
+	}
+	assert.JSONEq(t, string(originalBody), string(routingCtx.ReqBody))
+}
+
+func TestVLLMPrefillFinishReasonDoesNotShortCircuit(t *testing.T) {
+	resp := `{
+		"choices":[
+			{
+				"message":{"role":"assistant","content":"done"},
+				"finish_reason":"stop"
+			}
+		],
+		"kv_transfer_params":{
+			"do_remote_decode":true,
+			"do_remote_prefill":false,
+			"remote_engine_id":"test-engine-123",
+			"remote_block_ids":["block1","block2"],
+			"remote_host":"127.0.0.1",
+			"remote_port":"8080"
+		}
+	}`
+
+	ts := setupTestServer(t, http.StatusOK, resp, VLLMEngine)
+	defer ts.Close()
+
+	prefillPods := []*v1.Pod{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "prefill-vllm",
+			Labels: map[string]string{
+				LLMEngineIdentifier: VLLMEngine,
+				PDRoleIdentifier:    "prefill",
+			},
+		},
+		Status: v1.PodStatus{
+			PodIP: "127.0.0.1",
+			Conditions: []v1.PodCondition{{
+				Type:   v1.PodReady,
+				Status: v1.ConditionTrue,
+			}},
+		},
+	}}
+
+	originalBody := []byte(`{"messages":[{"role":"user","content":"test"}],"model":"test-model"}`)
+	routingCtx := &types.RoutingContext{
+		RequestID:  "test-request",
+		Model:      "test-model",
+		ReqPath:    "/v1/chat/completions",
+		ReqBody:    append([]byte(nil), originalBody...),
+		ReqHeaders: map[string]string{"Authorization": "Bearer test"},
+		Context:    context.Background(),
+		Stream:     false,
+	}
+
+	router := &pdRouter{
+		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		cache:                 cache.NewWithPodsForTest(prefillPods, "test-model"),
+		prefillRequestTracker: pd.NewPrefillRequestTracker(),
+		httpClient:            &http.Client{},
+	}
+
+	err := router.doPrefillRequest(routingCtx, prefillPods[0], VLLMEngine)
+	assert.NoError(t, err)
+	assert.Nil(t, routingCtx.ImmediateResponse)
+}
+
 func TestUpdateRoutingContextWithTRTDisaggParams(t *testing.T) {
 	tests := []struct {
 		name          string
