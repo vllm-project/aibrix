@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import os
 import sys
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from kubernetes import client as k8s_client
 from kubernetes import config
@@ -160,6 +161,32 @@ def build_app(args: argparse.Namespace, params={}):
 
     app.state.httpx_client_wrapper = HTTPXClientWrapper()
 
+    # Normalize HTTPException responses to OpenAI's top-level
+    # ``{"error": {message, type, param, code}}`` shape so that the
+    # official ``openai`` SDK can deserialize 4xx responses. FastAPI's
+    # default wraps the raw detail under ``{"detail": ...}``, which
+    # the SDK cannot read.
+    @app.exception_handler(HTTPException)
+    async def _openai_compat_http_exception_handler(
+        request: Request, exc: HTTPException
+    ) -> JSONResponse:
+        detail = exc.detail
+        if isinstance(detail, dict) and "error" in detail:
+            # Routes that already produced an OpenAI-shaped error body
+            # (e.g. files routes via _create_error_response) flow through
+            # unchanged.
+            body: Dict[str, Any] = detail
+        else:
+            body = {
+                "error": {
+                    "message": "" if detail is None else str(detail),
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": None,
+                }
+            }
+        return JSONResponse(status_code=exc.status_code, content=body)
+
     # Initialize kopf operator wrapper if K8s jobs are enabled
     if args.enable_k8s_job:
         from aibrix.metadata.core import KopfOperatorWrapper
@@ -200,6 +227,11 @@ def build_app(args: argparse.Namespace, params={}):
             app.state.template_registry = template_registry
             app.state.profile_registry = profile_registry
 
+            # BatchJobStore is the metadata-service ↔ kopf-operator shared
+            # source of truth, so it is only meaningful when
+            # --enable-k8s-job is set. Standalone mode reads/writes the
+            # in-process JobManager pool directly; AIBRIX_BATCH_JOB_STORE_ENABLED
+            # is intentionally a no-op there.
             batch_job_store: Optional[BatchJobStore] = None
             if envs.BATCH_JOB_STORE_ENABLED:
                 # Reuse the same backing storage as batch payloads. The
@@ -223,10 +255,23 @@ def build_app(args: argparse.Namespace, params={}):
             # directly. When None, handlers fall through to the
             # JobManager in-memory pool (legacy mode).
             app.state.batch_job_store = batch_job_store
+
+        # In K8s mode the actual inference is run by ``aibrix_batch_worker``
+        # pods that bring their own ``llm_engine_endpoint``; here we still
+        # forward INFERENCE_ENGINE_ENDPOINT so that standalone runs (no
+        # K8s, BatchDriver runs inference itself) hit the configured
+        # engine instead of falling back to the echo client.
+        #
+        # We read os.environ directly rather than envs.INFERENCE_ENGINE_ENDPOINT
+        # because the latter has a hardcoded ``http://localhost:8000`` default
+        # for the runtime sidecar; that default is wrong for the metadata
+        # service (no engine is implied) and would force ProxyInferenceEngineClient
+        # in tests where no engine is running. Unset → None → echo client.
         app.state.batch_driver = BatchDriver(
             job_entity_manager,
             storage_type=settings.STORAGE_TYPE,
             metastore_type=settings.METASTORE_TYPE,
+            llm_engine_endpoint=os.environ.get("INFERENCE_ENGINE_ENDPOINT"),
             stand_alone=True,
             params=params,
         )
@@ -307,12 +352,6 @@ def main():
         default=10.0,
         help="Timeout in seconds for kopf operator shutdown (default: 10.0)",
     )
-    parser.add_argument(
-        "--e2e-test",
-        action="store_true",
-        default=False,
-        help="Enable features for e2e test",
-    )
     args = parser.parse_args()
 
     if args.k8s_job_patch is not None:
@@ -329,15 +368,23 @@ def main():
         )
         sys.exit(2)
 
+    if args.disable_file_api and not args.disable_batch_api:
+        # The batch API needs the files API as its input/output channel.
+        parser.error(
+            "--disable-file-api requires --disable-batch-api: the batch "
+            "API needs the files API for input/output."
+        )
+
     global logger
     logging_basic_config(settings)
     logger = init_logger(__name__)  # Reset logger
 
-    try:
-        config.load_incluster_config()
-    except Exception:
-        # Local debug
-        config.load_kube_config()
+    if args.enable_k8s_job:
+        try:
+            config.load_incluster_config()
+        except Exception:
+            # Local debug
+            config.load_kube_config()
 
     logger.info(f"Using {args} to startup app", project=settings.PROJECT_NAME)  # type: ignore[call-arg]
     app = build_app(args=args)
