@@ -379,7 +379,7 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	leastReqPodList, isLoadImbalanced := getTargetPodListOnLoadImbalance(p.cache, readyPods)
 	if isLoadImbalanced {
 		if len(leastReqPodList) == 0 {
-			klog.InfoS("prefix_cache_load_imbalanced_no_target",
+			klog.V(4).InfoS("prefix_cache_load_imbalanced_no_target",
 				"request_id", ctx.RequestID,
 				"pod_request_count", getRequestCounts(p.cache, readyPods))
 			return "", errors.New("no target pod found when load imbalanced")
@@ -401,14 +401,14 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	if len(matchedPods) > 0 {
 		targetPod = getTargetPodFromMatchedPods(p.cache, readyPods, matchedPods)
 		if targetPod != nil {
-			klog.InfoS("prefix_cache_matched_pods",
+			klog.V(4).InfoS("prefix_cache_matched_pods",
 				"request_id", ctx.RequestID,
 				"target_pod", targetPod.Name,
 				"target_pod_ip", targetPod.Status.PodIP,
 				"matched_pods", matchedPods,
 				"pod_request_count", getRequestCounts(p.cache, readyPods))
 		} else {
-			klog.InfoS("prefix_cache_skip_matched_pods",
+			klog.V(4).InfoS("prefix_cache_skip_matched_pods",
 				"request_id", ctx.RequestID,
 				"matched_pods", matchedPods,
 				"pod_request_count", getRequestCounts(p.cache, readyPods))
@@ -419,14 +419,14 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	if len(matchedPods) == 0 || targetPod == nil {
 		targetPod = selectTargetPodWithLeastRequestCount(p.cache, readyPods)
 		if targetPod != nil {
-			klog.InfoS("prefix_cache_fallback_least_request_count",
+			klog.V(4).InfoS("prefix_cache_fallback_least_request_count",
 				"request_id", ctx.RequestID,
 				"target_pod", targetPod.Name,
 				"target_pod_ip", targetPod.Status.PodIP,
 				"matched_pods", matchedPods,
 				"pod_request_count", getRequestCounts(p.cache, readyPods))
 		} else {
-			klog.InfoS("prefix_cache_no_pods_available",
+			klog.V(4).InfoS("prefix_cache_no_pods_available",
 				"request_id", ctx.RequestID,
 				"matched_pods", matchedPods,
 				"pod_request_count", getRequestCounts(p.cache, readyPods))

@@ -19,6 +19,7 @@ package prefixcacheindexer
 import (
 	"encoding/binary"
 	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 
@@ -55,9 +56,10 @@ func GetSharedPrefixHashTable() *PrefixHashTable {
 }
 
 type PrefixHashTable struct {
-	mu    sync.RWMutex
-	seed  uint64
-	store lrustore.Store[uint64, Block]
+	mu       sync.RWMutex
+	seed     uint64
+	store    lrustore.Store[uint64, Block]
+	dirtyIds map[string]struct{} // block hash as string, for delta sync
 }
 
 type Block struct {
@@ -73,13 +75,21 @@ func NewPrefixHashTable() *PrefixHashTable {
 		"prefix_cache_block_eviction_interval_seconds", prefixCacheEvictionInterval,
 		"prefix_cache_block_eviction_duration_minutes", prefixCacheEvictionDuration)
 	instance := &PrefixHashTable{
-		seed: seed,
-		store: lrustore.NewLRUStore[uint64, Block](prefixCacheBlockNumber,
-			prefixCacheEvictionDuration,
-			prefixCacheEvictionInterval,
-			func() time.Time { return time.Now() }),
+		seed:  seed,
+		store: lrustore.NewLRUStore[uint64, Block](prefixCacheBlockNumber, prefixCacheEvictionDuration, prefixCacheEvictionInterval, func() time.Time { return time.Now() }),
 	}
 	return instance
+}
+
+// EnableDeltaSync initializes dirty-set tracking so GetDeltaForSync/ClearDirtyForSync
+// can be used. Call this once before registering with statesync.Manager. It is safe
+// to call multiple times; subsequent calls are no-ops.
+func (c *PrefixHashTable) EnableDeltaSync() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dirtyIds == nil {
+		c.dirtyIds = make(map[string]struct{})
+	}
 }
 
 // MatchPrefix matches the input token prefix's if already cached
@@ -141,6 +151,9 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 		}
 
 		c.store.Put(prefixHash, block)
+		if c.dirtyIds != nil {
+			c.dirtyIds[strconv.FormatUint(prefixHash, 10)] = struct{}{}
+		}
 	}
 }
 

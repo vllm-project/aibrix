@@ -117,6 +117,17 @@ func (e *LRUStore[K, V]) Len() int {
 	return len(e.freeTable)
 }
 
+// Range calls f for each key-value pair in the store; iteration stops if f returns false.
+func (e *LRUStore[K, V]) Range(f func(key K, value V) bool) {
+	e.RLock()
+	defer e.RUnlock()
+	for k, ent := range e.freeTable {
+		if !f(k, ent.Value) {
+			return
+		}
+	}
+}
+
 func (e *LRUStore[K, V]) evict(now time.Time) {
 	var keysToEvict []K
 

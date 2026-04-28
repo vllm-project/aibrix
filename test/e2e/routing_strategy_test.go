@@ -22,12 +22,15 @@ import (
 	"math/rand"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+const prefixCacheWarmUpDelay = 3 * time.Second
 
 func TestStrategyRequiresCache(t *testing.T) {
 	req := "this is test message"
@@ -126,6 +129,8 @@ func TestPrefixCacheRouting(t *testing.T) {
 	targetPod := getTargetPodFromChatCompletion(t, req, "prefix-cache")
 	t.Logf("req: %s, target pod: %v\n", req, targetPod)
 
+	time.Sleep(2 * time.Second)
+
 	// #2 request - reuse target pod from first time
 	targetPod2 := getTargetPodFromChatCompletion(t, req, "prefix-cache")
 	t.Logf("req: %s, target pod: %v\n", req, targetPod2)
@@ -169,9 +174,35 @@ func TestMultiTurnConversation(t *testing.T) {
 		messages = append(messages, openai.AssistantMessage(chatCompletion.Choices[0].Message.Content))
 		if i == 1 {
 			targetPod = dst.Header.Get("target-pod")
+			time.Sleep(prefixCacheWarmUpDelay)
 		}
 
 		assert.Equal(t, targetPod, dst.Header.Get("target-pod"), "each multiturn conversation must route to same target pod")
+	}
+}
+
+// nolint:lll
+// TestPrefixCacheRoutingConsistency sends a warm-up request, waits 2 seconds,
+// then sends 10 requests with the same prompt and asserts they all route to the
+// same backend pod (prefix cache hit).
+func TestPrefixCacheRoutingConsistency(t *testing.T) {
+	// Message must exceed the prefix cache block threshold (>128 bytes) so that
+	// at least one full block is hashed and stored in the prefix cache.
+	const msg = "prefix-cache consistency test: this message is intentionally long to exceed the " +
+		"128-byte block threshold required for prefix cache routing to engage. 这是前缀缓存路由一致性测试消息！"
+
+	// Warm up: populate the prefix cache for this prompt on the target pod.
+	warmPod := getTargetPodFromChatCompletion(t, msg, "prefix-cache")
+	require.NotEmpty(t, warmPod, "warm-up request returned no target-pod header")
+	t.Logf("warm-up routed to: %s", warmPod)
+
+	time.Sleep(prefixCacheWarmUpDelay)
+
+	// All 10 subsequent requests with the same prefix must route to the same pod.
+	for i := 0; i < 10; i++ {
+		pod := getTargetPodFromChatCompletion(t, msg, "prefix-cache")
+		assert.Equal(t, warmPod, pod, "request %d: expected pod %s, got %s", i+1, warmPod, pod)
+		t.Logf("request %d routed to: %s", i+1, pod)
 	}
 }
 

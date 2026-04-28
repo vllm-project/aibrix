@@ -37,7 +37,9 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/statesync"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"google.golang.org/grpc/health"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 	"sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
@@ -158,6 +160,19 @@ func main() {
 
 	gatewayServer := gateway.NewServer(redisClient, k8sClient, gatewayK8sClient)
 
+	stateSyncEnabled := utils.LoadEnvBool("AIBRIX_STATESYNC_ENABLED", false)
+	var syncManager *statesync.RedisSync
+	if stateSyncEnabled {
+		klog.InfoS("statesync enabled; starting cross-replica state sync")
+		table := prefixcacheindexer.GetSharedPrefixHashTable()
+		table.EnableDeltaSync()
+		syncManager = statesync.New(redisClient)
+		syncManager.Register(prefixcacheindexer.NewPrefixHashTableSyncable(table))
+		syncManager.Start()
+	} else {
+		klog.InfoS("statesync disabled; set AIBRIX_STATESYNC_ENABLED=true to enable cross-replica state sync")
+	}
+
 	if err := gatewayServer.StartHTTPServer(httpAddr); err != nil {
 		klog.Fatalf("Failed to start HTTP server: %v", err)
 	}
@@ -183,6 +198,9 @@ func main() {
 	go func() {
 		sig := <-gracefulStop
 		klog.Warningf("signal received: %v, initiating graceful shutdown...", sig)
+		if syncManager != nil {
+			syncManager.Stop()
+		}
 		gatewayServer.Shutdown()
 		s.GracefulStop()
 		// Close stopCh so that cache ticker goroutines and other consumers tied
