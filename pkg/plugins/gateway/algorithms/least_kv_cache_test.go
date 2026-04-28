@@ -194,17 +194,21 @@ func TestLeastKvCache_ScoreAll(t *testing.T) {
 	assert.Equal(t, 3, len(scores))
 
 	pods := podsFromCache(c).All()
+	// Create a map to verify results independently of slice ordering
+	podScores := make(map[string]float64)
+	podScored := make(map[string]bool)
 	for i, p := range pods {
-		if p.Name == "pA" {
-			assert.True(t, scored[i])
-			assert.InDelta(t, 0.2, scores[i], 0.001)
-		} else if p.Name == "pB" {
-			assert.True(t, scored[i])
-			assert.InDelta(t, 0.5, scores[i], 0.001)
-		} else {
-			assert.False(t, scored[i])
-		}
+		podScores[p.Name] = scores[i]
+		podScored[p.Name] = scored[i]
 	}
+
+	assert.True(t, podScored["pA"])
+	assert.InDelta(t, 0.2, podScores["pA"], 0.001)
+
+	assert.True(t, podScored["pB"])
+	assert.InDelta(t, 0.5, podScores["pB"], 0.001)
+
+	assert.False(t, podScored["pC"])
 
 	// Check polarity
 	assert.Equal(t, types.PolarityLeast, r.Polarity())
