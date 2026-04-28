@@ -260,7 +260,6 @@ class TestModelsAPI:
             disable_batch_api=True,
             disable_file_api=True,
             enable_k8s_job=False,
-            e2e_test=False,
         )
         app = build_app(args)
         client = TestClient(app)
