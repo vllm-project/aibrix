@@ -31,7 +31,16 @@ import (
 
 const gatewaySnapshotSyncInterval = 100 * time.Millisecond
 
-var gatewayPodName = os.Getenv("POD_NAME")
+var gatewayPodName = func() string {
+	if name := os.Getenv("POD_NAME"); name != "" {
+		return name
+	}
+	name, _ := os.Hostname()
+	if name == "" {
+		return "unknown-gateway"
+	}
+	return name
+}()
 
 // initGatewaySnapshotSync starts a background goroutine that every 100ms:
 //  1. Writes this gateway's per-pod snapshots to Redis (one pipeline, one round-trip).
@@ -79,7 +88,9 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 				}
 
 				// Phase 2 (read): pipeline HGetAll for every key — one round-trip.
-				newCache := make(map[string]map[string]string, len(allKeys))
+				// Keyed by pod key (namespace/name) → list of per-gateway snapshots so consumers
+				// can look up all snapshots for a pod in O(1) without scanning the full cache.
+				newCache := make(map[string][]map[string]string)
 				if len(allKeys) > 0 {
 					readPipe := store.redisClient.Pipeline()
 					cmds := make([]*redis.MapStringStringCmd, len(allKeys))
@@ -89,9 +100,10 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 					if _, err := readPipe.Exec(ctx); err != nil {
 						klog.V(4).ErrorS(err, "failed to pipeline HGetAll for gateway snapshots")
 					} else {
-						for i, cmd := range cmds {
+						for _, cmd := range cmds {
 							if fields, err := cmd.Result(); err == nil && len(fields) > 0 {
-								newCache[allKeys[i]] = fields
+								pKey := utils.GeneratePodKey(fields["namespace"], fields["pod_name"])
+								newCache[pKey] = append(newCache[pKey], fields)
 							}
 						}
 					}

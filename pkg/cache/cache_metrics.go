@@ -484,13 +484,11 @@ func (c *Store) syncRunningRequestsGlobally(pod *Pod) {
 	if raw == nil {
 		return
 	}
-	snapshotCache := raw.(map[string]map[string]string)
+	snapshotCache := raw.(map[string][]map[string]string)
 
 	var remoteRunning float64
-	for _, fields := range snapshotCache {
-		if fields["namespace"] != pod.Namespace || fields["pod_name"] != pod.Name {
-			continue
-		}
+	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+	for _, fields := range snapshotCache[podKey] {
 		if fields["gateway_instance_id"] == gatewayPodName {
 			continue
 		}

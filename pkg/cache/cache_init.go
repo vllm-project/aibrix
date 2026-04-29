@@ -120,9 +120,9 @@ type Store struct {
 	// List of registered request trackers
 	requestTrackers []RequestTracker
 
-	// gatewaySnapshotCache holds a periodically refreshed snapshot of all gateway pod
-	// entries from Redis (key → fields map). Swapped atomically by initGatewaySnapshotSync.
-	// Readers call Load() to get map[string]map[string]string without touching Redis.
+	// gatewaySnapshotCache holds a periodically refreshed snapshot of all gateway pod entries
+	// from Redis, grouped by pod key (namespace/name) → []fields. Swapped atomically by
+	// initGatewaySnapshotSync. Readers call Load() to get map[string][]map[string]string.
 	gatewaySnapshotCache atomic.Value
 }
 

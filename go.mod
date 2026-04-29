@@ -5,6 +5,7 @@ go 1.22.5
 toolchain go1.22.6
 
 require (
+	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/buraksezer/consistent v0.10.0
 	github.com/bytedance/sonic v1.14.2
 	github.com/cespare/xxhash/v2 v2.3.0
@@ -18,6 +19,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.20.1
 	github.com/onsi/gomega v1.35.1
 	github.com/open-policy-agent/cert-controller v0.12.0
+	github.com/openai/openai-go v1.12.0
 	github.com/openai/openai-go/v3 v3.32.0
 	github.com/pebbe/zmq4 v1.4.0
 	github.com/pkoukk/tiktoken-go v0.1.7
@@ -115,6 +117,7 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
