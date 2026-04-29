@@ -25,6 +25,7 @@ import (
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -153,20 +154,31 @@ func TestInitGatewaySnapshotSyncRefreshesCache(t *testing.T) {
 	initGatewaySnapshotSync(store, stopCh)
 	t.Cleanup(func() { close(stopCh) })
 
-	var cache map[string]map[string]string
+	var cache map[string][]map[string]string
 	require.Eventually(t, func() bool {
 		raw := store.gatewaySnapshotCache.Load()
 		if raw == nil {
 			return false
 		}
-		cache = raw.(map[string]map[string]string)
-		return len(cache) >= 2
+		cache = raw.(map[string][]map[string]string)
+		return len(cache[utils.GeneratePodKey("default", "pod-a")]) >= 2
 	}, 2*time.Second, 50*time.Millisecond)
 
-	selfKey := gatewayPodSnapshotKey("gw-self", "default", "pod-a")
-	require.Equal(t, "4", cache[selfKey]["requests_running"])
-	require.Equal(t, "12", cache[selfKey]["seq"])
+	entries := cache[utils.GeneratePodKey("default", "pod-a")]
+	require.Len(t, entries, 2)
 
-	remoteKey := gatewayPodSnapshotKey("gw-remote", "default", "pod-a")
-	require.Equal(t, "2", cache[remoteKey]["requests_running"])
+	var foundSelf, foundRemote bool
+	for _, fields := range entries {
+		switch fields["gateway_instance_id"] {
+		case "gw-self":
+			foundSelf = true
+			require.Equal(t, "4", fields["requests_running"])
+			require.Equal(t, "12", fields["seq"])
+		case "gw-remote":
+			foundRemote = true
+			require.Equal(t, "2", fields["requests_running"])
+		}
+	}
+	require.True(t, foundSelf)
+	require.True(t, foundRemote)
 }
