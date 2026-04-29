@@ -223,6 +223,24 @@ def parse_args() -> argparse.Namespace:
         help="Total seconds to wait for a terminal state. Default: %(default)s",
     )
     p.add_argument(
+        "--aibrix-template",
+        default=None,
+        help=(
+            "AIBrix ModelDeploymentTemplate name to attach via "
+            "extra_body.aibrix.model_template. Required in --enable-k8s-job "
+            "mode (no built-in fallback); ignored by standalone --dry-run."
+        ),
+    )
+    p.add_argument(
+        "--aibrix-profile",
+        default=None,
+        help=(
+            "AIBrix BatchProfile name to attach via "
+            "extra_body.aibrix.profile. Falls back to the registry default "
+            "if omitted. Has no effect in standalone mode."
+        ),
+    )
+    p.add_argument(
         "--cancel",
         action="store_true",
         help=(
@@ -320,13 +338,28 @@ def main() -> None:
     step(
         f"Create  POST /v1/batches  endpoint={args.endpoint} "
         f"completion_window={args.completion_window}"
+        + (f"  template={args.aibrix_template}" if args.aibrix_template else "")
+        + (f"  profile={args.aibrix_profile}" if args.aibrix_profile else "")
     )
+
+    # Build extra_body.aibrix only if the user opted into K8s-mode
+    # selectors. Standalone --dry-run servers ignore this block; K8s
+    # servers reject batches without a model_template.
+    create_kwargs: dict = {
+        "input_file_id": input_file.id,
+        "endpoint": args.endpoint,
+        "completion_window": args.completion_window,
+    }
+    aibrix_block: dict = {}
+    if args.aibrix_template:
+        aibrix_block["model_template"] = {"name": args.aibrix_template}
+    if args.aibrix_profile:
+        aibrix_block["profile"] = {"name": args.aibrix_profile}
+    if aibrix_block:
+        create_kwargs["extra_body"] = {"aibrix": aibrix_block}
+
     try:
-        batch = client.batches.create(
-            input_file_id=input_file.id,
-            endpoint=args.endpoint,
-            completion_window=args.completion_window,
-        )
+        batch = client.batches.create(**create_kwargs)
     except APIStatusError as e:
         fail(f"batch creation rejected: {e.status_code} {e.response.text}")
     dump("create response", batch)
