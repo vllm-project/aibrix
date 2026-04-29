@@ -29,7 +29,12 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const gatewaySnapshotSyncInterval = 100 * time.Millisecond
+const (
+	gatewaySnapshotSyncInterval = 100 * time.Millisecond
+	// gatewaySnapshotHGetAllBatchSize limits how many HGetAll commands share one pipeline Exec,
+	// reducing head-of-line blocking and client memory spikes when many gateway snapshot keys exist.
+	gatewaySnapshotHGetAllBatchSize = 100
+)
 
 var gatewayPodName = func() string {
 	if name := os.Getenv("POD_NAME"); name != "" {
@@ -58,48 +63,59 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 		for {
 			select {
 			case <-ticker.C:
-				ctx := context.Background()
-				start := time.Now()
+				// Bounded context per tick so a stuck Redis client cannot block this goroutine
+				// indefinitely. Use a closure so defer cancel runs each iteration, not once at exit.
+				func() {
+					ctx, cancel := context.WithTimeout(context.Background(), gatewaySnapshotSyncInterval)
+					defer cancel()
+					start := time.Now()
 
-				// Phase 1 (write): push all pods' snapshots in one pipeline.
-				writePipe := store.redisClient.Pipeline()
-				store.metaPods.Range(func(_ string, pod *Pod) bool {
-					appendGatewayPodSnapshotToPipeline(ctx, writePipe, pod)
-					return true
-				})
-				if _, err := writePipe.Exec(ctx); err != nil {
-					klog.V(4).ErrorS(err, "failed to flush gateway pod snapshots")
-				}
+					// Phase 1 (write): push all pods' snapshots in one pipeline.
+					writePipe := store.redisClient.Pipeline()
+					store.metaPods.Range(func(_ string, pod *Pod) bool {
+						appendGatewayPodSnapshotToPipeline(ctx, writePipe, pod)
+						return true
+					})
+					if _, err := writePipe.Exec(ctx); err != nil {
+						klog.V(4).ErrorS(err, "failed to flush gateway pod snapshots")
+					}
 
-				// Phase 2 (scan): collect all gateway snapshot keys across all instances.
-				var allKeys []string
-				var cursor uint64
-				for {
-					keys, nextCursor, err := store.redisClient.Scan(ctx, cursor, "aibrix:pod:*", 500).Result()
-					if err != nil {
-						klog.V(4).ErrorS(err, "failed to scan gateway snapshot keys")
-						break
+					// Phase 2 (scan): collect all gateway snapshot keys across all instances.
+					var allKeys []string
+					var cursor uint64
+					for {
+						keys, nextCursor, err := store.redisClient.Scan(ctx, cursor, "aibrix:pod:*", 500).Result()
+						if err != nil {
+							klog.V(4).ErrorS(err, "failed to scan gateway snapshot keys")
+							break
+						}
+						allKeys = append(allKeys, keys...)
+						cursor = nextCursor
+						if cursor == 0 {
+							break
+						}
 					}
-					allKeys = append(allKeys, keys...)
-					cursor = nextCursor
-					if cursor == 0 {
-						break
-					}
-				}
 
-				// Phase 2 (read): pipeline HGetAll for every key — one round-trip.
-				// Keyed by pod key (namespace/name) → list of per-gateway snapshots so consumers
-				// can look up all snapshots for a pod in O(1) without scanning the full cache.
-				newCache := make(map[string][]map[string]string)
-				if len(allKeys) > 0 {
-					readPipe := store.redisClient.Pipeline()
-					cmds := make([]*redis.MapStringStringCmd, len(allKeys))
-					for i, key := range allKeys {
-						cmds[i] = readPipe.HGetAll(ctx, key)
-					}
-					if _, err := readPipe.Exec(ctx); err != nil {
-						klog.V(4).ErrorS(err, "failed to pipeline HGetAll for gateway snapshots")
-					} else {
+					// Phase 2 (read): pipeline HGetAll in batches (bounded pipeline size per round-trip).
+					// Keyed by pod key (namespace/name) → list of per-gateway snapshots so consumers
+					// can look up all snapshots for a pod in O(1) without scanning the full cache.
+					newCache := make(map[string][]map[string]string)
+					for batchStart := 0; batchStart < len(allKeys); batchStart += gatewaySnapshotHGetAllBatchSize {
+						batchEnd := batchStart + gatewaySnapshotHGetAllBatchSize
+						if batchEnd > len(allKeys) {
+							batchEnd = len(allKeys)
+						}
+						chunk := allKeys[batchStart:batchEnd]
+						readPipe := store.redisClient.Pipeline()
+						cmds := make([]*redis.MapStringStringCmd, len(chunk))
+						for i, key := range chunk {
+							cmds[i] = readPipe.HGetAll(ctx, key)
+						}
+						if _, err := readPipe.Exec(ctx); err != nil {
+							klog.V(4).ErrorS(err, "failed to pipeline HGetAll for gateway snapshots",
+								"batchStart", batchStart, "batchLen", len(chunk))
+							continue
+						}
 						for _, cmd := range cmds {
 							if fields, err := cmd.Result(); err == nil && len(fields) > 0 {
 								pKey := utils.GeneratePodKey(fields["namespace"], fields["pod_name"])
@@ -107,11 +123,11 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 							}
 						}
 					}
-				}
 
-				// Atomically replace the snapshot cache so readers always see a consistent map.
-				store.gatewaySnapshotCache.Store(newCache)
-				klog.V(5).InfoS("refreshed gateway snapshot cache", "keys", len(newCache), "duration", time.Since(start))
+					// Atomically replace the snapshot cache so readers always see a consistent map.
+					store.gatewaySnapshotCache.Store(newCache)
+					klog.V(5).InfoS("refreshed gateway snapshot cache", "keys", len(newCache), "duration", time.Since(start))
+				}()
 
 			case <-stopCh:
 				ticker.Stop()

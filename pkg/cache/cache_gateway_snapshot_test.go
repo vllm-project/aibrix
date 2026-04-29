@@ -18,6 +18,7 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -187,4 +188,51 @@ func TestInitGatewaySnapshotSyncRefreshesCache(t *testing.T) {
 	}
 	require.True(t, foundSelf)
 	require.True(t, foundRemote)
+}
+
+func TestInitGatewaySnapshotSyncHGetAllBatchingLoadsAllKeys(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	oldGatewayPodName := gatewayPodName
+	gatewayPodName = testGatewaySelf
+	t.Cleanup(func() { gatewayPodName = oldGatewayPodName })
+
+	store := &Store{redisClient: client}
+	n := gatewaySnapshotHGetAllBatchSize + 50
+	for i := range n {
+		podName := fmt.Sprintf("pod-batch-%d", i)
+		gw := fmt.Sprintf("gw-batch-%d", i)
+		require.NoError(t, client.HSet(ctx, gatewayPodSnapshotKey(gw, testNamespace, podName),
+			map[string]any{
+				"gateway_instance_id": gw,
+				"namespace":           testNamespace,
+				"pod_name":            podName,
+				"requests_running":    "1",
+			}).Err())
+	}
+
+	stopCh := make(chan struct{})
+	initGatewaySnapshotSync(store, stopCh)
+	t.Cleanup(func() { close(stopCh) })
+
+	require.Eventually(t, func() bool {
+		raw := store.gatewaySnapshotCache.Load()
+		if raw == nil {
+			return false
+		}
+		cache := raw.(map[string][]map[string]string)
+		return len(cache) >= n
+	}, 3*time.Second, 50*time.Millisecond)
+
+	raw := store.gatewaySnapshotCache.Load()
+	cache := raw.(map[string][]map[string]string)
+	require.Len(t, cache, n)
+	for i := range n {
+		pk := utils.GeneratePodKey(testNamespace, fmt.Sprintf("pod-batch-%d", i))
+		require.Len(t, cache[pk], 1)
+		require.Equal(t, "1", cache[pk][0]["requests_running"])
+	}
 }
