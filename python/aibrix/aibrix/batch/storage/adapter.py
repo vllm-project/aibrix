@@ -17,7 +17,7 @@ import json
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from aibrix.batch.job_entity import BatchJob
+from aibrix.batch.job_entity import BatchJob, BatchJobError
 from aibrix.batch.storage.batch_metastore import (
     delete_metadata,
     get_metadata,
@@ -217,7 +217,12 @@ class BatchStorageAdapter:
             and job.status.temp_error_file_id
         )
 
-        json_str = json.dumps(output_data) + "\n"
+        # output_data["error"] may be a BatchJobError when inference
+        # fails (see job_driver.create_response_record). The class
+        # exposes ``json_serializer`` for exactly this case; without
+        # ``default=`` json.dumps raises TypeError, which would then
+        # surface as the batch-level error message.
+        json_str = json.dumps(output_data, default=BatchJobError.json_serializer) + "\n"
         is_error = "error" in output_data and output_data["error"] is not None
         etag = await self.storage.upload_part(
             job.status.error_file_id if is_error else job.status.output_file_id,
@@ -318,7 +323,12 @@ class BatchStorageAdapter:
                 output.append(val)
                 completed += 1
 
-        # 4. Update job object with calculated request counts if they differ
+        # 4. Update job object with calculated request counts if they differ.
+        # ``total`` is preserved when set at job creation (validated input
+        # line count). Only infer it from metastore in the legacy "discover
+        # while streaming" path where no upfront count was available;
+        # otherwise an inconsistency (e.g. a missing per-request marker)
+        # would silently rewrite a known-correct ``total``.
         if (
             job.status.request_counts.total != total
             or job.status.request_counts.launched != launched
@@ -338,7 +348,8 @@ class BatchStorageAdapter:
                 new_failed=failed,
             )  # type: ignore[call-arg]
 
-            job.status.request_counts.total = total
+            if job.status.request_counts.total == 0:
+                job.status.request_counts.total = total
             job.status.request_counts.launched = launched
             job.status.request_counts.completed = completed
             job.status.request_counts.failed = failed

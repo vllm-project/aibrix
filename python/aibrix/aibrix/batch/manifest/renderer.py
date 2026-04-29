@@ -236,8 +236,9 @@ class JobManifestRenderer:
     ) -> tuple[ModelDeploymentTemplate, BatchProfile]:
         if not spec.model_template_name:
             raise RenderError(
-                "BatchJobSpec.model_template_name is required for "
-                "ConfigMap-driven rendering"
+                "extra_body.aibrix.model_template.name is required: "
+                "the cluster has no built-in template fallback, so every "
+                "batch must reference a registered ModelDeploymentTemplate"
             )
         # Pinned version => exact match; empty version => latest active.
         if spec.model_template_version:

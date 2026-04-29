@@ -653,7 +653,7 @@ def test_k8s_job_failed_during_finalizing():
     batch_job = k8s_job_to_batch_job(_get_job_failed_during_finalizing_obj())
 
     # Skip type_meta, metadata, and spec testing
-    print(str(batch_job.status.dict()))
+    print(str(batch_job.status.model_dump()))
 
     # Should be FINALIZED based on annotations
     assert batch_job.status.state == BatchJobState.FINALIZED

@@ -58,7 +58,7 @@ logger = init_logger(__name__)
 # the metadata service can find them without configuration. If/when
 # multi-tenant isolation requires per-namespace registries, these become
 # constructor parameters.
-DEFAULT_NAMESPACE = "aibrix-system"
+DEFAULT_NAMESPACE = "default"
 TEMPLATES_CONFIGMAP_NAME = "aibrix-model-deployment-templates"
 TEMPLATES_DATA_KEY = "templates.yaml"
 PROFILES_CONFIGMAP_NAME = "aibrix-batch-profiles"

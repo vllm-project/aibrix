@@ -12,20 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import os
 import sys
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from kubernetes import client as k8s_client
 from kubernetes import config
 
 from aibrix import envs
 from aibrix.batch import BatchDriver
+from aibrix.batch.job_driver import (
+    EchoInferenceEngineClient,
+    InferenceEngineClient,
+    ProxyInferenceEngineClient,
+)
 from aibrix.batch.job_entity import JobEntityManager
-from aibrix.batch.store import BatchJobStore, ObjectBatchJobStore
 from aibrix.batch.template import (
     k8s_profile_registry,
     k8s_template_registry,
@@ -160,6 +165,32 @@ def build_app(args: argparse.Namespace, params={}):
 
     app.state.httpx_client_wrapper = HTTPXClientWrapper()
 
+    # Normalize HTTPException responses to OpenAI's top-level
+    # ``{"error": {message, type, param, code}}`` shape so that the
+    # official ``openai`` SDK can deserialize 4xx responses. FastAPI's
+    # default wraps the raw detail under ``{"detail": ...}``, which
+    # the SDK cannot read.
+    @app.exception_handler(HTTPException)
+    async def _openai_compat_http_exception_handler(
+        request: Request, exc: HTTPException
+    ) -> JSONResponse:
+        detail = exc.detail
+        if isinstance(detail, dict) and "error" in detail:
+            # Routes that already produced an OpenAI-shaped error body
+            # (e.g. files routes via _create_error_response) flow through
+            # unchanged.
+            body: Dict[str, Any] = detail
+        else:
+            body = {
+                "error": {
+                    "message": "" if detail is None else str(detail),
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": None,
+                }
+            }
+        return JSONResponse(status_code=exc.status_code, content=body)
+
     # Initialize kopf operator wrapper if K8s jobs are enabled
     if args.enable_k8s_job:
         from aibrix.metadata.core import KopfOperatorWrapper
@@ -182,6 +213,29 @@ def build_app(args: argparse.Namespace, params={}):
     app.include_router(users.router, tags=["users"])
     logger.info("User CRUD API mounted")
 
+    # Resolve the inference client up front so misconfigurations fail
+    # at startup instead of later when a request hits the scheduler.
+    # Only meaningful when the batch API is enabled and the driver
+    # owns its own scheduler (i.e. not K8s mode).
+    inference_client: Optional[InferenceEngineClient] = None
+    dry_run = getattr(args, "dry_run", False)
+    if not args.disable_batch_api and not args.enable_k8s_job:
+        if dry_run:
+            inference_client = EchoInferenceEngineClient()
+            logger.warning(
+                "DRY RUN MODE — outputs are echoed inputs, not real model "
+                "completions. Refuses to write to non-local storage."
+            )
+        elif endpoint_url := os.environ.get("INFERENCE_ENGINE_ENDPOINT"):
+            inference_client = ProxyInferenceEngineClient(endpoint_url)
+        else:
+            sys.stderr.write(
+                "ERROR: no inference backend configured. Pass --dry-run "
+                "for echo, set INFERENCE_ENGINE_ENDPOINT for an external "
+                "engine, or pass --enable-k8s-job to provision workers.\n"
+            )
+            sys.exit(2)
+
     # Initialize batches API
     if not args.disable_batch_api:
         job_entity_manager: Optional[JobEntityManager] = None
@@ -193,40 +247,51 @@ def build_app(args: argparse.Namespace, params={}):
             # so an admin who has not yet applied templates gets a
             # helpful render-time error rather than a startup crash.
             core_v1 = k8s_client.CoreV1Api()
-            template_registry = k8s_template_registry(core_v1)
-            profile_registry = k8s_profile_registry(core_v1)
+            registry_ns = getattr(args, "k8s_namespace", "default")
+            template_registry = k8s_template_registry(core_v1, namespace=registry_ns)
+            profile_registry = k8s_profile_registry(core_v1, namespace=registry_ns)
             template_registry.reload()
             profile_registry.reload()
             app.state.template_registry = template_registry
             app.state.profile_registry = profile_registry
 
-            batch_job_store: Optional[BatchJobStore] = None
-            if envs.BATCH_JOB_STORE_ENABLED:
-                # Reuse the same backing storage as batch payloads. The
-                # store namespaces its keys under ``batches/`` so it does
-                # not collide with payload files (root-level) or metastore
-                # locks (``batch:...`` colon-prefixed).
-                batch_job_store = ObjectBatchJobStore(
-                    create_storage(settings.STORAGE_TYPE, **params)
-                )
+            # BatchJob document persistence reuses the batch metastore
+            # (same backend as per-request markers and locks), keyed by
+            # ``batchjob:<id>``. Only meaningful when --enable-k8s-job
+            # is set; standalone mode reads/writes the in-process
+            # JobManager pool directly. AIBRIX_BATCH_JOB_STORE_ENABLED
+            # gates this behavior.
+            persist_to_metastore = envs.BATCH_JOB_STORE_ENABLED
+            if persist_to_metastore:
                 logger.info(  # type: ignore[call-arg]
-                    "BatchJobStore enabled",
-                    storage_type=settings.STORAGE_TYPE.value,
+                    "BatchJob metastore persistence enabled",
+                    metastore_type=settings.METASTORE_TYPE.value,
                 )
 
             job_entity_manager = JobCache(
                 template_registry=template_registry,
                 profile_registry=profile_registry,
-                batch_job_store=batch_job_store,
+                persist_to_metastore=persist_to_metastore,
             )
-            # Expose the store so API handlers can read from it
-            # directly. When None, handlers fall through to the
-            # JobManager in-memory pool (legacy mode).
-            app.state.batch_job_store = batch_job_store
+            # Tell the batches route whether to attempt metastore reads.
+            app.state.batch_metastore_persist = persist_to_metastore
+
+        # In K8s mode the actual inference is run by ``aibrix_batch_worker``
+        # pods that bring their own ``llm_engine_endpoint``; here we still
+        # forward INFERENCE_ENGINE_ENDPOINT so that standalone runs (no
+        # K8s, BatchDriver runs inference itself) hit the configured
+        # engine instead of falling back to the echo client.
+        #
+        # We read os.environ directly rather than envs.INFERENCE_ENGINE_ENDPOINT
+        # because the latter has a hardcoded ``http://localhost:8000`` default
+        # for the runtime sidecar; that default is wrong for the metadata
+        # service (no engine is implied) and would force ProxyInferenceEngineClient
+        # in tests where no engine is running. Unset → None → echo client.
         app.state.batch_driver = BatchDriver(
             job_entity_manager,
             storage_type=settings.STORAGE_TYPE,
             metastore_type=settings.METASTORE_TYPE,
+            inference_client=inference_client,
             stand_alone=True,
             params=params,
         )
@@ -280,6 +345,20 @@ def main():
         help="Enable native kubernetes jobs as the job executor",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help=(
+            "Bundle for dev/CI: forces local storage and metastore, uses an "
+            "echo inference client (responses are the request body verbatim, "
+            "NOT real model completions). Refuses to combine with "
+            "--enable-k8s-job. Not crash-safe: in-process multipart upload "
+            "ids are kept in memory only, so if the server is killed mid-batch "
+            "the partial output is unrecoverable. Use a real K8s deployment "
+            "with BatchJobStore for crash-safe long-running batches."
+        ),
+    )
+    parser.add_argument(
         "--k8s-namespace",
         type=str,
         default="default",
@@ -307,12 +386,6 @@ def main():
         default=10.0,
         help="Timeout in seconds for kopf operator shutdown (default: 10.0)",
     )
-    parser.add_argument(
-        "--e2e-test",
-        action="store_true",
-        default=False,
-        help="Enable features for e2e test",
-    )
     args = parser.parse_args()
 
     if args.k8s_job_patch is not None:
@@ -329,15 +402,33 @@ def main():
         )
         sys.exit(2)
 
+    if args.disable_file_api and not args.disable_batch_api:
+        # The batch API needs the files API as its input/output channel.
+        parser.error(
+            "--disable-file-api requires --disable-batch-api: the batch "
+            "API needs the files API for input/output."
+        )
+
+    if args.dry_run:
+        if args.enable_k8s_job:
+            parser.error("--dry-run is incompatible with --enable-k8s-job")
+        # Bundle: dry-run forces local storage so a stray AWS_* / TOS_*
+        # in the environment doesn't accidentally write to a real bucket.
+        from aibrix.storage import StorageType  # local import: avoid cycle
+
+        settings.STORAGE_TYPE = StorageType.LOCAL
+        settings.METASTORE_TYPE = StorageType.LOCAL
+
     global logger
     logging_basic_config(settings)
     logger = init_logger(__name__)  # Reset logger
 
-    try:
-        config.load_incluster_config()
-    except Exception:
-        # Local debug
-        config.load_kube_config()
+    if args.enable_k8s_job:
+        try:
+            config.load_incluster_config()
+        except Exception:
+            # Local debug
+            config.load_kube_config()
 
     logger.info(f"Using {args} to startup app", project=settings.PROJECT_NAME)  # type: ignore[call-arg]
     app = build_app(args=args)

@@ -27,7 +27,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import ValidationError
 
-from aibrix.batch.job_driver import JobDriver
+from aibrix.batch.job_driver import EchoInferenceEngineClient, JobDriver
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobSpec,
@@ -97,7 +97,10 @@ class TestBatchUsageSchema:
 
 @pytest.fixture
 def driver() -> JobDriver:
-    return JobDriver(progress_manager=MagicMock())
+    return JobDriver(
+        progress_manager=MagicMock(),
+        inference_client=EchoInferenceEngineClient(),
+    )
 
 
 class TestWorkerAccumulation:

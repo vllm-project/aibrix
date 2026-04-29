@@ -34,7 +34,7 @@ from aibrix.batch.job_entity import (
     CompletionWindow,
 )
 from aibrix.batch.manifest import RenderError
-from aibrix.batch.store import BatchJobStore
+from aibrix.batch.storage.batch_metastore import get_batch_job
 from aibrix.batch.template import (
     ProfileOverridesSpec,
     ProfileRegistry,
@@ -676,11 +676,14 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
             request_count=request_count,
         )  # type: ignore[call-arg]
 
-        # Create job using JobManager
+        # Create job using JobManager. Pass the validated input line
+        # count so request_counts.total is fixed at creation, matching
+        # OpenAI Batch API semantics.
         job_id = await batch_driver.run_coroutine(
             batch_driver.job_manager.create_job_with_spec(
                 session_id=session_id,
                 job_spec=batch_request,
+                request_count=request_count,
             )
         )
 
@@ -714,21 +717,20 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
 
 
 async def _resolve_batch_job(request: Request, batch_id: str) -> Optional[BatchJob]:
-    """Resolve a BatchJob by id, store-first with JobManager fallback.
+    """Resolve a BatchJob by id, metastore-first with JobManager fallback.
 
-    When ``app.state.batch_job_store`` is configured (A.2 read-flip phase),
-    the store is the source of truth and is consulted first. The fallback
-    to ``JobManager.get_job`` covers the brief window between K8s
-    ``create_namespaced_job`` returning and the kopf ADDED handler
-    persisting the document, since the metadata service seeds the
-    JobManager pool synchronously on POST.
+    When ``app.state.batch_metastore_persist`` is True (A.2 read-flip
+    phase), the batch metastore is the source of truth and is consulted
+    first. The fallback to ``JobManager.get_job`` covers the brief
+    window between K8s ``create_namespaced_job`` returning and the kopf
+    ADDED handler persisting the document, since the metadata service
+    seeds the JobManager pool synchronously on POST.
 
-    When the store is not configured, behavior is identical to reading
-    from JobManager directly.
+    When persistence is off, behavior is identical to reading from
+    JobManager directly.
     """
-    store: Optional[BatchJobStore] = getattr(request.app.state, "batch_job_store", None)
-    if store is not None:
-        job = await store.get(batch_id)
+    if getattr(request.app.state, "batch_metastore_persist", False):
+        job = await get_batch_job(batch_id)
         if job is not None:
             return job
 

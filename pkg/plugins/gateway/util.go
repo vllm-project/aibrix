@@ -399,8 +399,9 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		return
 	}
 	routingCtx.ConfigProfile = &types.ResolvedConfigProfile{
-		RoutingStrategy: profile.RoutingStrategy,
-		RoutingConfig:   profile.RoutingConfig,
+		RoutingStrategy:   profile.RoutingStrategy,
+		RoutingConfig:     profile.RoutingConfig,
+		RequestsPerSecond: profile.RequestsPerSecond,
 	}
 }
 
