@@ -37,8 +37,9 @@ const (
 
 // ModelConfigProfile holds gateway options for a single profile.
 type ModelConfigProfile struct {
-	RoutingStrategy string          `json:"routingStrategy"`
-	RoutingConfig   json.RawMessage `json:"routingConfig,omitempty"`
+	RoutingStrategy   string          `json:"routingStrategy"`
+	RoutingConfig     json.RawMessage `json:"routingConfig,omitempty"`
+	RequestsPerSecond int64           `json:"requestsPerSecond,omitempty"`
 }
 
 // ModelConfigProfiles is the root JSON structure from model.aibrix.ai/config.

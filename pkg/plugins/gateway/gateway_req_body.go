@@ -107,6 +107,16 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		headers = buildEnvoyProxyHeaders(headers, ":path", rewritePath)
 	}
 
+	if errRes = s.enforceModelRPS(ctx, model, routingCtx); errRes != nil {
+		return errRes, model, routingCtx, stream, term
+	}
+	needsRollback := true
+	defer func() {
+		if needsRollback {
+			s.decrModelRPS(ctx, model, routingCtx)
+		}
+	}()
+
 	if routingAlgorithm == routing.RouterNotSet {
 		if err := s.validateHTTPRouteStatus(ctx, model); err != nil {
 			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, err.Error(), ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
@@ -142,6 +152,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			"target_pod", targetPodName, "target_pod_ip", targetPodIP, "outstanding_requests", request_count, "routing_time_taken", routingDelay)
 	}
 
+	needsRollback = false
 	routingCtx.RequestEndTime = time.Now()
 	term = s.cache.AddRequestCount(routingCtx, requestID, model)
 

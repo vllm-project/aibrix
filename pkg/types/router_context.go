@@ -46,8 +46,9 @@ type RequestFeatures []float64
 // Populated from model.aibrix.ai/config annotation based on config-profile header or defaultProfile.
 // Nil when no config is present;
 type ResolvedConfigProfile struct {
-	RoutingStrategy string
-	RoutingConfig   json.RawMessage
+	RoutingStrategy   string
+	RoutingConfig     json.RawMessage
+	RequestsPerSecond int64
 }
 
 // RoutingAlgorithm defines the routing algorithms
