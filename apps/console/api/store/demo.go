@@ -197,12 +197,12 @@ func (s *MemoryStore) loadDemoModelDeploymentTemplates() {
 				},
 				Parallelism: &pb.ParallelismSpec{Tp: 4, Pp: 1, Dp: 1},
 				EngineArgs: map[string]string{
-					"max_num_batched_tokens":  "32768",
-					"max_num_seqs":            "256",
-					"max_model_len":           "32768",
-					"gpu_memory_utilization":  "0.92",
-					"enable_prefix_caching":   "true",
-					"enable_chunked_prefill":  "true",
+					"max_num_batched_tokens": "32768",
+					"max_num_seqs":           "256",
+					"max_model_len":          "32768",
+					"gpu_memory_utilization": "0.92",
+					"enable_prefix_caching":  "true",
+					"enable_chunked_prefill": "true",
 				},
 				Quantization: &pb.QuantizationSpec{Weight: "fp8", KvCache: "fp8_e4m3"},
 				ProviderConfig: &pb.ProviderConfig{
