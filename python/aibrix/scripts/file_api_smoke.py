@@ -93,6 +93,25 @@ def step(label: str) -> None:
     print(f"\n── {label} ".ljust(72, "─"), flush=True)
 
 
+def dump(label: str, payload: object) -> None:
+    """Print a labelled JSON-ish view of an SDK object.
+
+    The smoke test exists to surface OpenAI-compat regressions, so we
+    want every server response visible — failures otherwise hide the
+    raw payload. SDK pydantic models go through ``model_dump``;
+    everything else falls back to a plain ``json.dumps`` with a
+    safe ``default``.
+    """
+    if hasattr(payload, "model_dump"):
+        body = payload.model_dump()  # type: ignore[union-attr]
+    else:
+        body = payload
+    print(f"  {label}:")
+    text = json.dumps(body, indent=2, ensure_ascii=False, default=str)
+    for line in text.splitlines():
+        print(f"    {line}")
+
+
 def fail(msg: str) -> "None":
     print(f"FAIL: {msg}", file=sys.stderr)
     sys.exit(1)
@@ -160,29 +179,27 @@ def main() -> None:
         )
     except APIStatusError as e:
         fail(f"upload rejected: {e.status_code} {e.response.text}")
-    print(
-        f"  id={uploaded.id}  bytes={uploaded.bytes}  "
-        f"filename={uploaded.filename}  status={uploaded.status}"
-    )
+    dump("upload response", uploaded)
 
     step("List   GET  /v1/files")
     page = client.files.list()
+    dump(
+        f"list response (count={len(page.data)})",
+        [f.model_dump() for f in page.data],
+    )
     found = next((f for f in page.data if f.id == uploaded.id), None)
     if found is None:
         fail(f"uploaded file {uploaded.id} not in list response")
-    print(f"  list returned {len(page.data)} files; ours present ✓")
+    print("  ours present ✓")
 
     step(f"Retrieve  GET  /v1/files/{uploaded.id}")
     metadata = client.files.retrieve(uploaded.id)
+    dump("retrieve response", metadata)
     if metadata.bytes != uploaded.bytes:
         fail(
             f"bytes mismatch: upload reported {uploaded.bytes}, "
             f"retrieve reports {metadata.bytes}"
         )
-    print(
-        f"  bytes={metadata.bytes}  filename={metadata.filename}  "
-        f"created_at={metadata.created_at}"
-    )
 
     step(f"Download  GET  /v1/files/{uploaded.id}/content")
     body = client.files.content(uploaded.id).read()
@@ -199,9 +216,9 @@ def main() -> None:
 
     step(f"Delete  DELETE /v1/files/{uploaded.id}")
     deleted = client.files.delete(uploaded.id)
+    dump("delete response", deleted)
     if not deleted.deleted:
         fail(f"delete returned deleted={deleted.deleted}")
-    print(f"  deleted=True  id={deleted.id}")
 
     step("Verify post-delete 404  GET /v1/files/<id>")
     try:
