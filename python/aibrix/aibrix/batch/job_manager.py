@@ -337,6 +337,22 @@ class JobManager(JobProgressManager):
                     self._job_entity_manager.submit_job(session_id, job_spec)
                 )
 
+                # If the submit task fails before the future is resolved
+                # (e.g. RenderError on a malformed BatchJobSpec), forward
+                # the real exception so wait_for() returns immediately
+                # with a useful error instead of stalling for the full
+                # ``timeout`` seconds. Without this, every render-time
+                # rejection looked like a 408 to the client.
+                def _propagate_submit_failure(t: "asyncio.Task[None]") -> None:
+                    if t.cancelled():
+                        return
+                    exc = t.exception()
+                    if exc is None or job_future.done():
+                        return
+                    job_future.set_exception(exc)
+
+                submit_task.add_done_callback(_propagate_submit_failure)
+
                 # Wait for job ID with timeout
                 try:
                     job_id = await asyncio.wait_for(job_future, timeout=timeout)

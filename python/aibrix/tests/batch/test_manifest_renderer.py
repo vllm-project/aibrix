@@ -308,7 +308,7 @@ class TestRendererValidation:
         r = renderer_factory(templates=[_vllm_template(count=1)], profiles=[_profile()])
         spec = _spec()
         spec.model_template_name = None
-        with pytest.raises(RenderError, match="model_template_name"):
+        with pytest.raises(RenderError, match="model_template.name"):
             r.render(session_id="s1", spec=spec)
 
     def test_template_not_found(self, renderer_factory):

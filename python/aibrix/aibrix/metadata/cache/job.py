@@ -240,6 +240,11 @@ class JobCache(JobEntityManager):
         if not self.batch_v1_api:
             raise RuntimeError("Kubernetes client not available")
 
+        # Initialize before the try so that any exception raised by
+        # _batch_job_spec_to_k8s_job (manifest rendering) doesn't fall
+        # into the outer ``except`` with ``namespace`` unbound, which
+        # masks the real failure with an UnboundLocalError.
+        namespace = "default"
         try:
             # Convert BatchJobSpec to Kubernetes Job manifest
             k8s_job = self._batch_job_spec_to_k8s_job(
@@ -315,6 +320,10 @@ class JobCache(JobEntityManager):
                 error_type=error_type,
                 operation="submit_job",
             )  # type: ignore[call-arg]
+            # Re-raise so JobManager.create_job_with_spec can fail the
+            # waiting future immediately with the real exception (e.g.
+            # RenderError → 400) instead of stalling 30s on a timeout.
+            raise
 
     async def update_job_ready(self, job: BatchJob):
         """Update job by marking it ready info in the persist store.
@@ -346,7 +355,6 @@ class JobCache(JobEntityManager):
                 name=job.metadata.name,
                 namespace=namespace,
                 body=patch_body,
-                async_req=True,
             )
 
             await self._put_to_store(job, op="update_job_ready", propagate=True)
@@ -456,7 +464,6 @@ class JobCache(JobEntityManager):
                 name=job_name,
                 namespace=namespace,
                 body=suspend_patch,
-                async_req=True,
             )
 
             await self._put_to_store(job, op="cancel_job", propagate=True)
@@ -523,7 +530,6 @@ class JobCache(JobEntityManager):
                 name=job_name,
                 namespace=namespace,
                 propagation_policy="Foreground",  # Delete pods too
-                async_req=True,
             )
 
             await self._delete_from_store(job)
@@ -581,10 +587,15 @@ class JobCache(JobEntityManager):
             job_status.in_progress_at is not None
         ), "AssertError: Job must be set as in progress before setting as ready"
 
+        # No ``metadata.resourceVersion`` here on purpose: this patch is
+        # only ever issued by the metadata service immediately after it
+        # creates the Job, so there is no concurrent writer to guard
+        # against. K8s controller-driven status updates race with our
+        # ADDED handler and bump resourceVersion *before* this patch
+        # fires, producing a 409 every time the optimistic check is in
+        # place. Without it, the strategic-merge patch is naturally
+        # idempotent on these fields.
         return {
-            "metadata": {
-                "resourceVersion": job.metadata.resource_version,
-            },
             "spec": {
                 "template": {
                     "metadata": {
