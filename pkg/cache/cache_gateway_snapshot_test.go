@@ -31,11 +31,17 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+const (
+	testGatewaySelf = "gw-self"
+	testPodName     = "pod-a"
+	testNamespace   = "default"
+)
+
 func TestGatewayPodSnapshotKeyAndPattern(t *testing.T) {
-	key := gatewayPodSnapshotKey("gw-1", "default", "pod-a")
+	key := gatewayPodSnapshotKey("gw-1", testNamespace, testPodName)
 	require.Equal(t, "aibrix:pod:gw-1:default:pod-a", key)
 
-	pattern := gatewayPodSnapshotPattern("default", "pod-a")
+	pattern := gatewayPodSnapshotPattern(testNamespace, testPodName)
 	require.Equal(t, "aibrix:pod:*:default:pod-a", pattern)
 }
 
@@ -46,14 +52,14 @@ func TestUpsertAndGetGatewayPodSnapshot(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	oldGatewayPodName := gatewayPodName
-	gatewayPodName = "gw-self"
+	gatewayPodName = testGatewaySelf
 	t.Cleanup(func() { gatewayPodName = oldGatewayPodName })
 
 	pod := &Pod{
 		Pod: &v1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "pod-a",
-				Namespace: "default",
+				Name:      testPodName,
+				Namespace: testNamespace,
 				UID:       types.UID("uid-a"),
 			},
 			Spec: v1.PodSpec{
@@ -69,10 +75,10 @@ func TestUpsertAndGetGatewayPodSnapshot(t *testing.T) {
 
 	got, err := store.GetGatewayPodSnapshot(ctx, pod)
 	require.NoError(t, err)
-	require.Equal(t, "gw-self", got["gateway_instance_id"])
+	require.Equal(t, testGatewaySelf, got["gateway_instance_id"])
 	require.Equal(t, "uid-a", got["pod_uid"])
-	require.Equal(t, "pod-a", got["pod_name"])
-	require.Equal(t, "default", got["namespace"])
+	require.Equal(t, testPodName, got["pod_name"])
+	require.Equal(t, testNamespace, got["namespace"])
 	require.Equal(t, "node-a", got["node_name"])
 	require.Equal(t, "7", got["requests_running"])
 	require.Equal(t, "11", got["seq"])
@@ -89,17 +95,17 @@ func TestGetAllGatewayPodSnapshots(t *testing.T) {
 	pod := &Pod{
 		Pod: &v1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "pod-a",
-				Namespace: "default",
+				Name:      testPodName,
+				Namespace: testNamespace,
 			},
 		},
 	}
 
-	require.NoError(t, client.HSet(ctx, gatewayPodSnapshotKey("gw-1", "default", "pod-a"),
+	require.NoError(t, client.HSet(ctx, gatewayPodSnapshotKey("gw-1", testNamespace, testPodName),
 		map[string]any{"gateway_instance_id": "gw-1", "requests_running": "3"}).Err())
-	require.NoError(t, client.HSet(ctx, gatewayPodSnapshotKey("gw-2", "default", "pod-a"),
+	require.NoError(t, client.HSet(ctx, gatewayPodSnapshotKey("gw-2", testNamespace, testPodName),
 		map[string]any{"gateway_instance_id": "gw-2", "requests_running": "5"}).Err())
-	require.NoError(t, client.HSet(ctx, gatewayPodSnapshotKey("gw-9", "default", "pod-b"),
+	require.NoError(t, client.HSet(ctx, gatewayPodSnapshotKey("gw-9", testNamespace, "pod-b"),
 		map[string]any{"gateway_instance_id": "gw-9", "requests_running": "9"}).Err())
 
 	snapshots, err := store.GetAllGatewayPodSnapshots(ctx, pod)
@@ -121,15 +127,15 @@ func TestInitGatewaySnapshotSyncRefreshesCache(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	oldGatewayPodName := gatewayPodName
-	gatewayPodName = "gw-self"
+	gatewayPodName = testGatewaySelf
 	t.Cleanup(func() { gatewayPodName = oldGatewayPodName })
 
 	store := &Store{redisClient: client}
 	pod := &Pod{
 		Pod: &v1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "pod-a",
-				Namespace: "default",
+				Name:      testPodName,
+				Namespace: testNamespace,
 				UID:       types.UID("uid-a"),
 			},
 			Spec: v1.PodSpec{
@@ -139,14 +145,14 @@ func TestInitGatewaySnapshotSyncRefreshesCache(t *testing.T) {
 	}
 	atomic.StoreInt32(&pod.runningRequests, 4)
 	atomic.StoreInt64(&pod.completedRequests, 12)
-	store.metaPods.Store("default/pod-a", pod)
+	store.metaPods.Store(testNamespace+"/"+testPodName, pod)
 
 	// Seed one remote gateway snapshot so sync reads cross-gateway keys too.
-	require.NoError(t, client.HSet(ctx, gatewayPodSnapshotKey("gw-remote", "default", "pod-a"),
+	require.NoError(t, client.HSet(ctx, gatewayPodSnapshotKey("gw-remote", testNamespace, testPodName),
 		map[string]any{
 			"gateway_instance_id": "gw-remote",
-			"namespace":           "default",
-			"pod_name":            "pod-a",
+			"namespace":           testNamespace,
+			"pod_name":            testPodName,
 			"requests_running":    "2",
 		}).Err())
 
@@ -161,16 +167,16 @@ func TestInitGatewaySnapshotSyncRefreshesCache(t *testing.T) {
 			return false
 		}
 		cache = raw.(map[string][]map[string]string)
-		return len(cache[utils.GeneratePodKey("default", "pod-a")]) >= 2
+		return len(cache[utils.GeneratePodKey(testNamespace, testPodName)]) >= 2
 	}, 2*time.Second, 50*time.Millisecond)
 
-	entries := cache[utils.GeneratePodKey("default", "pod-a")]
+	entries := cache[utils.GeneratePodKey(testNamespace, testPodName)]
 	require.Len(t, entries, 2)
 
 	var foundSelf, foundRemote bool
 	for _, fields := range entries {
 		switch fields["gateway_instance_id"] {
-		case "gw-self":
+		case testGatewaySelf:
 			foundSelf = true
 			require.Equal(t, "4", fields["requests_running"])
 			require.Equal(t, "12", fields["seq"])
