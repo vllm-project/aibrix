@@ -19,6 +19,7 @@ spec:
     metadata:
       labels:
         model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+        model.aibrix.ai/port: "8000"
       annotations:
         prometheus.io/path: "/metrics"
         prometheus.io/port: "8000"
@@ -64,12 +65,11 @@ spec:
           command:
             - vllm
             - serve
+            - /models/DeepSeek-R1-Distill-Llama-8B/
             - --port
             - "8000"
             - --uvicorn-log-level
             - warning
-            - --model
-            - /models/DeepSeek-R1-Distill-Llama-8B/
             - --trust-remote-code
             - --served-model-name
             - deepseek-r1-distill-llama-8b
@@ -89,7 +89,7 @@ spec:
       volumes:
         - name: model-hostpath
           hostPath:
-            path: /root/models
+            path: /data01/models/
             type: DirectoryOrCreate
 
 ---
