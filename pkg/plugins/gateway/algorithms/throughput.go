@@ -92,7 +92,7 @@ func (r throughputRouter) Route(ctx *types.RoutingContext, readyPodList types.Po
 
 func (r *throughputRouter) SubscribedMetrics() []string {
 	return []string{
-		metrics.AvgPromptThroughputToksPerS,
-		metrics.AvgGenerationThroughputToksPerS,
+		metrics.AvgPromptToksPerReq,
+		metrics.AvgGenerationToksPerReq,
 	}
 }
