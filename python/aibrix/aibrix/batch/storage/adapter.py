@@ -354,18 +354,18 @@ class BatchStorageAdapter:
             job.status.request_counts.completed = completed
             job.status.request_counts.failed = failed
 
-        # Aggregate results
-        await asyncio.gather(
-            self.storage.complete_multipart_upload(
-                job.status.output_file_id,
-                job.status.temp_output_file_id,
-                output,
-            ),
-            self.storage.complete_multipart_upload(
-                job.status.error_file_id,
-                job.status.temp_error_file_id,
-                error,
-            ),
+        # Aggregate results sequentially: parallel completes hammer
+        # MinIO bucket-level locks under small_parts mode (each complete
+        # does N list/delete/put_object calls under .multipart/).
+        await self.storage.complete_multipart_upload(
+            job.status.output_file_id,
+            job.status.temp_output_file_id,
+            output,
+        )
+        await self.storage.complete_multipart_upload(
+            job.status.error_file_id,
+            job.status.temp_error_file_id,
+            error,
         )
 
         # Delete metadata for valid keys only
