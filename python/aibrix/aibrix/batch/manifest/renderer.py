@@ -295,6 +295,10 @@ class JobManifestRenderer:
                         "automountServiceAccountToken": True,
                         "shareProcessNamespace": True,
                         "restartPolicy": "Never",
+                        # WORKAROUND for an env-naming collision: legacy
+                        # K8s service-link injection emits REDIS or S3 related
+                        # metrics, we just disable it to avoid conflicts.
+                        "enableServiceLinks": False,
                         "containers": [self._worker_container()],
                     },
                 },

@@ -216,6 +216,18 @@ class JobMetaInfo(BatchJob):
         return True
 
 
+def _preserve_local_timestamps(
+    old_status: BatchJobStatus, new_status: BatchJobStatus
+) -> None:
+    """Carry forward timestamps + usage."""
+    for field in ("in_progress_at", "usage"):
+        if (
+            getattr(new_status, field) is None
+            and getattr(old_status, field) is not None
+        ):
+            setattr(new_status, field, getattr(old_status, field))
+
+
 class JobManager(JobProgressManager):
     # Valid state transitions are defined as:
     # 1. Started -> Validating -> In_progress -> Finalizing -> Finalzed(condition: completed)
@@ -687,10 +699,12 @@ class JobManager(JobProgressManager):
             if old_category == new_category:
                 # avoid override local metainfo by update status only
                 old_job.metadata = new_job.metadata  # Update resource version
+                _preserve_local_timestamps(old_job.status, new_job.status)
                 old_job.status = new_job.status  # Update status
                 new_job = old_job
             else:
                 # Move job from old category to new category
+                _preserve_local_timestamps(old_job.status, new_job.status)
                 del old_category[job_id]
                 new_category[job_id] = new_job
                 logger.debug(
