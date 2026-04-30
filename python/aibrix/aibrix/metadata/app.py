@@ -255,26 +255,20 @@ def build_app(args: argparse.Namespace, params={}):
             app.state.template_registry = template_registry
             app.state.profile_registry = profile_registry
 
-            # BatchJob document persistence reuses the batch metastore
-            # (same backend as per-request markers and locks), keyed by
-            # ``batchjob:<id>``. Only meaningful when --enable-k8s-job
-            # is set; standalone mode reads/writes the in-process
-            # JobManager pool directly. AIBRIX_BATCH_JOB_STORE_ENABLED
-            # gates this behavior.
-            persist_to_metastore = envs.BATCH_JOB_STORE_ENABLED
-            if persist_to_metastore:
-                logger.info(  # type: ignore[call-arg]
-                    "BatchJob metastore persistence enabled",
-                    metastore_type=settings.METASTORE_TYPE.value,
-                )
+            # BatchJob documents are persisted to the batch metastore
+            # (Redis in prod, LOCAL in dry-run / tests) keyed by
+            # ``batchjob:<id>``. Same backend as the per-request
+            # markers and locks. K8s Job annotations carry only the
+            # immutable spec the worker reads via downward API.
+            logger.info(  # type: ignore[call-arg]
+                "BatchJob metastore persistence enabled",
+                metastore_type=settings.METASTORE_TYPE.value,
+            )
 
             job_entity_manager = JobCache(
                 template_registry=template_registry,
                 profile_registry=profile_registry,
-                persist_to_metastore=persist_to_metastore,
             )
-            # Tell the batches route whether to attempt metastore reads.
-            app.state.batch_metastore_persist = persist_to_metastore
 
         # In K8s mode the actual inference is run by ``aibrix_batch_worker``
         # pods that bring their own ``llm_engine_endpoint``; here we still
