@@ -166,3 +166,46 @@ func TestLeastKvCache(t *testing.T) {
 		})
 	}
 }
+
+func TestLeastKvCache_ScoreAll(t *testing.T) {
+	podA := newPod("pA", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podB := newPod("pB", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podC := newPod("pC", "3.3.3.3", true, map[string]string{"model.aibrix.ai/port": "8000"})
+
+	c := cache.NewWithPodsModelMetricsForTest(
+		[]*v1.Pod{podA, podB, podC},
+		"m1",
+		map[string]map[string]metrics.MetricValue{
+			"pA": {
+				metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1},
+				metrics.CPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1},
+			},
+			"pB": {
+				metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.5},
+				metrics.CPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.0},
+			},
+		})
+
+	r := leastKvCacheRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
+
+	scores, scored, err := r.ScoreAll(ctx, podsFromCache(c))
+	assert.NoError(t, err)
+	assert.Equal(t, 3, len(scores))
+
+	pods := podsFromCache(c).All()
+	for i, p := range pods {
+		if p.Name == "pA" {
+			assert.True(t, scored[i])
+			assert.InDelta(t, 0.2, scores[i], 0.001)
+		} else if p.Name == "pB" {
+			assert.True(t, scored[i])
+			assert.InDelta(t, 0.5, scores[i], 0.001)
+		} else {
+			assert.False(t, scored[i])
+		}
+	}
+
+	// Check polarity
+	assert.Equal(t, PolarityLeast, r.Polarity())
+}

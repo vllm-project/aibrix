@@ -191,6 +191,61 @@ func getTargetPodFromChatCompletion(t *testing.T, message string, strategy strin
 	return dst.Header.Get("target-pod")
 }
 
+// TestMultiStrategyRouting performs E2E checks for multi-strategy routing configs
+func TestMultiStrategyRouting(t *testing.T) {
+	// 1. Valid multi-strategy combinations
+	t.Run("ValidMultiStrategy_LeastRequest_Throughput", func(t *testing.T) {
+		req := "this is a multi-strategy test message"
+		// Testing equal weights
+		targetPod := getTargetPodFromChatCompletion(t, req, "least-request:1,throughput:1")
+		assert.NotEmpty(t, targetPod, "multi-strategy target pod should not be empty")
+	})
+
+	t.Run("ValidMultiStrategy_With_Different_Weights", func(t *testing.T) {
+		req := "this is another multi-strategy test message"
+		// Testing skewed weights
+		targetPod := getTargetPodFromChatCompletion(t, req, "prefix-cache:6,least-request:1,throughput:1")
+		assert.NotEmpty(t, targetPod, "multi-strategy weighted target pod should not be empty")
+	})
+
+	t.Run("ValidMultiStrategy_Partial_Weights", func(t *testing.T) {
+		req := "this is a partial weights multi-strategy test message"
+		// Testing partial weights (some with explicit weight, some omitted and defaulting to 1)
+		targetPod := getTargetPodFromChatCompletion(t, req, "least-request,throughput:2")
+		assert.NotEmpty(t, targetPod, "multi-strategy partial weighted target pod should not be empty")
+	})
+
+	t.Run("ValidMultiStrategy_No_Weights", func(t *testing.T) {
+		req := "this is a no weights multi-strategy test message"
+		// Testing no weights (all default to 1)
+		targetPod := getTargetPodFromChatCompletion(t, req, "least-request,throughput")
+		assert.NotEmpty(t, targetPod, "multi-strategy no weights target pod should not be empty")
+	})
+
+	// 2. Exclusive strategies fallback
+	t.Run("ExclusiveStrategy_FallbackToSelf_PD", func(t *testing.T) {
+		req := "this is an exclusive strategy fallback test message"
+		// "pd" is exclusive and should strip other strategies and fallback to itself
+		targetPod := getTargetPodFromChatCompletion(t, req, "pd,least-request:1")
+		assert.NotEmpty(t, targetPod, "exclusive strategy should fallback to pd and return a valid pod")
+	})
+
+	t.Run("ExclusiveStrategy_FallbackToSelf_SLO", func(t *testing.T) {
+		req := "this is another exclusive strategy fallback test message"
+		// "slo" is exclusive and should strip other strategies and fallback to itself
+		targetPod := getTargetPodFromChatCompletion(t, req, "least-request:1,slo-least-load")
+		assert.NotEmpty(t, targetPod, "exclusive strategy should fallback to slo and return a valid pod")
+	})
+
+	// 3. Invalid strategies fallback to Random
+	t.Run("InvalidStrategy_FallbackToRandom", func(t *testing.T) {
+		req := "this is a fallback test message"
+		// "non-existent-strategy" doesn't exist, it should fallback to "random" gracefully without failing the request
+		targetPod := getTargetPodFromChatCompletion(t, req, "non-existent-strategy:1,least-request:1")
+		assert.NotEmpty(t, targetPod, "invalid strategy should fallback to random and return a valid pod")
+	})
+}
+
 // ChiSquaredGoodnessOfFit calculates the chi-squared test statistic and degrees of freedom
 // for a goodness-of-fit test.
 // observed: A slice of observed frequencies for each category.

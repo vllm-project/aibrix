@@ -239,3 +239,35 @@ func newPod(name, ip string, ready bool, labels map[string]string) *v1.Pod {
 		},
 	}
 }
+
+func TestLeastBusyTime_ScoreAll(t *testing.T) {
+	podA := newPod("pA", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podB := newPod("pB", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+
+	c := cache.NewWithPodsMetricsForTest(
+		[]*v1.Pod{podA, podB},
+		"m1",
+		map[string]map[string]metrics.MetricValue{
+			"pA": {metrics.GPUBusyTimeRatio: &metrics.SimpleMetricValue{Value: 0.3}},
+			// pB has no metrics
+		})
+
+	r := leastBusyTimeRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
+
+	scores, scored, err := r.ScoreAll(ctx, podsFromCache(c))
+	assert.NoError(t, err)
+
+	// Ensure that pB is the pod at index 0 and pA is the pod at index 1 or vice versa
+	pods := podsFromCache(c).All()
+	for i, p := range pods {
+		if p.Name == "pA" {
+			assert.True(t, scored[i])
+			assert.InDelta(t, 0.3, scores[i], 0.001)
+		} else {
+			assert.False(t, scored[i])
+		}
+	}
+
+	assert.Equal(t, PolarityLeast, r.Polarity())
+}
