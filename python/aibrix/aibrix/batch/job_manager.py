@@ -219,18 +219,12 @@ class JobMetaInfo(BatchJob):
 def _preserve_local_timestamps(
     old_status: BatchJobStatus, new_status: BatchJobStatus
 ) -> None:
-    """Carry forward timestamps + usage that K8s annotations don't persist.
-
-    K8s-derived BatchJobStatus (built by ``k8s_job_to_batch_job`` from
-    annotations the worker doesn't write) is None for fields the
-    metadata side stamped locally — most notably ``in_progress_at``
-    set during ``start_execute_job``. A wholesale ``old.status =
-    new.status`` would clobber those values, leaving the OpenAI
-    response with the awkward ``status=completed, in_progress_at=null``
-    combination.
-    """
+    """Carry forward timestamps + usage."""
     for field in ("in_progress_at", "usage"):
-        if getattr(new_status, field) is None and getattr(old_status, field) is not None:
+        if (
+            getattr(new_status, field) is None
+            and getattr(old_status, field) is not None
+        ):
             setattr(new_status, field, getattr(old_status, field))
 
 
@@ -705,11 +699,6 @@ class JobManager(JobProgressManager):
             if old_category == new_category:
                 # avoid override local metainfo by update status only
                 old_job.metadata = new_job.metadata  # Update resource version
-                # Preserve timestamps the metadata side stamped locally
-                # but K8s annotations don't carry. Without this, kopf
-                # MODIFIED-driven status replacement nukes in_progress_at
-                # set during start_execute_job, leaving the OpenAI-shape
-                # response with status=completed but in_progress_at=null.
                 _preserve_local_timestamps(old_job.status, new_job.status)
                 old_job.status = new_job.status  # Update status
                 new_job = old_job
