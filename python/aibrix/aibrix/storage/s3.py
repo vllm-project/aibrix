@@ -55,7 +55,10 @@ class S3Storage(BaseStorage):
         client_config = Config(
             region_name=region_name,
             max_pool_connections=max(self.config.max_concurrency, 10),
-            retries={"max_attempts": max(self.config.max_retries, 10), "mode": "adaptive"},
+            retries={
+                "max_attempts": max(self.config.max_retries, 10),
+                "mode": "adaptive",
+            },
             request_checksum_calculation="when_required",
         )
 

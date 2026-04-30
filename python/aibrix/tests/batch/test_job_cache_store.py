@@ -16,10 +16,10 @@
 
 These tests exercise ``JobCache._put_to_store`` and ``_delete_from_store``
 directly so we can pin the persistence contract (LWW write, idempotent
-delete, no-op when persist_to_metastore=False, error swallowing on
-write) without standing up a kubernetes client mock. The higher-level
-flow tests for ``update_job_status`` and the kopf monotonicity rule
-live further below in this file.
+delete, error swallowing vs. propagation) without standing up a
+kubernetes client mock. The higher-level flow tests for
+``update_job_status`` and the kopf monotonicity rule live further
+below in this file.
 """
 
 import os
@@ -77,7 +77,7 @@ def _make_job(batch_id: str = "batch-1") -> BatchJob:
     )
 
 
-def _make_cache(persist: bool) -> JobCache:
+def _make_cache() -> JobCache:
     template_registry = local_template_registry(_FIXTURE)
     profile_registry = local_profile_registry(_FIXTURE)
     template_registry.reload()
@@ -85,7 +85,6 @@ def _make_cache(persist: bool) -> JobCache:
     return JobCache(
         template_registry=template_registry,
         profile_registry=profile_registry,
-        persist_to_metastore=persist,
     )
 
 
@@ -146,8 +145,8 @@ def failing_metastore(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_put_to_store_writes_when_persist_enabled(fake_metastore):
-    cache = _make_cache(persist=True)
+async def test_put_to_store_writes(fake_metastore):
+    cache = _make_cache()
 
     job = _make_job("batch-1")
     await cache._put_to_store(job, op="update_job_status")
@@ -159,16 +158,8 @@ async def test_put_to_store_writes_when_persist_enabled(fake_metastore):
 
 
 @pytest.mark.asyncio
-async def test_put_to_store_is_noop_when_persist_disabled(fake_metastore):
-    cache = _make_cache(persist=False)
-    # Must not raise, must not error, must not write.
-    await cache._put_to_store(_make_job(), op="update_job_status")
-    assert await fake_metastore.get("batch-1") is None
-
-
-@pytest.mark.asyncio
 async def test_delete_from_store_removes_document(fake_metastore):
-    cache = _make_cache(persist=True)
+    cache = _make_cache()
 
     job = _make_job("batch-del")
     await cache._put_to_store(job, op="update_job_ready")
@@ -179,17 +170,11 @@ async def test_delete_from_store_removes_document(fake_metastore):
 
 
 @pytest.mark.asyncio
-async def test_delete_from_store_is_noop_when_persist_disabled(fake_metastore):
-    cache = _make_cache(persist=False)
-    await cache._delete_from_store(_make_job())
-
-
-@pytest.mark.asyncio
 async def test_put_to_store_default_swallows_failures(failing_metastore, caplog):
     """Default behavior (no ``propagate`` flag) swallows store errors.
     Reserved for the kopf seed write where the next event will retry;
     status-mutation callers must opt into propagation explicitly."""
-    cache = _make_cache(persist=True)
+    cache = _make_cache()
     await cache._put_to_store(_make_job("batch-fail"), op="job_created")
 
 
@@ -199,7 +184,7 @@ async def test_put_to_store_propagates_when_requested(failing_metastore):
     cancel_job) pass ``propagate=True`` because the metastore is the
     only persistent record; a swallowed failure would leave active_jobs
     ahead of disk and surface as stale reads after restart."""
-    cache = _make_cache(persist=True)
+    cache = _make_cache()
     with pytest.raises(RuntimeError, match="simulated store outage"):
         await cache._put_to_store(
             _make_job("batch-fail"), op="update_job_status", propagate=True
@@ -211,13 +196,13 @@ async def test_delete_from_store_swallows_failures(failing_metastore):
     """Delete is best-effort: the K8s ``delete_namespaced_job`` op is
     the authoritative deletion signal, so a metastore delete failure
     leaks a stale document at worst."""
-    cache = _make_cache(persist=True)
+    cache = _make_cache()
     await cache._delete_from_store(_make_job("batch-fail"))
 
 
 @pytest.mark.asyncio
 async def test_subsequent_puts_overwrite_via_lww(fake_metastore):
-    cache = _make_cache(persist=True)
+    cache = _make_cache()
 
     job = _make_job("batch-lww")
     await cache._put_to_store(job, op="update_job_status")
@@ -238,7 +223,7 @@ async def test_update_job_status_writes_metastore_and_cache_no_k8s(fake_metastor
     batch metastore is the source of truth and active_jobs is updated
     directly so the JobManager pool stays in sync without waiting for a
     kopf MODIFIED echo."""
-    cache = _make_cache(persist=True)
+    cache = _make_cache()
     # Replace the K8s client with one that fails on any call so the test
     # asserts no K8s round-trip is attempted.
 
@@ -261,7 +246,7 @@ async def test_update_job_status_fires_job_updated_callback(fake_metastore):
     """The callback is how JobManager moves a job between its pending /
     in_progress / done pools. Without a kopf MODIFIED to trigger it
     after we dropped the annotation patch, JobCache must invoke it."""
-    cache = _make_cache(persist=True)
+    cache = _make_cache()
 
     received: list = []
 
@@ -292,7 +277,7 @@ async def test_update_job_status_raises_and_does_not_advance_cache_on_failure(
     in-memory view would advance past the persistent record and the
     next API read (which prefers the metastore) would silently
     regress."""
-    cache = _make_cache(persist=True)
+    cache = _make_cache()
 
     initial = _make_job("batch-fail")
     initial.status.state = BatchJobState.IN_PROGRESS
@@ -312,7 +297,7 @@ async def test_update_job_status_raises_and_does_not_advance_cache_on_failure(
 async def test_update_job_status_first_seen_skips_callback(fake_metastore):
     """First-time observation has no ``old`` to diff against; the
     callback is reserved for genuine transitions."""
-    cache = _make_cache(persist=True)
+    cache = _make_cache()
 
     received: list = []
 
