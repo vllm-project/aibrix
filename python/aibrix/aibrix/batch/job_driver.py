@@ -92,12 +92,12 @@ class JobDriver:
         * Call finalize_job() for Job finalizing. API server runs without scheduler will call this to aggregate outputs.
         """
         self._progress_manager = progress_manager
-        if inference_client is None:
-            raise ValueError(
-                "JobDriver requires an explicit inference_client. Pass "
-                "EchoInferenceEngineClient() for --dry-run or "
-                "ProxyInferenceEngineClient(url) for a real engine."
-            )
+        # ``inference_client`` may be None when the driver is only used
+        # for prepare_job/finalize_job (the K8s metadata-service path —
+        # worker pods do the actual inference). The check is deferred
+        # to _retry_inference_request so the misuse fails at call site
+        # with a clear message instead of silently falling back to a
+        # default client.
         self._inference_client = inference_client
 
         # Per-job token usage accumulators. Populated by inference responses
@@ -482,6 +482,15 @@ class JobDriver:
         """
         request_output = None
         last_error = None
+
+        if self._inference_client is None:
+            raise RuntimeError(
+                "JobDriver was constructed without an inference_client; "
+                "execute_job / execute_worker require one. Pass "
+                "EchoInferenceEngineClient() for --dry-run or "
+                "ProxyInferenceEngineClient(url) for a real engine. "
+                "(prepare_job / finalize_job do not need a client.)"
+            )
 
         for attempt in range(max_retries):
             try:

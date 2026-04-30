@@ -216,6 +216,18 @@ class JobMetaInfo(BatchJob):
         return True
 
 
+def _preserve_local_timestamps(
+    old_status: BatchJobStatus, new_status: BatchJobStatus
+) -> None:
+    """Carry forward timestamps + usage."""
+    for field in ("in_progress_at", "usage"):
+        if (
+            getattr(new_status, field) is None
+            and getattr(old_status, field) is not None
+        ):
+            setattr(new_status, field, getattr(old_status, field))
+
+
 class JobManager(JobProgressManager):
     # Valid state transitions are defined as:
     # 1. Started -> Validating -> In_progress -> Finalizing -> Finalzed(condition: completed)
@@ -336,6 +348,22 @@ class JobManager(JobProgressManager):
                 submit_task = asyncio.create_task(
                     self._job_entity_manager.submit_job(session_id, job_spec)
                 )
+
+                # If the submit task fails before the future is resolved
+                # (e.g. RenderError on a malformed BatchJobSpec), forward
+                # the real exception so wait_for() returns immediately
+                # with a useful error instead of stalling for the full
+                # ``timeout`` seconds. Without this, every render-time
+                # rejection looked like a 408 to the client.
+                def _propagate_submit_failure(t: "asyncio.Task[None]") -> None:
+                    if t.cancelled():
+                        return
+                    exc = t.exception()
+                    if exc is None or job_future.done():
+                        return
+                    job_future.set_exception(exc)
+
+                submit_task.add_done_callback(_propagate_submit_failure)
 
                 # Wait for job ID with timeout
                 try:
@@ -671,10 +699,12 @@ class JobManager(JobProgressManager):
             if old_category == new_category:
                 # avoid override local metainfo by update status only
                 old_job.metadata = new_job.metadata  # Update resource version
+                _preserve_local_timestamps(old_job.status, new_job.status)
                 old_job.status = new_job.status  # Update status
                 new_job = old_job
             else:
                 # Move job from old category to new category
+                _preserve_local_timestamps(old_job.status, new_job.status)
                 del old_category[job_id]
                 new_category[job_id] = new_job
                 logger.debug(

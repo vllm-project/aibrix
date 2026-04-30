@@ -308,7 +308,7 @@ class TestRendererValidation:
         r = renderer_factory(templates=[_vllm_template(count=1)], profiles=[_profile()])
         spec = _spec()
         spec.model_template_name = None
-        with pytest.raises(RenderError, match="model_template_name"):
+        with pytest.raises(RenderError, match="model_template.name"):
             r.render(session_id="s1", spec=spec)
 
     def test_template_not_found(self, renderer_factory):
@@ -439,6 +439,62 @@ class TestMetastoreEnv:
         m = r.render(session_id="s1", spec=_spec())
         env_names = {e["name"] for e in _worker_container(m)["env"]}
         assert "REDIS_HOST" not in env_names
+
+    def test_worker_redis_host_overrides_metadata_redis_host(
+        self, renderer_factory, monkeypatch
+    ):
+        """Metadata may use ``REDIS_HOST=localhost`` (port-forwarded
+        for an off-cluster dev process), but workers running in-cluster
+        need a Service DNS name. WORKER_REDIS_HOST is the override
+        that lets the two views diverge."""
+        from aibrix.batch.storage import batch_metastore
+        from aibrix.storage import StorageType
+
+        monkeypatch.setattr(
+            batch_metastore, "get_metastore_type", lambda: StorageType.REDIS
+        )
+        monkeypatch.setenv("REDIS_HOST", "localhost")
+        monkeypatch.setenv("WORKER_REDIS_HOST", "redis.default.svc.cluster.local")
+        monkeypatch.setenv("WORKER_REDIS_PORT", "16379")
+
+        r = renderer_factory(
+            templates=[_vllm_template(count=1)],
+            profiles=[_profile()],
+        )
+        m = r.render(session_id="s1", spec=_spec())
+        env = {
+            e["name"]: e["value"] for e in _worker_container(m)["env"] if "value" in e
+        }
+        assert env["REDIS_HOST"] == "redis.default.svc.cluster.local"
+        assert env["REDIS_PORT"] == "16379"
+
+    def test_worker_redis_host_falls_back_to_redis_host(
+        self, renderer_factory, monkeypatch
+    ):
+        """When metadata and workers share the same Redis address (the
+        common in-cluster production case), the operator only needs to
+        set REDIS_HOST."""
+        from aibrix.batch.storage import batch_metastore
+        from aibrix.storage import StorageType
+
+        monkeypatch.setattr(
+            batch_metastore, "get_metastore_type", lambda: StorageType.REDIS
+        )
+        monkeypatch.delenv("WORKER_REDIS_HOST", raising=False)
+        monkeypatch.delenv("WORKER_REDIS_PORT", raising=False)
+        monkeypatch.setenv("REDIS_HOST", "redis-shared.aibrix.svc")
+        monkeypatch.setenv("REDIS_PORT", "16379")
+
+        r = renderer_factory(
+            templates=[_vllm_template(count=1)],
+            profiles=[_profile()],
+        )
+        m = r.render(session_id="s1", spec=_spec())
+        env = {
+            e["name"]: e["value"] for e in _worker_container(m)["env"] if "value" in e
+        }
+        assert env["REDIS_HOST"] == "redis-shared.aibrix.svc"
+        assert env["REDIS_PORT"] == "16379"
 
 
 class TestMockEngineOverrideNoop:

@@ -17,7 +17,8 @@ import json
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from aibrix.batch.job_entity import BatchJob
+from aibrix.batch.job_entity import BatchJob, BatchJobError
+from aibrix.batch.job_entity.batch_job import BatchUsage
 from aibrix.batch.storage.batch_metastore import (
     delete_metadata,
     get_metadata,
@@ -217,7 +218,12 @@ class BatchStorageAdapter:
             and job.status.temp_error_file_id
         )
 
-        json_str = json.dumps(output_data) + "\n"
+        # output_data["error"] may be a BatchJobError when inference
+        # fails (see job_driver.create_response_record). The class
+        # exposes ``json_serializer`` for exactly this case; without
+        # ``default=`` json.dumps raises TypeError, which would then
+        # surface as the batch-level error message.
+        json_str = json.dumps(output_data, default=BatchJobError.json_serializer) + "\n"
         is_error = "error" in output_data and output_data["error"] is not None
         etag = await self.storage.upload_part(
             job.status.error_file_id if is_error else job.status.output_file_id,
@@ -349,23 +355,79 @@ class BatchStorageAdapter:
             job.status.request_counts.completed = completed
             job.status.request_counts.failed = failed
 
-        # Aggregate results
-        await asyncio.gather(
-            self.storage.complete_multipart_upload(
-                job.status.output_file_id,
-                job.status.temp_output_file_id,
-                output,
-            ),
-            self.storage.complete_multipart_upload(
-                job.status.error_file_id,
-                job.status.temp_error_file_id,
-                error,
-            ),
+        # Aggregate results sequentially: parallel completes hammer
+        # MinIO bucket-level locks under small_parts mode (each complete
+        # does N list/delete/put_object calls under .multipart/).
+        await self.storage.complete_multipart_upload(
+            job.status.output_file_id,
+            job.status.temp_output_file_id,
+            output,
         )
+        await self.storage.complete_multipart_upload(
+            job.status.error_file_id,
+            job.status.temp_error_file_id,
+            error,
+        )
+
+        # Sum usage from the assembled output file.
+        job.status.usage = await self._sum_usage_from_output(job.status.output_file_id)
 
         # Delete metadata for valid keys only
         if valid_keys:
             await asyncio.gather(*[delete_metadata(key) for key in valid_keys])
+
+    async def _sum_usage_from_output(self, output_file_id: str) -> BatchUsage:
+        """Read the merged output JSONL and sum the per-line usage.
+
+        Returns a zero BatchUsage if the output is empty or no line
+        carries usage (e.g. rerank batches). Tolerates malformed lines:
+        skips JSON-decode failures rather than aborting finalize.
+        """
+        usage = BatchUsage()
+        try:
+            async for line in self.storage.readline_iter(output_file_id):
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    response = obj.get("response")
+                    if not isinstance(response, dict):
+                        continue
+                    body = response.get("body")
+                    if not isinstance(body, dict):
+                        continue
+                    raw = body.get("usage")
+                    if not isinstance(raw, dict):
+                        continue
+                    # OpenAI-flavored usage uses prompt/completion;
+                    # AIBrix's BatchUsage stores input/output. Map both.
+                    usage.input_tokens += int(
+                        raw.get("input_tokens") or raw.get("prompt_tokens") or 0
+                    )
+                    usage.output_tokens += int(
+                        raw.get("output_tokens") or raw.get("completion_tokens") or 0
+                    )
+                    usage.total_tokens += int(raw.get("total_tokens") or 0)
+                    prompt_details = raw.get("prompt_tokens_details")
+                    if isinstance(prompt_details, dict):
+                        usage.input_tokens_details.cached_tokens += int(
+                            prompt_details.get("cached_tokens") or 0
+                        )
+                    completion_details = raw.get("completion_tokens_details")
+                    if isinstance(completion_details, dict):
+                        usage.output_tokens_details.reasoning_tokens += int(
+                            completion_details.get("reasoning_tokens") or 0
+                        )
+                except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                    # Skip malformed lines / unexpected nested types
+                    # rather than aborting finalize.
+                    continue
+        except FileNotFoundError:
+            return usage
+        return usage
 
     async def read_job_output_data(self, file_id: str) -> List[Dict[str, Any]]:
         """Read job results output from storage.

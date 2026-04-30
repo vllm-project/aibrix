@@ -154,6 +154,24 @@ def step(label: str) -> None:
     print(f"\n── {label} ".ljust(72, "─"), flush=True)
 
 
+def dump(label: str, payload: object) -> None:
+    """Print a labelled JSON-ish view of an SDK object.
+
+    Mirrors ``file_api_smoke.dump`` so failures show the full server
+    response without scrolling. Pydantic models flow through
+    ``model_dump``; everything else falls back to ``json.dumps`` with
+    ``default=str`` to handle datetimes / enums.
+    """
+    if hasattr(payload, "model_dump"):
+        body = payload.model_dump()  # type: ignore[union-attr]
+    else:
+        body = payload
+    print(f"  {label}:")
+    text = json.dumps(body, indent=2, ensure_ascii=False, default=str)
+    for line in text.splitlines():
+        print(f"    {line}")
+
+
 def fail(msg: str) -> None:
     print(f"FAIL: {msg}", file=sys.stderr)
     sys.exit(1)
@@ -203,6 +221,24 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=90.0,
         help="Total seconds to wait for a terminal state. Default: %(default)s",
+    )
+    p.add_argument(
+        "--aibrix-template",
+        default=None,
+        help=(
+            "AIBrix ModelDeploymentTemplate name to attach via "
+            "extra_body.aibrix.model_template. Required in --enable-k8s-job "
+            "mode (no built-in fallback); ignored by standalone --dry-run."
+        ),
+    )
+    p.add_argument(
+        "--aibrix-profile",
+        default=None,
+        help=(
+            "AIBrix BatchProfile name to attach via "
+            "extra_body.aibrix.profile. Falls back to the registry default "
+            "if omitted. Has no effect in standalone mode."
+        ),
     )
     p.add_argument(
         "--cancel",
@@ -297,21 +333,36 @@ def main() -> None:
         )
     except APIStatusError as e:
         fail(f"upload rejected: {e.status_code} {e.response.text}")
-    print(f"  input_file_id={input_file.id}  bytes={input_file.bytes}")
+    dump("upload response", input_file)
 
     step(
         f"Create  POST /v1/batches  endpoint={args.endpoint} "
         f"completion_window={args.completion_window}"
+        + (f"  template={args.aibrix_template}" if args.aibrix_template else "")
+        + (f"  profile={args.aibrix_profile}" if args.aibrix_profile else "")
     )
+
+    # Build extra_body.aibrix only if the user opted into K8s-mode
+    # selectors. Standalone --dry-run servers ignore this block; K8s
+    # servers reject batches without a model_template.
+    create_kwargs: dict = {
+        "input_file_id": input_file.id,
+        "endpoint": args.endpoint,
+        "completion_window": args.completion_window,
+    }
+    aibrix_block: dict = {}
+    if args.aibrix_template:
+        aibrix_block["model_template"] = {"name": args.aibrix_template}
+    if args.aibrix_profile:
+        aibrix_block["profile"] = {"name": args.aibrix_profile}
+    if aibrix_block:
+        create_kwargs["extra_body"] = {"aibrix": aibrix_block}
+
     try:
-        batch = client.batches.create(
-            input_file_id=input_file.id,
-            endpoint=args.endpoint,
-            completion_window=args.completion_window,
-        )
+        batch = client.batches.create(**create_kwargs)
     except APIStatusError as e:
         fail(f"batch creation rejected: {e.status_code} {e.response.text}")
-    print(f"  batch_id={batch.id}  status={batch.status}")
+    dump("create response", batch)
 
     if args.cancel:
         step(f"Cancel  POST /v1/batches/{batch.id}/cancel")
@@ -319,9 +370,9 @@ def main() -> None:
             cancelled = client.batches.cancel(batch.id)
         except APIStatusError as e:
             fail(f"cancel rejected: {e.status_code} {e.response.text}")
+        dump("cancel response", cancelled)
         if cancelled.status not in CANCELLED_STATES:
             fail(f"expected status in {CANCELLED_STATES}, got '{cancelled.status}'")
-        print(f"  status={cancelled.status}  cancelling_at={cancelled.cancelling_at}")
 
         if not args.keep:
             step(f"Delete input file  DELETE /v1/files/{input_file.id}")
@@ -337,14 +388,11 @@ def main() -> None:
     final = poll_until_terminal(
         client, batch.id, poll_interval=args.poll_interval, timeout=args.timeout
     )
+    dump("terminal batch", final)
     if final.status in TERMINAL_FAIL:
-        fail(
-            f"batch reached terminal failure state '{final.status}'. "
-            f"errors: {final.errors}"
-        )
+        fail(f"batch reached terminal failure state '{final.status}'")
     if not final.output_file_id:
-        fail(f"batch completed but output_file_id is missing: {final}")
-    print(f"  output_file_id={final.output_file_id}")
+        fail("batch completed but output_file_id is missing")
 
     step(f"Download output  GET /v1/files/{final.output_file_id}/content")
     output_bytes = client.files.content(final.output_file_id).read()

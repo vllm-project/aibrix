@@ -45,11 +45,21 @@ class S3Storage(BaseStorage):
         super().__init__(config)
         self.bucket_name = bucket_name
 
-        # Configure client with connection pooling
+        # Configure client with connection pooling.
+        # ``request_checksum_calculation="when_required"`` reverts botocore
+        # 1.36's default-on body checksum: that path calls ``tell()`` on
+        # the request body, which our streaming Reader (UploadFile-backed)
+        # intentionally does not support — see reader.py:371. The header
+        # is opt-in for both S3 and MinIO, so disabling it costs nothing
+        # for the file/batch upload path.
         client_config = Config(
             region_name=region_name,
             max_pool_connections=max(self.config.max_concurrency, 10),
-            retries={"max_attempts": self.config.max_retries},
+            retries={
+                "max_attempts": max(self.config.max_retries, 10),
+                "mode": "adaptive",
+            },
+            request_checksum_calculation="when_required",
         )
 
         session = boto3.Session(
@@ -99,30 +109,50 @@ class S3Storage(BaseStorage):
             else:
                 size = len(reader)
             if size >= self.config.multipart_threshold:
-                await self.multipart_upload(key, reader, content_type, metadata)
+                # ``bysize`` is required: ``BaseStorage.multipart_upload``
+                # falls back to ``put_object`` when no chunking strategy
+                # is given, which would re-enter this branch and recurse.
+                await self.multipart_upload(
+                    key,
+                    reader,
+                    content_type,
+                    metadata,
+                    bysize=self.config.multipart_threshold,
+                )
                 return True
         except (OSError, IOError, ValueError):
             # Can't determine size, give up multipart upload
             pass
 
-        # Prepare kwargs
-        kwargs = {
-            "Bucket": self.bucket_name,
-            "Key": key,
-            "Body": reader,
-        }
-
-        if content_type:
-            kwargs["ContentType"] = content_type
-
-        if metadata:
-            kwargs["Metadata"] = metadata  # type: ignore
-
-        # Execute in thread pool
-        try:
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: self.client.put_object(**kwargs)
+        # SigV4 always signs the request body and calls ``tell()`` on the
+        # fileobj to remember its start position (botocore auth.py:343).
+        # Our Reader (UploadFile-backed) intentionally doesn't support
+        # tell — see reader.py:371. For the single-PUT path the file is
+        # already capped by MAX_FILE_SIZE upstream, so draining the
+        # Reader to bytes here is bounded and lets boto3 hash directly
+        # without seeking. The drain happens inside the executor closure
+        # because Reader.read on a SpooledTemporaryFile-backed UploadFile
+        # is a blocking syscall once the spool falls back to disk.
+        # The multipart path above is unaffected.
+        def _put_object() -> None:
+            body: Union[bytes, Reader] = (
+                reader.read_all() if isinstance(reader, Reader) else reader
             )
+
+            kwargs: dict = {
+                "Bucket": self.bucket_name,
+                "Key": key,
+                "Body": body,
+            }
+            if content_type:
+                kwargs["ContentType"] = content_type
+            if metadata:
+                kwargs["Metadata"] = metadata
+
+            self.client.put_object(**kwargs)
+
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, _put_object)
         finally:
             # Close the reader if we created it
             if isinstance(reader, Reader) and not isinstance(data, Reader):
@@ -330,12 +360,19 @@ class S3Storage(BaseStorage):
         reader = self._wrap_s3_data(data)
 
         def _upload_part():
+            # Drain to bytes for the same reason as ``put_object``: SigV4
+            # signs the part body via ``tell()``, which our Reader doesn't
+            # support. Each part is bounded by ``multipart_threshold``
+            # (5MB default), so memory cost per call is bounded. Drain
+            # inside the executor closure because Reader.read may block
+            # on disk I/O for spooled UploadFile bodies.
+            body = reader.read_all() if isinstance(reader, Reader) else reader
             part_response = self.client.upload_part(
                 Bucket=self.bucket_name,
                 Key=key,
                 PartNumber=part_number,
                 UploadId=upload_id,
-                Body=reader,
+                Body=body,
             )
             return part_response["ETag"]
 
