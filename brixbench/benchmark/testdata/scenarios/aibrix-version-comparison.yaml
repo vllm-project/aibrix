@@ -1,0 +1,31 @@
+Scenario: aibrix-version-comparison
+Tests:
+  - name: aibrix-v0.5.0-disaggregated
+    provider: aibrix
+    fullstack: false
+    version: v0.5.0
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/pd-model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke-pd.yaml
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.5.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+
+  - name: aibrix-v0.6.0-disaggregated
+    provider: aibrix
+    fullstack: false
+    version: v0.6.0
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/pd-model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke-pd.yaml
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
