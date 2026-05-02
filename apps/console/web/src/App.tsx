@@ -16,7 +16,6 @@ import { CreateModelDeploymentTemplate } from './components/CreateModelDeploymen
 import { Playground } from './components/Playground';
 import { ApiKeysPage } from './components/settings/ApiKeysPage';
 import { SecretsPage } from './components/settings/SecretsPage';
-import { QuotasPage } from './components/settings/QuotasPage';
 import { Toast } from './components/settings/Toast';
 
 export type Page = 'home' | 'batch-jobs' | 'job-detail' | 'create-job' | 'deployments' | 'deployment-detail' | 'create-deployment' | 'settings' | 'model-library' | 'model-detail' | 'model-template-form' | 'playground' | 'lora';
@@ -194,8 +193,6 @@ export default function App() {
         return <ApiKeysPage onToast={showToast} />;
       case 'secrets':
         return <SecretsPage onToast={showToast} />;
-      case 'quotas':
-        return <QuotasPage />;
     }
   };
 
