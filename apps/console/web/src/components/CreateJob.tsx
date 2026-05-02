@@ -8,7 +8,16 @@ import {
   JobEndpoint,
 } from '../utils/api';
 import type { ModelDeploymentTemplate } from '../utils/api';
-import { validateBatchFile, generateJobDisplayName, ValidationResult } from '../utils/batchValidation';
+import {
+  validateBatchFile,
+  generateJobDisplayName,
+  ValidationResult,
+  parseJsonl,
+  applyBatchOverrides,
+  serializeJsonl,
+  hasAnyOverride,
+  BatchOverrides,
+} from '../utils/batchValidation';
 import { Model } from '../data/mockData';
 
 interface CreateJobProps {
@@ -104,10 +113,12 @@ export function CreateJob({ onBack }: CreateJobProps) {
       })
       .finally(() => setTemplatesLoading(false));
 
-    // Re-validate already-selected file against the new model
+    // Re-validate already-selected file against the new model.
+    // Note: supportedEndpoints is unknown until a template is picked in step 2;
+    // endpoint check will be re-applied when a template is selected.
     if (selectedFile) {
       setValidating(true);
-      validateBatchFile(selectedFile, model.name).then((r) => {
+      validateBatchFile(selectedFile, { expectedModel: model.name }).then((r) => {
         setValidation(r);
         setValidating(false);
       });
@@ -117,6 +128,16 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const handleSelectTemplate = (tpl: ModelDeploymentTemplate) => {
     setSelectedTemplate(tpl);
     setCurrentStep('dataset');
+    // Re-validate selected file with the template's supported endpoints.
+    if (selectedFile) {
+      setValidating(true);
+      validateBatchFile(selectedFile, {
+        expectedModel: selectedModel,
+        supportedEndpoints: tpl.spec?.supportedEndpoints,
+      })
+        .then((r) => setValidation(r))
+        .finally(() => setValidating(false));
+    }
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -131,7 +152,10 @@ export function CreateJob({ onBack }: CreateJobProps) {
     // Validate immediately
     setValidating(true);
     try {
-      const result = await validateBatchFile(file, selectedModel);
+      const result = await validateBatchFile(file, {
+        expectedModel: selectedModel,
+        supportedEndpoints: selectedTemplate?.spec?.supportedEndpoints,
+      });
       setValidation(result);
     } catch (err) {
       setValidation({
@@ -199,7 +223,35 @@ export function CreateJob({ onBack }: CreateJobProps) {
       if (selectedFile && !datasetId) {
         setUploading(true);
         try {
-          const fileInfo = await uploadFile(selectedFile, 'batch');
+          const overrides: BatchOverrides = {
+            maxTokens: parseNumber(maxTokens),
+            temperature: parseNumber(temperature),
+            topP: parseNumber(topP),
+            n: parseNumber(n),
+          };
+
+          let fileToUpload: File = selectedFile;
+          if (hasAnyOverride(overrides)) {
+            const text = await selectedFile.text();
+            const parsed = parseJsonl(text);
+            const { records, diff } = applyBatchOverrides(parsed.records, overrides);
+            // Initial audit trail; UI surfacing comes later.
+            console.groupCollapsed(
+              `[batch override] ${diff.changedLines}/${diff.totalLines} lines mutated`,
+            );
+            console.log('overrides:', overrides);
+            console.table(diff.fieldsChanged);
+            if (diff.samples.length) console.log('samples:', diff.samples);
+            if (diff.skipped.length) console.log('skipped (incompatible endpoint):', diff.skipped);
+            console.groupEnd();
+            fileToUpload = new File(
+              [serializeJsonl(records)],
+              selectedFile.name,
+              { type: 'application/jsonl' },
+            );
+          }
+
+          const fileInfo = await uploadFile(fileToUpload, 'batch');
           datasetId = fileInfo.id;
           setUploadedFileId(fileInfo.id);
         } catch (uploadErr) {
