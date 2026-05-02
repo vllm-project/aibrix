@@ -28,6 +28,7 @@ import (
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/grpc/status"
 )
 
@@ -66,6 +67,32 @@ func NewMemoryStore() *MemoryStore {
 func (s *MemoryStore) LoadDemoData() error {
 	s.loadDemoData()
 	return nil
+}
+
+// ListDemoJobs returns the full pb.Job records (including OpenAI Batch state
+// fields) currently stored, used by the JobHandler dev fallback when MDS is
+// unreachable. Unlike the Store.ListJobs interface method which only surfaces
+// the Console-owned overlay subset, this method returns whatever was seeded
+// directly into s.jobs.
+func (s *MemoryStore) ListDemoJobs() []*pb.Job {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*pb.Job, 0, len(s.jobs))
+	for _, j := range s.jobs {
+		out = append(out, proto.Clone(j).(*pb.Job))
+	}
+	return out
+}
+
+// GetDemoJob looks up a single full pb.Job by id. Counterpart of ListDemoJobs.
+func (s *MemoryStore) GetDemoJob(id string) (*pb.Job, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	j, ok := s.jobs[id]
+	if !ok {
+		return nil, false
+	}
+	return proto.Clone(j).(*pb.Job), true
 }
 
 func (s *MemoryStore) genID() string {
