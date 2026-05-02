@@ -15,8 +15,8 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
   ];
 
   const apiItems = [
-    { id: 'deployments' as Page, icon: Rocket, label: 'Deployments' },
     { id: 'batch-jobs' as Page, icon: Boxes, label: 'Batch API' },
+    { id: 'deployments' as Page, icon: Rocket, label: 'Deployments' },
     { id: 'lora' as Page, icon: Layers, label: 'LoRA' },
   ];
 
