@@ -644,6 +644,12 @@ function Field({
   );
 }
 
+type CustomRow = { id: string; key: string; value: string };
+
+function newRowId(): string {
+  return `row_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function EngineArgsSection({
   args,
   onChange,
@@ -651,46 +657,70 @@ function EngineArgsSection({
   args: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
 }) {
+  // Custom flags live in local array state so editing key/value to empty
+  // doesn't collapse the row (which the prior Record<string,string> design
+  // forced — empty string can't address an entry, and two empty keys can't
+  // coexist). Known-knob values still live in `args` and are synced through
+  // setKey below. We re-derive customRows from props when an external load
+  // happens (template fetch / clone) but skip our own emissions to avoid an
+  // update loop.
+  const [customRows, setCustomRows] = useState<CustomRow[]>([]);
+  const lastEmittedRef = useRef<Record<string, string> | null>(null);
+
+  useEffect(() => {
+    if (lastEmittedRef.current === args) return;
+    const fromProps = Object.entries(args)
+      .filter(([k]) => !KNOWN_KEYS.has(k))
+      .map(([k, v]) => ({ id: newRowId(), key: k, value: v }));
+    setCustomRows(fromProps);
+  }, [args]);
+
+  // Compose final Record from current known-knob values plus custom rows
+  // (skipping rows whose key is blank — they are placeholders the user is
+  // still typing into).
+  const compose = (rows: CustomRow[], knownOverride?: { key: string; value: string | undefined }) => {
+    const next: Record<string, string> = {};
+    for (const [k, v] of Object.entries(args)) {
+      if (KNOWN_KEYS.has(k)) next[k] = v;
+    }
+    if (knownOverride) {
+      const { key, value } = knownOverride;
+      if (value === undefined || value === '') delete next[key];
+      else next[key] = value;
+    }
+    for (const r of rows) {
+      const k = r.key.trim();
+      if (k) next[k] = r.value;
+    }
+    return next;
+  };
+
+  const emit = (rows: CustomRow[], knownOverride?: { key: string; value: string | undefined }) => {
+    const next = compose(rows, knownOverride);
+    lastEmittedRef.current = next;
+    onChange(next);
+  };
+
   const setKey = (key: string, value: string | undefined) => {
-    const next = { ...args };
-    if (value === undefined || value === '') {
-      delete next[key];
-    } else {
-      next[key] = value;
-    }
-    onChange(next);
+    emit(customRows, { key, value });
   };
 
-  // Stable per-row IDs for React keys. Using the editable map key as the React
-  // `key` would unmount/remount the input on every keystroke and drop focus —
-  // we mint an ID once per row and migrate it across renames.
-  const rowIdsRef = useRef<Map<string, string>>(new Map());
-  const rowIdFor = (k: string) => {
-    let id = rowIdsRef.current.get(k);
-    if (!id) {
-      id = `row_${Math.random().toString(36).slice(2, 10)}`;
-      rowIdsRef.current.set(k, id);
-    }
-    return id;
+  const updateRow = (id: string, patch: Partial<Pick<CustomRow, 'key' | 'value'>>) => {
+    const next = customRows.map((r) => (r.id === id ? { ...r, ...patch } : r));
+    setCustomRows(next);
+    emit(next);
   };
 
-  const renameKey = (oldKey: string, newKey: string) => {
-    if (newKey === oldKey) return;
-    const id = rowIdsRef.current.get(oldKey);
-    if (id) {
-      rowIdsRef.current.delete(oldKey);
-      if (newKey) rowIdsRef.current.set(newKey, id);
-    }
-    const next = { ...args };
-    if (oldKey in next) {
-      const v = next[oldKey];
-      delete next[oldKey];
-      if (newKey) next[newKey] = v;
-    }
-    onChange(next);
+  const addRow = () => {
+    setCustomRows((rows) => [...rows, { id: newRowId(), key: '', value: '' }]);
+    // Don't emit yet — a row with empty key contributes nothing to the wire format.
   };
 
-  const customEntries = Object.entries(args).filter(([k]) => !KNOWN_KEYS.has(k));
+  const removeRow = (id: string) => {
+    const next = customRows.filter((r) => r.id !== id);
+    setCustomRows(next);
+    emit(next);
+  };
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
@@ -741,35 +771,35 @@ function EngineArgsSection({
           <h4 className="text-xs text-gray-700">Custom flags</h4>
           <button
             type="button"
-            onClick={() => onChange({ ...args, '': '' })}
+            onClick={addRow}
             className="text-xs text-teal-600 hover:text-teal-700"
           >
             + Add
           </button>
         </div>
-        {customEntries.length === 0 ? (
+        {customRows.length === 0 ? (
           <p className="text-xs text-gray-400">No custom flags set.</p>
         ) : (
           <div className="space-y-2">
-            {customEntries.map(([k, v]) => (
-              <div key={rowIdFor(k)} className="flex items-center gap-2">
+            {customRows.map((row) => (
+              <div key={row.id} className="flex items-center gap-2">
                 <input
                   type="text"
-                  value={k}
+                  value={row.key}
                   placeholder="flag_name"
-                  onChange={(e) => renameKey(k, e.target.value)}
+                  onChange={(e) => updateRow(row.id, { key: e.target.value })}
                   className={`${inputCls} flex-1 font-mono`}
                 />
                 <input
                   type="text"
-                  value={v}
+                  value={row.value}
                   placeholder="value"
-                  onChange={(e) => setKey(k, e.target.value)}
+                  onChange={(e) => updateRow(row.id, { value: e.target.value })}
                   className={`${inputCls} flex-1 font-mono`}
                 />
                 <button
                   type="button"
-                  onClick={() => setKey(k, undefined)}
+                  onClick={() => removeRow(row.id)}
                   className="px-2 py-1 text-xs text-gray-400 hover:text-red-600"
                   aria-label="Remove"
                 >
