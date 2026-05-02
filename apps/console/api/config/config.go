@@ -84,6 +84,11 @@ type Config struct {
 	// AllowedOrigins is a comma-separated list of allowed CORS origins.
 	// When empty, CORS is disabled (same-origin only).
 	AllowedOrigins string
+
+	// DevMode toggles development conveniences. Currently it controls demo-data
+	// seeding on startup; future dev-only behaviors should hang off the same
+	// flag so a single switch covers the "I'm running this locally" intent.
+	DevMode bool
 }
 
 // Load reads configuration from environment variables and applies sensible defaults.
@@ -126,7 +131,21 @@ func Load() (*Config, error) {
 		BasicPassword:                       envOrDefault("BASIC_PASSWORD", ""),
 		StaticFilesDir:                      envOrDefault("STATIC_FILES_DIR", ""),
 		AllowedOrigins:                      envOrDefault("ALLOWED_ORIGINS", ""),
+		DevMode:                             envBool("DEV_MODE", false),
 	}, nil
+}
+
+// envBool returns true when the env var is set to "1", "true", "yes" (case-insensitive).
+func envBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	switch v {
+	case "1", "true", "TRUE", "True", "yes", "YES", "Yes":
+		return true
+	}
+	return false
 }
 
 // envOrDefault returns the value of the environment variable named by key,

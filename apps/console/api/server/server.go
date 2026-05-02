@@ -60,15 +60,23 @@ func New(cfg *config.Config) *Server {
 		if err := ms.RunMigrations(); err != nil {
 			klog.Fatalf("Failed to run MySQL migrations: %v", err)
 		}
-		if err := ms.LoadDemoData(); err != nil {
-			klog.Fatalf("Failed to load MySQL demo data: %v", err)
-		}
 		s = ms
 		mysqlStore = ms
 		klog.Info("Using MySQL store")
 	default:
 		s = store.NewMemoryStore()
 		klog.Info("Using in-memory store")
+	}
+
+	// Dev-mode conveniences. Seeding is opt-in so production / shared envs
+	// start with an empty store.
+	if cfg.DevMode {
+		if seeder, ok := s.(interface{ LoadDemoData() error }); ok {
+			if err := seeder.LoadDemoData(); err != nil {
+				klog.Fatalf("Failed to seed demo data: %v", err)
+			}
+			klog.Info("Dev mode: demo data seeded")
+		}
 	}
 
 	authCfg := middleware.AuthConfig{

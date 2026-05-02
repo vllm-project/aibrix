@@ -37,6 +37,8 @@ func main() {
 	httpAddr := flag.String("http-addr", "", "HTTP gateway address (overrides HTTP_ADDR env)")
 	gatewayEndpoint := flag.String("gateway-endpoint", "",
 		"AIBrix gateway endpoint (overrides GATEWAY_ENDPOINT env)")
+	devMode := flag.Bool("dev-mode", false,
+		"Enable development conveniences (currently: seed demo data on startup). Overrides DEV_MODE env when set.")
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
 	flag.Parse()
@@ -57,6 +59,13 @@ func main() {
 	if *gatewayEndpoint != "" {
 		cfg.GatewayEndpoint = *gatewayEndpoint
 	}
+	// Bool flags can't be distinguished from their default by value alone, so
+	// only override env when the user passed --dev-mode explicitly.
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "dev-mode" {
+			cfg.DevMode = *devMode
+		}
+	})
 
 	srv := server.New(cfg)
 
