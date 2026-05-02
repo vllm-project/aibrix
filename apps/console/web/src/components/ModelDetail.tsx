@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   ArrowLeft, Copy, Calendar, Home as HomeIcon, Globe, Moon, Settings2, Layers, Plus, Cpu, Edit3, Trash2,
-  ChevronLeft, ChevronRight,
+  ChevronLeft, ChevronRight, Eye, GitFork,
 } from 'lucide-react';
 import { getModel, listModelDeploymentTemplates, deleteModelDeploymentTemplate } from '../utils/api';
 import type { Model } from '../data/mockData';
@@ -13,6 +13,8 @@ interface ModelDetailProps {
   onBack: () => void;
   onCreateTemplate?: (modelId: string) => void;
   onEditTemplate?: (modelId: string, templateId: string) => void;
+  onViewTemplate?: (modelId: string, templateId: string) => void;
+  onCloneTemplate?: (modelId: string, templateId: string) => void;
 }
 
 const languageTabs = ['curl', 'Python'] as const;
@@ -105,7 +107,14 @@ print(response.json())`;
   }
 }
 
-export function ModelDetail({ modelId, onBack, onCreateTemplate, onEditTemplate }: ModelDetailProps) {
+export function ModelDetail({
+  modelId,
+  onBack,
+  onCreateTemplate,
+  onEditTemplate,
+  onViewTemplate,
+  onCloneTemplate,
+}: ModelDetailProps) {
   const [activeLanguage, setActiveLanguage] = useState<Language>('curl');
   const [activeMode, setActiveMode] = useState<Mode>('Chat');
   const [copied, setCopied] = useState(false);
@@ -361,6 +370,24 @@ export function ModelDetail({ modelId, onBack, onCreateTemplate, onEditTemplate 
                           </div>
                         </div>
                         <div className="flex items-center gap-1">
+                          {onViewTemplate && modelId && (
+                            <button
+                              onClick={() => onViewTemplate(modelId, t.id)}
+                              className="p-1 text-gray-400 hover:text-gray-700"
+                              title="View"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          {onCloneTemplate && modelId && (
+                            <button
+                              onClick={() => onCloneTemplate(modelId, t.id)}
+                              className="p-1 text-gray-400 hover:text-gray-700"
+                              title="Clone & bump version"
+                            >
+                              <GitFork className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                           {onEditTemplate && modelId && (
                             <button
                               onClick={() => onEditTemplate(modelId, t.id)}

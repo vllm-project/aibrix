@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronLeft, Save, Trash2 } from 'lucide-react';
+import { ChevronLeft, Save } from 'lucide-react';
 import {
   createModelDeploymentTemplate,
   getModel,
@@ -14,9 +14,25 @@ import type { Model } from '../data/mockData';
 
 interface CreateModelDeploymentTemplateProps {
   modelId: string;
-  templateId?: string; // when set, the form is in edit mode
+  templateId?: string; // when set with mode!=='view', edit mode; with mode==='view', read-only
+  cloneFromId?: string; // when set, prefill from this template but save as new (create path)
+  mode?: 'view';
   onBack: () => void;
   onSaved: () => void;
+}
+
+// Bump trailing numeric component of a version string. Examples:
+//   v1.2.3 -> v1.2.4   v1.2 -> v1.3   v1 -> v2   foo-7 -> foo-8   plain -> plain-2
+function bumpVersion(v: string): string {
+  const semver = v.match(/^(v?)(\d+)\.(\d+)\.(\d+)$/);
+  if (semver) return `${semver[1]}${semver[2]}.${semver[3]}.${Number(semver[4]) + 1}`;
+  const minor = v.match(/^(v?)(\d+)\.(\d+)$/);
+  if (minor) return `${minor[1]}${minor[2]}.${Number(minor[3]) + 1}`;
+  const major = v.match(/^(v?)(\d+)$/);
+  if (major) return `${major[1]}${Number(major[2]) + 1}`;
+  const tail = v.match(/^(.*?)(\d+)$/);
+  if (tail) return `${tail[1]}${Number(tail[2]) + 1}`;
+  return `${v}-2`;
 }
 
 const ENGINE_TYPES = ['vllm', 'sglang', 'trtllm', 'lmdeploy', 'mock'];
@@ -77,10 +93,16 @@ function emptySpec(): ModelDeploymentTemplateSpec {
 export function CreateModelDeploymentTemplate({
   modelId,
   templateId,
+  cloneFromId,
+  mode,
   onBack,
   onSaved,
 }: CreateModelDeploymentTemplateProps) {
-  const isEdit = !!templateId;
+  const isView = mode === 'view' && !!templateId;
+  const isClone = !!cloneFromId && !templateId;
+  const isEdit = !!templateId && !isView;
+  // Source template to prefill from (edit/view loads templateId; clone loads cloneFromId).
+  const sourceTemplateId = templateId || cloneFromId;
 
   const [model, setModel] = useState<Model | null>(null);
   const [name, setName] = useState('');
@@ -97,11 +119,12 @@ export function CreateModelDeploymentTemplate({
   }, [modelId]);
 
   useEffect(() => {
-    if (!templateId) return;
-    getModelDeploymentTemplate(modelId, templateId)
+    if (!sourceTemplateId) return;
+    getModelDeploymentTemplate(modelId, sourceTemplateId)
       .then((t: ModelDeploymentTemplate) => {
         setName(t.name);
-        setVersion(t.version);
+        // For clone, auto-bump the version so user lands on a non-conflicting one.
+        setVersion(isClone ? bumpVersion(t.version) : t.version);
         setStatusValue(t.status);
         const s = t.spec ?? emptySpec();
         setSpec(s);
@@ -113,7 +136,7 @@ export function CreateModelDeploymentTemplate({
         );
       })
       .catch(err => setError(`Failed to load template: ${err}`));
-  }, [templateId, modelId]);
+  }, [sourceTemplateId, modelId, isClone]);
 
   const updateSpec = <K extends keyof ModelDeploymentTemplateSpec>(
     key: K,
@@ -156,11 +179,12 @@ export function CreateModelDeploymentTemplate({
       setError('Accelerator type is required');
       return;
     }
+    // Treat 0 (proto int default for unset fields) as 1, since each dim is 1-based.
     const ws =
-      (spec.parallelism?.tp ?? 1) *
-      (spec.parallelism?.pp ?? 1) *
-      (spec.parallelism?.dp ?? 1) *
-      (spec.parallelism?.ep ?? 1);
+      (spec.parallelism?.tp || 1) *
+      (spec.parallelism?.pp || 1) *
+      (spec.parallelism?.dp || 1) *
+      (spec.parallelism?.ep || 1);
     if (ws !== (spec.accelerator?.count ?? 1)) {
       setError(`Parallelism (tp*pp*dp*ep=${ws}) must equal accelerator.count (${spec.accelerator?.count})`);
       return;
@@ -219,12 +243,18 @@ export function CreateModelDeploymentTemplate({
         <ChevronLeft className="w-4 h-4" />
         {model ? `${model.name} / ` : ''}
         <span className="text-gray-400">
-          {isEdit ? 'Edit Template' : 'Create Template'}
+          {isView ? 'View Template' : isEdit ? 'Edit Template' : isClone ? 'Clone Template' : 'Create Template'}
         </span>
       </button>
 
       <h1 className="text-2xl mb-1">
-        {isEdit ? 'Edit Deployment Template' : 'Create Deployment Template'}
+        {isView
+          ? 'View Deployment Template'
+          : isEdit
+          ? 'Edit Deployment Template'
+          : isClone
+          ? 'Clone Deployment Template'
+          : 'Create Deployment Template'}
       </h1>
       <p className="text-sm text-gray-500 mb-6">
         Capture engine, accelerator, parallelism, and tuning settings for{' '}
@@ -238,7 +268,7 @@ export function CreateModelDeploymentTemplate({
         </div>
       )}
 
-      <div className="space-y-6">
+      <fieldset disabled={isView} className="space-y-6 disabled:opacity-90">
         {/* Identity */}
         <Section title="Identity">
           <Field label="Name">
@@ -248,6 +278,14 @@ export function CreateModelDeploymentTemplate({
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. llama3-70b-prod"
               className={inputCls}
+              disabled={isClone || isEdit}
+              title={
+                isClone
+                  ? 'Name is fixed when cloning; only the version changes.'
+                  : isEdit
+                  ? 'Name is part of the template identity. To rename, clone into a new template.'
+                  : undefined
+              }
             />
           </Field>
           <Field label="Version">
@@ -547,22 +585,30 @@ export function CreateModelDeploymentTemplate({
             })}
           </div>
         </Section>
-      </div>
+      </fieldset>
 
       <div className="flex items-center gap-3 mt-6">
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-white text-sm rounded-lg hover:bg-slate-700 disabled:opacity-50"
-        >
-          {isEdit ? <Save className="w-4 h-4" /> : <Trash2 className="w-4 h-4 hidden" />}
-          {saving ? 'Saving…' : isEdit ? 'Save Changes' : 'Create Template'}
-        </button>
+        {!isView && (
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-white text-sm rounded-lg hover:bg-slate-700 disabled:opacity-50"
+          >
+            {isEdit && <Save className="w-4 h-4" />}
+            {saving
+              ? 'Saving…'
+              : isEdit
+              ? 'Save Changes'
+              : isClone
+              ? 'Create New Version'
+              : 'Create Template'}
+          </button>
+        )}
         <button
           onClick={onBack}
           className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"
         >
-          Cancel
+          {isView ? 'Back' : 'Cancel'}
         </button>
       </div>
     </div>
