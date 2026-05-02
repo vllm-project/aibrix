@@ -93,6 +93,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
     setSelectedTemplate(null);
     setTemplates([]);
     setTemplatesError(null);
+    setUploadedFileId(null);
     setCurrentStep('template');
 
     // Load templates for this model
@@ -312,73 +313,57 @@ export function CreateJob({ onBack }: CreateJobProps) {
               <h2>Model Selection</h2>
             </div>
 
-            {currentStep === 'model' && (
-              <div>
-                <div className="mb-4">
-                  <label className="block text-sm mb-2">Choose a model to run batch inference.</label>
-                  <div className="relative">
-                    <button
-                      onClick={() => setShowModelDropdown(!showModelDropdown)}
-                      className="w-full px-4 py-2 border border-gray-200 rounded-lg text-left flex items-center justify-between hover:bg-gray-50"
-                    >
-                      <span className="text-sm">{selectedModel || 'Select Model'}</span>
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                      </svg>
-                    </button>
+            <div className="mb-4">
+              <label className="block text-sm mb-2">Choose a model to run batch inference.</label>
+              <div className="relative">
+                <button
+                  onClick={() => setShowModelDropdown(!showModelDropdown)}
+                  className="w-full px-4 py-2 border border-gray-200 rounded-lg text-left flex items-center justify-between hover:bg-gray-50"
+                >
+                  <span className="text-sm">{selectedModel || 'Select Model'}</span>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
 
-                    {showModelDropdown && (
-                      <div className="absolute z-10 w-full mt-2 bg-white border border-gray-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
-                        <div className="p-2 border-b border-gray-100">
-                          <div className="relative">
-                            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                            <input
-                              type="text"
-                              placeholder="Search"
-                              value={modelSearchQuery}
-                              onChange={(e) => setModelSearchQuery(e.target.value)}
-                              className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500"
-                            />
-                          </div>
-                        </div>
-                        <div className="p-2">
-                          {modelsLoading ? (
-                            <div className="px-3 py-4 text-center text-sm text-gray-500">Loading models...</div>
-                          ) : filteredModels.length === 0 ? (
-                            <div className="px-3 py-4 text-center text-sm text-gray-500">No models found.</div>
-                          ) : (
-                            filteredModels.map((model) => (
-                              <button
-                                key={model.id}
-                                onClick={() => handleSelectModel(model)}
-                                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 rounded flex items-center gap-2"
-                              >
-                                <div className="w-5 h-5 rounded-full bg-teal-50 flex items-center justify-center">
-                                  <div className="w-2 h-2 rounded-full bg-teal-500"></div>
-                                </div>
-                                {model.name}
-                              </button>
-                            ))
-                          )}
-                        </div>
+                {showModelDropdown && (
+                  <div className="absolute z-10 w-full mt-2 bg-white border border-gray-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
+                    <div className="p-2 border-b border-gray-100">
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                        <input
+                          type="text"
+                          placeholder="Search"
+                          value={modelSearchQuery}
+                          onChange={(e) => setModelSearchQuery(e.target.value)}
+                          className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500"
+                        />
                       </div>
-                    )}
-                  </div>
-                </div>
-
-                {selectedModel && (
-                  <div className="text-sm text-gray-600 bg-gray-50 p-3 rounded-lg">
-                    Model: accounts/aibrix/models/{selectedModel.toLowerCase().replace(/\s+/g, '-')}
+                    </div>
+                    <div className="p-2">
+                      {modelsLoading ? (
+                        <div className="px-3 py-4 text-center text-sm text-gray-500">Loading models...</div>
+                      ) : filteredModels.length === 0 ? (
+                        <div className="px-3 py-4 text-center text-sm text-gray-500">No models found.</div>
+                      ) : (
+                        filteredModels.map((model) => (
+                          <button
+                            key={model.id}
+                            onClick={() => handleSelectModel(model)}
+                            className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 rounded flex items-center gap-2"
+                          >
+                            <div className="w-5 h-5 rounded-full bg-teal-50 flex items-center justify-center">
+                              <div className="w-2 h-2 rounded-full bg-teal-500"></div>
+                            </div>
+                            {model.name}
+                          </button>
+                        ))
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
-            )}
-
-            {currentStep !== 'model' && selectedModel && (
-              <div className="text-sm text-gray-600 bg-gray-50 p-3 rounded-lg">
-                Model: accounts/aibrix/models/{selectedModel.toLowerCase().replace(/\s+/g, '-')}
-              </div>
-            )}
+            </div>
           </div>
 
           {/* Step 2: Deployment Template */}
