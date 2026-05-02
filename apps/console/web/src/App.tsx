@@ -61,11 +61,56 @@ export default function App() {
       case 'create-job':
         return <CreateJob onBack={() => handleNavigate('batch-jobs')} />;
       case 'deployments':
+        // Backend not ready yet — show a coming-soon placeholder. Restore the
+        // commented block below (and remove the placeholder) when re-enabling.
+        // return (
+        //   <Deployments
+        //     onSelectDeployment={(id) => handleNavigate('deployment-detail', id)}
+        //     onCreateDeployment={() => handleNavigate('create-deployment')}
+        //   />
+        // );
         return (
-          <Deployments
-            onSelectDeployment={(id) => handleNavigate('deployment-detail', id)}
-            onCreateDeployment={() => handleNavigate('create-deployment')}
-          />
+          <div className="flex-1 flex items-center justify-center p-8">
+            <div className="max-w-lg text-center">
+              <div className="w-16 h-16 bg-teal-50 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                <svg className="w-8 h-8 text-teal-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
+                  <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
+                  <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
+                  <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
+                </svg>
+              </div>
+              <h2 className="text-xl mb-2 text-gray-900">Online Deployments</h2>
+              <p className="text-gray-500 mb-6 leading-relaxed">
+                Spin up dedicated, low-latency endpoints for online inference using
+                a deployment template. The control plane work is still in progress.
+              </p>
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-5 text-left">
+                <h3 className="text-sm text-gray-700 mb-3">Planned Features</h3>
+                <ul className="space-y-2.5">
+                  <li className="flex items-start gap-2.5 text-sm text-gray-500">
+                    <span className="w-1.5 h-1.5 rounded-full bg-teal-400 mt-1.5 flex-shrink-0" />
+                    Launch deployments from a registered model + deployment template
+                  </li>
+                  <li className="flex items-start gap-2.5 text-sm text-gray-500">
+                    <span className="w-1.5 h-1.5 rounded-full bg-teal-400 mt-1.5 flex-shrink-0" />
+                    Live status, replicas, and accelerator usage per endpoint
+                  </li>
+                  <li className="flex items-start gap-2.5 text-sm text-gray-500">
+                    <span className="w-1.5 h-1.5 rounded-full bg-teal-400 mt-1.5 flex-shrink-0" />
+                    Roll, pause, and tear down without leaving the console
+                  </li>
+                </ul>
+              </div>
+              <div className="mt-6 inline-flex items-center gap-2 px-4 py-2 bg-teal-50 text-teal-700 rounded-full text-sm">
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M12 6v6l4 2" />
+                </svg>
+                Coming Soon
+              </div>
+            </div>
+          </div>
         );
       case 'deployment-detail':
         return <DeploymentDetail deploymentId={selectedDeploymentId} onBack={() => handleNavigate('deployments')} />;
