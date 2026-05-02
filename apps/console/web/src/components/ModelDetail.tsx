@@ -12,14 +12,13 @@ interface ModelDetailProps {
   onEditTemplate?: (modelId: string, templateId: string) => void;
 }
 
-const languageTabs = ['Python', 'Typescript', 'Java', 'Go', 'Shell'] as const;
+const languageTabs = ['curl', 'Python'] as const;
 type Language = typeof languageTabs[number];
 
 const modeTabs = ['Chat', 'Completion'] as const;
 type Mode = typeof modeTabs[number];
 
 function getCodeSnippet(modelName: string, language: Language, mode: Mode): string {
-  const modelSlug = modelName.toLowerCase().replace(/[\s.]+/g, '-').replace(/[()]/g, '').replace(/\[|\]/g, '');
   const endpoint = mode === 'Chat' ? 'chat/completions' : 'completions';
 
   switch (language) {
@@ -31,7 +30,7 @@ import json
 url = "https://api.inference.ai/inference/v1/${endpoint}"
 
 payload = {
-    "model": "accounts/inference/models/${modelSlug}",
+    "model": "${modelName}",
     "max_tokens": 16384,
     "top_p": 1,
     "top_k": 40,
@@ -60,7 +59,7 @@ import json
 url = "https://api.inference.ai/inference/v1/${endpoint}"
 
 payload = {
-    "model": "accounts/inference/models/${modelSlug}",
+    "model": "${modelName}",
     "max_tokens": 16384,
     "prompt": "Once upon a time",
     "temperature": 0.6
@@ -75,57 +74,14 @@ headers = {
 response = requests.post(url, json=payload, headers=headers)
 print(response.json())`;
 
-    case 'Typescript':
-      return mode === 'Chat'
-        ? `const response = await fetch(
-  "https://api.inference.ai/inference/v1/${endpoint}",
-  {
-    method: "POST",
-    headers: {
-      "Accept": "application/json",
-      "Content-Type": "application/json",
-      "Authorization": "Bearer <API_KEY>"
-    },
-    body: JSON.stringify({
-      model: "accounts/inference/models/${modelSlug}",
-      max_tokens: 16384,
-      messages: [
-        { role: "user", content: "Hello, how are you?" }
-      ]
-    })
-  }
-);
-
-const data = await response.json();
-console.log(data);`
-        : `const response = await fetch(
-  "https://api.inference.ai/inference/v1/${endpoint}",
-  {
-    method: "POST",
-    headers: {
-      "Accept": "application/json",
-      "Content-Type": "application/json",
-      "Authorization": "Bearer <API_KEY>"
-    },
-    body: JSON.stringify({
-      model: "accounts/inference/models/${modelSlug}",
-      max_tokens: 16384,
-      prompt: "Once upon a time"
-    })
-  }
-);
-
-const data = await response.json();
-console.log(data);`;
-
-    case 'Shell':
+    case 'curl':
       return mode === 'Chat'
         ? `curl -X POST "https://api.inference.ai/inference/v1/${endpoint}" \\
   -H "Accept: application/json" \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer <API_KEY>" \\
   -d '{
-    "model": "accounts/inference/models/${modelSlug}",
+    "model": "${modelName}",
     "max_tokens": 16384,
     "messages": [
       {"role": "user", "content": "Hello, how are you?"}
@@ -136,22 +92,10 @@ console.log(data);`;
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer <API_KEY>" \\
   -d '{
-    "model": "accounts/inference/models/${modelSlug}",
+    "model": "${modelName}",
     "max_tokens": 16384,
     "prompt": "Once upon a time"
   }'`;
-
-    case 'Java':
-      return `// Java example
-// Use your preferred HTTP client library
-// Model: accounts/inference/models/${modelSlug}
-// Endpoint: https://api.inference.ai/inference/v1/${endpoint}`;
-
-    case 'Go':
-      return `// Go example
-// Use net/http package
-// Model: accounts/inference/models/${modelSlug}
-// Endpoint: https://api.inference.ai/inference/v1/${endpoint}`;
 
     default:
       return '';
@@ -159,7 +103,7 @@ console.log(data);`;
 }
 
 export function ModelDetail({ modelId, onBack, onCreateTemplate, onEditTemplate }: ModelDetailProps) {
-  const [activeLanguage, setActiveLanguage] = useState<Language>('Python');
+  const [activeLanguage, setActiveLanguage] = useState<Language>('curl');
   const [activeMode, setActiveMode] = useState<Mode>('Chat');
   const [copied, setCopied] = useState(false);
   const [model, setModel] = useState<Model | null>(null);
@@ -236,8 +180,6 @@ export function ModelDetail({ modelId, onBack, onCreateTemplate, onEditTemplate 
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
-
-  const hasPricing = model.pricing.uncachedInput || model.pricing.cachedInput || model.pricing.output || model.pricing.perMinute || model.pricing.perImage;
 
   return (
     <div className="p-8">
@@ -378,59 +320,6 @@ export function ModelDetail({ modelId, onBack, onCreateTemplate, onEditTemplate 
             )}
           </div>
 
-          {/* Estimated Cost */}
-          {hasPricing && (
-            <div className="mb-8">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h2 className="text-lg mb-1">Use Serverless</h2>
-                  <p className="text-xs text-gray-500">Run queries immediately, pay only for usage</p>
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-6 mb-6">
-                {model.pricing.uncachedInput && (
-                  <div>
-                    <div className="text-xl">
-                      {model.pricing.uncachedInput.replace('/M', '')}
-                      <span className="text-sm text-gray-500">/1M</span>
-                    </div>
-                    <div className="text-xs text-gray-500">Uncached input</div>
-                  </div>
-                )}
-                {model.pricing.cachedInput && (
-                  <div>
-                    <div className="text-xl">
-                      {model.pricing.cachedInput.replace('/M', '')}
-                      <span className="text-sm text-gray-500">/1M</span>
-                    </div>
-                    <div className="text-xs text-gray-500">Cached input</div>
-                  </div>
-                )}
-                {model.pricing.output && (
-                  <div>
-                    <div className="text-xl">
-                      {model.pricing.output.replace('/M', '')}
-                      <span className="text-sm text-gray-500">/1M</span>
-                    </div>
-                    <div className="text-xs text-gray-500">Output</div>
-                  </div>
-                )}
-                {model.pricing.perMinute && (
-                  <div>
-                    <div className="text-xl">{model.pricing.perMinute}</div>
-                    <div className="text-xs text-gray-500">Per minute</div>
-                  </div>
-                )}
-                {model.pricing.perImage && (
-                  <div>
-                    <div className="text-xl">{model.pricing.perImage}</div>
-                    <div className="text-xs text-gray-500">Per image</div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* Usage / Code Snippet */}
           <div>
             {/* Language + Mode tabs */}
@@ -476,9 +365,6 @@ export function ModelDetail({ modelId, onBack, onCreateTemplate, onEditTemplate 
               >
                 <Copy className="w-3.5 h-3.5" />
                 {copied ? 'Copied!' : 'Copy'}
-              </button>
-              <button className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                Get API Key
               </button>
             </div>
 
