@@ -28,6 +28,7 @@ export default function App() {
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
+  const [templateMode, setTemplateMode] = useState<'create' | 'edit' | 'view' | 'clone'>('create');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('api-keys');
   const [toast, setToast] = useState<{ message: string; subtitle?: string } | null>(null);
 
@@ -81,12 +82,28 @@ export default function App() {
             onCreateTemplate={(id) => {
               setSelectedModelId(id);
               setEditingTemplateId(null);
+              setTemplateMode('create');
               setPreviousPage('model-detail');
               setCurrentPage('model-template-form');
             }}
             onEditTemplate={(id, templateId) => {
               setSelectedModelId(id);
               setEditingTemplateId(templateId);
+              setTemplateMode('edit');
+              setPreviousPage('model-detail');
+              setCurrentPage('model-template-form');
+            }}
+            onViewTemplate={(id, templateId) => {
+              setSelectedModelId(id);
+              setEditingTemplateId(templateId);
+              setTemplateMode('view');
+              setPreviousPage('model-detail');
+              setCurrentPage('model-template-form');
+            }}
+            onCloneTemplate={(id, templateId) => {
+              setSelectedModelId(id);
+              setEditingTemplateId(templateId);
+              setTemplateMode('clone');
               setPreviousPage('model-detail');
               setCurrentPage('model-template-form');
             }}
@@ -99,7 +116,13 @@ export default function App() {
         return (
           <CreateModelDeploymentTemplate
             modelId={selectedModelId}
-            templateId={editingTemplateId ?? undefined}
+            templateId={
+              templateMode === 'edit' || templateMode === 'view'
+                ? editingTemplateId ?? undefined
+                : undefined
+            }
+            cloneFromId={templateMode === 'clone' ? editingTemplateId ?? undefined : undefined}
+            mode={templateMode === 'view' ? 'view' : undefined}
             onBack={() => handleNavigate('model-detail', selectedModelId)}
             onSaved={() => handleNavigate('model-detail', selectedModelId)}
           />
