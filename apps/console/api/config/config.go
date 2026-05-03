@@ -28,10 +28,11 @@ const AuthModeDev = "dev"
 
 // Config holds all configuration for the AIBrix console backend.
 type Config struct {
-	// StoreType selects the backing store: "memory" or "mysql".
-	StoreType string
-	// MySQLDSN is the MySQL connection string (used when StoreType is "mysql").
-	MySQLDSN string
+	// StoreURI selects the backing store via a URI scheme. Examples:
+	//   memory://
+	//   mysql://user:pass@host:3306/aibrix
+	// Future: postgres://, redis://, mongodb:// — add a case in store.NewFromURI.
+	StoreURI string
 
 	// GatewayEndpoint is the AIBrix gateway URL for proxying inference requests.
 	GatewayEndpoint string
@@ -111,8 +112,7 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		StoreType:                           envOrDefault("STORE_TYPE", "memory"),
-		MySQLDSN:                            envOrDefault("MYSQL_DSN", ""),
+		StoreURI:                            envOrDefault("STORE_URI", "memory://"),
 		GatewayEndpoint:                     envOrDefault("GATEWAY_ENDPOINT", "http://localhost:8888"),
 		MetadataServiceURL:                  envOrDefault("METADATA_SERVICE_URL", "http://localhost:8000"),
 		DefaultBatchModelDeploymentTemplate: envOrDefault("DEFAULT_BATCH_MODEL_DEPLOYMENT_TEMPLATE", ""),
