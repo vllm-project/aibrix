@@ -159,8 +159,8 @@ type CancelJobResponse struct {
 // default ordering (typically `available_at` ascending) to pick up to
 // `Limit` candidates and atomically lease them. Custom scheduling
 // policies (priority, score-based, fair-share, resource-aware) should
-// use a PickFunc against TaskStore.ListCandidates + TaskStore.LeaseByID
-// instead.
+// use a SchedulerFunc against TaskStore.ListCandidates +
+// TaskStore.LeaseByID instead.
 type LeaseRequest struct {
 	WorkerID string        `json:"worker_id"`
 	Limit    int           `json:"limit"`
@@ -168,8 +168,9 @@ type LeaseRequest struct {
 }
 
 // ListCandidatesRequest queries the store for tasks that are currently
-// leaseable, without acquiring a lease. Used by PickFunc implementations
-// to compute their ranking before committing a selection via LeaseByID.
+// leaseable, without acquiring a lease. Used by SchedulerFunc
+// implementations to compute their ranking before committing a
+// selection via LeaseByID.
 type ListCandidatesRequest struct {
 	// Limit caps the number of candidates returned. Policies typically
 	// overscan (request more than they intend to lease) so the ranking
@@ -180,10 +181,10 @@ type ListCandidatesRequest struct {
 	Now time.Time `json:"now"`
 }
 
-// PickRequest is the standard input to a PickFunc. The worker passes
-// itself in via WorkerID, the batch size as Limit, and the current time
-// as Now (so policies stay deterministic for tests).
-type PickRequest struct {
+// ScheduleRequest is the standard input to a SchedulerFunc. The worker
+// passes itself in via WorkerID, the batch size as Limit, and the
+// current time as Now (so policies stay deterministic for tests).
+type ScheduleRequest struct {
 	WorkerID string    `json:"worker_id"`
 	Limit    int       `json:"limit"`
 	Now      time.Time `json:"now"`
@@ -271,8 +272,8 @@ type EnqueueContinuationRequest struct {
 // Unlike Ack/Nack/Fail it carries no TaskLease: Planner.CancelJob does
 // not own a lease, and cancellation must work regardless of which worker
 // (if any) currently holds one. Any holding worker discovers the
-// cancellation on its next RenewLease/Ack/Nack/Fail call via
-// ErrLeaseLost and unwinds.
+// cancellation on its next Ack/Nack/Fail call via ErrLeaseLost and
+// unwinds.
 //
 // For post-submit cancels (BatchID set on the task), Planner.CancelJob
 // is responsible for calling BatchClient.CancelBatch separately;
@@ -285,45 +286,22 @@ type CancelTaskRequest struct {
 }
 
 // =============================================================================
-// Worker -> ResourceManager
+// Worker in-memory: Reservation
 // =============================================================================
 
-// ReserveRequest is the worker -> RM request for capacity to run one task.
-type ReserveRequest struct {
-	JobID               string              `json:"job_id"`
-	TaskID              string              `json:"task_id"`
-	ResourceRequirement ResourceRequirement `json:"resource_requirement"`
-	// Deadline, if set, hints to the RM how long the reservation should
-	// remain valid if the worker has not yet committed. RMs may also apply
-	// their own internal default expiry. Zero means "use RM default".
-	Deadline *time.Time `json:"deadline,omitempty"`
-	// RequestedBy identifies the worker requesting the reservation, useful
-	// for RM-side logging and quota accounting.
-	RequestedBy string `json:"requested_by,omitempty"`
-}
-
-// Reservation is the RM -> worker confirmation that capacity has been
-// allocated to a specific task. ReservationID and Allocations flow into
+// Reservation is the in-memory shape the worker assembles from the
+// RM-side response after acquiring capacity from the Resource Manager
+// (whose contract is owned by an adjacent RM package). The worker
+// projects ReservationID and Allocations into
 // extra_body.aibrix.planner_decision and extra_body.aibrix.resource_details
-// on the MDS submission.
+// when building the MDSBatchSubmission for BatchClient.CreateBatch.
 type Reservation struct {
 	ReservationID string           `json:"reservation_id"`
 	JobID         string           `json:"job_id"`
 	Allocations   []ResourceDetail `json:"allocations,omitempty"`
-	// ExpiresAt is when the RM will reclaim this reservation if Release has
-	// not been called. Zero means "no automatic expiry".
+	// ExpiresAt is when the RM will reclaim this reservation if Release
+	// has not been called. Zero means "no automatic expiry".
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-}
-
-// ReleaseRequest is the worker -> RM call that returns a reservation to
-// the pool. Workers SHOULD call Release as soon as a task reaches a
-// terminal planner state (submitted-and-acked, terminal_failure,
-// cancelled) rather than waiting for expiry.
-type ReleaseRequest struct {
-	ReservationID string `json:"reservation_id"`
-	// Reason is free-form telemetry: "submitted" / "failed" / "cancelled" /
-	// "retry" so RM operators can see why reservations are being released.
-	Reason string `json:"reason,omitempty"`
 }
 
 // =============================================================================

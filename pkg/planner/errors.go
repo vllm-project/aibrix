@@ -41,36 +41,27 @@ var (
 	// already present in the store.
 	ErrDuplicateEnqueue = errors.New("planner: duplicate enqueue")
 
-	// ErrLeaseLost indicates an Ack/Nack/Fail/RenewLease call carried a lease
-	// the store no longer recognizes (typically because the lease expired and
-	// another worker re-leased the task). The caller should drop the in-flight
-	// work.
+	// ErrLeaseLost indicates an Ack/Nack/Fail call carried a lease the
+	// store no longer recognizes (typically because a concurrent
+	// CancelTask transitioned the task out of `leased`, or the lease
+	// was administratively replaced). The caller should drop the
+	// in-flight work.
 	ErrLeaseLost = errors.New("planner: lease lost")
 
 	// ErrMDSSubmitFailed indicates submitting the OpenAI batch to MDS
-	// failed. TaskExecutor implementations should wrap upstream submit errors
-	// with this sentinel when the failure occurred after planning but before a
-	// batch ID was durably recorded.
+	// failed. The Worker wraps upstream BatchClient.CreateBatch errors
+	// with this sentinel when the failure occurred after planning but
+	// before a batch ID was durably recorded, so callers can route on
+	// errors.Is without parsing transport-specific error strings.
 	ErrMDSSubmitFailed = errors.New("planner: mds submit failed")
 
-	// ErrInsufficientResources indicates the ResourceManager could not
-	// satisfy a Reserve request right now. The worker should typically Nack
-	// the task with backoff and retry later.
+	// ErrInsufficientResources indicates the RM could not satisfy a
+	// capacity request right now. The worker should typically Nack the
+	// task with backoff and retry later. The RM's typed error (from
+	// the adjacent RM package) is wrapped with this sentinel at the
+	// worker-store boundary so the planner stays decoupled from the
+	// concrete RM error vocabulary.
 	ErrInsufficientResources = errors.New("planner: insufficient resources")
-
-	// ErrResourceManagerUnavailable indicates the RM backend could not accept
-	// or serve requests (network/storage outage, dependency timeout, etc.).
-	ErrResourceManagerUnavailable = errors.New("planner: resource manager unavailable")
-
-	// ErrReservationNotFound indicates a Release call referenced a reservation
-	// the RM no longer recognizes (already released or expired). Callers may
-	// treat this as a no-op success.
-	ErrReservationNotFound = errors.New("planner: reservation not found")
-
-	// ErrReservationExpired indicates an attempt to use or extend a reservation
-	// that the RM already reclaimed. The worker should re-reserve before
-	// continuing.
-	ErrReservationExpired = errors.New("planner: reservation expired")
 
 	// ErrTaskAlreadyTerminal indicates a non-lease state-transition call
 	// (CancelTask, EnqueueContinuation) targeted a task that has already

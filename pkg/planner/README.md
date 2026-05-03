@@ -19,24 +19,35 @@ For field-level request/response payloads, see [CONTRACTS.md](./CONTRACTS.md).
 
 ## Boundaries
 
-The MVP surface is eight interfaces, one per audience:
+The MVP surface is five exported interfaces plus one function type
+declared in `pkg/planner`. The worker is a concrete struct, not an
+exported interface, since it has only one production implementation.
+The worker also calls into the RM contract owned by an adjacent RM
+package — listed last in the table for context, but not declared here.
 
-| Interface                | Audience                       | What it does                                       |
-| ------------------------ | ------------------------------ | -------------------------------------------------- |
-| `Planner`                | Console BFF                    | `Enqueue` / `GetJob` / `ListJobs` / `CancelJob`    |
-| `QueueStatsReader`       | Console / ops dashboards       | Queue depth + worker activity telemetry            |
-| `ResourceCapacityReader` | Console / ops dashboards       | Aggregated reserved / in-use / free capacity       |
-| `TaskStore`              | Planner internals              | Durable state + lease coordination                 |
-| `TaskExecutor`           | Planner worker                 | One MDS `POST /v1/batches`                         |
-| `ResourceManager`        | Planner worker                 | Reserve / release capacity for one task            |
-| `BatchClient`            | Planner (read overlay + cancel)| MDS read + cancel                                  |
-| `Worker`                 | Planner process                | Long-running orchestration loop                    |
+| Surface                  | Kind             | Audience                         | What it does                                       |
+| ------------------------ | ---------------- | -------------------------------- | -------------------------------------------------- |
+| `Planner`                | interface        | Console BFF                      | `Enqueue` / `GetJob` / `ListJobs` / `CancelJob`    |
+| `QueueStatsReader`       | interface        | Console / ops dashboards         | Queue depth + worker activity telemetry            |
+| `ResourceCapacityReader` | interface        | Console / ops dashboards         | Aggregated reserved / in-use / free capacity       |
+| `TaskStore`              | interface        | Planner / Worker                 | Durable state + lease coordination                 |
+| `BatchClient`            | interface        | Planner (read/cancel) + Worker (create) | MDS create / read / cancel / list           |
+| `SchedulerFunc`               | function type    | Worker                           | Pluggable scheduling policy (see below)            |
+| `Worker`                 | concrete struct  | Planner process (`main`)         | Long-running orchestration loop                    |
+| RM                       | (adjacent pkg)   | Worker                           | Reserve / release capacity for one task. Owned by an adjacent RM package; the planner does not declare the RM interface. |
 
 `TaskStore` exposes both an FCFS convenience path (`Lease`) and a
 policy-aware path (`ListCandidates` + `LeaseByID`). Custom scheduling
-policies are pluggable as `PickFunc` values; concrete implementations
-land alongside their consumers in follow-ups. A `nil` `PickFunc` falls
+policies are pluggable as `SchedulerFunc` values; concrete implementations
+land alongside their consumers in follow-ups. A `nil` `SchedulerFunc` falls
 through to the store-baked FCFS path.
+
+`BatchClient` is the single mocking seam for MDS in tests: a fake
+`BatchClient` covers both the worker's submit path (`CreateBatch`) and
+the planner's read/cancel paths (`GetBatch` / `CancelBatch` /
+`ListBatches`). The pre-submit dedup check and PlannerTask -> MDS
+request translation are private methods on the Worker, not a separate
+exported interface.
 
 ## State
 
@@ -68,14 +79,17 @@ Console
       Planner.ListJobs         (paginated JobView list)
       Planner.CancelJob        (pre- or post-submit, planner routes)
 
-Worker
-  ├── TaskStore.Lease           (acquire N tasks with a lease TTL)
-  │   (or PickFunc + TaskStore.LeaseByID for custom policies)
-  ├── ResourceManager.Reserve   (idempotent per TaskID)
-  ├── TaskStore.RenewLease      (heartbeat goroutine while in flight)
-  ├── TaskExecutor.Execute      (translate task → MDS POST /v1/batches)
-  ├── TaskStore.Ack/Nack/Fail   (record outcome; Ack does NOT release the reservation)
-  └── ResourceManager.Release   (called on Fail/Cancel; not on Ack)
+Worker (single process; one dispatcher goroutine + N task goroutines)
+  ├── dispatcher: TaskStore.Lease            (FCFS path, when SchedulerFunc is nil)
+  │           or  TaskStore.ListCandidates   (custom path)
+  │             + SchedulerFunc(candidates)
+  │             + TaskStore.LeaseByID        (atomic claim of selected IDs)
+  └── per-task goroutines:
+       ├── RM.Provision                      (adjacent package; idempotent per TaskID)
+       ├── BatchClient.GetBatch              (pre-submit dedup by aibrix.job_id)
+       ├── BatchClient.CreateBatch           (POST /v1/batches with assembled MDSBatchSubmission)
+       ├── TaskStore.Ack/Nack/Fail           (record outcome; Ack does NOT release the reservation)
+       └── RM.Release                        (called on Fail/Cancel; not on Ack)
 
 Planner.CancelJob
   ├── (post-submit only) BatchClient.CancelBatch
@@ -91,10 +105,16 @@ Planner reservation-expiry sweeper (background)
                                      new task inserted with Attempt+1, queued)
 ```
 
+Lease TTL is sized longer than the expected `Execute` duration (so a
+slow MDS submission does not invalidate the in-flight worker) and there
+is no mid-flight `RenewLease`. Crash recovery falls back to natural
+TTL expiry: if the worker process dies, leased tasks become re-leasable
+once their TTL passes.
+
 When a reservation expires, the RM tears down the underlying resources
 and MDS marks its batch failed/expired on its own. The planner does
-not call `BatchClient.CancelBatch` or `ResourceManager.Release` from
-the sweeper - it just inserts the continuation and moves on.
+not call `BatchClient.CancelBatch` or `RM.Release` from the sweeper -
+it just inserts the continuation and moves on.
 
 In MVP, `JobView` is assembled live: `Planner.GetJob` reads the
 `PlannerTask` from `TaskStore` and (when `BatchID` is set) overlays a
@@ -115,7 +135,7 @@ for the full requirement and what breaks until it ships.
 
 ## Not in this PR
 
-This PR defines the contract; concrete `TaskStore` / `TaskExecutor` /
-`Worker` / `Planner` implementations and the MDS-side schema work are
-separate. See [ARCHITECTURE.md "Expected next PRs"](./ARCHITECTURE.md#expected-next-prs)
+This PR defines the contract; concrete `TaskStore`, `BatchClient`,
+`Worker`, and `Planner` implementations and the MDS-side schema work
+are separate. See [ARCHITECTURE.md "Expected next PRs"](./ARCHITECTURE.md#expected-next-prs)
 for the canonical roadmap.

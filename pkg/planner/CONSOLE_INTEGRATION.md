@@ -19,18 +19,31 @@ request.
 
 The new design inserts a queue between Console and MDS:
 
-```
-[ Console UI ]
-      |  HTTP
-      v
-[ Console BFF (apps/console) ]
-      |  Go interface (Planner)
-      v
-[ pkg/planner: TaskStore + TaskExecutor + ResourceManager
-                + BatchClient + Worker ]
-      |
-      v
-[ MDS  /v1/batches  /v1/files ]      [ Resource Manager (parallel team) ]
+```mermaid
+flowchart TD
+  UI["Console UI"]
+  BFF["Console BFF<br/>(apps/console)"]
+
+  subgraph PLN["pkg/planner"]
+    TS["TaskStore"]
+    BC["BatchClient"]
+    WK["Worker (struct)"]
+  end
+
+  RM["Resource Manager<br/>(contract owned by<br/>an adjacent RM package)"]
+  MDS["MDS<br/>/v1/batches  /v1/files"]
+
+  UI -- HTTP --> BFF
+  BFF -- "Planner.Enqueue / GetJob / ListJobs / CancelJob" --> PLN
+  BFF -- "/v1/files (direct proxy)" --> MDS
+
+  WK -- "Lease / Ack / Nack / Fail" --> TS
+  WK -- "acquire / release capacity" --> RM
+  WK -- "CreateBatch (POST /v1/batches)" --> BC
+  BC -- "HTTP" --> MDS
+
+  classDef ext fill:#eef,stroke:#88a;
+  class UI,BFF,RM,MDS ext;
 ```
 
 Console is now a BFF that:
@@ -52,11 +65,18 @@ and backoff, MDS submission, and the read-time MDS overlay that powers
 | Console / ops   | Planner           | `QueueStatsReader`       | Queue depth + worker activity telemetry            |
 | Console / ops   | Planner           | `ResourceCapacityReader` | Aggregated reserved / in-use / free capacity       |
 | Planner         | Store             | `TaskStore`              | `Enqueue` / `GetByJobID` / `ListTasksByJobID` / `CancelTask` / `ListSubmittedWithExpiringReservation` / `EnqueueContinuation` |
-| Worker          | Store             | `TaskStore`              | `Lease` (FCFS) / `ListCandidates`+`LeaseByID` (custom) / `RenewLease` / `Ack` / `Nack` / `Fail` |
-| Worker          | Resource Manager  | `ResourceManager`        | Reserve / release capacity for one task            |
-| Worker          | Executor          | `TaskExecutor`           | Build `MDSBatchSubmission` + POST                  |
+| Worker (struct) | Store             | `TaskStore`              | `Lease` (FCFS) / `ListCandidates`+`LeaseByID` (custom) / `Ack` / `Nack` / `Fail` |
+| Worker (struct) | Resource Manager  | (contract owned by an adjacent RM package; the planner does not declare it) | Reserve / release capacity for one task |
+| Worker (struct) | MDS               | `BatchClient`            | `CreateBatch` (submit) + `GetBatch` (pre-submit dedup) |
 | Planner         | MDS               | `BatchClient`            | Live MDS overlay (`GetBatch`) + post-submit cancel (`CancelBatch`) |
 | Console BFF     | MDS               | direct proxy             | `/v1/files` (unchanged)                            |
+
+The Worker is a concrete struct in `pkg/planner`; it has no exported
+interface because it has only one production implementation. The
+PlannerTask -> `MDSBatchSubmission` translation and the pre-submit
+dedup check are private methods on the Worker; both reach MDS only
+through `BatchClient`, which is therefore the single mocking seam for
+MDS in tests.
 
 ## 3. End-to-end CreateJob flow
 
@@ -84,17 +104,26 @@ The main path. Console returns immediately; the worker submits later.
      - `ErrStoreUnavailable` -> `codes.Unavailable`
 4. **Console responds.**
    - Returns a `*pb.Job` populated from the overlay + the queued task.
-5. **Worker leases.** (background loop)
-   - `TaskStore.Lease` returns one or more `LeasedTask`s with a lease bound
-     to the worker.
+5. **Worker dispatcher leases.** (background loop, single process,
+   single dispatcher goroutine)
+   - When `SchedulerFunc == nil`: `TaskStore.Lease` returns one or more
+     `LeasedTask`s with a lease bound to the worker.
+   - When `SchedulerFunc != nil`: `TaskStore.ListCandidates` →
+     `SchedulerFunc(candidates)` → `TaskStore.LeaseByID` to atomically claim
+     the selected IDs.
    - State: `queued -> leased`.
-6. **Worker calls `TaskExecutor.Execute`.**
-   - The executor builds the MDS submission body from the task. The
-     `extra_body.aibrix` block carries `job_id` and `model_template`.
-   - Pre-submit dedup: the executor SHOULD `BatchClient.GetBatch` keyed on
-     `extra_body.aibrix.job_id` first and short-circuit if a batch already
-     exists.
-   - Returns `(batchID, err)`.
+   - Each leased task is handed to one of N task goroutines via an
+     internal channel.
+6. **Worker submits to MDS** (private `Worker.submit` method, runs on a
+   per-task goroutine).
+   - Builds `MDSBatchSubmission` from the task and the in-memory
+     `Reservation`. The `extra_body.aibrix` block carries `job_id`,
+     `model_template`, `planner_decision`, and `resource_details`.
+   - Pre-submit dedup: `BatchClient.GetBatch` keyed on
+     `extra_body.aibrix.job_id` first; if a batch already exists,
+     short-circuit and Ack with the existing batch ID.
+   - Otherwise calls `BatchClient.CreateBatch` and uses the returned
+     batch ID. Wraps transport errors with `ErrMDSSubmitFailed`.
 7. **Worker acks the store.**
    - On success: `TaskStore.Ack` with the batch ID. State: `leased ->
      submitted`.
@@ -146,7 +175,7 @@ The planner routes internally:
 
 | Task state                       | What CancelJob does                                                                          |
 | -------------------------------- | -------------------------------------------------------------------------------------------- |
-| `queued`, `leased`, `retryable_failure` | `TaskStore.CancelTask`; any holding worker discovers the cancel via `ErrLeaseLost`.   |
+| `queued`, `leased`, `retryable_failure` | `TaskStore.CancelTask`; any holding worker goroutine discovers the cancel on its next `Ack`/`Nack`/`Fail` call via `ErrLeaseLost`. |
 | `submitted` (BatchID set)        | `BatchClient.CancelBatch(batchID)`, then `TaskStore.CancelTask`; subsequent `GetJob` reads overlay live MDS state. |
 | terminal states                  | `TaskStore.CancelTask` is a no-op success (idempotent).                                      |
 
@@ -154,114 +183,116 @@ Console does not call `BatchClient` directly. The planner owns the routing.
 
 ## 6. Worker loop (reference outline)
 
-The planner worker is a long-running goroutine. One conceptual tick:
+The Worker is a single long-running struct in one process. Internally
+it runs one **dispatcher goroutine** that batches tasks out of the
+store, and **N task goroutines** that consume from a shared channel.
+Concurrency control across goroutines is in-memory; the store-level
+lease exists for crash recovery, not for in-process mutual exclusion.
 
 ```text
+// Dispatcher goroutine (one per Worker).
 for ctx.Err() == nil {
-    // Two paths, picked by whether a PickFunc is configured:
+    // Two paths, picked by whether a SchedulerFunc is configured:
     //
-    //   pick == nil  -> FCFS via store.Lease (the convenience path).
-    //   pick != nil  -> custom ranking; the function returns task IDs,
-    //                   the store atomically leases them.
+    //   scheduler == nil  -> FCFS via store.Lease (the convenience path).
+    //   scheduler != nil  -> custom ranking; the function returns task IDs,
+    //                        the store atomically leases them.
     //
-    // Switching policies is one line: pick = mySchedulingPolicy, where
-    // mySchedulingPolicy is any PickFunc.
+    // Switching policies is one line: scheduler = mySchedulingPolicy,
+    // where mySchedulingPolicy is any SchedulerFunc.
     var leased []*LeasedTask
-    if w.pick == nil {
+    if w.scheduler == nil {
         leased, _ = store.Lease(ctx, &LeaseRequest{
-            WorkerID: workerID, Limit: batchSize, LeaseTTL: 30 * time.Second,
+            WorkerID: workerID, Limit: batchSize, LeaseTTL: leaseTTL, // e.g. 10m
         })
     } else {
-        ids, _ := w.pick(ctx, store, &PickRequest{
+        candidates, _ := store.ListCandidates(ctx, &ListCandidatesRequest{
+            Limit: batchSize * overscan, Now: time.Now(),
+        })
+        if len(candidates) == 0 { time.Sleep(pollInterval); continue }
+        ids, _ := w.scheduler(ctx, store, &ScheduleRequest{
             WorkerID: workerID, Limit: batchSize, Now: time.Now(),
         })
         if len(ids) == 0 { time.Sleep(pollInterval); continue }
         leased, _ = store.LeaseByID(ctx, &LeaseByIDRequest{
-            WorkerID: workerID, TaskIDs: ids, LeaseTTL: 30 * time.Second,
+            WorkerID: workerID, TaskIDs: ids, LeaseTTL: leaseTTL,
         })
     }
     if len(leased) == 0 {
         time.Sleep(pollInterval); continue
     }
-
     for _, item := range leased {
-        hbCtx, hbCancel := context.WithCancel(ctx)
-        go heartbeat(hbCtx, store, item.Lease, ttl/3)
+        workChan <- item   // hand off to a task goroutine
+    }
+}
 
-        // 1. Reserve capacity. Reserve is idempotent per TaskID, so a
-        //    re-leasing worker (after a prior worker crashed mid-tick)
-        //    gets the same Reservation back rather than a new slot.
-        reservation, err := rm.Reserve(ctx, &ReserveRequest{
-            JobID: item.Task.JobID, TaskID: item.Task.TaskID,
-            ResourceRequirement: item.Task.ResourceRequirement,
-            RequestedBy: workerID,
+// Task goroutine (one per parallelism slot; reads from workChan).
+for item := range workChan {
+    // 1. Acquire capacity from the RM (contract owned by an adjacent
+    //    RM package; idempotent per TaskID, so a re-leasing worker
+    //    after a crash gets the same handle back rather than a new
+    //    slot). The worker translates the RM-side response into the
+    //    in-memory planner.Reservation shape.
+    reservation, err := acquireFromRM(ctx, item.Task, workerID)
+    if errors.Is(err, ErrInsufficientResources) {
+        store.Nack(ctx, &NackRequest{
+            Lease: item.Lease, RetryAt: backoff.Next(item.Task.Attempts),
+            LastError: err.Error(),
         })
-        if errors.Is(err, ErrInsufficientResources) ||
-           errors.Is(err, ErrResourceManagerUnavailable) {
-            store.Nack(ctx, &NackRequest{
-                Lease: item.Lease, RetryAt: backoff.Next(item.Task.Attempts),
-                LastError: err.Error(),
-            })
-            hbCancel()
-            continue
-        }
+        continue
+    }
 
-        // 2. Project the reservation into extra_body.aibrix.planner_decision
-        //    via item.Task before Execute reads it.
-        item.Task.ReservationID = reservation.ReservationID
-        item.Task.ReservationExpiresAt = reservation.ExpiresAt
+    // 2. Submit (private Worker.submit method).
+    //    Builds MDSBatchSubmission, runs pre-submit dedup via
+    //    BatchClient.GetBatch by aibrix.job_id, then calls
+    //    BatchClient.CreateBatch. Returns the resulting BatchID.
+    batchID, err := w.submit(ctx, item.Task, reservation)
 
-        // 3. Submit.
-        batchID, err := executor.Execute(ctx, item.Task)
-        hbCancel()
-
-        switch {
-        case err == nil:
-            // The reservation is intentionally NOT released on Ack:
-            // it must outlive submit so the reservation-expiry sweeper
-            // can detect an expired reservation and create a
-            // continuation task. Release happens on Fail/Cancel/
-            // observed MDS-terminal state. The sweeper itself does
-            // not call Release; RM-side expiry handles slot reclaim.
-            store.Ack(ctx, &AckRequest{
-                Lease: item.Lease, BatchID: batchID, SubmittedAt: time.Now(),
-                ReservationID:        reservation.ReservationID,
-                ReservationExpiresAt: reservation.ExpiresAt,
-            })
-        case errors.Is(err, ErrMDSSubmitFailed) && retryable(err):
-            store.Nack(ctx, &NackRequest{
-                Lease: item.Lease, RetryAt: backoff.Next(item.Task.Attempts),
-                LastError: err.Error(),
-            })
-            rm.Release(ctx, &ReleaseRequest{
-                ReservationID: reservation.ReservationID, Reason: "retry",
-            })
-        default:
-            store.Fail(ctx, &FailRequest{
-                Lease: item.Lease, LastError: err.Error(),
-            })
-            rm.Release(ctx, &ReleaseRequest{
-                ReservationID: reservation.ReservationID, Reason: "failed",
-            })
-        }
+    switch {
+    case err == nil:
+        // The reservation is intentionally NOT released on Ack:
+        // it must outlive submit so the reservation-expiry sweeper
+        // can detect an expired reservation and create a
+        // continuation task. Release happens on Fail/Cancel/
+        // observed MDS-terminal state. The sweeper itself does
+        // not call Release; RM-side expiry handles slot reclaim.
+        store.Ack(ctx, &AckRequest{
+            Lease: item.Lease, BatchID: batchID, SubmittedAt: time.Now(),
+            ReservationID:        reservation.ReservationID,
+            ReservationExpiresAt: reservation.ExpiresAt,
+        })
+    case errors.Is(err, ErrMDSSubmitFailed) && retryable(err):
+        store.Nack(ctx, &NackRequest{
+            Lease: item.Lease, RetryAt: backoff.Next(item.Task.Attempts),
+            LastError: err.Error(),
+        })
+        releaseFromRM(ctx, reservation.ReservationID)
+    default:
+        store.Fail(ctx, &FailRequest{
+            Lease: item.Lease, LastError: err.Error(),
+        })
+        releaseFromRM(ctx, reservation.ReservationID)
     }
 }
 ```
 
-`Release` errors (ErrReservationNotFound / ErrReservationExpired) are
-treated as no-ops; the reservation already returned to the pool.
+`Release` errors from the RM (e.g. "reservation already released or
+expired") are treated as no-ops; the reservation already returned to
+the pool.
 
-`Worker.Run` wraps this with shutdown handling. `Worker.ProcessAvailable`
-exposes one tick for tests with controlled time.
+`Worker.Run(ctx)` wraps the dispatcher and N task goroutines with
+shutdown handling. `Worker.ProcessAvailable(ctx, now)` exposes one
+dispatcher tick for tests with controlled time.
 
-The heartbeat goroutine is mandatory: lease expiry is the only crash
-recovery primitive, but during a synchronous `Execute` there is nothing
-to renew it from. Renewing every `TTL/3` keeps the lease alive while the
-MDS call is in flight; the heartbeat is cancelled when `Execute` returns.
+`leaseTTL` is sized longer than the expected `Worker.submit` duration
+(commonly 5–15 minutes for batch submission) so a slow MDS call does
+not invalidate the in-flight worker. There is no mid-flight
+`RenewLease` in MVP; if the worker process dies, leased tasks are
+re-leasable once their TTL expires on the next `Lease` call.
 
-`Execute` must be effectively idempotent against MDS — typically by
-keying off `extra_body.aibrix.job_id` so a duplicate submit is detectable.
-See §8.
+`Worker.submit` must be effectively idempotent against MDS — typically
+by keying off `extra_body.aibrix.job_id` so a duplicate submit is
+detectable via `BatchClient.GetBatch`. See §8.
 
 ## 7. Read-time MDS overlay
 
@@ -287,23 +318,36 @@ When that happens, the lookup key is `extra_body.aibrix.job_id`.
 
 ## 8. Crash safety and duplicate submit
 
-Three failure modes can cause one task to be submitted to MDS twice:
+Two failure modes can cause one task to be submitted to MDS twice:
 
-1. Worker dies after MDS returns 200 but before `Ack`.
-2. `Execute` runs longer than the lease TTL.
-3. Network partition swallows the MDS response.
+1. Worker process dies after MDS returns 200 but before `Ack`. On
+   restart, the lease eventually TTLs out and the task is re-leased
+   and re-submitted.
+2. Network partition swallows the MDS response; the task goroutine
+   times out and `Nack`s; the next retry creates a second batch.
+
+(Single-worker plus a generously sized lease TTL means "another worker
+leases the task while the first is still running" is not a path: there
+is only one worker process, the dispatcher hands each leased task to
+exactly one goroutine, and `submit` finishes well within TTL in the
+common case.)
 
 The MVP defenses, in order:
 
-1. **Pre-submit dedup check inside `Execute`.** Call `BatchClient.GetBatch`
-   (or, eventually, a `ListBatches` filtered by `aibrix.job_id`) before
-   submitting. If a batch already exists for the same `job_id`, return its
-   batch ID without resubmitting.
-2. **Lease heartbeat.** `Worker` runs a goroutine that calls
-   `TaskStore.RenewLease` every `TTL/3` while `Execute` is in flight.
-3. **MDS-side dedup (target).** When MDS treats `extra_body.aibrix.job_id`
-   as a uniqueness key, retries become safe by construction and (1)
-   becomes a fast-path optimization. Until then, (1) is required.
+1. **Pre-submit dedup check inside `Worker.submit`.** Call
+   `BatchClient.GetBatch` (or, eventually, a `ListBatches` filtered by
+   `aibrix.job_id`) before calling `BatchClient.CreateBatch`. If a
+   batch already exists for the same `job_id`, return its batch ID
+   without resubmitting.
+2. **MDS-side dedup (target).** When MDS treats
+   `extra_body.aibrix.job_id` as a uniqueness key, retries become safe
+   by construction and (1) becomes a fast-path optimization. Until
+   then, (1) is required.
+
+Mid-flight lease renewal (heartbeats) is intentionally not part of the
+MVP surface; reintroducing `RenewLease` becomes worthwhile only if the
+planner scales to multiple worker processes that contend for the same
+store.
 
 ## 9. Files
 
@@ -340,8 +384,8 @@ Workers MUST NOT upload file content before submit.
 | `ErrDuplicateEnqueue`  | `AlreadyExists`          | Treat as success on retry                    |
 | `ErrStoreFull`         | `ResourceExhausted`      | "System busy, retry shortly"                 |
 | `ErrStoreUnavailable`  | `Unavailable`            | Backend down banner                          |
-| `ErrLeaseLost`         | (worker-internal)        | Worker drops in-flight work; not user-facing |
-| `ErrMDSSubmitFailed`   | (chain underlying status)| Reuse `mapSDKError` shape                    |
+| `ErrLeaseLost`         | (worker-internal)        | Worker goroutine drops in-flight work; not user-facing |
+| `ErrMDSSubmitFailed`   | (chain underlying status)| Reuse `mapSDKError` shape; wraps `BatchClient.CreateBatch` failures |
 
 ## 12. MDS dependency
 

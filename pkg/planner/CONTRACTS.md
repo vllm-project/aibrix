@@ -29,9 +29,8 @@ Console / ops -> Planner telemetry
 Worker -> TaskStore
   Enqueue(*PlannerTask)        -> no body         (always Attempt = 1)
   LeaseRequest                 -> []*LeasedTask   (FCFS convenience)
-  ListCandidatesRequest        -> []*PlannerTask  (read-only, for PickFunc)
+  ListCandidatesRequest        -> []*PlannerTask  (read-only, for SchedulerFunc)
   LeaseByIDRequest             -> []*LeasedTask   (atomic by ID)
-  RenewLease(...)              -> TaskLease
   AckRequest                   -> no body
   NackRequest                  -> no body
   FailRequest                  -> no body
@@ -44,20 +43,19 @@ Planner -> TaskStore
   EnqueueContinuationRequest                     -> no body
   ListTasksByJobID(jobID)                        -> []*PlannerTask  (full chain)
 
-Worker -> PickFunc (scheduling policy)
-  PickRequest            -> []taskID
+Worker -> SchedulerFunc (scheduling policy)
+  ScheduleRequest            -> []taskID
 
-Worker -> Executor
-  Execute(*PlannerTask, *Reservation)  -> batchID
+(Worker -> RM is owned by an adjacent RM package; the planner does not
+declare it. The worker translates the RM-side response into the in-memory
+Reservation defined here before building the MDSBatchSubmission for
+BatchClient.CreateBatch.)
 
-Worker -> ResourceManager
-  ReserveRequest         -> *Reservation
-  ReleaseRequest         -> no body
-
-Planner -> MDS
-  GetBatch(batchID)             -> *BatchStatus
-  CancelBatch(batchID)          -> *BatchStatus
-  ListBatchesRequest            -> *ListBatchesResponse
+Worker / Planner -> MDS (BatchClient)
+  CreateBatch(*MDSBatchSubmission) -> *BatchStatus    (worker submit path)
+  GetBatch(batchID)                -> *BatchStatus    (read overlay + dedup)
+  CancelBatch(batchID)             -> *BatchStatus    (post-submit cancel)
+  ListBatchesRequest               -> *ListBatchesResponse
 ```
 
 ## 1. Console -> Planner
@@ -111,7 +109,7 @@ Propagation rules:
 - `job.idempotency_key` must be carried into the durable `PlannerTask` so
   the store can enforce `ErrDuplicateEnqueue`.
 - `job.priority` is copied into `PlannerTask.Priority` for use by score-
-  based `PickFunc` implementations. Zero is the default and is ignored
+  based `SchedulerFunc` implementations. Zero is the default and is ignored
   by FCFS policies.
 
 ### EnqueueResult
@@ -175,8 +173,8 @@ the JobID is unknown.
 The planner routes the cancel internally:
 
 - pre-submit (`PlannerState ∈ {queued, leased, retryable_failure}`):
-  call `TaskStore.CancelTask`; any worker holding the lease discovers
-  the cancel on its next `RenewLease`/`Ack`/`Nack`/`Fail` call via
+  call `TaskStore.CancelTask`; any worker goroutine holding the lease
+  discovers the cancel on its next `Ack`/`Nack`/`Fail` call via
   `ErrLeaseLost`.
 - post-submit (`PlannerState == submitted`, `BatchID` set):
   call `BatchClient.CancelBatch(batchID)`, then `TaskStore.CancelTask`.
@@ -186,9 +184,9 @@ The planner routes the cancel internally:
 ## 2. TaskStore
 
 Interface: `TaskStore`. Called by both the Worker (lease lifecycle:
-`Lease` / `LeaseByID` / `RenewLease` / `Ack` / `Nack` / `Fail`) and
-the Planner (`Enqueue` / `GetByJobID` / `GetByTaskID` / `CancelTask`
-/ `ListSubmittedWithExpiringReservation` / `EnqueueContinuation` /
+`Lease` / `LeaseByID` / `Ack` / `Nack` / `Fail`) and the Planner
+(`Enqueue` / `GetByJobID` / `GetByTaskID` / `CancelTask` /
+`ListSubmittedWithExpiringReservation` / `EnqueueContinuation` /
 `ListTasksByJobID`).
 
 Each `PlannerTask` is one attempt at running a job. The first attempt
@@ -203,9 +201,14 @@ transitions on a single PlannerTask are forward-only.
 {
   "worker_id": "planner-worker-0",
   "limit": 10,
-  "lease_ttl": "30s"
+  "lease_ttl": "10m"
 }
 ```
+
+`lease_ttl` is sized longer than the expected `Worker.submit` duration
+so a slow MDS submission does not invalidate the in-flight worker.
+There is no mid-flight `RenewLease` in MVP; crash recovery falls back
+to natural TTL expiry on worker-process restart.
 
 ### Lease response (`[]*LeasedTask`)
 
@@ -230,20 +233,20 @@ transitions on a single PlannerTask are forward-only.
       "attempts": 0,
       "max_attempts": 3,
       "lease_owner": "planner-worker-0",
-      "lease_expires_at": "2026-05-01T10:00:35Z",
+      "lease_expires_at": "2026-05-01T10:10:00Z",
       "enqueued_at": "2026-05-01T10:00:00Z",
       "available_at": "2026-05-01T10:00:00Z"
     },
     "lease": {
       "task_id": "task_456",
       "worker_id": "planner-worker-0",
-      "lease_expires_at": "2026-05-01T10:00:35Z"
+      "lease_expires_at": "2026-05-01T10:10:00Z"
     }
   }
 ]
 ```
 
-### Policy-aware lease (used by `PickFunc`)
+### Policy-aware lease (used by `SchedulerFunc`)
 
 Custom scheduling policies use a two-stage pickup that splits ranking
 from leasing. The store exposes both halves; the policy ranks; the
@@ -269,7 +272,7 @@ policy is free to inspect, rank, and discard candidates.
 {
   "worker_id": "planner-worker-0",
   "task_ids":  ["task_456", "task_457", "task_458"],
-  "lease_ttl": "30s"
+  "lease_ttl": "10m"
 }
 ```
 
@@ -281,18 +284,13 @@ race outcome and operates on what it got.
 
 The shape of the response is the same `[]*LeasedTask` as `Lease`.
 
-### RenewLease
-
-`RenewLease(ctx, lease, extendBy)` returns the renewed `TaskLease`.
-Returns `ErrLeaseLost` if the existing lease is no longer valid.
-
 ### Ack / Nack / Fail
 
 ```json
 // AckRequest
 {
   "lease": { "task_id": "task_456", "worker_id": "planner-worker-0",
-             "lease_expires_at": "2026-05-01T10:00:35Z" },
+             "lease_expires_at": "2026-05-01T10:10:00Z" },
   "batch_id": "batch_xyz",
   "submitted_at": "2026-05-01T10:00:07Z",
   "reservation_id": "res_789",
@@ -314,7 +312,8 @@ Returns `ErrLeaseLost` if the existing lease is no longer valid.
 ```
 
 All three return no body on success. All three return `ErrLeaseLost` if
-the store no longer recognizes the lease.
+the store no longer recognizes the lease (typically because a
+concurrent `CancelTask` transitioned the task out of `leased`).
 
 ### CancelTaskRequest
 
@@ -331,8 +330,8 @@ Returns no body on success. Returns `ErrJobNotFound` if the TaskID does
 not exist. Idempotent: cancelling a task already in `cancelled` or any
 terminal state is a no-op success. CancelTask carries no `TaskLease`
 because `Planner.CancelJob` does not own one; any worker holding the
-lease discovers the cancel on its next `RenewLease`/`Ack`/`Nack`/`Fail`
-call via `ErrLeaseLost`.
+lease discovers the cancel on its next `Ack`/`Nack`/`Fail` call via
+`ErrLeaseLost`.
 
 For post-submit cancels (`BatchID` set), `Planner.CancelJob` also calls
 `BatchClient.CancelBatch` separately; `CancelTask` only records the
@@ -414,18 +413,18 @@ surface; state changes go through the narrow methods above
 MDS-derived state is overlaid live into `JobView` via
 `BatchClient.GetBatch` rather than mirrored into the store.
 
-## 3. Scheduling Policy (PickFunc)
+## 3. Scheduling Policy (SchedulerFunc)
 
-Scheduling policies plug into the worker as `PickFunc` values:
+Scheduling policies plug into the worker as `SchedulerFunc` values:
 
 ```go
-type PickFunc func(ctx context.Context, store TaskStore, req *PickRequest) ([]string, error)
+type SchedulerFunc func(ctx context.Context, store TaskStore, req *ScheduleRequest) ([]string, error)
 ```
 
-The worker invokes the configured `PickFunc` once per loop tick, then
+The worker invokes the configured `SchedulerFunc` once per loop tick, then
 hands the returned TaskIDs to `TaskStore.LeaseByID`.
 
-`PickRequest`:
+`ScheduleRequest`:
 
 ```json
 {
@@ -439,27 +438,38 @@ Return value: a `[]string` of TaskIDs in preferred lease order; length
 must be `<= limit`.
 
 Switching policies is a one-line change at the Worker's construction
-site (`Pick: myPolicy`). A `nil` `PickFunc` means "use
+site (`Scheduler: myPolicy`). A `nil` `SchedulerFunc` means "use
 `TaskStore.Lease` directly" - the FCFS-only convenience path that
-bypasses `PickFunc` entirely.
+bypasses `SchedulerFunc` entirely.
 
-## 4. Worker -> Executor
+## 4. Worker submit path
 
-Interface: `TaskExecutor`.
+The Worker is a concrete struct in `pkg/planner`, not an exported
+interface. The MDS submission step is a private method on the Worker
+(typically `Worker.submit`) that:
 
-`Execute(ctx, *PlannerTask, *Reservation) → (batchID string, err error)`.
+1. Builds an `MDSBatchSubmission` from the leased `PlannerTask` and the
+   in-memory `Reservation`.
+2. Performs a pre-submit dedup check by calling
+   `BatchClient.GetBatch` keyed on `extra_body.aibrix.job_id` (or
+   `BatchClient.ListBatches` once MDS exposes a `job_id` index). If a
+   batch already exists, the Worker treats it as already submitted
+   and `Ack`s with the existing batch ID without resubmitting.
+3. Calls `BatchClient.CreateBatch(*MDSBatchSubmission) -> *BatchStatus`.
+4. Wraps any transport-level error from `CreateBatch` with
+   `ErrMDSSubmitFailed` so callers can route on `errors.Is` without
+   parsing transport-specific error strings.
 
-The executor builds an `MDSBatchSubmission` from the task and the live
-reservation, then translates that into the actual MDS HTTP call. The
-`*Reservation` argument is the in-memory `Reservation` the worker just
-obtained from `ResourceManager.Reserve` (its `ReservationID` /
-`ExpiresAt` / `Allocations` flow into `extra_body.aibrix`). It MAY be
-nil when the worker stack runs without an RM (for example unit tests),
-in which case the planner_decision and resource_details blocks are
-simply omitted.
+The `Reservation` is the in-memory shape the worker assembled from
+the RM-side response (its `ReservationID` / `ExpiresAt` /
+`Allocations` flow into `extra_body.aibrix`). When the Worker
+constructs the submission without an RM (for example in a unit test
+that injects a fake `BatchClient`), the `planner_decision` and
+`resource_details` blocks are simply omitted.
 
-`MDSBatchSubmission` is the typed cross-team payload between the
-planner-side submission builder and any MDS transport adapter:
+`MDSBatchSubmission` is the typed shared payload between the
+planner-side submission builder (the Worker) and the `BatchClient`
+implementation:
 
 ```go
 type MDSBatchSubmission struct {
@@ -471,7 +481,8 @@ type MDSBatchSubmission struct {
 }
 ```
 
-The on-the-wire shape:
+The on-the-wire shape that `BatchClient.CreateBatch` ultimately POSTs
+to MDS `/v1/batches`:
 
 ```json
 {
@@ -503,59 +514,35 @@ The on-the-wire shape:
 
 Notes:
 
-- `planner_decision` is populated by the worker from the
-  `Reservation.ReservationID` and `Reservation.ExpiresAt` returned by
-  `ResourceManager.Reserve`. `resource_details` is populated from
-  `Reservation.Allocations`. Both are present whenever the worker
-  acquired a reservation before calling Execute; absent only when the
-  worker skipped `Reserve` (e.g., a development build wired without an
-  `ResourceManager`).
+- `planner_decision` is populated by the worker from
+  `Reservation.ReservationID` and `Reservation.ExpiresAt`.
+  `resource_details` is populated from `Reservation.Allocations`. Both
+  are present whenever the worker acquired a reservation before
+  building the submission; absent only when the worker stack runs
+  without an RM (e.g. a development build wired without an RM).
 - `aibrix.job_id` is the primary correlation key between planner tasks
   and MDS batches.
-- Pre-submit dedup is part of the executor contract: implementations
-  SHOULD short-circuit when an existing MDS batch for the same
-  `aibrix.job_id` is found. (The lookup mechanism is being designed
-  separately - see the open dedup decision in ARCHITECTURE.md.)
-- `Execute` MUST wrap upstream submit failures with `ErrMDSSubmitFailed`.
+- Pre-submit dedup is the Worker's responsibility, not the
+  `BatchClient` adapter's. The lookup mechanism (GetBatch by
+  job_id vs. ListBatches filtered by aibrix.job_id) is being designed
+  separately — see the open dedup decision in ARCHITECTURE.md.
 
-## 5. Worker -> ResourceManager
+## 5. Worker -> RM
 
-Interface: `ResourceManager`.
-
-`Reserve(ctx, *ReserveRequest) → (*Reservation, error)` — request
-capacity. Implementations MUST treat `TaskID` as a uniqueness key:
-duplicate Reserve calls with the same `TaskID` MUST return the existing
-`Reservation` rather than allocating a new one. Without this property,
-worker crashes between `Reserve` and `Ack` (or lost RM responses) leak
-reservations. Continuation tasks (created by
-`TaskStore.EnqueueContinuation`) get a fresh `TaskID` and therefore a
-fresh reservation — the dedup keys are intentionally per-attempt.
-
-```json
-{
-  "job_id": "job_123",
-  "task_id": "task_456",
-  "resource_requirement": {
-    "resource_type": "spot",
-    "accelerator": { "type": "H100-SXM", "count": 4 }
-  },
-  "deadline": "2026-05-01T10:05:00Z",
-  "requested_by": "planner-worker-0"
-}
-```
-
-Reserve returns a `Reservation`:
+The Resource Manager contract is owned by an adjacent RM package; the planner
+package does not declare it. The worker translates the RM-side
+response into the in-memory `Reservation` shape this package defines:
 
 ```json
 {
   "reservation_id": "res_789",
-  "job_id": "job_123",
+  "job_id":         "job_123",
   "allocations": [
     {
-      "resource_type": "spot",
+      "resource_type":    "spot",
       "endpoint_cluster": "cluster-a",
-      "gpu_type": "H100-SXM",
-      "worker_num": 4
+      "gpu_type":         "H100-SXM",
+      "worker_num":       4
     }
   ],
   "expires_at": "2026-05-01T10:05:00Z"
@@ -563,60 +550,59 @@ Reserve returns a `Reservation`:
 ```
 
 The `ResourceDetail` wire shape is intentionally flat (no nested
-`accelerator` block). MDS consumes `gpu_type` and `worker_num` directly
-when rendering the batch worker job.
+`accelerator` block). MDS consumes `gpu_type` and `worker_num`
+directly when rendering the batch worker job.
 
 The worker projects `reservation_id` and `allocations` into the MDS
 submission as:
 
 - `extra_body.aibrix.planner_decision.reservation_id`
-- `extra_body.aibrix.planner_decision.reservation_resource_deadline` (Unix
-  seconds)
+- `extra_body.aibrix.planner_decision.reservation_resource_deadline`
+  (Unix seconds, derived from the request's deadline)
 - `extra_body.aibrix.resource_details` (= `allocations`)
 
-`Release(ctx, *ReleaseRequest) → error` — return capacity to the pool.
+Lifecycle expectations the planner relies on (the RM contract guarantees
+them; the worker enforces them in its own loop):
 
-```json
-{
-  "reservation_id": "res_789",
-  "reason": "submitted"
-}
-```
+- The capacity-request path is idempotent per the planner's `TaskID`,
+  so a re-leasing worker after a crash gets the same Reservation back
+  rather than allocating a new slot. Continuation tasks get a fresh
+  `TaskID` and therefore a fresh reservation.
+- The release path is called once the attempt reaches a terminal
+  planner state (Fail / post-`MaxAttempts` Nack / post-submit cancel /
+  observed MDS-terminal). It is *not* called on `Ack`: the reservation
+  is held past submit so the reservation-expiry sweeper can detect an
+  expired reservation by reading `ReservationExpiresAt` on the
+  submitted task. The sweeper itself does *not* call Release; it
+  relies on RM-side expiry to reclaim the slot.
+- When the reservation expires, the RM tears down the underlying GPU
+  pods and MDS marks its batch failed/expired on its own, so the
+  planner does not call `BatchClient.CancelBatch` from the expiry path
+  either.
 
-The worker / planner SHOULD call `Release` once the attempt reaches a
-terminal state: `Fail` on terminal failure, post-`MaxAttempts` `Nack`
-once retries are exhausted, after `Planner.CancelJob` has transitioned
-the task to `cancelled`, or once the planner observes the MDS batch
-reach a terminal status (`completed`/`failed`/`expired`/`cancelled`).
+The planner exposes one error sentinel at the worker -> store boundary:
 
-`Release` is *not* called on `Ack`: the reservation is held past
-submit so the reservation-expiry sweeper can detect an expired
-reservation by reading `ReservationExpiresAt` on the submitted task.
-The sweeper itself does *not* call `Release`; it relies on RM-side
-expiry to reclaim the slot. The RM thus enforces an expiry as a
-backstop for crashed workers and as the trigger for the continuation
-path. When the reservation expires, the RM tears down the underlying
-GPU pods and MDS marks its batch failed/expired on its own, so the
-planner does not call `BatchClient.CancelBatch` from the expiry path
-either.
+- `ErrInsufficientResources` — the RM cannot satisfy the request now;
+  the worker should Nack with backoff. The RM's typed error is wrapped
+  with this so the planner stays decoupled from the concrete RM error
+  vocabulary.
 
-Errors:
+## 6. Worker / Planner -> MDS
 
-- `ErrInsufficientResources` — Reserve cannot satisfy the request now;
-  the worker should Nack with backoff.
-- `ErrResourceManagerUnavailable` — RM backend down; same retry pattern.
-- `ErrReservationNotFound` — Release referenced a reservation already
-  released or expired; callers may treat as a no-op success.
-- `ErrReservationExpired` — the RM reclaimed the reservation before the
-  worker used it; the worker must re-Reserve before continuing.
+Interface: `BatchClient`. The single MDS adapter for both the worker's
+submit path and the planner's read/cancel paths. One fake covers every
+MDS interaction in tests.
 
-## 6. Planner -> MDS
-
-Interface: `BatchClient`.
-
+`CreateBatch(ctx, *MDSBatchSubmission) → *BatchStatus`
 `GetBatch(ctx, batchID) → *BatchStatus`
 `CancelBatch(ctx, batchID) → *BatchStatus`
 `ListBatches(ctx, *ListBatchesRequest) → *ListBatchesResponse`
+
+`CreateBatch` is the thin transport adapter for the worker's submit
+path (see §4). `BatchClient` implementations need only translate
+`MDSBatchSubmission` into the actual MDS `POST /v1/batches` HTTP call
+and return the resulting `BatchStatus`; pre-submit dedup and error
+wrapping (`ErrMDSSubmitFailed`) are the Worker's responsibility.
 
 ### ListBatchesRequest / ListBatchesResponse
 
@@ -812,7 +798,7 @@ Interface: `QueueStatsReader`. `GetQueueStats(ctx, *GetQueueStatsRequest)
   "current_queued_tasks": 234,
   "current_leased_tasks": 5,
   "current_retryable_tasks": 9,
-  "max_lease_ttl": "30s",
+  "max_lease_ttl": "10m",
   "oldest_queued_at": "2026-05-01T09:58:00Z",
   "sampled_at": "2026-05-01T10:00:00Z"
 }
@@ -834,9 +820,6 @@ counted here.
 | `ErrStoreUnavailable`           | The store backend is degraded or unreachable.                   |
 | `ErrDuplicateEnqueue`           | `JobID` or `IdempotencyKey` already exists in the store.        |
 | `ErrLeaseLost`                  | Ack/Nack/Fail referenced a lease the store no longer owns.      |
-| `ErrMDSSubmitFailed`            | `TaskExecutor.Execute` failed talking to MDS.                   |
-| `ErrInsufficientResources`      | `ResourceManager.Reserve` cannot satisfy the request now.       |
-| `ErrResourceManagerUnavailable` | RM backend degraded or unreachable.                             |
-| `ErrReservationNotFound`        | `Release` referenced an unknown reservation (treat as no-op).   |
-| `ErrReservationExpired`         | RM reclaimed reservation before the worker used or extended it. |
+| `ErrMDSSubmitFailed`            | `BatchClient.CreateBatch` (called from `Worker.submit`) failed. |
+| `ErrInsufficientResources`      | The RM cannot satisfy the request now; worker Nacks with backoff. |
 | `ErrTaskAlreadyTerminal`        | Non-lease state transition (`CancelTask`/`EnqueueContinuation`) targeted a task already in a terminal state; safe to treat as no-op. |

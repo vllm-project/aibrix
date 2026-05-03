@@ -18,29 +18,42 @@ limitations under the License.
 // between the AIBrix Console BFF, the planner workers, and the metadata
 // service (MDS).
 //
-// The MVP surface is eight interfaces, one per audience:
+// The MVP surface is five exported interfaces plus one function type:
 //
 //   - Planner                Console BFF -> planner front door (Enqueue/Get/List/Cancel)
 //   - QueueStatsReader       Console / ops -> queue depth + worker activity
 //   - ResourceCapacityReader Console / ops -> aggregated capacity (reserved/used/free)
-//   - TaskStore              Planner -> durable state + worker coordination
-//   - TaskExecutor           Worker -> MDS submission
-//   - ResourceManager        Worker -> RM (capacity reserve/release)
-//   - BatchClient            Planner -> MDS read/cancel
-//   - Worker                 Long-running orchestration loop
+//   - TaskStore              Planner / Worker -> durable state + lease coordination
+//   - BatchClient            Planner / Worker -> MDS create / read / cancel
+//   - SchedulerFunc (func)   Worker -> pluggable scheduling policy
+//
+// The Worker is a concrete struct in this package, not an exported
+// interface, since it has only one production implementation. Pre-submit
+// dedup and the PlannerTask -> MDS submission translation are private
+// methods on the Worker; they hit MDS through the BatchClient interface,
+// which is the single mocking seam for MDS in tests.
+//
+// The planner -> RM boundary is owned by an adjacent RM package and is
+// not declared here; the worker calls into it directly and translates
+// the result into the in-memory Reservation shape this package defines.
 //
 // TaskStore exposes both an FCFS convenience path (Lease) and a
 // policy-aware path (ListCandidates + LeaseByID). Custom scheduling
-// policies plug into the worker as PickFunc values; concrete PickFunc
-// implementations land alongside their consumers in follow-up PRs. A
-// pluggable TaskScheduler interface is intentionally not part of MVP -
-// PickFunc is the function-shaped equivalent and can be promoted to an
-// interface later if a taxonomy of policies needs to coexist.
+// policies plug into the worker as SchedulerFunc values; concrete
+// SchedulerFunc implementations land alongside their consumers in
+// follow-up PRs. A pluggable Scheduler interface is intentionally not
+// part of MVP - SchedulerFunc is the function-shaped equivalent and
+// can be promoted to an interface later if a taxonomy of policies
+// needs to coexist (the same http.Handler / http.HandlerFunc pattern
+// from the standard library).
 //
-// Cross-team types defined here ahead of their consumers - because the teams
-// building those consumers need a stable shape to design against - include
-// ProfileRef, PlannerDecision, ResourceDetail, AIBrixExtraBody, MDSExtraBody,
-// MDSBatchSubmission, JobLifecycleState, and QueueStatsView.
+// The MVP runs a single worker process with multiple goroutines
+// dispatching from one TaskStore; lease semantics protect against
+// process-level crash recovery (long TTL + natural reclaim on restart),
+// not against concurrent leasing across multiple workers. Mid-flight
+// lease renewal (heartbeats) is intentionally not part of the MVP
+// surface; it can be added back if and when the planner scales to
+// multiple worker processes.
 package planner
 
 import (
@@ -95,10 +108,18 @@ type ResourceCapacityReader interface {
 // fast lease layer and a separate durable layer is a refactor inside this
 // interface, not a change in the public contract.
 //
-// Lease semantics: at-most-one worker owns a task between Lease (or
-// LeaseByID) and Ack/Nack/Fail. If the worker dies or its lease expires,
-// the task becomes re-leasable on the next Lease call - that is the
-// crash-recovery primitive.
+// Lease semantics in MVP: a lease records that one worker owns the task
+// between Lease (or LeaseByID) and Ack/Nack/Fail. The MVP runs a single
+// worker process, so the lease is primarily a crash-recovery primitive:
+// if the process dies, lease TTL eventually expires and the task becomes
+// re-leasable on the next Lease call. Lease TTL is sized longer than the
+// expected Execute duration so a slow MDS submission does not spuriously
+// invalidate the in-flight worker; mid-flight RenewLease is not part of
+// the MVP surface. Ack/Nack/Fail are accepted as long as the
+// LeaseOwner/LeaseExpiresAt on the request still match what the store
+// recorded for the task; if the lease has been replaced (e.g. by a
+// concurrent CancelTask or a future multi-worker reclaim) the store
+// returns ErrLeaseLost.
 //
 // Two lease paths are exposed:
 //
@@ -106,11 +127,11 @@ type ResourceCapacityReader interface {
 //     ordering (typically available_at ascending) and atomically leases
 //     the top N candidates. Workers that don't need a custom policy use
 //     this directly.
-//   - ListCandidates + LeaseByID is the policy-aware path: a PickFunc
-//     reads candidates without leasing them, applies its ranking policy,
-//     and asks the store to lease just the IDs it selected. This
-//     supports priority, score-based, fair-share, and resource-aware
-//     policies without coupling them to the store.
+//   - ListCandidates + LeaseByID is the policy-aware path: a
+//     SchedulerFunc reads candidates without leasing them, applies its
+//     ranking policy, and asks the store to lease just the IDs it
+//     selected. This supports priority, score-based, fair-share, and
+//     resource-aware policies without coupling them to the store.
 type TaskStore interface {
 	// Enqueue inserts the first PlannerTask of a JobID's attempt
 	// chain. The store sets Attempt = 1 regardless of any value the
@@ -129,7 +150,6 @@ type TaskStore interface {
 	ListCandidates(ctx context.Context, req *ListCandidatesRequest) ([]*PlannerTask, error)
 	LeaseByID(ctx context.Context, req *LeaseByIDRequest) ([]*LeasedTask, error)
 
-	RenewLease(ctx context.Context, lease TaskLease, extendBy time.Duration) (TaskLease, error)
 	Ack(ctx context.Context, req *AckRequest) error
 	Nack(ctx context.Context, req *NackRequest) error
 	Fail(ctx context.Context, req *FailRequest) error
@@ -140,7 +160,7 @@ type TaskStore interface {
 	// holds the lease. The store transitions the task to
 	// PlannerTaskStateCancelled and stamps CancelledAt; a worker
 	// currently holding the lease discovers this on its next
-	// RenewLease/Ack/Nack/Fail call via ErrLeaseLost.
+	// Ack/Nack/Fail call via ErrLeaseLost.
 	//
 	// Idempotent: cancelling a task already in cancelled or any
 	// terminal state (terminal_failure, superseded, or any post-submit
@@ -186,72 +206,24 @@ type TaskStore interface {
 	GetByTaskID(ctx context.Context, taskID string) (*PlannerTask, error)
 }
 
-// TaskExecutor is the worker's MDS-submission boundary.
+// BatchClient is the planner -> MDS adapter for all batch operations.
+// It is the single mocking seam for MDS in tests: a fake BatchClient
+// covers both the worker's submit path and the planner's read/cancel
+// paths.
 //
-// Implementations translate the leased PlannerTask into one POST /v1/batches
-// against MDS and return the resulting batch ID. They should:
+// CreateBatch is called by the worker to submit a prepared
+// MDSBatchSubmission (built from the leased PlannerTask plus the
+// in-memory Reservation). The worker is responsible for the
+// pre-submit dedup check (calling GetBatch keyed on
+// extra_body.aibrix.job_id, or ListBatches once MDS indexes that
+// field) and for wrapping upstream submit failures with
+// ErrMDSSubmitFailed; BatchClient implementations are thin transport
+// adapters and need only return the resulting BatchStatus or a
+// transport error.
 //
-//   - perform a pre-submit ListBatches/GetBatch dedup check by
-//     extra_body.aibrix.job_id to avoid creating duplicate MDS batches when
-//     a previous worker died after MDS accepted but before Ack ran;
-//   - wrap upstream submit failures with ErrMDSSubmitFailed so callers can
-//     route on errors.Is without parsing transport-specific error strings.
-//
-// res carries the live ResourceManager.Reserve result the worker is
-// holding in-memory for this attempt; the executor projects
-// res.ReservationID / res.ExpiresAt into extra_body.aibrix.planner_decision
-// and res.Allocations into extra_body.aibrix.resource_details. res may be
-// nil when the worker stack runs without an RM (for example unit tests),
-// in which case those extra_body fields are simply omitted.
-type TaskExecutor interface {
-	Execute(ctx context.Context, task *PlannerTask, res *Reservation) (batchID string, err error)
-}
-
-// ResourceManager is the planner -> RM (resource manager) boundary.
-//
-// Workers call Reserve before submitting to MDS to obtain capacity for the
-// task's ResourceRequirement. The returned Reservation carries an ID and
-// allocation details that the worker projects into
-// extra_body.aibrix.planner_decision and extra_body.aibrix.resource_details
-// on the MDS submission.
-//
-// Reserve is idempotent per TaskID. Implementations MUST treat TaskID
-// as a uniqueness key: a duplicate Reserve call with the same TaskID
-// MUST return the existing Reservation rather than allocating a new
-// one. This is the only correctness fix for "worker called Reserve,
-// RM committed, response was lost." Without it, worker crashes between
-// Reserve and Ack would leak reservations. Continuation tasks (created
-// by TaskStore.EnqueueContinuation) get a new TaskID and therefore a
-// fresh reservation - the dedup keys are intentionally per-attempt.
-//
-// Release is called from worker-driven terminal states - Fail on
-// terminal failure, post-MaxAttempts Nack, or after Planner.CancelJob
-// has transitioned the task to cancelled. It is *not* called on Ack:
-// the reservation is intentionally held past submit so the
-// reservation-expiry sweeper can detect "reservation expired before
-// MDS finished" by reading ReservationExpiresAt on the submitted task.
-// The sweeper itself does not call Release; it relies on RM-side
-// expiry to reclaim the slot. Implementations MUST enforce a
-// reservation expiry as the backstop for crashed workers and as the
-// trigger for the continuation path. RM implementations SHOULD size
-// the reservation TTL to cover the batch's expected duration
-// (typically the job's completion_window). When the reservation
-// expires, the RM is responsible for tearing down the underlying
-// resources; MDS observes the resource loss and marks its batch
-// failed/expired on its own, so the planner does not call CancelBatch
-// from the expiry path.
-//
-// The concrete RM is being developed in parallel by the RM team. This
-// package defines the contract so both sides can develop independently
-// against a stable shape.
-type ResourceManager interface {
-	Reserve(ctx context.Context, req *ReserveRequest) (*Reservation, error)
-	Release(ctx context.Context, req *ReleaseRequest) error
-}
-
-// BatchClient is the planner -> MDS read/control boundary used by
-// Planner.GetJob/ListJobs to overlay live MDS state onto JobView and by
-// Planner.CancelJob for post-submit cancellation.
+// GetBatch and CancelBatch are used by Planner.GetJob/ListJobs to
+// overlay live MDS state onto JobView and by Planner.CancelJob for
+// post-submit cancellation.
 //
 // The primary correlation key between planner tasks and MDS batches is
 // extra_body.aibrix.job_id. BatchClient implementations should expose that
@@ -261,24 +233,10 @@ type ResourceManager interface {
 //
 // ListBatches returns one page of batches keyed by MDS-side cursor. It
 // powers Planner.ListJobs's MDS overlay and is also the building block for
-// the TaskExecutor pre-submit dedup scan once MDS exposes a job_id index.
+// the worker pre-submit dedup scan once MDS exposes a job_id index.
 type BatchClient interface {
+	CreateBatch(ctx context.Context, req *MDSBatchSubmission) (*BatchStatus, error)
 	GetBatch(ctx context.Context, batchID string) (*BatchStatus, error)
 	CancelBatch(ctx context.Context, batchID string) (*BatchStatus, error)
 	ListBatches(ctx context.Context, req *ListBatchesRequest) (*ListBatchesResponse, error)
-}
-
-// Worker is the long-running planner loop.
-//
-// Run is the production entry point; ProcessAvailable is one tick exposed for
-// tests. Worker is process-local; wire DTOs use RFC3339 strings on the wire,
-// but this interface uses native time.Time values.
-//
-// In MVP the Worker only handles submission (Lease -> TaskExecutor.Execute
-// -> Ack/Nack/Fail). MDS state is overlaid live into JobView at read time
-// via BatchClient.GetBatch; there is no reconcile-cache write path in the
-// MVP TaskStore surface.
-type Worker interface {
-	Run(ctx context.Context) error
-	ProcessAvailable(ctx context.Context, now time.Time) error
 }

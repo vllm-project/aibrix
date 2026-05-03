@@ -40,10 +40,10 @@ type PlannerJob struct {
 	// "use the queue/worker default policy".
 	MaxAttempts int `json:"max_attempts,omitempty"`
 	// Priority is the scheduling-policy hint. Higher values are leased
-	// sooner by priority/score-based PickFunc implementations. Zero is
-	// the default; FCFS policies ignore the field. Reserved on the type
-	// ahead of any concrete scoring policy so future scoring rollouts
-	// do not require a schema migration.
+	// sooner by priority/score-based SchedulerFunc implementations. Zero
+	// is the default; FCFS policies ignore the field. Reserved on the
+	// type ahead of any concrete scoring policy so future scoring
+	// rollouts do not require a schema migration.
 	Priority int `json:"priority,omitempty"`
 	// ResourceRequirement is provided directly by Console so planner can make
 	// scheduling decisions without first resolving the template.
@@ -107,8 +107,8 @@ type ProfileRef struct {
 // PlannerDecision captures the planner-owned scheduling decision that
 // accompanies the final MDS submission.
 //
-// Populated by the worker after a successful ResourceManager.Reserve call
-// from the returned Reservation: ReservationID is the Reservation's ID,
+// Populated by the worker after a successful RM-side capacity request,
+// from the resulting Reservation: ReservationID is the Reservation's ID,
 // ReservationResourceDeadline is the Unix-second form of Reservation.ExpiresAt.
 // The worker projects this struct into extra_body.aibrix.planner_decision on
 // the MDS submission. Empty when no reservation has been obtained yet.
@@ -136,8 +136,8 @@ type ResourceDetail struct {
 }
 
 // AIBrixExtraBody is the logical payload carried under extra_body.aibrix
-// when talking to MDS. It is the wire-level cross-team contract between
-// the planner and the metadata service.
+// when talking to MDS. It is the wire-level contract between the planner
+// and the metadata service.
 //
 // JobID is the primary correlation key between planner tasks and MDS
 // batches. MDS must persist and echo it for BatchStatus.JobID round-trips
@@ -153,7 +153,7 @@ type AIBrixExtraBody struct {
 // MDSExtraBody is the top-level extra_body payload the planner sends to MDS.
 //
 // Today the only namespace is "aibrix"; the wrapper exists because the
-// MDSBatchSubmission struct is the cross-team type that paired components
+// MDSBatchSubmission struct is the shared type that paired components
 // (executor, MDS transport adapter) construct and consume.
 type MDSExtraBody struct {
 	AIBrix AIBrixExtraBody `json:"aibrix"`
@@ -162,7 +162,7 @@ type MDSExtraBody struct {
 // MDSBatchSubmission is the fully prepared submit payload for
 // POST /v1/batches.
 //
-// This is the cross-team contract between the planner-side submission
+// This is the shared contract between the planner-side submission
 // builder and any MDS transport adapter (openai-go SDK today; potentially
 // others later). By the time MDSBatchSubmission is constructed, all planner
 // decisions are materialized; the transport's only job is to translate this
@@ -290,16 +290,16 @@ type PlannerTask struct {
 	Payload             BatchPayload        `json:"payload"`
 
 	// Priority is copied from PlannerJob. Persisted on the task so
-	// score-based PickFunc implementations can rank candidates without
-	// re-resolving the original PlannerJob.
+	// score-based SchedulerFunc implementations can rank candidates
+	// without re-resolving the original PlannerJob.
 	Priority int `json:"priority,omitempty"`
 
-	// ReservationID, if non-empty, is the active ResourceManager
-	// reservation held for this attempt. The worker carries it
-	// in-memory between Reserve and Ack, then Ack persists it on
-	// the PlannerTask. ResourceManager.Reserve is idempotent per
-	// TaskID, so a re-leasing worker after a crash gets the same
-	// Reservation back rather than a new slot.
+	// ReservationID, if non-empty, is the active RM-side reservation
+	// held for this attempt. The worker carries it in-memory between
+	// the RM call and Ack, then Ack persists it on the PlannerTask.
+	// The RM-side capacity-request path is idempotent per TaskID, so
+	// a re-leasing worker after a crash gets the same Reservation
+	// back rather than a new slot.
 	ReservationID string `json:"reservation_id,omitempty"`
 
 	// ReservationExpiresAt mirrors Reservation.ExpiresAt at Ack time.
