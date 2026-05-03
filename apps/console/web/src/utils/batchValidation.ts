@@ -52,6 +52,8 @@ export interface MutationDiff {
 
 const MAX_ERRORS = 20;
 const MAX_DIFF_SAMPLES = 5;
+// OpenAI Batch API hard limit; MDS enforces the same cap (python/aibrix/.../batch.py).
+const MAX_REQUESTS_PER_BATCH = 50000;
 
 const OVERRIDE_FIELD_MAP: Record<keyof BatchOverrides, string> = {
   maxTokens: 'max_tokens',
@@ -128,13 +130,41 @@ export function validateBatchLines(parsed: ParseResult, ctx: ValidationContext):
       : `Line ${e.lineNumber}: ${e.message}`);
   }
 
+  // File-level: total request count cap.
+  if (parsed.totalLines > MAX_REQUESTS_PER_BATCH) {
+    pushError(
+      `File has ${parsed.totalLines} requests; the per-batch limit is ${MAX_REQUESTS_PER_BATCH}.`,
+    );
+  }
+
+  // Track custom_id uniqueness — OpenAI Batch requires each row's custom_id
+  // to be unique within the file.
+  const seenCustomIds = new Set<string>();
+
   for (const { lineNumber, record } of parsed.records) {
     if (errors.length >= MAX_ERRORS) break;
 
-    if (!record.custom_id) pushError(`Line ${lineNumber}: missing "custom_id"`);
-    if (!record.method) pushError(`Line ${lineNumber}: missing "method"`);
+    if (!record.custom_id) {
+      pushError(`Line ${lineNumber}: missing "custom_id"`);
+    } else if (seenCustomIds.has(record.custom_id)) {
+      pushError(`Line ${lineNumber}: duplicate custom_id "${record.custom_id}"`);
+    } else {
+      seenCustomIds.add(record.custom_id);
+    }
+
+    if (!record.method) {
+      pushError(`Line ${lineNumber}: missing "method"`);
+    } else if (record.method !== 'POST') {
+      pushError(`Line ${lineNumber}: method must be "POST" (got "${record.method}")`);
+    }
+
     if (!record.url) pushError(`Line ${lineNumber}: missing "url"`);
-    if (!record.body) pushError(`Line ${lineNumber}: missing "body"`);
+
+    if (!record.body) {
+      pushError(`Line ${lineNumber}: missing "body"`);
+    } else if (!record.body.model) {
+      pushError(`Line ${lineNumber}: missing "body.model"`);
+    }
 
     if (record.body?.model) models.add(record.body.model);
     if (record.url) {
