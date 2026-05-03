@@ -32,8 +32,8 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/stretchr/testify/assert"
 	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
