@@ -27,6 +27,7 @@ import (
 	"time"
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -42,6 +43,7 @@ type MemoryStore struct {
 	apiKeys     []*apiKeyEntry
 	secrets     []*secretEntry
 	quotas      []*pb.Quota
+	provisions  map[string]*types.ProvisionRecord // idempotencyKey → result
 	nextID      int
 }
 
@@ -612,4 +614,113 @@ func (s *MemoryStore) ListQuotas(_ context.Context, search string) ([]*pb.Quota,
 		}
 	}
 	return result, nil
+}
+
+// --- Provision ---
+
+func (s *MemoryStore) ensureProvisions() {
+	if s.provisions == nil {
+		s.provisions = make(map[string]*types.ProvisionRecord)
+	}
+}
+
+func (s *MemoryStore) GetProvision(_ context.Context, idempotencyKey string) (*types.ProvisionResult, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	s.ensureProvisions()
+
+	record := s.provisions[idempotencyKey]
+	if record == nil || record.Deleted {
+		return nil, status.Errorf(codes.NotFound, "provision %q not found", idempotencyKey)
+	}
+
+	return record.ToProvisionResult()
+}
+
+func (s *MemoryStore) InsertProvision(_ context.Context, idempotencyKey string, result *types.ProvisionResult) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureProvisions()
+
+	record, err := result.ToProvisionRecord()
+	if err != nil {
+		return err
+	}
+	s.provisions[idempotencyKey] = record
+	return nil
+}
+
+func (s *MemoryStore) UpdateProvisionStatus(_ context.Context, idempotencyKey string, pstatus types.ProvisionStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureProvisions()
+
+	record := s.provisions[idempotencyKey]
+	if record == nil || record.Deleted {
+		return status.Errorf(codes.NotFound, "provision %q not found", idempotencyKey)
+	}
+	record.UpdateStatus(pstatus)
+	return nil
+}
+
+func (s *MemoryStore) DeleteProvision(_ context.Context, idempotencyKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureProvisions()
+
+	record := s.provisions[idempotencyKey]
+	if record == nil || record.Deleted {
+		return nil
+	}
+
+	record.MarkDeleted()
+	return nil
+}
+
+func (s *MemoryStore) ExistsProvision(_ context.Context, idempotencyKey string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	s.ensureProvisions()
+
+	record, exists := s.provisions[idempotencyKey]
+	return exists && !record.Deleted, nil
+}
+
+func (s *MemoryStore) ListProvisions(_ context.Context, status *types.ProvisionStatus, offset, limit int) ([]*types.ProvisionResult, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	s.ensureProvisions()
+
+	// Collect all provisions into a slice
+	var all []*types.ProvisionRecord
+	for _, p := range s.provisions {
+		if p.Deleted {
+			continue
+		}
+		if status != nil && p.Status != string(*status) {
+			continue
+		}
+		all = append(all, p)
+	}
+
+	// Apply offset
+	if offset >= len(all) {
+		return []*types.ProvisionResult{}, nil
+	}
+	all = all[offset:]
+
+	// Apply limit
+	if limit > 0 && limit < len(all) {
+		all = all[:limit]
+	}
+
+	var results []*types.ProvisionResult
+	for _, p := range all {
+		result, err := p.ToProvisionResult()
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	return results, nil
 }

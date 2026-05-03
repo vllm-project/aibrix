@@ -156,3 +156,21 @@ CREATE TABLE IF NOT EXISTS users (
     UNIQUE INDEX idx_users_email (email),
     INDEX idx_users_external_id (external_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- Provision Results
+-- Stores provision results for idempotency key deduplication.
+-- Used to prevent duplicate provision requests with the same idempotency key.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS provision_results (
+    idempotency_key   VARCHAR(255)  NOT NULL PRIMARY KEY,
+    provision_id      VARCHAR(255)  NOT NULL,
+    status            VARCHAR(64)   NOT NULL,
+    payload           JSON,
+    created_at        TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted           BOOLEAN       NOT NULL DEFAULT FALSE,
+
+    INDEX idx_provision_results_provision_id (provision_id),
+    INDEX idx_provision_results_status_deleted (status, deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

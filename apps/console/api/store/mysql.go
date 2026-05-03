@@ -35,6 +35,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -837,4 +838,125 @@ func (s *MySQLStore) loadDemoQuotas() error {
 		"6", "GLOBAL - H200 Count", "global--h200-count", 0, 0.0, 16,
 		"7", "Job Submission Count", "job-submission-count", 0, 0.0, 8)
 	return err
+}
+
+// --- Provision ---
+
+// GetProvision retrieves a stored provision result by idempotency key.
+func (s *MySQLStore) GetProvision(_ context.Context, idempotencyKey string) (*types.ProvisionResult, error) {
+	var record types.ProvisionRecord
+
+	err := s.db.QueryRow(
+		`SELECT provision_id, status, payload, created_at, updated_at, deleted
+		 FROM provision_results
+		 WHERE idempotency_key = ? AND deleted = FALSE`,
+		idempotencyKey,
+	).Scan(&record.ProvisionID, &record.Status, &record.Payload, &record.CreatedAt, &record.UpdatedAt, &record.Deleted)
+
+	if err == sql.ErrNoRows {
+		return nil, status.Errorf(codes.NotFound, "provision %q not found", idempotencyKey)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get provision %q: %w", idempotencyKey, err)
+	}
+
+	return record.ToProvisionResult()
+}
+
+// InsertProvision stores a provision result with the given idempotency key.
+func (s *MySQLStore) InsertProvision(_ context.Context, idempotencyKey string, result *types.ProvisionResult) error {
+	record, err := result.ToProvisionRecord()
+	if err != nil {
+		return fmt.Errorf("failed to convert provision result to record: %w", err)
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO provision_results (idempotency_key, provision_id, status, payload, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON DUPLICATE KEY UPDATE provision_id = VALUES(provision_id), status = VALUES(status),
+		                          payload = VALUES(payload), created_at = VALUES(created_at), updated_at = VALUES(updated_at)`,
+		idempotencyKey, record.ProvisionID, record.Status, record.Payload, record.CreatedAt, record.UpdatedAt,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to set idempotency result: %w", err)
+	}
+	return nil
+}
+
+// UpdateProvisionStatus updates the status of a provision result by idempotency key.
+func (s *MySQLStore) UpdateProvisionStatus(_ context.Context, idempotencyKey string, status types.ProvisionStatus) error {
+	_, err := s.db.Exec(
+		`UPDATE provision_results SET status = ?, updated_at = NOW() WHERE idempotency_key = ? AND deleted = FALSE`,
+		status, idempotencyKey,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update idempotency result status: %w", err)
+	}
+	return nil
+}
+
+// DeleteProvision marks a stored provision result as deleted by idempotency key.
+func (s *MySQLStore) DeleteProvision(_ context.Context, idempotencyKey string) error {
+	_, err := s.db.Exec(
+		`UPDATE provision_results SET deleted = TRUE, updated_at = NOW() WHERE idempotency_key = ?`,
+		idempotencyKey,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to delete idempotency result: %w", err)
+	}
+	return nil
+}
+
+// ExistsProvision checks if an entry exists for the given key.
+func (s *MySQLStore) ExistsProvision(_ context.Context, idempotencyKey string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM provision_results WHERE idempotency_key = ? AND deleted = FALSE`,
+		idempotencyKey,
+	).Scan(&count)
+
+	if err != nil {
+		return false, fmt.Errorf("failed to check idempotency key: %w", err)
+	}
+	return count > 0, nil
+}
+
+// ListProvisions lists all stored results.
+func (s *MySQLStore) ListProvisions(_ context.Context, status *types.ProvisionStatus, offset, limit int) ([]*types.ProvisionResult, error) {
+	query := `SELECT provision_id, status, payload, created_at, updated_at, deleted
+	          FROM provision_results WHERE deleted = FALSE`
+	var args []interface{}
+
+	if status != nil {
+		query += " AND status = ?"
+		args = append(args, string(*status))
+	}
+	query += " ORDER BY created_at DESC LIMIT ?, ?"
+	args = append(args, offset, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list provision results: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*types.ProvisionResult
+	for rows.Next() {
+		var record types.ProvisionRecord
+		if err := rows.Scan(&record.ProvisionID, &record.Status, &record.Payload, &record.CreatedAt, &record.UpdatedAt, &record.Deleted); err != nil {
+			return nil, fmt.Errorf("failed to scan provision record: %w", err)
+		}
+		result, err := record.ToProvisionResult()
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert record to result: %w", err)
+		}
+		results = append(results, result)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating provision results: %w", err)
+	}
+
+	return results, nil
 }
