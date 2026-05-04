@@ -60,15 +60,23 @@ func New(cfg *config.Config) *Server {
 		if err := ms.RunMigrations(); err != nil {
 			klog.Fatalf("Failed to run MySQL migrations: %v", err)
 		}
-		if err := ms.LoadDemoData(); err != nil {
-			klog.Fatalf("Failed to load MySQL demo data: %v", err)
-		}
 		s = ms
 		mysqlStore = ms
 		klog.Info("Using MySQL store")
 	default:
 		s = store.NewMemoryStore()
 		klog.Info("Using in-memory store")
+	}
+
+	// Dev-mode conveniences. Seeding is opt-in so production / shared envs
+	// start with an empty store.
+	if cfg.DevMode {
+		if seeder, ok := s.(interface{ LoadDemoData() error }); ok {
+			if err := seeder.LoadDemoData(); err != nil {
+				klog.Fatalf("Failed to seed demo data: %v", err)
+			}
+			klog.Info("Dev mode: demo data seeded")
+		}
 	}
 
 	authCfg := middleware.AuthConfig{
@@ -103,7 +111,7 @@ func (s *Server) StartGRPC(addr string) error {
 
 	// Register all service handlers
 	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
-	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.cfg.MetadataServiceURL, s.cfg.DefaultBatchModelDeploymentTemplate))
+	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.cfg.MetadataServiceURL, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
 	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))
 	pb.RegisterAPIKeyServiceServer(s.grpcServer, handler.NewAPIKeyHandler(s.store))

@@ -60,10 +60,11 @@ type JobHandler struct {
 	store                          store.Store
 	openai                         openai.Client
 	defaultModelDeploymentTemplate string
+	devMode                        bool
 }
 
 // NewJobHandler creates a JobHandler.
-func NewJobHandler(s store.Store, metadataServiceURL, defaultModelDeploymentTemplate string) *JobHandler {
+func NewJobHandler(s store.Store, metadataServiceURL, defaultModelDeploymentTemplate string, devMode bool) *JobHandler {
 
 	baseURL := strings.TrimRight(metadataServiceURL, "/")
 	client := openai.NewClient(
@@ -74,6 +75,7 @@ func NewJobHandler(s store.Store, metadataServiceURL, defaultModelDeploymentTemp
 		store:                          s,
 		openai:                         client,
 		defaultModelDeploymentTemplate: defaultModelDeploymentTemplate,
+		devMode:                        devMode,
 	}
 }
 
@@ -91,7 +93,19 @@ func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb
 
 	page, err := h.openai.Batches.List(ctx, params)
 	if err != nil {
-		return nil, mapSDKError(err, "list batches")
+		// Dev fallback: serve Console's demo batches so the UI is usable
+		// end-to-end without a running MDS.
+		if h.devMode {
+			if dev, ok := h.store.(interface{ ListDemoJobs() []*pb.Job }); ok {
+				klog.Warningf("MDS unreachable, falling back to demo jobs: %v", err)
+				return &pb.ListJobsResponse{Jobs: dev.ListDemoJobs(), HasMore: false}, nil
+			}
+		}
+		// Non-dev: degrade to empty list. Surfacing the raw SDK error in the UI
+		// leaks internals (MDS URL, connection details) and isn't actionable
+		// for end users; ops can still diagnose from server logs.
+		klog.Warningf("list batches failed; returning empty list: %v", err)
+		return &pb.ListJobsResponse{Jobs: nil, HasMore: false}, nil
 	}
 
 	batches := page.Data
@@ -126,6 +140,17 @@ func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job
 	}
 	batch, err := h.openai.Batches.Get(ctx, req.Id)
 	if err != nil {
+		// Dev fallback: return the demo job if MDS is unreachable.
+		if h.devMode {
+			if dev, ok := h.store.(interface {
+				GetDemoJob(id string) (*pb.Job, bool)
+			}); ok {
+				if job, found := dev.GetDemoJob(req.Id); found {
+					klog.Warningf("MDS unreachable, falling back to demo job %s: %v", req.Id, err)
+					return job, nil
+				}
+			}
+		}
 		return nil, mapSDKError(err, "get batch")
 	}
 	overlay, _ := h.store.GetJob(ctx, batch.ID)

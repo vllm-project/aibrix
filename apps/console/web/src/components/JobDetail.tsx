@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ChevronLeft, Copy, Trash2, CheckCircle, XCircle } from 'lucide-react';
 import { getJob } from '../utils/api';
-import { Job, JobStatus, mockJobs } from '../data/mockData';
+import { Job, JobStatus } from '../data/mockData';
 
 interface JobDetailProps {
   jobId: string | null;
@@ -35,21 +35,18 @@ function statusClass(s: JobStatus): string {
 export function JobDetail({ jobId, onBack }: JobDetailProps) {
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(true);
-  const [usingMock, setUsingMock] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!jobId) return;
     setLoading(true);
+    setLoadError(null);
     getJob(jobId)
-      .then(j => {
-        setJob(j);
-        setUsingMock(false);
-      })
+      .then(j => setJob(j))
       .catch(err => {
         console.error('Failed to fetch job:', err);
-        const fallback = mockJobs.find(j => j.id === jobId) || mockJobs[0] || null;
-        setJob(fallback);
-        setUsingMock(fallback !== null);
+        setLoadError(err instanceof Error ? err.message : String(err));
+        setJob(null);
       })
       .finally(() => setLoading(false));
   }, [jobId]);
@@ -71,7 +68,11 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
         <button onClick={onBack} className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-4">
           <ChevronLeft className="w-4 h-4" /> Back
         </button>
-        <p>Job not found</p>
+        {loadError ? (
+          <p className="text-sm text-red-600">Failed to load job: {loadError}</p>
+        ) : (
+          <p>Job not found</p>
+        )}
       </div>
     );
   }
@@ -104,7 +105,6 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
               <span className={`inline-flex px-2.5 py-1 text-xs rounded-full ${statusClass(job.status)}`}>
                 {job.status}
               </span>
-              {usingMock && <span className="text-xs text-amber-600">Example data</span>}
             </div>
           </div>
 

@@ -1,4 +1,4 @@
-import { Home, Settings, Rocket, Boxes, Library, Gamepad2, Layers } from 'lucide-react';
+import { Home, Rocket, Boxes, Library, Gamepad2, Layers } from 'lucide-react';
 import type { Page } from '../App';
 
 interface SidebarProps {
@@ -7,14 +7,16 @@ interface SidebarProps {
 }
 
 export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
+  // Settings entry intentionally omitted — API Keys / Secrets pages exist but
+  // are not yet wired to backend behavior. Re-add `{ id: 'settings', ... }`
+  // once those features are productized.
   const navItems = [
     { id: 'home' as Page, icon: Home, label: 'Home' },
-    { id: 'settings' as Page, icon: Settings, label: 'Settings' },
   ];
 
   const apiItems = [
-    { id: 'deployments' as Page, icon: Rocket, label: 'Deployments' },
     { id: 'batch-jobs' as Page, icon: Boxes, label: 'Batch API' },
+    { id: 'deployments' as Page, icon: Rocket, label: 'Deployments' },
     { id: 'lora' as Page, icon: Layers, label: 'LoRA' },
   ];
 

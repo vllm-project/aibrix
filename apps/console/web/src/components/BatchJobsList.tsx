@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Search, ChevronDown } from 'lucide-react';
 import { listJobs } from '../utils/api';
-import { Job, JobStatus, mockJobs } from '../data/mockData';
+import { Job, JobStatus } from '../data/mockData';
 
 interface BatchJobsListProps {
   onSelectJob: (id: string) => void;
@@ -48,27 +48,20 @@ function statusClass(s: JobStatus): string {
 export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'' | JobStatus>('');
   const [showStatusDropdown, setShowStatusDropdown] = useState(false);
-  const [usingMock, setUsingMock] = useState(false);
 
   useEffect(() => {
     setLoading(true);
+    setLoadError(null);
     listJobs()
-      .then(res => {
-        if (res.jobs && res.jobs.length > 0) {
-          setJobs(res.jobs);
-          setUsingMock(false);
-        } else {
-          setJobs(mockJobs);
-          setUsingMock(true);
-        }
-      })
+      .then(res => setJobs(res.jobs ?? []))
       .catch(err => {
         console.error('Failed to fetch jobs:', err);
-        setJobs(mockJobs);
-        setUsingMock(true);
+        setLoadError(err instanceof Error ? err.message : String(err));
+        setJobs([]);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -93,8 +86,8 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
         <div>
           <h1 className="text-2xl mb-2">Batch Inference Jobs</h1>
           <p className="text-sm text-gray-500">View your past batch inference jobs or create new ones.</p>
-          {usingMock && !loading && (
-            <p className="text-xs text-amber-600 mt-1">Showing example data — Console BFF returned no jobs.</p>
+          {loadError && !loading && (
+            <p className="text-xs text-red-600 mt-1">Failed to load jobs: {loadError}</p>
           )}
         </div>
         <button

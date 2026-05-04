@@ -17,6 +17,8 @@ limitations under the License.
 package store
 
 import (
+	"time"
+
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 )
 
@@ -49,19 +51,46 @@ func (s *MemoryStore) loadDemoDeployments() {
 }
 
 func (s *MemoryStore) loadDemoJobs() {
-	// The store only persists Console-owned fields. OpenAI Batch state for
-	// these demo IDs is synthesized by the JobHandler dev fallback when the
-	// metadata service is unreachable.
+	// Full OpenAI Batch records, including state fields normally owned by the
+	// metadata service. The Store interface (UpsertJob/GetJob/ListJobs) only
+	// surfaces the Console-owned subset; the JobHandler dev fallback uses
+	// ListDemoJobs / GetDemoJob to retrieve these full records when MDS is
+	// unavailable.
+	now := time.Now().UTC().Unix()
 	s.jobs = map[string]*pb.Job{
 		"batch_demo_27a6ee2c": {
-			Id:        "batch_demo_27a6ee2c",
-			Name:      "gsm-8k-20260118",
-			CreatedBy: "demo@aibrix.ai",
+			Id:               "batch_demo_27a6ee2c",
+			Object:           "batch",
+			Endpoint:         "/v1/chat/completions",
+			Model:            "Llama 3.3 70B Instruct",
+			InputDataset:     "file_demo_in_001",
+			OutputDataset:    "file_demo_out_001",
+			CompletionWindow: "24h",
+			Status:           "completed",
+			CreatedAt:        now - 86400,
+			InProgressAt:     now - 86400 + 60,
+			FinalizingAt:     now - 3700,
+			CompletedAt:      now - 3600,
+			ExpiresAt:        now,
+			RequestCounts:    &pb.JobRequestCounts{Total: 1000, Completed: 998, Failed: 2},
+			Usage:            &pb.JobUsage{InputTokens: 250000, OutputTokens: 180000, TotalTokens: 430000},
+			Name:             "gsm-8k-20260118",
+			CreatedBy:        "demo@aibrix.ai",
 		},
 		"batch_demo_a0b13ef5": {
-			Id:        "batch_demo_a0b13ef5",
-			Name:      "gsm-8k-20260118-v2",
-			CreatedBy: "demo@aibrix.ai",
+			Id:               "batch_demo_a0b13ef5",
+			Object:           "batch",
+			Endpoint:         "/v1/chat/completions",
+			Model:            "GLM-5",
+			InputDataset:     "file_demo_in_002",
+			CompletionWindow: "24h",
+			Status:           "in_progress",
+			CreatedAt:        now - 1800,
+			InProgressAt:     now - 1700,
+			ExpiresAt:        now - 1800 + 86400,
+			RequestCounts:    &pb.JobRequestCounts{Total: 500, Completed: 250, Failed: 0},
+			Name:             "gsm-8k-20260118-v2",
+			CreatedBy:        "demo@aibrix.ai",
 		},
 	}
 }
