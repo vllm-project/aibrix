@@ -271,6 +271,8 @@ export function CreateJob({ onBack }: CreateJobProps) {
       const endpoint: JobEndpoint =
         (validation?.endpoints[0] as JobEndpoint | undefined) || '/v1/chat/completions';
 
+      // maxTokens/temperature/topP/n are baked into the JSONL via
+      // applyBatchOverrides above; no need to forward them to BFF.
       await createJob({
         inputDataset: datasetId || '',
         endpoint,
@@ -278,10 +280,6 @@ export function CreateJob({ onBack }: CreateJobProps) {
         name: displayName,
         modelTemplateName: selectedTemplate?.name,
         modelTemplateVersion: selectedTemplate?.version,
-        ...(maxTokens.trim() !== '' && { maxTokens: parseNumber(maxTokens) }),
-        ...(temperature.trim() !== '' && { temperature: parseNumber(temperature) }),
-        ...(topP.trim() !== '' && { topP: parseNumber(topP) }),
-        ...(n.trim() !== '' && { n: parseNumber(n) }),
       });
       onBack();
     } catch (err) {

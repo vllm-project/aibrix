@@ -159,10 +159,9 @@ func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job
 
 // CreateJob calls POST /v1/batches and persists the Console-owned overlay.
 //
-// max_tokens / temperature / top_p / n on the request are intentionally NOT
-// forwarded yet — per-request JSONL values win. They're reserved on the
-// proto so the Console contract is stable; a follow-up will route them into
-// aibrix.overrides.engine_args.
+// Per-batch sampling params (max_tokens / temperature / top_p / n) are baked
+// into the JSONL by the console wizard before upload, so they don't appear
+// on this request. The OpenAI SDK path can still POST them to MDS directly.
 func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*pb.Job, error) {
 	if req.InputDataset == "" {
 		return nil, status.Error(codes.InvalidArgument, "input_dataset is required")

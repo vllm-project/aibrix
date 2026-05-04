@@ -216,14 +216,12 @@ message CreateJobRequest {
   string model_template_name = 5;
   string model_template_version = 6;  // optional; "" = latest active
 
-  // Optional batch-wide inference parameter overrides. Currently NOT applied
-  // by the handler — per-request values from the JSONL body take precedence.
-  // Reserved here so the Console contract is stable; future versions will
-  // route these into aibrix.overrides.engine_args.
-  optional int32 max_tokens = 10;
-  optional double temperature = 11;
-  optional double top_p = 12;
-  optional int32 n = 13;
+  // Fields 10..13 (max_tokens / temperature / top_p / n) were removed:
+  // the console wizard bakes per-batch sampling params into the uploaded
+  // JSONL itself, so there's nothing for the BFF to forward. The OpenAI
+  // SDK path can still POST them to MDS directly.
+  reserved 10, 11, 12, 13;
+  reserved "max_tokens", "temperature", "top_p", "n";
 }
 
 message CancelJobRequest {

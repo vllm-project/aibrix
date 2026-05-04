@@ -41,19 +41,14 @@ export interface UserInfo {
 export type JobEndpoint =
   | '/v1/chat/completions'
   | '/v1/completions'
-  | '/v1/embeddings';
+  | '/v1/embeddings'
+  | '/v1/rerank';
 
 export interface CreateJobRequest {
   inputDataset: string;
   endpoint: JobEndpoint;
   completionWindow?: '24h';
   name: string;
-  // Reserved fields — Console contract keeps them for future per-batch
-  // overrides. Backend currently does not forward them.
-  maxTokens?: number;
-  temperature?: number;
-  topP?: number;
-  n?: number;
   // ModelDeploymentTemplate binding picked by the create-job wizard. The SDK
   // path may omit these and rely on metadata-service-side resolution via
   // extra_body.aibrix.model_template.
