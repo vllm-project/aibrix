@@ -28,8 +28,8 @@ import (
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // MemoryStore implements Store with in-memory storage.

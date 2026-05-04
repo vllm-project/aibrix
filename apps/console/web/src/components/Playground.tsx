@@ -543,8 +543,6 @@ export function Playground({ onNavigateToModel }: PlaygroundProps) {
     };
   }, []);
 
-  const modelSlug = selectedModel.name.toLowerCase().replace(/[\s.]+/g, '-').replace(/[()]/g, '');
-
   const handleSend = () => {
     if (!inputText.trim() || isStreaming) return;
 
@@ -643,6 +641,8 @@ export function Playground({ onNavigateToModel }: PlaygroundProps) {
       </div>
     );
   }
+
+  const modelSlug = selectedModel.name.toLowerCase().replace(/[\s.]+/g, '-').replace(/[()]/g, '');
 
   return (
     <div className="flex flex-col h-full">
