@@ -20,6 +20,8 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -246,16 +248,28 @@ func corsMiddleware(allowedOrigins string) func(http.Handler) http.Handler {
 }
 
 // staticFileMiddleware serves static files from dir for non-API paths.
-// API paths (/api/) are passed through to the next handler.
+// API paths (/api/) are passed through to the next handler. Non-API paths
+// that don't match a real file fall back to index.html so the React Router
+// SPA can render deep links (e.g. /models/abc, /batch/job-xyz) on hard
+// reload or external link.
 func staticFileMiddleware(dir string, next http.Handler) http.Handler {
 	fs := http.FileServer(http.Dir(dir))
+	indexPath := filepath.Join(dir, "index.html")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// API requests go to the backend
-		if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/api" {
+		if strings.HasPrefix(r.URL.Path, "/api") {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Try to serve static file
+		// SPA fallback: any path that doesn't map to a real file gets index.html.
+		// "/" itself falls through to FileServer which serves index.html.
+		if r.URL.Path != "/" {
+			rel := filepath.Join(dir, filepath.Clean(r.URL.Path))
+			if _, err := os.Stat(rel); os.IsNotExist(err) {
+				http.ServeFile(w, r, indexPath)
+				return
+			}
+		}
 		fs.ServeHTTP(w, r)
 	})
 }
