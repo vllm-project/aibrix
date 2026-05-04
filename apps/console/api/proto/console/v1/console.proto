@@ -467,7 +467,7 @@ message EngineSpec {
 }
 
 message ModelSourceSpec {
-  string type = 1;                        // "huggingface" | "s3" | "local" | "registry"
+  string type = 1;                        // "huggingface" | "s3" | "local"
   string uri = 2;
   string revision = 3;
   string tokenizer_path = 4;

@@ -124,7 +124,6 @@ class ModelSourceType(str, Enum):
     HUGGINGFACE = "huggingface"
     S3 = "s3"
     LOCAL = "local"
-    REGISTRY = "registry"  # internal model registry
 
 
 class ModelSourceSpec(_Strict):
@@ -134,7 +133,7 @@ class ModelSourceSpec(_Strict):
     uri: str = Field(description="URI or path to model artifacts")
     revision: Optional[str] = Field(
         default=None,
-        description="Git revision / tag for HF, version for registry",
+        description="Git revision / tag for HuggingFace; ignored for other sources",
     )
     tokenizer_path: Optional[str] = Field(
         default=None,

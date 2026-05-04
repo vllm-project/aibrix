@@ -53,6 +53,7 @@ from aibrix.batch.template import (
     EngineArgsSpec,
     EngineType,
     ModelDeploymentTemplate,
+    ModelSourceType,
     ProfileRegistry,
     ProviderType,
     TemplateRegistry,
@@ -151,6 +152,34 @@ def _resolve_health_endpoint(engine_type: str, configured: str) -> str:
     if configured:
         return configured
     return _ENGINE_HEALTH_DEFAULTS.get(engine_type, _FALLBACK_HEALTH_ENDPOINT)
+
+
+def _build_source_auth_env(source_type: str, secret_name: str) -> List[Dict[str, Any]]:
+    """Render auth_secret_ref into engine container env vars by source type.
+
+    Phase 1 supports HuggingFace only: secret must contain a ``token`` key,
+    mounted as ``HF_TOKEN``. S3/local are skipped with a warning so users see
+    the field is recognized but not yet wired.
+    """
+    if not secret_name:
+        return []
+    if source_type == ModelSourceType.HUGGINGFACE.value:
+        return [
+            {
+                "name": "HF_TOKEN",
+                "valueFrom": {
+                    "secretKeyRef": {"name": secret_name, "key": "token"},
+                },
+            }
+        ]
+    logger.warning(
+        "auth_secret_ref set but source type has no auth wiring yet",
+        source_type=source_type,
+        secret_name=secret_name,
+    )  # type: ignore[call-arg]
+    return []
+
+
 _DEFAULT_BACKOFF_LIMIT = 2
 _DEFAULT_ACTIVE_DEADLINE = 86400  # 24h fallback when spec.completion_window absent
 _DEFAULT_LABEL_APP = "aibrix-batch"
@@ -451,6 +480,14 @@ class JobManifestRenderer:
         resources = self._build_resources(template)
         if resources:
             container["resources"] = resources
+
+        # Source auth credentials (Phase 1: HuggingFace only).
+        env = _build_source_auth_env(
+            spec.model_source.type,
+            spec.model_source.auth_secret_ref or "",
+        )
+        if env:
+            container["env"] = env
 
         return container
 

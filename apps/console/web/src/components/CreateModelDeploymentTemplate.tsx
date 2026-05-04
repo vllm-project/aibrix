@@ -36,7 +36,32 @@ function bumpVersion(v: string): string {
 }
 
 const ENGINE_TYPES = ['vllm', 'sglang', 'trtllm'];
-const MODEL_SOURCE_TYPES = ['huggingface', 's3', 'local', 'registry'];
+const MODEL_SOURCE_TYPES = ['huggingface', 's3', 'local'];
+
+interface SourceAuthHint {
+  show: boolean;
+  placeholder: string;
+  help: string;
+}
+function authHint(sourceType: string | undefined): SourceAuthHint {
+  switch (sourceType) {
+    case 'huggingface':
+      return {
+        show: true,
+        placeholder: 'aibrix-hf-token',
+        help: 'K8s Secret containing key "token" — mounted as HF_TOKEN env on the engine container.',
+      };
+    case 's3':
+      return {
+        show: true,
+        placeholder: 'aibrix-s3-creds',
+        help: 'K8s Secret with keys access_key_id, secret_access_key (and optional session_token, region). Wiring not yet implemented in renderer.',
+      };
+    case 'local':
+    default:
+      return { show: false, placeholder: '', help: '' };
+  }
+}
 // Curated GPU catalog. vram_gb / interconnect derive from the SKU pick so
 // the user only chooses a name; the renderer doesn't read these fields today
 // but they're persisted on the spec for downstream schedulers.
@@ -320,62 +345,85 @@ export function CreateModelDeploymentTemplate({
         </Section>
 
         {/* Model Source */}
-        <Section title="Model Source">
-          <Field label="Type">
-            <select
-              value={spec.modelSource?.type ?? 'huggingface'}
-              onChange={(e) => updateSpec('modelSource', { type: e.target.value })}
-              className={inputCls}
-            >
-              {MODEL_SOURCE_TYPES.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="URI" wide>
-            <input
-              type="text"
-              value={spec.modelSource?.uri ?? ''}
-              onChange={(e) => updateSpec('modelSource', { uri: e.target.value })}
-              placeholder="meta-llama/Llama-3.3-70B-Instruct or s3://bucket/path/"
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Revision">
-            <input
-              type="text"
-              value={spec.modelSource?.revision ?? ''}
-              onChange={(e) => updateSpec('modelSource', { revision: e.target.value })}
-              placeholder="main"
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Auth secret ref">
-            <input
-              type="text"
-              value={spec.modelSource?.authSecretRef ?? ''}
-              onChange={(e) => updateSpec('modelSource', { authSecretRef: e.target.value })}
-              placeholder="aibrix-hf-token"
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Tokenizer path">
-            <input
-              type="text"
-              value={spec.modelSource?.tokenizerPath ?? ''}
-              onChange={(e) => updateSpec('modelSource', { tokenizerPath: e.target.value })}
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Chat template path">
-            <input
-              type="text"
-              value={spec.modelSource?.chatTemplatePath ?? ''}
-              onChange={(e) => updateSpec('modelSource', { chatTemplatePath: e.target.value })}
-              className={inputCls}
-            />
-          </Field>
-        </Section>
+        {(() => {
+          const sourceType = spec.modelSource?.type ?? 'huggingface';
+          const hint = authHint(sourceType);
+          const isHF = sourceType === 'huggingface';
+          return (
+            <Section title="Model Source">
+              <Field label="Type">
+                <select
+                  value={sourceType}
+                  onChange={(e) => updateSpec('modelSource', { type: e.target.value })}
+                  className={inputCls}
+                >
+                  {MODEL_SOURCE_TYPES.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="URI" wide>
+                <input
+                  type="text"
+                  value={spec.modelSource?.uri ?? ''}
+                  onChange={(e) => updateSpec('modelSource', { uri: e.target.value })}
+                  placeholder="meta-llama/Llama-3.3-70B-Instruct or s3://bucket/path/"
+                  className={inputCls}
+                />
+              </Field>
+              {isHF && (
+                <Field label="Revision">
+                  <input
+                    type="text"
+                    value={spec.modelSource?.revision ?? ''}
+                    onChange={(e) => updateSpec('modelSource', { revision: e.target.value })}
+                    placeholder="main"
+                    className={inputCls}
+                  />
+                </Field>
+              )}
+              {hint.show && (
+                <Field label="Auth secret" wide>
+                  <input
+                    type="text"
+                    value={spec.modelSource?.authSecretRef ?? ''}
+                    onChange={(e) => updateSpec('modelSource', { authSecretRef: e.target.value })}
+                    placeholder={hint.placeholder}
+                    className={inputCls}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">{hint.help}</p>
+                </Field>
+              )}
+              <div className="sm:col-span-2 lg:col-span-3">
+                <details className="group">
+                  <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-700 select-none">
+                    Advanced — tokenizer / chat template overrides
+                  </summary>
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Tokenizer path</label>
+                      <input
+                        type="text"
+                        value={spec.modelSource?.tokenizerPath ?? ''}
+                        onChange={(e) => updateSpec('modelSource', { tokenizerPath: e.target.value })}
+                        className={inputCls}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Chat template path</label>
+                      <input
+                        type="text"
+                        value={spec.modelSource?.chatTemplatePath ?? ''}
+                        onChange={(e) => updateSpec('modelSource', { chatTemplatePath: e.target.value })}
+                        className={inputCls}
+                      />
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </Section>
+          );
+        })()}
 
         {/* Accelerator */}
         <Section title="Accelerator">
