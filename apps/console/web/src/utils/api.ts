@@ -221,6 +221,22 @@ class APIError extends Error {
   }
 }
 
+// cachedAuthMode is populated by getAuthConfig(); apiFetch consults it to
+// decide whether a 401 should kick the user to the OIDC login flow.
+let cachedAuthMode: string | null = null;
+
+// Endpoints whose own 401 responses must NOT trigger the OIDC redirect,
+// because they are part of the unauthenticated bootstrap path.
+const NO_AUTO_REDIRECT_PREFIXES = [
+  '/api/v1/auth/',
+  '/api/v1/health',
+];
+
+function shouldAutoRedirectOnUnauthorized(url: string): boolean {
+  if (cachedAuthMode !== 'oidc') return false;
+  return !NO_AUTO_REDIRECT_PREFIXES.some(p => url.startsWith(p));
+}
+
 async function apiFetch<T>(
   url: string,
   options?: RequestInit,
@@ -235,6 +251,15 @@ async function apiFetch<T>(
   });
 
   if (!response.ok) {
+    if (response.status === 401 && shouldAutoRedirectOnUnauthorized(url)) {
+      const returnTo = window.location.pathname + window.location.search;
+      window.location.assign(
+        `/api/v1/auth/login?return=${encodeURIComponent(returnTo)}`,
+      );
+      // Returns a never-resolving promise so callers don't try to parse
+      // the 401 body during the navigation.
+      return new Promise<T>(() => {});
+    }
     const text = await response.text().catch(() => 'Unknown error');
     throw new APIError(text, response.status);
   }
@@ -479,15 +504,24 @@ export async function listFiles(): Promise<FileInfo[]> {
 // --- Auth ---
 
 export async function getAuthConfig(): Promise<{ mode: string; providerName?: string }> {
-  return apiFetch<{ mode: string; providerName?: string }>('/api/v1/auth/config');
+  const cfg = await apiFetch<{ mode: string; providerName?: string }>(
+    '/api/v1/auth/config',
+  );
+  cachedAuthMode = cfg.mode;
+  return cfg;
 }
 
 export async function getUserInfo(): Promise<UserInfo | null> {
   return apiFetch<UserInfo | null>('/api/v1/auth/userinfo');
 }
 
-export async function logout(): Promise<void> {
-  return apiFetch<void>('/api/v1/auth/logout', {
+export interface LogoutResponse {
+  message: string;
+  redirectUrl?: string;
+}
+
+export async function logout(): Promise<LogoutResponse> {
+  return apiFetch<LogoutResponse>('/api/v1/auth/logout', {
     method: 'POST',
   });
 }

@@ -58,6 +58,17 @@ type Config struct {
 	OIDCClientSecret string
 	// OIDCRedirectURL is the OIDC redirect URL after authentication.
 	OIDCRedirectURL string
+	// OIDCPostLogoutRedirectURL is the URL the OIDC provider should send
+	// the browser to after end-session is complete. Must be registered as
+	// a post-logout redirect URI in the SSO console.
+	OIDCPostLogoutRedirectURL string
+	// OIDCGroupsClaim is the ID-token claim name that carries the user's
+	// group memberships (string array). Defaults to "groups".
+	OIDCGroupsClaim string
+	// OIDCAdminGroups is a comma-separated list of group names that map
+	// to the "admin" role. Users not in any of these groups receive the
+	// "viewer" role. Empty means every authenticated user is "viewer".
+	OIDCAdminGroups string
 
 	// SessionSecret is used to sign session cookies. Must be provided via
 	// SESSION_SECRET env var in non-dev modes; generated randomly in dev mode.
@@ -123,6 +134,9 @@ func Load() (*Config, error) {
 		OIDCClientID:                        envOrDefault("OIDC_CLIENT_ID", ""),
 		OIDCClientSecret:                    envOrDefault("OIDC_CLIENT_SECRET", ""),
 		OIDCRedirectURL:                     envOrDefault("OIDC_REDIRECT_URL", "http://localhost:8090/api/v1/auth/callback"),
+		OIDCPostLogoutRedirectURL:           envOrDefault("OIDC_POST_LOGOUT_REDIRECT_URL", ""),
+		OIDCGroupsClaim:                     envOrDefault("OIDC_GROUPS_CLAIM", "groups"),
+		OIDCAdminGroups:                     envOrDefault("OIDC_ADMIN_GROUPS", ""),
 		SessionSecret:                       sessionSecret,
 		SecretsEncryptionKey:                encryptionKey,
 		DevUserName:                         envOrDefault("DEV_USER_NAME", "Test User"),

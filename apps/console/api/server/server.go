@@ -78,22 +78,30 @@ func New(cfg *config.Config) *Server {
 	}
 
 	authCfg := middleware.AuthConfig{
-		Mode:             cfg.AuthMode,
-		OIDCIssuerURL:    cfg.OIDCIssuerURL,
-		OIDCClientID:     cfg.OIDCClientID,
-		OIDCClientSecret: cfg.OIDCClientSecret,
-		OIDCRedirectURL:  cfg.OIDCRedirectURL,
-		SessionSecret:    cfg.SessionSecret,
-		DevUserName:      cfg.DevUserName,
-		DevUserEmail:     cfg.DevUserEmail,
-		BasicUsername:    cfg.BasicUsername,
-		BasicPassword:    cfg.BasicPassword,
+		Mode:                      cfg.AuthMode,
+		OIDCIssuerURL:             cfg.OIDCIssuerURL,
+		OIDCClientID:              cfg.OIDCClientID,
+		OIDCClientSecret:          cfg.OIDCClientSecret,
+		OIDCRedirectURL:           cfg.OIDCRedirectURL,
+		OIDCPostLogoutRedirectURL: cfg.OIDCPostLogoutRedirectURL,
+		OIDCGroupsClaim:           cfg.OIDCGroupsClaim,
+		OIDCAdminGroups:           cfg.OIDCAdminGroups,
+		SessionSecret:             cfg.SessionSecret,
+		DevUserName:               cfg.DevUserName,
+		DevUserEmail:              cfg.DevUserEmail,
+		BasicUsername:             cfg.BasicUsername,
+		BasicPassword:             cfg.BasicPassword,
+	}
+
+	auth, err := middleware.NewAuthMiddleware(authCfg)
+	if err != nil {
+		klog.Fatalf("Failed to construct auth middleware: %v", err)
 	}
 
 	return &Server{
 		store:      s,
 		cfg:        cfg,
-		auth:       middleware.NewAuthMiddleware(authCfg),
+		auth:       auth,
 		mysqlStore: mysqlStore,
 	}
 }
