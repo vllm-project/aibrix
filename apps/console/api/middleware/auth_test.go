@@ -10,7 +10,66 @@ You may obtain a copy of the License at
 
 package middleware
 
-import "testing"
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"strings"
+	"testing"
+)
+
+func makeHS256JWT(t *testing.T, secret []byte, payload string) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	body := base64.RawURLEncoding.EncodeToString([]byte(payload))
+	signed := header + "." + body
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(signed))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return signed + "." + sig
+}
+
+func TestHMACKeySet(t *testing.T) {
+	secret := []byte("client-secret-xyz")
+	ks := &hmacKeySet{secret: secret}
+
+	t.Run("valid signature", func(t *testing.T) {
+		jwt := makeHS256JWT(t, secret, `{"sub":"u1"}`)
+		payload, err := ks.VerifySignature(context.Background(), jwt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(string(payload), `"sub":"u1"`) {
+			t.Fatalf("unexpected payload: %s", payload)
+		}
+	})
+
+	t.Run("wrong secret", func(t *testing.T) {
+		jwt := makeHS256JWT(t, []byte("other-secret"), `{"sub":"u1"}`)
+		if _, err := ks.VerifySignature(context.Background(), jwt); err == nil {
+			t.Fatal("expected signature mismatch, got nil")
+		}
+	})
+
+	t.Run("malformed jwt", func(t *testing.T) {
+		if _, err := ks.VerifySignature(context.Background(), "not.a.jwt.at.all"); err == nil {
+			t.Fatal("expected error")
+		}
+		if _, err := ks.VerifySignature(context.Background(), "abc"); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+
+	t.Run("tampered payload", func(t *testing.T) {
+		jwt := makeHS256JWT(t, secret, `{"sub":"u1"}`)
+		parts := strings.Split(jwt, ".")
+		parts[1] = base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"attacker"}`))
+		if _, err := ks.VerifySignature(context.Background(), strings.Join(parts, ".")); err == nil {
+			t.Fatal("expected signature mismatch on tampered payload")
+		}
+	})
+}
 
 func TestRoleFromClaims(t *testing.T) {
 	a := &AuthMiddleware{

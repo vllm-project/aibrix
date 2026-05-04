@@ -86,6 +86,7 @@ func New(cfg *config.Config) *Server {
 		OIDCPostLogoutRedirectURL: cfg.OIDCPostLogoutRedirectURL,
 		OIDCGroupsClaim:           cfg.OIDCGroupsClaim,
 		OIDCAdminGroups:           cfg.OIDCAdminGroups,
+		OIDCSigningAlg:            cfg.OIDCSigningAlg,
 		SessionSecret:             cfg.SessionSecret,
 		DevUserName:               cfg.DevUserName,
 		DevUserEmail:              cfg.DevUserEmail,

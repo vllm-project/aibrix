@@ -59,6 +59,7 @@ type AuthConfig struct {
 	OIDCPostLogoutRedirectURL string
 	OIDCGroupsClaim           string
 	OIDCAdminGroups           string
+	OIDCSigningAlg            string
 	SessionSecret             string
 	DevUserName               string
 	DevUserEmail              string
@@ -151,12 +152,40 @@ func NewAuthMiddleware(cfg AuthConfig) (*AuthMiddleware, error) {
 			return nil, fmt.Errorf("auth: oidc discovery failed: %w", err)
 		}
 		a.oidcProvider = provider
-		a.oidcVerifier = provider.Verifier(&oidc.Config{ClientID: cfg.OIDCClientID})
+
+		alg := strings.ToUpper(strings.TrimSpace(cfg.OIDCSigningAlg))
+		if alg == "" {
+			alg = "RS256"
+		}
+		switch alg {
+		case "RS256":
+			// JWKS-backed verifier (default OIDC behaviour).
+			a.oidcVerifier = provider.Verifier(&oidc.Config{ClientID: cfg.OIDCClientID})
+		case "HS256":
+			if cfg.OIDCClientSecret == "" {
+				return nil, fmt.Errorf("auth: HS256 ID tokens require OIDC_CLIENT_SECRET")
+			}
+			ks := &hmacKeySet{secret: []byte(cfg.OIDCClientSecret)}
+			a.oidcVerifier = oidc.NewVerifier(cfg.OIDCIssuerURL, ks, &oidc.Config{
+				ClientID:             cfg.OIDCClientID,
+				SupportedSigningAlgs: []string{"HS256"},
+			})
+		default:
+			return nil, fmt.Errorf("auth: unsupported OIDC_SIGNING_ALG %q (RS256 or HS256)", alg)
+		}
+
+		endpoint := provider.Endpoint()
+		// Several IdPs (incl. our internal SSO) document /token auth with
+		// client_id+client_secret in the form body rather than a Basic
+		// header. AuthStyleInParams pins that behaviour deterministically
+		// instead of relying on oauth2's auto-detect-and-retry.
+		endpoint.AuthStyle = oauth2.AuthStyleInParams
+
 		a.oauth2Config = &oauth2.Config{
 			ClientID:     cfg.OIDCClientID,
 			ClientSecret: cfg.OIDCClientSecret,
 			RedirectURL:  cfg.OIDCRedirectURL,
-			Endpoint:     provider.Endpoint(),
+			Endpoint:     endpoint,
 			Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 		}
 
@@ -524,7 +553,6 @@ func (a *AuthMiddleware) handleLogout(
 		if err == nil {
 			q := u.Query()
 			q.Set("id_token_hint", sp.IDToken)
-			q.Set("client_id", a.config.OIDCClientID)
 			if a.config.OIDCPostLogoutRedirectURL != "" {
 				q.Set("post_logout_redirect_uri", a.config.OIDCPostLogoutRedirectURL)
 			}
@@ -641,6 +669,40 @@ func (a *AuthMiddleware) sign(data []byte) []byte {
 func (a *AuthMiddleware) verify(data, signature []byte) bool {
 	expected := a.sign(data)
 	return hmac.Equal(expected, signature)
+}
+
+// hmacKeySet implements oidc.KeySet for ID tokens signed with HS256, where
+// the shared HMAC key is the OAuth client_secret. go-oidc's default verifier
+// only knows how to fetch RSA/EC keys from a JWKS endpoint, so HS256 tenants
+// need this small adapter.
+//
+// The verifier validates the JWT's `alg` against SupportedSigningAlgs before
+// calling VerifySignature, so we don't have to defend against alg=none /
+// alg-confusion attacks here — we just check the HMAC and return the payload.
+type hmacKeySet struct {
+	secret []byte
+}
+
+func (k *hmacKeySet) VerifySignature(_ context.Context, jwt string) ([]byte, error) {
+	parts := strings.Split(jwt, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("hmacKeySet: malformed JWT")
+	}
+	signed := parts[0] + "." + parts[1]
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, fmt.Errorf("hmacKeySet: decode signature: %w", err)
+	}
+	mac := hmac.New(sha256.New, k.secret)
+	mac.Write([]byte(signed))
+	if !hmac.Equal(mac.Sum(nil), sig) {
+		return nil, fmt.Errorf("hmacKeySet: signature mismatch")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("hmacKeySet: decode payload: %w", err)
+	}
+	return payload, nil
 }
 
 // parseAdminGroups normalises the OIDC_ADMIN_GROUPS CSV into a lookup set.

@@ -69,6 +69,12 @@ type Config struct {
 	// to the "admin" role. Users not in any of these groups receive the
 	// "viewer" role. Empty means every authenticated user is "viewer".
 	OIDCAdminGroups string
+	// OIDCSigningAlg overrides the ID-token signing algorithm. Defaults to
+	// RS256 (verified via the provider's JWKS). Set to "HS256" for IdPs
+	// that sign ID tokens with the client_secret as a shared HMAC key —
+	// at the time of writing, the company SSO documents this as the only
+	// supported algorithm for its default Authorization Server.
+	OIDCSigningAlg string
 
 	// SessionSecret is used to sign session cookies. Must be provided via
 	// SESSION_SECRET env var in non-dev modes; generated randomly in dev mode.
@@ -137,6 +143,7 @@ func Load() (*Config, error) {
 		OIDCPostLogoutRedirectURL:           envOrDefault("OIDC_POST_LOGOUT_REDIRECT_URL", ""),
 		OIDCGroupsClaim:                     envOrDefault("OIDC_GROUPS_CLAIM", "groups"),
 		OIDCAdminGroups:                     envOrDefault("OIDC_ADMIN_GROUPS", ""),
+		OIDCSigningAlg:                      envOrDefault("OIDC_SIGNING_ALG", "RS256"),
 		SessionSecret:                       sessionSecret,
 		SecretsEncryptionKey:                encryptionKey,
 		DevUserName:                         envOrDefault("DEV_USER_NAME", "Test User"),
