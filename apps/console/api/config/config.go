@@ -62,6 +62,11 @@ type Config struct {
 	// the browser to after end-session is complete. Must be registered as
 	// a post-logout redirect URI in the SSO console.
 	OIDCPostLogoutRedirectURL string
+	// OIDCEndSessionURL is a fallback for the provider's end-session
+	// endpoint when it isn't advertised in the discovery document. Set
+	// it explicitly (e.g. https://${sso}/oidc/v1/logout) to enable
+	// RP-initiated logout against IdPs that don't publish the URL.
+	OIDCEndSessionURL string
 	// OIDCGroupsClaim is the ID-token claim name that carries the user's
 	// group memberships (string array). Defaults to "groups".
 	OIDCGroupsClaim string
@@ -69,6 +74,11 @@ type Config struct {
 	// to the "admin" role. Users not in any of these groups receive the
 	// "viewer" role. Empty means every authenticated user is "viewer".
 	OIDCAdminGroups string
+	// OIDCAdminEmails is a comma-separated list of email addresses that
+	// map to the "admin" role regardless of group membership. Useful for
+	// IdPs whose ID tokens don't carry a groups claim (e.g. our internal
+	// SSO) — operators can still grant admin without per-user IdP changes.
+	OIDCAdminEmails string
 	// OIDCSigningAlg overrides the ID-token signing algorithm. Defaults to
 	// RS256 (verified via the provider's JWKS). Set to "HS256" for IdPs
 	// that sign ID tokens with the client_secret as a shared HMAC key —
@@ -141,8 +151,10 @@ func Load() (*Config, error) {
 		OIDCClientSecret:                    envOrDefault("OIDC_CLIENT_SECRET", ""),
 		OIDCRedirectURL:                     envOrDefault("OIDC_REDIRECT_URL", "http://localhost:8080/api/v1/auth/callback"),
 		OIDCPostLogoutRedirectURL:           envOrDefault("OIDC_POST_LOGOUT_REDIRECT_URL", ""),
+		OIDCEndSessionURL:                   envOrDefault("OIDC_END_SESSION_URL", ""),
 		OIDCGroupsClaim:                     envOrDefault("OIDC_GROUPS_CLAIM", "groups"),
 		OIDCAdminGroups:                     envOrDefault("OIDC_ADMIN_GROUPS", ""),
+		OIDCAdminEmails:                     envOrDefault("OIDC_ADMIN_EMAILS", ""),
 		OIDCSigningAlg:                      envOrDefault("OIDC_SIGNING_ALG", "RS256"),
 		SessionSecret:                       sessionSecret,
 		SecretsEncryptionKey:                encryptionKey,

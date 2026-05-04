@@ -57,8 +57,10 @@ type AuthConfig struct {
 	OIDCClientSecret          string
 	OIDCRedirectURL           string
 	OIDCPostLogoutRedirectURL string
+	OIDCEndSessionURL         string
 	OIDCGroupsClaim           string
 	OIDCAdminGroups           string
+	OIDCAdminEmails           string
 	OIDCSigningAlg            string
 	SessionSecret             string
 	DevUserName               string
@@ -121,6 +123,7 @@ type AuthMiddleware struct {
 	oauth2Config      *oauth2.Config
 	oidcEndSessionURL string // discovered end_session_endpoint, may be empty
 	oidcAdminGroups   map[string]struct{}
+	oidcAdminEmails   map[string]struct{}
 }
 
 const (
@@ -198,8 +201,16 @@ func NewAuthMiddleware(cfg AuthConfig) (*AuthMiddleware, error) {
 		if err := provider.Claims(&disc); err == nil {
 			a.oidcEndSessionURL = disc.EndSessionEndpoint
 		}
+		// Fall back to the operator-supplied URL when the provider does
+		// not advertise end_session_endpoint via discovery (the company
+		// SSO documents a fixed /oidc/v1/logout but omits it from the
+		// well-known config).
+		if a.oidcEndSessionURL == "" {
+			a.oidcEndSessionURL = cfg.OIDCEndSessionURL
+		}
 
 		a.oidcAdminGroups = parseAdminGroups(cfg.OIDCAdminGroups)
+		a.oidcAdminEmails = parseAdminEmails(cfg.OIDCAdminEmails)
 	}
 
 	return a, nil
@@ -479,7 +490,7 @@ func (a *AuthMiddleware) handleOIDCCallback(w http.ResponseWriter, r *http.Reque
 		ID:    claims.Sub,
 		Name:  claims.Name,
 		Email: claims.Email,
-		Role:  a.roleFromClaims(rawClaims),
+		Role:  a.resolveRole(claims.Email, rawClaims),
 	}
 
 	if err := a.setSessionCookie(w, r, user, rawIDToken); err != nil {
@@ -716,30 +727,49 @@ func parseAdminGroups(csv string) map[string]struct{} {
 	return out
 }
 
-// roleFromClaims maps a user to a role based on the configured groups
-// claim. The default role is "viewer"; users belonging to any group named
-// in OIDC_ADMIN_GROUPS are promoted to "admin".
+// parseAdminEmails normalises the OIDC_ADMIN_EMAILS CSV into a lookup set,
+// lowercased for case-insensitive comparison (email addresses are not
+// case-sensitive in the local part per RFC 5321 in practice, and IdPs
+// frequently disagree on case anyway).
+func parseAdminEmails(csv string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, e := range strings.Split(csv, ",") {
+		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+			out[e] = struct{}{}
+		}
+	}
+	return out
+}
+
+// resolveRole decides the role for an authenticated user. A user is
+// promoted to "admin" if either their email is in OIDC_ADMIN_EMAILS or
+// any of their group memberships (from the configured groups claim) is
+// in OIDC_ADMIN_GROUPS. Otherwise they are "viewer".
 //
-// The groups claim is permissively typed: providers may emit either a
-// JSON array of strings or a single string. Anything else is treated as
-// no membership.
-func (a *AuthMiddleware) roleFromClaims(claims map[string]interface{}) string {
-	if len(a.oidcAdminGroups) == 0 {
-		return roleViewer
-	}
-	claimName := a.config.OIDCGroupsClaim
-	if claimName == "" {
-		claimName = "groups"
-	}
-	raw, ok := claims[claimName]
-	if !ok {
-		return roleViewer
-	}
-	for _, g := range coerceStringSlice(raw) {
-		if _, ok := a.oidcAdminGroups[g]; ok {
+// The two mechanisms are independent and complementary: groups suit IdPs
+// that emit them; email suits IdPs that don't (e.g. the company SSO,
+// whose ID tokens carry no group claim).
+func (a *AuthMiddleware) resolveRole(email string, claims map[string]interface{}) string {
+	if email != "" && len(a.oidcAdminEmails) > 0 {
+		if _, ok := a.oidcAdminEmails[strings.ToLower(email)]; ok {
 			return roleAdmin
 		}
 	}
+
+	if len(a.oidcAdminGroups) > 0 {
+		claimName := a.config.OIDCGroupsClaim
+		if claimName == "" {
+			claimName = "groups"
+		}
+		if raw, ok := claims[claimName]; ok {
+			for _, g := range coerceStringSlice(raw) {
+				if _, ok := a.oidcAdminGroups[g]; ok {
+					return roleAdmin
+				}
+			}
+		}
+	}
+
 	return roleViewer
 }
 
