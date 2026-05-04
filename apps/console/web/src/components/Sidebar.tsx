@@ -1,46 +1,55 @@
 import { Home, Rocket, Boxes, Library, Gamepad2, Layers } from 'lucide-react';
-import type { Page } from '../App';
+import { useLocation, useNavigate } from 'react-router-dom';
+import type { ComponentType, SVGProps } from 'react';
 
-interface SidebarProps {
-  currentPage: Page;
-  onNavigate: (page: Page) => void;
+interface NavItem {
+  path: string;          // primary route
+  matches?: string[];    // additional pathname prefixes that should highlight this item
+  icon: ComponentType<SVGProps<SVGSVGElement> & { className?: string }>;
+  label: string;
 }
 
-export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
+export function Sidebar() {
+  const location = useLocation();
+  const navigate = useNavigate();
+
   // Settings entry intentionally omitted — API Keys / Secrets pages exist but
-  // are not yet wired to backend behavior. Re-add `{ id: 'settings', ... }`
-  // once those features are productized.
-  const navItems = [
-    { id: 'home' as Page, icon: Home, label: 'Home' },
+  // are not yet wired to backend behavior.
+  const navItems: NavItem[] = [
+    { path: '/home', icon: Home, label: 'Home' },
   ];
 
-  const apiItems = [
-    { id: 'batch-jobs' as Page, icon: Boxes, label: 'Batch API' },
-    { id: 'deployments' as Page, icon: Rocket, label: 'Deployments' },
-    { id: 'lora' as Page, icon: Layers, label: 'LoRA' },
+  const apiItems: NavItem[] = [
+    { path: '/batch', icon: Boxes, label: 'Batch API' },
+    { path: '/deployments', icon: Rocket, label: 'Deployments' },
+    { path: '/lora', icon: Layers, label: 'LoRA' },
   ];
 
-  const exploreItems = [
-    { id: 'model-library' as Page, icon: Library, label: 'Model Library' },
-    { id: 'playground' as Page, icon: Gamepad2, label: 'Playground' },
+  const exploreItems: NavItem[] = [
+    { path: '/models', icon: Library, label: 'Model Library' },
+    { path: '/playground', icon: Gamepad2, label: 'Playground' },
   ];
 
-  const NavSection = ({ title, items }: { title?: string; items: typeof navItems }) => (
+  const isActive = (item: NavItem) => {
+    const prefixes = [item.path, ...(item.matches ?? [])];
+    return prefixes.some(
+      (p) => location.pathname === p || location.pathname.startsWith(p + '/'),
+    );
+  };
+
+  const NavSection = ({ title, items }: { title?: string; items: NavItem[] }) => (
     <div className="mb-6">
       {title && <div className="px-3 mb-2 text-xs text-slate-400 uppercase tracking-wider">{title}</div>}
       <div className="space-y-0.5">
         {items.map((item) => {
           const Icon = item.icon;
-          const isActive = currentPage === item.id
-            || (item.id === 'model-library' && currentPage === 'model-detail')
-            || (item.id === 'deployments' && (currentPage === 'deployment-detail' || currentPage === 'create-deployment'))
-            || (item.id === 'batch-jobs' && (currentPage === 'job-detail' || currentPage === 'create-job'));
+          const active = isActive(item);
           return (
             <button
-              key={item.id}
-              onClick={() => onNavigate(item.id)}
+              key={item.path}
+              onClick={() => navigate(item.path)}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                isActive
+                active
                   ? 'bg-teal-500/15 text-teal-400'
                   : 'text-slate-300 hover:bg-slate-800 hover:text-white'
               }`}
@@ -68,7 +77,7 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
           <span className="text-white text-sm tracking-wide">AIBrix</span>
         </div>
       </div>
-      
+
       <div className="flex-1 overflow-y-auto p-3 pt-4">
         <NavSection items={navItems} />
         <NavSection title="API" items={apiItems} />
