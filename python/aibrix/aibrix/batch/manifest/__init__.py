@@ -23,7 +23,6 @@ from .renderer import (
     RenderError,
     TemplateNotFound,
     UnsupportedDeploymentMode,
-    UnsupportedProvider,
 )
 from .storage_env import build_metastore_env, build_storage_env
 
@@ -33,7 +32,6 @@ __all__ = [
     "TemplateNotFound",
     "ProfileNotFound",
     "UnsupportedDeploymentMode",
-    "UnsupportedProvider",
     "UnsupportedEngineError",
     "EndpointNotSupported",
     "ForbiddenOverride",

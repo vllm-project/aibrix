@@ -30,8 +30,12 @@ override merging.
 
 Currently supports:
   - engine.type in {vllm, mock}
-  - provider_config.type == k8s
   - deployment_mode == dedicated
+
+Templates are provider-agnostic: K8s defaults (namespace, serviceAccount)
+are baked into _system_base; nodeSelector / tolerations / affinity are left
+unset so cluster scheduling decides. Multi-provider arbitration belongs to
+BatchProfile.scheduling, not Template.
 
 Other values raise RenderError.
 """
@@ -53,8 +57,8 @@ from aibrix.batch.template import (
     EngineArgsSpec,
     EngineType,
     ModelDeploymentTemplate,
+    ModelSourceType,
     ProfileRegistry,
-    ProviderType,
     TemplateRegistry,
 )
 from aibrix.logger import init_logger
@@ -94,14 +98,6 @@ class UnsupportedDeploymentMode(RenderError):
         )
 
 
-class UnsupportedProvider(RenderError):
-    def __init__(self, provider: ProviderType):
-        super().__init__(
-            f"provider '{provider.value}' is not currently supported; "
-            f"only 'k8s' is honored"
-        )
-
-
 class EndpointNotSupported(RenderError):
     def __init__(self, endpoint: str, supported: List[str]):
         super().__init__(
@@ -130,6 +126,53 @@ class ForbiddenOverride(RenderError):
 _DEFAULT_NAMESPACE = "default"
 _DEFAULT_SERVICE_ACCOUNT = "job-reader-sa"
 _DEFAULT_ENGINE_PORT = 8000
+
+# Per-engine health endpoint defaults. Used when the template leaves
+# engine.health_endpoint empty so the console UI can hide this field —
+# all supported engines expose /health by convention. Templates may still
+# override (e.g. when fronting the engine with a reverse proxy that
+# rewrites the path).
+_ENGINE_HEALTH_DEFAULTS: Dict[str, str] = {
+    EngineType.VLLM.value: "/health",
+    EngineType.SGLANG.value: "/health",
+    EngineType.TRTLLM.value: "/health",
+}
+_FALLBACK_HEALTH_ENDPOINT = "/health"
+
+
+def _resolve_health_endpoint(engine_type: str, configured: str) -> str:
+    """Return the engine health endpoint, falling back to per-engine default."""
+    if configured:
+        return configured
+    return _ENGINE_HEALTH_DEFAULTS.get(engine_type, _FALLBACK_HEALTH_ENDPOINT)
+
+
+def _build_source_auth_env(source_type: str, secret_name: str) -> List[Dict[str, Any]]:
+    """Render auth_secret_ref into engine container env vars by source type.
+
+    Phase 1 supports HuggingFace only: secret must contain a ``token`` key,
+    mounted as ``HF_TOKEN``. S3/local are skipped with a warning so users see
+    the field is recognized but not yet wired.
+    """
+    if not secret_name:
+        return []
+    if source_type == ModelSourceType.HUGGINGFACE.value:
+        return [
+            {
+                "name": "HF_TOKEN",
+                "valueFrom": {
+                    "secretKeyRef": {"name": secret_name, "key": "token"},
+                },
+            }
+        ]
+    logger.warning(
+        "auth_secret_ref set but source type has no auth wiring yet",
+        source_type=source_type,
+        secret_name=secret_name,
+    )  # type: ignore[call-arg]
+    return []
+
+
 _DEFAULT_BACKOFF_LIMIT = 2
 _DEFAULT_ACTIVE_DEADLINE = 86400  # 24h fallback when spec.completion_window absent
 _DEFAULT_LABEL_APP = "aibrix-batch"
@@ -189,7 +232,7 @@ class JobManifestRenderer:
 
         Raises:
             TemplateNotFound, ProfileNotFound, UnsupportedDeploymentMode,
-            UnsupportedProvider, EndpointNotSupported, ForbiddenOverride,
+            EndpointNotSupported, ForbiddenOverride,
             UnsupportedEngineError (from engine_adapter).
 
         Returns:
@@ -201,8 +244,6 @@ class JobManifestRenderer:
         # layers can assume they're working with k8s + dedicated + supported endpoint.
         if template.spec.deployment_mode != DeploymentMode.DEDICATED:
             raise UnsupportedDeploymentMode(template.spec.deployment_mode)
-        if template.spec.provider_config.type != ProviderType.K8S:
-            raise UnsupportedProvider(template.spec.provider_config.type)
         supported = [e.value for e in template.spec.supported_endpoints]
         if spec.endpoint not in supported:
             raise EndpointNotSupported(spec.endpoint, supported)
@@ -331,34 +372,16 @@ class JobManifestRenderer:
         # health endpoint; otherwise the worker probes the wrong target
         # when admins override --port via serve_args or set a non-default
         # health_endpoint on the template.
+        health_path = _resolve_health_endpoint(
+            template.spec.engine.type, template.spec.engine.health_endpoint
+        )
         worker = self._find_container(manifest, _WORKER_CONTAINER_NAME)
         worker["env"].append(
             {
                 "name": "LLM_READY_ENDPOINT",
-                "value": (
-                    f"http://localhost:{port}{template.spec.engine.health_endpoint}"
-                ),
+                "value": f"http://localhost:{port}{health_path}",
             }
         )
-
-        # Apply provider-specific Pod fields if present in provider_config.
-        # Only k8s is honored today; we surface a few common K8s
-        # extensions (namespace override, serviceAccount, affinity,
-        # tolerations).
-        pcfg = template.spec.provider_config.model_dump(exclude_none=True)
-        pcfg.pop("type", None)
-
-        ns = pcfg.pop("namespace", None)
-        if ns:
-            manifest["metadata"]["namespace"] = ns
-        sa = pcfg.pop("service_account", None)
-        if sa:
-            manifest["spec"]["template"]["spec"]["serviceAccountName"] = sa
-        # Pass-through K8s pod fields admins may set per template.
-        for k in ("affinity", "tolerations", "nodeSelector", "runtimeClassName"):
-            v = pcfg.pop(k, None)
-            if v is not None:
-                manifest["spec"]["template"]["spec"][k] = v
 
         return manifest
 
@@ -403,7 +426,12 @@ class JobManifestRenderer:
             "image": spec.engine.image,
             "ports": [{"containerPort": port}],
             "readinessProbe": {
-                "httpGet": {"path": spec.engine.health_endpoint, "port": port},
+                "httpGet": {
+                    "path": _resolve_health_endpoint(
+                        spec.engine.type, spec.engine.health_endpoint
+                    ),
+                    "port": port,
+                },
                 "periodSeconds": 5,
                 "successThreshold": 1,
                 "timeoutSeconds": 1,
@@ -424,6 +452,14 @@ class JobManifestRenderer:
         resources = self._build_resources(template)
         if resources:
             container["resources"] = resources
+
+        # Source auth credentials (Phase 1: HuggingFace only).
+        env = _build_source_auth_env(
+            spec.model_source.type,
+            spec.model_source.auth_secret_ref or "",
+        )
+        if env:
+            container["env"] = env
 
         return container
 

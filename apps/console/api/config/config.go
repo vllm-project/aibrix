@@ -28,10 +28,11 @@ const AuthModeDev = "dev"
 
 // Config holds all configuration for the AIBrix console backend.
 type Config struct {
-	// StoreType selects the backing store: "memory" or "mysql".
-	StoreType string
-	// MySQLDSN is the MySQL connection string (used when StoreType is "mysql").
-	MySQLDSN string
+	// StoreURI selects the backing store via a URI scheme. Examples:
+	//   memory://
+	//   mysql://user:pass@host:3306/aibrix
+	// Future: postgres://, redis://, mongodb:// — add a case in store.NewFromURI.
+	StoreURI string
 
 	// GatewayEndpoint is the AIBrix gateway URL for proxying inference requests.
 	GatewayEndpoint string
@@ -57,6 +58,33 @@ type Config struct {
 	OIDCClientSecret string
 	// OIDCRedirectURL is the OIDC redirect URL after authentication.
 	OIDCRedirectURL string
+	// OIDCPostLogoutRedirectURL is the URL the OIDC provider should send
+	// the browser to after end-session is complete. Must be registered as
+	// a post-logout redirect URI in the SSO console.
+	OIDCPostLogoutRedirectURL string
+	// OIDCEndSessionURL is a fallback for the provider's end-session
+	// endpoint when it isn't advertised in the discovery document. Set
+	// it explicitly (e.g. https://${sso}/oidc/v1/logout) to enable
+	// RP-initiated logout against IdPs that don't publish the URL.
+	OIDCEndSessionURL string
+	// OIDCGroupsClaim is the ID-token claim name that carries the user's
+	// group memberships (string array). Defaults to "groups".
+	OIDCGroupsClaim string
+	// OIDCAdminGroups is a comma-separated list of group names that map
+	// to the "admin" role. Users not in any of these groups receive the
+	// "viewer" role. Empty means every authenticated user is "viewer".
+	OIDCAdminGroups string
+	// OIDCAdminEmails is a comma-separated list of email addresses that
+	// map to the "admin" role regardless of group membership. Useful for
+	// IdPs whose ID tokens don't carry a groups claim (e.g. our internal
+	// SSO) — operators can still grant admin without per-user IdP changes.
+	OIDCAdminEmails string
+	// OIDCSigningAlg overrides the ID-token signing algorithm. Defaults to
+	// RS256 (verified via the provider's JWKS). Set to "HS256" for IdPs
+	// that sign ID tokens with the client_secret as a shared HMAC key —
+	// at the time of writing, the company SSO documents this as the only
+	// supported algorithm for its default Authorization Server.
+	OIDCSigningAlg string
 
 	// SessionSecret is used to sign session cookies. Must be provided via
 	// SESSION_SECRET env var in non-dev modes; generated randomly in dev mode.
@@ -84,6 +112,11 @@ type Config struct {
 	// AllowedOrigins is a comma-separated list of allowed CORS origins.
 	// When empty, CORS is disabled (same-origin only).
 	AllowedOrigins string
+
+	// DevMode toggles development conveniences. Currently it controls demo-data
+	// seeding on startup; future dev-only behaviors should hang off the same
+	// flag so a single switch covers the "I'm running this locally" intent.
+	DevMode bool
 }
 
 // Load reads configuration from environment variables and applies sensible defaults.
@@ -106,18 +139,23 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		StoreType:                           envOrDefault("STORE_TYPE", "memory"),
-		MySQLDSN:                            envOrDefault("MYSQL_DSN", ""),
+		StoreURI:                            envOrDefault("STORE_URI", "memory://"),
 		GatewayEndpoint:                     envOrDefault("GATEWAY_ENDPOINT", "http://localhost:8888"),
-		MetadataServiceURL:                  envOrDefault("METADATA_SERVICE_URL", "http://localhost:8000"),
+		MetadataServiceURL:                  envOrDefault("METADATA_SERVICE_URL", "http://localhost:8090"),
 		DefaultBatchModelDeploymentTemplate: envOrDefault("DEFAULT_BATCH_MODEL_DEPLOYMENT_TEMPLATE", ""),
 		GRPCAddr:                            envOrDefault("GRPC_ADDR", ":50060"),
-		HTTPAddr:                            envOrDefault("HTTP_ADDR", ":8090"),
+		HTTPAddr:                            envOrDefault("HTTP_ADDR", ":8080"),
 		AuthMode:                            authMode,
 		OIDCIssuerURL:                       envOrDefault("OIDC_ISSUER_URL", ""),
 		OIDCClientID:                        envOrDefault("OIDC_CLIENT_ID", ""),
 		OIDCClientSecret:                    envOrDefault("OIDC_CLIENT_SECRET", ""),
-		OIDCRedirectURL:                     envOrDefault("OIDC_REDIRECT_URL", "http://localhost:8090/api/v1/auth/callback"),
+		OIDCRedirectURL:                     envOrDefault("OIDC_REDIRECT_URL", "http://localhost:8080/api/v1/auth/callback"),
+		OIDCPostLogoutRedirectURL:           envOrDefault("OIDC_POST_LOGOUT_REDIRECT_URL", ""),
+		OIDCEndSessionURL:                   envOrDefault("OIDC_END_SESSION_URL", ""),
+		OIDCGroupsClaim:                     envOrDefault("OIDC_GROUPS_CLAIM", "groups"),
+		OIDCAdminGroups:                     envOrDefault("OIDC_ADMIN_GROUPS", ""),
+		OIDCAdminEmails:                     envOrDefault("OIDC_ADMIN_EMAILS", ""),
+		OIDCSigningAlg:                      envOrDefault("OIDC_SIGNING_ALG", "RS256"),
 		SessionSecret:                       sessionSecret,
 		SecretsEncryptionKey:                encryptionKey,
 		DevUserName:                         envOrDefault("DEV_USER_NAME", "Test User"),
@@ -126,7 +164,21 @@ func Load() (*Config, error) {
 		BasicPassword:                       envOrDefault("BASIC_PASSWORD", ""),
 		StaticFilesDir:                      envOrDefault("STATIC_FILES_DIR", ""),
 		AllowedOrigins:                      envOrDefault("ALLOWED_ORIGINS", ""),
+		DevMode:                             envBool("DEV_MODE", false),
 	}, nil
+}
+
+// envBool returns true when the env var is set to "1", "true", "yes" (case-insensitive).
+func envBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	switch v {
+	case "1", "true", "TRUE", "True", "yes", "YES", "Yes":
+		return true
+	}
+	return false
 }
 
 // envOrDefault returns the value of the environment variable named by key,

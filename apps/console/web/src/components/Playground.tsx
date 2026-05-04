@@ -3,8 +3,8 @@ import {
   ChevronDown, ChevronRight, Copy, Maximize2, ExternalLink, Code2,
   Trash2, ImagePlus, Send, MessageCircle, Search, Check, X, Plus, Paperclip
 } from 'lucide-react';
-import { mockModels } from '../data/mockData';
 import type { Model } from '../data/mockData';
+import { listModels as apiListModels } from '../utils/api';
 import { copyToClipboard } from '../utils/clipboard';
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -76,11 +76,13 @@ const defaultFunctionSchema = `{
 // ─── Model Selector Dropdown ─────────────────────────────────────────
 function ModelSelector({
   selectedModel,
+  models,
   onSelect,
   isOpen,
   onToggle,
 }: {
   selectedModel: Model;
+  models: Model[];
   onSelect: (m: Model) => void;
   isOpen: boolean;
   onToggle: () => void;
@@ -96,11 +98,11 @@ function ModelSelector({
     return () => document.removeEventListener('mousedown', handler);
   }, [isOpen, onToggle]);
 
-  const filtered = mockModels.filter(
+  const filtered = models.filter(
     (m) =>
       m.categories.includes('LLM') &&
       (m.name.toLowerCase().includes(search.toLowerCase()) ||
-        m.metadata.providerName.toLowerCase().includes(search.toLowerCase()))
+        (m.metadata?.providerName ?? '').toLowerCase().includes(search.toLowerCase()))
   );
 
   return (
@@ -472,9 +474,29 @@ function OptionSlider({
 
 // ─── Main Playground ─────────────────────────────────────────────────
 export function Playground({ onNavigateToModel }: PlaygroundProps) {
-  const defaultModel = mockModels.find((m) => m.id === 'model-minimax-m2.5') || mockModels[0];
+  // TODO: Playground should list *deployed / callable* models, not the catalog.
+  // We're using /api/v1/models here only because the deployments backend isn't
+  // ready yet — pointing at the catalog keeps Playground in sync with Models
+  // page during UI iteration. Switch to a deployment-status source (gateway
+  // active models / deployments list) when that backend lands.
+  const [models, setModels] = useState<Model[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [selectedModel, setSelectedModel] = useState<Model | null>(null);
 
-  const [selectedModel, setSelectedModel] = useState<Model>(defaultModel);
+  useEffect(() => {
+    apiListModels()
+      .then((m) => {
+        setModels(m);
+        setSelectedModel(m.find((x) => x.id === 'model-minimax-m2.5') || m[0] || null);
+      })
+      .catch((err) => {
+        console.error('Failed to fetch models:', err);
+        setModelsError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => setModelsLoading(false));
+  }, []);
+
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [mode, setMode] = useState<'Chat' | 'Completion'>('Chat');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -520,8 +542,6 @@ export function Playground({ onNavigateToModel }: PlaygroundProps) {
       }
     };
   }, []);
-
-  const modelSlug = selectedModel.name.toLowerCase().replace(/[\s.]+/g, '-').replace(/[()]/g, '');
 
   const handleSend = () => {
     if (!inputText.trim() || isStreaming) return;
@@ -610,12 +630,27 @@ export function Playground({ onNavigateToModel }: PlaygroundProps) {
     });
   };
 
+  if (!selectedModel) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-8 text-sm text-gray-500">
+        {modelsLoading
+          ? 'Loading models...'
+          : modelsError
+          ? `Failed to load models: ${modelsError}`
+          : 'No models available.'}
+      </div>
+    );
+  }
+
+  const modelSlug = selectedModel.name.toLowerCase().replace(/[\s.]+/g, '-').replace(/[()]/g, '');
+
   return (
     <div className="flex flex-col h-full">
       {/* ── Top Bar ───────────────────────────────────── */}
       <div className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-200 bg-white flex-shrink-0">
         <ModelSelector
           selectedModel={selectedModel}
+          models={models}
           onSelect={setSelectedModel}
           isOpen={modelSelectorOpen}
           onToggle={() => setModelSelectorOpen(!modelSelectorOpen)}

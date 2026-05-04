@@ -48,9 +48,17 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
 
+// Console-owned fields we stash on the OpenAI batch.metadata map. Namespaced
+// to keep them out of user-supplied metadata's key space. The bare
+// "display_name" key is kept for backwards compatibility with batches
+// created by older console builds.
 const (
-	metadataDisplayName = "display_name"
-	defaultListLimit    = 20
+	metadataDisplayName            = "display_name" // legacy fallback
+	metadataConsoleDisplayName     = "aibrix.console.display_name"
+	metadataConsoleCreatedBy       = "aibrix.console.created_by"
+	metadataConsoleTemplateName    = "aibrix.console.template_name"
+	metadataConsoleTemplateVersion = "aibrix.console.template_version"
+	defaultListLimit               = 20
 )
 
 // JobHandler implements console.v1.JobService.
@@ -60,12 +68,13 @@ type JobHandler struct {
 	store                          store.Store
 	openai                         openai.Client
 	defaultModelDeploymentTemplate string
+	devMode                        bool
 }
 
 // NewJobHandler creates a JobHandler.
-func NewJobHandler(s store.Store, metadataServiceURL, defaultModelDeploymentTemplate string) *JobHandler {
+func NewJobHandler(s store.Store, metadataServiceURL, defaultModelDeploymentTemplate string, devMode bool) *JobHandler {
 
-	baseURL := strings.TrimRight(metadataServiceURL, "/")
+	baseURL := strings.TrimRight(metadataServiceURL, "/") + "/v1"
 	client := openai.NewClient(
 		option.WithBaseURL(baseURL),
 		option.WithAPIKey("aibrix-console"),
@@ -74,10 +83,12 @@ func NewJobHandler(s store.Store, metadataServiceURL, defaultModelDeploymentTemp
 		store:                          s,
 		openai:                         client,
 		defaultModelDeploymentTemplate: defaultModelDeploymentTemplate,
+		devMode:                        devMode,
 	}
 }
 
-// ListJobs proxies to GET /v1/batches and merges with store.
+// ListJobs proxies to GET /v1/batches. Console-owned fields ride on
+// batch.metadata; the store overlay path is parked (see CreateJob).
 func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb.ListJobsResponse, error) {
 	params := openai.BatchListParams{}
 	if req.After != "" {
@@ -91,23 +102,25 @@ func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb
 
 	page, err := h.openai.Batches.List(ctx, params)
 	if err != nil {
-		return nil, mapSDKError(err, "list batches")
+		// Dev fallback: serve Console's demo batches so the UI is usable
+		// end-to-end without a running MDS.
+		if h.devMode {
+			if dev, ok := h.store.(interface{ ListDemoJobs() []*pb.Job }); ok {
+				klog.Warningf("MDS unreachable, falling back to demo jobs: %v", err)
+				return &pb.ListJobsResponse{Jobs: dev.ListDemoJobs(), HasMore: false}, nil
+			}
+		}
+		// Non-dev: degrade to empty list. Surfacing the raw SDK error in the UI
+		// leaks internals (MDS URL, connection details) and isn't actionable
+		// for end users; ops can still diagnose from server logs.
+		klog.Warningf("list batches failed; returning empty list: %v", err)
+		return &pb.ListJobsResponse{Jobs: nil, HasMore: false}, nil
 	}
 
 	batches := page.Data
-	ids := make([]string, 0, len(batches))
-	for i := range batches {
-		ids = append(ids, batches[i].ID)
-	}
-	overlays, err := h.store.ListJobs(ctx, ids)
-	if err != nil {
-		klog.Warningf("store.ListJobs failed; returning batch state without overlay: %v", err)
-		overlays = map[string]*pb.Job{}
-	}
-
 	jobs := make([]*pb.Job, 0, len(batches))
 	for i := range batches {
-		jobs = append(jobs, mergeJob(&batches[i], overlays[batches[i].ID]))
+		jobs = append(jobs, mergeJob(&batches[i], nil))
 	}
 	// SDK CursorPage exposes Data and HasMore. first_id / last_id ride along
 	// in the upstream JSON but are not surfaced as named fields; the UI
@@ -119,25 +132,40 @@ func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb
 	}, nil
 }
 
-// GetJob proxies to GET /v1/batches/{id} and merges with store.
+// GetJob proxies to GET /v1/batches/{id}. Console-owned fields ride on
+// batch.metadata; the store overlay path is parked (see CreateJob).
 func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job, error) {
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
 	batch, err := h.openai.Batches.Get(ctx, req.Id)
 	if err != nil {
+		// Dev fallback: return the demo job if MDS is unreachable.
+		if h.devMode {
+			if dev, ok := h.store.(interface {
+				GetDemoJob(id string) (*pb.Job, bool)
+			}); ok {
+				if job, found := dev.GetDemoJob(req.Id); found {
+					klog.Warningf("MDS unreachable, falling back to demo job %s: %v", req.Id, err)
+					return job, nil
+				}
+			}
+		}
 		return nil, mapSDKError(err, "get batch")
 	}
-	overlay, _ := h.store.GetJob(ctx, batch.ID)
-	return mergeJob(batch, overlay), nil
+	return mergeJob(batch, nil), nil
 }
 
-// CreateJob calls POST /v1/batches and persists the Console-owned overlay.
+// CreateJob calls POST /v1/batches with console-owned fields (display name,
+// created_by, template binding) packed into batch.metadata under the
+// aibrix.console.* namespace. The store-overlay path is intentionally parked
+// while we treat MDS batch.metadata as the single source of truth for the
+// e2e demo loop; the store layer (UpsertJob/GetJob/ListJobs) stays in place
+// for the future reconcile / annotations design (see #8 discussion).
 //
-// max_tokens / temperature / top_p / n on the request are intentionally NOT
-// forwarded yet — per-request JSONL values win. They're reserved on the
-// proto so the Console contract is stable; a follow-up will route them into
-// aibrix.overrides.engine_args.
+// Per-batch sampling params (max_tokens / temperature / top_p / n) are baked
+// into the JSONL by the console wizard before upload, so they don't appear
+// on this request. The OpenAI SDK path can still POST them to MDS directly.
 func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*pb.Job, error) {
 	if req.InputDataset == "" {
 		return nil, status.Error(codes.InvalidArgument, "input_dataset is required")
@@ -151,13 +179,32 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 		completionWindow = string(openai.BatchNewParamsCompletionWindow24h)
 	}
 
+	// Pack console-owned fields into batch.Metadata under the aibrix.console.*
+	// namespace. This keeps a single source of truth (MDS) for the e2e demo
+	// loop. The store-overlay path is parked (not deleted) for the future
+	// reconcile / annotation work; see job.go:UpsertJob comment.
+	metadata := map[string]string{}
+	if req.Name != "" {
+		metadata[metadataConsoleDisplayName] = req.Name
+		metadata[metadataDisplayName] = req.Name // legacy key, kept for back-compat reads
+	}
+	if email := currentUserEmail(ctx); email != "" {
+		metadata[metadataConsoleCreatedBy] = email
+	}
+	if req.ModelTemplateName != "" {
+		metadata[metadataConsoleTemplateName] = req.ModelTemplateName
+	}
+	if req.ModelTemplateVersion != "" {
+		metadata[metadataConsoleTemplateVersion] = req.ModelTemplateVersion
+	}
+
 	params := openai.BatchNewParams{
 		InputFileID:      req.InputDataset,
 		Endpoint:         openai.BatchNewParamsEndpoint(req.Endpoint),
 		CompletionWindow: openai.BatchNewParamsCompletionWindow(completionWindow),
 	}
-	if req.Name != "" {
-		params.Metadata = map[string]string{metadataDisplayName: req.Name}
+	if len(metadata) > 0 {
+		params.Metadata = metadata
 	}
 
 	// AIBrix extension fields ride along via OpenAI's `extra_body` channel.
@@ -178,20 +225,7 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	if err != nil {
 		return nil, mapSDKError(err, "create batch")
 	}
-
-	overlay := &pb.Job{
-		Id:                   batch.ID,
-		Name:                 req.Name,
-		CreatedBy:            currentUserEmail(ctx),
-		ModelTemplateName:    req.ModelTemplateName,
-		ModelTemplateVersion: req.ModelTemplateVersion,
-	}
-	if err := h.store.UpsertJob(ctx, overlay); err != nil {
-		// Don't fail the request: the metadata service already created the
-		// batch. The Console row will be filled by a future reconcile.
-		klog.Warningf("store.UpsertJob failed for %s: %v", batch.ID, err)
-	}
-	return mergeJob(batch, overlay), nil
+	return mergeJob(batch, nil), nil
 }
 
 // CancelJob proxies to POST /v1/batches/{id}/cancel and merges with store.
@@ -203,8 +237,7 @@ func (h *JobHandler) CancelJob(ctx context.Context, req *pb.CancelJobRequest) (*
 	if err != nil {
 		return nil, mapSDKError(err, "cancel batch")
 	}
-	overlay, _ := h.store.GetJob(ctx, batch.ID)
-	return mergeJob(batch, overlay), nil
+	return mergeJob(batch, nil), nil
 }
 
 // currentUserEmail returns the authenticated user's email if available, else
@@ -246,9 +279,11 @@ func mapSDKError(err error, op string) error {
 	return status.Errorf(codes.Unavailable, "%s: %v", op, err)
 }
 
-// mergeJob aggregates the OpenAI Batch state with the Console-side overlay.
-// Either input may be nil. Console-owned fields override anything that may
-// have leaked from the upstream metadata bag.
+// mergeJob aggregates the OpenAI Batch state with optional Console overlay.
+// Console-owned fields (display name, created_by, template binding) are read
+// out of batch.metadata under the aibrix.console.* namespace; the overlay
+// argument is plumbing for the future store-backed reconcile path and is
+// expected to be nil today.
 func mergeJob(b *openai.Batch, overlay *pb.Job) *pb.Job {
 	job := &pb.Job{}
 	if b != nil {
@@ -272,7 +307,23 @@ func mergeJob(b *openai.Batch, overlay *pb.Job) *pb.Job {
 		job.CancelledAt = b.CancelledAt
 		if len(b.Metadata) > 0 {
 			job.Metadata = map[string]string(b.Metadata)
-			job.Name = b.Metadata[metadataDisplayName]
+			// Console-owned fields. Prefer namespaced keys; fall back to the
+			// legacy bare "display_name" so batches created by older builds
+			// still surface their name.
+			if v := b.Metadata[metadataConsoleDisplayName]; v != "" {
+				job.Name = v
+			} else if v := b.Metadata[metadataDisplayName]; v != "" {
+				job.Name = v
+			}
+			if v := b.Metadata[metadataConsoleCreatedBy]; v != "" {
+				job.CreatedBy = v
+			}
+			if v := b.Metadata[metadataConsoleTemplateName]; v != "" {
+				job.ModelTemplateName = v
+			}
+			if v := b.Metadata[metadataConsoleTemplateVersion]; v != "" {
+				job.ModelTemplateVersion = v
+			}
 		}
 		if b.JSON.RequestCounts.Valid() {
 			job.RequestCounts = &pb.JobRequestCounts{
@@ -289,6 +340,7 @@ func mergeJob(b *openai.Batch, overlay *pb.Job) *pb.Job {
 			}
 		}
 	}
+	// Overlay still respected when caller chooses to pass one (future path).
 	if overlay != nil {
 		if overlay.Name != "" {
 			job.Name = overlay.Name

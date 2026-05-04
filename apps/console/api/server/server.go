@@ -20,6 +20,8 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -48,46 +50,61 @@ type Server struct {
 
 // New creates a new console Server from configuration.
 func New(cfg *config.Config) *Server {
-	var s store.Store
-	var mysqlStore *store.MySQLStore
+	s, err := store.NewFromURI(cfg.StoreURI, cfg.SecretsEncryptionKey)
+	if err != nil {
+		klog.Fatalf("Failed to construct store: %v", err)
+	}
+	klog.Infof("Using store %s", cfg.StoreURI)
 
-	switch cfg.StoreType {
-	case "mysql":
-		ms, err := store.NewMySQLStore(cfg.MySQLDSN, cfg.SecretsEncryptionKey)
-		if err != nil {
-			klog.Fatalf("Failed to connect to MySQL: %v", err)
-		}
+	// MySQL needs migrations and a Close() on shutdown — handle via type
+	// assertion so the Store interface stays focused on data access.
+	var mysqlStore *store.MySQLStore
+	if ms, ok := s.(*store.MySQLStore); ok {
 		if err := ms.RunMigrations(); err != nil {
 			klog.Fatalf("Failed to run MySQL migrations: %v", err)
 		}
-		if err := ms.LoadDemoData(); err != nil {
-			klog.Fatalf("Failed to load MySQL demo data: %v", err)
-		}
-		s = ms
 		mysqlStore = ms
-		klog.Info("Using MySQL store")
-	default:
-		s = store.NewMemoryStore()
-		klog.Info("Using in-memory store")
+	}
+
+	// Dev-mode conveniences. Seeding is opt-in so production / shared envs
+	// start with an empty store.
+	if cfg.DevMode {
+		if seeder, ok := s.(interface{ LoadDemoData() error }); ok {
+			if err := seeder.LoadDemoData(); err != nil {
+				klog.Fatalf("Failed to seed demo data: %v", err)
+			}
+			klog.Info("Dev mode: demo data seeded")
+		}
 	}
 
 	authCfg := middleware.AuthConfig{
-		Mode:             cfg.AuthMode,
-		OIDCIssuerURL:    cfg.OIDCIssuerURL,
-		OIDCClientID:     cfg.OIDCClientID,
-		OIDCClientSecret: cfg.OIDCClientSecret,
-		OIDCRedirectURL:  cfg.OIDCRedirectURL,
-		SessionSecret:    cfg.SessionSecret,
-		DevUserName:      cfg.DevUserName,
-		DevUserEmail:     cfg.DevUserEmail,
-		BasicUsername:    cfg.BasicUsername,
-		BasicPassword:    cfg.BasicPassword,
+		Mode:                      cfg.AuthMode,
+		OIDCIssuerURL:             cfg.OIDCIssuerURL,
+		OIDCClientID:              cfg.OIDCClientID,
+		OIDCClientSecret:          cfg.OIDCClientSecret,
+		OIDCRedirectURL:           cfg.OIDCRedirectURL,
+		OIDCPostLogoutRedirectURL: cfg.OIDCPostLogoutRedirectURL,
+		OIDCEndSessionURL:         cfg.OIDCEndSessionURL,
+		OIDCGroupsClaim:           cfg.OIDCGroupsClaim,
+		OIDCAdminGroups:           cfg.OIDCAdminGroups,
+		OIDCAdminEmails:           cfg.OIDCAdminEmails,
+		OIDCSigningAlg:            cfg.OIDCSigningAlg,
+		SessionSecret:             cfg.SessionSecret,
+		DevUserName:               cfg.DevUserName,
+		DevUserEmail:              cfg.DevUserEmail,
+		BasicUsername:             cfg.BasicUsername,
+		BasicPassword:             cfg.BasicPassword,
+	}
+
+	auth, err := middleware.NewAuthMiddleware(authCfg)
+	if err != nil {
+		klog.Fatalf("Failed to construct auth middleware: %v", err)
 	}
 
 	return &Server{
 		store:      s,
 		cfg:        cfg,
-		auth:       middleware.NewAuthMiddleware(authCfg),
+		auth:       auth,
 		mysqlStore: mysqlStore,
 	}
 }
@@ -103,7 +120,7 @@ func (s *Server) StartGRPC(addr string) error {
 
 	// Register all service handlers
 	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
-	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.cfg.MetadataServiceURL, s.cfg.DefaultBatchModelDeploymentTemplate))
+	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.cfg.MetadataServiceURL, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
 	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))
 	pb.RegisterAPIKeyServiceServer(s.grpcServer, handler.NewAPIKeyHandler(s.store))
@@ -242,16 +259,28 @@ func corsMiddleware(allowedOrigins string) func(http.Handler) http.Handler {
 }
 
 // staticFileMiddleware serves static files from dir for non-API paths.
-// API paths (/api/) are passed through to the next handler.
+// API paths (/api/) are passed through to the next handler. Non-API paths
+// that don't match a real file fall back to index.html so the React Router
+// SPA can render deep links (e.g. /models/abc, /batch/job-xyz) on hard
+// reload or external link.
 func staticFileMiddleware(dir string, next http.Handler) http.Handler {
 	fs := http.FileServer(http.Dir(dir))
+	indexPath := filepath.Join(dir, "index.html")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// API requests go to the backend
-		if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/api" {
+		if strings.HasPrefix(r.URL.Path, "/api") {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Try to serve static file
+		// SPA fallback: any path that doesn't map to a real file gets index.html.
+		// "/" itself falls through to FileServer which serves index.html.
+		if r.URL.Path != "/" {
+			rel := filepath.Join(dir, filepath.Clean(r.URL.Path))
+			if _, err := os.Stat(rel); os.IsNotExist(err) {
+				http.ServeFile(w, r, indexPath)
+				return
+			}
+		}
 		fs.ServeHTTP(w, r)
 	})
 }
