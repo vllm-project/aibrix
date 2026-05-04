@@ -422,101 +422,101 @@ export function CreateModelDeploymentTemplate({
           </Field>
         </Section>
 
-        {/* Engine */}
-        <Section title="Engine">
-          <Field label="Type">
-            <select
-              value={spec.engine?.type ?? 'vllm'}
-              onChange={(e) => updateSpec('engine', { type: e.target.value })}
-              className={inputCls}
-            >
-              {ENGINE_TYPES.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Version">
-            <input
-              type="text"
-              value={spec.engine?.version ?? ''}
-              onChange={(e) => updateSpec('engine', { version: e.target.value })}
-              placeholder="0.6.3"
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Ready timeout (s)">
-            <input
-              type="number"
-              value={spec.engine?.readyTimeoutSeconds ?? 600}
-              onChange={(e) => updateSpec('engine', { readyTimeoutSeconds: Number(e.target.value) })}
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Image" wide>
-            <input
-              type="text"
-              value={spec.engine?.image ?? ''}
-              onChange={(e) => updateSpec('engine', { image: e.target.value })}
-              placeholder="vllm/vllm-openai:v0.6.3"
-              className={inputCls}
-            />
-          </Field>
-        </Section>
-
-        {/* Engine args (free-form key/value, with curated knobs surfaced) */}
-        <EngineArgsSection
-          args={spec.engineArgs ?? {}}
-          onChange={(next) => setSpec((prev) => ({ ...prev, engineArgs: next }))}
-        />
-
-        {/* Parallelism */}
-        <Section title="Parallelism">
-          {(['tp', 'pp', 'dp', 'ep', 'sp', 'cp'] as const).map((k) => (
-            <Field key={k} label={k.toUpperCase()}>
+        {/* Engine (mega-group: engine selection + tuning) */}
+        <Group title="Engine">
+          <SubSection title="Engine">
+            <Field label="Type">
+              <select
+                value={spec.engine?.type ?? 'vllm'}
+                onChange={(e) => updateSpec('engine', { type: e.target.value })}
+                className={inputCls}
+              >
+                {ENGINE_TYPES.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Version">
               <input
-                type="number"
-                min={1}
-                value={spec.parallelism?.[k] ?? 1}
-                onChange={(e) => updateSpec('parallelism', { [k]: Number(e.target.value) })}
+                type="text"
+                value={spec.engine?.version ?? ''}
+                onChange={(e) => updateSpec('engine', { version: e.target.value })}
+                placeholder="0.6.3"
                 className={inputCls}
               />
             </Field>
-          ))}
-        </Section>
+            <Field label="Ready timeout (s)">
+              <input
+                type="number"
+                value={spec.engine?.readyTimeoutSeconds ?? 600}
+                onChange={(e) => updateSpec('engine', { readyTimeoutSeconds: Number(e.target.value) })}
+                className={inputCls}
+              />
+            </Field>
+            <Field label="Image" wide>
+              <input
+                type="text"
+                value={spec.engine?.image ?? ''}
+                onChange={(e) => updateSpec('engine', { image: e.target.value })}
+                placeholder="vllm/vllm-openai:v0.6.3"
+                className={inputCls}
+              />
+            </Field>
+          </SubSection>
 
-        {/* Quantization */}
-        <Section title="Quantization">
-          <Field label="Weight">
-            <select
-              value={spec.quantization?.weight ?? ''}
-              onChange={(e) => updateSpec('quantization', { weight: e.target.value })}
-              className={inputCls}
-            >
-              {WEIGHT_QUANT_OPTIONS.map((w) => (
-                <option key={w || 'none'} value={w}>{w || '—'}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="KV cache">
-            <select
-              value={spec.quantization?.kvCache ?? ''}
-              onChange={(e) => updateSpec('quantization', { kvCache: e.target.value })}
-              className={inputCls}
-            >
-              {KV_QUANT_OPTIONS.map((q) => (
-                <option key={q || 'none'} value={q}>{q || '—'}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Pre-quantized weights URI" wide>
-            <input
-              type="text"
-              value={spec.quantization?.weightsArtifactUri ?? ''}
-              onChange={(e) => updateSpec('quantization', { weightsArtifactUri: e.target.value })}
-              className={inputCls}
-            />
-          </Field>
-        </Section>
+          <EngineArgsSection
+            bare
+            args={spec.engineArgs ?? {}}
+            onChange={(next) => setSpec((prev) => ({ ...prev, engineArgs: next }))}
+          />
+
+          <SubSection title="Parallelism">
+            {(['tp', 'pp', 'dp', 'ep', 'sp', 'cp'] as const).map((k) => (
+              <Field key={k} label={k.toUpperCase()}>
+                <input
+                  type="number"
+                  min={1}
+                  value={spec.parallelism?.[k] ?? 1}
+                  onChange={(e) => updateSpec('parallelism', { [k]: Number(e.target.value) })}
+                  className={inputCls}
+                />
+              </Field>
+            ))}
+          </SubSection>
+
+          <SubSection title="Quantization">
+            <Field label="Weight">
+              <select
+                value={spec.quantization?.weight ?? ''}
+                onChange={(e) => updateSpec('quantization', { weight: e.target.value })}
+                className={inputCls}
+              >
+                {WEIGHT_QUANT_OPTIONS.map((w) => (
+                  <option key={w || 'none'} value={w}>{w || '—'}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="KV cache">
+              <select
+                value={spec.quantization?.kvCache ?? ''}
+                onChange={(e) => updateSpec('quantization', { kvCache: e.target.value })}
+                className={inputCls}
+              >
+                {KV_QUANT_OPTIONS.map((q) => (
+                  <option key={q || 'none'} value={q}>{q || '—'}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Pre-quantized weights URI" wide>
+              <input
+                type="text"
+                value={spec.quantization?.weightsArtifactUri ?? ''}
+                onChange={(e) => updateSpec('quantization', { weightsArtifactUri: e.target.value })}
+                className={inputCls}
+              />
+            </Field>
+          </SubSection>
+        </Group>
 
         {/* Provider */}
         <Section title="Provider">
@@ -617,6 +617,26 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
+// Group wraps a logically related set of subsections inside one larger card.
+function Group({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+      <h3 className="text-base font-medium mb-5">{title}</h3>
+      <div className="divide-y divide-gray-100">{children}</div>
+    </div>
+  );
+}
+
+// SubSection is a Section without the card chrome — used inside Group.
+function SubSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="py-5 first:pt-0 last:pb-0">
+      <h4 className="text-xs font-medium uppercase tracking-wide text-gray-500 mb-3">{title}</h4>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">{children}</div>
+    </div>
+  );
+}
+
 function Field({
   label,
   wide,
@@ -643,9 +663,11 @@ function newRowId(): string {
 function EngineArgsSection({
   args,
   onChange,
+  bare = false,
 }: {
   args: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
+  bare?: boolean;
 }) {
   // Custom flags live in local array state so editing key/value to empty
   // doesn't collapse the row (which the prior Record<string,string> design
@@ -712,13 +734,22 @@ function EngineArgsSection({
     emit(next);
   };
 
+  const wrapperClass = bare
+    ? 'py-5 first:pt-0 last:pb-0'
+    : 'bg-white rounded-xl shadow-sm border border-gray-100 p-6';
+  const headerClass = bare
+    ? 'text-xs font-medium uppercase tracking-wide text-gray-500'
+    : 'text-sm';
+
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-      <div className="mb-4">
-        <h3 className="text-sm">Engine args</h3>
-        <p className="text-xs text-gray-500 mt-1">
-          Key/value flags forwarded to the engine. Common knobs are listed below; use Custom for engine-specific flags.
-        </p>
+    <div className={wrapperClass}>
+      <div className="mb-3">
+        <h3 className={headerClass}>Engine args</h3>
+        {!bare && (
+          <p className="text-xs text-gray-500 mt-1">
+            Key/value flags forwarded to the engine. Common knobs are listed below; use Custom for engine-specific flags.
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
