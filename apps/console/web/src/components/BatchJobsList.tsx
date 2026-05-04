@@ -54,16 +54,46 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
   const [showStatusDropdown, setShowStatusDropdown] = useState(false);
 
   useEffect(() => {
-    setLoading(true);
-    setLoadError(null);
-    listJobs()
-      .then(res => setJobs(res.jobs ?? []))
-      .catch(err => {
-        console.error('Failed to fetch jobs:', err);
-        setLoadError(err instanceof Error ? err.message : String(err));
-        setJobs([]);
-      })
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const fetchJobs = (initial: boolean) => {
+      if (initial) {
+        setLoading(true);
+        setLoadError(null);
+      }
+      listJobs()
+        .then(res => {
+          if (cancelled) return;
+          const next = res.jobs ?? [];
+          setJobs(next);
+          // Poll while any job is in a non-terminal state.
+          const TERMINAL = new Set(['completed', 'failed', 'expired', 'cancelled']);
+          const hasActive = next.some(j => !TERMINAL.has(j.status));
+          if (hasActive) {
+            timer = setTimeout(() => fetchJobs(false), 5000);
+          }
+        })
+        .catch(err => {
+          if (cancelled) return;
+          console.error('Failed to fetch jobs:', err);
+          if (initial) {
+            setLoadError(err instanceof Error ? err.message : String(err));
+            setJobs([]);
+          }
+          // Keep polling on transient errors so the page recovers when MDS comes back.
+          timer = setTimeout(() => fetchJobs(false), 10000);
+        })
+        .finally(() => {
+          if (!cancelled && initial) setLoading(false);
+        });
+    };
+
+    fetchJobs(true);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   const filtered = useMemo(() => {

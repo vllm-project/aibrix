@@ -74,7 +74,7 @@ type JobHandler struct {
 // NewJobHandler creates a JobHandler.
 func NewJobHandler(s store.Store, metadataServiceURL, defaultModelDeploymentTemplate string, devMode bool) *JobHandler {
 
-	baseURL := strings.TrimRight(metadataServiceURL, "/")
+	baseURL := strings.TrimRight(metadataServiceURL, "/") + "/v1"
 	client := openai.NewClient(
 		option.WithBaseURL(baseURL),
 		option.WithAPIKey("aibrix-console"),

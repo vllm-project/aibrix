@@ -39,16 +39,42 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
 
   useEffect(() => {
     if (!jobId) return;
-    setLoading(true);
-    setLoadError(null);
-    getJob(jobId)
-      .then(j => setJob(j))
-      .catch(err => {
-        console.error('Failed to fetch job:', err);
-        setLoadError(err instanceof Error ? err.message : String(err));
-        setJob(null);
-      })
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const TERMINAL = new Set(['completed', 'failed', 'expired', 'cancelled']);
+
+    const fetchJob = (initial: boolean) => {
+      if (initial) {
+        setLoading(true);
+        setLoadError(null);
+      }
+      getJob(jobId)
+        .then(j => {
+          if (cancelled) return;
+          setJob(j);
+          if (!TERMINAL.has(j.status)) {
+            timer = setTimeout(() => fetchJob(false), 5000);
+          }
+        })
+        .catch(err => {
+          if (cancelled) return;
+          console.error('Failed to fetch job:', err);
+          if (initial) {
+            setLoadError(err instanceof Error ? err.message : String(err));
+            setJob(null);
+          }
+          timer = setTimeout(() => fetchJob(false), 10000);
+        })
+        .finally(() => {
+          if (!cancelled && initial) setLoading(false);
+        });
+    };
+
+    fetchJob(true);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [jobId]);
 
   if (loading) {
