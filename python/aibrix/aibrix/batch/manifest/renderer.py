@@ -130,6 +130,27 @@ class ForbiddenOverride(RenderError):
 _DEFAULT_NAMESPACE = "default"
 _DEFAULT_SERVICE_ACCOUNT = "job-reader-sa"
 _DEFAULT_ENGINE_PORT = 8000
+
+# Per-engine health endpoint defaults. Used when the template leaves
+# engine.health_endpoint empty so the console UI can hide this field —
+# all supported engines expose /health by convention. Templates may still
+# override (e.g. when fronting the engine with a reverse proxy that
+# rewrites the path).
+_ENGINE_HEALTH_DEFAULTS: Dict[str, str] = {
+    EngineType.VLLM.value: "/health",
+    EngineType.SGLANG.value: "/health",
+    EngineType.TRTLLM.value: "/health",
+    EngineType.LMDEPLOY.value: "/health",
+    EngineType.MOCK.value: "/health",
+}
+_FALLBACK_HEALTH_ENDPOINT = "/health"
+
+
+def _resolve_health_endpoint(engine_type: str, configured: str) -> str:
+    """Return the engine health endpoint, falling back to per-engine default."""
+    if configured:
+        return configured
+    return _ENGINE_HEALTH_DEFAULTS.get(engine_type, _FALLBACK_HEALTH_ENDPOINT)
 _DEFAULT_BACKOFF_LIMIT = 2
 _DEFAULT_ACTIVE_DEADLINE = 86400  # 24h fallback when spec.completion_window absent
 _DEFAULT_LABEL_APP = "aibrix-batch"
@@ -331,13 +352,14 @@ class JobManifestRenderer:
         # health endpoint; otherwise the worker probes the wrong target
         # when admins override --port via serve_args or set a non-default
         # health_endpoint on the template.
+        health_path = _resolve_health_endpoint(
+            template.spec.engine.type, template.spec.engine.health_endpoint
+        )
         worker = self._find_container(manifest, _WORKER_CONTAINER_NAME)
         worker["env"].append(
             {
                 "name": "LLM_READY_ENDPOINT",
-                "value": (
-                    f"http://localhost:{port}{template.spec.engine.health_endpoint}"
-                ),
+                "value": f"http://localhost:{port}{health_path}",
             }
         )
 
@@ -403,7 +425,12 @@ class JobManifestRenderer:
             "image": spec.engine.image,
             "ports": [{"containerPort": port}],
             "readinessProbe": {
-                "httpGet": {"path": spec.engine.health_endpoint, "port": port},
+                "httpGet": {
+                    "path": _resolve_health_endpoint(
+                        spec.engine.type, spec.engine.health_endpoint
+                    ),
+                    "port": port,
+                },
                 "periodSeconds": 5,
                 "successThreshold": 1,
                 "timeoutSeconds": 1,

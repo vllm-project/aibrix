@@ -78,7 +78,7 @@ const KNOWN_KEYS = new Set(KNOWN_ENGINE_ARGS.map((k) => k.key));
 
 function emptySpec(): ModelDeploymentTemplateSpec {
   return {
-    engine: { type: 'vllm', version: '', image: '', invocation: 'http_server', healthEndpoint: '/health' },
+    engine: { type: 'vllm', version: '', image: '', invocation: 'http_server' },
     modelSource: { type: 'huggingface', uri: '' },
     accelerator: { type: '', count: 1 },
     parallelism: { tp: 1, pp: 1, dp: 1 },
@@ -333,14 +333,6 @@ export function CreateModelDeploymentTemplate({
               value={spec.engine?.image ?? ''}
               onChange={(e) => updateSpec('engine', { image: e.target.value })}
               placeholder="vllm/vllm-openai:v0.6.3"
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Health endpoint">
-            <input
-              type="text"
-              value={spec.engine?.healthEndpoint ?? ''}
-              onChange={(e) => updateSpec('engine', { healthEndpoint: e.target.value })}
               className={inputCls}
             />
           </Field>

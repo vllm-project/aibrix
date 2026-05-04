@@ -99,8 +99,13 @@ class EngineSpec(_Strict):
         description="Raw flags appended to engine startup command, e.g. ['--port=8000']",
     )
     health_endpoint: str = Field(
-        default="/health",
-        description="HTTP path checked for readiness",
+        default="",
+        description=(
+            "HTTP path checked for readiness. Empty (the default) lets the "
+            "renderer pick the per-engine convention (vllm/sglang/trtllm/"
+            "lmdeploy/mock all use /health). Override only when fronting the "
+            "engine with a reverse proxy that rewrites the path."
+        ),
     )
     ready_timeout_seconds: int = Field(
         default=600,
