@@ -262,6 +262,12 @@ message Model {
   ModelMetadata metadata = 11;
   ModelSpecification specification = 12;
   repeated string tags = 13;
+  // serving_name is the identifier callers must put in `body.model` for
+  // batch / online inference (typically the HuggingFace path or the vLLM
+  // `--served-model-name` value). Distinct from `id` (Console-internal
+  // primary key) and `name` (human-readable display). Empty means the model
+  // isn't deployed yet — clients should skip server-side identifier checks.
+  string serving_name = 14;
 }
 
 message ModelPricing {

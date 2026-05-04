@@ -48,24 +48,20 @@ type Server struct {
 
 // New creates a new console Server from configuration.
 func New(cfg *config.Config) *Server {
-	var s store.Store
-	var mysqlStore *store.MySQLStore
+	s, err := store.NewFromURI(cfg.StoreURI, cfg.SecretsEncryptionKey)
+	if err != nil {
+		klog.Fatalf("Failed to construct store: %v", err)
+	}
+	klog.Infof("Using store %s", cfg.StoreURI)
 
-	switch cfg.StoreType {
-	case "mysql":
-		ms, err := store.NewMySQLStore(cfg.MySQLDSN, cfg.SecretsEncryptionKey)
-		if err != nil {
-			klog.Fatalf("Failed to connect to MySQL: %v", err)
-		}
+	// MySQL needs migrations and a Close() on shutdown — handle via type
+	// assertion so the Store interface stays focused on data access.
+	var mysqlStore *store.MySQLStore
+	if ms, ok := s.(*store.MySQLStore); ok {
 		if err := ms.RunMigrations(); err != nil {
 			klog.Fatalf("Failed to run MySQL migrations: %v", err)
 		}
-		s = ms
 		mysqlStore = ms
-		klog.Info("Using MySQL store")
-	default:
-		s = store.NewMemoryStore()
-		klog.Info("Using in-memory store")
 	}
 
 	// Dev-mode conveniences. Seeding is opt-in so production / shared envs

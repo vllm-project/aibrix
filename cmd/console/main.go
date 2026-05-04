@@ -37,6 +37,8 @@ func main() {
 	httpAddr := flag.String("http-addr", "", "HTTP gateway address (overrides HTTP_ADDR env)")
 	gatewayEndpoint := flag.String("gateway-endpoint", "",
 		"AIBrix gateway endpoint (overrides GATEWAY_ENDPOINT env)")
+	storeURI := flag.String("store-uri", "",
+		"Store URI: memory:// or mysql://user:pass@host:3306/db (overrides STORE_URI env)")
 	devMode := flag.Bool("dev-mode", false,
 		"Enable development conveniences (currently: seed demo data on startup). Overrides DEV_MODE env when set.")
 	klog.InitFlags(flag.CommandLine)
@@ -58,6 +60,9 @@ func main() {
 	}
 	if *gatewayEndpoint != "" {
 		cfg.GatewayEndpoint = *gatewayEndpoint
+	}
+	if *storeURI != "" {
+		cfg.StoreURI = *storeURI
 	}
 	// Bool flags can't be distinguished from their default by value alone, so
 	// only override env when the user passed --dev-mode explicitly.
@@ -84,7 +89,7 @@ func main() {
 	}()
 
 	klog.Infof("AIBrix Console started: gRPC=%s HTTP=%s store=%s auth=%s",
-		cfg.GRPCAddr, cfg.HTTPAddr, cfg.StoreType, cfg.AuthMode)
+		cfg.GRPCAddr, cfg.HTTPAddr, cfg.StoreURI, cfg.AuthMode)
 
 	// Graceful shutdown
 	stop := make(chan os.Signal, 1)

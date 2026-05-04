@@ -107,6 +107,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 10, 2026", ProviderName: "MiniMax", HuggingFace: "minimax/MiniMax-M2.5"},
 			Specification: &pb.ModelSpecification{Parameters: "250B"},
 			Tags:          []string{"Serverless"},
+			ServingName:   "minimax/MiniMax-M2.5",
 		},
 		{
 			Id: "model-glm-5", Name: "GLM-5",
@@ -118,6 +119,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 12, 2026", ProviderName: "Z.ai", HuggingFace: "zai-org/GLM-5"},
 			Specification: &pb.ModelSpecification{MixtureOfExperts: true, Parameters: "700B"},
 			Tags:          []string{"Serverless"},
+			ServingName:   "zai-org/GLM-5",
 		},
 		{
 			Id: "model-kimi-k2.5", Name: "Kimi K2.5",
@@ -129,6 +131,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 8, 2026", ProviderName: "Moonshot AI", HuggingFace: "moonshot/kimi-k2.5"},
 			Specification: &pb.ModelSpecification{MixtureOfExperts: true, Parameters: "400B"},
 			Tags:          []string{"Serverless", "Tunable"},
+			ServingName:   "moonshot/kimi-k2.5",
 		},
 		{
 			Id: "model-deepseek-v3.2", Name: "Deepseek v3.2",
@@ -140,6 +143,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Jan 25, 2026", ProviderName: "DeepSeek", HuggingFace: "deepseek-ai/deepseek-v3.2"},
 			Specification: &pb.ModelSpecification{MixtureOfExperts: true, Parameters: "671B"},
 			Tags:          []string{"Serverless"},
+			ServingName:   "deepseek-ai/deepseek-v3.2",
 		},
 		{
 			Id: "model-llama-3.3-70b", Name: "Llama 3.3 70B Instruct",
@@ -151,6 +155,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Dec 10, 2025", ProviderName: "Meta", HuggingFace: "meta-llama/Llama-3.3-70B-Instruct"},
 			Specification: &pb.ModelSpecification{Parameters: "70B"},
 			Tags:          []string{"Serverless", "Tunable", "Function Calling"},
+			ServingName:   "meta-llama/Llama-3.3-70B-Instruct",
 		},
 		// Audio
 		{
@@ -162,6 +167,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Oct 20, 2025", ProviderName: "OpenAI", HuggingFace: "openai/whisper-large-v3"},
 			Specification: &pb.ModelSpecification{Calibrated: true, Parameters: "1.5B"},
 			Tags:          []string{"Serverless"},
+			ServingName:   "openai/whisper-large-v3",
 		},
 		// Image
 		{
@@ -173,6 +179,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 1, 2026", ProviderName: "Black Forest Labs"},
 			Specification: &pb.ModelSpecification{Parameters: "12B"},
 			Tags:          []string{"Serverless"},
+			ServingName:   "black-forest-labs/FLUX.1-Kontext-pro",
 		},
 		// Embedding
 		{
@@ -185,6 +192,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Sep 1, 2025", ProviderName: "Nomic AI", HuggingFace: "nomic-ai/nomic-embed-text-v1.5"},
 			Specification: &pb.ModelSpecification{Parameters: "137M"},
 			Tags:          []string{"Serverless"},
+			ServingName:   "nomic-ai/nomic-embed-text-v1.5",
 		},
 	}
 }

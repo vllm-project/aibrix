@@ -183,8 +183,11 @@ export function validateBatchLines(parsed: ParseResult, ctx: ValidationContext):
   }
 
   const detectedModel = models.size >= 1 ? [...models][0] : null;
-  if (detectedModel && detectedModel !== ctx.expectedModel) {
-    pushError(`Model in file "${detectedModel}" doesn't match selected model "${ctx.expectedModel}".`);
+  // expectedModel comes from model.serving_name (the inference identifier).
+  // Empty means the selected model isn't deployed yet; skip the identifier
+  // check so the user can still upload and exercise the rest of the flow.
+  if (detectedModel && ctx.expectedModel && detectedModel !== ctx.expectedModel) {
+    pushError(`body.model "${detectedModel}" doesn't match selected model's serving name "${ctx.expectedModel}".`);
   }
 
   return {

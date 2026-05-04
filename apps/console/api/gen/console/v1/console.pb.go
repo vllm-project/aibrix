@@ -1167,6 +1167,12 @@ type Model struct {
 	Metadata      *ModelMetadata         `protobuf:"bytes,11,opt,name=metadata,proto3" json:"metadata,omitempty"`
 	Specification *ModelSpecification    `protobuf:"bytes,12,opt,name=specification,proto3" json:"specification,omitempty"`
 	Tags          []string               `protobuf:"bytes,13,rep,name=tags,proto3" json:"tags,omitempty"`
+	// serving_name is the identifier callers must put in `body.model` for
+	// batch / online inference (typically the HuggingFace path or the vLLM
+	// `--served-model-name` value). Distinct from `id` (Console-internal
+	// primary key) and `name` (human-readable display). Empty means the model
+	// isn't deployed yet — clients should skip server-side identifier checks.
+	ServingName   string `protobuf:"bytes,14,opt,name=serving_name,json=servingName,proto3" json:"serving_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1290,6 +1296,13 @@ func (x *Model) GetTags() []string {
 		return x.Tags
 	}
 	return nil
+}
+
+func (x *Model) GetServingName() string {
+	if x != nil {
+		return x.ServingName
+	}
+	return ""
 }
 
 type ModelPricing struct {
@@ -3549,7 +3562,7 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\x06_top_pB\x04\n" +
 	"\x02_n\"\"\n" +
 	"\x10CancelJobRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\xce\x03\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xf1\x03\n" +
 	"\x05Model\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x17\n" +
@@ -3566,7 +3579,8 @@ const file_console_v1_console_proto_rawDesc = "" +
 	" \x01(\tR\vdescription\x125\n" +
 	"\bmetadata\x18\v \x01(\v2\x19.console.v1.ModelMetadataR\bmetadata\x12D\n" +
 	"\rspecification\x18\f \x01(\v2\x1e.console.v1.ModelSpecificationR\rspecification\x12\x12\n" +
-	"\x04tags\x18\r \x03(\tR\x04tags\"\xac\x01\n" +
+	"\x04tags\x18\r \x03(\tR\x04tags\x12!\n" +
+	"\fserving_name\x18\x0e \x01(\tR\vservingName\"\xac\x01\n" +
 	"\fModelPricing\x12%\n" +
 	"\x0euncached_input\x18\x01 \x01(\tR\runcachedInput\x12!\n" +
 	"\fcached_input\x18\x02 \x01(\tR\vcachedInput\x12\x16\n" +

@@ -35,8 +35,9 @@ const STEP_INDEX: Record<Step, number> = { model: 1, template: 2, dataset: 3, se
 
 export function CreateJob({ onBack }: CreateJobProps) {
   const [currentStep, setCurrentStep] = useState<Step>('model');
-  const [selectedModel, setSelectedModel] = useState('');
+  const [selectedModel, setSelectedModel] = useState('');           // display name (model.name)
   const [selectedModelId, setSelectedModelId] = useState('');
+  const [selectedServingName, setSelectedServingName] = useState(''); // serving identifier (model.serving_name)
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [maxTokens, setMaxTokens] = useState('');
@@ -86,6 +87,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const handleSelectModel = (model: Model) => {
     setSelectedModel(model.name);
     setSelectedModelId(model.id);
+    setSelectedServingName(model.servingName ?? '');
     setShowModelDropdown(false);
     setModelSearchQuery('');
     setDisplayName(generateJobDisplayName(model.name));
@@ -119,7 +121,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
     // endpoint check will be re-applied when a template is selected.
     if (selectedFile) {
       setValidating(true);
-      validateBatchFile(selectedFile, { expectedModel: model.name }).then((r) => {
+      validateBatchFile(selectedFile, { expectedModel: model.servingName ?? '' }).then((r) => {
         setValidation(r);
         setValidating(false);
       });
@@ -133,7 +135,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
     if (selectedFile) {
       setValidating(true);
       validateBatchFile(selectedFile, {
-        expectedModel: selectedModel,
+        expectedModel: selectedServingName,
         supportedEndpoints: tpl.spec?.supportedEndpoints,
       })
         .then((r) => setValidation(r))
@@ -154,7 +156,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
     setValidating(true);
     try {
       const result = await validateBatchFile(file, {
-        expectedModel: selectedModel,
+        expectedModel: selectedServingName,
         supportedEndpoints: selectedTemplate?.spec?.supportedEndpoints,
       });
       setValidation(result);
@@ -823,7 +825,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
                 <div className="bg-gray-50 p-3 rounded-lg text-xs text-gray-600">
                   <strong>Example JSONL line:</strong>
                   <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all text-[11px] text-gray-500">
-{`{"custom_id":"req-001","method":"POST","url":"/v1/responses","body":{"model":"${selectedModel || 'your-model'}","input":"Hello"}}`}
+{`{"custom_id":"req-001","method":"POST","url":"/v1/responses","body":{"model":"${selectedServingName || selectedModel || 'your-model'}","input":"Hello"}}`}
                   </pre>
                 </div>
 
