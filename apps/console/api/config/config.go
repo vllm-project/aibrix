@@ -29,8 +29,11 @@ const AuthModeDev = "dev"
 // Config holds all configuration for the AIBrix console backend.
 type Config struct {
 	// StoreURI selects the backing store via a URI scheme. Examples:
-	//   memory://
-	//   mysql://user:pass@host:3306/aibrix
+	//   sqlite:/tmp/aibrix-console.db                   (file-backed, dev default)
+	//   sqlite:/var/lib/aibrix/console.db               (file-backed, absolute)
+	//   sqlite::memory:                                 (in-memory SQLite)
+	//   memory://                                       (alias for in-memory SQLite)
+	//   mysql://user:pass@host:3306/aibrix              (production)
 	// Future: postgres://, redis://, mongodb:// — add a case in store.NewFromURI.
 	StoreURI string
 
@@ -139,7 +142,7 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		StoreURI:                            envOrDefault("STORE_URI", "memory://"),
+		StoreURI:                            envOrDefault("STORE_URI", "sqlite:/tmp/aibrix-console.db"),
 		GatewayEndpoint:                     envOrDefault("GATEWAY_ENDPOINT", "http://localhost:8888"),
 		MetadataServiceURL:                  envOrDefault("METADATA_SERVICE_URL", "http://localhost:8090"),
 		DefaultBatchModelDeploymentTemplate: envOrDefault("DEFAULT_BATCH_MODEL_DEPLOYMENT_TEMPLATE", ""),

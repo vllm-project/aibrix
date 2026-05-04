@@ -45,7 +45,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// NewMySQLStore creates mysql-backed gorm store.
+// NewMySQLStore creates mysql-backed gorm store with auto-migrations.
 func NewMySQLStore(dsn, encryptionKey string) (*GORMStore, error) {
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
@@ -59,42 +59,63 @@ func NewMySQLStore(dsn, encryptionKey string) (*GORMStore, error) {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("failed to ping mysql: %w", err)
 	}
-	store, err := newGORMStore(db, encryptionKey)
+	s, err := newGORMStore(db, encryptionKey)
 	if err != nil {
 		_ = sqlDB.Close()
 		return nil, err
 	}
-	return store, nil
+	if err := s.RunMigrations(); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("failed to run mysql migrations: %w", err)
+	}
+	return s, nil
 }
 
-// NewSQLiteStore creates sqlite-backed gorm store.
+// NewSQLiteStore creates sqlite-backed gorm store with auto-migrations.
+// Pass ":memory:" or any "...mode=memory..." DSN to get an in-memory database;
+// such DSNs are pinned to a single connection so all queries see the same
+// in-process database.
 func NewSQLiteStore(dsn, encryptionKey string) (*GORMStore, error) {
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite: %w", err)
 	}
-	store, err := newGORMStore(db, encryptionKey)
+	sqlDB, err := db.DB()
 	if err != nil {
+		return nil, fmt.Errorf("failed to access sqlite db: %w", err)
+	}
+	if isSQLiteInMemoryDSN(dsn) {
+		// In-memory SQLite databases are per-connection; multiple connections
+		// would each see a different empty DB. Pin to one connection.
+		sqlDB.SetMaxOpenConns(1)
+		sqlDB.SetMaxIdleConns(1)
+	}
+	s, err := newGORMStore(db, encryptionKey)
+	if err != nil {
+		_ = sqlDB.Close()
 		return nil, err
 	}
-	return store, nil
+	if err := s.RunMigrations(); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("failed to run sqlite migrations: %w", err)
+	}
+	return s, nil
 }
 
+// NewMemoryStore returns an in-memory SQLite store. Convenience wrapper used
+// by the memory:// URI scheme and by tests; equivalent to
+// NewSQLiteStore(":memory:", ...). Production deployments should use a
+// sqlite: file URL or mysql:// instead.
 func NewMemoryStore() *GORMStore {
-	s, err := NewSQLiteStore("file:aibrix-memory?mode=memory&cache=private", strings.Repeat("0", 64))
+	s, err := NewSQLiteStore(":memory:", strings.Repeat("0", 64))
 	if err != nil {
-		panic(fmt.Sprintf("failed to initialize sqlite memory store: %v", err))
-	}
-	sqlDB, err := s.db.DB()
-	if err != nil {
-		panic(fmt.Sprintf("failed to get sqlite db handle: %v", err))
-	}
-	sqlDB.SetMaxOpenConns(1)
-	sqlDB.SetMaxIdleConns(1)
-	if err := s.RunMigrations(); err != nil {
-		panic(fmt.Sprintf("failed to run sqlite migrations: %v", err))
+		panic(fmt.Sprintf("failed to initialize in-memory sqlite store: %v", err))
 	}
 	return s
+}
+
+func isSQLiteInMemoryDSN(dsn string) bool {
+	return strings.Contains(dsn, ":memory:") || strings.Contains(dsn, "mode=memory")
 }
 
 // GORMStore implements Store for mysql/sqlite with shared logic.
