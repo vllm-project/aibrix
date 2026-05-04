@@ -18,12 +18,10 @@ limitations under the License.
 // between the AIBrix Console BFF, the planner workers, and the metadata
 // service (MDS).
 //
-// The MVP surface is five exported interfaces plus one function type:
+// The MVP surface is three exported interfaces plus one function type:
 //
-//   - Planner                Console BFF -> planner front door (Enqueue/Get/List/Cancel)
-//   - QueueStatsReader       Console / ops -> queue depth + worker activity
-//   - ResourceCapacityReader Console / ops -> aggregated capacity (reserved/used/free)
-//   - TaskStore              Planner / Worker -> durable state + lease coordination
+//   - Planner                Console BFF -> planner front door (jobs + telemetry)
+//   - TaskStore              Planner / Worker -> durable state + claim coordination
 //   - BatchClient            Planner / Worker -> MDS create / read / cancel
 //   - SchedulerFunc (func)   Worker -> pluggable scheduling policy
 //
@@ -37,8 +35,8 @@ limitations under the License.
 // not declared here; the worker calls into it directly and translates
 // the result into the in-memory Reservation shape this package defines.
 //
-// TaskStore exposes both an FCFS convenience path (Lease) and a
-// policy-aware path (ListCandidates + LeaseByID). Custom scheduling
+// TaskStore exposes both an FCFS convenience path (Claim) and a
+// policy-aware path (ListCandidates + ClaimByID). Custom scheduling
 // policies plug into the worker as SchedulerFunc values; concrete
 // SchedulerFunc implementations land alongside their consumers in
 // follow-up PRs. A pluggable Scheduler interface is intentionally not
@@ -47,13 +45,15 @@ limitations under the License.
 // needs to coexist (the same http.Handler / http.HandlerFunc pattern
 // from the standard library).
 //
-// The MVP runs a single worker process with multiple goroutines
-// dispatching from one TaskStore; lease semantics protect against
-// process-level crash recovery (long TTL + natural reclaim on restart),
-// not against concurrent leasing across multiple workers. Mid-flight
-// lease renewal (heartbeats) is intentionally not part of the MVP
-// surface; it can be added back if and when the planner scales to
-// multiple worker processes.
+// The MVP runs a single Worker process with multiple goroutines
+// dispatching from one TaskStore. The state machine itself
+// (queued -> claimed -> submitted / etc.) is the coordination
+// primitive: Claim atomically transitions tasks queued -> claimed,
+// Ack/Nack/Fail check the row is still in claimed before transitioning
+// it forward, and TaskStore.RecoverInProgress (called once on Worker
+// startup) resets any tasks left in claimed by a crashed prior process
+// back to queued. In-process double-claim is prevented by the
+// dispatcher's channel-based hand-off.
 package planner
 
 import (
@@ -61,75 +61,64 @@ import (
 	"time"
 )
 
-// Planner is the Console BFF -> planner boundary.
+// Planner is the Console BFF -> planner boundary. It carries both the
+// job-lifecycle methods (Enqueue / GetJob / ListJobs) and the
+// telemetry reads Console / ops dashboards need (GetQueueStats /
+// GetCapacity). Console talks to one client; the underlying
+// implementation can still delegate the read methods to a TaskStore
+// query (queue stats) or an RM client (capacity) — that's an
+// implementation detail, not part of the public surface.
 //
-// CreateJob in the Console BFF should stop calling MDS synchronously. It
-// builds a PlannerJob, calls Enqueue, and returns a queued view to the UI.
-// A planner worker submits the task to MDS later. GetJob/ListJobs return the
-// merged planner + MDS view; CancelJob covers both pre- and post-submit
-// cancellation.
+// CreateJob in the Console BFF should stop calling MDS synchronously.
+// It builds a PlannerJob, calls Enqueue, and returns a queued view to
+// the UI. A planner worker submits the task to MDS later. GetJob /
+// ListJobs return the merged planner + MDS view; cancellation flows
+// through MDS directly (the OpenAI Batches API exposes /cancel) and
+// the planner observes the resulting terminal state on its read-time
+// overlay rather than driving cancellation itself.
+//
+// CapacityView reports counts at three levels (pool total,
+// per-cluster, per-accelerator-type within cluster) so the UI can
+// render the full breakdown or roll up to the level it cares about.
 type Planner interface {
+	// Job lifecycle.
 	Enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueResult, error)
 	GetJob(ctx context.Context, jobID string) (*JobView, error)
 	ListJobs(ctx context.Context, req *ListJobsRequest) (*ListJobsResponse, error)
-	CancelJob(ctx context.Context, req *CancelJobRequest) (*CancelJobResponse, error)
-}
 
-// QueueStatsReader is the Console/ops read boundary for planner queue
-// depth and worker activity.
-//
-// This is split from Planner so ops dashboards can depend on it without
-// pulling in the full Console-facing surface. A concrete implementation
-// can be backed by direct queries against TaskStore.
-type QueueStatsReader interface {
+	// Telemetry.
 	GetQueueStats(ctx context.Context, req *GetQueueStatsRequest) (*QueueStatsView, error)
-}
-
-// ResourceCapacityReader is the Console/ops read boundary for aggregated
-// resource availability across the planner's RM pool.
-//
-// Like QueueStatsReader, this is split from Planner so dashboard code can
-// depend on a narrow surface. Concrete implementations are typically backed
-// by the same RM client that the worker uses for Reserve/Release, but are
-// served read-only here.
-//
-// CapacityView reports counts at three levels (pool total, per-cluster,
-// per-accelerator-type within cluster) so the UI can render the full
-// breakdown or roll up to the level it cares about.
-type ResourceCapacityReader interface {
 	GetCapacity(ctx context.Context, req *GetCapacityRequest) (*CapacityView, error)
 }
 
 // TaskStore is the durable state and worker-coordination boundary.
 //
-// One interface backs both lease coordination and durable task metadata. A
-// production implementation against a single relational store (Postgres /
-// MySQL with row-level locking) is straightforward; a future split into a
-// fast lease layer and a separate durable layer is a refactor inside this
-// interface, not a change in the public contract.
+// One interface backs both task coordination and durable task metadata.
+// A production implementation against a single relational store
+// (Postgres / MySQL with row-level locking) is straightforward; a
+// future split into a fast claim layer and a separate durable layer is
+// a refactor inside this interface, not a change in the public
+// contract.
 //
-// Lease semantics in MVP: a lease records that one worker owns the task
-// between Lease (or LeaseByID) and Ack/Nack/Fail. The MVP runs a single
-// worker process, so the lease is primarily a crash-recovery primitive:
-// if the process dies, lease TTL eventually expires and the task becomes
-// re-leasable on the next Lease call. Lease TTL is sized longer than the
-// expected Execute duration so a slow MDS submission does not spuriously
-// invalidate the in-flight worker; mid-flight RenewLease is not part of
-// the MVP surface. Ack/Nack/Fail are accepted as long as the
-// LeaseOwner/LeaseExpiresAt on the request still match what the store
-// recorded for the task; if the lease has been replaced (e.g. by a
-// concurrent CancelTask or a future multi-worker reclaim) the store
-// returns ErrLeaseLost.
+// Claim semantics: Claim and ClaimByID atomically transition queued
+// tasks to claimed and return them to the worker. In-process
+// double-claim is prevented by the dispatcher's channel-based hand-off,
+// and crash recovery is handled by RecoverInProgress on Worker startup
+// (which resets every claimed row back to queued). Ack/Nack/Fail
+// validate that the task is still in claimed before transitioning it
+// forward; if a concurrent CancelTask transitioned the task to
+// cancelled (or any terminal state) mid-submit, the store returns
+// ErrTaskAlreadyTerminal and the worker drops its in-flight result.
 //
-// Two lease paths are exposed:
+// Two claim paths are exposed:
 //
-//   - Lease is the FCFS convenience path: the store applies its default
-//     ordering (typically available_at ascending) and atomically leases
+//   - Claim is the FCFS convenience path: the store applies its default
+//     ordering (typically available_at ascending) and atomically claims
 //     the top N candidates. Workers that don't need a custom policy use
 //     this directly.
-//   - ListCandidates + LeaseByID is the policy-aware path: a
-//     SchedulerFunc reads candidates without leasing them, applies its
-//     ranking policy, and asks the store to lease just the IDs it
+//   - ListCandidates + ClaimByID is the policy-aware path: a
+//     SchedulerFunc reads candidates without claiming them, applies its
+//     ranking policy, and asks the store to claim just the IDs it
 //     selected. This supports priority, score-based, fair-share, and
 //     resource-aware policies without coupling them to the store.
 type TaskStore interface {
@@ -140,41 +129,40 @@ type TaskStore interface {
 	// through Enqueue.
 	Enqueue(ctx context.Context, task *PlannerTask) error
 
-	// FCFS convenience path.
-	Lease(ctx context.Context, req *LeaseRequest) ([]*LeasedTask, error)
+	// FCFS convenience path. Atomically transitions up to req.Limit
+	// queued tasks to claimed and returns them.
+	Claim(ctx context.Context, req *ClaimRequest) ([]*PlannerTask, error)
 
-	// Policy-aware path. ListCandidates returns leaseable tasks
-	// without acquiring a lease; LeaseByID atomically acquires
-	// leases on the specified IDs (silently skipping any that are
-	// no longer leaseable).
+	// Policy-aware path. ListCandidates returns claimable tasks
+	// without transitioning them; ClaimByID atomically transitions
+	// the specified IDs from queued to claimed (silently skipping
+	// any that are no longer claimable).
 	ListCandidates(ctx context.Context, req *ListCandidatesRequest) ([]*PlannerTask, error)
-	LeaseByID(ctx context.Context, req *LeaseByIDRequest) ([]*LeasedTask, error)
+	ClaimByID(ctx context.Context, req *ClaimByIDRequest) ([]*PlannerTask, error)
 
 	Ack(ctx context.Context, req *AckRequest) error
 	Nack(ctx context.Context, req *NackRequest) error
 	Fail(ctx context.Context, req *FailRequest) error
 
-	// CancelTask records a user-initiated cancel. Unlike Ack/Nack/Fail
-	// it does not require a lease; it is invoked from Planner.CancelJob
-	// and is safe to call regardless of which worker (if any) currently
-	// holds the lease. The store transitions the task to
-	// PlannerTaskStateCancelled and stamps CancelledAt; a worker
-	// currently holding the lease discovers this on its next
-	// Ack/Nack/Fail call via ErrLeaseLost.
+	// RecoverInProgress is called once on Worker startup. It resets
+	// every PlannerTask currently in PlannerTaskStateClaimed back to
+	// PlannerTaskStateQueued so any tasks the prior process was
+	// holding when it crashed are re-claimable on the next Claim
+	// call. Returns the number of rows transitioned for telemetry.
 	//
-	// Idempotent: cancelling a task already in cancelled or any
-	// terminal state (terminal_failure, superseded, or any post-submit
-	// MDS-driven terminal) is a no-op success. Returns ErrJobNotFound
-	// if the TaskID does not exist.
-	CancelTask(ctx context.Context, req *CancelTaskRequest) error
+	// Safe to call when nothing is currently claimed (returns 0).
+	// Implementations MUST make this call atomic with respect to
+	// concurrent Claim/ClaimByID calls; in MVP the Worker calls it
+	// before the dispatcher loop starts so contention is not a
+	// concern.
+	RecoverInProgress(ctx context.Context) (int, error)
 
 	// ListSubmittedWithExpiringReservation returns submitted tasks whose
 	// ReservationExpiresAt is at or before `before`, capped at `limit`.
 	// Used by the reservation-expiry sweeper inside Planner to find
 	// submitted attempts whose RM reservation is about to expire so it
-	// can cancel the MDS batch and create a continuation via
-	// EnqueueContinuation. Tasks without a persisted
-	// ReservationExpiresAt are not returned.
+	// can create a continuation via EnqueueContinuation. Tasks without a
+	// persisted ReservationExpiresAt are not returned.
 	ListSubmittedWithExpiringReservation(ctx context.Context, before time.Time, limit int) ([]*PlannerTask, error)
 
 	// EnqueueContinuation atomically supersedes a submitted task and
@@ -212,7 +200,7 @@ type TaskStore interface {
 // paths.
 //
 // CreateBatch is called by the worker to submit a prepared
-// MDSBatchSubmission (built from the leased PlannerTask plus the
+// MDSBatchSubmission (built from the claimed PlannerTask plus the
 // in-memory Reservation). The worker is responsible for the
 // pre-submit dedup check (calling GetBatch keyed on
 // extra_body.aibrix.job_id, or ListBatches once MDS indexes that
@@ -221,9 +209,8 @@ type TaskStore interface {
 // adapters and need only return the resulting BatchStatus or a
 // transport error.
 //
-// GetBatch and CancelBatch are used by Planner.GetJob/ListJobs to
-// overlay live MDS state onto JobView and by Planner.CancelJob for
-// post-submit cancellation.
+// GetBatch is used by Planner.GetJob/ListJobs to overlay live MDS
+// state onto JobView and by the worker for pre-submit dedup.
 //
 // The primary correlation key between planner tasks and MDS batches is
 // extra_body.aibrix.job_id. BatchClient implementations should expose that
@@ -237,6 +224,5 @@ type TaskStore interface {
 type BatchClient interface {
 	CreateBatch(ctx context.Context, req *MDSBatchSubmission) (*BatchStatus, error)
 	GetBatch(ctx context.Context, batchID string) (*BatchStatus, error)
-	CancelBatch(ctx context.Context, batchID string) (*BatchStatus, error)
 	ListBatches(ctx context.Context, req *ListBatchesRequest) (*ListBatchesResponse, error)
 }

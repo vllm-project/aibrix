@@ -41,13 +41,6 @@ var (
 	// already present in the store.
 	ErrDuplicateEnqueue = errors.New("planner: duplicate enqueue")
 
-	// ErrLeaseLost indicates an Ack/Nack/Fail call carried a lease the
-	// store no longer recognizes (typically because a concurrent
-	// CancelTask transitioned the task out of `leased`, or the lease
-	// was administratively replaced). The caller should drop the
-	// in-flight work.
-	ErrLeaseLost = errors.New("planner: lease lost")
-
 	// ErrMDSSubmitFailed indicates submitting the OpenAI batch to MDS
 	// failed. The Worker wraps upstream BatchClient.CreateBatch errors
 	// with this sentinel when the failure occurred after planning but
@@ -63,11 +56,13 @@ var (
 	// concrete RM error vocabulary.
 	ErrInsufficientResources = errors.New("planner: insufficient resources")
 
-	// ErrTaskAlreadyTerminal indicates a non-lease state-transition call
-	// (CancelTask, EnqueueContinuation) targeted a task that has already
-	// reached a terminal state. Callers may treat this as a no-op
-	// success - the task is settled - but the sentinel is exposed so
-	// the reservation-expiry sweeper can distinguish "raced with
-	// MDS-side completion" from real errors and skip without alerting.
+	// ErrTaskAlreadyTerminal indicates EnqueueContinuation targeted a
+	// task that has already reached a terminal state (terminal_failure,
+	// superseded, or any post-submit MDS-driven terminal — for example
+	// MDS finished the batch before the reservation-expiry sweeper
+	// saw it). Callers may treat this as a no-op success - the task is
+	// settled - but the sentinel is exposed so the reservation-expiry
+	// sweeper can distinguish "raced with MDS-side completion" from
+	// real errors and skip without alerting.
 	ErrTaskAlreadyTerminal = errors.New("planner: task already terminal")
 )

@@ -1,0 +1,55 @@
+flowchart LR
+    %% Console - Planner - MDS interaction in the MVP queue-based architecture.
+    %% Three exported interfaces, one function type, and one concrete struct
+    %% live in apps/console/api/planner:
+    %%   Console BFF -> Planner: Planner (jobs + telemetry)
+    %%   Planner / Worker -> internals: TaskStore, BatchClient
+    %%   Worker scheduling policy: SchedulerFunc - a function type
+    %%   Process-local: Worker - a concrete struct, not an exported interface
+    %% The Worker -> RM boundary is owned by an adjacent RM package and is
+    %% NOT declared in this package. The worker translates the RM-side
+    %% response into the in-memory planner.Reservation shape before building
+    %% the MDSBatchSubmission for BatchClient.CreateBatch.
+
+    UI[Console UI]
+    BFF[Console BFF]
+    Store[Console Store overlay]
+
+    subgraph PKG ["apps console api planner"]
+        P[Planner]
+        TS[TaskStore]
+        Worker["Worker struct<br/>dispatcher + N task goroutines"]
+        BC[BatchClient]
+    end
+
+    RM["Resource Manager<br/>contract owned by<br/>an adjacent RM package"]
+    MDS[Metadata Service]
+
+    UI -->|CreateJob GetJob ListJobs| BFF
+    UI -->|file upload list get content| BFF
+    UI -->|CancelJob via OpenAI compat| MDS
+    BFF -->|store overlay| Store
+    BFF -->|files passthrough| MDS
+
+    BFF -->|Enqueue GetJob ListJobs<br/>GetQueueStats GetCapacity| P
+
+    P -->|Enqueue GetByJobID ListTasksByJobID| TS
+    P -->|ListSubmittedWithExpiringReservation EnqueueContinuation| TS
+    P -->|GetBatch live overlay| BC
+    Worker -->|RecoverInProgress on startup<br/>Claim ListCandidates ClaimByID Ack Nack Fail| TS
+    Worker -->|GetBatch dedup then CreateBatch submit| BC
+
+    Worker -->|acquire and release capacity<br/>RM contract in adjacent package| RM
+    BC -->|HTTP POST GET| MDS
+
+    classDef console fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
+    classDef planner fill:#fff3e0,stroke:#e65100,color:#bf360c
+    classDef mds fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    classDef store fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
+    classDef external fill:#fce4ec,stroke:#ad1457,color:#880e4f
+
+    class UI,BFF console
+    class Store store
+    class P,TS,Worker,BC planner
+    class MDS mds
+    class RM external

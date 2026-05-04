@@ -20,15 +20,15 @@ import "context"
 
 // SchedulerFunc is the convention for plugging a scheduling policy
 // into the Worker. Given a TaskStore and a ScheduleRequest, it returns
-// the TaskIDs to lease in preferred order. The Worker hands the result
-// to TaskStore.LeaseByID for atomic acquisition.
+// the TaskIDs to claim in preferred order. The Worker hands the result
+// to TaskStore.ClaimByID for atomic acquisition.
 //
 // The Worker accepts a SchedulerFunc at construction time; whichever
 // function is injected determines the policy. Custom policies are just
 // new SchedulerFunc values - no new interface, no new type, no new
 // TaskStore methods. Wiring changes amount to one assignment in main().
 //
-// Convention: a nil SchedulerFunc means "use TaskStore.Lease directly",
+// Convention: a nil SchedulerFunc means "use TaskStore.Claim directly",
 // so callers that don't care about ranking can leave it unset and the
 // Worker falls through to the store-baked FCFS path.
 //

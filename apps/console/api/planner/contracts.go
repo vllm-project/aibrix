@@ -31,19 +31,18 @@ type GetQueueStatsRequest struct {
 // QueueStatsView is the normalized read model for queue telemetry.
 //
 // Counts mirror the values of PlannerTaskState that are observable as
-// "in flight" from an ops perspective: queued, leased, retryable_failure.
+// "in flight" from an ops perspective: queued, claimed, retryable_failure.
 // Terminal states (submitted, terminal_failure, cancelled) are not
 // counted here - they live in the per-job read model (JobView).
 type QueueStatsView struct {
-	QueueName             string        `json:"queue_name,omitempty"`
-	Bounded               bool          `json:"bounded"`
-	MaxQueuedTasks        int           `json:"max_queued_tasks,omitempty"`
-	CurrentQueuedTasks    int           `json:"current_queued_tasks,omitempty"`
-	CurrentLeasedTasks    int           `json:"current_leased_tasks,omitempty"`
-	CurrentRetryableTasks int           `json:"current_retryable_tasks,omitempty"`
-	MaxLeaseTTL           time.Duration `json:"max_lease_ttl,omitempty"`
-	OldestQueuedAt        *time.Time    `json:"oldest_queued_at,omitempty"`
-	SampledAt             time.Time     `json:"sampled_at"`
+	QueueName             string     `json:"queue_name,omitempty"`
+	Bounded               bool       `json:"bounded"`
+	MaxQueuedTasks        int        `json:"max_queued_tasks,omitempty"`
+	CurrentQueuedTasks    int        `json:"current_queued_tasks,omitempty"`
+	CurrentClaimedTasks   int        `json:"current_claimed_tasks,omitempty"`
+	CurrentRetryableTasks int        `json:"current_retryable_tasks,omitempty"`
+	OldestQueuedAt        *time.Time `json:"oldest_queued_at,omitempty"`
+	SampledAt             time.Time  `json:"sampled_at"`
 }
 
 // =============================================================================
@@ -56,9 +55,12 @@ type QueueStatsView struct {
 type GetCapacityRequest struct {
 	// Cluster, if non-empty, limits the response to that cluster only.
 	Cluster string `json:"cluster,omitempty"`
-	// ResourceType, if non-empty, limits the response to that allocation
-	// mode (e.g. "spot" / "scheduled").
-	ResourceType string `json:"resource_type,omitempty"`
+	// AllocationMode, if non-empty, limits the response to that
+	// allocation mode (one of ResourceAllocationModeOnDemand / Spot /
+	// Scheduled). The field name and JSON tag mirror
+	// ResourceRequirement.AllocationMode so a planner request and a
+	// capacity filter use the same vocabulary.
+	AllocationMode ResourceAllocationMode `json:"allocation_mode,omitempty"`
 	// AcceleratorType, if non-empty, limits the response to that accelerator
 	// SKU (e.g. "H100-SXM").
 	AcceleratorType string `json:"accelerator_type,omitempty"`
@@ -134,46 +136,33 @@ type ListJobsResponse struct {
 	NextAfter string     `json:"next_after,omitempty"`
 }
 
-// CancelJobRequest is the Console -> planner cancel request.
-type CancelJobRequest struct {
-	JobID       string `json:"job_id"`
-	Reason      string `json:"reason,omitempty"`
-	RequestedBy string `json:"requested_by,omitempty"`
-}
-
-// CancelJobResponse is the normalized result of a cancel routing decision.
-type CancelJobResponse struct {
-	JobID      string           `json:"job_id"`
-	State      PlannerTaskState `json:"state"`
-	BatchID    string           `json:"batch_id,omitempty"`
-	AcceptedAt time.Time        `json:"accepted_at"`
-}
-
 // =============================================================================
 // Worker -> TaskStore
 // =============================================================================
 
-// LeaseRequest is the worker -> store API for acquiring executable tasks.
+// ClaimRequest is the worker -> store API for acquiring executable tasks.
 //
-// Lease is the FCFS convenience path: the store internally uses its
+// Claim is the FCFS convenience path: the store internally uses its
 // default ordering (typically `available_at` ascending) to pick up to
-// `Limit` candidates and atomically lease them. Custom scheduling
-// policies (priority, score-based, fair-share, resource-aware) should
-// use a SchedulerFunc against TaskStore.ListCandidates +
-// TaskStore.LeaseByID instead.
-type LeaseRequest struct {
-	WorkerID string        `json:"worker_id"`
-	Limit    int           `json:"limit"`
-	LeaseTTL time.Duration `json:"lease_ttl"`
+// `Limit` candidates and atomically transition them from queued to
+// claimed. Custom scheduling policies (priority, score-based,
+// fair-share, resource-aware) should use a SchedulerFunc against
+// TaskStore.ListCandidates + TaskStore.ClaimByID instead.
+//
+// Tasks held in claimed across a process crash are reset to queued
+// by TaskStore.RecoverInProgress on the next Worker startup.
+type ClaimRequest struct {
+	WorkerID string `json:"worker_id"`
+	Limit    int    `json:"limit"`
 }
 
 // ListCandidatesRequest queries the store for tasks that are currently
-// leaseable, without acquiring a lease. Used by SchedulerFunc
+// claimable, without acquiring them. Used by SchedulerFunc
 // implementations to compute their ranking before committing a
-// selection via LeaseByID.
+// selection via ClaimByID.
 type ListCandidatesRequest struct {
 	// Limit caps the number of candidates returned. Policies typically
-	// overscan (request more than they intend to lease) so the ranking
+	// overscan (request more than they intend to claim) so the ranking
 	// has room to maneuver.
 	Limit int `json:"limit,omitempty"`
 	// Now is the reference time for "available_at <= Now" filtering.
@@ -190,46 +179,57 @@ type ScheduleRequest struct {
 	Now      time.Time `json:"now"`
 }
 
-// LeaseByIDRequest atomically acquires leases on the specified task IDs
-// in one transaction.
+// ClaimByIDRequest atomically transitions the specified task IDs from
+// queued to claimed in one transaction.
 //
-// Tasks that are no longer leaseable (already leased, became terminal,
+// Tasks that are no longer claimable (already claimed, became terminal,
 // or do not exist) are silently skipped - the response contains only
-// the subset that was successfully leased. The worker treats
+// the subset that was successfully claimed. The worker treats
 // `len(returned) < len(requested)` as a normal race outcome.
-type LeaseByIDRequest struct {
-	WorkerID string        `json:"worker_id"`
-	TaskIDs  []string      `json:"task_ids"`
-	LeaseTTL time.Duration `json:"lease_ttl"`
+type ClaimByIDRequest struct {
+	WorkerID string   `json:"worker_id"`
+	TaskIDs  []string `json:"task_ids"`
 }
 
 // AckRequest records a successful submission to MDS.
 //
-// ReservationID and ReservationExpiresAt are persisted on the
-// PlannerTask so the reservation-expiry sweeper can find submitted
-// tasks whose RM reservation has expired. Both are zero-valued when
+// The store transitions the task identified by TaskID from claimed to
+// submitted. ReservationID and ReservationExpiresAt are persisted on
+// the PlannerTask so the reservation-expiry sweeper can find submitted
+// tasks whose RM reservation has expired; both are zero-valued when
 // the worker stack is running without an RM (e.g. in unit tests).
+//
+// Returns ErrTaskAlreadyTerminal if the task is no longer in claimed
+// (typically because a concurrent CancelTask transitioned it to
+// cancelled mid-submit); the worker drops the in-flight result.
 type AckRequest struct {
-	Lease                TaskLease  `json:"lease"`
+	TaskID               string     `json:"task_id"`
 	BatchID              string     `json:"batch_id"`
 	SubmittedAt          time.Time  `json:"submitted_at"`
 	ReservationID        string     `json:"reservation_id,omitempty"`
 	ReservationExpiresAt *time.Time `json:"reservation_expires_at,omitempty"`
 }
 
-// NackRequest records a retryable failure. The store re-enqueues the task
-// and makes it available again at RetryAt.
+// NackRequest records a retryable failure. The store transitions the
+// task identified by TaskID from claimed to retryable_failure (or, if
+// Attempts has reached MaxAttempts, to terminal_failure) and makes the
+// row queued again at RetryAt.
+//
+// Returns ErrTaskAlreadyTerminal if the task is no longer in claimed.
 type NackRequest struct {
-	Lease     TaskLease `json:"lease"`
+	TaskID    string    `json:"task_id"`
 	RetryAt   time.Time `json:"retry_at"`
 	LastError string    `json:"last_error"`
 }
 
-// FailRequest records a non-retryable failure. The task moves to terminal
-// failure and will not be retried.
+// FailRequest records a non-retryable failure. The store transitions
+// the task identified by TaskID from claimed to terminal_failure; the
+// task will not be retried.
+//
+// Returns ErrTaskAlreadyTerminal if the task is no longer in claimed.
 type FailRequest struct {
-	Lease     TaskLease `json:"lease"`
-	LastError string    `json:"last_error"`
+	TaskID    string `json:"task_id"`
+	LastError string `json:"last_error"`
 }
 
 // EnqueueContinuationRequest is the planner -> store transition that
@@ -242,13 +242,13 @@ type FailRequest struct {
 //     Attempt = supersededTask.Attempt + 1 and the same JobID.
 //
 // The new task starts with empty BatchID and empty ReservationID; the
-// next worker that leases it calls Reserve to obtain a fresh
+// next worker that claims it calls Reserve to obtain a fresh
 // reservation. RM idempotency is keyed on TaskID, so the new TaskID
 // guarantees a fresh reservation.
 //
-// Unlike Ack/Nack/Fail it carries no TaskLease: the superseded task is
-// no longer leased after Ack, and continuation is initiated by a
-// planner-internal sweeper, not by a worker.
+// EnqueueContinuation is initiated by a planner-internal sweeper, not
+// by a worker; the superseded task is already in submitted (no longer
+// claimed) by the time the sweeper looks at it.
 //
 // Returns ErrJobNotFound if SupersededTaskID does not exist.
 // Returns ErrTaskAlreadyTerminal if the superseded task is not in
@@ -264,25 +264,6 @@ type EnqueueContinuationRequest struct {
 	NewTask          *PlannerTask `json:"new_task"`
 	Reason           string       `json:"reason,omitempty"`
 	SupersededAt     time.Time    `json:"superseded_at"`
-}
-
-// CancelTaskRequest is the planner -> store transition that records a
-// user-initiated cancel against an existing task.
-//
-// Unlike Ack/Nack/Fail it carries no TaskLease: Planner.CancelJob does
-// not own a lease, and cancellation must work regardless of which worker
-// (if any) currently holds one. Any holding worker discovers the
-// cancellation on its next Ack/Nack/Fail call via ErrLeaseLost and
-// unwinds.
-//
-// For post-submit cancels (BatchID set on the task), Planner.CancelJob
-// is responsible for calling BatchClient.CancelBatch separately;
-// CancelTaskRequest only records the planner-side state transition.
-type CancelTaskRequest struct {
-	TaskID      string    `json:"task_id"`
-	Reason      string    `json:"reason,omitempty"`
-	RequestedBy string    `json:"requested_by,omitempty"`
-	CancelledAt time.Time `json:"cancelled_at"`
 }
 
 // =============================================================================
@@ -355,7 +336,8 @@ type ListBatchesResponse struct {
 //
 // JobID is the planner/console correlation key extracted from
 // extra_body.aibrix.job_id. It may be empty until MDS implements the
-// round-trip dependency described in ARCHITECTURE.md.
+// round-trip dependency described in README.md "MDS correlation and
+// dedup (hard external dependency)".
 type BatchStatus struct {
 	BatchID       string              `json:"batch_id"`
 	JobID         string              `json:"job_id,omitempty"`
