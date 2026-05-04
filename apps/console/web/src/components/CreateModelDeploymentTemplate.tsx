@@ -35,9 +35,32 @@ function bumpVersion(v: string): string {
   return `${v}-2`;
 }
 
-const ENGINE_TYPES = ['vllm', 'sglang', 'trtllm', 'lmdeploy', 'mock'];
+const ENGINE_TYPES = ['vllm', 'sglang', 'trtllm'];
 const MODEL_SOURCE_TYPES = ['huggingface', 's3', 'local', 'registry'];
-const INTERCONNECT_OPTIONS = ['', 'nvlink', 'pcie', 'ib'];
+// Curated GPU catalog. vram_gb / interconnect derive from the SKU pick so
+// the user only chooses a name; the renderer doesn't read these fields today
+// but they're persisted on the spec for downstream schedulers.
+interface GpuSku {
+  type: string;
+  label: string;
+  vramGb: number;
+  interconnect: 'nvlink' | 'pcie' | 'ib' | '';
+}
+const GPU_CATALOG: GpuSku[] = [
+  { type: 'H200-SXM', label: 'NVIDIA H200 SXM (141 GB, NVLink)', vramGb: 141, interconnect: 'nvlink' },
+  { type: 'H100-SXM', label: 'NVIDIA H100 SXM (80 GB, NVLink)', vramGb: 80, interconnect: 'nvlink' },
+  { type: 'H100-NVL', label: 'NVIDIA H100 NVL (94 GB, NVLink)', vramGb: 94, interconnect: 'nvlink' },
+  { type: 'H100-PCIe', label: 'NVIDIA H100 PCIe (80 GB, PCIe)', vramGb: 80, interconnect: 'pcie' },
+  { type: 'B200', label: 'NVIDIA B200 (192 GB, NVLink)', vramGb: 192, interconnect: 'nvlink' },
+  { type: 'A100-SXM-80', label: 'NVIDIA A100 SXM (80 GB, NVLink)', vramGb: 80, interconnect: 'nvlink' },
+  { type: 'A100-SXM-40', label: 'NVIDIA A100 SXM (40 GB, NVLink)', vramGb: 40, interconnect: 'nvlink' },
+  { type: 'A100-PCIe', label: 'NVIDIA A100 PCIe (40 GB, PCIe)', vramGb: 40, interconnect: 'pcie' },
+  { type: 'L40S', label: 'NVIDIA L40S (48 GB, PCIe)', vramGb: 48, interconnect: 'pcie' },
+  { type: 'L4', label: 'NVIDIA L4 (24 GB, PCIe)', vramGb: 24, interconnect: 'pcie' },
+  { type: 'T4', label: 'NVIDIA T4 (16 GB, PCIe)', vramGb: 16, interconnect: 'pcie' },
+  { type: 'MI300X', label: 'AMD MI300X (192 GB, IF)', vramGb: 192, interconnect: 'ib' },
+  { type: 'CPU', label: 'CPU (no GPU)', vramGb: 0, interconnect: '' },
+];
 const WEIGHT_QUANT_OPTIONS = ['', 'fp8', 'awq', 'gptq', 'int8', 'bf16', 'fp16'];
 const KV_QUANT_OPTIONS = ['', 'auto', 'fp8', 'fp8_e4m3', 'fp8_e5m2', 'int8'];
 const PROVIDER_TYPES = ['k8s', 'runpod', 'lambda_labs', 'ec2', 'gcp', 'external'];
@@ -71,8 +94,6 @@ const KNOWN_ENGINE_ARGS: KnownKnob[] = [
   { key: 'swap_space', label: 'swap_space (GB)', kind: 'int' },
   { key: 'enable_prefix_caching', label: 'enable_prefix_caching', kind: 'bool' },
   { key: 'enable_chunked_prefill', label: 'enable_chunked_prefill', kind: 'bool' },
-  { key: 'speculative_model', label: 'speculative_model', kind: 'string' },
-  { key: 'num_speculative_tokens', label: 'num_speculative_tokens', kind: 'int' },
 ];
 const KNOWN_KEYS = new Set(KNOWN_ENGINE_ARGS.map((k) => k.key));
 
@@ -109,7 +130,6 @@ export function CreateModelDeploymentTemplate({
   const [version, setVersion] = useState('v1.0.0');
   const [statusValue, setStatusValue] = useState('active');
   const [spec, setSpec] = useState<ModelDeploymentTemplateSpec>(emptySpec());
-  const [serveArgsRaw, setServeArgsRaw] = useState('');
   const [providerExtraRaw, setProviderExtraRaw] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -128,7 +148,6 @@ export function CreateModelDeploymentTemplate({
         setStatusValue(t.status);
         const s = t.spec ?? emptySpec();
         setSpec(s);
-        setServeArgsRaw((s.engine?.serveArgs ?? []).join('\n'));
         setProviderExtraRaw(
           Object.entries(s.providerConfig?.extra ?? {})
             .map(([k, v]) => `${k}=${v}`)
@@ -194,15 +213,10 @@ export function CreateModelDeploymentTemplate({
       return;
     }
 
-    const serveArgs = serveArgsRaw
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean);
     const providerExtra = parseProviderExtra(providerExtraRaw);
 
     const finalSpec: ModelDeploymentTemplateSpec = {
       ...spec,
-      engine: { ...(spec.engine ?? {}), serveArgs },
       providerConfig: { ...(spec.providerConfig ?? { type: 'k8s' }), extra: providerExtra },
     };
 
@@ -305,56 +319,6 @@ export function CreateModelDeploymentTemplate({
           </Field>
         </Section>
 
-        {/* Engine */}
-        <Section title="Engine">
-          <Field label="Type">
-            <select
-              value={spec.engine?.type ?? 'vllm'}
-              onChange={(e) => updateSpec('engine', { type: e.target.value })}
-              className={inputCls}
-            >
-              {ENGINE_TYPES.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Version">
-            <input
-              type="text"
-              value={spec.engine?.version ?? ''}
-              onChange={(e) => updateSpec('engine', { version: e.target.value })}
-              placeholder="0.6.3"
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Image" wide>
-            <input
-              type="text"
-              value={spec.engine?.image ?? ''}
-              onChange={(e) => updateSpec('engine', { image: e.target.value })}
-              placeholder="vllm/vllm-openai:v0.6.3"
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Ready timeout (s)">
-            <input
-              type="number"
-              value={spec.engine?.readyTimeoutSeconds ?? 600}
-              onChange={(e) => updateSpec('engine', { readyTimeoutSeconds: Number(e.target.value) })}
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Serve args (one per line)" wide>
-            <textarea
-              value={serveArgsRaw}
-              onChange={(e) => setServeArgsRaw(e.target.value)}
-              placeholder={'--port=8000\n--enable-prefix-caching'}
-              rows={3}
-              className={`${inputCls} font-mono`}
-            />
-          </Field>
-        </Section>
-
         {/* Model Source */}
         <Section title="Model Source">
           <Field label="Type">
@@ -415,14 +379,28 @@ export function CreateModelDeploymentTemplate({
 
         {/* Accelerator */}
         <Section title="Accelerator">
-          <Field label="GPU type">
-            <input
-              type="text"
+          <Field label="GPU">
+            <select
               value={spec.accelerator?.type ?? ''}
-              onChange={(e) => updateSpec('accelerator', { type: e.target.value })}
-              placeholder="H100-SXM"
+              onChange={(e) => {
+                const sku = GPU_CATALOG.find((g) => g.type === e.target.value);
+                if (sku) {
+                  updateSpec('accelerator', {
+                    type: sku.type,
+                    vramGb: sku.vramGb,
+                    interconnect: sku.interconnect,
+                  });
+                } else {
+                  updateSpec('accelerator', { type: '', vramGb: undefined, interconnect: '' });
+                }
+              }}
               className={inputCls}
-            />
+            >
+              <option value="">— Select GPU —</option>
+              {GPU_CATALOG.map((g) => (
+                <option key={g.type} value={g.type}>{g.label}</option>
+              ))}
+            </select>
           </Field>
           <Field label="Count">
             <input
@@ -433,27 +411,7 @@ export function CreateModelDeploymentTemplate({
               className={inputCls}
             />
           </Field>
-          <Field label="Interconnect">
-            <select
-              value={spec.accelerator?.interconnect ?? ''}
-              onChange={(e) => updateSpec('accelerator', { interconnect: e.target.value })}
-              className={inputCls}
-            >
-              {INTERCONNECT_OPTIONS.map((o) => (
-                <option key={o || 'none'} value={o}>{o || '—'}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="VRAM (GB)">
-            <input
-              type="number"
-              min={0}
-              value={spec.accelerator?.vramGb ?? ''}
-              onChange={(e) => updateSpec('accelerator', { vramGb: e.target.value === '' ? undefined : Number(e.target.value) })}
-              className={inputCls}
-            />
-          </Field>
-          <Field label="SKU hint" wide>
+          <Field label="SKU hint">
             <input
               type="text"
               value={spec.accelerator?.skuHint ?? ''}
@@ -463,6 +421,53 @@ export function CreateModelDeploymentTemplate({
             />
           </Field>
         </Section>
+
+        {/* Engine */}
+        <Section title="Engine">
+          <Field label="Type">
+            <select
+              value={spec.engine?.type ?? 'vllm'}
+              onChange={(e) => updateSpec('engine', { type: e.target.value })}
+              className={inputCls}
+            >
+              {ENGINE_TYPES.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Version">
+            <input
+              type="text"
+              value={spec.engine?.version ?? ''}
+              onChange={(e) => updateSpec('engine', { version: e.target.value })}
+              placeholder="0.6.3"
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Ready timeout (s)">
+            <input
+              type="number"
+              value={spec.engine?.readyTimeoutSeconds ?? 600}
+              onChange={(e) => updateSpec('engine', { readyTimeoutSeconds: Number(e.target.value) })}
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Image" wide>
+            <input
+              type="text"
+              value={spec.engine?.image ?? ''}
+              onChange={(e) => updateSpec('engine', { image: e.target.value })}
+              placeholder="vllm/vllm-openai:v0.6.3"
+              className={inputCls}
+            />
+          </Field>
+        </Section>
+
+        {/* Engine args (free-form key/value, with curated knobs surfaced) */}
+        <EngineArgsSection
+          args={spec.engineArgs ?? {}}
+          onChange={(next) => setSpec((prev) => ({ ...prev, engineArgs: next }))}
+        />
 
         {/* Parallelism */}
         <Section title="Parallelism">
@@ -478,13 +483,6 @@ export function CreateModelDeploymentTemplate({
             </Field>
           ))}
         </Section>
-
-        {/* Engine args (free-form key/value, with curated knobs surfaced) */}
-        <EngineArgsSection
-          args={spec.engineArgs ?? {}}
-          onChange={(next) => setSpec((prev) => ({ ...prev, engineArgs: next }))}
-        />
-
 
         {/* Quantization */}
         <Section title="Quantization">
