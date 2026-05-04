@@ -94,6 +94,7 @@ const COMMON_ENDPOINTS = [
   '/v1/chat/completions',
   '/v1/completions',
   '/v1/embeddings',
+  '/v1/rerank',
   '/v1/audio/transcriptions',
   '/v1/audio/translations',
   '/v1/images/generations',

@@ -57,8 +57,11 @@ type AuthConfig struct {
 	OIDCClientSecret          string
 	OIDCRedirectURL           string
 	OIDCPostLogoutRedirectURL string
+	OIDCEndSessionURL         string
 	OIDCGroupsClaim           string
 	OIDCAdminGroups           string
+	OIDCAdminEmails           string
+	OIDCSigningAlg            string
 	SessionSecret             string
 	DevUserName               string
 	DevUserEmail              string
@@ -120,6 +123,7 @@ type AuthMiddleware struct {
 	oauth2Config      *oauth2.Config
 	oidcEndSessionURL string // discovered end_session_endpoint, may be empty
 	oidcAdminGroups   map[string]struct{}
+	oidcAdminEmails   map[string]struct{}
 }
 
 const (
@@ -151,12 +155,40 @@ func NewAuthMiddleware(cfg AuthConfig) (*AuthMiddleware, error) {
 			return nil, fmt.Errorf("auth: oidc discovery failed: %w", err)
 		}
 		a.oidcProvider = provider
-		a.oidcVerifier = provider.Verifier(&oidc.Config{ClientID: cfg.OIDCClientID})
+
+		alg := strings.ToUpper(strings.TrimSpace(cfg.OIDCSigningAlg))
+		if alg == "" {
+			alg = "RS256"
+		}
+		switch alg {
+		case "RS256":
+			// JWKS-backed verifier (default OIDC behaviour).
+			a.oidcVerifier = provider.Verifier(&oidc.Config{ClientID: cfg.OIDCClientID})
+		case "HS256":
+			if cfg.OIDCClientSecret == "" {
+				return nil, fmt.Errorf("auth: HS256 ID tokens require OIDC_CLIENT_SECRET")
+			}
+			ks := &hmacKeySet{secret: []byte(cfg.OIDCClientSecret)}
+			a.oidcVerifier = oidc.NewVerifier(cfg.OIDCIssuerURL, ks, &oidc.Config{
+				ClientID:             cfg.OIDCClientID,
+				SupportedSigningAlgs: []string{"HS256"},
+			})
+		default:
+			return nil, fmt.Errorf("auth: unsupported OIDC_SIGNING_ALG %q (RS256 or HS256)", alg)
+		}
+
+		endpoint := provider.Endpoint()
+		// Several IdPs (incl. our internal SSO) document /token auth with
+		// client_id+client_secret in the form body rather than a Basic
+		// header. AuthStyleInParams pins that behaviour deterministically
+		// instead of relying on oauth2's auto-detect-and-retry.
+		endpoint.AuthStyle = oauth2.AuthStyleInParams
+
 		a.oauth2Config = &oauth2.Config{
 			ClientID:     cfg.OIDCClientID,
 			ClientSecret: cfg.OIDCClientSecret,
 			RedirectURL:  cfg.OIDCRedirectURL,
-			Endpoint:     provider.Endpoint(),
+			Endpoint:     endpoint,
 			Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 		}
 
@@ -169,8 +201,16 @@ func NewAuthMiddleware(cfg AuthConfig) (*AuthMiddleware, error) {
 		if err := provider.Claims(&disc); err == nil {
 			a.oidcEndSessionURL = disc.EndSessionEndpoint
 		}
+		// Fall back to the operator-supplied URL when the provider does
+		// not advertise end_session_endpoint via discovery (the company
+		// SSO documents a fixed /oidc/v1/logout but omits it from the
+		// well-known config).
+		if a.oidcEndSessionURL == "" {
+			a.oidcEndSessionURL = cfg.OIDCEndSessionURL
+		}
 
 		a.oidcAdminGroups = parseAdminGroups(cfg.OIDCAdminGroups)
+		a.oidcAdminEmails = parseAdminEmails(cfg.OIDCAdminEmails)
 	}
 
 	return a, nil
@@ -450,7 +490,7 @@ func (a *AuthMiddleware) handleOIDCCallback(w http.ResponseWriter, r *http.Reque
 		ID:    claims.Sub,
 		Name:  claims.Name,
 		Email: claims.Email,
-		Role:  a.roleFromClaims(rawClaims),
+		Role:  a.resolveRole(claims.Email, rawClaims),
 	}
 
 	if err := a.setSessionCookie(w, r, user, rawIDToken); err != nil {
@@ -524,7 +564,6 @@ func (a *AuthMiddleware) handleLogout(
 		if err == nil {
 			q := u.Query()
 			q.Set("id_token_hint", sp.IDToken)
-			q.Set("client_id", a.config.OIDCClientID)
 			if a.config.OIDCPostLogoutRedirectURL != "" {
 				q.Set("post_logout_redirect_uri", a.config.OIDCPostLogoutRedirectURL)
 			}
@@ -643,6 +682,40 @@ func (a *AuthMiddleware) verify(data, signature []byte) bool {
 	return hmac.Equal(expected, signature)
 }
 
+// hmacKeySet implements oidc.KeySet for ID tokens signed with HS256, where
+// the shared HMAC key is the OAuth client_secret. go-oidc's default verifier
+// only knows how to fetch RSA/EC keys from a JWKS endpoint, so HS256 tenants
+// need this small adapter.
+//
+// The verifier validates the JWT's `alg` against SupportedSigningAlgs before
+// calling VerifySignature, so we don't have to defend against alg=none /
+// alg-confusion attacks here — we just check the HMAC and return the payload.
+type hmacKeySet struct {
+	secret []byte
+}
+
+func (k *hmacKeySet) VerifySignature(_ context.Context, jwt string) ([]byte, error) {
+	parts := strings.Split(jwt, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("hmacKeySet: malformed JWT")
+	}
+	signed := parts[0] + "." + parts[1]
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, fmt.Errorf("hmacKeySet: decode signature: %w", err)
+	}
+	mac := hmac.New(sha256.New, k.secret)
+	mac.Write([]byte(signed))
+	if !hmac.Equal(mac.Sum(nil), sig) {
+		return nil, fmt.Errorf("hmacKeySet: signature mismatch")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("hmacKeySet: decode payload: %w", err)
+	}
+	return payload, nil
+}
+
 // parseAdminGroups normalises the OIDC_ADMIN_GROUPS CSV into a lookup set.
 func parseAdminGroups(csv string) map[string]struct{} {
 	out := map[string]struct{}{}
@@ -654,30 +727,49 @@ func parseAdminGroups(csv string) map[string]struct{} {
 	return out
 }
 
-// roleFromClaims maps a user to a role based on the configured groups
-// claim. The default role is "viewer"; users belonging to any group named
-// in OIDC_ADMIN_GROUPS are promoted to "admin".
+// parseAdminEmails normalises the OIDC_ADMIN_EMAILS CSV into a lookup set,
+// lowercased for case-insensitive comparison (email addresses are not
+// case-sensitive in the local part per RFC 5321 in practice, and IdPs
+// frequently disagree on case anyway).
+func parseAdminEmails(csv string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, e := range strings.Split(csv, ",") {
+		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+			out[e] = struct{}{}
+		}
+	}
+	return out
+}
+
+// resolveRole decides the role for an authenticated user. A user is
+// promoted to "admin" if either their email is in OIDC_ADMIN_EMAILS or
+// any of their group memberships (from the configured groups claim) is
+// in OIDC_ADMIN_GROUPS. Otherwise they are "viewer".
 //
-// The groups claim is permissively typed: providers may emit either a
-// JSON array of strings or a single string. Anything else is treated as
-// no membership.
-func (a *AuthMiddleware) roleFromClaims(claims map[string]interface{}) string {
-	if len(a.oidcAdminGroups) == 0 {
-		return roleViewer
-	}
-	claimName := a.config.OIDCGroupsClaim
-	if claimName == "" {
-		claimName = "groups"
-	}
-	raw, ok := claims[claimName]
-	if !ok {
-		return roleViewer
-	}
-	for _, g := range coerceStringSlice(raw) {
-		if _, ok := a.oidcAdminGroups[g]; ok {
+// The two mechanisms are independent and complementary: groups suit IdPs
+// that emit them; email suits IdPs that don't (e.g. the company SSO,
+// whose ID tokens carry no group claim).
+func (a *AuthMiddleware) resolveRole(email string, claims map[string]interface{}) string {
+	if email != "" && len(a.oidcAdminEmails) > 0 {
+		if _, ok := a.oidcAdminEmails[strings.ToLower(email)]; ok {
 			return roleAdmin
 		}
 	}
+
+	if len(a.oidcAdminGroups) > 0 {
+		claimName := a.config.OIDCGroupsClaim
+		if claimName == "" {
+			claimName = "groups"
+		}
+		if raw, ok := claims[claimName]; ok {
+			for _, g := range coerceStringSlice(raw) {
+				if _, ok := a.oidcAdminGroups[g]; ok {
+					return roleAdmin
+				}
+			}
+		}
+	}
+
 	return roleViewer
 }
 

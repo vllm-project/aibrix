@@ -996,16 +996,8 @@ type CreateJobRequest struct {
 	// through extra_body.aibrix.model_template.
 	ModelTemplateName    string `protobuf:"bytes,5,opt,name=model_template_name,json=modelTemplateName,proto3" json:"model_template_name,omitempty"`
 	ModelTemplateVersion string `protobuf:"bytes,6,opt,name=model_template_version,json=modelTemplateVersion,proto3" json:"model_template_version,omitempty"` // optional; "" = latest active
-	// Optional batch-wide inference parameter overrides. Currently NOT applied
-	// by the handler — per-request values from the JSONL body take precedence.
-	// Reserved here so the Console contract is stable; future versions will
-	// route these into aibrix.overrides.engine_args.
-	MaxTokens     *int32   `protobuf:"varint,10,opt,name=max_tokens,json=maxTokens,proto3,oneof" json:"max_tokens,omitempty"`
-	Temperature   *float64 `protobuf:"fixed64,11,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
-	TopP          *float64 `protobuf:"fixed64,12,opt,name=top_p,json=topP,proto3,oneof" json:"top_p,omitempty"`
-	N             *int32   `protobuf:"varint,13,opt,name=n,proto3,oneof" json:"n,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *CreateJobRequest) Reset() {
@@ -1078,34 +1070,6 @@ func (x *CreateJobRequest) GetModelTemplateVersion() string {
 		return x.ModelTemplateVersion
 	}
 	return ""
-}
-
-func (x *CreateJobRequest) GetMaxTokens() int32 {
-	if x != nil && x.MaxTokens != nil {
-		return *x.MaxTokens
-	}
-	return 0
-}
-
-func (x *CreateJobRequest) GetTemperature() float64 {
-	if x != nil && x.Temperature != nil {
-		return *x.Temperature
-	}
-	return 0
-}
-
-func (x *CreateJobRequest) GetTopP() float64 {
-	if x != nil && x.TopP != nil {
-		return *x.TopP
-	}
-	return 0
-}
-
-func (x *CreateJobRequest) GetN() int32 {
-	if x != nil && x.N != nil {
-		return *x.N
-	}
-	return 0
 }
 
 type CancelJobRequest struct {
@@ -3482,24 +3446,16 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\alast_id\x18\x03 \x01(\tR\x06lastId\x12\x19\n" +
 	"\bhas_more\x18\x04 \x01(\bR\ahasMore\"\x1f\n" +
 	"\rGetJobRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\xa1\x03\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xb5\x02\n" +
 	"\x10CreateJobRequest\x12#\n" +
 	"\rinput_dataset\x18\x01 \x01(\tR\finputDataset\x12\x1a\n" +
 	"\bendpoint\x18\x02 \x01(\tR\bendpoint\x12+\n" +
 	"\x11completion_window\x18\x03 \x01(\tR\x10completionWindow\x12\x12\n" +
 	"\x04name\x18\x04 \x01(\tR\x04name\x12.\n" +
 	"\x13model_template_name\x18\x05 \x01(\tR\x11modelTemplateName\x124\n" +
-	"\x16model_template_version\x18\x06 \x01(\tR\x14modelTemplateVersion\x12\"\n" +
-	"\n" +
-	"max_tokens\x18\n" +
-	" \x01(\x05H\x00R\tmaxTokens\x88\x01\x01\x12%\n" +
-	"\vtemperature\x18\v \x01(\x01H\x01R\vtemperature\x88\x01\x01\x12\x18\n" +
-	"\x05top_p\x18\f \x01(\x01H\x02R\x04topP\x88\x01\x01\x12\x11\n" +
-	"\x01n\x18\r \x01(\x05H\x03R\x01n\x88\x01\x01B\r\n" +
-	"\v_max_tokensB\x0e\n" +
-	"\f_temperatureB\b\n" +
-	"\x06_top_pB\x04\n" +
-	"\x02_n\"\"\n" +
+	"\x16model_template_version\x18\x06 \x01(\tR\x14modelTemplateVersionJ\x04\b\n" +
+	"\x10\vJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\r\x10\x0eR\n" +
+	"max_tokensR\vtemperatureR\x05top_pR\x01n\"\"\n" +
 	"\x10CancelJobRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\xf1\x03\n" +
 	"\x05Model\x12\x0e\n" +
@@ -3861,7 +3817,6 @@ func file_console_v1_console_proto_init() {
 	if File_console_v1_console_proto != nil {
 		return
 	}
-	file_console_v1_console_proto_msgTypes[12].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
