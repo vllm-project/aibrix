@@ -130,11 +130,6 @@ export interface QuantizationSpec {
   weightsArtifactUri?: string;
 }
 
-export interface ProviderConfig {
-  type?: string;
-  extra?: Record<string, string>;
-}
-
 export interface ModelDeploymentTemplateSpec {
   engine?: EngineSpec;
   modelSource?: ModelSourceSpec;
@@ -144,7 +139,6 @@ export interface ModelDeploymentTemplateSpec {
   // the form as curated inputs; everything else flows through directly.
   engineArgs?: Record<string, string>;
   quantization?: QuantizationSpec;
-  providerConfig?: ProviderConfig;
   supportedEndpoints?: string[];
   deploymentMode?: string;
 }

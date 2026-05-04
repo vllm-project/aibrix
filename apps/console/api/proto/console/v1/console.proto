@@ -371,7 +371,7 @@ message GetModelRequest {
 //
 // TODO: This schema duplicates python/aibrix/aibrix/batch/template/schema.py
 // (ModelDeploymentTemplate, EngineSpec, ModelSourceSpec, AcceleratorSpec,
-// ParallelismSpec, EngineArgsSpec, QuantizationSpec, ProviderConfig). The
+// ParallelismSpec, EngineArgsSpec, QuantizationSpec). The
 // duplication is intentional for now — console owns the user-facing surface
 // while batch already has runtime usage. Once both sides settle, fold into a
 // single source-of-truth (likely a CRD generated from one schema).
@@ -450,7 +450,11 @@ message ModelDeploymentTemplateSpec {
   // inputs) decoupled from the wire format.
   map<string, string> engine_args = 5;
   QuantizationSpec quantization = 6;
-  ProviderConfig provider_config = 7;
+  // Field 7 (provider_config) was removed — Template stays provider-agnostic;
+  // K8s defaults live in MDS renderer, multi-provider arbitration belongs to
+  // BatchProfile.scheduling.
+  reserved 7;
+  reserved "provider_config";
   repeated string supported_endpoints = 8;   // OpenAI endpoints, e.g. "/v1/chat/completions"
   string deployment_mode = 9;                 // "dedicated" | "shared" | "external"
 }
@@ -496,12 +500,6 @@ message QuantizationSpec {
   string weight = 1;                      // "fp8" | "awq" | "gptq" | "int8" | "bf16" | "fp16"
   string kv_cache = 2;                    // "auto" | "fp8" | "fp8_e4m3" | "fp8_e5m2" | "int8"
   string weights_artifact_uri = 3;
-}
-
-message ProviderConfig {
-  string type = 1;                        // "k8s" | "runpod" | "lambda_labs" | "ec2" | "gcp" | "external"
-  // Provider-specific keys (e.g. namespace, service_account, gpu_type_id).
-  map<string, string> extra = 2;
 }
 
 message ListModelDeploymentTemplatesRequest {

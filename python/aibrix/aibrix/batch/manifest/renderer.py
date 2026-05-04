@@ -30,8 +30,12 @@ override merging.
 
 Currently supports:
   - engine.type in {vllm, mock}
-  - provider_config.type == k8s
   - deployment_mode == dedicated
+
+Templates are provider-agnostic: K8s defaults (namespace, serviceAccount)
+are baked into _system_base; nodeSelector / tolerations / affinity are left
+unset so cluster scheduling decides. Multi-provider arbitration belongs to
+BatchProfile.scheduling, not Template.
 
 Other values raise RenderError.
 """
@@ -55,7 +59,6 @@ from aibrix.batch.template import (
     ModelDeploymentTemplate,
     ModelSourceType,
     ProfileRegistry,
-    ProviderType,
     TemplateRegistry,
 )
 from aibrix.logger import init_logger
@@ -92,14 +95,6 @@ class UnsupportedDeploymentMode(RenderError):
         super().__init__(
             f"deployment_mode '{mode.value}' is not currently supported; "
             f"only 'dedicated' is honored"
-        )
-
-
-class UnsupportedProvider(RenderError):
-    def __init__(self, provider: ProviderType):
-        super().__init__(
-            f"provider '{provider.value}' is not currently supported; "
-            f"only 'k8s' is honored"
         )
 
 
@@ -239,7 +234,7 @@ class JobManifestRenderer:
 
         Raises:
             TemplateNotFound, ProfileNotFound, UnsupportedDeploymentMode,
-            UnsupportedProvider, EndpointNotSupported, ForbiddenOverride,
+            EndpointNotSupported, ForbiddenOverride,
             UnsupportedEngineError (from engine_adapter).
 
         Returns:
@@ -251,8 +246,6 @@ class JobManifestRenderer:
         # layers can assume they're working with k8s + dedicated + supported endpoint.
         if template.spec.deployment_mode != DeploymentMode.DEDICATED:
             raise UnsupportedDeploymentMode(template.spec.deployment_mode)
-        if template.spec.provider_config.type != ProviderType.K8S:
-            raise UnsupportedProvider(template.spec.provider_config.type)
         supported = [e.value for e in template.spec.supported_endpoints]
         if spec.endpoint not in supported:
             raise EndpointNotSupported(spec.endpoint, supported)
@@ -391,25 +384,6 @@ class JobManifestRenderer:
                 "value": f"http://localhost:{port}{health_path}",
             }
         )
-
-        # Apply provider-specific Pod fields if present in provider_config.
-        # Only k8s is honored today; we surface a few common K8s
-        # extensions (namespace override, serviceAccount, affinity,
-        # tolerations).
-        pcfg = template.spec.provider_config.model_dump(exclude_none=True)
-        pcfg.pop("type", None)
-
-        ns = pcfg.pop("namespace", None)
-        if ns:
-            manifest["metadata"]["namespace"] = ns
-        sa = pcfg.pop("service_account", None)
-        if sa:
-            manifest["spec"]["template"]["spec"]["serviceAccountName"] = sa
-        # Pass-through K8s pod fields admins may set per template.
-        for k in ("affinity", "tolerations", "nodeSelector", "runtimeClassName"):
-            v = pcfg.pop(k, None)
-            if v is not None:
-                manifest["spec"]["template"]["spec"][k] = v
 
         return manifest
 

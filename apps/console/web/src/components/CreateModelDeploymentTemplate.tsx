@@ -88,8 +88,6 @@ const GPU_CATALOG: GpuSku[] = [
 ];
 const WEIGHT_QUANT_OPTIONS = ['', 'fp8', 'awq', 'gptq', 'int8', 'bf16', 'fp16'];
 const KV_QUANT_OPTIONS = ['', 'auto', 'fp8', 'fp8_e4m3', 'fp8_e5m2', 'int8'];
-const PROVIDER_TYPES = ['k8s', 'runpod', 'lambda_labs', 'ec2', 'gcp', 'external'];
-const DEPLOYMENT_MODES = ['dedicated', 'shared', 'external'];
 const STATUS_OPTIONS = ['active', 'draft', 'deprecated'];
 
 const COMMON_ENDPOINTS = [
@@ -130,7 +128,6 @@ function emptySpec(): ModelDeploymentTemplateSpec {
     parallelism: { tp: 1, pp: 1, dp: 1 },
     engineArgs: {},
     quantization: {},
-    providerConfig: { type: 'k8s', extra: {} },
     supportedEndpoints: ['/v1/chat/completions'],
     deploymentMode: 'dedicated',
   };
@@ -155,7 +152,6 @@ export function CreateModelDeploymentTemplate({
   const [version, setVersion] = useState('v1.0.0');
   const [statusValue, setStatusValue] = useState('active');
   const [spec, setSpec] = useState<ModelDeploymentTemplateSpec>(emptySpec());
-  const [providerExtraRaw, setProviderExtraRaw] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -173,11 +169,6 @@ export function CreateModelDeploymentTemplate({
         setStatusValue(t.status);
         const s = t.spec ?? emptySpec();
         setSpec(s);
-        setProviderExtraRaw(
-          Object.entries(s.providerConfig?.extra ?? {})
-            .map(([k, v]) => `${k}=${v}`)
-            .join('\n'),
-        );
       })
       .catch(err => setError(`Failed to load template: ${err}`));
   }, [sourceTemplateId, modelId, isClone]);
@@ -200,17 +191,6 @@ export function CreateModelDeploymentTemplate({
         ? current.filter((x) => x !== ep)
         : [...current, ep],
     }));
-  };
-
-  const parseProviderExtra = (raw: string): Record<string, string> => {
-    const out: Record<string, string> = {};
-    for (const line of raw.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.includes('=')) continue;
-      const [k, ...rest] = trimmed.split('=');
-      out[k.trim()] = rest.join('=').trim();
-    }
-    return out;
   };
 
   const handleSave = async () => {
@@ -238,12 +218,7 @@ export function CreateModelDeploymentTemplate({
       return;
     }
 
-    const providerExtra = parseProviderExtra(providerExtraRaw);
-
-    const finalSpec: ModelDeploymentTemplateSpec = {
-      ...spec,
-      providerConfig: { ...(spec.providerConfig ?? { type: 'k8s' }), extra: providerExtra },
-    };
+    const finalSpec: ModelDeploymentTemplateSpec = { ...spec };
 
     setSaving(true);
     try {
@@ -566,41 +541,6 @@ export function CreateModelDeploymentTemplate({
           </SubSection>
         </Group>
 
-        {/* Provider */}
-        <Section title="Provider">
-          <Field label="Type">
-            <select
-              value={spec.providerConfig?.type ?? 'k8s'}
-              onChange={(e) => updateSpec('providerConfig', { type: e.target.value })}
-              className={inputCls}
-            >
-              {PROVIDER_TYPES.map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Deployment mode">
-            <select
-              value={spec.deploymentMode ?? 'dedicated'}
-              onChange={(e) => setSpec((prev) => ({ ...prev, deploymentMode: e.target.value }))}
-              className={inputCls}
-            >
-              {DEPLOYMENT_MODES.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Provider extras (key=value, one per line)" wide>
-            <textarea
-              value={providerExtraRaw}
-              onChange={(e) => setProviderExtraRaw(e.target.value)}
-              placeholder={'namespace=aibrix-inference\nservice_account=aibrix-engine'}
-              rows={3}
-              className={`${inputCls} font-mono`}
-            />
-          </Field>
-        </Section>
-
         {/* Endpoints */}
         <Section title="Supported endpoints">
           <div className="col-span-full flex flex-wrap gap-2">
@@ -669,7 +609,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Group({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-      <h3 className="text-base font-medium mb-5">{title}</h3>
+      <h3 className="text-sm mb-4">{title}</h3>
       <div className="divide-y divide-gray-100">{children}</div>
     </div>
   );
