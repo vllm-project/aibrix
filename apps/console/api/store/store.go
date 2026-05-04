@@ -76,7 +76,7 @@ type Store interface {
 
 	// Provision
 	// GetProvision retrieves a stored provision result by idempotency key.
-	// Returns nil if the key doesn't exist.
+	// Returns nil and a NotFound error if the key doesn't exist.
 	GetProvision(ctx context.Context, idempotencyKey string) (*types.ProvisionResult, error)
 
 	// InsertProvision stores a provision result with the given idempotency key.
@@ -93,4 +93,7 @@ type Store interface {
 
 	// ListProvisions lists stored provision results.
 	ListProvisions(ctx context.Context, status *types.ProvisionStatus, offset, limit int) ([]*types.ProvisionResult, error)
+
+	// Close closes the store.
+	Close() error
 }
