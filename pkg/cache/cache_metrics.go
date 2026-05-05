@@ -38,6 +38,7 @@ const (
 	// When the engine's HTTP proxy is separated from the engine itself,
 	// the request port and metrics port may differ, so a dedicated metrics port is required.
 	MetricPortLabel                     = constants.ModelLabelMetricPort
+	engineLabel                         = constants.ModelLabelEngine
 	modelLabel                          = constants.ModelLabelName
 	defaultMetricPort                   = 8000
 	defaultEngineLabelValue             = "vllm"
@@ -45,6 +46,7 @@ const (
 	defaultPodMetricsWorkerCount        = 10
 	defaultPromQueryIntervalInMS        = 200
 	defaultPromQueryTimeoutInMS         = 2000
+	undefinedMetricLabelValue           = "undefined"
 )
 
 var (
@@ -277,6 +279,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 		}
 
 		for metricName, metricValue := range result.Metrics {
+			sanitizeMetricValueLabels(pod, metricValue)
 			if shouldSkipMetric(pod.Name, metricName) {
 				continue
 			}
@@ -290,6 +293,9 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			}
 			model := parts[0]
 			metric := parts[1]
+
+			model = resolveMetricModelName(pod, model)
+			sanitizeMetricValueLabels(pod, metricValue)
 
 			if shouldSkipMetric(pod.Name, metric) {
 				continue
@@ -470,6 +476,7 @@ func (c *Store) getAllAvailableMetrics() []string {
 func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.EngineMetricsResult) {
 	// Process pod-scoped metrics
 	for metricName, metricValue := range result.Metrics {
+		sanitizeMetricValueLabels(pod, metricValue)
 		if metricDef, exists := metrics.Metrics[metricName]; exists {
 			err := c.updatePodRecord(pod, "", metricName, metricDef.MetricScope, metricValue)
 			if err != nil {
@@ -483,6 +490,9 @@ func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.Engine
 	for modelMetricKey, metricValue := range result.ModelMetrics {
 		// modelMetricKey format: "model/metric"
 		modelName, metricName := parseModelMetricKey(modelMetricKey)
+
+		modelName = resolveMetricModelName(pod, modelName)
+		sanitizeMetricValueLabels(pod, metricValue)
 
 		if metricDef, exists := metrics.Metrics[metricName]; exists {
 			err := c.updatePodRecord(pod, modelName, metricName, metricDef.MetricScope, metricValue)
@@ -506,4 +516,65 @@ func parseModelMetricKey(key string) (modelName, metricName string) {
 		return "", key // Fallback if parsing fails
 	}
 	return modelName, metricName
+}
+
+func resolveMetricModelName(pod *Pod, modelName string) string {
+	if !isUndefinedMetricLabelValue(modelName) {
+		return modelName
+	}
+
+	if podModel, err := getPodLabel(pod, modelLabel); err == nil && podModel != "" {
+		klog.V(4).InfoS("Using pod label as model name fallback",
+			"pod", pod.Name, "originalModel", modelName, "resolvedModel", podModel)
+		return podModel
+	}
+
+	return modelName
+}
+
+func resolveMetricEngineType(pod *Pod, engineType string) string {
+	if !isUndefinedMetricLabelValue(engineType) {
+		return engineType
+	}
+
+	if podEngine, err := getPodLabel(pod, engineLabel); err == nil && podEngine != "" {
+		klog.V(4).InfoS("Using pod label as engine type fallback",
+			"pod", pod.Name, "originalEngineType", engineType, "resolvedEngineType", podEngine)
+		return podEngine
+	}
+
+	return engineType
+}
+
+func sanitizeMetricValueLabels(pod *Pod, metricValue metrics.MetricValue) {
+	switch value := metricValue.(type) {
+	case *metrics.SimpleMetricValue:
+		value.Labels = sanitizeMetricLabels(pod, value.Labels)
+	case *metrics.HistogramMetricValue:
+		value.Labels = sanitizeMetricLabels(pod, value.Labels)
+	}
+}
+
+func sanitizeMetricLabels(pod *Pod, labelValues map[string]string) map[string]string {
+	if len(labelValues) == 0 {
+		return labelValues
+	}
+
+	sanitized := make(map[string]string, len(labelValues))
+	for key, value := range labelValues {
+		sanitized[key] = value
+	}
+
+	if modelName, ok := sanitized["model_name"]; ok {
+		sanitized["model_name"] = resolveMetricModelName(pod, modelName)
+	}
+	if engineType, ok := sanitized["engine_type"]; ok {
+		sanitized["engine_type"] = resolveMetricEngineType(pod, engineType)
+	}
+
+	return sanitized
+}
+
+func isUndefinedMetricLabelValue(value string) bool {
+	return value == "" || value == undefinedMetricLabelValue
 }
