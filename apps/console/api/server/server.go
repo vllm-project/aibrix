@@ -45,7 +45,6 @@ type Server struct {
 	store      store.Store
 	cfg        *config.Config
 	auth       *middleware.AuthMiddleware
-	mysqlStore *store.MySQLStore // nil if using memory store
 }
 
 // New creates a new console Server from configuration.
@@ -55,16 +54,6 @@ func New(cfg *config.Config) *Server {
 		klog.Fatalf("Failed to construct store: %v", err)
 	}
 	klog.Infof("Using store %s", cfg.StoreURI)
-
-	// MySQL needs migrations and a Close() on shutdown — handle via type
-	// assertion so the Store interface stays focused on data access.
-	var mysqlStore *store.MySQLStore
-	if ms, ok := s.(*store.MySQLStore); ok {
-		if err := ms.RunMigrations(); err != nil {
-			klog.Fatalf("Failed to run MySQL migrations: %v", err)
-		}
-		mysqlStore = ms
-	}
 
 	// Dev-mode conveniences. Seeding is opt-in so production / shared envs
 	// start with an empty store.
@@ -102,10 +91,9 @@ func New(cfg *config.Config) *Server {
 	}
 
 	return &Server{
-		store:      s,
-		cfg:        cfg,
-		auth:       auth,
-		mysqlStore: mysqlStore,
+		store: s,
+		cfg:   cfg,
+		auth:  auth,
 	}
 }
 
@@ -203,10 +191,14 @@ func (s *Server) Shutdown(ctx context.Context) {
 		s.grpcServer.GracefulStop()
 	}
 	if s.httpServer != nil {
-		_ = s.httpServer.Shutdown(ctx)
+		if err := s.httpServer.Shutdown(ctx); err != nil {
+			klog.Errorf("failed to shutdown http server: %v", err)
+		}
 	}
-	if s.mysqlStore != nil {
-		_ = s.mysqlStore.Close()
+	if s.store != nil {
+		if err := s.store.Close(); err != nil {
+			klog.Errorf("failed to close store: %v", err)
+		}
 	}
 }
 
