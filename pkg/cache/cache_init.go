@@ -567,7 +567,7 @@ func (s *Store) initKVEventSync() error {
 	// Create sync indexer after validation passes - use shared singleton
 	s.syncPrefixIndexer = syncindexer.GetSharedSyncPrefixHashTable()
 	if s.syncPrefixIndexer == nil {
-		return fmt.Errorf("failed to create sync prefix indexer")
+		return fmt.Errorf("failed to get shared sync prefix indexer")
 	}
 
 	// Start event manager

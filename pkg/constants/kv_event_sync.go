@@ -60,6 +60,10 @@ const (
 	// EnvPrefixCacheRemoteTokenizerEndpoint specifies the remote tokenizer service endpoint
 	// Format: "http://service:port" - required when using remote tokenizer
 	EnvPrefixCacheRemoteTokenizerEndpoint = "AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT"
+
+	// EnvPrefixCacheUseRedisReqCnt enables Redis-based request counting
+	// When true, uses Redis to track request counts instead of local metrics
+	EnvPrefixCacheUseRedisReqCnt = "AIBRIX_PREFIX_CACHE_USE_REDIS_REQCNT"
 )
 
 // Helper functions for KV Event Sync labels

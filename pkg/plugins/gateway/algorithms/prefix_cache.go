@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/redis/go-redis/v9"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
@@ -155,15 +156,24 @@ func getPrefixCacheMetrics() *PrefixCacheMetrics {
 }
 
 func init() {
-	Register(RouterPrefixCache, NewPrefixCacheRouter)
+	Register(RouterPrefixCache, func() (types.Router, error) {
+		return NewPrefixCacheRouterWithRedis(nil)
+	})
+}
+
+func RegisterPrefixCacheRouterWithRedis(redisClient *redis.Client) {
+	Register(RouterPrefixCache, func() (types.Router, error) {
+		return NewPrefixCacheRouterWithRedis(redisClient)
+	})
 }
 
 // kvSyncPrefixCacheRouter handles routing when KV sync is enabled
 type kvSyncPrefixCacheRouter struct {
 	cache          cache.Cache
-	tokenizerPool  TokenizerPoolInterface // Add TokenizerPool reference
-	syncIndexer    *syncindexer.SyncPrefixHashTable
+	tokenizerPool  TokenizerPoolInterface           // Add TokenizerPool reference
+	syncIndexer    *syncindexer.SyncPrefixHashTable // Use concrete type
 	metricsEnabled bool
+	requestCounter RequestCounter // Request counter for load balancing
 }
 
 type prefixCacheRouter struct {
@@ -176,6 +186,9 @@ type prefixCacheRouter struct {
 
 	// KV sync router - only created when needed
 	kvSyncRouter *kvSyncPrefixCacheRouter
+
+	// Request counter for load balancing
+	requestCounter RequestCounter
 }
 
 // TokenizerPoolInterface defines the interface for tokenizer pools
@@ -194,7 +207,7 @@ func (p *panicTokenizer) TokenizeInputText(text string) ([]byte, error) {
 		"Use the model-aware getTokenizerForRequest(ctx) helper method instead.")
 }
 
-func NewPrefixCacheRouter() (types.Router, error) {
+func NewPrefixCacheRouterWithRedis(redisClient *redis.Client) (types.Router, error) {
 	// Initialize prefix cache metrics if enabled
 	if err := initializePrefixCacheMetrics(); err != nil {
 		klog.Errorf("Failed to initialize prefix cache metrics: %v", err)
@@ -274,11 +287,25 @@ func NewPrefixCacheRouter() (types.Router, error) {
 		}
 	}
 
+	// Initialize request counter
+	var requestCounter RequestCounter
+	useRedisReqCnt := redisClient != nil && utils.LoadEnvBool(constants.EnvPrefixCacheUseRedisReqCnt, false)
+	if useRedisReqCnt {
+		// Use Redis-based request counter
+		requestCounter = NewRedisRequestCounter(redisClient)
+		klog.Info("Using Redis-based request counter for prefix cache router")
+	} else {
+		// Use local metrics-based request counter
+		requestCounter = NewLocalRequestCounter(c)
+		klog.Info("Using local metrics-based request counter for prefix cache router")
+	}
+
 	// Log final configuration
 	klog.InfoS("prefix_cache_configurations",
 		"tokenizer_type", tokenizerType,
 		"remote_tokenizer_enabled", tokenizerPool != nil,
 		"kv_sync_enabled", kvSyncEnabled,
+		"redis_request_counter_enabled", useRedisReqCnt,
 		"pod_running_request_imbalance_abs_count", podRunningRequestImbalanceAbsCount,
 		"matched_pods_running_requests_standard_deviation_factor", standardDeviationFactor)
 
@@ -287,6 +314,7 @@ func NewPrefixCacheRouter() (types.Router, error) {
 		cache:              c,
 		tokenizer:          tokenizerObj,
 		prefixCacheIndexer: prefixcacheindexer.GetSharedPrefixHashTable(),
+		requestCounter:     requestCounter,
 		// Only assign tokenizerPool if it's not nil to avoid interface nil issues
 	}
 
@@ -297,21 +325,36 @@ func NewPrefixCacheRouter() (types.Router, error) {
 
 	// Only create KV sync router if enabled
 	if kvSyncEnabled && useRemoteTokenizer && tokenizerPool != nil {
-		kvSyncRouter := &kvSyncPrefixCacheRouter{
-			cache:          c,
-			tokenizerPool:  tokenizerPool, // Pass the pool reference
-			syncIndexer:    syncindexer.GetSharedSyncPrefixHashTable(),
-			metricsEnabled: true,
-		}
+		// Get the shared sync indexer instance - this is the same instance
+		// that receives KV events from vLLM pods via the KV event subscriber
+		syncIdx := syncindexer.GetSharedSyncPrefixHashTable()
+		if syncIdx == nil {
+			klog.Warning("KV sync enabled but sync indexer not initialized, falling back to local indexer")
+			// Update metrics to reflect fallback to local indexer
+			if metrics := getPrefixCacheMetrics(); metrics != nil {
+				metrics.prefixCacheIndexerStatus.WithLabelValues("", "local").Set(1)
+				metrics.prefixCacheIndexerStatus.WithLabelValues("", "sync").Set(0)
+			}
+		} else {
+			kvSyncRouter := &kvSyncPrefixCacheRouter{
+				cache:          c,
+				tokenizerPool:  tokenizerPool, // Pass the pool reference
+				syncIndexer:    syncIdx,       // Use the shared sync indexer
+				metricsEnabled: true,
+				requestCounter: requestCounter, // Use the same request counter
+			}
 
-		router.kvSyncRouter = kvSyncRouter
+			router.kvSyncRouter = kvSyncRouter
 
-		// Set initial metrics only if KV sync is enabled
-		if metrics := getPrefixCacheMetrics(); metrics != nil {
-			metrics.prefixCacheIndexerStatus.WithLabelValues("", "sync").Set(1)
-			metrics.prefixCacheIndexerStatus.WithLabelValues("", "local").Set(0)
+			// Set initial metrics only if KV sync is enabled
+			if metrics := getPrefixCacheMetrics(); metrics != nil {
+				metrics.prefixCacheIndexerStatus.WithLabelValues("", "sync").Set(1)
+				metrics.prefixCacheIndexerStatus.WithLabelValues("", "local").Set(0)
+			}
 		}
-	} else {
+	}
+
+	if router.kvSyncRouter == nil {
 		// Set local indexer metrics only if metrics are enabled
 		metricsEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheLocalRouterMetricsEnabled, false)
 		if metricsEnabled {
@@ -373,25 +416,31 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	readyPods := readyPodList.All()
 	readyPodsMap := map[string]struct{}{}
 	for _, pod := range readyPods {
-		readyPodsMap[pod.Name] = struct{}{}
+		podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+		readyPodsMap[podKey] = struct{}{}
 	}
 
-	leastReqPodList, isLoadImbalanced := getTargetPodListOnLoadImbalance(p.cache, readyPods)
+	// Get request counts once for consistency across all subsequent operations
+	// Pass ctx directly so RequestTime can be extracted for key rotation
+	podRequestCount := p.requestCounter.GetRequestCounts(ctx, readyPods)
+
+	leastReqPodList, isLoadImbalanced := getTargetPodListOnLoadImbalance(podRequestCount, readyPods)
 	if isLoadImbalanced {
 		if len(leastReqPodList) == 0 {
 			klog.InfoS("prefix_cache_load_imbalanced_no_target",
 				"request_id", ctx.RequestID,
-				"pod_request_count", getRequestCounts(p.cache, readyPods))
+				"pod_request_count", podRequestCount)
 			return "", errors.New("no target pod found when load imbalanced")
 		}
 		readyPodsMap = map[string]struct{}{}
 		// filter the readyPodsMap by leastReqPodList used by below codes
 		for _, pod := range leastReqPodList {
-			readyPodsMap[pod.Name] = struct{}{}
+			podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+			readyPodsMap[podKey] = struct{}{}
 		}
 		klog.V(4).InfoS("prefix_cache_load_imbalanced",
 			"request_id", ctx.RequestID,
-			"pod_request_count", getRequestCounts(p.cache, readyPods),
+			"pod_request_count", podRequestCount,
 			"target_pod_list", readyPodsMap)
 	}
 	// handle request with readyPodsMap from balanced or imbalanced filter
@@ -399,37 +448,37 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	klog.V(4).InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
 
 	if len(matchedPods) > 0 {
-		targetPod = getTargetPodFromMatchedPods(p.cache, readyPods, matchedPods)
+		targetPod = getTargetPodFromMatchedPodsWithKeys(podRequestCount, readyPods, matchedPods)
 		if targetPod != nil {
 			klog.InfoS("prefix_cache_matched_pods",
 				"request_id", ctx.RequestID,
 				"target_pod", targetPod.Name,
 				"target_pod_ip", targetPod.Status.PodIP,
 				"matched_pods", matchedPods,
-				"pod_request_count", getRequestCounts(p.cache, readyPods))
+				"pod_request_count", podRequestCount)
 		} else {
 			klog.InfoS("prefix_cache_skip_matched_pods",
 				"request_id", ctx.RequestID,
 				"matched_pods", matchedPods,
-				"pod_request_count", getRequestCounts(p.cache, readyPods))
+				"pod_request_count", podRequestCount)
 		}
 	}
 
 	// no pod with prefix match, as a fallback select pod with least request count
 	if len(matchedPods) == 0 || targetPod == nil {
-		targetPod = selectTargetPodWithLeastRequestCount(p.cache, readyPods)
+		targetPod = selectTargetPodFromRequestCounts(podRequestCount, readyPods)
 		if targetPod != nil {
 			klog.InfoS("prefix_cache_fallback_least_request_count",
 				"request_id", ctx.RequestID,
 				"target_pod", targetPod.Name,
 				"target_pod_ip", targetPod.Status.PodIP,
 				"matched_pods", matchedPods,
-				"pod_request_count", getRequestCounts(p.cache, readyPods))
+				"pod_request_count", podRequestCount)
 		} else {
 			klog.InfoS("prefix_cache_no_pods_available",
 				"request_id", ctx.RequestID,
 				"matched_pods", matchedPods,
-				"pod_request_count", getRequestCounts(p.cache, readyPods))
+				"pod_request_count", podRequestCount)
 		}
 	}
 	if targetPod == nil {
@@ -437,7 +486,8 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	}
 
 	if len(prefixHashes) > 0 {
-		p.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Name)
+		podKey := &podServerKey{pod: targetPod}
+		p.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, podKey.String())
 	}
 
 	ctx.SetTargetPod(targetPod)
@@ -549,6 +599,7 @@ func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext,
 		return nil
 	}
 
+	startTime := time.Now()
 	// Perform tokenization with chat template
 	result, err := extTokenizer.TokenizeWithOptions(ctx.Context, *input)
 	if err != nil {
@@ -565,7 +616,8 @@ func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext,
 		"message_count", len(input.Messages),
 		"token_count", len(result.Tokens),
 		"add_generation_prompt", input.AddGenerationPrompt,
-		"add_special_tokens", input.AddSpecialTokens)
+		"add_special_tokens", input.AddSpecialTokens,
+		"duration", time.Since(startTime))
 	return tokens
 }
 
@@ -621,28 +673,33 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	// Build pod key map for sync indexer
 	readyPodsMap := map[string]struct{}{}
 	for _, pod := range readyPods {
-		podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-		readyPodsMap[podKey] = struct{}{}
+		// TODO: support multi-card
+		podKey := &podServerKey{pod: pod}
+		readyPodsMap[podKey.String()] = struct{}{}
 	}
 
+	// Get request counts once for consistency across all subsequent operations
+	// Pass ctx directly so RequestTime can be extracted for key rotation
+	podRequestCount := k.requestCounter.GetRequestCounts(ctx, readyPods)
+
 	// Check for load imbalance first
-	leastReqPodList, isLoadImbalanced := getTargetPodListOnLoadImbalance(k.cache, readyPods)
+	leastReqPodList, isLoadImbalanced := getTargetPodListOnLoadImbalance(podRequestCount, readyPods)
 	if isLoadImbalanced {
 		if len(leastReqPodList) == 0 {
 			klog.InfoS("prefix_cache_load_imbalanced_no_target",
 				"request_id", ctx.RequestID,
-				"pod_request_count", getRequestCounts(k.cache, readyPods))
+				"pod_request_count", podRequestCount)
 			return "", errors.New("no target pod found when load imbalanced")
 		}
 		readyPodsMap = map[string]struct{}{}
 		// filter the readyPodsMap by leastReqPodList used by below codes
 		for _, pod := range leastReqPodList {
-			podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-			readyPodsMap[podKey] = struct{}{}
+			podKey := &podServerKey{pod: pod}
+			readyPodsMap[podKey.String()] = struct{}{}
 		}
 		klog.InfoS("prefix_cache_load_imbalanced",
 			"request_id", ctx.RequestID,
-			"pod_request_count", getRequestCounts(k.cache, readyPods),
+			"pod_request_count", podRequestCount,
 			"target_pod_list", readyPodsMap)
 	}
 
@@ -661,32 +718,33 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 		"ready_pods", readyPodList.Len())
 
 	if len(matchedPods) > 0 {
-		targetPod = getTargetPodFromMatchedPodsWithKeys(k.cache, readyPods, matchedPods)
+		// For KV sync router, we need podRequestCount to use pod keys (namespace/podName)
+		targetPod = getTargetPodFromMatchedPodsWithKeys(podRequestCount, readyPods, matchedPods)
 		if targetPod != nil {
 			klog.InfoS("prefix_cache_matched_pods",
 				"request_id", ctx.RequestID,
 				"target_pod", targetPod.Name,
 				"target_pod_ip", targetPod.Status.PodIP,
 				"matched_pods", matchedPods,
-				"pod_request_count", getRequestCounts(k.cache, readyPods))
+				"pod_request_count", podRequestCount)
 		} else {
 			klog.InfoS("prefix_cache_skip_matched_pods",
 				"request_id", ctx.RequestID,
 				"matched_pods", matchedPods,
-				"pod_request_count", getRequestCounts(k.cache, readyPods))
+				"pod_request_count", podRequestCount)
 		}
 	}
 
 	// Fallback to least request count selection
 	if len(matchedPods) == 0 || targetPod == nil {
-		targetPod = selectTargetPodWithLeastRequestCount(k.cache, readyPods)
+		targetPod = selectTargetPodFromRequestCounts(podRequestCount, readyPods)
 		if targetPod != nil {
 			klog.InfoS("prefix_cache_fallback_least_request_count",
 				"request_id", ctx.RequestID,
 				"target_pod", targetPod.Name,
 				"target_pod_ip", targetPod.Status.PodIP,
 				"matched_pods", matchedPods,
-				"pod_request_count", getRequestCounts(k.cache, readyPods))
+				"pod_request_count", podRequestCount)
 		}
 	}
 
@@ -696,11 +754,6 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	}
 
 	selectedPodKey := fmt.Sprintf("%s/%s", targetPod.Namespace, targetPod.Name)
-
-	// Add prefix to sync indexer if we have prefixes
-	if len(prefixHashes) > 0 {
-		_ = k.syncIndexer.AddPrefix(modelName, loraID, selectedPodKey, prefixHashes)
-	}
 
 	// Record routing decision metric if metrics are enabled
 	if k.metricsEnabled {
@@ -718,18 +771,17 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 }
 
 // getTargetPodFromMatchedPodsWithKeys is similar to getTargetPodFromMatchedPods but uses pod keys
-func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
+func getTargetPodFromMatchedPodsWithKeys(podRequestCount map[string]int, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
 	var targetPodKey string
 	requestCount := []float64{}
 
 	// Build pod key to pod mapping
 	podKeyToPod := make(map[string]*v1.Pod)
 	for _, pod := range readyPods {
-		podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-		podKeyToPod[podKey] = pod
+		podKey := &podServerKey{pod: pod}
+		podKeyToPod[podKey.String()] = pod
 	}
 
-	podRequestCount := getRequestCountsWithKeys(cache, readyPods)
 	for _, cnt := range podRequestCount {
 		requestCount = append(requestCount, float64(cnt))
 	}
@@ -764,54 +816,13 @@ func getTargetPodFromMatchedPodsWithKeys(cache cache.Cache, readyPods []*v1.Pod,
 	return podKeyToPod[targetPodKey]
 }
 
-func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
-	var targetPodName string
-	requestCount := []float64{}
-
-	podRequestCount := getRequestCounts(cache, readyPods)
-	for _, cnt := range podRequestCount {
-		requestCount = append(requestCount, float64(cnt))
-	}
-	meanRequestCount := mean(requestCount)
-	stdDevRequestCount := standardDeviation(requestCount)
-
-	podnames := []string{}
-	for podname := range matchedPods {
-		podnames = append(podnames, podname)
-	}
-	rand.Shuffle(len(podnames), func(i, j int) {
-		podnames[i], podnames[j] = podnames[j], podnames[i]
-	})
-
-	// sort pods with decreasing %perfixmatch AND for same %prefixmatch sort by increasing request count
-	sort.SliceStable(podnames, func(i, j int) bool {
-		if matchedPods[podnames[i]] == matchedPods[podnames[j]] {
-			return podRequestCount[podnames[i]] < podRequestCount[podnames[j]]
-		}
-		return matchedPods[podnames[i]] > matchedPods[podnames[j]]
-	})
-
-	// select targetpod with highest %prefixmatch and request_count within stddev
-	for _, podname := range podnames {
-		reqCnt := float64(podRequestCount[podname])
-		if reqCnt <= meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
-			targetPodName = podname
-			break
-		}
-	}
-	targetPod, _ := utils.FilterPodByName(targetPodName, readyPods)
-	return targetPod
-}
-
 // getTargetPodListOnLoadImbalance evaluates if the load is imbalanced based on the abs difference between
 // pods with min and max outstanding request counts
-func getTargetPodListOnLoadImbalance(cache cache.Cache, readyPods []*v1.Pod) ([]*v1.Pod, bool) {
+func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods []*v1.Pod) ([]*v1.Pod, bool) {
 	var imbalance bool
 	var targetPodList []*v1.Pod
 	minValue := math.MaxInt32
 	maxValue := math.MinInt32
-
-	podRequestCount := getRequestCounts(cache, readyPods)
 
 	// Handle empty podRequestCount case
 	if len(podRequestCount) == 0 {
@@ -827,9 +838,17 @@ func getTargetPodListOnLoadImbalance(cache cache.Cache, readyPods []*v1.Pod) ([]
 			maxValue = value
 		}
 	}
-	for podname, value := range podRequestCount {
+
+	// get pods with min request count
+	minKeys := make(map[string]bool)
+	for podKey, value := range podRequestCount {
 		if minValue == value {
-			pod, _ := utils.FilterPodByName(podname, readyPods)
+			minKeys[podKey] = true
+		}
+	}
+	for _, pod := range readyPods {
+		podKey := &podServerKey{pod: pod}
+		if minKeys[podKey.String()] {
 			targetPodList = append(targetPodList, pod)
 		}
 	}
@@ -855,25 +874,30 @@ func getRequestCountsWithKeys(cache cache.Cache, readyPods []*v1.Pod) map[string
 	return podRequestCount
 }
 
-func selectPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod) *v1.Pod {
+// selectTargetPodFromRequestCounts selects a pod with the least request count from the given podRequestCount map
+func selectTargetPodFromRequestCounts(podRequestCount map[string]int, readyPods []*v1.Pod) *v1.Pod {
 	var targetPod *v1.Pod
-	targetPods := []string{}
+	targetPodKeys := []string{}
 
 	minCount := math.MaxInt32
-	podRequestCount := getRequestCounts(cache, readyPods)
-	klog.V(4).InfoS("selectPodWithLeastRequestCount", "podRequestCount", podRequestCount)
-	for _, totalReq := range podRequestCount {
-		if totalReq <= minCount {
+	klog.V(4).InfoS("selectTargetPodFromRequestCounts", "podRequestCount", podRequestCount)
+	for podKey, totalReq := range podRequestCount {
+		if totalReq < minCount {
 			minCount = totalReq
+			targetPodKeys = []string{podKey}
+		} else if totalReq == minCount {
+			targetPodKeys = append(targetPodKeys, podKey)
 		}
 	}
-	for podname, totalReq := range podRequestCount {
-		if totalReq == minCount {
-			targetPods = append(targetPods, podname)
+	if len(targetPodKeys) > 0 {
+		selectedPodKey := targetPodKeys[rand.Intn(len(targetPodKeys))]
+		for _, pod := range readyPods {
+			key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+			if key == selectedPodKey {
+				targetPod = pod
+				break
+			}
 		}
-	}
-	if len(targetPods) > 0 {
-		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
 	}
 	return targetPod
 }

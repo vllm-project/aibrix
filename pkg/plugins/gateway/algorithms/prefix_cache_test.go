@@ -59,6 +59,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 		cache:              c,
 		tokenizer:          tokenizerObj,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+		requestCounter:     NewLocalRequestCounter(c),
 		// No KV sync router, uses original implementation
 	}
 
