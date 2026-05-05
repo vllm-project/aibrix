@@ -19,21 +19,34 @@ package store
 import (
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 // NewFromURI dispatches to a Store implementation based on the URI scheme.
-// Supported schemes:
+// Supported forms:
 //
-//	memory://                                          → in-memory (no persistence)
+//	sqlite:/absolute/path.db                           → file-backed SQLite
+//	sqlite:///absolute/path.db                         → same, URL form
+//	sqlite:file:/path/to/db?cache=shared               → raw SQLite driver DSN
 //	mysql://user:pass@host:3306/db?param=value         → MySQL via go-sql-driver/mysql
+//	memory://                                          → in-process in-memory SQLite (test/throwaway)
 //
-// To add a backend (postgres, redis, mongodb, ...) extend the switch below
-// and add a corresponding constructor in this package.
+// The "sqlite:" prefix is stripped and the remainder is forwarded to the
+// SQLite driver verbatim, so any DSN form the driver accepts (file paths,
+// URI-form options) works without bespoke parsing. For in-memory storage
+// use memory:// — production deployments should use sqlite: or mysql://.
 //
 // secretKey is forwarded to backends that encrypt stored secrets at rest.
 func NewFromURI(uri, secretKey string) (Store, error) {
 	if uri == "" {
-		uri = "memory://"
+		uri = "sqlite:/tmp/aibrix-console.db"
+	}
+	if strings.HasPrefix(uri, "sqlite:") {
+		dsn := strings.TrimPrefix(uri, "sqlite:")
+		// sqlite:///abs/path → //abs/path → /abs/path so the URL form and
+		// the raw driver form converge on the same DSN.
+		dsn = strings.TrimPrefix(dsn, "//")
+		return NewSQLiteStore(dsn, secretKey)
 	}
 	u, err := url.Parse(uri)
 	if err != nil {
@@ -45,7 +58,7 @@ func NewFromURI(uri, secretKey string) (Store, error) {
 	case "mysql":
 		return NewMySQLStore(mysqlURIToDSN(u), secretKey)
 	default:
-		return nil, fmt.Errorf("unsupported store scheme %q (URI %q)", u.Scheme, uri)
+		return nil, fmt.Errorf("unsupported store scheme %q (URI %q); use sqlite:, mysql://, or memory://", u.Scheme, uri)
 	}
 }
 

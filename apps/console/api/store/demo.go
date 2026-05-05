@@ -23,7 +23,12 @@ import (
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
+	"gorm.io/gorm/clause"
 )
+
+// onConflictSkip is used by demo seeders so re-running against an existing
+// (e.g. file-backed sqlite) database is a no-op instead of a primary-key failure.
+var onConflictSkip = clause.OnConflict{DoNothing: true}
 
 type apiKeyEntry struct {
 	key    *pb.APIKey
@@ -116,7 +121,7 @@ func (s *GORMStore) loadDemoDeployments() error {
 		if err := dep.FromPB(pbDep); err != nil {
 			return fmt.Errorf("convert demo deployment %s: %w", pbDep.Id, err)
 		}
-		if err := s.db.Create(&dep).Error; err != nil {
+		if err := s.db.Clauses(onConflictSkip).Create(&dep).Error; err != nil {
 			return fmt.Errorf("insert demo deployment %s: %w", dep.ID, err)
 		}
 	}
@@ -172,7 +177,7 @@ func (s *GORMStore) loadDemoJobs() error {
 		if err := job.FromPB(pbJob); err != nil {
 			return fmt.Errorf("convert demo job %s: %w", pbJob.Id, err)
 		}
-		if err := s.db.Create(&job).Error; err != nil {
+		if err := s.db.Clauses(onConflictSkip).Create(&job).Error; err != nil {
 			return fmt.Errorf("insert demo job %s: %w", job.ID, err)
 		}
 	}
@@ -300,7 +305,7 @@ func (s *GORMStore) loadDemoModels() error {
 		if err := model.FromPB(pbModel); err != nil {
 			return fmt.Errorf("convert demo model %s: %w", pbModel.Id, err)
 		}
-		if err := s.db.Create(&model).Error; err != nil {
+		if err := s.db.Clauses(onConflictSkip).Create(&model).Error; err != nil {
 			return fmt.Errorf("insert demo model %s: %w", model.ID, err)
 		}
 	}
@@ -344,7 +349,7 @@ func (s *GORMStore) loadDemoModelDeploymentTemplates() error {
 		if err := tpl.FromPB(pbTpl); err != nil {
 			return fmt.Errorf("convert demo template %s: %w", pbTpl.Id, err)
 		}
-		if err := s.db.Create(&tpl).Error; err != nil {
+		if err := s.db.Clauses(onConflictSkip).Create(&tpl).Error; err != nil {
 			return fmt.Errorf("insert demo template %s: %w", tpl.ID, err)
 		}
 	}
@@ -369,7 +374,7 @@ func (s *GORMStore) loadDemoAPIKeys() error {
 			return fmt.Errorf("convert demo api key %s: %w", entry.key.Id, err)
 		}
 		key.KeyHash = entry.secret
-		if err := s.db.Create(&key).Error; err != nil {
+		if err := s.db.Clauses(onConflictSkip).Create(&key).Error; err != nil {
 			return fmt.Errorf("insert demo api key %s: %w", key.ID, err)
 		}
 	}
@@ -389,7 +394,7 @@ func (s *GORMStore) loadDemoSecrets() error {
 			return fmt.Errorf("convert demo secret %s: %w", entry.secret.Id, err)
 		}
 		secretModel.EncryptedValue = entry.value
-		if err := s.db.Create(&secretModel).Error; err != nil {
+		if err := s.db.Clauses(onConflictSkip).Create(&secretModel).Error; err != nil {
 			return fmt.Errorf("insert demo secret %s: %w", secretModel.ID, err)
 		}
 	}
@@ -411,7 +416,7 @@ func (s *GORMStore) loadDemoQuotas() error {
 		if err := quota.FromPB(pbQuota); err != nil {
 			return fmt.Errorf("convert demo quota %s: %w", pbQuota.Id, err)
 		}
-		if err := s.db.Create(&quota).Error; err != nil {
+		if err := s.db.Clauses(onConflictSkip).Create(&quota).Error; err != nil {
 			return fmt.Errorf("insert demo quota %s: %w", quota.QuotaID, err)
 		}
 	}

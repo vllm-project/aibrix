@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import json
 import os
 import sys
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from kubernetes import client as k8s_client
 from kubernetes import config
@@ -45,6 +46,46 @@ from aibrix.storage import create_storage
 
 logger = init_logger(__name__)
 router = APIRouter()
+
+_MAX_LOGGED_BODY_BYTES = 8192
+
+
+def _pretty_body(b: bytes) -> str:
+    """Indent JSON bodies for readable traffic dumps; truncate oversized."""
+    if not b:
+        return "(empty)"
+    try:
+        out = json.dumps(json.loads(b), indent=2, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        out = b.decode("utf-8", errors="replace")
+    if len(out) > _MAX_LOGGED_BODY_BYTES:
+        return out[:_MAX_LOGGED_BODY_BYTES] + "\n...(truncated)"
+    return out
+
+
+def _emit_traffic(
+    method: str,
+    path: str,
+    req_body: bytes,
+    status: int,
+    resp_body: Optional[bytes],
+    resp_ct: str = "",
+) -> None:
+    """Print one HTTP exchange to stderr in human-readable form.
+
+    Multi-line by design — bypasses structlog so the JSON bodies render with
+    indentation. Off the structured-log path so production filters can ignore.
+    """
+    parts = [f"\n[MDS HTTP] {method} {path} -> {status}"]
+    if req_body:
+        parts.append("--- request ---")
+        parts.append(_pretty_body(req_body))
+    if resp_body is not None:
+        parts.append("--- response ---")
+        parts.append(_pretty_body(resp_body))
+    elif resp_ct:
+        parts.append(f"(response body skipped: content-type={resp_ct})")
+    print("\n".join(parts), file=sys.stderr, flush=True)
 
 
 @router.get("/healthz")
@@ -190,6 +231,41 @@ def build_app(args: argparse.Namespace, params={}):
                 }
             }
         return JSONResponse(status_code=exc.status_code, content=body)
+
+    # HTTP traffic dump for debugging — always on. JSON bodies are pretty-
+    # printed; multipart uploads and file/stream responses skip body capture
+    # to avoid buffering large payloads.
+    @app.middleware("http")
+    async def _log_http_traffic(request: Request, call_next):
+        method = request.method
+        path = request.url.path
+        req_ct = request.headers.get("content-type", "")
+        req_body: bytes = b""
+        if req_ct.startswith("application/json"):
+            try:
+                req_body = await request.body()
+            except Exception:  # noqa: BLE001
+                pass
+
+        response = await call_next(request)
+
+        resp_ct = response.headers.get("content-type", "")
+        if resp_ct.startswith("application/json"):
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
+            resp_body = b"".join(chunks)
+            _emit_traffic(method, path, req_body, response.status_code, resp_body)
+            return Response(
+                content=resp_body,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.media_type,
+            )
+        _emit_traffic(
+            method, path, req_body, response.status_code, None, resp_ct=resp_ct
+        )
+        return response
 
     # Initialize kopf operator wrapper if K8s jobs are enabled
     if args.enable_k8s_job:

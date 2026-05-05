@@ -32,8 +32,12 @@ limitations under the License.
 package handler
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -47,6 +51,75 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
+
+// loggingTransport dumps every request and response between the BFF and MDS
+// at klog -v=2 (verbose). Errors and non-2xx responses always log at info.
+// Enable with `--v=2` (or env KLOG_V=2) when debugging the OpenAI SDK payloads.
+type loggingTransport struct {
+	base http.RoundTripper
+}
+
+func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	verbose := klog.V(2).Enabled()
+
+	var reqBody []byte
+	if verbose && req.Body != nil {
+		var err error
+		reqBody, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read request body for logging: %w", err)
+		}
+		req.Body = io.NopCloser(bytes.NewReader(reqBody))
+	}
+	if verbose {
+		klog.V(2).Infof("[BFF→MDS] %s %s\n%s", req.Method, req.URL.String(), prettyBody(reqBody))
+	}
+
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		klog.Warningf("[BFF→MDS] %s %s ERROR %v", req.Method, req.URL.String(), err)
+		return resp, err
+	}
+
+	if resp.StatusCode >= 400 || verbose {
+		respBody, rerr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if rerr != nil {
+			klog.Warningf("[BFF→MDS] %s %s -> %d (read body failed: %v)",
+				req.Method, req.URL.String(), resp.StatusCode, rerr)
+			return resp, nil
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if resp.StatusCode >= 400 {
+			klog.Warningf("[BFF→MDS] %s %s -> %d\n%s", req.Method, req.URL.String(), resp.StatusCode, prettyBody(respBody))
+		} else {
+			klog.V(2).Infof("[BFF→MDS] %s %s -> %d\n%s", req.Method, req.URL.String(), resp.StatusCode, prettyBody(respBody))
+		}
+	}
+	return resp, nil
+}
+
+const maxLoggedBodyBytes = 8192
+
+// prettyBody indents JSON for readability and truncates oversized bodies.
+// Non-JSON bodies are returned as-is (also truncated).
+func prettyBody(b []byte) string {
+	if len(b) == 0 {
+		return "(empty)"
+	}
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, b, "", "  "); err == nil {
+		out := pretty.Bytes()
+		if len(out) > maxLoggedBodyBytes {
+			return string(out[:maxLoggedBodyBytes]) + "\n...(truncated)"
+		}
+		return string(out)
+	}
+	if len(b) > maxLoggedBodyBytes {
+		return string(b[:maxLoggedBodyBytes]) + "...(truncated)"
+	}
+	return string(b)
+}
 
 // Console-owned fields we stash on the OpenAI batch.metadata map. Namespaced
 // to keep them out of user-supplied metadata's key space. The bare
@@ -75,9 +148,11 @@ type JobHandler struct {
 func NewJobHandler(s store.Store, metadataServiceURL, defaultModelDeploymentTemplate string, devMode bool) *JobHandler {
 
 	baseURL := strings.TrimRight(metadataServiceURL, "/") + "/v1"
+	httpClient := &http.Client{Transport: &loggingTransport{base: http.DefaultTransport}}
 	client := openai.NewClient(
 		option.WithBaseURL(baseURL),
 		option.WithAPIKey("aibrix-console"),
+		option.WithHTTPClient(httpClient),
 	)
 	return &JobHandler{
 		store:                          s,
