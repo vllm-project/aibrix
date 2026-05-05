@@ -1,28 +1,41 @@
 flowchart LR
     %% Console - Planner - MDS interaction in the MVP queue-based architecture.
-    %% Three exported interfaces, one function type, and one concrete struct
-    %% live in apps/console/api/planner:
-    %%   Console BFF -> Planner: Planner (jobs + telemetry)
-    %%   Planner / Worker -> internals: TaskStore, BatchClient
-    %%   Worker scheduling policy: SchedulerFunc - a function type
-    %%   Process-local: Worker - a concrete struct, not an exported interface
-    %% The Worker -> RM boundary is owned by an adjacent RM package and is
-    %% NOT declared in this package. The worker translates the RM-side
-    %% response into the in-memory planner.Reservation shape before building
-    %% the MDSBatchSubmission for BatchClient.CreateBatch.
+    %%
+    %% Package layout under apps/console/api/planner:
+    %%   plannerapi/  : Console-facing public surface — Planner interface,
+    %%                  EnqueueRequest / JobView / *StatsView, etc. Anything
+    %%                  Console (or any caller outside the planner module)
+    %%                  imports lives here.
+    %%   internal/    : Compiler-blocked from outside the planner tree.
+    %%       internal/task      : PlannerTask (the only persisted type;
+    %%                             carries the resolved rmtypes.ResourceProvisionSpec).
+    %%       internal/store     : TaskStore = TaskQueue + TaskLifecycle + TaskRepository.
+    %%       internal/mds       : BatchClient + MDSBatchSubmission + Provision.
+    %%       internal/scheduler : SchedulerFunc + concrete policies (fcfs / priority / ...).
+    %%
+    %% The Worker -> RM boundary is owned by an adjacent RM package
+    %% (apps/console/api/resource_manager) and is NOT declared in this package.
+    %% The worker translates the RM-side response into the in-memory
+    %% mds.Provision shape before building the MDSBatchSubmission for
+    %% BatchClient.CreateBatch.
 
     UI[Console UI]
     BFF[Console BFF]
     Store[Console Store overlay]
 
     subgraph PKG ["apps console api planner"]
-        P[Planner]
-        TS[TaskStore]
-        Worker["Worker struct<br/>dispatcher + N task goroutines"]
-        BC[BatchClient]
+        subgraph PA ["plannerapi - Console-facing public"]
+            P[Planner interface]
+        end
+        subgraph INT ["internal - compiler-blocked from outside"]
+            TS[TaskStore<br/>TaskQueue + TaskLifecycle + TaskRepository]
+            Worker["Worker struct<br/>dispatcher + N task goroutines"]
+            BC[BatchClient]
+            Sched[SchedulerFunc]
+        end
     end
 
-    RM["Resource Manager<br/>contract owned by<br/>an adjacent RM package"]
+    RM["Resource Manager<br/>contract owned by<br/>apps/console/api/resource_manager"]
     MDS[Metadata Service]
 
     UI -->|CreateJob GetJob ListJobs| BFF
@@ -31,25 +44,29 @@ flowchart LR
     BFF -->|store overlay| Store
     BFF -->|files passthrough| MDS
 
-    BFF -->|Enqueue GetJob ListJobs<br/>GetQueueStats GetCapacity| P
+    BFF -->|Enqueue GetJob ListJobs<br/>GetQueueStats GetProvisionResourceStats| P
 
-    P -->|Enqueue GetByJobID ListTasksByJobID| TS
-    P -->|ListSubmittedWithExpiringReservation EnqueueContinuation| TS
-    P -->|GetBatch live overlay| BC
-    Worker -->|RecoverInProgress on startup<br/>Claim ListCandidates ClaimByID Ack Nack Fail| TS
+    P -->|TaskQueue.Enqueue<br/>TaskRepository.GetByJobID ListTasksByJobID| TS
+    P -->|TaskLifecycle.ListExpiringProvisions Supersede| TS
+    P -->|BatchClient.GetBatch live overlay| BC
+    Worker -->|TaskQueue.Recover on startup<br/>Dequeue Peek<br/>TaskLifecycle.Ack Nack Fail| TS
+    Worker -->|policy ranking via SchedulerFunc| Sched
+    Sched -->|Peek then Dequeue TaskIDs=...| TS
     Worker -->|GetBatch dedup then CreateBatch submit| BC
 
     Worker -->|acquire and release capacity<br/>RM contract in adjacent package| RM
     BC -->|HTTP POST GET| MDS
 
     classDef console fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
-    classDef planner fill:#fff3e0,stroke:#e65100,color:#bf360c
+    classDef plannerapi fill:#fff8e1,stroke:#f57f17,color:#e65100
+    classDef plannerinternal fill:#fff3e0,stroke:#e65100,color:#bf360c
     classDef mds fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
     classDef store fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
     classDef external fill:#fce4ec,stroke:#ad1457,color:#880e4f
 
     class UI,BFF console
     class Store store
-    class P,TS,Worker,BC planner
+    class P plannerapi
+    class TS,Worker,BC,Sched plannerinternal
     class MDS mds
     class RM external

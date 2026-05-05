@@ -14,14 +14,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package planner
+package plannerapi
 
 import "errors"
 
-// Sentinel errors. Planner implementations should wrap with %w so callers can
-// use errors.Is without parsing transport- or storage-specific error strings.
+// Sentinel errors returned by the Planner interface. Implementations
+// should wrap with %w so callers can use errors.Is without parsing
+// transport- or storage-specific error strings.
+//
+// Planner-internal coordination errors (e.g. ErrTaskAlreadyTerminal,
+// ErrMDSSubmitFailed) do not appear here; they live alongside the
+// internal interfaces that surface them and are not part of the
+// Console-facing contract.
 var (
-	// ErrInvalidJob indicates the submitted PlannerJob failed validation
+	// ErrInvalidJob indicates the EnqueueRequest failed validation
 	// (missing required fields, etc.).
 	ErrInvalidJob = errors.New("planner: invalid job")
 
@@ -41,13 +47,6 @@ var (
 	// already present in the store.
 	ErrDuplicateEnqueue = errors.New("planner: duplicate enqueue")
 
-	// ErrMDSSubmitFailed indicates submitting the OpenAI batch to MDS
-	// failed. The Worker wraps upstream BatchClient.CreateBatch errors
-	// with this sentinel when the failure occurred after planning but
-	// before a batch ID was durably recorded, so callers can route on
-	// errors.Is without parsing transport-specific error strings.
-	ErrMDSSubmitFailed = errors.New("planner: mds submit failed")
-
 	// ErrInsufficientResources indicates the RM could not satisfy a
 	// capacity request right now. The worker should typically Nack the
 	// task with backoff and retry later. The RM's typed error (from
@@ -55,14 +54,4 @@ var (
 	// worker-store boundary so the planner stays decoupled from the
 	// concrete RM error vocabulary.
 	ErrInsufficientResources = errors.New("planner: insufficient resources")
-
-	// ErrTaskAlreadyTerminal indicates EnqueueContinuation targeted a
-	// task that has already reached a terminal state (terminal_failure,
-	// superseded, or any post-submit MDS-driven terminal — for example
-	// MDS finished the batch before the reservation-expiry sweeper
-	// saw it). Callers may treat this as a no-op success - the task is
-	// settled - but the sentinel is exposed so the reservation-expiry
-	// sweeper can distinguish "raced with MDS-side completion" from
-	// real errors and skip without alerting.
-	ErrTaskAlreadyTerminal = errors.New("planner: task already terminal")
 )

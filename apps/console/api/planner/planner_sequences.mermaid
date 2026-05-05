@@ -1,7 +1,14 @@
 sequenceDiagram
     %% End-to-end planner sequences:
     %%   1. Console enqueue + Worker submission tick - happy path
-    %%   2. Reservation-expiry sweeper - submitted -> superseded; new attempt inserted
+    %%   2. Provision-expiry sweeper - submitted -> superseded; new attempt inserted
+    %%
+    %% Visibility boundary (matches the package layout):
+    %%   plannerapi/ : the only thing Console BFF imports. The Planner
+    %%                 participant below sits inside this box.
+    %%   internal/   : compiler-blocked from outside the planner module.
+    %%                 TaskStore, Worker, and BatchClient all live here;
+    %%                 BFF never references them by type.
     %%
     %% Cancellation is NOT a planner-driven flow: the OpenAI Batches API
     %% exposes /cancel on MDS, and any user-facing cancel travels through
@@ -10,65 +17,74 @@ sequenceDiagram
     %% it via JobView.LifecycleState - see the README "JobLifecycleState"
     %% derivation table.
 
-    participant UI as Console UI
-    participant BFF as Console BFF
-    participant P as Planner
-    participant TS as TaskStore
-    participant W as Worker
-    participant RM as RM
-    participant BC as BatchClient
-    participant MDS
+    box rgb(227,242,253) Console (external to planner)
+        participant UI as Console UI
+        participant BFF as Console BFF
+    end
+    box rgb(255,248,225) plannerapi (Console-facing public)
+        participant P as Planner
+    end
+    box rgb(255,243,224) internal (compiler-blocked from outside)
+        participant TS as TaskStore
+        participant W as Worker
+        participant BC as BatchClient
+    end
+    box rgb(252,228,236) External services
+        participant RM as Resource Manager
+        participant MDS
+    end
 
     Note over UI,MDS: 1. Enqueue and Worker submission
 
     UI->>BFF: CreateJob
-    BFF->>P: Enqueue PlannerJob
-    P->>TS: write PlannerTask Attempt=1 state queued
+    BFF->>P: Enqueue EnqueueRequest<br/>JobID, Accelerator, ModelTemplate, Profile, BatchPayload
+    Note over P: planner expands Accelerator + ModelTemplate<br/>into the resolved rmtypes.ResourceProvisionSpec<br/>(Groups, Credential, TimeWindow) and stamps it<br/>onto the PlannerTask before persisting
+    P->>TS: TaskQueue.Enqueue PlannerTask Attempt=1 state queued
     TS-->>P: ok
     P-->>BFF: EnqueueResult queued
     BFF-->>UI: JobID status queued
 
     Note over W: dispatcher tick - single process<br/>one dispatcher + N task goroutines
 
-    W->>TS: Claim N tasks for FCFS<br/>or ListCandidates + SchedulerFunc + ClaimByID for custom policy
-    TS-->>W: claimed tasks state claimed
+    W->>TS: TaskQueue.Dequeue (TaskIDs=nil) for FCFS<br/>or Peek + SchedulerFunc + Dequeue (TaskIDs=...) for custom policy
+    TS-->>W: claimed PlannerTasks - state claimed
 
-    W->>RM: acquire capacity for TaskID + ResourceRequirement
+    W->>RM: acquire capacity for TaskID + PlannerTask.ProvisionSpec
     alt insufficient resources
         RM-->>W: error wrapped as ErrInsufficientResources
-        W->>TS: Nack with backoff
+        W->>TS: TaskLifecycle.Nack with backoff
     else success
-        RM-->>W: RM-side response<br/>worker translates into Reservation<br/>ID, Allocations, ExpiresAt
+        RM-->>W: RM-side response<br/>worker translates into mds.Provision<br/>ID, Allocations, ExpiresAt
         Note over W: idempotent per TaskID<br/>a re-claiming worker after crash gets the same handle back
     end
 
-    Note over W: Worker.submit private method<br/>build MDSBatchSubmission from task + Reservation
-    W->>BC: GetBatch by aibrix.job_id - pre-submit dedup
+    Note over W: Worker.submit private method<br/>build mds.MDSBatchSubmission from PlannerTask + Provision
+    W->>BC: BatchClient.GetBatch by aibrix.job_id - pre-submit dedup
     alt batch already exists
-        BC-->>W: existing BatchStatus
+        BC-->>W: existing BatchView
         Note over W: short-circuit - Ack with existing BatchID
     else not found
         BC-->>W: not found
-        W->>BC: CreateBatch with MDSBatchSubmission
-        BC->>MDS: POST v1 batches with extra_body aibrix
+        W->>BC: BatchClient.CreateBatch with MDSBatchSubmission
+        BC->>MDS: POST v1 batches with extra_body.aibrix
         MDS-->>BC: Batch
-        BC-->>W: BatchStatus with BatchID
+        BC-->>W: BatchView with BatchID
     end
 
-    W->>TS: Ack TaskID BatchID ReservationID ReservationExpiresAt
-    Note over W,RM: Reservation NOT released here<br/>held past submit so the sweeper can detect<br/>reservation expired before MDS finished<br/>release happens on Fail, post-MaxAttempts Nack,<br/>or observed MDS-terminal
+    W->>TS: TaskLifecycle.Ack TaskID BatchID ProvisionID ProvisionExpiresAt
+    Note over W,RM: Provision NOT released here<br/>held past submit so the sweeper can detect<br/>provision expired before MDS finished<br/>release happens on Fail, post-MaxAttempts Nack,<br/>or observed MDS-terminal
 
-    Note over P,MDS: 2. Reservation-expiry sweep - planner-internal background
+    Note over P,MDS: 2. Provision-expiry sweep - planner-internal background
 
     Note over RM,MDS: RM-side expiry tears down GPU pods<br/>MDS marks its batch failed or expired on its own<br/>planner does NOT release capacity here
 
     loop every sweep tick
-        P->>TS: ListSubmittedWithExpiringReservation before now
+        P->>TS: TaskLifecycle.ListExpiringProvisions before, limit
         TS-->>P: candidate PlannerTasks - each is one attempt
 
         loop for each candidate
-            P->>TS: EnqueueContinuation supersededTaskID newTask
-            Note over TS: atomic - prior to superseded, BatchID kept for audit<br/>new task inserted - Attempt+1, state queued, fresh TaskID<br/>fresh TaskID forces a fresh RM-side capacity allocation
+            P->>TS: TaskLifecycle.Supersede supersededTaskID newTask
+            Note over TS: atomic - prior task to superseded, BatchID kept for audit<br/>new task inserted - Attempt+1, state queued, fresh TaskID<br/>fresh TaskID forces a fresh RM-side capacity allocation
             TS-->>P: ok
         end
     end
