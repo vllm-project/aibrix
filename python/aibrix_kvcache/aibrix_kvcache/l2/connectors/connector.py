@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from concurrent.futures import Executor
 from dataclasses import dataclass
 from typing import Any, Generic, List, Sequence, Tuple, TypeVar
@@ -35,6 +35,7 @@ class ConnectorFeature:
         rdma: Whether the kv cache connector supports RDMA.
         gdr_put: Whether the kv cache connector supports GDR put.
         gdr_get: Whether the kv cache connector supports GDR get.
+        zero_copy: Whether the kv cache connector supports zero copy.
     """
 
     mput_mget: bool = False
@@ -42,6 +43,7 @@ class ConnectorFeature:
     rdma: bool = False
     gdr_put: bool = False
     gdr_get: bool = False
+    zero_copy: bool = False
 
 
 @dataclass
@@ -62,6 +64,22 @@ class ConnectorRegisterDescriptor:
     """The register descriptor"""
 
     pass
+
+
+class ConnectorZeroCopyMemoryRegion(ABC):
+    """The zero copy memory region."""
+
+    @property
+    @abstractmethod
+    def addr(self) -> int:
+        """Get the address of the zero copy memory region."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def length(self) -> int:
+        """Get the length of the zero copy memory region."""
+        raise NotImplementedError
 
 
 class Connector(Generic[K, V]):
@@ -255,5 +273,58 @@ class Connector(Generic[K, V]):
             key: The key of the kv cache.
         Returns:
             The status of the delete operation.
+        """
+        raise NotImplementedError
+
+    async def allocate(
+        self, key: K, length: int
+    ) -> Status[ConnectorZeroCopyMemoryRegion]:
+        """Allocate a pinned memory region that is able to store the kv cache
+        of the given length.
+
+        Args:
+            key: The key of the kv cache.
+            length: The length of the kv cache.
+
+        Returns:
+            The status of the allocate operation and the allocated pinned
+            memory region.
+        """
+        raise NotImplementedError
+
+    async def seal(self, mr: ConnectorZeroCopyMemoryRegion) -> None:
+        """Seal the allocated zero copy memory region.
+
+        Args:
+            mr: The zero copy memory region to be sealed.
+        """
+        raise NotImplementedError
+
+    async def drop(self, mr: ConnectorZeroCopyMemoryRegion) -> None:
+        """Drop the allocated zero copy memory region.
+
+        Args:
+            mr: The zero copy memory region to be dropped.
+        """
+        raise NotImplementedError
+
+    async def acquire(self, key: K) -> Status[ConnectorZeroCopyMemoryRegion]:
+        """Acquire the pinned memory region that has the kv cache of the given
+        key.
+
+        Args:
+            key: The key of the kv cache.
+
+        Returns:
+            The status of the acquire operation and the acquired pinned
+            memory region.
+        """
+        raise NotImplementedError
+
+    async def release(self, mr: ConnectorZeroCopyMemoryRegion) -> None:
+        """Release the acquired pinned memory region.
+
+        Args:
+            mr: The zero copy memory region to be released.
         """
         raise NotImplementedError

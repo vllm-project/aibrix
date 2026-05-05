@@ -26,7 +26,6 @@ class Settings(BaseSettings):
     video_api_url: str = ""
     video_api_key: str = ""
 
-
     # Default model names per capability
     image_model: str = ""
     image_edit_model: str = ""

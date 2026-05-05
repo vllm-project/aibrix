@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from models.schemas import Conversation, ConversationSummary, Message, ChatAttachment
+from models.schemas import ChatAttachment, Conversation, ConversationSummary, Message
 
 
 class ConversationStore:
@@ -21,7 +21,10 @@ class ConversationStore:
         project_id: str | None = None,
     ) -> Conversation:
         conv = Conversation(
-            model=model, title=title, user_id=user_id, project_id=project_id,
+            model=model,
+            title=title,
+            user_id=user_id,
+            project_id=project_id,
         )
         self._conversations[conv.id] = conv
         return conv
@@ -100,9 +103,7 @@ class ConversationStore:
         content_blocks.extend(image_blocks)
         return {"role": msg.role, "content": content_blocks}
 
-    def get_messages_for_gateway(
-        self, conversation_id: str, system_prompt: str | None = None
-    ) -> list[dict] | None:
+    def get_messages_for_gateway(self, conversation_id: str, system_prompt: str | None = None) -> list[dict] | None:
         """Build the full message list in OpenAI format for the gateway."""
         conv = self._conversations.get(conversation_id)
         if conv is None:

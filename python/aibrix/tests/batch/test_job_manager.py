@@ -25,6 +25,8 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobEndpoint,
+    BatchJobError,
+    BatchJobErrorCode,
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
@@ -141,6 +143,53 @@ async def test_job_committed_handler():
     # Verify job is in pending state
     assert "test-job-id" in job_manager._pending_jobs
     assert job_manager._pending_jobs["test-job-id"] == batch_job
+
+
+@pytest.mark.asyncio
+async def test_validate_job_finalizes_worker_style_validation_failure(monkeypatch):
+    job_manager = JobManager()
+
+    batch_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
+        metadata=ObjectMeta(
+            name="test-job",
+            namespace="default",
+            uid="test-uid-789",
+            creationTimestamp=datetime.now(),
+            resourceVersion=None,
+            deletionTimestamp=None,
+        ),
+        spec=BatchJobSpec(
+            input_file_id="missing-file",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        ),
+        status=BatchJobStatus(
+            jobID="test-worker-job-id",
+            state=BatchJobState.IN_PROGRESS,
+            createdAt=datetime.now(),
+            inProgressAt=None,
+        ),
+    )
+    job_manager._pending_jobs["test-worker-job-id"] = batch_job
+
+    async def _fail_validate(self, job):
+        raise BatchJobError(
+            code=BatchJobErrorCode.INVALID_INPUT_FILE,
+            message="input file not found",
+        )
+
+    monkeypatch.setattr(
+        "aibrix.batch.job_driver.local_driver.LocalJobDriver.validate_job",
+        _fail_validate,
+    )
+
+    result = await job_manager.validate_job("test-worker-job-id")
+
+    assert result is False
+    failed_job = job_manager._done_jobs["test-worker-job-id"]
+    assert failed_job.status.state == BatchJobState.FINALIZED
+    assert failed_job.status.failed
 
 
 @pytest.mark.asyncio

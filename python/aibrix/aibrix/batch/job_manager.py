@@ -17,7 +17,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from aibrix.batch.job_driver import JobDriver
+from aibrix.batch.job_driver import (
+    JobProgressManager,
+    LocalJobDriver,
+    create_job_driver,
+)
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobError,
@@ -30,9 +34,8 @@ from aibrix.batch.job_entity import (
     ConditionType,
     JobEntityManager,
 )
-from aibrix.batch.job_progress_manager import JobProgressManager
 from aibrix.batch.scheduler import JobScheduler
-from aibrix.batch.storage import read_job_input_info
+from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
 
 
@@ -189,31 +192,22 @@ class JobMetaInfo(BatchJob):
             self.status.request_counts.total = req_id + 1
         return req_id
 
-    async def validate_job(self):
-        """
-        This handles all validations before successfully creating a job.
-        This is also the place connecting other components
-        to check connection and status.
-        """
-        # 1. [TODO][NOW] Make sure input file exists.
-        _, exists = await read_job_input_info(self)
-        if not exists:
-            raise BatchJobError(
-                code=BatchJobErrorCode.INVALID_INPUT_FILE,
-                message="input file not found",
-            )
-
-        # 2. Authenticate job and rate limit
-        if not self.job_authentication():
-            raise BatchJobError(
-                code=BatchJobErrorCode.AUTHENTICATION_ERROR,
-                message="authentication error",
-            )
-
     def job_authentication(self):
         # [TODO] xin
         # Check if the job and account is permitted and rate limit.
         return True
+
+
+def _preserve_local_timestamps(
+    old_status: BatchJobStatus, new_status: BatchJobStatus
+) -> None:
+    """Carry forward timestamps + usage."""
+    for field in ("in_progress_at", "usage"):
+        if (
+            getattr(new_status, field) is None
+            and getattr(old_status, field) is not None
+        ):
+            setattr(new_status, field, getattr(old_status, field))
 
 
 class JobManager(JobProgressManager):
@@ -244,7 +238,9 @@ class JobManager(JobProgressManager):
         BatchJobState.FINALIZED: [],  # Terminal state
     }
 
-    def __init__(self) -> None:
+    def __init__(
+        self, context: InfrastructureContext
+    ) -> None:
         """
         This manages jobs in three categorical job pools.
         1. _pending_jobs are jobs that are not scheduled yet
@@ -259,6 +255,7 @@ class JobManager(JobProgressManager):
         self._done_jobs: dict[str, BatchJob] = {}
         self._job_scheduler: Optional[JobScheduler] = None
         self._job_entity_manager: Optional[JobEntityManager] = None
+        self._context = context
 
         # Track jobs being created with JobEntityManager
         self._creating_jobs: Dict[str, asyncio.Future[str]] = {}
@@ -286,12 +283,13 @@ class JobManager(JobProgressManager):
         meta_data: dict,
         timeout: float = 30.0,
         initial_state: BatchJobState = BatchJobState.CREATED,
+        request_count: int = 0,
     ) -> str:
         job_spec = BatchJobSpec.from_strings(
             input_file_id, api_endpoint, completion_window, meta_data
         )
         return await self.create_job_with_spec(
-            session_id, job_spec, timeout, initial_state
+            session_id, job_spec, timeout, initial_state, request_count
         )
 
     async def create_job_with_spec(
@@ -300,6 +298,7 @@ class JobManager(JobProgressManager):
         job_spec: BatchJobSpec,
         timeout: float = 30.0,
         initial_state: BatchJobState = BatchJobState.CREATED,
+        request_count: int = 0,
     ) -> str:
         """
         Async job creation that waits for job ID to be available.
@@ -334,6 +333,22 @@ class JobManager(JobProgressManager):
                 submit_task = asyncio.create_task(
                     self._job_entity_manager.submit_job(session_id, job_spec)
                 )
+
+                # If the submit task fails before the future is resolved
+                # (e.g. RenderError on a malformed BatchJobSpec), forward
+                # the real exception so wait_for() returns immediately
+                # with a useful error instead of stalling for the full
+                # ``timeout`` seconds. Without this, every render-time
+                # rejection looked like a 408 to the client.
+                def _propagate_submit_failure(t: "asyncio.Task[None]") -> None:
+                    if t.cancelled():
+                        return
+                    exc = t.exception()
+                    if exc is None or job_future.done():
+                        return
+                    job_future.set_exception(exc)
+
+                submit_task.add_done_callback(_propagate_submit_failure)
 
                 # Wait for job ID with timeout
                 try:
@@ -374,7 +389,7 @@ class JobManager(JobProgressManager):
                 self._creating_jobs.pop(session_id, None)
 
         # Local job handling.
-        job = BatchJob.new_local(job_spec)
+        job = BatchJob.new_local(job_spec, request_count=request_count)
         job.status.state = initial_state
         await self.job_committed_handler(job)
 
@@ -585,29 +600,22 @@ class JobManager(JobProgressManager):
             or job.status.temp_error_file_id is None
         ) and self._job_entity_manager is not None:
             # Try starting job immiediately with job validation.
-            if not await self.start_execute_job(job_id):
+            if not await self.validate_job(job_id):
                 return True
 
             # Initiate job preparing, see JobDriver for details
             logger.info("Starting job preparation for new job", job_id=job_id)  # type: ignore[call-arg]
             try:
-                job_driver = JobDriver(self)
-                prepared_job = await job_driver.prepare_job(job)
-
-                logger.info(
-                    "Job preparation completed, files ready",
-                    job_id=job_id,
-                    output_file_id=prepared_job.status.output_file_id,
-                    temp_output_file_id=prepared_job.status.temp_output_file_id,
-                    error_file_id=prepared_job.status.error_file_id,
-                    temp_error_file_id=prepared_job.status.temp_error_file_id,
-                )  # type: ignore[call-arg]
-
-                await self._job_entity_manager.update_job_ready(prepared_job)
-
+                job_driver = create_job_driver(
+                    self._context,
+                    self,
+                    self._job_entity_manager,
+                    job,
+                )
+                await job_driver.execute_job(job.job_id)
                 # Leave job_updated_handler to update job location in queues
             except Exception as e:
-                logger.error("Job preparation failed", job_id=job_id, exc_info=True)  # type: ignore[call-arg]
+                logger.error("Job execution failed", job_id=job_id, exc_info=True)  # type: ignore[call-arg]
                 await self.mark_job_failed(
                     job_id,
                     BatchJobError(
@@ -652,27 +660,22 @@ class JobManager(JobProgressManager):
                 )  # type: ignore[call-arg]
                 return False
 
-            # Mark post-state-transition flags
-            finalizing_needed = (
-                new_job.status.state == BatchJobState.FINALIZING
-                and old_job.status.state != BatchJobState.FINALIZING
-                and self._job_scheduler is None
-            )
             logger.debug(
                 "job_updated_handler passed state transition",
                 old_state=old_job.status.state.value,
                 new_state=new_job.status.state.value,
-                finalizing_needed=finalizing_needed,
             )  # type: ignore[call-arg]
 
             # No category change, try update status
             if old_category == new_category:
                 # avoid override local metainfo by update status only
                 old_job.metadata = new_job.metadata  # Update resource version
+                _preserve_local_timestamps(old_job.status, new_job.status)
                 old_job.status = new_job.status  # Update status
                 new_job = old_job
             else:
                 # Move job from old category to new category
+                _preserve_local_timestamps(old_job.status, new_job.status)
                 del old_category[job_id]
                 new_category[job_id] = new_job
                 logger.debug(
@@ -680,23 +683,6 @@ class JobManager(JobProgressManager):
                     old_category=old_name,
                     new_category=new_name,
                 )  # type: ignore[call-arg]
-
-            # For metadata server (no scheduler): finalize job when transitioning to FINALIZING
-            if finalizing_needed:
-                try:
-                    logger.info("Starting job finalization", job_id=job_id)  # type: ignore[call-arg]
-                    job_driver = JobDriver(self)
-                    await job_driver.finalize_job(new_job)
-                except Exception as fe:
-                    logger.error(
-                        "Job finalization failed", job_id=job_id, exc_info=True
-                    )  # type: ignore[call-arg]
-                    await self.mark_job_failed(
-                        job_id,
-                        BatchJobError(
-                            code=BatchJobErrorCode.FINALIZING_ERROR, message=str(fe)
-                        ),
-                    )
 
             return True
         except Exception:
@@ -764,11 +750,7 @@ class JobManager(JobProgressManager):
 
         return all_jobs
 
-    async def validate_job(self, meta_data: JobMetaInfo):
-        """The interface is reserved for tests to hijack job validation"""
-        await meta_data.validate_job()
-
-    async def start_execute_job(self, job_id: str) -> bool:
+    async def validate_job(self, job_id: str) -> bool:
         """
         This interface should be called by scheduler.
         User is not allowed to choose a job to be scheduled.
@@ -789,7 +771,10 @@ class JobManager(JobProgressManager):
 
         meta_data = JobMetaInfo(job)
         # In-place status update, will be reflected in the entity_manager if available.
-        if job.status.state == BatchJobState.CREATED:
+        if job.status.state == BatchJobState.CREATED or (
+            job.status.state == BatchJobState.IN_PROGRESS
+            and job.status.in_progress_at is None
+        ):
             # Only update state for first validation.
             meta_data.status.state = BatchJobState.VALIDATING
         self._in_progress_jobs[job_id] = meta_data
@@ -800,9 +785,8 @@ class JobManager(JobProgressManager):
         )  # type: ignore[call-arg]
 
         try:
-            # [TODO][NOW] This should be moved to job_driver.
-            # We still need to validate job even if it is in progress.
-            await self.validate_job(meta_data)
+            job_driver = LocalJobDriver(self)
+            await job_driver.validate_job(meta_data.batch_job)
             # But we do not update state for in-progress job.
             if meta_data.status.state == BatchJobState.VALIDATING:
                 meta_data.status.in_progress_at = datetime.now(timezone.utc)

@@ -17,7 +17,7 @@ limitations under the License.
 package webhook
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -49,7 +49,7 @@ func buildRuntimeSidecarContainer(sidecarImage, engineType string) corev1.Contai
 		Image: sidecarImage,
 		Command: []string{
 			SidecarCommand,
-			"--port", fmt.Sprintf("%d", SidecarPort),
+			"--port", strconv.Itoa(SidecarPort),
 		},
 		Env: []corev1.EnvVar{
 			{

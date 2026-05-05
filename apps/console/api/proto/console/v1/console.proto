@@ -1,0 +1,671 @@
+// Copyright 2025 The Aibrix Team.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package console.v1;
+
+option go_package = "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1;consolev1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+
+// =============================================================================
+// Deployment Service
+// =============================================================================
+
+service DeploymentService {
+  rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/deployments"
+    };
+  }
+
+  rpc GetDeployment(GetDeploymentRequest) returns (Deployment) {
+    option (google.api.http) = {
+      get: "/api/v1/deployments/{id}"
+    };
+  }
+
+  rpc CreateDeployment(CreateDeploymentRequest) returns (Deployment) {
+    option (google.api.http) = {
+      post: "/api/v1/deployments"
+      body: "*"
+    };
+  }
+
+  rpc DeleteDeployment(DeleteDeploymentRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/deployments/{id}"
+    };
+  }
+}
+
+message Deployment {
+  string id = 1;
+  string name = 2;
+  string deployment_id = 3;
+  string base_model = 4;
+  string base_model_id = 5;
+  string replicas = 6;
+  int32 gpus_per_replica = 7;
+  string gpu_type = 8;
+  string region = 9;
+  string created_by = 10;
+  string status = 11; // "Ready", "Deploying", "Failed"
+}
+
+message ListDeploymentsRequest {
+  string search = 1;
+}
+
+message ListDeploymentsResponse {
+  repeated Deployment deployments = 1;
+}
+
+message GetDeploymentRequest {
+  string id = 1;
+}
+
+message CreateDeploymentRequest {
+  string name = 1;
+  string base_model = 2;
+  string region = 3;
+  string accelerator_type = 4;
+  int32 accelerator_count = 5;
+  string quantization = 6;
+  int32 min_replicas = 7;
+  int32 max_replicas = 8;
+  bool enable_auto_scaling = 9;
+  bool enable_multi_lora = 10;
+}
+
+message DeleteDeploymentRequest {
+  string id = 1;
+}
+
+// =============================================================================
+// Job Service (Batch Inference)
+//
+// Job is the Console product abstraction over OpenAI Batch — a superset that
+// exposes every OpenAI Batch field plus Console-owned fields (name,
+// created_by, ...). The JobService handler proxies to the metadata service
+// /v1/batches API and aggregates the OpenAI Batch response with Console-side
+// fields persisted in the store.
+// =============================================================================
+
+service JobService {
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/jobs"
+    };
+  }
+
+  rpc GetJob(GetJobRequest) returns (Job) {
+    option (google.api.http) = {
+      get: "/api/v1/jobs/{id}"
+    };
+  }
+
+  rpc CreateJob(CreateJobRequest) returns (Job) {
+    option (google.api.http) = {
+      post: "/api/v1/jobs"
+      body: "*"
+    };
+  }
+
+  rpc CancelJob(CancelJobRequest) returns (Job) {
+    option (google.api.http) = {
+      post: "/api/v1/jobs/{id}/cancel"
+      body: "*"
+    };
+  }
+}
+
+message Job {
+  // Identity
+  string id = 1;
+  string object = 2;             // mirrors OpenAI's "batch"
+
+  // Configuration. Console-side names; the handler maps input_dataset /
+  // output_dataset / error_dataset to OpenAI's input_file_id / output_file_id /
+  // error_file_id when calling the metadata service.
+  string endpoint = 3;
+  string model = 4;
+  string input_dataset = 5;
+  string completion_window = 6;
+  // 8-state OpenAI status:
+  // validating | in_progress | finalizing | completed | failed | expired | cancelling | cancelled
+  string status = 7;
+  string output_dataset = 8;
+  string error_dataset = 9;
+
+  // Unix-second timestamps
+  int64 created_at = 10;
+  int64 in_progress_at = 11;
+  int64 expires_at = 12;
+  int64 finalizing_at = 13;
+  int64 completed_at = 14;
+  int64 failed_at = 15;
+  int64 expired_at = 16;
+  int64 cancelling_at = 17;
+  int64 cancelled_at = 18;
+  JobRequestCounts request_counts = 19;
+  JobUsage usage = 20;
+  map<string, string> metadata = 21;
+
+  // Console-owned fields (persisted in the store)
+  string name = 100;             // display name; resolved from metadata.display_name
+  string created_by = 101;       // Console user that created the job
+  // Resolved deployment-template binding. Populated from the user's
+  // template selection in the create-job flow; empty for legacy jobs and
+  // SDK-path jobs that pin templates through extra_body.aibrix instead.
+  string model_template_name = 102;
+  string model_template_version = 103;
+}
+
+message JobRequestCounts {
+  int32 total = 1;
+  int32 completed = 2;
+  int32 failed = 3;
+}
+
+message JobUsage {
+  int64 input_tokens = 1;
+  int64 output_tokens = 2;
+  int64 total_tokens = 3;
+}
+
+message ListJobsRequest {
+  string after = 1;              // pagination cursor (metadata service)
+  int32 limit = 2;
+}
+
+message ListJobsResponse {
+  repeated Job jobs = 1;
+  string first_id = 2;
+  string last_id = 3;
+  bool has_more = 4;
+}
+
+message GetJobRequest {
+  string id = 1;
+}
+
+message CreateJobRequest {
+  string input_dataset = 1;      // Console naming; handler maps to OpenAI input_file_id
+  string endpoint = 2;           // e.g. /v1/chat/completions
+  string completion_window = 3;  // e.g. "24h"
+  string name = 4;               // display name (stored in metadata.display_name)
+
+  // ModelDeploymentTemplate binding. Required for new jobs created via the
+  // console UI (the wizard picks a template after the model); the SDK path
+  // remains free to omit them and rely on metadata-service-side resolution
+  // through extra_body.aibrix.model_template.
+  string model_template_name = 5;
+  string model_template_version = 6;  // optional; "" = latest active
+
+  // Fields 10..13 (max_tokens / temperature / top_p / n) were removed:
+  // the console wizard bakes per-batch sampling params into the uploaded
+  // JSONL itself, so there's nothing for the BFF to forward. The OpenAI
+  // SDK path can still POST them to MDS directly.
+  reserved 10, 11, 12, 13;
+  reserved "max_tokens", "temperature", "top_p", "n";
+}
+
+message CancelJobRequest {
+  string id = 1;
+}
+
+// =============================================================================
+// Model Service (Catalog)
+// =============================================================================
+
+service ModelService {
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/models"
+    };
+  }
+
+  rpc GetModel(GetModelRequest) returns (Model) {
+    option (google.api.http) = {
+      get: "/api/v1/models/{id}"
+    };
+  }
+}
+
+message Model {
+  string id = 1;
+  string name = 2;
+  string icon_bg = 3;
+  string icon_text = 4;
+  string icon_text_color = 5;
+  repeated string categories = 6; // "LLM", "Audio", "Image", "Video", "Vision", "Embedding", "Reranks"
+  bool is_new = 7;
+  ModelPricing pricing = 8;
+  string context_length = 9;
+  string description = 10;
+  ModelMetadata metadata = 11;
+  ModelSpecification specification = 12;
+  repeated string tags = 13;
+  // serving_name is the identifier callers must put in `body.model` for
+  // batch / online inference (typically the HuggingFace path or the vLLM
+  // `--served-model-name` value). Distinct from `id` (Console-internal
+  // primary key) and `name` (human-readable display). Empty means the model
+  // isn't deployed yet — clients should skip server-side identifier checks.
+  string serving_name = 14;
+}
+
+message ModelPricing {
+  string uncached_input = 1;     // also covers embeddings (formerly per_tokens)
+  string cached_input = 2;
+  string output = 3;
+  string per_minute = 4;         // audio (e.g. Whisper)
+  string per_image = 5;          // formerly per_ea — image generation
+}
+
+message ModelMetadata {
+  string state = 1;
+  string created_on = 2;
+  string provider_name = 3;
+  string hugging_face = 4;
+}
+
+message ModelSpecification {
+  bool calibrated = 1;
+  bool mixture_of_experts = 2;
+  string parameters = 3;
+}
+
+message ListModelsRequest {
+  string search = 1;
+  string category = 2;
+}
+
+message ListModelsResponse {
+  repeated Model models = 1;
+}
+
+message GetModelRequest {
+  string id = 1;
+}
+
+// =============================================================================
+// Model Deployment Template Service
+//
+// Identity model:
+//   - Each template has a server-assigned UUID `id` (stable, addressable).
+//   - The (model_id, name, version) tuple is unique and is the human-friendly
+//     handle used by clients that pin a known template. Multiple versions of
+//     the same `name` may coexist; `status` selects which is active.
+//   - "Latest active" for a (model_id, name) pair = highest SemVer-ish version
+//     with status == "active".
+//
+// Resolve vs Get:
+//   - Get is by UUID — used by the console UI after navigating from a list.
+//   - ResolveModelDeploymentTemplate is by (name, version?) — used by clients
+//     that pin templates from outside the UI (e.g. batch SDK callers passing
+//     model_template + model_template_version in extra_body.aibrix). Server
+//     picks "latest active" when version is empty.
+//
+// -----------------------------------------------------------------------------
+// Batch SDK contract
+// -----------------------------------------------------------------------------
+// Batch jobs reference templates and profiles via OpenAI's extra_body. The
+// Python metadata service (python/aibrix/aibrix/metadata/api/v1/batch.py)
+//
+//   client.batches.create(
+//       input_file_id="file-...",
+//       endpoint="/v1/chat/completions",
+//       completion_window="24h",
+//       extra_body={
+//           "aibrix": {
+//               "model_template": {
+//                   "name":    "llama3-70b-prod",   # required
+//                   "version": "v1.3.0",            # optional; "" = latest active
+//                   "overrides": {                  # optional, allowlisted patches
+//                       "engine_args": {"max_num_seqs": "512"}
+//                   }
+//               },
+//               "profile": {
+//                   "name": "prod-24h",             # required
+//                   "overrides": {                  # optional
+//                       "scheduling": {"max_concurrency": 32}
+//                   }
+//               }
+//           }
+//       }
+//   )
+//
+//
+// rules:
+//   - model_template.name is required when extra_body.aibrix.model_template
+//     is present.
+//   - model_template.version: empty string -> latest active version of that
+//     name; explicit value -> exact match (404 if missing).
+//   - model_template.overrides is optional and ALLOWLISTED. Allowlist today:
+//     {engine_args}. Anything else is rejected with 400. New keys are added
+//     here only after a proven need; the proto comment is the source of
+//     truth — implementations MUST reject unknown keys, not silently ignore.
+//   - profile.name is required when extra_body.aibrix.profile is present.
+//   - profile.overrides is optional and ALLOWLISTED. Allowlist today:
+//     {scheduling}. Same rejection rule as above.
+//   - When extra_body.aibrix is omitted entirely, the metadata service uses
+//     its configured default profile and rejects the request if no template
+//     can be inferred from the request `model` field.
+// -----------------------------------------------------------------------------
+//
+// TODO: This schema duplicates python/aibrix/aibrix/batch/template/schema.py
+// (ModelDeploymentTemplate, EngineSpec, ModelSourceSpec, AcceleratorSpec,
+// ParallelismSpec, EngineArgsSpec, QuantizationSpec). The
+// duplication is intentional for now — console owns the user-facing surface
+// while batch already has runtime usage. Once both sides settle, fold into a
+// single source-of-truth (likely a CRD generated from one schema).
+// =============================================================================
+
+service ModelDeploymentTemplateService {
+  rpc ListModelDeploymentTemplates(ListModelDeploymentTemplatesRequest) returns (ListModelDeploymentTemplatesResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/models/{model_id}/deployment-templates"
+    };
+  }
+
+  rpc GetModelDeploymentTemplate(GetModelDeploymentTemplateRequest) returns (ModelDeploymentTemplate) {
+    option (google.api.http) = {
+      get: "/api/v1/models/{model_id}/deployment-templates/{id}"
+    };
+  }
+
+  rpc CreateModelDeploymentTemplate(CreateModelDeploymentTemplateRequest) returns (ModelDeploymentTemplate) {
+    option (google.api.http) = {
+      post: "/api/v1/models/{model_id}/deployment-templates"
+      body: "*"
+    };
+  }
+
+  rpc UpdateModelDeploymentTemplate(UpdateModelDeploymentTemplateRequest) returns (ModelDeploymentTemplate) {
+    option (google.api.http) = {
+      put: "/api/v1/models/{model_id}/deployment-templates/{id}"
+      body: "*"
+    };
+  }
+
+  rpc DeleteModelDeploymentTemplate(DeleteModelDeploymentTemplateRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/models/{model_id}/deployment-templates/{id}"
+    };
+  }
+
+  // Resolve looks up a template by (model_id, name, version). When `version`
+  // is empty, the server returns the latest active version of that name.
+  // 404 if no template matches; 409 if name has versions but none are active
+  // and version was not specified.
+  rpc ResolveModelDeploymentTemplate(ResolveModelDeploymentTemplateRequest) returns (ModelDeploymentTemplate) {
+    option (google.api.http) = {
+      get: "/api/v1/models/{model_id}/deployment-templates/by-name/{name}"
+    };
+  }
+}
+
+message ModelDeploymentTemplate {
+  string id = 1;                          // server-assigned UUID
+  string name = 2;                        // logical name, e.g. "llama3-70b-prod"
+  string version = 3;                     // SemVer-ish, default "v1.0.0"
+  string status = 4;                      // "active" | "deprecated" | "draft"
+  string model_id = 5;                    // required — links template to a Model
+  ModelDeploymentTemplateSpec spec = 6;
+  string created_at = 7;
+  string updated_at = 8;
+}
+
+message ModelDeploymentTemplateSpec {
+  EngineSpec engine = 1;
+  ModelSourceSpec model_source = 2;
+  AcceleratorSpec accelerator = 3;
+  ParallelismSpec parallelism = 4;
+  // Free-form key/value engine knobs. Keys map directly to engine flags
+  // (e.g. "max_num_seqs", "gpu_memory_utilization"); values are strings so
+  // the wire format stays engine-agnostic — the renderer parses each value
+  // when materializing the engine command line.
+  //
+  // Why a map rather than typed fields: vLLM / SGLang / TRT-LLM expose
+  // dozens of flags that change every release; modeling each as its own
+  // proto field turns the schema into a maintenance treadmill and forces
+  // a superset that is meaningless for half of the engines. The console UI
+  // ships a curated list of "known knobs" client-side (autocomplete + typed
+  // inputs) decoupled from the wire format.
+  map<string, string> engine_args = 5;
+  QuantizationSpec quantization = 6;
+  // Field 7 (provider_config) was removed — Template stays provider-agnostic;
+  // K8s defaults live in MDS renderer, multi-provider arbitration belongs to
+  // BatchProfile.scheduling.
+  reserved 7;
+  reserved "provider_config";
+  repeated string supported_endpoints = 8;   // OpenAI endpoints, e.g. "/v1/chat/completions"
+  string deployment_mode = 9;                 // "dedicated" | "shared" | "external"
+}
+
+message EngineSpec {
+  string type = 1;                        // "vllm" | "sglang" | "trtllm" | "lmdeploy" | "mock"
+  string version = 2;
+  string image = 3;
+  string invocation = 4;                  // "http_server"
+  repeated string serve_args = 5;
+  string health_endpoint = 6;
+  int32 ready_timeout_seconds = 7;
+  string metrics_endpoint = 8;
+}
+
+message ModelSourceSpec {
+  string type = 1;                        // "huggingface" | "s3" | "local"
+  string uri = 2;
+  string revision = 3;
+  string tokenizer_path = 4;
+  string chat_template_path = 5;
+  string auth_secret_ref = 6;
+}
+
+message AcceleratorSpec {
+  string type = 1;                        // free-form GPU SKU label, "cpu" treated specially
+  int32 count = 2;
+  string interconnect = 3;                // "nvlink" | "pcie" | "ib"
+  int32 vram_gb = 4;
+  string sku_hint = 5;                    // e.g. "aws/p5.48xlarge"
+}
+
+message ParallelismSpec {
+  int32 tp = 1;
+  int32 pp = 2;
+  int32 dp = 3;
+  int32 ep = 4;
+  int32 sp = 5;
+  int32 cp = 6;
+}
+
+message QuantizationSpec {
+  string weight = 1;                      // "fp8" | "awq" | "gptq" | "int8" | "bf16" | "fp16"
+  string kv_cache = 2;                    // "auto" | "fp8" | "fp8_e4m3" | "fp8_e5m2" | "int8"
+  string weights_artifact_uri = 3;
+}
+
+message ListModelDeploymentTemplatesRequest {
+  string model_id = 1;                    // required path param
+  string status = 2;                      // optional filter — "active" | "deprecated" | "draft"
+  string name = 3;                        // optional filter — list all versions of a given name
+}
+
+message ListModelDeploymentTemplatesResponse {
+  repeated ModelDeploymentTemplate templates = 1;
+}
+
+message GetModelDeploymentTemplateRequest {
+  string model_id = 1;                    // required path param
+  string id = 2;
+}
+
+message CreateModelDeploymentTemplateRequest {
+  string model_id = 1;                    // required path param
+  string name = 2;
+  string version = 3;                     // optional, defaults to "v1.0.0"
+  string status = 4;                      // optional, defaults to "active"
+  ModelDeploymentTemplateSpec spec = 5;
+}
+
+message UpdateModelDeploymentTemplateRequest {
+  string model_id = 1;                    // required path param
+  string id = 2;
+  string name = 3;
+  string version = 4;
+  string status = 5;
+  ModelDeploymentTemplateSpec spec = 6;
+}
+
+message DeleteModelDeploymentTemplateRequest {
+  string model_id = 1;                    // required path param
+  string id = 2;
+}
+
+message ResolveModelDeploymentTemplateRequest {
+  string model_id = 1;                    // required path param
+  string name = 2;                        // required path param
+  string version = 3;                     // optional query — empty = latest active
+}
+
+// =============================================================================
+// API Key Service
+// =============================================================================
+
+service APIKeyService {
+  rpc ListAPIKeys(ListAPIKeysRequest) returns (ListAPIKeysResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/apikeys"
+    };
+  }
+
+  rpc CreateAPIKey(CreateAPIKeyRequest) returns (CreateAPIKeyResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/apikeys"
+      body: "*"
+    };
+  }
+
+  rpc DeleteAPIKey(DeleteAPIKeyRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/apikeys/{id}"
+    };
+  }
+}
+
+message APIKey {
+  string id = 1;
+  string name = 2;
+  string secret_key = 3; // masked after creation
+  string created_at = 4;
+}
+
+message ListAPIKeysRequest {}
+
+message ListAPIKeysResponse {
+  repeated APIKey api_keys = 1;
+}
+
+message CreateAPIKeyRequest {
+  string name = 1;
+}
+
+message CreateAPIKeyResponse {
+  APIKey api_key = 1;
+  string full_key = 2; // only returned once at creation
+}
+
+message DeleteAPIKeyRequest {
+  string id = 1;
+}
+
+// =============================================================================
+// Secret Service
+// =============================================================================
+
+service SecretService {
+  rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/secrets"
+    };
+  }
+
+  rpc CreateSecret(CreateSecretRequest) returns (Secret) {
+    option (google.api.http) = {
+      post: "/api/v1/secrets"
+      body: "*"
+    };
+  }
+
+  rpc DeleteSecret(DeleteSecretRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/secrets/{id}"
+    };
+  }
+}
+
+message Secret {
+  string id = 1;
+  string name = 2;
+}
+
+message ListSecretsRequest {
+  string search = 1;
+}
+
+message ListSecretsResponse {
+  repeated Secret secrets = 1;
+}
+
+message CreateSecretRequest {
+  string name = 1;
+  string value = 2;
+}
+
+message DeleteSecretRequest {
+  string id = 1;
+}
+
+// =============================================================================
+// Quota Service
+// =============================================================================
+
+service QuotaService {
+  rpc ListQuotas(ListQuotasRequest) returns (ListQuotasResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/quotas"
+    };
+  }
+}
+
+message Quota {
+  string id = 1;
+  string name = 2;
+  string quota_id = 3;
+  int32 current_usage = 4;
+  double usage_percentage = 5;
+  int32 quota = 6;
+}
+
+message ListQuotasRequest {
+  string search = 1;
+}
+
+message ListQuotasResponse {
+  repeated Quota quotas = 1;
+}

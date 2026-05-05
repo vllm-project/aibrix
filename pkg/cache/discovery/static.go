@@ -26,7 +26,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/yaml"
 )
 
@@ -82,14 +81,21 @@ func (p *StaticProvider) Type() string {
 	return "static"
 }
 
-// AddEventHandler implements Provider. Static provider does not support dynamic updates.
-func (p *StaticProvider) AddEventHandler(_ string,
-	_ cache.ResourceEventHandlerFuncs, _ <-chan struct{}) error {
+// Watch reads the config file, delivers all endpoints as EventAdd via the handler,
+// and returns. Static provider has no ongoing dynamic updates.
+func (p *StaticProvider) Watch(handler EventHandler, _ <-chan struct{}) error {
+	pods, err := p.load()
+	if err != nil {
+		return err
+	}
+	for _, pod := range pods {
+		handler(WatchEvent{Type: EventAdd, Object: pod})
+	}
 	return nil
 }
 
-// Load reads the config file and returns all endpoints as synthetic pods.
-func (p *StaticProvider) Load() ([]any, error) {
+// load reads the config file and returns all endpoints as synthetic pods.
+func (p *StaticProvider) load() ([]any, error) {
 	data, err := os.ReadFile(p.configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)

@@ -32,8 +32,8 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/stretchr/testify/assert"
 	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
@@ -41,12 +41,14 @@ import (
 )
 
 const (
-	gatewayURL     = "http://localhost:8888"
-	engineURL      = "http://localhost:8000"
-	apiKey         = "test-key-1234567890"
-	modelName      = "llama2-7b"
-	modelNameQwen3 = "qwen3-8b"
-	namespace      = "aibrix-system"
+	gatewayURL      = "http://localhost:8888"
+	engineURL       = "http://localhost:8000"
+	apiKey          = "test-key-1234567890"
+	modelName       = "llama2-7b"
+	modelNameQwen3  = "qwen3-8b"
+	modelNameVLLM   = "llama2-7b-vllm"
+	modelNameSGLang = "llama2-7b-sglang"
+	modelNameTRTLLM = "llama2-7b-trtllm"
 )
 
 func initializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset, *v1alpha1.Clientset) {

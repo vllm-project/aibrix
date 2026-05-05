@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from typing import Dict, Optional, Union
 
 from aibrix import envs
@@ -54,7 +55,15 @@ def create_storage(
         return create_storage_from_env()
 
     if storage_type == StorageType.LOCAL:
-        base_path = kwargs.get("base_path") or ".storage"
+        # Honor STORAGE_LOCAL_PATH from the environment when no explicit
+        # ``base_path`` kwarg is provided. LocalStorage itself only reads
+        # the env when constructed with ``base_path=None``, so without
+        # this fallback the env var never reaches it via the factory.
+        base_path = (
+            kwargs.get("base_path")
+            or os.environ.get("STORAGE_LOCAL_PATH")
+            or ".storage"
+        )
         return LocalStorage(base_path=base_path, config=config)
 
     elif storage_type == StorageType.S3:
@@ -130,9 +139,26 @@ def create_storage_from_env() -> BaseStorage:
     Returns:
         Storage instance
     """
-    # Default to local storage with .storage folder
+    explicit_storage_type = os.environ.get("STORAGE_TYPE")
+    if explicit_storage_type and explicit_storage_type.lower() != StorageType.AUTO.value:
+        normalized_type = explicit_storage_type.lower()
+        if normalized_type == "minio":
+            normalized_type = StorageType.S3.value
+        kwargs: Dict[str, str] = {}
+        if normalized_type == StorageType.LOCAL.value:
+            kwargs["base_path"] = (
+                os.environ.get("STORAGE_LOCAL_PATH")
+                or ".storage"
+            )
+        return create_storage(normalized_type, config=None, **kwargs)
+
+    # Default to local storage; honor STORAGE_LOCAL_PATH if set, else
+    # fall back to a cwd-relative ``.storage`` folder.
     storage_type = StorageType.LOCAL
-    kwargs: Dict[str, str] = {"base_path": ".storage"}
+    kwargs = {
+        "base_path": os.environ.get("STORAGE_LOCAL_PATH")
+        or ".storage"
+    }
 
     # Check if S3 credentials are available
     if envs.STORAGE_AWS_ACCESS_KEY_ID and envs.STORAGE_AWS_SECRET_ACCESS_KEY:

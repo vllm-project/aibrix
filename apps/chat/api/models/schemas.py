@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from config import settings
+
 # ── Messages ───────────────────────────────────────────────
 
 
@@ -18,6 +19,7 @@ class MessageContent(BaseModel):
     type: str  # "text" or "image_url"
     text: str | None = None
     image_url: dict[str, str] | None = None
+
 
 class ChatAttachment(BaseModel):
     """Serializable attachment metadata for images or files in chat."""
@@ -38,9 +40,7 @@ class Message(BaseModel):
     parent_id: str | None = None
     model: str | None = None
     attachments: list[ChatAttachment] = Field(default_factory=list)
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 # ── Conversations ──────────────────────────────────────────
@@ -55,12 +55,8 @@ class Conversation(BaseModel):
     model: str | None = None
     user_id: str = ""
     project_id: str | None = None
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-    updated_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class ConversationSummary(BaseModel):
@@ -184,12 +180,8 @@ class Project(BaseModel):
     description: str = ""
     instructions: str = ""
     user_id: str = ""
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-    updated_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class ProjectSummary(BaseModel):
@@ -218,9 +210,7 @@ class UpdateProjectRequest(BaseModel):
 class User(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class LoginRequest(BaseModel):

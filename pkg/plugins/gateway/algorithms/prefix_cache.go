@@ -300,7 +300,7 @@ func NewPrefixCacheRouter() (types.Router, error) {
 		kvSyncRouter := &kvSyncPrefixCacheRouter{
 			cache:          c,
 			tokenizerPool:  tokenizerPool, // Pass the pool reference
-			syncIndexer:    syncindexer.NewSyncPrefixHashTable(),
+			syncIndexer:    syncindexer.GetSharedSyncPrefixHashTable(),
 			metricsEnabled: true,
 		}
 

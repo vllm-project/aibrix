@@ -31,7 +31,9 @@ import (
 
 const (
 	RouterSessionAffinity types.RoutingAlgorithm = "session-affinity"
-	sessionIDHeader       string                 = "x-session-id"
+	// NOTE: sessionIDHeader must strictly match types.HeaderSessionID
+	// defined in pkg/plugins/gateway/types.go to prevent routing failures.
+	sessionIDHeader string = "x-session-id"
 )
 
 func init() {

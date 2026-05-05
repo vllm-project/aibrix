@@ -68,10 +68,26 @@ def create_test_batch_job(
     )
 
 
+def _readline_iter_from_lines(lines: list):
+    """Build an async generator that yields the given lines, mimicking
+    BaseStorage.readline_iter for tests."""
+
+    async def _iter(*_args, **_kwargs):
+        for ln in lines:
+            yield ln
+
+    return _iter
+
+
 @pytest.fixture
 def mock_storage():
     """Create a mock storage instance."""
     storage = AsyncMock(spec=BaseStorage)
+    # finalize_job_output_data streams the merged output via
+    # readline_iter to sum per-record usage; tests that don't care
+    # about usage just need an empty stream. AsyncMock can't return
+    # an async generator directly, so wire a side_effect callable.
+    storage.readline_iter.side_effect = _readline_iter_from_lines([])
     return storage
 
 
@@ -80,13 +96,15 @@ async def test_finalize_job_output_data_corrects_counts_from_metastore(mock_stor
     """Test that finalize_job_output_data correctly calculates counts from metastore keys."""
     adapter = BatchStorageAdapter(mock_storage)
 
-    # Create job with incorrect initial counts
+    # Create job with incorrect initial counts. ``total`` left at 0 to
+    # exercise the legacy "infer total from metastore" path; if total is
+    # already set at job creation it is preserved through finalize.
     batch_job = create_test_batch_job(
         job_id="job-123",
         launched=10,  # Wrong - should be corrected to 3 based on metastore
         completed=5,  # Wrong - should be corrected to 2 based on metadata
         failed=2,  # Wrong - should be corrected to 1 based on metadata
-        total=15,  # Wrong - should be corrected to 5 based on max index
+        total=0,  # Unset - inferred to 5 based on max index (4) + 1
     )
 
     # Mock metastore keys for indices 0, 2, 4 (non-consecutive to test max calculation)
@@ -216,8 +234,8 @@ async def test_finalize_job_output_data_handles_empty_metastore(mock_storage):
     """Test handling when no keys are found in metastore."""
     adapter = BatchStorageAdapter(mock_storage)
     batch_job = create_test_batch_job(
-        job_id="job-789", launched=5, total=10
-    )  # Initial wrong counts
+        job_id="job-789", launched=5, total=0
+    )  # Initial wrong counts (total=0 to exercise inference path)
 
     with patch(
         "aibrix.batch.storage.adapter.list_metastore_keys", new_callable=AsyncMock
@@ -414,8 +432,8 @@ async def test_finalize_job_output_data_single_request(mock_storage):
     """Test edge case with single request (index 0 only)."""
     adapter = BatchStorageAdapter(mock_storage)
     batch_job = create_test_batch_job(
-        job_id="job-single", launched=10, total=20
-    )  # Wrong initial counts
+        job_id="job-single", launched=10, total=0
+    )  # Wrong initial counts (total=0 to exercise inference path)
 
     expected_keys = [f"batch:{batch_job.job_id}:done/0"]
 
@@ -489,3 +507,64 @@ async def test_finalize_job_output_data_preserves_part_numbers(mock_storage):
 
                 # Total should be max index + 1
                 assert batch_job.status.request_counts.total == 16  # 15 + 1
+
+
+@pytest.mark.asyncio
+async def test_sum_usage_from_output_aggregates_per_line(mock_storage):
+    """Per-line usage from the merged output JSONL is summed into
+    BatchJob.status.usage. This is the only path that populates usage —
+    workers don't propagate their accumulator to metadata."""
+    adapter = BatchStorageAdapter(mock_storage)
+    lines = [
+        '{"custom_id":"a","response":{"body":{"usage":'
+        '{"prompt_tokens":3,"completion_tokens":7,"total_tokens":10}}}}',
+        '{"custom_id":"b","response":{"body":{"usage":'
+        '{"input_tokens":5,"output_tokens":11,"total_tokens":16}}}}',
+        '{"custom_id":"c","response":{"body":{"usage":'
+        '{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,'
+        '"prompt_tokens_details":{"cached_tokens":4},'
+        '"completion_tokens_details":{"reasoning_tokens":5}}}}}',
+    ]
+    mock_storage.readline_iter.side_effect = _readline_iter_from_lines(lines)
+
+    usage = await adapter._sum_usage_from_output("any-output-id")
+
+    assert usage.input_tokens == 3 + 5 + 1
+    assert usage.output_tokens == 7 + 11 + 2
+    assert usage.total_tokens == 10 + 16 + 3
+    assert usage.input_tokens_details.cached_tokens == 4
+    assert usage.output_tokens_details.reasoning_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_sum_usage_skips_malformed_and_missing_fields(mock_storage):
+    adapter = BatchStorageAdapter(mock_storage)
+    lines = [
+        "not-json",
+        '{"no":"usage"}',
+        '{"custom_id":"a","response":{"body":{"usage":'
+        '{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}}}',
+        "",
+        '{"custom_id":"b","response":{"body":{}}}',
+        # response is a string instead of dict — must not raise
+        '{"custom_id":"c","response":"oops"}',
+    ]
+    mock_storage.readline_iter.side_effect = _readline_iter_from_lines(lines)
+
+    usage = await adapter._sum_usage_from_output("any-output-id")
+
+    assert usage.input_tokens == 2
+    assert usage.output_tokens == 3
+    assert usage.total_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_sum_usage_returns_zero_when_output_missing(mock_storage):
+    adapter = BatchStorageAdapter(mock_storage)
+    mock_storage.readline_iter.side_effect = FileNotFoundError
+
+    usage = await adapter._sum_usage_from_output("missing-id")
+
+    assert usage.input_tokens == 0
+    assert usage.output_tokens == 0
+    assert usage.total_tokens == 0

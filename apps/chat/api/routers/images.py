@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 import httpx
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from config import settings
 from models.schemas import ImageGenerateRequest, ImageGenerateResponse
@@ -39,7 +39,7 @@ async def generate_image(req: ImageGenerateRequest):
         return result
     except httpx.HTTPError as e:
         logger.exception("Image generation failed")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 @router.post("/edit", response_model=ImageGenerateResponse)
@@ -68,4 +68,4 @@ async def edit_image(
         return result
     except httpx.HTTPError as e:
         logger.exception("Image edit failed")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from e

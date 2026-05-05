@@ -26,6 +26,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
@@ -233,6 +234,7 @@ func TestPowerOfTwoRouter_getRequestCounts(t *testing.T) {
 		t.Skip("Redis not available, skipping test")
 	}
 
+	cache.InitForTest()
 	router, err := NewPowerOfTwoRouterWithRedis(client, 3600)
 	if err != nil {
 		t.Fatalf("Failed to create router: %v", err)
@@ -287,6 +289,7 @@ func TestPowerOfTwoRouter_Integration(t *testing.T) {
 		t.Skip("Redis not available, skipping integration test")
 	}
 
+	cache.InitForTest()
 	router, err := NewPowerOfTwoRouterWithRedis(client, 3600)
 	if err != nil {
 		t.Fatalf("Failed to create router: %v", err)
@@ -295,13 +298,14 @@ func TestPowerOfTwoRouter_Integration(t *testing.T) {
 	pod1 := createTestPodForPowerOfTwo("pod1", "10.0.0.1", 8000)
 
 	testTime := time.Now()
-	ctx := &types.RoutingContext{
-		Context:     context.Background(),
-		Model:       "test-model",
-		RequestID:   "test-request-1",
-		RequestTime: testTime,
-	}
+	ctx := types.NewRoutingContext(context.Background(), RouterPowerOfTwo, "test-model", "", "test-request-1", "")
+	ctx.RequestTime = testTime
 	ctx.SetTargetPod(pod1)
+	// AddRequestCount only tracks requests for models recently routed by this router.
+	// Seed lastRoutingTime to mirror normal Route() flow in this direct integration test.
+	router.lastRoutingTimeMu.Lock()
+	router.lastRoutingTime["test-model"] = time.Now()
+	router.lastRoutingTimeMu.Unlock()
 
 	// Test AddRequestCount
 	traceTerm := router.AddRequestCount(ctx, "test-request-1", "test-model")

@@ -1,11 +1,11 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from 'react'
 
 interface SetInstructionsModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onSave: (instructions: string) => void;
-  projectName: string;
-  initialInstructions: string;
+  isOpen: boolean
+  onClose: () => void
+  onSave: (instructions: string) => void
+  projectName: string
+  initialInstructions: string
 }
 
 export function SetInstructionsModal({
@@ -15,27 +15,24 @@ export function SetInstructionsModal({
   projectName,
   initialInstructions,
 }: SetInstructionsModalProps) {
-  const [instructions, setInstructions] = useState(initialInstructions);
+  const [instructions, setInstructions] = useState(initialInstructions)
 
   useEffect(() => {
-    setInstructions(initialInstructions);
-  }, [initialInstructions]);
+    setInstructions(initialInstructions)
+  }, [initialInstructions])
 
-  if (!isOpen) return null;
+  if (!isOpen) return null
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative bg-card border border-border rounded-2xl w-full max-w-[680px] p-8 shadow-2xl">
-        <h2
-          className="mb-2"
-          style={{ fontSize: "1.25rem", fontWeight: 500 }}
-        >
+        <h2 className="mb-2" style={{ fontSize: '1.25rem', fontWeight: 500 }}>
           Set project instructions
         </h2>
         <p className="text-sm text-muted-foreground mb-5">
-          Provide relevant instructions and information for chats within {projectName}.
-          This will work alongside user preferences and the selected style in a chat.
+          Provide relevant instructions and information for chats within {projectName}. This will work alongside user
+          preferences and the selected style in a chat.
         </p>
 
         <textarea
@@ -55,8 +52,8 @@ export function SetInstructionsModal({
           </button>
           <button
             onClick={() => {
-              onSave(instructions);
-              onClose();
+              onSave(instructions)
+              onClose()
             }}
             className="px-5 py-2 rounded-lg text-sm bg-foreground text-background hover:opacity-90 transition-opacity"
           >
@@ -65,5 +62,5 @@ export function SetInstructionsModal({
         </div>
       </div>
     </div>
-  );
+  )
 }

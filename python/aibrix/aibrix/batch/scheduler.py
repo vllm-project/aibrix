@@ -21,10 +21,15 @@ from enum import Enum
 from typing import Optional
 
 import aibrix.batch.constant as constant
-from aibrix.batch.job_progress_manager import JobProgressManager
+from aibrix.batch.job_driver import (
+    InferenceEngineClient,
+    JobProgressManager,
+    create_job_driver,
+)
+from aibrix.batch.job_entity import JobEntityManager
+from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
 
-from .job_driver import InferenceEngineClient, JobDriver
 from .job_entity import BatchJobError, BatchJobErrorCode
 
 # JobManager will be passed as parameter to avoid circular import
@@ -133,7 +138,9 @@ class BasicCongestionControl(CCInterface):
 class JobScheduler:
     def __init__(
         self,
+        context: InfrastructureContext,
         job_progress_manager: JobProgressManager,
+        job_entity_manager: JobEntityManager,
         pool_size: int,
         cc_controller=BasicCongestionControl(constant.DEFAULT_JOB_POOL_SIZE),
         policy=SchedulePolicy.FIFO,
@@ -144,7 +151,9 @@ class JobScheduler:
         as expired jobs.
         self._inactive_jobs are jobs that are already invalid.
         """
+        self._context = context
         self._job_progress_manager = job_progress_manager
+        self._job_entity_manager = job_entity_manager
         self.interval = constant.EXPIRE_INTERVAL
         self._jobs_queue: queue.Queue[str] = queue.Queue()
         self._inactive_jobs: set[str] = set()
@@ -191,7 +200,7 @@ class JobScheduler:
             # we check if this job is in active state and we try starting the job.
             while job_id and (
                 job_id in self._inactive_jobs
-                or not await self._job_progress_manager.start_execute_job(job_id)
+                or not await self._job_progress_manager.validate_job(job_id)
             ):
                 if self._jobs_queue.empty():
                     job_id = None
@@ -249,7 +258,6 @@ class JobScheduler:
         we can support a batch size of request per execution.
         """
         logger.info("Starting scheduling...")
-        job_driver = JobDriver(self._job_progress_manager, inference_client)
         while True:
             one_job: Optional[str] = None
             try:
@@ -262,6 +270,14 @@ class JobScheduler:
 
             if one_job:
                 try:
+                    job = await self._job_progress_manager.get_job(one_job)
+                    job_driver = create_job_driver(
+                        self._context,
+                        self._job_progress_manager,
+                        self._job_entity_manager,
+                        job,
+                        inference_client = inference_client,
+                    )
                     await job_driver.execute_job(one_job)
                 except RuntimeError as re:
                     logger.error(

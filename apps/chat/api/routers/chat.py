@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
-import base64
 
-from fastapi import APIRouter, Depends, HTTPException, File, Form, UploadFile
-
-logger = logging.getLogger(__name__)
+import httpx
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from middleware.auth import get_current_user
-from models.schemas import CompletionResponse, Message, User, ChatAttachment
-from services.conversation import store
+from models.schemas import ChatAttachment, CompletionResponse, Message, User
 from services import gateway
-import httpx
+from services.conversation import store
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
 
@@ -84,7 +84,6 @@ async def chat_completions(
             )
         )
 
-
     # Update conversation model if changed
     if conv.model != model:
         conv.model = model
@@ -97,23 +96,24 @@ async def chat_completions(
     resolved_system_prompt = system_prompt
     if not resolved_system_prompt and conv.project_id:
         from services.project import project_store
+
         project = project_store.get(conv.project_id)
         if project and project.instructions:
             resolved_system_prompt = project.instructions
 
     # Build full message history for the gateway
-    messages = store.get_messages_for_gateway(
-        conversation_id, system_prompt=resolved_system_prompt
-    )
-    
+    messages = store.get_messages_for_gateway(conversation_id, system_prompt=resolved_system_prompt)
+
     if stream:
-        return EventSourceResponse(_stream_response(
-            conversation_id=conversation_id,
-            messages=messages,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        ))
+        return EventSourceResponse(
+            _stream_response(
+                conversation_id=conversation_id,
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        )
     else:
         return await _non_stream_response(
             conversation_id=conversation_id,
@@ -195,4 +195,4 @@ async def _non_stream_response(
 
     except httpx.HTTPError as e:
         logger.exception("Chat completion error for model=%s", model)
-        raise HTTPException(status_code=502, detail=f"Gateway error: {e}")
+        raise HTTPException(status_code=502, detail=f"Gateway error: {e}") from e

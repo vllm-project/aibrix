@@ -72,6 +72,13 @@ static_resources:
                             idle_timeout: 300s
 
                         - match:
+                            prefix: "/v1/messages"
+                          route:
+                            cluster: vllm_backend
+                            timeout: 600s
+                            idle_timeout: 300s
+
+                        - match:
                             prefix: "/v1/completions"
                           route:
                             cluster: vllm_backend
@@ -140,7 +147,7 @@ static_resources:
                           direct_response:
                             status: 404
                             body:
-                              inline_string: '{"error":"Not Found","message":"Use /v1/chat/completions, /v1/models, or /health"}'
+                              inline_string: '{"error":"Not Found","message":"Use /v1/chat/completions, /v1/messages, /v1/models, or /health"}'
 
                 http_filters:
                   # ============================================

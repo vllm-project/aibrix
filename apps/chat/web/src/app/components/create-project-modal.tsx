@@ -1,30 +1,25 @@
-import { useState } from "react";
-import { X } from "lucide-react";
+import { useState } from 'react'
 
 interface CreateProjectModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onCreate: (name: string, description: string) => void;
+  isOpen: boolean
+  onClose: () => void
+  onCreate: (name: string, description: string) => void
 }
 
-export function CreateProjectModal({
-  isOpen,
-  onClose,
-  onCreate,
-}: CreateProjectModalProps) {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
+export function CreateProjectModal({ isOpen, onClose, onCreate }: CreateProjectModalProps) {
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
 
-  if (!isOpen) return null;
+  if (!isOpen) return null
 
   const handleCreate = () => {
     if (name.trim()) {
-      onCreate(name, description);
-      setName("");
-      setDescription("");
-      onClose();
+      onCreate(name, description)
+      setName('')
+      setDescription('')
+      onClose()
     }
-  };
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -34,9 +29,9 @@ export function CreateProjectModal({
           className="mb-6"
           style={{
             fontFamily: "'Playfair Display', serif",
-            fontSize: "1.75rem",
+            fontSize: '1.75rem',
             fontWeight: 400,
-            color: "var(--foreground)",
+            color: 'var(--foreground)',
             opacity: 0.85,
           }}
         >
@@ -44,9 +39,7 @@ export function CreateProjectModal({
         </h2>
 
         <div className="mb-5">
-          <label className="block mb-1.5 text-sm text-foreground/70">
-            What are you working on?
-          </label>
+          <label className="block mb-1.5 text-sm text-foreground/70">What are you working on?</label>
           <input
             type="text"
             value={name}
@@ -57,9 +50,7 @@ export function CreateProjectModal({
         </div>
 
         <div className="mb-6">
-          <label className="block mb-1.5 text-sm text-foreground/70">
-            What are you trying to achieve?
-          </label>
+          <label className="block mb-1.5 text-sm text-foreground/70">What are you trying to achieve?</label>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
@@ -86,5 +77,5 @@ export function CreateProjectModal({
         </div>
       </div>
     </div>
-  );
+  )
 }

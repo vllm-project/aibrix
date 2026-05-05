@@ -77,6 +77,82 @@ func TestUpdatePodRecord(t *testing.T) {
 	require.True(t, ok)
 }
 
+func TestUpdatePodMetricsFromTypedResultModelFallback(t *testing.T) {
+	tests := []struct {
+		name      string
+		rawModel  string
+		wantModel string
+	}{
+		{
+			name:      "keeps valid model name",
+			rawModel:  "raw-model",
+			wantModel: "raw-model",
+		},
+		{
+			name:      "falls back for empty model name",
+			rawModel:  "",
+			wantModel: "pod-model",
+		},
+		{
+			name:      "falls back for undefined model name",
+			rawModel:  undefinedMetricLabelValue,
+			wantModel: "pod-model",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &Store{}
+			pod := &Pod{
+				Pod: &v1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "p1",
+						Namespace: "default",
+						Labels: map[string]string{
+							modelLabel: "pod-model",
+						},
+					},
+				},
+			}
+			result := &metrics.EngineMetricsResult{
+				ModelMetrics: map[string]metrics.MetricValue{
+					store.getPodModelMetricName(tt.rawModel, metrics.NumRequestsWaiting): &metrics.SimpleMetricValue{Value: 1},
+				},
+			}
+
+			store.updatePodMetricsFromTypedResult(pod, result)
+
+			_, ok := pod.ModelMetrics.Load(store.getPodModelMetricName(tt.wantModel, metrics.NumRequestsWaiting))
+			require.True(t, ok)
+		})
+	}
+}
+
+func TestSanitizeMetricLabelsFallback(t *testing.T) {
+	pod := &Pod{
+		Pod: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "p1",
+				Namespace: "default",
+				Labels: map[string]string{
+					modelLabel:  "pod-model",
+					engineLabel: "trtllm",
+				},
+			},
+		},
+	}
+
+	sanitized := sanitizeMetricLabels(pod, map[string]string{
+		"model_name":  undefinedMetricLabelValue,
+		"engine_type": "",
+		"instance":    "pod:8000",
+	})
+
+	require.Equal(t, "pod-model", sanitized["model_name"])
+	require.Equal(t, "trtllm", sanitized["engine_type"])
+	require.Equal(t, "pod:8000", sanitized["instance"])
+}
+
 func TestMetricRoleFilters(t *testing.T) {
 	require.True(t, isPrefillOnlyMetric(metrics.TimeToFirstTokenSeconds))
 	require.False(t, isPrefillOnlyMetric(metrics.GenerationTokenTotal))
@@ -303,4 +379,49 @@ func TestInitPrometheusAPI_EndpointSet(t *testing.T) {
 
 	api := initPrometheusAPI(nil)
 	require.NotNil(t, api)
+}
+
+// TestUpdatePodMetricsNonBlocking verifies that updatePodMetrics does not block
+// when the worker pool is saturated (channel buffer full). This prevents the
+// metrics refresh goroutine from stalling when workers are stuck on slow pods.
+func TestUpdatePodMetricsNonBlocking(t *testing.T) {
+	// Create a store with a tiny channel buffer and NO workers draining it
+	store := &Store{
+		podMetricsJobs: make(chan *Pod, 2),
+	}
+
+	// Add 5 ready pods — more than the channel buffer can hold
+	for i := range 5 {
+		name := fmt.Sprintf("pod-%d", i)
+		store.metaPods.Store(name, &Pod{
+			Pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Status: v1.PodStatus{
+					Phase: v1.PodRunning,
+					PodIP: fmt.Sprintf("10.0.0.%d", i+1),
+					Conditions: []v1.PodCondition{
+						{Type: v1.PodReady, Status: v1.ConditionTrue},
+					},
+				},
+			},
+		})
+	}
+
+	// updatePodMetrics must return promptly without blocking.
+	// With the old blocking send, this would deadlock since no worker is reading.
+	done := make(chan struct{})
+	go func() {
+		store.updatePodMetrics()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success: updatePodMetrics returned without blocking
+	case <-time.After(2 * time.Second):
+		t.Fatal("updatePodMetrics blocked — channel send is not non-blocking")
+	}
+
+	// Exactly 2 pods should have been enqueued (channel buffer size)
+	require.Equal(t, 2, len(store.podMetricsJobs))
 }

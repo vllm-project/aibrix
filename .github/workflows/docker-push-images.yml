@@ -25,6 +25,9 @@ jobs:
             file: build/container/Dockerfile.python
           - name: kvcache-watcher
             file: build/container/Dockerfile.kvcache
+          - name: vllm-mock
+            file: development/app/Dockerfile
+            context: development/app
     steps:
       - uses: actions/checkout@v3
         with:
@@ -42,6 +45,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           platforms: linux/amd64,linux/arm64
+          context: ${{ matrix.component.context || '.' }}
           file: ${{ matrix.component.file }}
           push: true
           tags: |
@@ -67,6 +71,9 @@ jobs:
             file: build/container/Dockerfile.python
           - name: kvcache-watcher
             file: build/container/Dockerfile.kvcache
+          - name: vllm-mock
+            file: development/app/Dockerfile
+            context: development/app
     steps:
       - uses: actions/checkout@v3
         with:
@@ -85,6 +92,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           platforms: linux/amd64,linux/arm64
+          context: ${{ matrix.component.context || '.' }}
           file: ${{ matrix.component.file }}
           push: true
           tags: |

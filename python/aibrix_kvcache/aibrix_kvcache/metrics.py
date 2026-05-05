@@ -143,6 +143,7 @@ class MetricRecorder(ABC):
         PUT = enum.auto()
         GET = enum.auto()
         ACQUIRE = enum.auto()
+        ALLOCATE = enum.auto()
         EXISTS = enum.auto()
 
     class Resource(enum.Enum):
@@ -480,6 +481,8 @@ class BaseCacheMetrics(Metrics, MetricRecorder):
 
     put_metrics: OpMetrics
     get_metrics: OpMetrics
+    acquire_metrics: OpMetrics
+    allocate_metrics: OpMetrics
     exists_metrics: OpMetrics
     num_tokens_hit: int
     num_tokens_miss: int
@@ -499,9 +502,23 @@ class BaseCacheMetrics(Metrics, MetricRecorder):
 
         self.num_tokens_hit = 0
         self.num_tokens_miss = 0
+        self.allocate_metrics = OpMetrics(
+            MetricRecorder.OP.ALLOCATE,
+            lambda status: not status.is_ok(),
+            block_ntokens,
+            enable_time_measurement,
+            enable_breakdown_measurement,
+        )
         self.put_metrics = OpMetrics(
             MetricRecorder.OP.PUT,
             lambda status: not status.is_ok(),
+            block_ntokens,
+            enable_time_measurement,
+            enable_breakdown_measurement,
+        )
+        self.acquire_metrics = OpMetrics(
+            MetricRecorder.OP.ACQUIRE,
+            lambda status: not status.is_ok() and not status.is_not_found(),
             block_ntokens,
             enable_time_measurement,
             enable_breakdown_measurement,
@@ -530,7 +547,13 @@ class BaseCacheMetrics(Metrics, MetricRecorder):
         return self._enable_breakdown_measurement
 
     def _get_all_metrics(self) -> List[Metrics]:
-        return [self.put_metrics, self.get_metrics, self.exists_metrics]
+        return [
+            self.allocate_metrics,
+            self.put_metrics,
+            self.exists_metrics,
+            self.acquire_metrics,
+            self.get_metrics,
+        ]
 
     def _agg_hit_miss(self, num_tokens: int, status: Status) -> None:
         if status.is_ok():
@@ -555,34 +578,51 @@ class BaseCacheMetrics(Metrics, MetricRecorder):
         lat_ms: int,
         breakdowns: Breakdowns | None = None,
     ) -> None:
-        if op is MetricRecorder.OP.PUT:
+        if op is MetricRecorder.OP.ALLOCATE:
+            self.allocate_metrics.add(
+                num_prefix, num_tokens, status, lat_ms, breakdowns
+            )
+        elif op is MetricRecorder.OP.PUT:
             self.put_metrics.add(
                 num_prefix, num_tokens, status, lat_ms, breakdowns
             )
+        elif op is MetricRecorder.OP.EXISTS:
+            self.exists_metrics.add(
+                num_prefix, num_tokens, status, lat_ms, breakdowns
+            )
+        elif op is MetricRecorder.OP.ACQUIRE:
+            self.acquire_metrics.add(
+                num_prefix, num_tokens, status, lat_ms, breakdowns
+            )
+            self._agg_hit_miss(num_tokens, status)
         elif op is MetricRecorder.OP.GET:
             self.get_metrics.add(
                 num_prefix, num_tokens, status, lat_ms, breakdowns
             )
             self._agg_hit_miss(num_tokens, status)
-        elif op is MetricRecorder.OP.EXISTS:
-            self.exists_metrics.add(
-                num_prefix, num_tokens, status, lat_ms, breakdowns
-            )
         else:
             raise ValueError(f"Unknown op: {op}")
 
     def reset(self):
+        self.allocate_metrics.reset()
         self.put_metrics.reset()
-        self.get_metrics.reset()
         self.exists_metrics.reset()
+        self.acquire_metrics.reset()
+        self.get_metrics.reset()
 
     def summary(self) -> str:
         summary = ""
-        for m in [self.put_metrics, self.exists_metrics, self.get_metrics]:
+        for m in [
+            self.allocate_metrics,
+            self.put_metrics,
+            self.exists_metrics,
+            self.acquire_metrics,
+            self.get_metrics,
+        ]:
             if m.num_ops > 0:
                 summary += ", " if len(summary) > 0 else ""
                 summary += f"{m.summary()}"
-        if self.get_metrics.num_ops > 0:
+        if self.get_metrics.num_ops + self.acquire_metrics.num_ops > 0:
             summary += ", " if len(summary) > 0 else ""
             hit_rate = (
                 self.num_tokens_hit
@@ -651,7 +691,6 @@ class BaseCacheMetricsExporter(BaseMetricsExporter):
 class L1CacheMetrics(BaseCacheMetrics):
     """The metrics of the l1 cache."""
 
-    acquire_metrics: OpMetrics
     eviction_policy_usage_metrics: UsageMetrics
     allocator_usage_metrics: UsageMetrics
 
@@ -670,13 +709,6 @@ class L1CacheMetrics(BaseCacheMetrics):
             enable_time_measurement=enable_time_measurement,
             enable_breakdown_measurement=enable_breakdown_measurement,
         )
-        self.acquire_metrics = OpMetrics(
-            MetricRecorder.OP.ACQUIRE,
-            lambda status: not status.is_ok() and not status.is_not_found(),
-            block_ntokens,
-            enable_time_measurement,
-            enable_breakdown_measurement,
-        )
         self.eviction_policy_usage_metrics = UsageMetrics(
             MetricRecorder.Resource.L1_EVICTION_POLICY,
             capacity_nbytes,
@@ -687,33 +719,10 @@ class L1CacheMetrics(BaseCacheMetrics):
         )
 
     def _get_all_metrics(self) -> List[Metrics]:
-        return [
-            self.put_metrics,
-            self.get_metrics,
-            self.exists_metrics,
-            self.acquire_metrics,
+        return super()._get_all_metrics() + [
             self.eviction_policy_usage_metrics,
             self.allocator_usage_metrics,
         ]
-
-    def record(
-        self,
-        op: MetricRecorder.OP,
-        num_prefix: int,
-        num_tokens: int,
-        status: Status,
-        lat_ms: int,
-        breakdowns: Breakdowns | None = None,
-    ) -> None:
-        if op is MetricRecorder.OP.ACQUIRE:
-            self.acquire_metrics.add(
-                num_prefix, num_tokens, status, lat_ms, breakdowns
-            )
-            self._agg_hit_miss(num_tokens, status)
-        else:
-            super().record(
-                op, num_prefix, num_tokens, status, lat_ms, breakdowns
-            )
 
     def trace_usage(self, resource, used_nbytes):
         if resource is MetricRecorder.Resource.L1_EVICTION_POLICY:
@@ -723,33 +732,8 @@ class L1CacheMetrics(BaseCacheMetrics):
         else:
             raise ValueError(f"Unknown resource: {resource}")
 
-    def reset(self):
-        super().reset()
-        self.acquire_metrics.reset()
-
     def summary(self) -> str:
-        summary = ""
-        for m in [
-            self.put_metrics,
-            self.exists_metrics,
-            self.get_metrics,
-            self.acquire_metrics,
-        ]:
-            if m.num_ops > 0:
-                summary += ", " if len(summary) > 0 else ""
-                summary += f"{m.summary()}"
-        if self.get_metrics.num_ops + self.acquire_metrics.num_ops > 0:
-            summary += ", " if len(summary) > 0 else ""
-            hit_rate = (
-                self.num_tokens_hit
-                * 100
-                / (self.num_tokens_hit + self.num_tokens_miss)
-            )
-            summary += (
-                f"Num. of hit: {self.num_tokens_hit}, "
-                f"Num. of miss: {self.num_tokens_miss}, "
-                f"Hit rate: {hit_rate:.2f}%"
-            )
+        summary = super().summary()
         for r in [
             self.eviction_policy_usage_metrics,
             self.allocator_usage_metrics,

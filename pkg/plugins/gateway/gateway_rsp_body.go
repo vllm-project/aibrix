@@ -23,12 +23,13 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/packages/ssestream"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/packages/ssestream"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
@@ -130,8 +131,8 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			}
 
 			headers = buildEnvoyProxyHeaders(headers,
-				HeaderUpdateRPM, fmt.Sprintf("%d", rpm),
-				HeaderUpdateTPM, fmt.Sprintf("%d", tpm))
+				HeaderUpdateRPM, strconv.FormatInt(rpm, 10),
+				HeaderUpdateTPM, strconv.FormatInt(tpm, 10))
 		}
 
 		headers = buildEnvoyProxyHeaders(headers, HeaderRequestID, routerCtx.RequestID)

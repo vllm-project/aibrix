@@ -162,7 +162,7 @@ def parse_redis_connection_str(connection_str: str) -> Tuple[Any, str]:
 
 def make_color(color, alpha=1):
     rgb = plt.matplotlib.colors.to_rgb(color)
-    return f"rgba({rgb[0]*255}, {rgb[1]*255}, {rgb[2]*255}, {alpha})"
+    return f"rgba({rgb[0] * 255}, {rgb[1] * 255}, {rgb[2] * 255}, {alpha})"
 
 
 def update_graph(n, model_name) -> Any:
@@ -291,7 +291,7 @@ def update_graph(n, model_name) -> Any:
         figure.last = {
             "data": plotdata,
             "layout": go.Layout(
-                title=f"Live Data Update({n}:{round(duration)}ms) of {model_name}, labeled: {round(labeled/len(data_df)*100, 2)}%, processed: {monitor.progress}",
+                title=f"Live Data Update({n}:{round(duration)}ms) of {model_name}, labeled: {round(labeled / len(data_df) * 100, 2)}%, processed: {monitor.progress}",
                 # xaxis=dict(range=[0, max(data['x']) + 1]),
                 # yaxis=dict(range=[0, max(data['y']) + 1])
                 xaxis=dict(range=[0, scale], title="input_tokens(log2)"),

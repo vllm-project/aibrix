@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
-import httpx
 
 from models.schemas import VideoGenerateRequest, VideoJobResponse
 from services.providers import get_video_provider
@@ -30,7 +30,7 @@ async def generate_video(req: VideoGenerateRequest):
         return result
     except httpx.HTTPError as e:
         logger.exception("Video generation failed")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 @router.get("/status/{job_id}", response_model=VideoJobResponse)
@@ -42,7 +42,7 @@ async def video_status(job_id: str):
         return result
     except httpx.HTTPError as e:
         logger.exception("Video status check failed")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 @router.get("/content/{job_id}")
@@ -59,7 +59,7 @@ async def video_content(job_id: str):
             },
         )
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except httpx.HTTPError as e:
         logger.exception("Video content download failed")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from e

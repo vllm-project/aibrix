@@ -8,32 +8,32 @@
  *   clicking a sidebar link for a creation conversation re-displays results
  */
 
-import type { ImageData, VideoJobResponse } from "@/api/client";
+import type { ImageData, VideoJobResponse } from '@/api/client'
 
 export interface CreationMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  model?: string;
-  mode?: "image" | "video";
-  ratio?: string;
-  referenceImageUrl?: string;
-  images?: ImageData[];
-  videoJob?: VideoJobResponse;
-  loading?: boolean;
-  error?: string;
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  model?: string
+  mode?: 'image' | 'video'
+  ratio?: string
+  referenceImageUrl?: string
+  images?: ImageData[]
+  videoJob?: VideoJobResponse
+  loading?: boolean
+  error?: string
 }
 
 /** Non-serializable data for the current creation (consumed once). */
-export const pendingCreation: { file?: File; blobUrl?: string } = {};
+export const pendingCreation: { file?: File; blobUrl?: string } = {}
 
 /** Cache of creation messages keyed by conversation ID. */
-const messageCache = new Map<string, CreationMessage[]>();
+const messageCache = new Map<string, CreationMessage[]>()
 
 export function cacheMessages(conversationId: string, msgs: CreationMessage[]) {
-  messageCache.set(conversationId, msgs);
+  messageCache.set(conversationId, msgs)
 }
 
 export function getCachedMessages(conversationId: string): CreationMessage[] | undefined {
-  return messageCache.get(conversationId);
+  return messageCache.get(conversationId)
 }

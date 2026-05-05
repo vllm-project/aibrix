@@ -34,6 +34,7 @@ type Pod struct {
 
 	// Realtime statstistic
 	runningRequests        int32 // Realtime running requests counter.
+	completedRequests      int64 // Monotonically increasing count of finished requests (gateway-tracked).
 	pendingLoadUtilization atomic_ext.Float64
 
 	// Log frenquency control

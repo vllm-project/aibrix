@@ -18,14 +18,11 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 from pydantic_core import core_schema
 
-
-class NoExtraBaseModel(BaseModel):
-    """Base model that forbids extra fields."""
-
-    model_config = ConfigDict(extra="forbid")
+from .aibrix_metadata import AibrixMetadata
+from .base import _Strict
 
 
 class BatchJobEndpoint(str, Enum):
@@ -89,14 +86,14 @@ class ConditionStatus(str, Enum):
     UNKNOWN = "Unknown"
 
 
-class TypeMeta(NoExtraBaseModel):
+class TypeMeta(_Strict):
     """Kubernetes TypeMeta equivalent."""
 
     api_version: str = Field(alias="apiVersion")
     kind: str
 
 
-class ObjectMeta(NoExtraBaseModel):
+class ObjectMeta(_Strict):
     """Kubernetes ObjectMeta equivalent."""
 
     name: Optional[str] = None
@@ -110,7 +107,7 @@ class ObjectMeta(NoExtraBaseModel):
     annotations: Optional[Dict[str, str]] = None
 
 
-class Condition(NoExtraBaseModel):
+class Condition(_Strict):
     """Kubernetes Condition equivalent."""
 
     type: ConditionType
@@ -120,7 +117,7 @@ class Condition(NoExtraBaseModel):
     message: Optional[str] = None
 
 
-class BatchJobSpec(NoExtraBaseModel):
+class BatchJobSpec(_Strict):
     """Defines the specification of a Batch job input."""
 
     input_file_id: str = Field(
@@ -141,6 +138,36 @@ class BatchJobSpec(NoExtraBaseModel):
         default=None,
         description="System-only options for internal use (e.g., fail_after_n_requests)",
     )
+    # Set by Metadata Service when extra_body.aibrix.* is parsed at batch
+    # creation. Values are looked up by TemplateRegistry / ProfileRegistry.
+    # Stored as raw strings/dicts so this model has no dependency on the
+    # template schema package (avoids circular imports). Validation
+    # against actual template/profile existence happens upstream; the
+    # renderer re-validates override dicts against the typed schemas.
+    aibrix: Optional[AibrixMetadata] = Field(
+        default=None,
+        description="AIBrix-specific metadata attached to the batch job",
+    )
+
+    @property
+    def model_template_name(self) -> Optional[str]:
+        return self.aibrix.model_template_name if self.aibrix else None
+
+    @property
+    def model_template_version(self) -> Optional[str]:
+        return self.aibrix.model_template_version if self.aibrix else None
+
+    @property
+    def profile_name(self) -> Optional[str]:
+        return self.aibrix.profile_name if self.aibrix else None
+
+    @property
+    def template_overrides(self) -> Optional[Dict[str, Any]]:
+        return self.aibrix.template_overrides if self.aibrix else None
+
+    @property
+    def profile_overrides(self) -> Optional[Dict[str, Any]]:
+        return self.aibrix.profile_overrides if self.aibrix else None
 
     @classmethod
     def from_strings(
@@ -150,6 +177,8 @@ class BatchJobSpec(NoExtraBaseModel):
         completion_window: str = CompletionWindow.TWENTY_FOUR_HOURS.value,
         metadata: Optional[Dict[str, str]] = None,
         opts: Optional[Dict[str, str]] = None,
+        aibrix: Optional[Dict[str, Any]] = None,
+        **kw,
     ) -> "BatchJobSpec":
         """Create BatchJobSpec from string parameters with validation.
 
@@ -159,6 +188,7 @@ class BatchJobSpec(NoExtraBaseModel):
             completion_window: The completion window as string
             metadata: Optional metadata dictionary
             opts: Optional system options dictionary
+            aibrix: Optional structured AIBrix metadata
 
         Returns:
             BatchJobSpec instance
@@ -182,6 +212,9 @@ class BatchJobSpec(NoExtraBaseModel):
             completion_window=validated_completion_window.expires_at(),
             metadata=metadata,
             opts=opts,
+            aibrix=AibrixMetadata(**aibrix)
+            if aibrix
+            else AibrixMetadata.from_extension_fields(**kw),
         )
 
     @staticmethod
@@ -233,7 +266,7 @@ class BatchJobSpec(NoExtraBaseModel):
             )
 
 
-class RequestCountStats(NoExtraBaseModel):
+class RequestCountStats(_Strict):
     """Holds the statistics on the processing of the batch."""
 
     total: int = Field(default=0, description="Total number of requests in the batch")
@@ -245,6 +278,47 @@ class RequestCountStats(NoExtraBaseModel):
         description="Number of requests that have been successfully completed",
     )
     failed: int = Field(default=0, description="Number of requests that have failed")
+
+
+class InputTokensDetails(_Strict):
+    """Token-count breakdown for the input side of a batch.
+
+    Mirrors the OpenAI Batch API's ``input_tokens_details`` shape;
+    ``cached_tokens`` is the count of input tokens served from the
+    engine's prefix cache (only meaningful when prefix caching is on).
+    """
+
+    cached_tokens: int = Field(default=0, ge=0)
+
+
+class OutputTokensDetails(_Strict):
+    """Token-count breakdown for the output side of a batch.
+
+    ``reasoning_tokens`` are the chain-of-thought tokens emitted by
+    reasoning-class models (o1-style). For non-reasoning models this
+    stays at zero.
+    """
+
+    reasoning_tokens: int = Field(default=0, ge=0)
+
+
+class BatchUsage(_Strict):
+    """Aggregated token usage for a batch.
+
+    Matches the OpenAI Batch API's ``usage`` object (added 2025-09)
+    so it can be returned verbatim. Note that the engine's per-request
+    response uses the ``prompt_tokens`` / ``completion_tokens`` naming;
+    the worker maps those to ``input_tokens`` / ``output_tokens`` when
+    accumulating into this object.
+    """
+
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    input_tokens_details: InputTokensDetails = Field(default_factory=InputTokensDetails)
+    output_tokens_details: OutputTokensDetails = Field(
+        default_factory=OutputTokensDetails
+    )
 
 
 class BatchJobError(Exception):
@@ -344,7 +418,7 @@ class BatchJobError(Exception):
         return new_copy
 
 
-class BatchJobStatus(NoExtraBaseModel):
+class BatchJobStatus(_Strict):
     """Defines the observed state of BatchJobSpec."""
 
     job_id: str = Field(
@@ -383,6 +457,14 @@ class BatchJobStatus(NoExtraBaseModel):
         default_factory=RequestCountStats,
         alias="requestCounts",
         description="Statistics on the processing of the batch",
+    )
+
+    usage: Optional[BatchUsage] = Field(
+        default=None,
+        description=(
+            "Aggregated token usage. Populated by the worker as it processes "
+            "requests; absent until the first progress flush."
+        ),
     )
 
     # Timestamps
@@ -501,7 +583,7 @@ class BatchJobStatus(NoExtraBaseModel):
         self.conditions.append(condition)
 
 
-class BatchJob(NoExtraBaseModel):
+class BatchJob(_Strict):
     """Schema for the BatchJob API - Kubernetes Custom Resource equivalent."""
 
     session_id: Optional[str] = Field(
@@ -573,7 +655,23 @@ class BatchJob(NoExtraBaseModel):
     def new_local(
         cls,
         spec: BatchJobSpec,
+        request_count: int = 0,
     ) -> "BatchJob":
+        # Pre-seed request_counts.total from the validated input line
+        # count so it is fixed at job creation, matching OpenAI Batch
+        # API semantics. When 0 (caller didn't validate upfront), the
+        # JobMetaInfo falls back to the legacy "discover total while
+        # streaming" behavior.
+        request_counts = (
+            RequestCountStats(total=request_count) if request_count > 0 else None
+        )
+        status_kwargs: Dict[str, Any] = {
+            "jobID": str(uuid.uuid4()),
+            "state": BatchJobState.CREATED,
+            "createdAt": datetime.now(timezone.utc),
+        }
+        if request_counts is not None:
+            status_kwargs["requestCounts"] = request_counts
         return cls(
             typeMeta=TypeMeta(apiVersion="", kind="LocalBatchJob"),
             metadata=ObjectMeta(
@@ -582,11 +680,7 @@ class BatchJob(NoExtraBaseModel):
                 deletionTimestamp=None,
             ),
             spec=spec,
-            status=BatchJobStatus(
-                jobID=str(uuid.uuid4()),
-                state=BatchJobState.CREATED,
-                createdAt=datetime.now(timezone.utc),
-            ),
+            status=BatchJobStatus(**status_kwargs),
         )
 
     @property

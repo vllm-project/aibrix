@@ -94,14 +94,21 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 	defer c.mu.RUnlock()
 
 	// podname -> %prefixmatch
-	prefixMatchPods := map[string]int{}
+	prefixMatchPods := make(map[string]int, len(readyPods))
 	for i := 0; i < len(prefixHashes); i++ {
 		prefixHash := prefixHashes[i]
-		prefixMatchPercent := (i + 1) * 100 / len(prefixHashes)
-
 		block, ok := c.store.Get(prefixHash)
-		if !ok || len(block.modelToPods[model]) == 0 ||
-			!matchPods(block.modelToPods[model], readyPods, prefixMatchPods, prefixMatchPercent) {
+		if !ok {
+			break
+		}
+
+		blockPods := block.modelToPods[model]
+		if len(blockPods) == 0 {
+			break
+		}
+
+		prefixMatchPercent := (i + 1) * 100 / len(prefixHashes)
+		if !matchPods(blockPods, readyPods, prefixMatchPods, prefixMatchPercent) {
 			break
 		}
 	}
@@ -113,6 +120,7 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	now := time.Now()
 	for i := 0; i < len(prefixHashes); i++ {
 		prefixHash := prefixHashes[i]
 
@@ -120,9 +128,7 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 		if !ok {
 			block = Block{
 				modelToPods: map[string]map[string]time.Time{
-					model: {
-						pod: time.Now(),
-					},
+					model: {pod: now},
 				},
 			}
 		} else {
@@ -130,7 +136,7 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 			if !ok {
 				blockPods = map[string]time.Time{}
 			}
-			blockPods[pod] = time.Now()
+			blockPods[pod] = now
 			block.modelToPods[model] = blockPods
 		}
 

@@ -1,0 +1,21 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "B",   # flake8-bugbear
+  "UP",  # pyupgrade
+]
+ignore = [
+  "B008",  # function calls in default args — standard FastAPI pattern (Depends, File, Form)
+  "B027",  # empty methods in ABC without @abstractmethod — intentional optional lifecycle hooks
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

@@ -85,8 +85,9 @@ const (
 	RunningLoraAdapters                  = "running_lora_adapters"
 	VTCBucketSizeActive                  = "vtc_bucket_size_active"
 	// Realtime metrics
-	RealtimeNumRequestsRunning = "realtime_num_requests_running"
-	RealtimeNormalizedPendings = "realtime_normalized_pendings"
+	RealtimeNumRequestsRunning         = "realtime_num_requests_running"
+	RealtimeNormalizedPendings         = "realtime_normalized_pendings"
+	RealtimeRunningRequestsDrainRate1m = "realtime_running_requests_drain_rate_1m"
 
 	// error to read metrics from backend
 	PrometheusQueryFail       = "prometheus_query_fail"

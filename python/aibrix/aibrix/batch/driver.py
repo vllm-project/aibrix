@@ -25,6 +25,7 @@ from aibrix.batch.storage.batch_metastore import (
     get_metastore_type,
     initialize_batch_metastore,
 )
+from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
 from aibrix.metadata.core import AsyncLoopThread, T
 from aibrix.storage import StorageType
@@ -35,10 +36,12 @@ logger = init_logger(__name__)
 class BatchDriver:
     def __init__(
         self,
+        context: InfrastructureContext,
         job_entity_manager: Optional[JobEntityManager] = None,
         storage_type: StorageType = StorageType.AUTO,
         metastore_type: StorageType = StorageType.AUTO,
         llm_engine_endpoint: Optional[str] = None,
+        inference_client: Optional[InferenceEngineClient] = None,
         stand_alone: bool = False,
         params={},
     ):
@@ -47,28 +50,52 @@ class BatchDriver:
 
         Args:
             stand_alone: Set to true to start a new thread for job management.
+            inference_client: Explicit client. Preferred. Pass an
+                EchoInferenceEngineClient for --dry-run, or a
+                ProxyInferenceEngineClient for a real engine.
+            llm_engine_endpoint: Convenience shortcut for constructing a
+                ProxyInferenceEngineClient. Mutually exclusive with
+                ``inference_client``.
         """
+        if inference_client is not None and llm_engine_endpoint is not None:
+            raise ValueError(
+                "BatchDriver: pass at most one of inference_client / "
+                "llm_engine_endpoint."
+            )
+
         _storage.initialize_storage(storage_type, params)
         initialize_batch_metastore(metastore_type, params)
         self._async_thread_loop: Optional[AsyncLoopThread] = None
         if stand_alone:
             self._async_thread_loop = AsyncLoopThread("BatchDriver")
+        self._context = context
         self._storage = _storage
         self._job_entity_manager: Optional[JobEntityManager] = job_entity_manager
-        self._job_manager: JobManager = JobManager()
+        self._job_manager: JobManager = JobManager(self._context)
         self._scheduler: Optional[JobScheduler] = None
         # Only initiate scheduler if JobEntityManager does not have its own sched
         if (
             not self._job_entity_manager
             or not self._job_entity_manager.is_scheduler_enabled()
         ):
-            self._scheduler = JobScheduler(self._job_manager, DEFAULT_JOB_POOL_SIZE)
+            self._scheduler = JobScheduler(
+                self._context,
+                self._job_manager,
+                self._job_entity_manager,
+                DEFAULT_JOB_POOL_SIZE,
+            )
             self._job_manager.set_scheduler(self._scheduler)
 
-        # Initialize inference client with optional LLM engine endpoint
-        self._inference_client: Optional[InferenceEngineClient] = None
-        if llm_engine_endpoint is not None:
+        if inference_client is not None:
+            self._inference_client: Optional[InferenceEngineClient] = inference_client
+        elif llm_engine_endpoint is not None:
             self._inference_client = ProxyInferenceEngineClient(llm_engine_endpoint)
+        else:
+            # No client configured. Acceptable now. The error throwing is delayed 
+            # on a per BatchJob level. Here list the acceptable cases:
+            # 1. The job_entity_manager comes with scheduler feature (is_scheduler_enabled(), e.g., JobCache)
+            # 2. The BatchJob.spec.aibrix.planner_decision.resource_details[].resource_type is specified.
+            self._inference_client = None
 
         # Track jobs with fail_after_n_requests for stop() validation
         self._jobs_with_fail_after: set[str] = set()

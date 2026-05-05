@@ -17,7 +17,9 @@ async def create_project(
     user: User = Depends(get_current_user),
 ):
     project = project_store.create(
-        name=req.name, description=req.description, user_id=user.id,
+        name=req.name,
+        description=req.description,
+        user_id=user.id,
     )
     return project.model_dump()
 

@@ -71,12 +71,12 @@ echo "  Routing algorithm: ${ROUTING_ALGORITHM}"
 echo ""
 
 # Start gateway-plugin
-echo "Starting gateway-plugin (gRPC :50052, metrics :8080)..."
+echo "Starting gateway-plugin (gRPC :50052, HTTP :8080)..."
 ROUTING_ALGORITHM="${ROUTING_ALGORITHM}" setsid --fork "${GATEWAY_BINARY}" \
     --standalone \
     --endpoints-config="${ENDPOINTS_CONFIG}" \
     --grpc-bind-address=":50052" \
-    --metrics-bind-address=":8080" \
+    --http-bind-address=":8080" \
     > "${LOG_DIR}/gateway-plugin.log" 2>&1 &
 GATEWAY_PID=$!
 # setsid --fork creates a grandchild; wait briefly then find the actual PID
@@ -147,6 +147,7 @@ echo "AIBrix gateway is running!"
 echo ""
 echo "Endpoints:"
 echo "  HTTP API:          http://localhost:10080/v1/chat/completions"
+echo "  Model List:        http://localhost:10080/v1/models"
 echo "  Envoy Admin:       http://localhost:9901"
 echo "  Gateway Metrics:   http://localhost:8080/metrics"
 echo "  Health Check:      http://localhost:10080/healthz"

@@ -1,0 +1,2 @@
+-r requirements.txt
+ruff>=0.8.0

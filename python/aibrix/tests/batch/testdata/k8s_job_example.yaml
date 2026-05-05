@@ -1,0 +1,103 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: batch-job-template
+  namespace: default
+  labels:
+    app: aibrix-batch
+  annotations:
+    batch.job.aibrix.ai/managed-by: aibrix
+spec:
+  suspend: true
+  parallelism: 1
+  completions: 1
+  backoffLimit: 2
+  activeDeadlineSeconds: 86400
+  template:
+    metadata:
+      labels:
+        app: aibrix-batch
+      annotations:
+        batch.job.aibrix.ai/session-id: example-session
+        batch.job.aibrix.ai/input-file-id: file-1
+        batch.job.aibrix.ai/endpoint: /v1/chat/completions
+        batch.job.aibrix.ai/model-template-name: mock
+        batch.job.aibrix.ai/model-template-version: v1
+        batch.job.aibrix.ai/profile-name: example-profile
+        batch.job.aibrix.ai/metadata.team: infra
+        batch.job.aibrix.ai/metadata.project: p
+    spec:
+      serviceAccountName: job-reader-sa
+      automountServiceAccountToken: true
+      shareProcessNamespace: true
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: batch-worker
+          image: aibrix/runtime:nightly
+          command:
+            - aibrix_batch_worker
+          env:
+            - name: JOB_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['job-name']
+            - name: JOB_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: JOB_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['batch.kubernetes.io/controller-uid']
+            - name: BATCH_INPUT_FILE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['batch.job.aibrix.ai/input-file-id']
+            - name: BATCH_ENDPOINT
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['batch.job.aibrix.ai/endpoint']
+            - name: BATCH_OUTPUT_FILE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['batch.job.aibrix.ai/output-file-id']
+            - name: BATCH_TEMP_OUTPUT_FILE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['batch.job.aibrix.ai/temp-output-file-id']
+            - name: BATCH_ERROR_FILE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['batch.job.aibrix.ai/error-file-id']
+            - name: BATCH_TEMP_ERROR_FILE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['batch.job.aibrix.ai/temp-error-file-id']
+            - name: BATCH_OPTS_FAIL_AFTER_N_REQUESTS
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['batch.job.aibrix.ai/opts.fail_after_n_requests']
+            - name: LLM_READY_ENDPOINT
+              value: http://localhost:8000/ready
+            - name: STORAGE_TYPE
+              value: local
+            - name: STORAGE_LOCAL_PATH
+              value: /tmp/aibrix-storage
+        - name: llm-engine
+          image: aibrix/vllm-mock:nightly
+          ports:
+            - containerPort: 8000
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - WORKER_VICTIM=1 python app.py || true
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /ready
+              port: 8000
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1

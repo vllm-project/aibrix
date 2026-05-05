@@ -26,7 +26,9 @@ async def create_conversation(
     user: User = Depends(get_current_user),
 ):
     return store.create(
-        model=req.model, title=req.title, user_id=user.id,
+        model=req.model,
+        title=req.title,
+        user_id=user.id,
         project_id=req.project_id,
     )
 

@@ -65,10 +65,15 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			reqHeaders[n.Key] = string(n.RawValue)
 		case HeaderConfigProfile:
 			reqConfigProfile = strings.TrimSpace(string(n.RawValue))
+		case HeaderSessionID:
+			reqHeaders[n.Key] = string(n.RawValue)
 		}
 	}
 
 	if username != "" {
+		user.Name = username
+	}
+	if username != "" && s.redisClient != nil {
 		user, err = utils.GetUser(ctx, utils.User{Name: username}, s.redisClient)
 		if err != nil {
 			klog.ErrorS(err, "unable to process user info", "requestID", requestID, "username", username)

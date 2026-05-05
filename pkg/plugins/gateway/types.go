@@ -52,6 +52,10 @@ const (
 	HeaderModel              = "model"
 	HeaderExternalFilter     = "external-filter"
 	HeaderConfigProfile      = "config-profile"
+	// HeaderSessionID is the header used for session affinity routing.
+	// NOTE: If you change this value, you MUST also update sessionIDHeader in
+	// pkg/plugins/gateway/algorithms/simple_session_affinity.go
+	HeaderSessionID = "x-session-id"
 
 	// RPM & TPM Update Errors
 	HeaderUpdateTPM        = "x-update-tpm"
@@ -60,6 +64,10 @@ const (
 	HeaderErrorTPMExceeded = "x-error-tpm-exceeded"
 	HeaderErrorIncrRPM     = "x-error-incr-rpm"
 	HeaderErrorIncrTPM     = "x-error-incr-tpm"
+
+	// Model RPS Errors
+	HeaderErrorModelRPSExceeded = "x-error-model-rps-exceeded"
+	HeaderErrorIncrModelRPS     = "x-error-incr-model-rps"
 
 	// Rate Limiting defaults
 	DefaultRPM           = 100
@@ -89,6 +97,7 @@ const (
 
 	// Request Paths
 	PathChatCompletions     = "/v1/chat/completions"
+	PathMessages            = "/v1/messages"
 	PathCompletions         = "/v1/completions"
 	PathEmbeddings          = "/v1/embeddings"
 	PathImagesGenerations   = "/v1/images/generations"

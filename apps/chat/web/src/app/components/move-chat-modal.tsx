@@ -1,70 +1,67 @@
-import { useState, useEffect } from "react";
-import { X, Search, Folder, Loader2 } from "lucide-react";
-import { listProjects, type ProjectSummary } from "@/api/client";
+import { Folder, Loader2, Search, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { listProjects, type ProjectSummary } from '@/api/client'
 
 interface MoveChatModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onMove: (projectId: string) => void;
+  isOpen: boolean
+  onClose: () => void
+  onMove: (projectId: string) => void
 }
 
-export function MoveChatModal({
-  isOpen,
-  onClose,
-  onMove,
-}: MoveChatModalProps) {
-  const [searchQuery, setSearchQuery] = useState("");
-  const [isMoving, setIsMoving] = useState(false);
-  const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [loading, setLoading] = useState(false);
+export function MoveChatModal({ isOpen, onClose, onMove }: MoveChatModalProps) {
+  const [searchQuery, setSearchQuery] = useState('')
+  const [isMoving, setIsMoving] = useState(false)
+  const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [loading, setLoading] = useState(false)
 
   // Fetch projects from API when modal opens
   useEffect(() => {
-    if (!isOpen) return;
-    let cancelled = false;
-    setLoading(true);
+    if (!isOpen) return
+    let cancelled = false
+    setLoading(true)
     listProjects()
       .then((data) => {
-        if (!cancelled) setProjects(data);
+        if (!cancelled) setProjects(data)
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [isOpen]);
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isOpen])
 
-  if (!isOpen) return null;
+  if (!isOpen) return null
 
-  const filtered = projects.filter((p) =>
-    p.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filtered = projects.filter((p) => p.name.toLowerCase().includes(searchQuery.toLowerCase()))
 
   const handleMove = (projectId: string) => {
-    setIsMoving(true);
+    setIsMoving(true)
     setTimeout(() => {
-      onMove(projectId);
-      setIsMoving(false);
-      setSearchQuery("");
-      onClose();
-    }, 1200);
-  };
+      onMove(projectId)
+      setIsMoving(false)
+      setSearchQuery('')
+      onClose()
+    }, 1200)
+  }
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative bg-card border border-border rounded-2xl w-full max-w-[440px] shadow-2xl flex flex-col" style={{ maxHeight: "420px" }}>
+      <div
+        className="relative bg-card border border-border rounded-2xl w-full max-w-[440px] shadow-2xl flex flex-col"
+        style={{ maxHeight: '420px' }}
+      >
         {/* Header */}
         <div className="flex items-start justify-between px-6 pt-5 pb-1">
           <div>
-            <h2 style={{ fontSize: "1.1rem" }}>Move chat</h2>
-            <p className="text-sm text-foreground/50 mt-0.5">
-              Select a project to move this chat into.
-            </p>
+            <h2 style={{ fontSize: '1.1rem' }}>Move chat</h2>
+            <p className="text-sm text-foreground/50 mt-0.5">Select a project to move this chat into.</p>
           </div>
           <button
             onClick={() => {
-              setSearchQuery("");
-              onClose();
+              setSearchQuery('')
+              onClose()
             }}
             className="p-1 rounded-md text-foreground/40 hover:text-foreground hover:bg-accent transition-colors -mt-0.5"
           >
@@ -108,9 +105,7 @@ export function MoveChatModal({
                     className="flex items-center gap-3 w-full px-3 py-2.5 text-sm text-foreground hover:bg-accent transition-colors"
                   >
                     <Folder size={16} className="text-foreground/50 flex-shrink-0" />
-                    <span className="flex-1 text-left truncate">
-                      {project.name}
-                    </span>
+                    <span className="flex-1 text-left truncate">{project.name}</span>
                   </button>
                 ))
               ) : (
@@ -123,5 +118,5 @@ export function MoveChatModal({
         </div>
       </div>
     </div>
-  );
+  )
 }
