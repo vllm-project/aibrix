@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -33,6 +34,10 @@ import (
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/handler"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
+	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
+	plannerimpl "github.com/vllm-project/aibrix/apps/console/api/planner/impl"
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
+	k8sprov "github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner/kubernetes"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 
 	"github.com/vllm-project/aibrix/apps/console/api/config"
@@ -106,9 +111,16 @@ func (s *Server) StartGRPC(addr string) error {
 
 	s.grpcServer = grpc.NewServer()
 
+	batchClient := plannerclient.NewOpenAIBatchClient(s.cfg.MetadataServiceURL)
+	prov, err := s.buildProvisioner()
+	if err != nil {
+		return fmt.Errorf("provisioner init: %w", err)
+	}
+	planner := plannerimpl.NewPassthrough(batchClient, prov)
+
 	// Register all service handlers
 	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
-	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.cfg.MetadataServiceURL, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode))
+	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, planner, s.cfg.MetadataServiceURL, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
 	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))
 	pb.RegisterAPIKeyServiceServer(s.grpcServer, handler.NewAPIKeyHandler(s.store))
@@ -120,6 +132,10 @@ func (s *Server) StartGRPC(addr string) error {
 
 	klog.Infof("gRPC server listening on %s", addr)
 	return s.grpcServer.Serve(lis)
+}
+
+func (s *Server) buildProvisioner() (provisioner.Provisioner, error) {
+	return k8sprov.New()
 }
 
 // StartHTTP starts the grpc-gateway HTTP server on the given address,
