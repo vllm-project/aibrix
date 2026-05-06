@@ -68,8 +68,14 @@ func (p *Passthrough) Enqueue(ctx context.Context, req *plannerapi.EnqueueReques
 	if req.BatchPayload.Endpoint == "" {
 		return nil, fmt.Errorf("%w: missing endpoint", plannerapi.ErrInvalidJob)
 	}
+	if p.prov == nil {
+		return nil, fmt.Errorf("%w: missing provisioner", plannerapi.ErrInsufficientResources)
+	}
 
-	taskID := "tsk-" + uuid.NewString()
+	taskID := req.JobID
+	if taskID == "" {
+		taskID = "tsk-" + uuid.NewString()
+	}
 	provReq := &rmtypes.ResourceProvision{
 		Spec: rmtypes.ResourceProvisionSpec{
 			Credential: rmtypes.ResourceCredential{Provider: p.prov.Type()},

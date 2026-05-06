@@ -36,8 +36,8 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	plannerimpl "github.com/vllm-project/aibrix/apps/console/api/planner/impl"
-	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
-	k8sprov "github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner/kubernetes"
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager"
+	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 
 	"github.com/vllm-project/aibrix/apps/console/api/config"
@@ -112,11 +112,11 @@ func (s *Server) StartGRPC(addr string) error {
 	s.grpcServer = grpc.NewServer()
 
 	batchClient := plannerclient.NewOpenAIBatchClient(s.cfg.MetadataServiceURL)
-	prov, err := s.buildProvisioner()
+	rm, err := resource_manager.NewResourceManager(rmtypes.ResourceProvisionTypeKubernetes, s.store)
 	if err != nil {
-		return fmt.Errorf("provisioner init: %w", err)
+		return fmt.Errorf("resource manager init: %w", err)
 	}
-	planner := plannerimpl.NewPassthrough(batchClient, prov)
+	planner := plannerimpl.NewPassthrough(batchClient, rm.Provisioner)
 
 	// Register all service handlers
 	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
@@ -132,10 +132,6 @@ func (s *Server) StartGRPC(addr string) error {
 
 	klog.Infof("gRPC server listening on %s", addr)
 	return s.grpcServer.Serve(lis)
-}
-
-func (s *Server) buildProvisioner() (provisioner.Provisioner, error) {
-	return k8sprov.New()
 }
 
 // StartHTTP starts the grpc-gateway HTTP server on the given address,
