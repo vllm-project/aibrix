@@ -98,8 +98,27 @@ func (p *Passthrough) Enqueue(ctx context.Context, req *plannerapi.EnqueueReques
 				PlannerDecision: &struct {
 					ProvisionID               string `json:"provision_id,omitempty"`
 					ProvisionResourceDeadline int64  `json:"provision_resource_deadline,omitempty"`
+					ResourceDetails           []struct {
+						ResourceType    string `json:"resource_type"`
+						EndpointCluster string `json:"endpoint_cluster,omitempty"`
+						GPUType         string `json:"gpu_type,omitempty"`
+						WorkerNum       int    `json:"worker_num,omitempty"`
+					} `json:"resource_details,omitempty"`
 				}{
 					ProvisionID: provResult.ProvisionID,
+					ResourceDetails: []struct {
+						ResourceType    string `json:"resource_type"`
+						EndpointCluster string `json:"endpoint_cluster,omitempty"`
+						GPUType         string `json:"gpu_type,omitempty"`
+						WorkerNum       int    `json:"worker_num,omitempty"`
+					}{
+						{
+							// Temporary test values so MDS exercises the deployment-backed
+							// driver path until the planner/resource manager returns richer
+							// allocation details.
+							WorkerNum: 1,
+						},
+					},
 				},
 				ModelTemplate: req.ModelTemplate,
 			},
