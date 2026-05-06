@@ -487,27 +487,27 @@ def main():
         action="store_true",
         default=False,
         help=(
-            "Disable inference endpoint so that batch api can not invoke inference engine direcly"
-            "This can be useful if extra_body.aibrix.planner_decision is a must and avoid setting INFERENCE_ENGINE_ENDPOINT"
+            "Disable inference endpoint so that batch api can not invoke inference engine directly."
+            "This can be useful if extra_body.aibrix.planner_decision is a must and avoid setting INFERENCE_ENGINE_ENDPOINT."
         ),
     )
     parser.add_argument(
         "--enable-k8s-job",
         action="store_true",
         default=False,
-        help="Enable native kubernetes jobs as the job executor",
+        help="Enable native kubernetes jobs as the job executor.",
     )
     parser.add_argument(
         "--enable-mongo-job",
         action="store_true",
         default=False,
-        help="Enable MongoDB as the persistent job entity manager",
+        help="Enable MongoDB as the persistent job entity manager.",
     )
     parser.add_argument(
         "--enable-redis-job",
         action="store_true",
         default=False,
-        help="Enable Redis as the persistent job entity manager",
+        help="Enable Redis as the persistent job entity manager.",
     )
     parser.add_argument(
         "--registry-provider",
@@ -580,13 +580,27 @@ def main():
             "API needs the files API for input/output."
         )
 
-    if args.dry_run:
-        if args.enable_k8s_job:
-            parser.error("--dry-run is incompatible with --enable-k8s-job")
-        # Bundle: dry-run forces local storage so a stray AWS_* / TOS_*
-        # in the environment doesn't accidentally write to a real bucket.
-        from aibrix.storage import StorageType  # local import: avoid cycle
+    # Bundle: dry-run forces local storage so a stray AWS_* / TOS_*
+    # in the environment doesn't accidentally write to a real bucket.
+    enabled_job_modes = [
+        flag
+        for flag, enabled in (
+            ("--dry-run", args.dry_run),
+            ("--enable-k8s-job", args.enable_k8s_job),
+            ("--enable-mongo-job", args.enable_mongo_job),
+            ("--enable-redis-job", args.enable_redis_job),
+        )
+        if enabled
+    ]
+    if len(enabled_job_modes) > 1:
+        parser.error(
+            "Only one of --dry-run, --enable-k8s-job, "
+            "--enable-mongo-job, and --enable-redis-job may be set. "
+            f"Got: {', '.join(enabled_job_modes)}"
+        )
 
+    if args.dry_run:
+        from aibrix.storage import StorageType  # local import: avoid cycle
         settings.STORAGE_TYPE = StorageType.LOCAL
         settings.METASTORE_TYPE = StorageType.LOCAL
 
