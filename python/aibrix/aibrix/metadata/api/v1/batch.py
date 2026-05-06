@@ -232,8 +232,8 @@ class Decision(PlannerDecision):
     Wire shape (under ``extra_body.aibrix.planner_decision``)::
 
         {
-            "reservation_id": "xxxxxxxx",
-            "reservation_resource_deadline": 1422443902,  # optional; 0 / null = will not expire
+            "provision_id": "xxxxxxxx",
+            "provision_resource_deadline": 1422443902,  # optional; 0 / null = will not expire
             "resource_details": [
                 {
                     "resource_type": "xxxxxxxx",

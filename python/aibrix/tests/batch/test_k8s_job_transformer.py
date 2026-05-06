@@ -500,8 +500,8 @@ def test_k8s_job_extracts_aibrix_metadata():
     k8s_job["spec"]["template"]["metadata"]["annotations"][
         "batch.job.aibrix.ai/aibrix"
     ] = (
-        '{"job_id":"planner-job-1","planner_decision":{"reservation_id":"reservation-1",'
-        '"reservation_resource_deadline":123,"resource_details":[{"resource_type":"deployment",'
+        '{"job_id":"planner-job-1","planner_decision":{"provision_id":"reservation-1",'
+        '"provision_resource_deadline":123,"resource_details":[{"resource_type":"deployment",'
         '"endpoint_cluster":"cluster-a","gpu_type":"H100","worker_num":4}]},'
         '"model_template":{"name":"echo-template","version":"v1.0.0"}}'
     )
@@ -511,7 +511,7 @@ def test_k8s_job_extracts_aibrix_metadata():
     assert batch_job.spec.aibrix is not None
     assert batch_job.spec.aibrix.job_id == "planner-job-1"
     assert batch_job.spec.aibrix.planner_decision is not None
-    assert batch_job.spec.aibrix.planner_decision.reservation_id == "reservation-1"
+    assert batch_job.spec.aibrix.planner_decision.provision_id == "reservation-1"
     assert batch_job.spec.aibrix.planner_decision.resource_details is not None
     assert batch_job.spec.aibrix.planner_decision.resource_details[0].worker_num == 4
     assert batch_job.spec.aibrix.model_template is not None

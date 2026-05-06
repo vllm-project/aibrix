@@ -246,8 +246,8 @@ def test_batch_spec_accepts_aibrix_metadata():
             "aibrix": {
                 "job_id": "planner-job-1",
                 "planner_decision": {
-                    "reservation_id": "reservation-1",
-                    "reservation_resource_deadline": 123,
+                    "provision_id": "reservation-1",
+                    "provision_resource_deadline": 123,
                     "resource_details": [
                         {
                             "resource_type": "openai",
@@ -283,8 +283,8 @@ def test_batch_spec_accepts_aibrix_metadata():
     assert batch_job_spec.aibrix is not None
     assert batch_job_spec.aibrix.job_id == "planner-job-1"
     assert batch_job_spec.aibrix.planner_decision is not None
-    assert batch_job_spec.aibrix.planner_decision.reservation_id == "reservation-1"
-    assert batch_job_spec.aibrix.planner_decision.reservation_resource_deadline == 123
+    assert batch_job_spec.aibrix.planner_decision.provision_id == "reservation-1"
+    assert batch_job_spec.aibrix.planner_decision.provision_resource_deadline == 123
     assert len(batch_job_spec.aibrix.planner_decision.resource_details or []) == 1
     resource = batch_job_spec.aibrix.planner_decision.resource_details[0]
     assert resource is not None
@@ -316,8 +316,8 @@ def test_batch_response_includes_input_aibrix_metadata():
             aibrix=AibrixMetadata(
                 job_id="planner-job-1",
                 planner_decision=PlannerDecision(
-                    reservation_id="reservation-1",
-                    reservation_resource_deadline=123,
+                    provision_id="reservation-1",
+                    provision_resource_deadline=123,
                     resource_details=[
                         ResourceDetail(
                             resource_type="openai",
@@ -350,7 +350,7 @@ def test_batch_response_includes_input_aibrix_metadata():
     assert response.aibrix is not None
     assert response.aibrix.job_id == "planner-job-1"
     assert response.aibrix.planner_decision is not None
-    assert response.aibrix.planner_decision.reservation_id == "reservation-1"
+    assert response.aibrix.planner_decision.provision_id == "reservation-1"
     assert response.aibrix.planner_decision.resource_details is not None
     assert len(response.aibrix.planner_decision.resource_details) == 1
     assert response.aibrix.planner_decision.resource_details[0].gpu_type == "H100"

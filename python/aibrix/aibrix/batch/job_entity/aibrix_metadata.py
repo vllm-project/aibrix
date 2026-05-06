@@ -13,8 +13,8 @@ class ResourceDetail(_Lenient):
 
 
 class PlannerDecision(_Lenient):
-    reservation_id: Optional[str] = None
-    reservation_resource_deadline: Optional[int] = None
+    provision_id: Optional[str] = None
+    provision_resource_deadline: Optional[int] = None
     resource_details: Optional[List[ResourceDetail]] = None
 
 

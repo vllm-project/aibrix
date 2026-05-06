@@ -119,8 +119,8 @@ def build_batch_request(
         aibrix["profile"] = {"name": aibrix_profile}
     if resource_type:
         aibrix["planner_decision"] = {
-            "reservation_id": "reservation-1",
-            "reservation_resource_deadline": 3600,
+            "provision_id": "reservation-1",
+            "provision_resource_deadline": 3600,
             "resource_details": [
                 {
                     "resource_type": resource_type,

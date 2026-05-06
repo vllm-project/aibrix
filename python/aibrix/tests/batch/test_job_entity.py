@@ -156,8 +156,8 @@ class TestBatchJobEntityCreation:
             aibrix=AibrixMetadata(
                 job_id="job-123",
                 planner_decision=PlannerDecision(
-                    reservation_id="reservation-1",
-                    reservation_resource_deadline=3600,
+                    provision_id="reservation-1",
+                    provision_resource_deadline=3600,
                     resource_details=[
                         ResourceDetail(
                             resource_type="openai",
@@ -182,7 +182,7 @@ class TestBatchJobEntityCreation:
         assert spec.aibrix is not None
         assert spec.aibrix.job_id == "job-123"
         assert spec.aibrix.planner_decision is not None
-        assert spec.aibrix.planner_decision.reservation_id == "reservation-1"
+        assert spec.aibrix.planner_decision.provision_id == "reservation-1"
         assert spec.aibrix.planner_decision.resource_details is not None
         assert spec.aibrix.planner_decision.resource_details[0].gpu_type == "H100"
         assert spec.aibrix.model_template is not None
@@ -193,12 +193,12 @@ class TestBatchJobEntityCreation:
     def test_planner_decision_allows_extra_fields(self):
         decision = PlannerDecision.model_validate(
             {
-                "reservation_id": "reservation-1",
+                "provision_id": "reservation-1",
                 "future_field": {"phase": "queued"},
             }
         )
 
-        assert decision.reservation_id == "reservation-1"
+        assert decision.provision_id == "reservation-1"
         assert getattr(decision, "future_field") == {"phase": "queued"}
 
     def test_resource_detail_allows_extra_fields(self):

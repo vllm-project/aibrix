@@ -108,6 +108,7 @@ class FakeRenderer:
     def render(
         self,
         template_name: str,
+        profile_name=None,
         template_version=None,
         deployment_name=None,
         gpu_type=None,
@@ -148,8 +149,8 @@ def _make_job(job_id: str = "job-123456789abc") -> BatchJob:
         aibrix={
             "model_template": {"name": "mock-template"},
             "planner_decision": {
-                "reservation_id": "reservation-1",
-                "reservation_resource_deadline": 3600,
+                "provision_id": "reservation-1",
+                "provision_resource_deadline": 3600,
                 "resource_details": [
                     {
                         "resource_type": "deployment",
@@ -316,7 +317,7 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
     driver.finalize_job = _finalize_job
 
     task = asyncio.create_task(driver.execute_job(job.job_id))
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), timeout=1)
     deleted = await driver._job_deleted_handler(job)
     assert deleted is True
     await task
