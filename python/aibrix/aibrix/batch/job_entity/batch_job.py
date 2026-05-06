@@ -66,6 +66,7 @@ class BatchJobErrorCode(str, Enum):
     INFERENCE_FAILED = "inference_failed"
     PREPARE_OUTPUT_ERROR = "prepare_output_failed"
     FINALIZING_ERROR = "finalizing_failed"
+    INVALID_DRIVER = "invalid_driver"
     UNKNOWN_ERROR = "unknown_error"
 
 

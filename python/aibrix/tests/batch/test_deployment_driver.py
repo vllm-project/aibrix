@@ -33,6 +33,7 @@ from aibrix.batch.job_entity import (
     ObjectMeta,
     TypeMeta,
 )
+from aibrix.batch.job_manager import JobManager
 from aibrix.batch.scheduler import JobScheduler
 from aibrix.context import InfrastructureContext
 
@@ -67,9 +68,17 @@ class FakeProgressManager:
     def __init__(self, job: BatchJob):
         self.job = job
         self.failed_messages: list[str] = []
+        self.validated_job_ids: list[str] = []
+        self.created_driver = None
 
     async def get_job(self, job_id: str) -> Optional[BatchJob]:
         return self.job if self.job.job_id == job_id else None
+
+    async def validate_job(self, job_id: str, inference_client=None) -> bool:
+        if self.job.job_id != job_id:
+            return False
+        self.validated_job_ids.append(job_id)
+        return True
 
     async def mark_job_failed(self, job_id: str, error):
         self.failed_messages.append(str(error))
@@ -141,6 +150,89 @@ class FakeRenderer:
         }
 
 
+@pytest.mark.asyncio
+async def test_kubernetes_service_inference_client_logs_single_warning_on_gateway_success(
+    monkeypatch,
+):
+    client = deployment_driver_module.KubernetesServiceInferenceClient(
+        core_v1_api=FakeCoreV1Api(),
+        namespace="default",
+        service_name="svc",
+        model_name="model-a",
+        service_port=8000,
+        base_url="http://svc.default.svc.cluster.local:8000",
+    )
+    warnings = []
+
+    def _warning(message, **kwargs):
+        warnings.append((message, kwargs))
+
+    monkeypatch.setattr(deployment_driver_module.logger, "warning", _warning)
+
+    def _proxy_fail(endpoint, request_data):
+        raise RuntimeError("proxy boom")
+
+    async def _gateway_success(endpoint, request_data):
+        return {"ok": True, "model": request_data["model"]}
+
+    client._proxy_inference_request = _proxy_fail
+    client._gateway_inference_request = _gateway_success
+
+    result = await client.inference_request("/v1/chat/completions", {"prompt": "hi"})
+
+    assert result == {"ok": True, "model": "model-a"}
+    assert len(warnings) == 1
+    assert warnings[0][0] == "Inference request succeeded via gateway after fallback"
+    assert warnings[0][1]["succeeded_via"] == "gateway"
+    assert warnings[0][1]["attempts_failed"] == ["service proxy failed: proxy boom"]
+
+
+@pytest.mark.asyncio
+async def test_kubernetes_service_inference_client_logs_single_warning_on_port_forward_success(
+    monkeypatch,
+):
+    client = deployment_driver_module.KubernetesServiceInferenceClient(
+        core_v1_api=FakeCoreV1Api(),
+        namespace="default",
+        service_name="svc",
+        model_name="model-a",
+        service_port=8000,
+        base_url="http://svc.default.svc.cluster.local:8000",
+    )
+    warnings = []
+
+    def _warning(message, **kwargs):
+        warnings.append((message, kwargs))
+
+    monkeypatch.setattr(deployment_driver_module.logger, "warning", _warning)
+
+    def _proxy_fail(endpoint, request_data):
+        raise RuntimeError("proxy boom")
+
+    async def _gateway_fail(endpoint, request_data):
+        raise RuntimeError("gateway boom")
+
+    async def _fallback_success(endpoint, request_data):
+        return {"ok": True, "model": request_data["model"]}
+
+    client._proxy_inference_request = _proxy_fail
+    client._gateway_inference_request = _gateway_fail
+    client._fallback_inference_request = _fallback_success
+
+    result = await client.inference_request("/v1/chat/completions", {"prompt": "hi"})
+
+    assert result == {"ok": True, "model": "model-a"}
+    assert len(warnings) == 1
+    assert (
+        warnings[0][0] == "Inference request succeeded via port-forward after fallback"
+    )
+    assert warnings[0][1]["succeeded_via"] == "port-forward"
+    assert warnings[0][1]["attempts_failed"] == [
+        "service proxy failed: proxy boom",
+        "gateway failed: gateway boom",
+    ]
+
+
 def _make_job(job_id: str = "job-123456789abc") -> BatchJob:
     spec = BatchJobSpec.from_strings(
         input_file_id="input-file-1",
@@ -183,8 +275,8 @@ def _make_infrastructure_context(
     apps_v1_api=object(), core_v1_api=object()
 ) -> InfrastructureContext:
     return InfrastructureContext(
-        template_registry=object(),
-        profile_registry=object(),
+        template_registry=None,
+        profile_registry=None,
         apps_v1_api=apps_v1_api,
         core_v1_api=core_v1_api,
     )
@@ -207,9 +299,7 @@ async def test_deployment_driver_creates_runtime_and_finalizes_with_temp_files()
     apps_api = FakeAppsV1Api()
     core_api = FakeCoreV1Api()
     driver = DeploymentDriver(
-        _make_infrastructure_context(
-            apps_v1_api=apps_api, core_v1_api=core_api
-        ),
+        _make_infrastructure_context(apps_v1_api=apps_api, core_v1_api=core_api),
         progress_manager=progress_manager,
         entity_manager=entity_manager,
         renderer=FakeRenderer(),
@@ -289,9 +379,7 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
     apps_api = FakeAppsV1Api()
     core_api = FakeCoreV1Api()
     driver = DeploymentDriver(
-        _make_infrastructure_context(
-            apps_v1_api=apps_api, core_v1_api=core_api
-        ),
+        _make_infrastructure_context(apps_v1_api=apps_api, core_v1_api=core_api),
         progress_manager=progress_manager,
         entity_manager=entity_manager,
         renderer=FakeRenderer(),
@@ -393,7 +481,6 @@ def test_create_job_driver_passes_infrastructure_context_to_deployment_driver(
         job=job,
     )
 
-
     assert captured["context"].apps_v1_api == "apps-api"
     assert captured["context"].core_v1_api == "core-api"
     assert captured["entity_manager"] is entity_manager
@@ -404,16 +491,16 @@ async def test_scheduler_uses_create_job_driver_for_deployment_jobs(monkeypatch)
     job = _make_job()
     entity_manager = FakeEntityManager()
     context = _make_infrastructure_context()
-    progress_manager = FakeProgressManager(job)
-    scheduler = JobScheduler(
-        context,
-        progress_manager,
-        entity_manager,
-        1
-    )
+    progress_manager = JobManager(context)
+    progress_manager._job_entity_manager = entity_manager
+    assert job.job_id is not None
+    progress_manager._pending_jobs[job.job_id] = job
     created = {}
 
     class _Driver:
+        async def validate_job(self, job_arg):
+            return None
+
         async def execute_job(self, job_id):
             created["job_id"] = job_id
 
@@ -422,12 +509,14 @@ async def test_scheduler_uses_create_job_driver_for_deployment_jobs(monkeypatch)
         progress_manager_arg,
         entity_manager_arg,
         job_arg,
+        inference_client_arg=None,
         **kwargs,
     ):
         created["context"] = context_arg
         created["progress_manager"] = progress_manager_arg
         created["entity_manager"] = entity_manager_arg
         created["job"] = job_arg
+        created["inference_client"] = inference_client_arg
         created["kwargs"] = kwargs
         return _Driver()
 
@@ -435,12 +524,14 @@ async def test_scheduler_uses_create_job_driver_for_deployment_jobs(monkeypatch)
         return job.job_id
 
     monkeypatch.setattr(
-        "aibrix.batch.scheduler.create_job_driver",
+        "aibrix.batch.job_manager.create_job_driver",
         _create_job_driver,
     )
+    await progress_manager.validate_job(job.job_id)
+    scheduler = JobScheduler(context, progress_manager, entity_manager, 1)
     monkeypatch.setattr(scheduler, "round_robin_get_job", _one_job)
 
-    task = asyncio.create_task(scheduler.jobs_running_loop(None))
+    task = asyncio.create_task(scheduler.jobs_running_loop())
     try:
         for _ in range(20):
             if created.get("job_id") == job.job_id:
@@ -449,8 +540,8 @@ async def test_scheduler_uses_create_job_driver_for_deployment_jobs(monkeypatch)
         assert created["context"] is context
         assert created["progress_manager"] is progress_manager
         assert created["entity_manager"] is entity_manager
-        assert created["job"] is job
-        assert created["kwargs"]["inference_client"] is None
+        assert created["job"].job_id == job.job_id
+        assert created["inference_client"] is None
         assert created["job_id"] == job.job_id
     finally:
         task.cancel()

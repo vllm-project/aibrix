@@ -18,8 +18,6 @@ import sys
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
-from pandas.core.strings.accessor import str_extractall
-
 import uvicorn
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -53,6 +51,7 @@ router = APIRouter()
 _REGISTRY_PROVIDER_CONFIGMAP = "configmap"
 _MAX_LOGGED_BODY_BYTES = 8192
 
+
 def _require_setting(name: str, value: Any) -> Any:
     if value is None or value == "":
         raise RuntimeError(f"{name} environment variable is required")
@@ -72,22 +71,24 @@ def _redis_job_cache_from_env() -> RedisJobCache:
         host=_require_setting("REDIS_HOST", envs.STORAGE_REDIS_HOST),
         port=int(_require_setting("REDIS_PORT", envs.STORAGE_REDIS_PORT)),
         db=int(_require_setting("REDIS_DB", envs.STORAGE_REDIS_DB)),
-        password=_require_setting("REDIS_PASSWORD", envs.STORAGE_REDIS_PASSWORD),
-        key_prefix=_require_setting("DB_REDIS_PREFIX", envs.DB_REDIS_PREFIX),
+        password=envs.STORAGE_REDIS_PASSWORD,
+        key_prefix=f"{envs.DB_REDIS_PREFIX}batch_jobs",
     )
 
 
-def _load_batch_k8s_context(args, context: Optional[InfrastructureContext] = None) -> InfrastructureContext:
+def _load_batch_k8s_context(
+    args, context: Optional[InfrastructureContext] = None
+) -> InfrastructureContext:
     if context is None:
         context = InfrastructureContext()
 
     if args.dry_run:
         return context
-    
+
     if not args.disable_k8s_support:
         context.core_v1_api = k8s_client.CoreV1Api()
         context.apps_v1_api = k8s_client.AppsV1Api()
-    
+
     if args.registry_provider == _REGISTRY_PROVIDER_CONFIGMAP:
         registry_ns = getattr(args, "k8s_namespace", "default")
         # Build ConfigMap-driven registries. Both ConfigMaps must exist in
@@ -96,12 +97,17 @@ def _load_batch_k8s_context(args, context: Optional[InfrastructureContext] = Non
         # so an admin who has not yet applied templates gets a
         # helpful render-time error rather than a startup crash.
         assert context.core_v1_api is not None
-        context.template_registry = k8s_template_registry(context.core_v1_api, namespace=registry_ns)
-        context.profile_registry = k8s_profile_registry(context.core_v1_api, namespace=registry_ns)
+        context.template_registry = k8s_template_registry(
+            context.core_v1_api, namespace=registry_ns
+        )
+        context.profile_registry = k8s_profile_registry(
+            context.core_v1_api, namespace=registry_ns
+        )
         context.template_registry.reload()
         context.profile_registry.reload()
 
     return context
+
 
 def _pretty_body(b: bytes) -> str:
     """Indent JSON bodies for readable traffic dumps; truncate oversized."""
@@ -368,11 +374,19 @@ def build_app(args: argparse.Namespace, params={}):
         job_entity_manager: Optional[JobEntityManager] = None
 
         # Registries are now moved to infrastructure_context for sharing between components
-        # The construction of context should before any k8s dependent compenents' (e.g., JobCache) 
+        # The construction of context should before any k8s dependent compenents' (e.g., JobCache)
         # initialization.
         infrastructure_context = _load_batch_k8s_context(args)
         app.state.template_registry = infrastructure_context.template_registry
         app.state.profile_registry = infrastructure_context.profile_registry
+
+        if not args.dry_run:
+            if infrastructure_context is None:
+                raise RuntimeError("Kubernetes batch context is required")
+            if infrastructure_context.template_registry is None:
+                raise RuntimeError("template_registry is required")
+            if infrastructure_context.profile_registry is None:
+                raise RuntimeError("profile_registry is required")
 
         if args.enable_k8s_job:
             # BatchJob documents are persisted to the batch metastore
@@ -384,9 +398,6 @@ def build_app(args: argparse.Namespace, params={}):
                 "BatchJob metastore persistence enabled",
                 metastore_type=settings.METASTORE_TYPE.value,
             )
-
-            if infrastructure_context is None:
-                raise RuntimeError("Kubernetes batch context is required")
             job_entity_manager = JobCache(
                 template_registry=infrastructure_context.template_registry,
                 profile_registry=infrastructure_context.profile_registry,
@@ -478,7 +489,7 @@ def main():
         help=(
             "Disable inference endpoint so that batch api can not invoke inference engine direcly"
             "This can be useful if extra_body.aibrix.planner_decision is a must and avoid setting INFERENCE_ENGINE_ENDPOINT"
-        )
+        ),
     )
     parser.add_argument(
         "--enable-k8s-job",
@@ -583,7 +594,11 @@ def main():
     logging_basic_config(settings)
     logger = init_logger(__name__)  # Reset logger
 
-    if args.enable_k8s_job or args.registry_provider == "configmap" or not args.disable_k8s_support:
+    if (
+        args.enable_k8s_job
+        or args.registry_provider == "configmap"
+        or not args.disable_k8s_support
+    ):
         args.disable_k8s_support = False
         try:
             config.load_incluster_config()

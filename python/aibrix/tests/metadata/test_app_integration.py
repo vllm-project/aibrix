@@ -134,7 +134,9 @@ def test_build_app_with_mongo_job(monkeypatch):
         k8s_job_patch=None,
         dry_run=True,
     )
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_URI", "mongodb://mongo:27017")
+    monkeypatch.setattr(
+        "aibrix.metadata.app.envs.DB_MONGO_URI", "mongodb://mongo:27017"
+    )
     monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_DATABASE", "aibrix")
     monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_COLLECTION", "batch_jobs")
 
@@ -166,7 +168,9 @@ def test_build_app_with_redis_job_missing_env(monkeypatch):
     monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PASSWORD", None)
     monkeypatch.setattr("aibrix.metadata.app.envs.DB_REDIS_PREFIX", None)
 
-    with pytest.raises(RuntimeError, match="REDIS_HOST environment variable is required"):
+    with pytest.raises(
+        RuntimeError, match="REDIS_HOST environment variable is required"
+    ):
         build_app(args)
 
 
@@ -185,7 +189,9 @@ def test_build_app_with_mongo_job_missing_env(monkeypatch):
     monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_DATABASE", None)
     monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_COLLECTION", None)
 
-    with pytest.raises(RuntimeError, match="DB_MONGO_URI environment variable is required"):
+    with pytest.raises(
+        RuntimeError, match="DB_MONGO_URI environment variable is required"
+    ):
         build_app(args)
 
 

@@ -16,7 +16,12 @@ from typing import Optional
 
 import aibrix.batch.constant as constant
 from aibrix.batch.job_driver.local_driver import InferenceEngineClient
-from aibrix.batch.job_entity import BatchJob, JobEntityManager
+from aibrix.batch.job_entity import (
+    BatchJob,
+    BatchJobError,
+    BatchJobErrorCode,
+    JobEntityManager,
+)
 from aibrix.context import InfrastructureContext
 
 from .deployment_driver import DeploymentDriver
@@ -32,7 +37,7 @@ def create_job_driver(
     entity_manager: Optional[JobEntityManager] = None,
     job: Optional[BatchJob] = None,
     inference_client: Optional[InferenceEngineClient] = None,
-) -> Optional[JobDriver]:
+) -> JobDriver:
     if job is None:
         return LocalJobDriver(progress_manager, inference_client)
 
@@ -60,5 +65,8 @@ def create_job_driver(
 
     if inference_client is not None:
         return LocalJobDriver(progress_manager, inference_client)
-    
-    raise RuntimeError("No job driver avaiable, please specify AibrixMetadata, JobEntityManager with scheduling, or INFERENCE_ENGINE_ENDPOINT(env).")
+
+    raise BatchJobError(
+        BatchJobErrorCode.INVALID_DRIVER,
+        "No job driver avaiable, please specify AibrixMetadata, JobEntityManager with scheduling, or INFERENCE_ENGINE_ENDPOINT(env).",
+    )

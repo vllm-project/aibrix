@@ -91,7 +91,7 @@ class BatchDriver:
         elif llm_engine_endpoint is not None:
             self._inference_client = ProxyInferenceEngineClient(llm_engine_endpoint)
         else:
-            # No client configured. Acceptable now. The error throwing is delayed 
+            # No client configured. Acceptable now. The error throwing is delayed
             # on a per BatchJob level. Here list the acceptable cases:
             # 1. The job_entity_manager comes with scheduler feature (is_scheduler_enabled(), e.g., JobCache)
             # 2. The BatchJob.spec.aibrix.planner_decision.resource_details[].resource_type is specified.

@@ -14,9 +14,9 @@
 
 from __future__ import annotations
 
+import uuid
 from copy import deepcopy
 from typing import Any, Dict, Optional
-import uuid
 
 from aibrix.batch.template import BatchProfile, EngineType, ModelDeploymentTemplate
 from aibrix.downloader.utils import infer_model_name
@@ -48,7 +48,7 @@ class DeploymentManifestRenderer(_RendererSupport):
         deployment_name: Optional[str] = None,
         template_version: Optional[str] = None,
         replicas: Optional[int] = None,
-        gpu_type: Optional[str] = None
+        gpu_type: Optional[str] = None,
     ) -> Dict[str, Dict[str, Any]]:
         template = self._resolve_template(template_name, template_version)
         self._validate_template(template)
@@ -96,13 +96,15 @@ class DeploymentManifestRenderer(_RendererSupport):
             }
         ]
         if self._needs_model_download(template):
-            volumes.append({
-                "name": _MODEL_VOLUME_NAME, 
-                "hostPath": {
-                    "path": f"/root{_MODEL_MOUNT_PATH}",
-                    "type": "DirectoryOrCreate"
+            volumes.append(
+                {
+                    "name": _MODEL_VOLUME_NAME,
+                    "hostPath": {
+                        "path": f"/root{_MODEL_MOUNT_PATH}",
+                        "type": "DirectoryOrCreate",
+                    },
                 }
-            })          
+            )
         return {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
@@ -113,13 +115,11 @@ class DeploymentManifestRenderer(_RendererSupport):
             },
             "spec": {
                 "replicas": replicas,
-                "selector": {
-                    "matchLabels": labels["selector"]
-                },
+                "selector": {"matchLabels": labels["selector"]},
                 "template": {
                     "metadata": {
                         "labels": labels["pod"],
-                        "annotations": self._prometheus_annotations()
+                        "annotations": self._prometheus_annotations(),
                     },
                     "spec": {
                         "containers": (
@@ -210,10 +210,7 @@ class DeploymentManifestRenderer(_RendererSupport):
         port = self._resolve_engine_port(template_for_engine)
         engine_container = self._build_engine_container(template_for_engine, port)
         volumes = engine_container.setdefault("volumeMounts", [])
-        volumes.append({
-            "name": _DSHM_VOLUME_NAME,
-            "mountPath": _DSHM_MOUNT_PATH
-        })
+        volumes.append({"name": _DSHM_VOLUME_NAME, "mountPath": _DSHM_MOUNT_PATH})
         if self._needs_model_download(template):
             volumes.append(
                 {
@@ -243,7 +240,7 @@ class DeploymentManifestRenderer(_RendererSupport):
                 "labels": {"prometheus-discovery": "true"},
                 "annotations": self._prometheus_annotations(),
                 "name": service_name,
-                "namespace": deployment["metadata"].get("namespace")
+                "namespace": deployment["metadata"].get("namespace"),
             },
             "spec": {
                 "selector": {_AIBRIX_MODEL_NAME_KEY: service_name},

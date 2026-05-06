@@ -16,6 +16,8 @@ from typing import List, Optional, Protocol, Tuple
 
 from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobStatus
 
+from .inference_client import InferenceEngineClient
+
 
 class JobProgressManager(Protocol):
     """Protocol for managing job progress and status tracking.
@@ -40,7 +42,9 @@ class JobProgressManager(Protocol):
         """Get the current status of a job."""
         ...
 
-    async def validate_job(self, job_id) -> bool:
+    async def validate_job(
+        self, job_id: str, inference_client: Optional[InferenceEngineClient] = None
+    ) -> bool:
         """
         This interface should be called by scheduler.
         User is not allowed to choose a job to be scheduled.

@@ -18,7 +18,7 @@ class MongoJobCache(JobEntityManager):
         mongo_collection: Any = None,
     ) -> None:
         super().__init__()
-        
+
         self.active_jobs: Dict[str, BatchJob] = {}
         self._job_committed_handler: Optional[
             Callable[[BatchJob], Coroutine[Any, Any, bool]]

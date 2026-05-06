@@ -39,7 +39,11 @@ class RedisJobCache(JobEntityManager):
         job_ids = self._client.zrevrange(self._index_key, 0, -1)
         jobs: List[BatchJob] = []
         for raw_job_id in job_ids:
-            job_id = raw_job_id.decode("utf-8") if isinstance(raw_job_id, bytes) else raw_job_id
+            job_id = (
+                raw_job_id.decode("utf-8")
+                if isinstance(raw_job_id, bytes)
+                else raw_job_id
+            )
             payload = self._client.get(self._job_key(job_id))
             if payload is None:
                 continue
@@ -102,14 +106,17 @@ class RedisJobCache(JobEntityManager):
         if job.job_id is None:
             raise ValueError("job_id is required")
         stored_job = job.model_copy(deep=True)
+        stored_job_id = stored_job.job_id
+        if stored_job_id is None:
+            raise ValueError("job_id is required")
         stored_job.metadata.resource_version = self._next_resource_version(old_job)
         payload = stored_job.model_dump_json(by_alias=True)
-        self._client.set(self._job_key(stored_job.job_id), payload)
+        self._client.set(self._job_key(stored_job_id), payload)
         self._client.zadd(
             self._index_key,
-            {stored_job.job_id: self._created_at_score(stored_job)},
+            {stored_job_id: self._created_at_score(stored_job)},
         )
-        self.active_jobs[stored_job.job_id] = stored_job
+        self.active_jobs[stored_job_id] = stored_job
         return stored_job
 
     def _job_key(self, job_id: str) -> str:

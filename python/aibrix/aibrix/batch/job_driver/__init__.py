@@ -15,12 +15,12 @@
 from .deployment_driver import DeploymentDriver
 from .driver import JobDriver
 from .driver_factory import create_job_driver
-from .local_driver import (
+from .inference_client import (
     EchoInferenceEngineClient,
     InferenceEngineClient,
-    LocalJobDriver,
     ProxyInferenceEngineClient,
 )
+from .local_driver import LocalJobDriver
 from .openai_driver import OpenAIJobDriver
 from .progress_manager import JobProgressManager
 

@@ -17,6 +17,7 @@ import copy
 import json
 import os
 import uuid
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -106,13 +107,13 @@ def build_batch_request(
     aibrix_template: str | None = None,
     aibrix_profile: str | None = None,
     resource_type: str | None = None,
-) -> dict:
-    request = {
+) -> dict[str, Any]:
+    request: dict[str, Any] = {
         "input_file_id": input_file_id,
         "endpoint": endpoint,
         "completion_window": "24h",
     }
-    aibrix: dict = {}
+    aibrix: dict[str, Any] = {}
     if aibrix_template:
         aibrix["model_template"] = {"name": aibrix_template}
     if aibrix_profile:
@@ -379,6 +380,7 @@ async def test_openai_batch_api_e2e():
         )
         await app.state.batch_driver.clear_job(batch_id)
 
+
 @pytest.mark.asyncio
 async def test_metadata_server_workflow_renders_worker_env_from_s3_and_cluster_redis(
     test_app,
@@ -402,9 +404,8 @@ async def test_metadata_server_workflow_renders_worker_env_from_s3_and_cluster_r
         job_name="batch-env-check",
     )
     worker_env = {
-        item["name"]: item for item in manifest["spec"]["template"]["spec"]["containers"][
-            0
-        ]["env"]
+        item["name"]: item
+        for item in manifest["spec"]["template"]["spec"]["containers"][0]["env"]
     }
 
     assert worker_env["STORAGE_TYPE"]["value"] == "s3"
@@ -418,6 +419,7 @@ async def test_metadata_server_workflow_renders_worker_env_from_s3_and_cluster_r
         == "aibrix-redis-master.aibrix-system.svc.cluster.local"
     )
     assert worker_env["REDIS_PORT"]["value"] == "6379"
+
 
 @pytest.mark.asyncio
 async def test_openai_batch_api_metadata_server_workflow(test_app):
@@ -713,6 +715,7 @@ async def test_openai_batch_api_metadata_server_workflow_with_redis_cache_and_de
                     if ex.status != 404:
                         raise
             await app.state.batch_driver.clear_job(batch_id)
+
 
 # ---- Multi-endpoint parametrized tests ----
 

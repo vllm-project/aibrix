@@ -14,8 +14,21 @@
 
 from typing import Protocol, runtime_checkable
 
+from aibrix.batch.job_entity import BatchJob
+
 
 @runtime_checkable
 class JobDriver(Protocol):
-    async def execute_job(self, job_id):
+    async def validate_job(self, job: BatchJob) -> None:
+        """Validate the job before scheduling.
+        Raises:
+            BatchJobError: If the job is invalid.
+        """
+        pass
+
+    async def execute_job(self, job_id: str) -> None:
+        """Execute the job.
+        Raises:
+            RuntimeError: If something prevent the job from executing.
+        """
         pass

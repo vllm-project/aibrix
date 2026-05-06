@@ -52,7 +52,9 @@ async def test_run_returns_failure_when_execute_batch_job_fails(monkeypatch):
     )
 
     monkeypatch.setattr(worker, "load_job_from_env", lambda: batch_job)
-    monkeypatch.setattr(worker, "wait_for_in_progress", AsyncMock(return_value=batch_job))
+    monkeypatch.setattr(
+        worker, "wait_for_in_progress", AsyncMock(return_value=batch_job)
+    )
     worker.health_checker = SimpleNamespace(wait_for_ready=AsyncMock(return_value=True))
     monkeypatch.setattr(
         worker,

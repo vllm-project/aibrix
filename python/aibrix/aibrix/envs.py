@@ -108,7 +108,7 @@ STORAGE_REDIS_DB = int(os.getenv("REDIS_DB", 0))
 STORAGE_REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 # Database Redis Envs, other settings simply reuse Storage Redis Envs
-DB_REDIS_PREFIX = os.getenv("DB_REDIS_PREFIX")
+DB_REDIS_PREFIX = os.getenv("DB_REDIS_PREFIX", "")
 
 # Database Mongo Envs
 DB_MONGO_URI = os.getenv("DB_MONGO_URI")

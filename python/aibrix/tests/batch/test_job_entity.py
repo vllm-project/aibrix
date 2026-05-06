@@ -286,11 +286,15 @@ class TestBatchJobEntityCreation:
         await cache.submit_job("session-1", spec, job_name="batch-test")
         await asyncio.sleep(0)
 
-        pod_annotations = captured["body"]["spec"]["template"]["metadata"]["annotations"]
+        pod_annotations = captured["body"]["spec"]["template"]["metadata"][
+            "annotations"
+        ]
         assert captured["namespace"] == "default"
         assert captured["async_req"] is True
         assert captured["body"]["metadata"]["name"] == "batch-test"
-        assert pod_annotations[JobAnnotationKey.MODEL_TEMPLATE_NAME.value] == "mock-vllm"
+        assert (
+            pod_annotations[JobAnnotationKey.MODEL_TEMPLATE_NAME.value] == "mock-vllm"
+        )
         assert pod_annotations[JobAnnotationKey.PROFILE_NAME.value] == "unittest"
         assert captured["body"]["spec"]["suspend"] is True
         assert (

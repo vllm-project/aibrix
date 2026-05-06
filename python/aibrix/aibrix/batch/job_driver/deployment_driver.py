@@ -70,6 +70,7 @@ class KubernetesServiceInferenceClient:
     async def inference_request(self, endpoint: str, request_data):
         request_payload = dict(request_data)
         request_payload["model"] = self._model_name
+        attempt_failures: list[str] = []
         try:
             return await asyncio.to_thread(
                 self._proxy_inference_request,
@@ -77,22 +78,28 @@ class KubernetesServiceInferenceClient:
                 request_payload,
             )
         except Exception as ex:
-            logger.warning(
-                "Service proxy request failed, falling back to gateway",
-                service_name=self._service_name,
-                namespace=self._namespace,
-                error=str(ex),
-            )  # type: ignore[call-arg]
+            attempt_failures.append(f"service proxy failed: {ex}")
             try:
-                return await self._gateway_inference_request(endpoint, request_payload)
-            except Exception as gateway_ex:
+                result = await self._gateway_inference_request(endpoint, request_payload)
                 logger.warning(
-                    "Gateway request failed, falling back to port-forward",
+                    "Inference request succeeded via gateway after fallback",
                     service_name=self._service_name,
                     namespace=self._namespace,
-                    error=str(gateway_ex),
+                    succeeded_via="gateway",
+                    attempts_failed=attempt_failures,
                 )  # type: ignore[call-arg]
-                return await self._fallback_inference_request(endpoint, request_payload)
+                return result
+            except Exception as gateway_ex:
+                attempt_failures.append(f"gateway failed: {gateway_ex}")
+                result = await self._fallback_inference_request(endpoint, request_payload)
+                logger.warning(
+                    "Inference request succeeded via port-forward after fallback",
+                    service_name=self._service_name,
+                    namespace=self._namespace,
+                    succeeded_via="port-forward",
+                    attempts_failed=attempt_failures,
+                )  # type: ignore[call-arg]
+                return result
 
     def close(self) -> None:
         if self._port_forward_process is None:
@@ -474,8 +481,6 @@ class deploymentJobDriver(LocalJobDriver):
         ):
             job = await self.finalize_job(job)
 
-        if job.status.failed:
-            raise RuntimeError(job.status.errors)
         logger.info("Execute deployment-backed job successfully.", job_id=job_id)  # type: ignore[call-arg]
         await self._snapshot_usage_to_status(job_id)
         self._drop_usage_state(job_id)

@@ -31,6 +31,7 @@ from aibrix.batch.job_entity import (
     BatchJobState,
     BatchJobStatus,
 )
+from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -291,7 +292,9 @@ class BatchWorker:
                 job_exists=job is not None,
                 state=job.status.state.value if job else None,
                 failed=job.status.failed if job else None,
-                condition=job.status.condition.value if job and job.status.condition else None,
+                condition=job.status.condition.value
+                if job and job.status.condition
+                else None,
             )
             if job and job.status.finished:
                 logger.info(
@@ -338,7 +341,10 @@ class BatchWorker:
                 return 1
 
             # Step 3: Initialize BatchDriver
-            self.driver = BatchDriver(llm_engine_endpoint=self.llm_engine_base_url)
+            self.driver = BatchDriver(
+                context=InfrastructureContext(),
+                llm_engine_endpoint=self.llm_engine_base_url,
+            )
             await self.driver.start()
             logger.info("BatchDriver initialized successfully")
 

@@ -18,8 +18,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from aibrix.batch.job_driver import (
+    InferenceEngineClient,
+    JobDriver,
     JobProgressManager,
-    LocalJobDriver,
     create_job_driver,
 )
 from aibrix.batch.job_entity import (
@@ -96,6 +97,7 @@ class JobMetaInfo(BatchJob):
         self._request_progress_bits: list[bool] = [
             False
         ] * job.status.request_counts.total
+        self._job_driver: Optional[JobDriver] = None
 
     @property
     def batch_job(self) -> BatchJob:
@@ -105,6 +107,10 @@ class JobMetaInfo(BatchJob):
             spec=self.spec,
             status=self.status,
         )
+
+    @property
+    def job_driver(self) -> Optional[JobDriver]:
+        return self._job_driver
 
     def set_request_executed(self, req_id):
         # This marks the request successfully executed.
@@ -238,9 +244,7 @@ class JobManager(JobProgressManager):
         BatchJobState.FINALIZED: [],  # Terminal state
     }
 
-    def __init__(
-        self, context: InfrastructureContext
-    ) -> None:
+    def __init__(self, context: InfrastructureContext) -> None:
         """
         This manages jobs in three categorical job pools.
         1. _pending_jobs are jobs that are not scheduled yet
@@ -612,7 +616,7 @@ class JobManager(JobProgressManager):
                     self._job_entity_manager,
                     job,
                 )
-                await job_driver.execute_job(job.job_id)
+                await job_driver.execute_job(job_id)
                 # Leave job_updated_handler to update job location in queues
             except Exception as e:
                 logger.error("Job execution failed", job_id=job_id, exc_info=True)  # type: ignore[call-arg]
@@ -750,7 +754,9 @@ class JobManager(JobProgressManager):
 
         return all_jobs
 
-    async def validate_job(self, job_id: str) -> bool:
+    async def validate_job(
+        self, job_id: str, inference_client: Optional[InferenceEngineClient] = None
+    ) -> bool:
         """
         This interface should be called by scheduler.
         User is not allowed to choose a job to be scheduled.
@@ -785,7 +791,14 @@ class JobManager(JobProgressManager):
         )  # type: ignore[call-arg]
 
         try:
-            job_driver = LocalJobDriver(self)
+            job_driver = create_job_driver(
+                self._context,
+                self,
+                self._job_entity_manager,
+                meta_data,
+                inference_client,
+            )
+            meta_data._job_driver = job_driver
             await job_driver.validate_job(meta_data.batch_job)
             # But we do not update state for in-progress job.
             if meta_data.status.state == BatchJobState.VALIDATING:
