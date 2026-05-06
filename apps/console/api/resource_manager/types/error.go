@@ -16,6 +16,13 @@ limitations under the License.
 
 package types
 
+import "fmt"
+
+var (
+	ErrInvalidArgs    = fmt.Errorf("invalid args")
+	ErrNotImplemented = fmt.Errorf("not implemented")
+)
+
 // ProvisionerError represents a provisioning error.
 type ProvisionerError struct {
 	Message string `json:"message"`
@@ -37,8 +44,7 @@ var (
 	// ErrUnsupportedProvisioner is returned when a provisioner type is not supported.
 	ErrUnsupportedProvisioner = &ProvisionerError{Message: "unsupported provisioner type"}
 
-	// ErrInvalidCredential is returned when credentials are invalid.
-	ErrInvalidCredential = &ProvisionerError{Message: "invalid credential"}
+	ErrProvisionNotFound = &ProvisionerError{Message: "provision not found"}
 
 	// ErrQuotaExceeded is returned when quota limits are exceeded.
 	ErrQuotaExceeded = &ProvisionerError{Message: "quota exceeded"}
@@ -63,4 +69,26 @@ func (e *CatalogError) IsRetryable() bool {
 var (
 	// ErrUnsupportedCatalog is returned when a catalog type is not supported.
 	ErrUnsupportedCatalog = &CatalogError{Message: "unsupported catalog type"}
+)
+
+type ClientsetError struct {
+	Message string `json:"message"`
+	Code    string `json:"code,omitempty"`
+	Retry   bool   `json:"retry,omitempty"` // Whether the operation can be retried
+}
+
+func (e *ClientsetError) Error() string {
+	return e.Message
+}
+
+// IsRetryable returns true if the error can be retried.
+func (e *ClientsetError) IsRetryable() bool {
+	return e.Retry
+}
+
+var (
+	// ErrCredentialIsNil is returned when credential is nil.
+	ErrCredentialIsNil = &ClientsetError{Message: "credential is nil"}
+	// ErrInvalidCredential is returned when credentials are invalid.
+	ErrInvalidCredential = &ClientsetError{Message: "invalid credential"}
 )

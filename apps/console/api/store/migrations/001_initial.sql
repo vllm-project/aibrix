@@ -171,6 +171,6 @@ CREATE TABLE IF NOT EXISTS provision_results (
     updated_at        TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted           BOOLEAN       NOT NULL DEFAULT FALSE,
 
-    INDEX idx_provision_results_provision_id (provision_id),
+    UNIQUE INDEX idx_provision_results_provision_id (provision_id),
     INDEX idx_provision_results_status_deleted (status, deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

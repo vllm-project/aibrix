@@ -44,7 +44,7 @@ type ResourceCatalog interface {
 	ListRegions(ctx context.Context) ([]types.RegionSpec, error)
 
 	// ListInstanceTypes lists available instance types for the catalog.
-	ListInstanceTypes(ctx context.Context) ([]types.InstanceTypeSpec, error)
+	ListInstanceTypes(ctx context.Context, region *types.RegionSpec) ([]types.InstanceTypeSpec, error)
 
 	// ListResources lists available resources matching the options.
 	ListResources(ctx context.Context, opts *ResourceListOptions) ([]Resource, error)

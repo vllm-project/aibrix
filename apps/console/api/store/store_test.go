@@ -18,6 +18,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -28,6 +29,10 @@ import (
 )
 
 const testDeploymentName = "gsm-8k-20260118"
+
+func ptrStatus(s types.ProvisionStatus) *types.ProvisionStatus {
+	return &s
+}
 
 //nolint:gocyclo // Test function with many sub-tests
 func TestMemoryStore(t *testing.T) {
@@ -879,7 +884,7 @@ func TestMemoryStore(t *testing.T) {
 				t.Fatalf("InsertProvision for get test failed: %v", err)
 			}
 
-			retrieved, err := s.GetProvision(ctx, "idem-key-2")
+			retrieved, err := s.GetProvision(ctx, "prov-456")
 			if err != nil {
 				t.Fatalf("GetProvision failed: %v", err)
 			}
@@ -892,7 +897,7 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("GetProvision_NotFound", func(t *testing.T) {
-			_, err := s.GetProvision(ctx, "non-existent-idem-key")
+			_, err := s.GetProvision(ctx, "non-existent-provision-id")
 			if err == nil {
 				t.Fatal("expected error for non-existent provision")
 			}
@@ -911,7 +916,7 @@ func TestMemoryStore(t *testing.T) {
 				t.Fatalf("InsertProvision failed: %v", err)
 			}
 
-			exists, err := s.ExistsProvision(ctx, "idem-key-3")
+			exists, err := s.ExistsProvision(ctx, "prov-789")
 			if err != nil {
 				t.Fatalf("ExistsProvision failed: %v", err)
 			}
@@ -919,7 +924,7 @@ func TestMemoryStore(t *testing.T) {
 				t.Error("expected provision to exist")
 			}
 
-			exists, err = s.ExistsProvision(ctx, "non-existent")
+			exists, err = s.ExistsProvision(ctx, "non-existent-provision-id")
 			if err != nil {
 				t.Fatalf("ExistsProvision failed: %v", err)
 			}
@@ -937,12 +942,12 @@ func TestMemoryStore(t *testing.T) {
 				t.Fatalf("InsertProvision failed: %v", err)
 			}
 
-			err := s.UpdateProvisionStatus(ctx, "idem-key-update", types.ProvisionStatusRunning)
+			err := s.UpdateProvisionStatus(ctx, "prov-update", types.ProvisionStatusRunning)
 			if err != nil {
 				t.Fatalf("UpdateProvisionStatus failed: %v", err)
 			}
 
-			retrieved, err := s.GetProvision(ctx, "idem-key-update")
+			retrieved, err := s.GetProvision(ctx, "prov-update")
 			if err != nil {
 				t.Fatalf("GetProvision after update failed: %v", err)
 			}
@@ -960,13 +965,13 @@ func TestMemoryStore(t *testing.T) {
 				t.Fatalf("InsertProvision failed: %v", err)
 			}
 
-			err := s.DeleteProvision(ctx, "idem-key-delete")
+			err := s.DeleteProvision(ctx, "prov-delete")
 			if err != nil {
 				t.Fatalf("DeleteProvision failed: %v", err)
 			}
 
 			// Should not exist anymore
-			exists, _ := s.ExistsProvision(ctx, "idem-key-delete")
+			exists, _ := s.ExistsProvision(ctx, "prov-delete")
 			if exists {
 				t.Error("expected provision to be deleted")
 			}
@@ -984,7 +989,7 @@ func TestMemoryStore(t *testing.T) {
 				}
 			}
 
-			provisions, err := s.ListProvisions(ctx, nil, 0, 10)
+			provisions, err := s.ListProvisions(ctx, &types.ListOptions{Limit: 10})
 			if err != nil {
 				t.Fatalf("ListProvisions failed: %v", err)
 			}
@@ -994,8 +999,7 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("ListProvisions_WithStatus", func(t *testing.T) {
-			status := types.ProvisionStatusRunning
-			provisions, err := s.ListProvisions(ctx, &status, 0, 10)
+			provisions, err := s.ListProvisions(ctx, &types.ListOptions{Status: ptrStatus(types.ProvisionStatusRunning), Limit: 10})
 			if err != nil {
 				t.Fatalf("ListProvisions with status failed: %v", err)
 			}
@@ -1003,6 +1007,57 @@ func TestMemoryStore(t *testing.T) {
 				if p.Status != types.ProvisionStatusRunning {
 					t.Errorf("expected running status, got %q", p.Status)
 				}
+			}
+		})
+
+		t.Run("ListProvisions_WithRegions", func(t *testing.T) {
+			regionA := types.RegionSpec{Kubernetes: &types.KubernetesRegion{Context: "ctx-a", Namespace: "ns-a"}}
+			regionB := types.RegionSpec{Kubernetes: &types.KubernetesRegion{Context: "ctx-b", Namespace: "ns-b"}}
+
+			regionABytes, err := json.Marshal(regionA)
+			if err != nil {
+				t.Fatalf("marshal regionA failed: %v", err)
+			}
+			regionBBytes, err := json.Marshal(regionB)
+			if err != nil {
+				t.Fatalf("marshal regionB failed: %v", err)
+			}
+
+			resultA := &types.ProvisionResult{
+				ProvisionID: "prov-region-a",
+				Status:      types.ProvisionStatusPending,
+				Region:      string(regionABytes),
+			}
+			if err := s.InsertProvision(ctx, "idem-key-region-a", resultA); err != nil {
+				t.Fatalf("InsertProvision regionA failed: %v", err)
+			}
+
+			resultB := &types.ProvisionResult{
+				ProvisionID: "prov-region-b",
+				Status:      types.ProvisionStatusPending,
+				Region:      string(regionBBytes),
+			}
+			if err := s.InsertProvision(ctx, "idem-key-region-b", resultB); err != nil {
+				t.Fatalf("InsertProvision regionB failed: %v", err)
+			}
+
+			regions := []types.RegionSpec{regionA}
+			provisions, err := s.ListProvisions(ctx, &types.ListOptions{Regions: &regions, Limit: 20})
+			if err != nil {
+				t.Fatalf("ListProvisions with regions failed: %v", err)
+			}
+
+			foundA := false
+			for _, p := range provisions {
+				if p.ProvisionID == "prov-region-a" {
+					foundA = true
+				}
+				if p.ProvisionID == "prov-region-b" {
+					t.Fatalf("unexpected provision from non-matching region: %s", p.ProvisionID)
+				}
+			}
+			if !foundA {
+				t.Fatalf("expected provision prov-region-a in filtered result")
 			}
 		})
 	})

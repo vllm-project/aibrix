@@ -40,9 +40,3 @@ type Provisioner interface {
 	// Type returns the resource provision type
 	Type() types.ResourceProvisionType
 }
-
-// CredentialValidator provides credential validation methods.
-type CredentialValidator interface {
-	// Validate validates the credentials and returns an error if invalid.
-	Validate(ctx context.Context, credential *types.ResourceCredential) error
-}

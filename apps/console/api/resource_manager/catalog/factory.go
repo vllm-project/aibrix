@@ -14,22 +14,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package types
+package catalog
 
-// ListOptions contains options for listing provisions.
-type ListOptions struct {
-	// ProvisionIDs filters by provision IDs.
-	ProvisionIDs *[]string `json:"provisionIDs,omitempty"`
+import (
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
+)
 
-	// Regions filters by regions.
-	Regions *[]RegionSpec `json:"regions,omitempty"`
-
-	// Status filters by provision status.
-	Status *ProvisionStatus `json:"status,omitempty"`
-
-	// Offset is the pagination offset.
-	Offset int `json:"offset,omitempty"`
-
-	// Limit limits the number of results.
-	Limit int `json:"limit,omitempty"`
+func NewCatalog(provider types.ResourceProvisionType) (Catalog, error) {
+	switch provider {
+	case types.ResourceProvisionTypeKubernetes:
+		return NewK8sCatalog()
+	default:
+		return nil, types.ErrUnsupportedCatalog
+	}
 }
