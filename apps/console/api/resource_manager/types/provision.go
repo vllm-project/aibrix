@@ -346,6 +346,10 @@ type ProvisionResult struct {
 	// Status is the current provision status.
 	Status ProvisionStatus `json:"status"`
 
+	// Region is the JSON string representation of the region (xxxRegion).
+	// Used for filtering provisions by region.
+	Region string `json:"region,omitempty"`
+
 	// ErrorMessage contains error details if provisioning failed.
 	ErrorMessage string `json:"errorMessage,omitempty"`
 
@@ -379,6 +383,7 @@ func (pr *ProvisionResult) ToProvisionRecord() (*ProvisionRecord, error) {
 	return &ProvisionRecord{
 		ProvisionID: pr.ProvisionID,
 		Status:      string(pr.Status),
+		Region:      pr.Region,
 		Payload:     payload,
 		CreatedAt:   pr.CreatedAt,
 		UpdatedAt:   pr.UpdatedAt,
@@ -506,6 +511,7 @@ type InstanceTypeSpec struct {
 type ProvisionRecord struct {
 	ProvisionID string    `json:"provisionId"`
 	Status      string    `json:"status"`
+	Region      string    `json:"region,omitempty"`
 	Payload     []byte    `json:"payload,omitempty"` // JSON-serialized result
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`

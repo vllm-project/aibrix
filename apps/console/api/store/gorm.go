@@ -45,6 +45,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+const (
+	DefaultStoreListLimit = 50
+)
+
 // NewMySQLStore creates mysql-backed gorm store with auto-migrations.
 func NewMySQLStore(dsn, encryptionKey string) (*GORMStore, error) {
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
@@ -640,13 +644,30 @@ func (s *GORMStore) ListQuotas(ctx context.Context, search string) ([]*pb.Quota,
 	return out, nil
 }
 
-func (s *GORMStore) GetProvision(ctx context.Context, idempotencyKey string) (*types.ProvisionResult, error) {
+func (s *GORMStore) GetProvision(ctx context.Context, provisionId string) (*types.ProvisionResult, error) {
+	var rec models.ProvisionResult
+	if err := s.db.WithContext(ctx).First(&rec, "provision_id = ? AND deleted = ?", provisionId, false).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, status.Errorf(codes.NotFound, "provision %q not found", provisionId)
+		}
+		return nil, fmt.Errorf("failed to get provision %q: %w", provisionId, err)
+	}
+	res := &types.ProvisionResult{}
+	if err := json.Unmarshal(rec.Payload, res); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal provision payload: %w", err)
+	}
+	res.Status = types.ProvisionStatus(rec.Status)
+	res.UpdatedAt = rec.UpdatedAt
+	return res, nil
+}
+
+func (s *GORMStore) GetProvisionByIdempotencyKey(ctx context.Context, idempotencyKey string) (*types.ProvisionResult, error) {
 	var rec models.ProvisionResult
 	if err := s.db.WithContext(ctx).First(&rec, "idempotency_key = ? AND deleted = ?", idempotencyKey, false).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, status.Errorf(codes.NotFound, "provision %q not found", idempotencyKey)
+			return nil, status.Errorf(codes.NotFound, "provision with idempotency key %q not found", idempotencyKey)
 		}
-		return nil, fmt.Errorf("failed to get provision %q: %w", idempotencyKey, err)
+		return nil, fmt.Errorf("failed to get provision by idempotency key %q: %w", idempotencyKey, err)
 	}
 	res := &types.ProvisionResult{}
 	if err := json.Unmarshal(rec.Payload, res); err != nil {
@@ -662,42 +683,72 @@ func (s *GORMStore) InsertProvision(ctx context.Context, idempotencyKey string, 
 	if err != nil {
 		return fmt.Errorf("failed to convert provision result to record: %w", err)
 	}
-	rec := models.ProvisionResult{IdempotencyKey: idempotencyKey, ProvisionID: record.ProvisionID, Status: record.Status, Payload: datatypes.JSON(record.Payload), CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, Deleted: false}
-	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "idempotency_key"}}, DoUpdates: clause.AssignmentColumns([]string{"provision_id", "status", "payload", "created_at", "updated_at", "deleted"})}).Create(&rec).Error; err != nil {
-		return fmt.Errorf("failed to set idempotency result: %w", err)
+	rec := models.ProvisionResult{
+		IdempotencyKey: idempotencyKey,
+		ProvisionID:    record.ProvisionID,
+		Region:         record.Region,
+		Status:         record.Status,
+		Payload:        datatypes.JSON(record.Payload),
+		CreatedAt:      record.CreatedAt,
+		UpdatedAt:      record.UpdatedAt,
+		Deleted:        false,
+	}
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "idempotency_key"}}, DoUpdates: clause.AssignmentColumns([]string{"provision_id", "region", "status", "payload", "created_at", "updated_at", "deleted"})}).Create(&rec).Error; err != nil {
+		return fmt.Errorf("failed to set provision result: %w", err)
 	}
 	return nil
 }
 
-func (s *GORMStore) UpdateProvisionStatus(ctx context.Context, idempotencyKey string, pstatus types.ProvisionStatus) error {
-	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("idempotency_key = ? AND deleted = ?", idempotencyKey, false).Updates(map[string]interface{}{"status": string(pstatus), "updated_at": time.Now()}).Error; err != nil {
-		return fmt.Errorf("failed to update idempotency result status: %w", err)
+func (s *GORMStore) UpdateProvisionStatus(ctx context.Context, provisionId string, pstatus types.ProvisionStatus) error {
+	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("provision_id = ? AND deleted = ?", provisionId, false).Updates(map[string]interface{}{"status": string(pstatus), "updated_at": time.Now()}).Error; err != nil {
+		return fmt.Errorf("failed to update provision result status: %w", err)
 	}
 	return nil
 }
 
-func (s *GORMStore) DeleteProvision(ctx context.Context, idempotencyKey string) error {
-	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("idempotency_key = ?", idempotencyKey).Updates(map[string]interface{}{"deleted": true, "updated_at": time.Now()}).Error; err != nil {
-		return fmt.Errorf("failed to delete idempotency result: %w", err)
+func (s *GORMStore) DeleteProvision(ctx context.Context, provisionId string) error {
+	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("provision_id = ?", provisionId).Updates(map[string]interface{}{"deleted": true, "updated_at": time.Now()}).Error; err != nil {
+		return fmt.Errorf("failed to delete provision result: %w", err)
 	}
 	return nil
 }
 
-func (s *GORMStore) ExistsProvision(ctx context.Context, idempotencyKey string) (bool, error) {
+func (s *GORMStore) ExistsProvision(ctx context.Context, provisionId string) (bool, error) {
 	var count int64
-	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("idempotency_key = ? AND deleted = ?", idempotencyKey, false).Count(&count).Error; err != nil {
-		return false, fmt.Errorf("failed to check idempotency key: %w", err)
+	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("provision_id = ? AND deleted = ?", provisionId, false).Count(&count).Error; err != nil {
+		return false, fmt.Errorf("failed to check provision result: %w", err)
 	}
 	return count > 0, nil
 }
 
-func (s *GORMStore) ListProvisions(ctx context.Context, pstatus *types.ProvisionStatus, offset, limit int) ([]*types.ProvisionResult, error) {
+func (s *GORMStore) ListProvisions(ctx context.Context, options *types.ListOptions) ([]*types.ProvisionResult, error) {
 	q := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("deleted = ?", false)
-	if pstatus != nil {
-		q = q.Where("status = ?", string(*pstatus))
+	if options != nil {
+		if options.Status != nil {
+			q = q.Where("status = ?", string(*options.Status))
+		}
+		if options.ProvisionIDs != nil && len(*options.ProvisionIDs) > 0 {
+			q = q.Where("provision_id IN ?", *options.ProvisionIDs)
+		}
+		if options.Regions != nil && len(*options.Regions) > 0 {
+			regionStrs := make([]string, 0, len(*options.Regions))
+			for _, region := range *options.Regions {
+				regionBytes, err := json.Marshal(region)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal region: %w", err)
+				}
+				regionStrs = append(regionStrs, string(regionBytes))
+			}
+			q = q.Where("region IN ?", regionStrs)
+		}
 	}
-	if limit <= 0 {
-		limit = 50
+	limit := DefaultStoreListLimit
+	if options != nil && options.Limit > 0 {
+		limit = options.Limit
+	}
+	offset := 0
+	if options != nil {
+		offset = options.Offset
 	}
 	var rows []models.ProvisionResult
 	if err := q.Order("created_at DESC").Offset(offset).Limit(limit).Find(&rows).Error; err != nil {
@@ -710,6 +761,7 @@ func (s *GORMStore) ListProvisions(ctx context.Context, pstatus *types.Provision
 			return nil, fmt.Errorf("failed to unmarshal provision payload: %w", err)
 		}
 		res.Status = types.ProvisionStatus(r.Status)
+		res.Region = r.Region
 		res.UpdatedAt = r.UpdatedAt
 		out = append(out, res)
 	}

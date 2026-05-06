@@ -75,24 +75,28 @@ type Store interface {
 	ListQuotas(ctx context.Context, search string) ([]*pb.Quota, error)
 
 	// Provision
-	// GetProvision retrieves a stored provision result by idempotency key.
+	// GetProvision retrieves a stored provision result by provision ID.
 	// Returns nil and a NotFound error if the key doesn't exist.
-	GetProvision(ctx context.Context, idempotencyKey string) (*types.ProvisionResult, error)
+	GetProvision(ctx context.Context, provisionId string) (*types.ProvisionResult, error)
+
+	// GetProvisionByIdempotencyKey retrieves a stored provision result by idempotency key.
+	// Returns nil and a NotFound error if the key doesn't exist.
+	GetProvisionByIdempotencyKey(ctx context.Context, idempotencyKey string) (*types.ProvisionResult, error)
 
 	// InsertProvision stores a provision result with the given idempotency key.
 	InsertProvision(ctx context.Context, idempotencyKey string, result *types.ProvisionResult) error
 
 	// UpdateProvisionStatus updates the status of a provision result.
-	UpdateProvisionStatus(ctx context.Context, idempotencyKey string, status types.ProvisionStatus) error
+	UpdateProvisionStatus(ctx context.Context, provisionId string, status types.ProvisionStatus) error
 
-	// DeleteProvision marks a stored provision result by idempotency key as deleted.
-	DeleteProvision(ctx context.Context, idempotencyKey string) error
+	// DeleteProvision marks a stored provision result by provision ID as deleted.
+	DeleteProvision(ctx context.Context, provisionId string) error
 
-	// ExistsProvision checks if a provision exists for the given key.
-	ExistsProvision(ctx context.Context, idempotencyKey string) (bool, error)
+	// ExistsProvision checks if a provision exists for the given provision ID.
+	ExistsProvision(ctx context.Context, provisionId string) (bool, error)
 
 	// ListProvisions lists stored provision results.
-	ListProvisions(ctx context.Context, status *types.ProvisionStatus, offset, limit int) ([]*types.ProvisionResult, error)
+	ListProvisions(ctx context.Context, options *types.ListOptions) ([]*types.ProvisionResult, error)
 
 	// Close closes the store.
 	Close() error

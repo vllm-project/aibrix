@@ -49,6 +49,7 @@ import (
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
+	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
 
@@ -139,13 +140,14 @@ type JobHandler struct {
 	pb.UnimplementedJobServiceServer
 
 	store                          store.Store
+	planner                        plannerapi.Planner
 	openai                         openai.Client
 	defaultModelDeploymentTemplate string
 	devMode                        bool
 }
 
 // NewJobHandler creates a JobHandler.
-func NewJobHandler(s store.Store, metadataServiceURL, defaultModelDeploymentTemplate string, devMode bool) *JobHandler {
+func NewJobHandler(s store.Store, planner plannerapi.Planner, metadataServiceURL, defaultModelDeploymentTemplate string, devMode bool) *JobHandler {
 
 	baseURL := strings.TrimRight(metadataServiceURL, "/") + "/v1"
 	httpClient := &http.Client{Transport: &loggingTransport{base: http.DefaultTransport}}
@@ -156,6 +158,7 @@ func NewJobHandler(s store.Store, metadataServiceURL, defaultModelDeploymentTemp
 	)
 	return &JobHandler{
 		store:                          s,
+		planner:                        planner,
 		openai:                         client,
 		defaultModelDeploymentTemplate: defaultModelDeploymentTemplate,
 		devMode:                        devMode,
@@ -165,17 +168,14 @@ func NewJobHandler(s store.Store, metadataServiceURL, defaultModelDeploymentTemp
 // ListJobs proxies to GET /v1/batches. Console-owned fields ride on
 // batch.metadata; the store overlay path is parked (see CreateJob).
 func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb.ListJobsResponse, error) {
-	params := openai.BatchListParams{}
-	if req.After != "" {
-		params.After = openai.String(req.After)
-	}
 	limit := defaultListLimit
 	if req.Limit > 0 {
 		limit = int(req.Limit)
 	}
-	params.Limit = openai.Int(int64(limit))
-
-	page, err := h.openai.Batches.List(ctx, params)
+	resp, err := h.planner.ListJobs(ctx, &plannerapi.ListJobsRequest{
+		Limit: limit,
+		After: req.After,
+	})
 	if err != nil {
 		// Dev fallback: serve Console's demo batches so the UI is usable
 		// end-to-end without a running MDS.
@@ -192,10 +192,9 @@ func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb
 		return &pb.ListJobsResponse{Jobs: nil, HasMore: false}, nil
 	}
 
-	batches := page.Data
-	jobs := make([]*pb.Job, 0, len(batches))
-	for i := range batches {
-		jobs = append(jobs, mergeJob(&batches[i], nil))
+	jobs := make([]*pb.Job, 0, len(resp.Data))
+	for _, batch := range resp.Data {
+		jobs = append(jobs, mergeJob(batch, nil))
 	}
 	// SDK CursorPage exposes Data and HasMore. first_id / last_id ride along
 	// in the upstream JSON but are not surfaced as named fields; the UI
@@ -203,7 +202,7 @@ func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb
 	// becomes user-visible.
 	return &pb.ListJobsResponse{
 		Jobs:    jobs,
-		HasMore: page.HasMore,
+		HasMore: resp.HasMore,
 	}, nil
 }
 
@@ -213,7 +212,7 @@ func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
-	batch, err := h.openai.Batches.Get(ctx, req.Id)
+	batch, err := h.planner.GetJob(ctx, req.Id)
 	if err != nil {
 		// Dev fallback: return the demo job if MDS is unreachable.
 		if h.devMode {
@@ -226,7 +225,7 @@ func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job
 				}
 			}
 		}
-		return nil, mapSDKError(err, "get batch")
+		return nil, mapPlannerError(err, "get batch")
 	}
 	return mergeJob(batch, nil), nil
 }
@@ -273,34 +272,37 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 		metadata[metadataConsoleTemplateVersion] = req.ModelTemplateVersion
 	}
 
-	params := openai.BatchNewParams{
-		InputFileID:      req.InputDataset,
-		Endpoint:         openai.BatchNewParamsEndpoint(req.Endpoint),
-		CompletionWindow: openai.BatchNewParamsCompletionWindow(completionWindow),
-	}
-	if len(metadata) > 0 {
-		params.Metadata = metadata
-	}
-
 	// AIBrix extension fields ride along via OpenAI's `extra_body` channel.
 	// The console wizard always picks a template (model_template_name); legacy
 	// callers may still hit this path with empty fields, in which case we fall
 	// back to the configured default.
-	var opts []option.RequestOption
-	if req.ModelTemplateName != "" {
-		opts = append(opts, option.WithJSONSet("aibrix.model_template.name", req.ModelTemplateName))
-		if req.ModelTemplateVersion != "" {
-			opts = append(opts, option.WithJSONSet("aibrix.model_template.version", req.ModelTemplateVersion))
+	templateName := req.ModelTemplateName
+	if templateName == "" {
+		templateName = h.defaultModelDeploymentTemplate
+	}
+	var modelTemplate *plannerapi.ModelTemplateRef
+	if templateName != "" {
+		modelTemplate = &plannerapi.ModelTemplateRef{
+			Name:    templateName,
+			Version: req.ModelTemplateVersion,
 		}
-	} else if h.defaultModelDeploymentTemplate != "" {
-		opts = append(opts, option.WithJSONSet("aibrix.model_template.name", h.defaultModelDeploymentTemplate))
 	}
 
-	batch, err := h.openai.Batches.New(ctx, params, opts...)
-	if err != nil {
-		return nil, mapSDKError(err, "create batch")
+	enqueueReq := &plannerapi.EnqueueRequest{
+		ModelTemplate: modelTemplate,
+		BatchPayload: plannerapi.BatchPayload{
+			InputFileID:      req.InputDataset,
+			Endpoint:         req.Endpoint,
+			CompletionWindow: completionWindow,
+			Metadata:         metadata,
+		},
 	}
-	return mergeJob(batch, nil), nil
+
+	result, err := h.planner.Enqueue(ctx, enqueueReq)
+	if err != nil {
+		return nil, mapPlannerError(err, "create batch")
+	}
+	return mergeJob(result.Batch, nil), nil
 }
 
 // CancelJob proxies to POST /v1/batches/{id}/cancel and merges with store.
@@ -352,6 +354,22 @@ func mapSDKError(err error, op string) error {
 	}
 
 	return status.Errorf(codes.Unavailable, "%s: %v", op, err)
+}
+
+// mapPlannerError translates planner sentinel errors into gRPC statuses,
+// falling back to mapSDKError for transport-level failures the planner
+// surfaces unchanged (errors.Join in the planner preserves the inner
+// *openai.Error so HTTP-status-derived codes still come through).
+func mapPlannerError(err error, op string) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, plannerapi.ErrInvalidJob):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, plannerapi.ErrInsufficientResources):
+		return status.Error(codes.ResourceExhausted, err.Error())
+	}
+	return mapSDKError(err, op)
 }
 
 // mergeJob aggregates the OpenAI Batch state with optional Console overlay.
