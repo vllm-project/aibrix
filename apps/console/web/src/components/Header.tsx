@@ -14,8 +14,9 @@ export function Header() {
       .catch(err => console.error('Failed to fetch user info:', err));
   }, []);
 
-  const displayName = user?.name || user?.email || '';
+  const displayName = user?.name || user?.username || user?.email || '';
   const initial = displayName.charAt(0).toUpperCase();
+  const avatarUrl = user?.picture || '';
 
   return (
     <header className="bg-white border-b border-gray-200 px-6 py-2.5">
@@ -40,9 +41,18 @@ export function Header() {
                 onClick={() => setShowDropdown(!showDropdown)}
                 className="flex items-center gap-2 px-2 py-1.5 hover:bg-gray-50 rounded-lg transition-colors"
               >
-                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-teal-500 to-cyan-500 flex items-center justify-center text-white text-xs">
-                  {initial}
-                </div>
+                {avatarUrl ? (
+                  <img
+                    src={avatarUrl}
+                    alt={displayName}
+                    referrerPolicy="no-referrer"
+                    className="w-7 h-7 rounded-full object-cover"
+                  />
+                ) : (
+                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-teal-500 to-cyan-500 flex items-center justify-center text-white text-xs">
+                    {initial}
+                  </div>
+                )}
                 <span className="text-sm text-gray-600">{displayName}</span>
                 <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
