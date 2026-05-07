@@ -17,49 +17,24 @@ limitations under the License.
 package client
 
 import (
-	"github.com/vllm-project/aibrix/apps/console/api/planner/api"
+	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 )
 
-// =============================================================================
-// MDS submission payload
-//
-// AIBrixExtraBody mirrors the planner -> MDS contract under
-// extra_body.aibrix. The struct carries every field the planner has
-// computed; the BatchClient adapter is responsible for dropping fields
-// MDS does not yet accept (see buildExtraBodyOptions in client.go).
-//
-// MDS-side BatchSpec.aibrix is Pydantic with extra="forbid" and only
-// declares model_template / profile today; sending unknown keys yields
-// 400 validation errors. Other fields here (JobID, PlannerDecision)
-// are populated for log-trace verification and will start riding the
-// wire once MDS accepts them.
-// See python/aibrix/aibrix/metadata/api/v1/batch.py.
-// =============================================================================
-
-// AIBrixExtraBody is the in-memory contract between the planner and the
-// MDS adapter. Only ModelTemplate currently rides the wire; the other
-// fields are computed and logged for verification.
+// AIBrixExtraBody is the AIBrix-specific extension the BatchClient
+// serializes onto POST /v1/batches via the openai-go SDK's extra_body
+// channel. Everything else on the submission rides on openai.BatchNewParams
+// directly — this struct is the only piece of the contract we own.
 type AIBrixExtraBody struct {
 	JobID           string `json:"job_id,omitempty"`
 	PlannerDecision *struct {
 		ProvisionID               string `json:"provision_id,omitempty"`
 		ProvisionResourceDeadline int64  `json:"provision_resource_deadline,omitempty"`
+		ResourceDetails           []struct {
+			ResourceType    string `json:"resource_type"`
+			EndpointCluster string `json:"endpoint_cluster,omitempty"`
+			GPUType         string `json:"gpu_type,omitempty"`
+			WorkerNum       int    `json:"worker_num,omitempty"`
+		} `json:"resource_details,omitempty"`
 	} `json:"planner_decision,omitempty"`
 	ModelTemplate *plannerapi.ModelTemplateRef `json:"model_template,omitempty"`
-}
-
-// MDSExtraBody is the wrapper that lands as extra_body on the openai-go
-// client call. The "aibrix" key is the only namespace MDS understands.
-type MDSExtraBody struct {
-	AIBrix AIBrixExtraBody `json:"aibrix"`
-}
-
-// MDSBatchSubmission is the fully prepared submit payload for
-// POST /v1/batches.
-type MDSBatchSubmission struct {
-	InputFileID      string            `json:"input_file_id"`
-	Endpoint         string            `json:"endpoint"`
-	CompletionWindow string            `json:"completion_window"`
-	Metadata         map[string]string `json:"metadata,omitempty"`
-	ExtraBody        MDSExtraBody      `json:"extra_body"`
 }

@@ -319,7 +319,7 @@ class AibrixExtension(BaseModel):
     users and shatter audit by template name.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "allow"}
 
     model_template: Optional[TemplateRef] = Field(
         default=None,

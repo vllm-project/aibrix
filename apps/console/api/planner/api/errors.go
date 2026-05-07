@@ -31,4 +31,10 @@ var (
 	// RM package) is wrapped with this sentinel so the planner stays
 	// decoupled from the concrete RM error vocabulary.
 	ErrInsufficientResources = errors.New("planner: insufficient resources")
+
+	// ErrJobNotFound indicates the JobID passed to GetJob/Cancel is not
+	// known to the planner. With Passthrough's in-memory map this fires
+	// for jobs created before the process started; the queued planner's
+	// durable index will narrow this to "truly unknown JobID" cases.
+	ErrJobNotFound = errors.New("planner: job not found")
 )
