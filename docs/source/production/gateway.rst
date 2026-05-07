@@ -153,7 +153,7 @@ For production workloads we recommend selecting a strategy based on your traffic
 When requests share a common prompt prefix (e.g. a system prompt, few-shot examples, or
 conversation history), ``prefix-cache`` routes each request to the pod that already holds the
 matching KV-cache blocks in GPU memory, reducing redundant computation and improving latency.
-See `prefix cache routing details <../../pkg/plugins/gateway/algorithms/prefix_cache_readme.md>`_
+See `prefix cache routing details <../../../pkg/plugins/gateway/algorithms/prefix_cache_readme.md>`_
 for algorithm internals and configuration options.
 
 .. code-block:: bash
@@ -203,7 +203,7 @@ type to be sized and scaled independently, improving GPU utilization at high req
         "temperature": 0.7
     }'
 
-See `prefill-decode disaggregation details <../../pkg/plugins/gateway/algorithms/pd_readme.md>`_
+See `prefill-decode disaggregation details <../../../pkg/plugins/gateway/algorithms/pd_readme.md>`_
 for deployment requirements and configuration options.
 
 .. note::
