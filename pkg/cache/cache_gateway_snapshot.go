@@ -31,6 +31,7 @@ import (
 
 const (
 	gatewaySnapshotSyncInterval = 100 * time.Millisecond
+	gatewayPodSnapshotTTL       = 500 * time.Millisecond
 	// gatewaySnapshotHGetAllBatchSize limits how many HGetAll commands share one pipeline Exec,
 	// reducing head-of-line blocking and client memory spikes when many gateway snapshot keys exist.
 	gatewaySnapshotHGetAllBatchSize = 100
@@ -209,7 +210,7 @@ func appendGatewayPodSnapshotToPipeline(ctx context.Context, pipe redis.Pipeline
 		"update_time":         time.Now().Format("15:04:05.000"),
 	}
 	pipe.HSet(ctx, key, fields)
-	pipe.PExpire(ctx, key, 500*time.Millisecond)
+	pipe.PExpire(ctx, key, gatewayPodSnapshotTTL)
 }
 
 // gatewayPodSnapshotKey returns the Redis key for this gateway instance's snapshot of a pod.
