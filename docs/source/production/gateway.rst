@@ -52,6 +52,60 @@ Set ``replicas`` and per-container resources as follows:
                 cpu: "8"
                 memory: 16Gi
 
+Enabling Redis for Multi-Replica Deployments
+---------------------------------------------
+
+When running more than one gateway plugin replica, shared state is required so that all
+instances agree on routing decisions (e.g. prefix-cache block assignments, rate-limit counters).
+The gateway plugin reads the ``REDIS_HOST`` environment variable at startup to connect to a
+Redis instance. If the variable is unset or Redis is unreachable, each replica operates with
+in-process state only, which causes inconsistent routing across pods.
+
+Enable Redis by pointing the gateway plugin at the bundled Redis instance:
+
+.. code-block:: yaml
+
+    gatewayPlugin:
+      dependencies:
+        redis:
+          host: ""   # leave empty to use the chart-managed Redis (aibrix-redis-master)
+          port: 6379
+
+The Helm chart sets ``REDIS_HOST`` automatically from ``gatewayPlugin.dependencies.redis.host``,
+defaulting to ``<release-name>-redis-master`` when the field is empty. For an external Redis
+cluster, set ``host`` to the service hostname or IP of your Redis endpoint.
+
+Sizing Redis
+~~~~~~~~~~~~
+
+The bundled Redis instance is deployed under ``metadata.redis``. For production workloads with
+multiple gateway plugin replicas, increase its CPU, memory, and (if using persistence)
+storage from the defaults:
+
+.. code-block:: yaml
+
+    metadata:
+      redis:
+        replicas: 1
+        container:
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+
+The right sizing depends on request throughput and the number of distinct prefix-cache keys
+in flight. As a starting point, allocate roughly **1 GiB of memory per 1 000 concurrent
+requests** and increase CPU if Redis becomes a latency bottleneck (monitor ``redis_commands_duration_seconds``).
+
+.. note::
+    If you are using an externally managed Redis (e.g. AWS ElastiCache, Google Memorystore),
+    set ``gatewayPlugin.dependencies.redis.host`` to the external endpoint and remove the
+    ``metadata.redis`` block from your override — the chart will not deploy its own Redis when
+    a custom host is provided.
+
 Configuring Buffer Limits, Connections, and QPS
 ------------------------------------------------
 
