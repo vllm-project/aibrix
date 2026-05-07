@@ -62,8 +62,10 @@ func Test_PrefixCacheE2E(t *testing.T) {
 		// No KV sync router, uses original implementation
 	}
 
+	const testInputStr = "abcdegfh"
+
 	// no prefix match -> select least request pod
-	input := "abcdegfh"
+	input := testInputStr
 	// pre_request_count: [p1: 0, p2: 0, p3: 0, p4: 0]
 	// post_request_count: [p1: 0, p2: 0, p3: 0, p4: 1(abcdefgh)]
 	t.Log(input)
@@ -88,7 +90,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	t.Log(p3)
 
 	// prefix match, load balanced -> select cached pod
-	input = "abcdegfh"
+	input = testInputStr
 	// pre_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 1(abcdefgh)]
 	// post_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 2(abcdefgh)]
 	t.Log(input)
@@ -212,4 +214,63 @@ func getReadyPods() []*v1.Pod {
 				},
 			}},
 	}
+}
+
+func TestPrefixCache_ScoreAll(t *testing.T) {
+	// Ensure metrics are not enabled
+	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "false")
+
+	readyPods := getReadyPods()
+	c := cache.NewWithPodsMetricsForTest(
+		readyPods,
+		"m1",
+		map[string]map[string]metrics.MetricValue{
+			"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
+			"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
+			"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
+			"p4": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
+		})
+	podList := podsFromCache(c)
+
+	tokenizerObj, err := tokenizer.NewTokenizer("character", nil)
+	assert.NoError(t, err)
+
+	prefixCacheRouter := prefixCacheRouter{
+		cache:              c,
+		tokenizer:          tokenizerObj,
+		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+	}
+
+	// Make an initial request to route to p1 so that it caches the prefix
+	const testInputStr2 = "abcdegfh"
+	input := testInputStr2
+	ctx1 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r1", "")
+	_, err = prefixCacheRouter.Route(ctx1, podList)
+	assert.NoError(t, err)
+
+	// Now try ScoreAll with the same input, p1 should have higher score (or the selected pod)
+	ctx2 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r2", "")
+	scores, scored, err := prefixCacheRouter.ScoreAll(ctx2, podList)
+
+	assert.NoError(t, err)
+	assert.Equal(t, 4, len(scores))
+	assert.Equal(t, 4, len(scored))
+
+	// All should be scored
+	for _, s := range scored {
+		assert.True(t, s)
+	}
+
+	// At least one pod should have a score > 0 (the one that matched the prefix)
+	hasPositiveScore := false
+	for _, s := range scores {
+		if s > 0 {
+			hasPositiveScore = true
+			break
+		}
+	}
+	assert.True(t, hasPositiveScore)
+
+	// Check polarity
+	assert.Equal(t, types.PolarityMost, prefixCacheRouter.Polarity())
 }

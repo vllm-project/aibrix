@@ -262,3 +262,46 @@ func TestPrefixCacheAndLoadRouterRouting(t *testing.T) {
 		})
 	}
 }
+
+func TestPrefixCacheAndLoadRouterScoreAllHandlesEmptyInput(t *testing.T) {
+	router := &prefixCacheAndLoadRouter{
+		cache: prefixcacheindexer.NewLPRadixCache(2),
+		histogram: &SlidingWindowHistogram{
+			windowDuration:             slidingWindowPeriod,
+			histogram:                  make(map[*prefixcacheindexer.TreeNode]int),
+			nodeToCount:                make(map[*prefixcacheindexer.TreeNode]int),
+			hitTokens:                  make(map[*prefixcacheindexer.TreeNode]int),
+			promptTokens:               make(map[*prefixcacheindexer.TreeNode]int),
+			decodingSize:               make(map[*prefixcacheindexer.TreeNode]int),
+			timestamps:                 []histogramEntry{},
+			numPods:                    0,
+			podAllocations:             make(map[*prefixcacheindexer.TreeNode]map[int]bool),
+			currentDecodeLengthsPerPod: make(map[string]int),
+			avgTimePerTokenPerPod:      make(map[string][]float64),
+			perNodeTotalDecodeLengths:  make(map[*prefixcacheindexer.TreeNode]int),
+		},
+		numPods:        0,
+		podAllocations: make(map[*prefixcacheindexer.TreeNode]map[int]bool),
+	}
+	podList := &MockPodList{pods: []*v1.Pod{
+		newPod("pod-1", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("pod-2", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+	}}
+	ctx := createTestRoutingContext("test-model", "", "req-empty-input")
+
+	scores, scored, err := router.ScoreAll(ctx, podList)
+	if err != nil {
+		t.Fatalf("ScoreAll returned unexpected error for empty input: %v", err)
+	}
+	if len(scores) != podList.Len() || len(scored) != podList.Len() {
+		t.Fatalf("expected %d scores and scored flags, got %d and %d", podList.Len(), len(scores), len(scored))
+	}
+	for i := range scored {
+		if !scored[i] {
+			t.Fatalf("expected pod %d to remain scored for empty input", i)
+		}
+		if scores[i] != 0 {
+			t.Fatalf("expected zero score for empty input, got %v", scores[i])
+		}
+	}
+}
