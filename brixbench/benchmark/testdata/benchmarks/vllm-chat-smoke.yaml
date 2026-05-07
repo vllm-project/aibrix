@@ -1,0 +1,29 @@
+kind: vllm-bench
+execution: cluster
+image: aibrix-container-registry-cn-beijing.cr.volces.com/autodash/vllm-bench:v0.10.2-20260118
+namespace: brixbench-adhoc
+podName: vllm-bench-client
+modelHostPath: /data01/models
+rootHostPath: /root
+
+artifacts:
+  resultFilename: bench_results.json
+  logDir: testdata/logs
+
+vllmArgs:
+  base-url: http://aibrix-gateway-plugins.aibrix-system.svc.cluster.local:10080
+  endpoint: /v1/chat/completions
+  backend: openai-chat
+  endpoint-type: openai-chat
+  model: qwen3-8b
+  tokenizer: /data01/models/Qwen3-8B
+  num-prompts: 100
+  request-rate: 1
+  concurrency: 1
+  random-prefix-len: 512
+  random-input-len: 1024
+  random-output-len: 256
+  metric-percentiles: "50,90,95,99"
+  percentile-metrics: "ttft,tpot,itl,e2el"
+  goodput: "tpot:250"
+  ready-check-timeout-sec: 30

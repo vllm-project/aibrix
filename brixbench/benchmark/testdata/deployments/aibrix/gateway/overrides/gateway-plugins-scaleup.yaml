@@ -1,0 +1,18 @@
+patchTarget:
+  kind: Deployment
+  name: aibrix-gateway-plugins
+  namespace: aibrix-system
+  type: strategic
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: gateway-plugin
+          resources:
+            requests:
+              cpu: "4"
+              memory: 8Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi

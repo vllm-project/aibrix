@@ -1,0 +1,16 @@
+# Use the official AIBrix gateway image as the base.
+# This base image already contains the necessary runtime environment,
+# including Alpine Linux, CA certificates, and the correct USER/ENTRYPOINT settings.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# Build-time argument for commit hash
+ARG COMMIT_HASH
+
+# Add commit hash as metadata label
+LABEL org.opencontainers.image.revision="${COMMIT_HASH}"
+
+# Copy the dynamically built gateway-plugins binary and its dependencies
+# from the benchmark workspace into the container, overwriting the original ones.
+COPY gateway-plugins /gateway-plugins
+COPY deps /gateway-plugins-lib

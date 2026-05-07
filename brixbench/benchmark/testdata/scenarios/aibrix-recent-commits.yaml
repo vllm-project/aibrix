@@ -1,0 +1,30 @@
+Scenario: aibrix-recent-commits
+Tests:
+  - name: aibrix-main-d41653b-disaggregated
+    provider: aibrix
+    fullstack: false
+    commit: d41653b26cf1257157e34ff35ee5f028644473a8
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/pd-model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke-pd.yaml
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+  - name: aibrix-main-d5b6d5b-disaggregated
+    provider: aibrix
+    fullstack: false
+    commit: d5b6d5b8b151e05025310aee13969a119b41c756
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/pd-model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke-pd.yaml
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd

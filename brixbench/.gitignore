@@ -1,0 +1,56 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Benchmark results (generated during test runs)
+bench_results.json
+benchmark/bench_results.json
+
+# vllm-bench logs (generated during test runs)
+vllm-bench.log
+bench.log
+benchmark/vllm-bench.log
+benchmark/bench.log
+benchmark/pf.log
+benchmark/testdata/logs/
+benchmark/testdata/logs/*.log
+benchmark/testdata/logs/**/figures/
+
+# Temporary files
+*.tmp
+*.temp
+.venv/
+.debug-capture/
+
+# Personal work logs
+.worklog/
+
+# Spec-Kit auto-generated memory and rule files
+.specify/memory/
+.trae/rules/speckit.*.md
+
+# Keep only essential Spec-Kit files
+!.trae/rules/project_rules.md
+benchmark/__pycache__/plot_summary_vllm_bench.cpython-311.pyc
