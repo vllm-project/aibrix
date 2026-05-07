@@ -1,6 +1,9 @@
 import { Home, Rocket, Boxes, Library, Gamepad2, Layers } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import type { ComponentType, SVGProps } from 'react';
+import { getUserInfo } from '../utils/api';
+import type { UserInfo } from '../utils/api';
 
 interface NavItem {
   path: string;          // primary route
@@ -12,6 +15,16 @@ interface NavItem {
 export function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
+  const [user, setUser] = useState<UserInfo | null>(null);
+
+  useEffect(() => {
+    getUserInfo()
+      .then((u) => setUser(u))
+      .catch(() => {});
+  }, []);
+
+  const displayName = user?.name || user?.email || 'User';
+  const initial = displayName.charAt(0).toUpperCase();
 
   // Settings entry intentionally omitted — API Keys / Secrets pages exist but
   // are not yet wired to backend behavior.
@@ -84,14 +97,16 @@ export function Sidebar() {
         <NavSection title="Explore" items={exploreItems} />
       </div>
 
-      <div className="p-3 border-t border-slate-700/50">
-        <div className="flex items-center gap-2.5 px-3 py-2">
-          <div className="w-7 h-7 rounded-full bg-gradient-to-br from-teal-500 to-cyan-500 flex items-center justify-center text-white text-xs">
-            S
+      {user && (
+        <div className="p-3 border-t border-slate-700/50">
+          <div className="flex items-center gap-2.5 px-3 py-2">
+            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-teal-500 to-cyan-500 flex items-center justify-center text-white text-xs">
+              {initial}
+            </div>
+            <div className="text-xs text-slate-400 truncate">{displayName}</div>
           </div>
-          <div className="text-xs text-slate-400 truncate">seedjeffwan-2hvzrk1</div>
         </div>
-      </div>
+      )}
     </aside>
   );
 }
