@@ -53,7 +53,6 @@ type BatchClient interface {
 	ListBatches(ctx context.Context, req *ListBatchesRequest) (*ListBatchesResponse, error)
 }
 
-
 // =============================================================================
 // ListBatches request / response
 // =============================================================================
