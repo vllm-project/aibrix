@@ -221,6 +221,7 @@ gateway:
       maxRequests: 1024
       # The maximum number of pending requests to the original destination cluster.
       maxPendingRequests: 1024
+    preserveExternalRequestID: false
 
 metadata:
   serviceAccount:

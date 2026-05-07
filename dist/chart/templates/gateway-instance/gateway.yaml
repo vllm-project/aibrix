@@ -170,4 +170,10 @@ spec:
                 max_connections: {{ .Values.gateway.envoyPatchPolicy.circuitBreakers.maxConnections }}
                 max_requests: {{ .Values.gateway.envoyPatchPolicy.circuitBreakers.maxRequests }}
                 max_pending_requests: {{ .Values.gateway.envoyPatchPolicy.circuitBreakers.maxPendingRequests }}
+    - type: type.googleapis.com/envoy.config.listener.v3.Listener
+      name: {{ .Release.Namespace }}/{{ include "aibrix.fullname" . }}-eg/http
+      operation:
+        op: add
+        path: /default_filter_chain/filters/{{- if gt (int .Values.gateway.clientTrafficPolicy.connection.connectionLimit.value) 0 }}1{{- else }}0{{- end }}/typed_config/preserve_external_request_id
+        value: {{.Values.gateway.envoyPatchPolicy.preserveExternalRequestID}}
 {{- end }}
