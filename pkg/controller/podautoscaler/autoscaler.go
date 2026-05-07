@@ -25,6 +25,7 @@ import (
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/aggregation"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/algorithm"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/circuitbreaker"
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
@@ -260,6 +261,27 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		return nil, fmt.Errorf("failed to collect metrics for %s: %w", workloadKey, err)
 	}
 
+	// Circuit breaker: validate raw metric values before processing
+	if cbConfig := request.PodAutoscaler.Spec.CircuitBreaker; cbConfig != nil && cbConfig.Enabled {
+		rawValidation := circuitbreaker.ValidateMetricValues(snapshot.Values)
+		if !rawValidation.Valid {
+			cbReplicas, triggered, cbReason := circuitbreaker.EvaluateCircuitBreaker(
+				cbConfig, request.CurrentReplicas, request.ScalingContext.GetMaxReplicas(), rawValidation)
+			if triggered {
+				klog.InfoS("Circuit breaker activated on raw metrics",
+					"source", workloadKey,
+					"reason", cbReason,
+					"desiredReplicas", cbReplicas)
+				return &algorithm.ScalingRecommendation{
+					DesiredReplicas: cbReplicas,
+					Reason:          cbReason,
+					Algorithm:       "circuit-breaker",
+					ScaleValid:      true,
+				}, nil
+			}
+		}
+	}
+
 	// Use scaling context from request (single source of truth)
 	scalingContext := request.ScalingContext
 
@@ -272,6 +294,27 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 	aggregatedMetrics, err := a.aggregator.GetAggregatedMetrics(metricKey, request.Timestamp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get aggregated metrics for %s %s: %w", workloadKey, metricKey, err)
+	}
+
+	// Circuit breaker: validate aggregated metric values
+	if cbConfig := request.PodAutoscaler.Spec.CircuitBreaker; cbConfig != nil && cbConfig.Enabled {
+		aggValidation := circuitbreaker.ValidateAggregatedValues(aggregatedMetrics.StableValue, aggregatedMetrics.PanicValue)
+		if !aggValidation.Valid {
+			cbReplicas, triggered, cbReason := circuitbreaker.EvaluateCircuitBreaker(
+				cbConfig, request.CurrentReplicas, request.ScalingContext.GetMaxReplicas(), aggValidation)
+			if triggered {
+				klog.InfoS("Circuit breaker activated on aggregated metrics",
+					"source", workloadKey,
+					"reason", cbReason,
+					"desiredReplicas", cbReplicas)
+				return &algorithm.ScalingRecommendation{
+					DesiredReplicas: cbReplicas,
+					Reason:          cbReason,
+					Algorithm:       "circuit-breaker",
+					ScaleValid:      true,
+				}, nil
+			}
+		}
 	}
 
 	// Step 3: Enhance confidence with pod count awareness
