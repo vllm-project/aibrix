@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -43,6 +44,17 @@ type PodSetRoleSyncer struct {
 }
 
 func (p *PodSetRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+	// Clean up orphan Pods left by the old StatefulRoleSyncer/StatelessRoleSyncer
+	// when podGroupSize was switched from <=1 to >1.
+	cleaned, err := cleanupOrphanPods(ctx, p.cli, roleSet, role)
+	if err != nil {
+		return cleaned, err
+	}
+	if cleaned {
+		klog.V(4).Infof("[PodSetRoleSyncer.Scale] cleaned orphan pods for roleset %s/%s role %s, waiting for next reconcile", roleSet.Namespace, roleSet.Name, role.Name)
+		return true, nil
+	}
+
 	var podSetsToCreate, podSetsToDelete []*orchestrationv1alpha1.PodSet
 	allPodSets, err := getRolePodSets(ctx, p.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
@@ -543,4 +555,35 @@ func deletePodSetsInBatch(ctx context.Context, cli client.Client, podSets []*orc
 		}
 	}
 	return len(podSets), nil
+}
+
+// cleanupOrphanPods detects and deletes Pods that were directly created by the old
+// StatefulRoleSyncer/StatelessRoleSyncer (OwnerRef → RoleSet) when podGroupSize switches
+// from <=1 to >1. Returns true if any orphan Pods were found.
+func cleanupOrphanPods(ctx context.Context, cli client.Client, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+	allPods, err := getRolePods(ctx, cli, roleSet.Namespace, roleSet.Name, role.Name)
+	if err != nil {
+		return false, err
+	}
+
+	var orphanPods []*v1.Pod
+	for _, pod := range allPods {
+		if isOwnedByRoleSet(pod, roleSet) {
+			orphanPods = append(orphanPods, pod)
+		}
+	}
+
+	if len(orphanPods) == 0 {
+		return false, nil
+	}
+
+	klog.V(4).Infof("[cleanupOrphanPods] found %d orphan pods for roleset %s/%s role %s, cleaning up",
+		len(orphanPods), roleSet.Namespace, roleSet.Name, role.Name)
+	var errs []error
+	for _, pod := range orphanPods {
+		if err := cli.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
+			errs = append(errs, err)
+		}
+	}
+	return true, utilerrors.NewAggregate(errs)
 }
