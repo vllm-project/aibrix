@@ -24,21 +24,23 @@ from pydantic import BaseModel, Field
 
 from aibrix.batch import BatchDriver
 from aibrix.batch.job_entity import (
+    AibrixMetadata,
     BatchJob,
     BatchJobEndpoint,
     BatchJobError,
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    BatchProfileRef,
     BatchUsage,
     CompletionWindow,
+    ModelTemplateRef,
+    PlannerDecision,
 )
 from aibrix.batch.manifest import RenderError
 from aibrix.batch.storage.batch_metastore import get_batch_job
 from aibrix.batch.template import (
-    ProfileOverridesSpec,
     ProfileRegistry,
-    TemplateOverridesSpec,
     TemplateRegistry,
 )
 from aibrix.logger import init_logger
@@ -224,9 +226,27 @@ async def _validate_batch_input_file(
 
 
 # OpenAI Batch API request/response models
+class Decision(PlannerDecision):
+    """Decision from planner
+
+    Wire shape (under ``extra_body.aibrix.planner_decision``)::
+
+        {
+            "provision_id": "xxxxxxxx",
+            "provision_resource_deadline": 1422443902,  # optional; 0 / null = will not expire
+            "resource_details": [
+                {
+                    "resource_type": "xxxxxxxx",
+                    "endpoint_cluster": 1422443902,  # optional; 0 / null = will not expire
+                    "gpu_type": "A100-SM-80G",  # optional
+                    "worker_num": 2,  # optional; 1 / null = 1
+                }
+            ],
+        }
+    """
 
 
-class TemplateRef(BaseModel):
+class TemplateRef(ModelTemplateRef):
     """Reference to a ModelDeploymentTemplate registered via ConfigMap.
 
     Wire shape (under ``extra_body.aibrix.model_template``)::
@@ -240,28 +260,8 @@ class TemplateRef(BaseModel):
         }
     """
 
-    model_config = {"extra": "forbid"}  # reject unknown keys, no silent drops
 
-    name: str = Field(
-        description="ModelDeploymentTemplate name registered via ConfigMap",
-    )
-    version: Optional[str] = Field(
-        default=None,
-        description=(
-            "Optional template version pin. Empty / null resolves to the "
-            "latest active version of the named template."
-        ),
-    )
-    overrides: Optional[TemplateOverridesSpec] = Field(
-        default=None,
-        description=(
-            "Allowlisted overrides applied on top of the resolved template "
-            "spec at render time."
-        ),
-    )
-
-
-class ProfileRef(BaseModel):
+class ProfileRef(BatchProfileRef):
     """Reference to a BatchProfile registered via ConfigMap.
 
     Wire shape (under ``extra_body.aibrix.profile``)::
@@ -273,17 +273,6 @@ class ProfileRef(BaseModel):
             },
         }
     """
-
-    model_config = {"extra": "forbid"}
-
-    name: str = Field(description="BatchProfile name registered via ConfigMap")
-    overrides: Optional[ProfileOverridesSpec] = Field(
-        default=None,
-        description=(
-            "Allowlisted overrides applied on top of the resolved profile "
-            "spec at render time."
-        ),
-    )
 
 
 class AibrixExtension(BaseModel):
@@ -319,8 +308,10 @@ class AibrixExtension(BaseModel):
     users and shatter audit by template name.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "allow"}
 
+    job_id: Optional[str] = None
+    planner_decision: Optional[PlannerDecision] = None
     model_template: Optional[TemplateRef] = Field(
         default=None,
         description="ModelDeploymentTemplate reference (name + optional version + overrides)",
@@ -360,33 +351,20 @@ class BatchSpec(BaseModel):
 
     @classmethod
     def newBatchJobSpec(cls, spec: "BatchSpec") -> BatchJobSpec:
-        ext = spec.aibrix
-        tref = ext.model_template if ext else None
-        pref = ext.profile if ext else None
+        aibrix: Optional[AibrixMetadata] = None
+        if spec.aibrix is not None:
+            aibrix = AibrixMetadata(
+                job_id=spec.aibrix.job_id,
+                planner_decision=spec.aibrix.planner_decision,
+                model_template=spec.aibrix.model_template,
+                profile=spec.aibrix.profile,
+            )
         return BatchJobSpec(
             input_file_id=spec.input_file_id,
             endpoint=spec.endpoint.value,
             completion_window=spec.completion_window.expires_at(),
             metadata=spec.metadata,
-            model_template_name=(tref.name if tref else None),
-            model_template_version=(tref.version if tref else None),
-            profile_name=(pref.name if pref else None),
-            # Overrides are carried as plain dicts on BatchJobSpec to keep
-            # that model decoupled from the template package (avoids a
-            # circular import). They are re-validated by the renderer.
-            template_overrides=(
-                tref.overrides.model_dump(exclude_none=True)
-                if (tref and tref.overrides)
-                else None
-            ),
-            # exclude_unset preserves the "partial override" contract: we
-            # only forward fields the caller actually set, so the renderer
-            # doesn't silently overwrite profile defaults.
-            profile_overrides=(
-                pref.overrides.model_dump(exclude_unset=True)
-                if (pref and pref.overrides)
-                else None
-            ),
+            aibrix=aibrix,
         )
 
 
@@ -535,6 +513,10 @@ class BatchResponse(BaseModel):
     metadata: Optional[Dict[str, str]] = Field(
         default=None, description="Batch metadata"
     )
+    aibrix: Optional[AibrixMetadata] = Field(
+        default=None,
+        description="AIBrix-specific batch metadata",
+    )
 
 
 class BatchListResponse(BaseModel):
@@ -621,6 +603,7 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
         request_counts=request_counts,
         usage=status.usage,
         metadata=spec.metadata,
+        aibrix=spec.aibrix,
     )
 
 

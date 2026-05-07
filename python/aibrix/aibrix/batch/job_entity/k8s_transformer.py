@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from aibrix.logger import init_logger
 
+from .aibrix_metadata import AibrixMetadata
 from .batch_job import (
     BatchJob,
     BatchJobError,
@@ -52,6 +53,7 @@ class JobAnnotationKey(str, Enum):
     ENDPOINT = f"{JOB_ANNOTATION_PREFIX}endpoint"
     METADATA_PREFIX = f"{JOB_ANNOTATION_PREFIX}metadata."
     OPTS_PREFIX = f"{JOB_ANNOTATION_PREFIX}opts."
+    AIBRIX = f"{JOB_ANNOTATION_PREFIX}aibrix"
     OUTPUT_FILE_ID = f"{JOB_ANNOTATION_PREFIX}output-file-id"
     TEMP_OUTPUT_FILE_ID = f"{JOB_ANNOTATION_PREFIX}temp-output-file-id"
     ERROR_FILE_ID = f"{JOB_ANNOTATION_PREFIX}error-file-id"
@@ -186,6 +188,27 @@ class BatchJobTransformer:
 
         template_overrides = _decode(JobAnnotationKey.TEMPLATE_OVERRIDES)
         profile_overrides = _decode(JobAnnotationKey.PROFILE_OVERRIDES)
+        aibrix = (
+            AibrixMetadata.model_validate_json(
+                annotations[JobAnnotationKey.AIBRIX.value]
+            )
+            if JobAnnotationKey.AIBRIX.value in annotations
+            else None
+        )
+        # Backward compatible logic, will be upgrade to consolidated aibrix field.
+        aibrix_from_spec = AibrixMetadata.from_extension_fields(
+            model_template_name=template_name,
+            model_template_version=template_version,
+            profile_name=profile_name,
+            template_overrides=template_overrides,
+            profile_overrides=profile_overrides,
+        )
+        if aibrix is None:
+            aibrix = aibrix_from_spec
+        elif aibrix_from_spec is not None:
+            merged = aibrix.model_dump(exclude_none=True)
+            merged.update(aibrix_from_spec.model_dump(exclude_none=True))
+            aibrix = AibrixMetadata.model_validate(merged)
 
         return BatchJobSpec(
             input_file_id=input_file_id,
@@ -197,11 +220,7 @@ class BatchJobTransformer:
             ),
             metadata=batch_metadata if batch_metadata else None,
             opts=batch_opts if batch_opts else None,
-            model_template_name=template_name,
-            model_template_version=template_version,
-            profile_name=profile_name,
-            template_overrides=template_overrides,
-            profile_overrides=profile_overrides,
+            aibrix=aibrix,
         )
 
     @classmethod

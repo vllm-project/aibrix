@@ -47,6 +47,9 @@ poetry run python scripts/batch_api_smoke.py --keep
 # Patient mode for a real engine (default times out at 90s):
 poetry run python scripts/batch_api_smoke.py --timeout 600 --poll-interval 5
 
+# K8s deployment mode:
+poetry run python scripts/batch_api_smoke.py --resource-type deployment -timeout 600 --poll-interval 5
+
 ================================================================
 What completes
 ================================================================
@@ -56,8 +59,12 @@ What completes
   output mirrors input bodies. Good for shape verification.
 * Standalone metadata + INFERENCE_ENGINE_ENDPOINT set: BatchDriver
   proxies to the real engine; raise --timeout if the model is slow.
-* K8s mode: kopf spawns worker pods. This script doesn't care about
+* K8s job mode: kopf spawns worker pods. This script doesn't care about
   the path — it only watches batch status — but completion depends on
+  pod scheduling, image pull, and the engine. Use --timeout 600+.
+* K8s deployment mode: job specific driver spawns long-running deployment pods,
+  and drive job progressing. Set "--resource-type deployment" to enable.
+  This script watches batch status — but completion depends on
   pod scheduling, image pull, and the engine. Use --timeout 600+.
 
 ================================================================
@@ -223,6 +230,16 @@ def parse_args() -> argparse.Namespace:
         help="Total seconds to wait for a terminal state. Default: %(default)s",
     )
     p.add_argument(
+        "--resource-type",
+        default=None,
+        help=(
+            "Deployment type specified to run the job via "
+            "extra_body.aibrix.planner_decisions.resource_details[].resource_type. "
+            "Required if --disable-inference-engine and not --enable-k8s-job "
+            "mode (no built-in fallback); ignored by standalone --dry-run."
+        ),
+    )
+    p.add_argument(
         "--aibrix-template",
         default=None,
         help=(
@@ -351,6 +368,10 @@ def main() -> None:
         "completion_window": args.completion_window,
     }
     aibrix_block: dict = {}
+    if args.resource_type:
+        aibrix_block["planner_decision"] = {
+            "resource_details": [{"resource_type": args.resource_type}]
+        }
     if args.aibrix_template:
         aibrix_block["model_template"] = {"name": args.aibrix_template}
     if args.aibrix_profile:

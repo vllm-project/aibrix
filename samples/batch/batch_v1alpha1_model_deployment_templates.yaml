@@ -62,10 +62,6 @@ data:
         quantization:
           weight: fp8
           kv_cache: fp8_e4m3
-        provider_config:
-          type: k8s
-          namespace: aibrix-inference
-          service_account: aibrix-engine
         supported_endpoints:
           - /v1/chat/completions
           - /v1/completions
@@ -106,10 +102,6 @@ data:
           enable_prefix_caching: true
         quantization:
           weight: bf16
-        provider_config:
-          type: k8s
-          namespace: aibrix-inference
-          service_account: aibrix-engine
         supported_endpoints:
           - /v1/chat/completions
           - /v1/completions
@@ -139,9 +131,6 @@ data:
           count: 1
         parallelism:
           tp: 1
-        provider_config:
-          type: k8s
-          namespace: aibrix-inference
         supported_endpoints:
           - /v1/chat/completions
           - /v1/completions

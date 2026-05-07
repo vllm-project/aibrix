@@ -18,14 +18,11 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 from pydantic_core import core_schema
 
-
-class NoExtraBaseModel(BaseModel):
-    """Base model that forbids extra fields."""
-
-    model_config = ConfigDict(extra="forbid")
+from .aibrix_metadata import AibrixMetadata
+from .base import _Strict
 
 
 class BatchJobEndpoint(str, Enum):
@@ -69,6 +66,7 @@ class BatchJobErrorCode(str, Enum):
     INFERENCE_FAILED = "inference_failed"
     PREPARE_OUTPUT_ERROR = "prepare_output_failed"
     FINALIZING_ERROR = "finalizing_failed"
+    INVALID_DRIVER = "invalid_driver"
     UNKNOWN_ERROR = "unknown_error"
 
 
@@ -89,14 +87,14 @@ class ConditionStatus(str, Enum):
     UNKNOWN = "Unknown"
 
 
-class TypeMeta(NoExtraBaseModel):
+class TypeMeta(_Strict):
     """Kubernetes TypeMeta equivalent."""
 
     api_version: str = Field(alias="apiVersion")
     kind: str
 
 
-class ObjectMeta(NoExtraBaseModel):
+class ObjectMeta(_Strict):
     """Kubernetes ObjectMeta equivalent."""
 
     name: Optional[str] = None
@@ -110,7 +108,7 @@ class ObjectMeta(NoExtraBaseModel):
     annotations: Optional[Dict[str, str]] = None
 
 
-class Condition(NoExtraBaseModel):
+class Condition(_Strict):
     """Kubernetes Condition equivalent."""
 
     type: ConditionType
@@ -120,7 +118,7 @@ class Condition(NoExtraBaseModel):
     message: Optional[str] = None
 
 
-class BatchJobSpec(NoExtraBaseModel):
+class BatchJobSpec(_Strict):
     """Defines the specification of a Batch job input."""
 
     input_file_id: str = Field(
@@ -141,43 +139,36 @@ class BatchJobSpec(NoExtraBaseModel):
         default=None,
         description="System-only options for internal use (e.g., fail_after_n_requests)",
     )
-
     # Set by Metadata Service when extra_body.aibrix.* is parsed at batch
     # creation. Values are looked up by TemplateRegistry / ProfileRegistry.
     # Stored as raw strings/dicts so this model has no dependency on the
     # template schema package (avoids circular imports). Validation
     # against actual template/profile existence happens upstream; the
     # renderer re-validates override dicts against the typed schemas.
-    model_template_name: Optional[str] = Field(
+    aibrix: Optional[AibrixMetadata] = Field(
         default=None,
-        description="Name of ModelDeploymentTemplate to use. Required at "
-        "render time; if absent the renderer raises and the request is "
-        "rejected as 400. Optional on the type only because legacy "
-        "deserialization paths (e.g. K8s annotations on pre-template "
-        "batches) can land here without it.",
+        description="AIBrix-specific metadata attached to the batch job",
     )
-    model_template_version: Optional[str] = Field(
-        default=None,
-        description="Optional version pin for the named template. Empty / "
-        "None resolves to the registry's latest active version of "
-        "model_template_name at render time.",
-    )
-    profile_name: Optional[str] = Field(
-        default=None,
-        description="Name of BatchProfile to apply; None means use system default.",
-    )
-    template_overrides: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="User-supplied overrides applied on top of the resolved "
-        "template (extra_body.aibrix.model_template.overrides). Allowlisted "
-        "by the renderer; today only engine_args is honoured.",
-    )
-    profile_overrides: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="User-supplied overrides applied on top of the resolved "
-        "profile (extra_body.aibrix.profile.overrides). Allowlisted by the "
-        "renderer; today only scheduling is accepted (and roundtripped).",
-    )
+
+    @property
+    def model_template_name(self) -> Optional[str]:
+        return self.aibrix.model_template_name if self.aibrix else None
+
+    @property
+    def model_template_version(self) -> Optional[str]:
+        return self.aibrix.model_template_version if self.aibrix else None
+
+    @property
+    def profile_name(self) -> Optional[str]:
+        return self.aibrix.profile_name if self.aibrix else None
+
+    @property
+    def template_overrides(self) -> Optional[Dict[str, Any]]:
+        return self.aibrix.template_overrides if self.aibrix else None
+
+    @property
+    def profile_overrides(self) -> Optional[Dict[str, Any]]:
+        return self.aibrix.profile_overrides if self.aibrix else None
 
     @classmethod
     def from_strings(
@@ -187,11 +178,8 @@ class BatchJobSpec(NoExtraBaseModel):
         completion_window: str = CompletionWindow.TWENTY_FOUR_HOURS.value,
         metadata: Optional[Dict[str, str]] = None,
         opts: Optional[Dict[str, str]] = None,
-        model_template_name: Optional[str] = None,
-        model_template_version: Optional[str] = None,
-        profile_name: Optional[str] = None,
-        template_overrides: Optional[Dict[str, Any]] = None,
-        profile_overrides: Optional[Dict[str, Any]] = None,
+        aibrix: Optional[Dict[str, Any]] = None,
+        **kw,
     ) -> "BatchJobSpec":
         """Create BatchJobSpec from string parameters with validation.
 
@@ -201,11 +189,7 @@ class BatchJobSpec(NoExtraBaseModel):
             completion_window: The completion window as string
             metadata: Optional metadata dictionary
             opts: Optional system options dictionary
-            model_template_name: Optional ModelDeploymentTemplate name
-            model_template_version: Optional version pin (resolves "latest active" if None)
-            profile_name: Optional BatchProfile name
-            template_overrides: Optional raw TemplateOverridesSpec dict
-            profile_overrides: Optional raw ProfileOverridesSpec dict
+            aibrix: Optional structured AIBrix metadata
 
         Returns:
             BatchJobSpec instance
@@ -229,11 +213,9 @@ class BatchJobSpec(NoExtraBaseModel):
             completion_window=validated_completion_window.expires_at(),
             metadata=metadata,
             opts=opts,
-            model_template_name=model_template_name,
-            model_template_version=model_template_version,
-            profile_name=profile_name,
-            template_overrides=template_overrides,
-            profile_overrides=profile_overrides,
+            aibrix=AibrixMetadata(**aibrix)
+            if aibrix
+            else AibrixMetadata.from_extension_fields(**kw),
         )
 
     @staticmethod
@@ -285,7 +267,7 @@ class BatchJobSpec(NoExtraBaseModel):
             )
 
 
-class RequestCountStats(NoExtraBaseModel):
+class RequestCountStats(_Strict):
     """Holds the statistics on the processing of the batch."""
 
     total: int = Field(default=0, description="Total number of requests in the batch")
@@ -299,7 +281,7 @@ class RequestCountStats(NoExtraBaseModel):
     failed: int = Field(default=0, description="Number of requests that have failed")
 
 
-class InputTokensDetails(NoExtraBaseModel):
+class InputTokensDetails(_Strict):
     """Token-count breakdown for the input side of a batch.
 
     Mirrors the OpenAI Batch API's ``input_tokens_details`` shape;
@@ -310,7 +292,7 @@ class InputTokensDetails(NoExtraBaseModel):
     cached_tokens: int = Field(default=0, ge=0)
 
 
-class OutputTokensDetails(NoExtraBaseModel):
+class OutputTokensDetails(_Strict):
     """Token-count breakdown for the output side of a batch.
 
     ``reasoning_tokens`` are the chain-of-thought tokens emitted by
@@ -321,7 +303,7 @@ class OutputTokensDetails(NoExtraBaseModel):
     reasoning_tokens: int = Field(default=0, ge=0)
 
 
-class BatchUsage(NoExtraBaseModel):
+class BatchUsage(_Strict):
     """Aggregated token usage for a batch.
 
     Matches the OpenAI Batch API's ``usage`` object (added 2025-09)
@@ -437,7 +419,7 @@ class BatchJobError(Exception):
         return new_copy
 
 
-class BatchJobStatus(NoExtraBaseModel):
+class BatchJobStatus(_Strict):
     """Defines the observed state of BatchJobSpec."""
 
     job_id: str = Field(
@@ -602,7 +584,7 @@ class BatchJobStatus(NoExtraBaseModel):
         self.conditions.append(condition)
 
 
-class BatchJob(NoExtraBaseModel):
+class BatchJob(_Strict):
     """Schema for the BatchJob API - Kubernetes Custom Resource equivalent."""
 
     session_id: Optional[str] = Field(

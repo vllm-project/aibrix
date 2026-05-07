@@ -123,6 +123,7 @@ class ModelSourceType(str, Enum):
 
     HUGGINGFACE = "huggingface"
     S3 = "s3"
+    TOS = "tos"
     LOCAL = "local"
 
 

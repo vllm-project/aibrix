@@ -32,3 +32,10 @@ if not (1 <= DEFAULT_JOB_POOL_SIZE <= 100):
 
 # Job opts are for testing purpose.
 BATCH_OPTS_FAIL_AFTER_N_REQUESTS = "fail_after_n_requests"
+BATCH_OPTS_RESOURCE_TYPE = "resource_type"
+BATCH_OPTS_RESOURCE_GPU_TYPE = "gpu_type"
+BATCH_OPTS_RESOURCE_ENDPOINT = "resource_endpoint"
+BATCH_OPTS_RESOURCE_WORKER_NUM = "worker_num"
+
+BATCH_RESOURCE_TYPE_LOCAL = "local"
+BATCH_RESOURCE_TYPE_DEPLOYMENT = "deployment"

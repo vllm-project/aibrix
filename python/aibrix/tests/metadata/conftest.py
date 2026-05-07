@@ -21,7 +21,9 @@ any external infrastructure.
 """
 
 import argparse
+import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -29,10 +31,14 @@ from aibrix.metadata.app import build_app
 from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
 
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 
 @pytest.fixture(autouse=True)
 def _isolated_local_storage(monkeypatch):
-    """Per-test isolated LOCAL_STORAGE_PATH.
+    """Per-test isolated STORAGE_LOCAL_PATH.
 
     Without this, multiple tests share the cwd-relative ``.storage``
     directory the storage factory picks by default, so list endpoints
@@ -44,7 +50,7 @@ def _isolated_local_storage(monkeypatch):
     shared pool.
     """
     with tempfile.TemporaryDirectory(prefix="aibrix-test-storage-") as tmp:
-        monkeypatch.setenv("LOCAL_STORAGE_PATH", tmp)
+        monkeypatch.setenv("STORAGE_LOCAL_PATH", tmp)
         yield
 
 
@@ -71,6 +77,7 @@ def create_test_app(disable_batch_api: bool = False, disable_file_api: bool = Fa
                 disable_batch_api=disable_batch_api,
                 disable_file_api=disable_file_api,
                 enable_k8s_job=False,
+                enable_mongo_job=False,
                 k8s_job_patch=None,
                 dry_run=True,
             )

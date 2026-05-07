@@ -15,10 +15,24 @@
 import asyncio
 import copy
 import json
+import os
+import uuid
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from kubernetes import client as k8s_client
 
+from aibrix.batch.job_entity import (
+    AibrixMetadata,
+    BatchJobEndpoint,
+    BatchJobSpec,
+    BatchProfileRef,
+    CompletionWindow,
+    ModelTemplateRef,
+)
+from aibrix.metadata.cache import RedisJobCache
+from aibrix.storage import StorageType
 from tests.batch.conftest import create_test_app
 
 # ---- Multi-endpoint input data generators ----
@@ -86,6 +100,42 @@ def generate_batch_input_data(
     return "\n".join(lines)
 
 
+def build_batch_request(
+    input_file_id: str,
+    endpoint: str,
+    *,
+    aibrix_template: str | None = None,
+    aibrix_profile: str | None = None,
+    resource_type: str | None = None,
+) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "input_file_id": input_file_id,
+        "endpoint": endpoint,
+        "completion_window": "24h",
+    }
+    aibrix: dict[str, Any] = {}
+    if aibrix_template:
+        aibrix["model_template"] = {"name": aibrix_template}
+    if aibrix_profile:
+        aibrix["profile"] = {"name": aibrix_profile}
+    if resource_type:
+        aibrix["planner_decision"] = {
+            "provision_id": "reservation-1",
+            "provision_resource_deadline": 3600,
+            "resource_details": [
+                {
+                    "resource_type": resource_type,
+                    "endpoint_cluster": "cluster-a",
+                    "gpu_type": "H100",
+                    "worker_num": 1,
+                }
+            ],
+        }
+    if aibrix:
+        request["aibrix"] = aibrix
+    return request
+
+
 def verify_batch_output_content(output_content: str, expected_requests: int) -> bool:
     """Verify that batch output content has the expected structure."""
     lines = output_content.strip().split("\n")
@@ -138,6 +188,54 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
     return True
 
 
+@pytest.fixture(scope="function")
+def redis_deployment_test_app(
+    test_s3_bucket,
+    redis_config_available,
+    ensure_job_rbac,
+    template_configmaps,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "aibrix.metadata.app.envs.STORAGE_REDIS_HOST",
+        os.environ["REDIS_HOST"],
+    )
+    monkeypatch.setattr(
+        "aibrix.metadata.app.envs.STORAGE_REDIS_PORT",
+        int(os.environ.get("REDIS_PORT", "6379")),
+    )
+    monkeypatch.setattr(
+        "aibrix.metadata.app.envs.STORAGE_REDIS_DB",
+        int(os.environ.get("REDIS_DB", "0")),
+    )
+    monkeypatch.setattr(
+        "aibrix.metadata.app.envs.STORAGE_REDIS_PASSWORD",
+        os.environ.get("REDIS_PASSWORD", "unused-for-local-redis-test"),
+    )
+    monkeypatch.setattr(
+        "aibrix.metadata.app.envs.DB_REDIS_PREFIX",
+        f"batch-jobs-deployment-{uuid.uuid4().hex}",
+    )
+    monkeypatch.setattr(
+        "aibrix.metadata.cache.redis.RedisJobCache._build_client",
+        lambda self, host, port, db, password: __import__("redis").Redis(
+            host=host,
+            port=port,
+            db=db,
+            password=os.environ.get("REDIS_PASSWORD"),
+            decode_responses=False,
+        ),
+    )
+    monkeypatch.setenv("INFERENCE_ENGINE_ENDPOINT", "http://127.0.0.1:8000")
+    return create_test_app(
+        enable_redis_job=True,
+        storage_type=StorageType.S3,
+        metastore_type=StorageType.LOCAL,
+        params={"bucket_name": test_s3_bucket},
+        dry_run=False,
+    )
+
+
 @pytest.mark.asyncio
 async def test_openai_batch_api_e2e():
     """
@@ -173,11 +271,7 @@ async def test_openai_batch_api_e2e():
         # Step 2: Create batch job via Batch API
         print("Step 2: Creating batch job...")
 
-        batch_request = {
-            "input_file_id": input_file_id,
-            "endpoint": "/v1/chat/completions",
-            "completion_window": "24h",
-        }
+        batch_request = build_batch_request(input_file_id, "/v1/chat/completions")
 
         batch_response = client.post("/v1/batches", json=batch_request)
         assert (
@@ -288,6 +382,46 @@ async def test_openai_batch_api_e2e():
 
 
 @pytest.mark.asyncio
+async def test_metadata_server_workflow_renders_worker_env_from_s3_and_cluster_redis(
+    test_app,
+):
+    job_cache = test_app.state.batch_driver._job_entity_manager
+    assert job_cache is not None
+
+    spec = BatchJobSpec(
+        input_file_id="file-input",
+        endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+        completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        aibrix=AibrixMetadata(
+            model_template=ModelTemplateRef(name="mock-vllm"),
+            profile=BatchProfileRef(name="unittest"),
+        ),
+    )
+
+    manifest = job_cache._batch_job_spec_to_k8s_job(
+        session_id="test-session",
+        job_spec=spec,
+        job_name="batch-env-check",
+    )
+    worker_env = {
+        item["name"]: item
+        for item in manifest["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+
+    assert worker_env["STORAGE_TYPE"]["value"] == "s3"
+    assert "STORAGE_LOCAL_PATH" not in worker_env
+    assert "STORAGE_AWS_ACCESS_KEY_ID" in worker_env
+    assert "STORAGE_AWS_SECRET_ACCESS_KEY" in worker_env
+    assert "STORAGE_AWS_REGION" in worker_env
+    assert "STORAGE_AWS_BUCKET" in worker_env
+    assert (
+        worker_env["REDIS_HOST"]["value"]
+        == "aibrix-redis-master.aibrix-system.svc.cluster.local"
+    )
+    assert worker_env["REDIS_PORT"]["value"] == "6379"
+
+
+@pytest.mark.asyncio
 async def test_openai_batch_api_metadata_server_workflow(test_app):
     """
     End-to-end test for OpenAI Batch API with metadata server workflow:
@@ -320,11 +454,12 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
         # Step 2: Create batch job via Batch API (metadata server mode)
         print("Step 2: Creating batch job with metadata server workflow...")
 
-        batch_request = {
-            "input_file_id": input_file_id,
-            "endpoint": "/v1/chat/completions",
-            "completion_window": "24h",
-        }
+        batch_request = build_batch_request(
+            input_file_id,
+            "/v1/chat/completions",
+            aibrix_template="mock-vllm",
+            aibrix_profile="unittest",
+        )
 
         batch_response = client.post("/v1/batches", json=batch_request)
         assert (
@@ -466,6 +601,120 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
             "Job preparation, worker coordination, and finalization working correctly."
         )
         await test_app.state.batch_driver.clear_job(batch_id)
+
+
+@pytest.mark.asyncio
+async def test_openai_batch_api_metadata_server_workflow_with_redis_cache_and_deployment_driver(
+    redis_deployment_test_app,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "aibrix.batch.job_driver.deployment_driver._deployment_job_driver",
+        None,
+    )
+    app = redis_deployment_test_app
+    assert isinstance(app.state.batch_driver._job_entity_manager, RedisJobCache)
+    infrastructure_context = app.state.batch_driver._context
+    assert infrastructure_context is not None
+
+    apps_v1_api = infrastructure_context.apps_v1_api
+    core_v1_api = infrastructure_context.core_v1_api
+    assert apps_v1_api is not None
+    assert core_v1_api is not None
+
+    with TestClient(app) as client:
+        input_data = generate_batch_input_data(3)
+        files = {
+            "file": ("deployment-input.jsonl", input_data, "application/jsonl"),
+            "purpose": (None, "batch"),
+        }
+
+        upload_response = client.post("/v1/files", files=files)
+        assert upload_response.status_code == 200
+        input_file_id = upload_response.json()["id"]
+
+        batch_request = build_batch_request(
+            input_file_id,
+            "/v1/chat/completions",
+            aibrix_template="mock-vllm",
+            aibrix_profile="unittest",
+            resource_type="deployment",
+        )
+        create_response = client.post("/v1/batches", json=batch_request)
+        assert create_response.status_code == 200
+        batch_id = create_response.json()["id"]
+        deployment_name = f"batch-{batch_id[:12]}-engine"
+        service_name = f"batch-{batch_id[:12]}-svc"
+        model_name = service_name
+        saw_deployment = False
+        saw_ready_deployment = False
+        saw_service = False
+        cleanup_runtime = False
+
+        try:
+            terminal_batch = None
+            for _ in range(120):
+                status_response = client.get(f"/v1/batches/{batch_id}")
+                assert status_response.status_code == 200
+                terminal_batch = status_response.json()
+                try:
+                    deployment = apps_v1_api.read_namespaced_deployment_status(
+                        name=deployment_name,
+                        namespace="default",
+                    )
+                    saw_deployment = True
+                    available = deployment.status.available_replicas or 0
+                    if available >= 1:
+                        saw_ready_deployment = True
+                except k8s_client.ApiException as ex:
+                    if ex.status != 404:
+                        raise
+                try:
+                    service = core_v1_api.read_namespaced_service(
+                        name=service_name,
+                        namespace="default",
+                    )
+                    if service.metadata.name == service_name:
+                        saw_service = True
+                except k8s_client.ApiException as ex:
+                    if ex.status != 404:
+                        raise
+                if terminal_batch["status"] in {"completed", "failed", "cancelled"}:
+                    break
+                await asyncio.sleep(1)
+
+            assert terminal_batch is not None
+            assert terminal_batch["status"] == "completed"
+            assert saw_deployment
+            assert saw_ready_deployment
+            assert saw_service
+
+            output_file_id = terminal_batch["output_file_id"]
+            output_response = client.get(f"/v1/files/{output_file_id}/content")
+            assert output_response.status_code == 200
+            assert verify_batch_output_content(output_response.text, 3)
+            first_line = json.loads(output_response.text.splitlines()[0])
+            assert first_line["response"]["body"]["model"] == model_name
+            cleanup_runtime = True
+        finally:
+            if cleanup_runtime:
+                try:
+                    core_v1_api.delete_namespaced_service(
+                        name=service_name,
+                        namespace="default",
+                    )
+                except k8s_client.ApiException as ex:
+                    if ex.status != 404:
+                        raise
+                try:
+                    apps_v1_api.delete_namespaced_deployment(
+                        name=deployment_name,
+                        namespace="default",
+                    )
+                except k8s_client.ApiException as ex:
+                    if ex.status != 404:
+                        raise
+            await app.state.batch_driver.clear_job(batch_id)
 
 
 # ---- Multi-endpoint parametrized tests ----

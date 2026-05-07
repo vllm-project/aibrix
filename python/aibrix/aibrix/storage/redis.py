@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import time
 from typing import BinaryIO, Optional, TextIO, Union
 
@@ -58,7 +59,7 @@ class RedisStorage(BaseStorage):
         self.port = port
         self.db = db
         self.password = password
-        self._redis: Optional[redis.Redis] = None
+        self._redis_clients: dict[int, redis.Redis] = {}
 
     def get_type(self) -> StorageType:
         """Get the type of storage.
@@ -70,21 +71,24 @@ class RedisStorage(BaseStorage):
 
     async def _get_redis(self) -> redis.Redis:
         """Get Redis connection, creating it if necessary."""
-        if self._redis is None:
-            self._redis = redis.Redis(
+        loop_id = id(asyncio.get_running_loop())
+        redis_client = self._redis_clients.get(loop_id)
+        if redis_client is None:
+            redis_client = redis.Redis(
                 host=self.host,
                 port=self.port,
                 db=self.db,
                 password=self.password,
                 decode_responses=False,  # Keep as bytes
             )
-        return self._redis
+            self._redis_clients[loop_id] = redis_client
+        return redis_client
 
     async def close(self):
         """Close Redis connection."""
-        if self._redis:
-            await self._redis.aclose()
-            self._redis = None
+        for redis_client in self._redis_clients.values():
+            await redis_client.aclose()
+        self._redis_clients.clear()
 
     def _parse_hierarchical_key(self, key: str) -> tuple[Optional[str], str]:
         """Parse hierarchical key into parent and item.

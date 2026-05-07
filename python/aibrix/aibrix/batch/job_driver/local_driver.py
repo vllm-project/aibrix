@@ -15,9 +15,6 @@
 import asyncio
 import uuid
 from typing import Any, Dict, Optional, Set
-from urllib.parse import urljoin
-
-import httpx
 
 import aibrix.batch.constant as constant
 import aibrix.batch.storage as storage
@@ -29,51 +26,16 @@ from aibrix.batch.job_entity import (
     BatchUsage,
     ConditionType,
 )
-from aibrix.batch.job_progress_manager import JobProgressManager
 from aibrix.logger import init_logger
+
+from .driver import JobDriver
+from .inference_client import InferenceEngineClient
+from .progress_manager import JobProgressManager
 
 logger = init_logger(__name__)
 
 
-class InferenceEngineClient:
-    """Abstract base for inference clients used by ``JobDriver``."""
-
-    async def inference_request(self, endpoint: str, request_data):
-        raise NotImplementedError(
-            "InferenceEngineClient is abstract; instantiate "
-            "ProxyInferenceEngineClient (production) or "
-            "EchoInferenceEngineClient (--dry-run) instead."
-        )
-
-
-class EchoInferenceEngineClient(InferenceEngineClient):
-    """Returns the request body verbatim. Only valid under --dry-run."""
-
-    async def inference_request(self, endpoint: str, request_data):
-        await asyncio.sleep(constant.EXPIRE_INTERVAL)
-        return request_data
-
-
-class ProxyInferenceEngineClient(InferenceEngineClient):
-    def __init__(self, base_url: str):
-        """
-        Initiate client to inference engine.
-        """
-        self.base_url = base_url
-
-    async def inference_request(self, endpoint: str, request_data):
-        """Real inference request to LLM engine."""
-        url = urljoin(self.base_url, endpoint)
-
-        logger.debug("requesting inference", url=url, body=request_data)  # type: ignore[call-arg]
-
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=request_data, timeout=30.0)
-            response.raise_for_status()
-            return response.json()
-
-
-class JobDriver:
+class LocalJobDriver(JobDriver):
     def __init__(
         self,
         progress_manager: JobProgressManager,
@@ -163,6 +125,7 @@ class JobDriver:
         self._usage_by_job.pop(job_id, None)
         self._usage_counted_ids.pop(job_id, None)
 
+    # BUG: This function is not thread-safe. Usage from multiple workers can overwrite each other.
     async def _snapshot_usage_to_status(self, job_id: str) -> None:
         """Push the current accumulator into the live BatchJob's status.
 
@@ -187,6 +150,9 @@ class JobDriver:
         """
         Execute complete job workflow: prepare -> execute -> finalize.
         This function executes all three steps.
+        LocalJobDriver can run either:
+        1. As a single thread, where the job is executed sequentially.
+        2. As one of parallel workers, where the job is split into multiple workers for parallel execution.
         """
         job = await self._progress_manager.get_job(job_id)
         if job is None:
@@ -228,6 +194,8 @@ class JobDriver:
 
         # Step 3: Aggregate outputs
         if job.status.state == BatchJobState.FINALIZING:
+            # When run as a paraller worker, temp files are not created by the worker,
+            # skip finalization and leave the coordination job driver to handle it.
             if not has_temp_files:
                 await storage.finalize_job_output_data(job)
 
@@ -241,6 +209,22 @@ class JobDriver:
             raise RuntimeError(
                 failed_condition.message or "Job failed with an unspecified error"
             )
+
+    async def validate_job(self, job: BatchJob):
+        total, exists = await storage.read_job_input_info(job)
+        if not exists:
+            raise BatchJobError(
+                code=BatchJobErrorCode.INVALID_INPUT_FILE,
+                message="input file not found",
+            )
+        if not self._job_authentication(job):
+            raise BatchJobError(
+                code=BatchJobErrorCode.AUTHENTICATION_ERROR,
+                message="authentication error",
+            )
+
+    def _job_authentication(self, job: BatchJob) -> bool:
+        return True
 
     async def prepare_job(self, job: BatchJob) -> BatchJob:
         """

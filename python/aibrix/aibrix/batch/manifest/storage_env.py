@@ -55,17 +55,24 @@ def build_storage_env(profile: BatchProfile) -> List[Dict[str, Any]]:
         List of K8s V1EnvVar-shaped dicts.
     """
     backend = profile.spec.storage.backend
+    env = [{"name": "STORAGE_TYPE", "value": _storage_type_value(backend)}]
     if backend == StorageBackend.S3:
-        return _s3_env(profile)
+        return env + _s3_env(profile)
     if backend == StorageBackend.TOS:
-        return _tos_env(profile)
+        return env + _tos_env(profile)
     if backend == StorageBackend.MINIO:
-        return _minio_env(profile)
+        return env + _minio_env(profile)
     if backend == StorageBackend.GCS:
-        return _gcs_env(profile)
+        return env + _gcs_env(profile)
     if backend == StorageBackend.LOCAL:
-        return _local_env(profile)
-    return []
+        return env + _local_env(profile)
+    return env
+
+
+def _storage_type_value(backend: StorageBackend) -> str:
+    if backend == StorageBackend.MINIO:
+        return StorageBackend.S3.value
+    return backend.value
 
 
 def _s3_env(profile: BatchProfile) -> List[Dict[str, Any]]:

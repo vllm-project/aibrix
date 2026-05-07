@@ -14,10 +14,29 @@
 
 """Unit tests for batch API endpoint support and body validation."""
 
+from datetime import datetime, timezone
+
 import pytest
 
-from aibrix.batch.job_entity import BatchJobEndpoint
-from aibrix.metadata.api.v1.batch import _validate_request_body_for_endpoint
+from aibrix.batch.job_entity import (
+    AibrixMetadata,
+    BatchJob,
+    BatchJobEndpoint,
+    BatchJobSpec,
+    BatchJobState,
+    BatchJobStatus,
+    BatchProfileRef,
+    ModelTemplateRef,
+    ObjectMeta,
+    PlannerDecision,
+    ResourceDetail,
+    TypeMeta,
+)
+from aibrix.metadata.api.v1.batch import (
+    BatchSpec,
+    _batch_job_to_openai_response,
+    _validate_request_body_for_endpoint,
+)
 
 
 def test_chat_completions_endpoint_supported():
@@ -217,36 +236,165 @@ class TestEndpointBodyValidation:
         result = _validate_request_body_for_endpoint(body, "/v1/unknown", 1)
         assert result is None
 
-    @pytest.mark.parametrize(
-        "endpoint,body",
-        [
-            (
-                "/v1/chat/completions",
-                {
-                    "model": "gpt-3.5-turbo",
-                    "messages": [{"role": "user", "content": "Hi"}],
+
+def test_batch_spec_accepts_aibrix_metadata():
+    spec = BatchSpec.model_validate(
+        {
+            "input_file_id": "file-123",
+            "endpoint": "/v1/chat/completions",
+            "completion_window": "24h",
+            "aibrix": {
+                "job_id": "planner-job-1",
+                "planner_decision": {
+                    "provision_id": "reservation-1",
+                    "provision_resource_deadline": 123,
+                    "resource_details": [
+                        {
+                            "resource_type": "openai",
+                            "endpoint_cluster": "cluster-a",
+                            "gpu_type": "H100",
+                            "worker_num": 4,
+                        }
+                    ],
                 },
-            ),
-            (
-                "/v1/completions",
-                {"model": "gpt-3.5-turbo", "prompt": "Hi"},
-            ),
-            (
-                "/v1/embeddings",
-                {"model": "text-embedding-ada-002", "input": "Hi"},
-            ),
-            (
-                "/v1/rerank",
-                {
-                    "model": "reranker-v1",
-                    "query": "Hi",
-                    "documents": ["doc1"],
+                "model_template": {
+                    "name": "echo-template",
+                    "version": "v1.0.0",
+                    "overrides": {
+                        "engine_args": {
+                            "max_num_seqs": "128",
+                        }
+                    },
                 },
-            ),
-        ],
-        ids=["chat_completions", "completions", "embeddings", "rerank"],
+                "profile": {
+                    "name": "default-profile",
+                    "overrides": {
+                        "scheduling": {
+                            "max_concurrency": 4,
+                        }
+                    },
+                },
+            },
+        }
     )
-    def test_all_endpoints_accept_valid_bodies(self, endpoint, body):
-        """Parametrized test: all endpoints accept their valid bodies."""
-        result = _validate_request_body_for_endpoint(body, endpoint, 1)
-        assert result is None, f"Unexpected error for {endpoint}: {result}"
+
+    batch_job_spec = BatchSpec.newBatchJobSpec(spec)
+
+    assert batch_job_spec.aibrix is not None
+    assert batch_job_spec.aibrix.job_id == "planner-job-1"
+    assert batch_job_spec.aibrix.planner_decision is not None
+    assert batch_job_spec.aibrix.planner_decision.provision_id == "reservation-1"
+    assert batch_job_spec.aibrix.planner_decision.provision_resource_deadline == 123
+    assert len(batch_job_spec.aibrix.planner_decision.resource_details or []) == 1
+    resource = batch_job_spec.aibrix.planner_decision.resource_details[0]
+    assert resource is not None
+    assert resource.resource_type == "openai"
+    assert resource.endpoint_cluster == "cluster-a"
+    assert resource.gpu_type == "H100"
+    assert resource.worker_num == 4
+    assert batch_job_spec.aibrix.model_template is not None
+    assert batch_job_spec.aibrix.model_template.name == "echo-template"
+    assert batch_job_spec.aibrix.model_template.overrides == {
+        "engine_args": {"max_num_seqs": "128"}
+    }
+    assert batch_job_spec.aibrix.profile is not None
+    assert batch_job_spec.aibrix.profile.name == "default-profile"
+    assert batch_job_spec.aibrix.profile.overrides == {
+        "scheduling": {"max_concurrency": 4}
+    }
+
+
+def test_batch_response_includes_input_aibrix_metadata():
+    created_at = datetime.now(timezone.utc)
+    batch_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="BatchJob"),
+        metadata=ObjectMeta(name="test-batch", namespace="default"),
+        spec=BatchJobSpec(
+            input_file_id="file-123",
+            endpoint="/v1/chat/completions",
+            completion_window=86400,
+            aibrix=AibrixMetadata(
+                job_id="planner-job-1",
+                planner_decision=PlannerDecision(
+                    provision_id="reservation-1",
+                    provision_resource_deadline=123,
+                    resource_details=[
+                        ResourceDetail(
+                            resource_type="openai",
+                            endpoint_cluster="cluster-a",
+                            gpu_type="H100",
+                            worker_num=4,
+                        )
+                    ],
+                ),
+                model_template=ModelTemplateRef(
+                    name="echo-template",
+                    version="v1.0.0",
+                    overrides={"engine_args": {"max_num_seqs": "128"}},
+                ),
+                profile=BatchProfileRef(
+                    name="default-profile",
+                    overrides={"scheduling": {"max_concurrency": 4}},
+                ),
+            ),
+        ),
+        status=BatchJobStatus(
+            jobID="job-123",
+            state=BatchJobState.CREATED,
+            createdAt=created_at,
+        ),
+    )
+
+    response = _batch_job_to_openai_response(batch_job)
+
+    assert response.aibrix is not None
+    assert response.aibrix.job_id == "planner-job-1"
+    assert response.aibrix.planner_decision is not None
+    assert response.aibrix.planner_decision.provision_id == "reservation-1"
+    assert response.aibrix.planner_decision.resource_details is not None
+    assert len(response.aibrix.planner_decision.resource_details) == 1
+    assert response.aibrix.planner_decision.resource_details[0].gpu_type == "H100"
+    assert response.aibrix.model_template is not None
+    assert response.aibrix.model_template.name == "echo-template"
+    assert response.aibrix.model_template.overrides == {
+        "engine_args": {"max_num_seqs": "128"}
+    }
+    assert response.aibrix.profile is not None
+    assert response.aibrix.profile.name == "default-profile"
+    assert response.aibrix.profile.overrides == {"scheduling": {"max_concurrency": 4}}
+    assert response.model == "echo-template"
+
+
+@pytest.mark.parametrize(
+    "endpoint,body",
+    [
+        (
+            "/v1/chat/completions",
+            {
+                "model": "gpt-3.5-turbo",
+                "messages": [{"role": "user", "content": "Hi"}],
+            },
+        ),
+        (
+            "/v1/completions",
+            {"model": "gpt-3.5-turbo", "prompt": "Hi"},
+        ),
+        (
+            "/v1/embeddings",
+            {"model": "text-embedding-ada-002", "input": "Hi"},
+        ),
+        (
+            "/v1/rerank",
+            {
+                "model": "reranker-v1",
+                "query": "Hi",
+                "documents": ["doc1"],
+            },
+        ),
+    ],
+    ids=["chat_completions", "completions", "embeddings", "rerank"],
+)
+def test_all_endpoints_accept_valid_bodies(endpoint, body):
+    """Parametrized test: all endpoints accept their valid bodies."""
+    result = _validate_request_body_for_endpoint(body, endpoint, 1)
+    assert result is None, f"Unexpected error for {endpoint}: {result}"

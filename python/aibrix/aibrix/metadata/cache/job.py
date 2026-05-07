@@ -91,6 +91,8 @@ class JobCache(JobEntityManager):
         The kopf ADDED seed write keeps the default swallow because
         the next event re-emits the document.
         """
+        super().__init__()
+
         # Cache of BatchJob objects keyed by batch ID (K8s UID)
         self.active_jobs: Dict[str, BatchJob] = {}
 
@@ -333,12 +335,26 @@ class JobCache(JobEntityManager):
                 patch=patch_body,
             )  # type: ignore[call-arg]
 
-            await asyncio.to_thread(
-                self.batch_v1_api.patch_namespaced_job,
-                name=job.metadata.name,
-                namespace=namespace,
-                body=patch_body,
-            )
+            for attempt in range(5):
+                try:
+                    await asyncio.to_thread(
+                        self.batch_v1_api.patch_namespaced_job,
+                        name=job.metadata.name,
+                        namespace=namespace,
+                        body=patch_body,
+                    )
+                    break
+                except ApiException as e:
+                    if e.status == 404 and attempt < 4:
+                        logger.warning(  # type: ignore[call-arg]
+                            "Job not visible yet while setting ready; retrying",
+                            job_name=job.metadata.name,
+                            namespace=namespace,
+                            attempt=attempt + 1,
+                        )
+                        await asyncio.sleep(0.5)
+                        continue
+                    raise
 
             await self._put_to_store(job, op="update_job_ready", propagate=True)
 
@@ -704,7 +720,8 @@ async def job_created_handler(body: Any, **kwargs: Any) -> None:
 
         # Invoke callback if registered
         try:
-            if await job_cache.job_committed(batch_job):
+            committed_ok = await job_cache.job_committed(batch_job)
+            if committed_ok:
                 # Store in cache
                 job_cache.active_jobs[job_id] = batch_job
                 # Seed the initial document. The K8s ADDED event is

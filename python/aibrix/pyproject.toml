@@ -67,6 +67,7 @@ hf-transfer = "^0.1.8"
 types-redis = "^4.6.0.20241004"
 redis = "^5.2.0"
 kubernetes = "^31.0.0"
+pymongo = "^4.10.1"
 # Required by kopf at import time (type stubs); without it kopf crashes with
 # TypeError: unsupported operand type(s) for |: 'NoneType' and 'NoneType'
 kubernetes-asyncio = "^31.0.0"

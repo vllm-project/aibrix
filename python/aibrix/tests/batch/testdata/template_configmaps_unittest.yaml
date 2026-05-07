@@ -28,9 +28,6 @@ data:
           count: 1
         parallelism:
           tp: 1
-        provider_config:
-          type: k8s
-          namespace: default
         supported_endpoints:
           - /v1/chat/completions
           - /v1/embeddings
