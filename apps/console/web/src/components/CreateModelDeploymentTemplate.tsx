@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronLeft, Save, Trash2 } from 'lucide-react';
+import { ChevronLeft, Save } from 'lucide-react';
 import {
   createModelDeploymentTemplate,
   getModel,
@@ -14,24 +14,87 @@ import type { Model } from '../data/mockData';
 
 interface CreateModelDeploymentTemplateProps {
   modelId: string;
-  templateId?: string; // when set, the form is in edit mode
+  templateId?: string; // when set with mode!=='view', edit mode; with mode==='view', read-only
+  cloneFromId?: string; // when set, prefill from this template but save as new (create path)
+  mode?: 'view';
   onBack: () => void;
   onSaved: () => void;
 }
 
-const ENGINE_TYPES = ['vllm', 'sglang', 'trtllm', 'lmdeploy', 'mock'];
-const MODEL_SOURCE_TYPES = ['huggingface', 's3', 'local', 'registry'];
-const INTERCONNECT_OPTIONS = ['', 'nvlink', 'pcie', 'ib'];
+// Bump trailing numeric component of a version string. Examples:
+//   v1.2.3 -> v1.2.4   v1.2 -> v1.3   v1 -> v2   foo-7 -> foo-8   plain -> plain-2
+function bumpVersion(v: string): string {
+  const semver = v.match(/^(v?)(\d+)\.(\d+)\.(\d+)$/);
+  if (semver) return `${semver[1]}${semver[2]}.${semver[3]}.${Number(semver[4]) + 1}`;
+  const minor = v.match(/^(v?)(\d+)\.(\d+)$/);
+  if (minor) return `${minor[1]}${minor[2]}.${Number(minor[3]) + 1}`;
+  const major = v.match(/^(v?)(\d+)$/);
+  if (major) return `${major[1]}${Number(major[2]) + 1}`;
+  const tail = v.match(/^(.*?)(\d+)$/);
+  if (tail) return `${tail[1]}${Number(tail[2]) + 1}`;
+  return `${v}-2`;
+}
+
+const ENGINE_TYPES = ['vllm', 'sglang', 'trtllm'];
+const MODEL_SOURCE_TYPES = ['huggingface', 's3', 'local'];
+
+interface SourceAuthHint {
+  show: boolean;
+  placeholder: string;
+  help: string;
+}
+function authHint(sourceType: string | undefined): SourceAuthHint {
+  switch (sourceType) {
+    case 'huggingface':
+      return {
+        show: true,
+        placeholder: 'aibrix-hf-token',
+        help: 'K8s Secret containing key "token" — mounted as HF_TOKEN env on the engine container.',
+      };
+    case 's3':
+      return {
+        show: true,
+        placeholder: 'aibrix-s3-creds',
+        help: 'K8s Secret with keys access_key_id, secret_access_key (and optional session_token, region). Wiring not yet implemented in renderer.',
+      };
+    case 'local':
+    default:
+      return { show: false, placeholder: '', help: '' };
+  }
+}
+// Curated GPU catalog. vram_gb / interconnect derive from the SKU pick so
+// the user only chooses a name; the renderer doesn't read these fields today
+// but they're persisted on the spec for downstream schedulers.
+interface GpuSku {
+  type: string;
+  label: string;
+  vramGb: number;
+  interconnect: 'nvlink' | 'pcie' | 'ib' | '';
+}
+const GPU_CATALOG: GpuSku[] = [
+  { type: 'H200-SXM', label: 'NVIDIA H200 SXM (141 GB, NVLink)', vramGb: 141, interconnect: 'nvlink' },
+  { type: 'H100-SXM', label: 'NVIDIA H100 SXM (80 GB, NVLink)', vramGb: 80, interconnect: 'nvlink' },
+  { type: 'H100-NVL', label: 'NVIDIA H100 NVL (94 GB, NVLink)', vramGb: 94, interconnect: 'nvlink' },
+  { type: 'H100-PCIe', label: 'NVIDIA H100 PCIe (80 GB, PCIe)', vramGb: 80, interconnect: 'pcie' },
+  { type: 'B200', label: 'NVIDIA B200 (192 GB, NVLink)', vramGb: 192, interconnect: 'nvlink' },
+  { type: 'A100-SXM-80', label: 'NVIDIA A100 SXM (80 GB, NVLink)', vramGb: 80, interconnect: 'nvlink' },
+  { type: 'A100-SXM-40', label: 'NVIDIA A100 SXM (40 GB, NVLink)', vramGb: 40, interconnect: 'nvlink' },
+  { type: 'A100-PCIe', label: 'NVIDIA A100 PCIe (40 GB, PCIe)', vramGb: 40, interconnect: 'pcie' },
+  { type: 'L40S', label: 'NVIDIA L40S (48 GB, PCIe)', vramGb: 48, interconnect: 'pcie' },
+  { type: 'L4', label: 'NVIDIA L4 (24 GB, PCIe)', vramGb: 24, interconnect: 'pcie' },
+  { type: 'T4', label: 'NVIDIA T4 (16 GB, PCIe)', vramGb: 16, interconnect: 'pcie' },
+  { type: 'MI300X', label: 'AMD MI300X (192 GB, IF)', vramGb: 192, interconnect: 'ib' },
+  { type: 'CPU', label: 'CPU (no GPU)', vramGb: 0, interconnect: '' },
+];
 const WEIGHT_QUANT_OPTIONS = ['', 'fp8', 'awq', 'gptq', 'int8', 'bf16', 'fp16'];
 const KV_QUANT_OPTIONS = ['', 'auto', 'fp8', 'fp8_e4m3', 'fp8_e5m2', 'int8'];
-const PROVIDER_TYPES = ['k8s', 'runpod', 'lambda_labs', 'ec2', 'gcp', 'external'];
-const DEPLOYMENT_MODES = ['dedicated', 'shared', 'external'];
 const STATUS_OPTIONS = ['active', 'draft', 'deprecated'];
 
 const COMMON_ENDPOINTS = [
   '/v1/chat/completions',
   '/v1/completions',
   '/v1/embeddings',
+  '/v1/rerank',
   '/v1/audio/transcriptions',
   '/v1/audio/translations',
   '/v1/images/generations',
@@ -55,20 +118,17 @@ const KNOWN_ENGINE_ARGS: KnownKnob[] = [
   { key: 'swap_space', label: 'swap_space (GB)', kind: 'int' },
   { key: 'enable_prefix_caching', label: 'enable_prefix_caching', kind: 'bool' },
   { key: 'enable_chunked_prefill', label: 'enable_chunked_prefill', kind: 'bool' },
-  { key: 'speculative_model', label: 'speculative_model', kind: 'string' },
-  { key: 'num_speculative_tokens', label: 'num_speculative_tokens', kind: 'int' },
 ];
 const KNOWN_KEYS = new Set(KNOWN_ENGINE_ARGS.map((k) => k.key));
 
 function emptySpec(): ModelDeploymentTemplateSpec {
   return {
-    engine: { type: 'vllm', version: '', image: '', invocation: 'http_server', healthEndpoint: '/health' },
+    engine: { type: 'vllm', version: '', image: '', invocation: 'http_server' },
     modelSource: { type: 'huggingface', uri: '' },
     accelerator: { type: '', count: 1 },
     parallelism: { tp: 1, pp: 1, dp: 1 },
     engineArgs: {},
     quantization: {},
-    providerConfig: { type: 'k8s', extra: {} },
     supportedEndpoints: ['/v1/chat/completions'],
     deploymentMode: 'dedicated',
   };
@@ -77,18 +137,22 @@ function emptySpec(): ModelDeploymentTemplateSpec {
 export function CreateModelDeploymentTemplate({
   modelId,
   templateId,
+  cloneFromId,
+  mode,
   onBack,
   onSaved,
 }: CreateModelDeploymentTemplateProps) {
-  const isEdit = !!templateId;
+  const isView = mode === 'view' && !!templateId;
+  const isClone = !!cloneFromId && !templateId;
+  const isEdit = !!templateId && !isView;
+  // Source template to prefill from (edit/view loads templateId; clone loads cloneFromId).
+  const sourceTemplateId = templateId || cloneFromId;
 
   const [model, setModel] = useState<Model | null>(null);
   const [name, setName] = useState('');
   const [version, setVersion] = useState('v1.0.0');
   const [statusValue, setStatusValue] = useState('active');
   const [spec, setSpec] = useState<ModelDeploymentTemplateSpec>(emptySpec());
-  const [serveArgsRaw, setServeArgsRaw] = useState('');
-  const [providerExtraRaw, setProviderExtraRaw] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -97,23 +161,18 @@ export function CreateModelDeploymentTemplate({
   }, [modelId]);
 
   useEffect(() => {
-    if (!templateId) return;
-    getModelDeploymentTemplate(modelId, templateId)
+    if (!sourceTemplateId) return;
+    getModelDeploymentTemplate(modelId, sourceTemplateId)
       .then((t: ModelDeploymentTemplate) => {
         setName(t.name);
-        setVersion(t.version);
+        // For clone, auto-bump the version so user lands on a non-conflicting one.
+        setVersion(isClone ? bumpVersion(t.version) : t.version);
         setStatusValue(t.status);
         const s = t.spec ?? emptySpec();
         setSpec(s);
-        setServeArgsRaw((s.engine?.serveArgs ?? []).join('\n'));
-        setProviderExtraRaw(
-          Object.entries(s.providerConfig?.extra ?? {})
-            .map(([k, v]) => `${k}=${v}`)
-            .join('\n'),
-        );
       })
       .catch(err => setError(`Failed to load template: ${err}`));
-  }, [templateId, modelId]);
+  }, [sourceTemplateId, modelId, isClone]);
 
   const updateSpec = <K extends keyof ModelDeploymentTemplateSpec>(
     key: K,
@@ -135,17 +194,6 @@ export function CreateModelDeploymentTemplate({
     }));
   };
 
-  const parseProviderExtra = (raw: string): Record<string, string> => {
-    const out: Record<string, string> = {};
-    for (const line of raw.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.includes('=')) continue;
-      const [k, ...rest] = trimmed.split('=');
-      out[k.trim()] = rest.join('=').trim();
-    }
-    return out;
-  };
-
   const handleSave = async () => {
     setError(null);
     if (!name.trim()) {
@@ -156,11 +204,12 @@ export function CreateModelDeploymentTemplate({
       setError('Accelerator type is required');
       return;
     }
+    // Treat 0 (proto int default for unset fields) as 1, since each dim is 1-based.
     const ws =
-      (spec.parallelism?.tp ?? 1) *
-      (spec.parallelism?.pp ?? 1) *
-      (spec.parallelism?.dp ?? 1) *
-      (spec.parallelism?.ep ?? 1);
+      (spec.parallelism?.tp || 1) *
+      (spec.parallelism?.pp || 1) *
+      (spec.parallelism?.dp || 1) *
+      (spec.parallelism?.ep || 1);
     if (ws !== (spec.accelerator?.count ?? 1)) {
       setError(`Parallelism (tp*pp*dp*ep=${ws}) must equal accelerator.count (${spec.accelerator?.count})`);
       return;
@@ -170,17 +219,7 @@ export function CreateModelDeploymentTemplate({
       return;
     }
 
-    const serveArgs = serveArgsRaw
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean);
-    const providerExtra = parseProviderExtra(providerExtraRaw);
-
-    const finalSpec: ModelDeploymentTemplateSpec = {
-      ...spec,
-      engine: { ...(spec.engine ?? {}), serveArgs },
-      providerConfig: { ...(spec.providerConfig ?? { type: 'k8s' }), extra: providerExtra },
-    };
+    const finalSpec: ModelDeploymentTemplateSpec = { ...spec };
 
     setSaving(true);
     try {
@@ -219,12 +258,18 @@ export function CreateModelDeploymentTemplate({
         <ChevronLeft className="w-4 h-4" />
         {model ? `${model.name} / ` : ''}
         <span className="text-gray-400">
-          {isEdit ? 'Edit Template' : 'Create Template'}
+          {isView ? 'View Template' : isEdit ? 'Edit Template' : isClone ? 'Clone Template' : 'Create Template'}
         </span>
       </button>
 
       <h1 className="text-2xl mb-1">
-        {isEdit ? 'Edit Deployment Template' : 'Create Deployment Template'}
+        {isView
+          ? 'View Deployment Template'
+          : isEdit
+          ? 'Edit Deployment Template'
+          : isClone
+          ? 'Clone Deployment Template'
+          : 'Create Deployment Template'}
       </h1>
       <p className="text-sm text-gray-500 mb-6">
         Capture engine, accelerator, parallelism, and tuning settings for{' '}
@@ -238,7 +283,7 @@ export function CreateModelDeploymentTemplate({
         </div>
       )}
 
-      <div className="space-y-6">
+      <fieldset disabled={isView} className="space-y-6 disabled:opacity-90">
         {/* Identity */}
         <Section title="Identity">
           <Field label="Name">
@@ -248,6 +293,14 @@ export function CreateModelDeploymentTemplate({
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. llama3-70b-prod"
               className={inputCls}
+              disabled={isClone || isEdit}
+              title={
+                isClone
+                  ? 'Name is fixed when cloning; only the version changes.'
+                  : isEdit
+                  ? 'Name is part of the template identity. To rename, clone into a new template.'
+                  : undefined
+              }
             />
           </Field>
           <Field label="Version">
@@ -267,132 +320,111 @@ export function CreateModelDeploymentTemplate({
           </Field>
         </Section>
 
-        {/* Engine */}
-        <Section title="Engine">
-          <Field label="Type">
-            <select
-              value={spec.engine?.type ?? 'vllm'}
-              onChange={(e) => updateSpec('engine', { type: e.target.value })}
-              className={inputCls}
-            >
-              {ENGINE_TYPES.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Version">
-            <input
-              type="text"
-              value={spec.engine?.version ?? ''}
-              onChange={(e) => updateSpec('engine', { version: e.target.value })}
-              placeholder="0.6.3"
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Image" wide>
-            <input
-              type="text"
-              value={spec.engine?.image ?? ''}
-              onChange={(e) => updateSpec('engine', { image: e.target.value })}
-              placeholder="vllm/vllm-openai:v0.6.3"
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Health endpoint">
-            <input
-              type="text"
-              value={spec.engine?.healthEndpoint ?? ''}
-              onChange={(e) => updateSpec('engine', { healthEndpoint: e.target.value })}
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Ready timeout (s)">
-            <input
-              type="number"
-              value={spec.engine?.readyTimeoutSeconds ?? 600}
-              onChange={(e) => updateSpec('engine', { readyTimeoutSeconds: Number(e.target.value) })}
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Serve args (one per line)" wide>
-            <textarea
-              value={serveArgsRaw}
-              onChange={(e) => setServeArgsRaw(e.target.value)}
-              placeholder={'--port=8000\n--enable-prefix-caching'}
-              rows={3}
-              className={`${inputCls} font-mono`}
-            />
-          </Field>
-        </Section>
-
         {/* Model Source */}
-        <Section title="Model Source">
-          <Field label="Type">
-            <select
-              value={spec.modelSource?.type ?? 'huggingface'}
-              onChange={(e) => updateSpec('modelSource', { type: e.target.value })}
-              className={inputCls}
-            >
-              {MODEL_SOURCE_TYPES.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="URI" wide>
-            <input
-              type="text"
-              value={spec.modelSource?.uri ?? ''}
-              onChange={(e) => updateSpec('modelSource', { uri: e.target.value })}
-              placeholder="meta-llama/Llama-3.3-70B-Instruct or s3://bucket/path/"
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Revision">
-            <input
-              type="text"
-              value={spec.modelSource?.revision ?? ''}
-              onChange={(e) => updateSpec('modelSource', { revision: e.target.value })}
-              placeholder="main"
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Auth secret ref">
-            <input
-              type="text"
-              value={spec.modelSource?.authSecretRef ?? ''}
-              onChange={(e) => updateSpec('modelSource', { authSecretRef: e.target.value })}
-              placeholder="aibrix-hf-token"
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Tokenizer path">
-            <input
-              type="text"
-              value={spec.modelSource?.tokenizerPath ?? ''}
-              onChange={(e) => updateSpec('modelSource', { tokenizerPath: e.target.value })}
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Chat template path">
-            <input
-              type="text"
-              value={spec.modelSource?.chatTemplatePath ?? ''}
-              onChange={(e) => updateSpec('modelSource', { chatTemplatePath: e.target.value })}
-              className={inputCls}
-            />
-          </Field>
-        </Section>
+        {(() => {
+          const sourceType = spec.modelSource?.type ?? 'huggingface';
+          const hint = authHint(sourceType);
+          const isHF = sourceType === 'huggingface';
+          return (
+            <Section title="Model Source">
+              <Field label="Type">
+                <select
+                  value={sourceType}
+                  onChange={(e) => updateSpec('modelSource', { type: e.target.value })}
+                  className={inputCls}
+                >
+                  {MODEL_SOURCE_TYPES.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="URI" wide>
+                <input
+                  type="text"
+                  value={spec.modelSource?.uri ?? ''}
+                  onChange={(e) => updateSpec('modelSource', { uri: e.target.value })}
+                  placeholder="meta-llama/Llama-3.3-70B-Instruct or s3://bucket/path/"
+                  className={inputCls}
+                />
+              </Field>
+              {isHF && (
+                <Field label="Revision">
+                  <input
+                    type="text"
+                    value={spec.modelSource?.revision ?? ''}
+                    onChange={(e) => updateSpec('modelSource', { revision: e.target.value })}
+                    placeholder="main"
+                    className={inputCls}
+                  />
+                </Field>
+              )}
+              {hint.show && (
+                <Field label="Auth secret" wide>
+                  <input
+                    type="text"
+                    value={spec.modelSource?.authSecretRef ?? ''}
+                    onChange={(e) => updateSpec('modelSource', { authSecretRef: e.target.value })}
+                    placeholder={hint.placeholder}
+                    className={inputCls}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">{hint.help}</p>
+                </Field>
+              )}
+              <div className="sm:col-span-2 lg:col-span-3">
+                <details className="group">
+                  <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-700 select-none">
+                    Advanced — tokenizer / chat template overrides
+                  </summary>
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Tokenizer path</label>
+                      <input
+                        type="text"
+                        value={spec.modelSource?.tokenizerPath ?? ''}
+                        onChange={(e) => updateSpec('modelSource', { tokenizerPath: e.target.value })}
+                        className={inputCls}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Chat template path</label>
+                      <input
+                        type="text"
+                        value={spec.modelSource?.chatTemplatePath ?? ''}
+                        onChange={(e) => updateSpec('modelSource', { chatTemplatePath: e.target.value })}
+                        className={inputCls}
+                      />
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </Section>
+          );
+        })()}
 
         {/* Accelerator */}
         <Section title="Accelerator">
-          <Field label="GPU type">
-            <input
-              type="text"
+          <Field label="GPU">
+            <select
               value={spec.accelerator?.type ?? ''}
-              onChange={(e) => updateSpec('accelerator', { type: e.target.value })}
-              placeholder="H100-SXM"
+              onChange={(e) => {
+                const sku = GPU_CATALOG.find((g) => g.type === e.target.value);
+                if (sku) {
+                  updateSpec('accelerator', {
+                    type: sku.type,
+                    vramGb: sku.vramGb,
+                    interconnect: sku.interconnect,
+                  });
+                } else {
+                  updateSpec('accelerator', { type: '', vramGb: undefined, interconnect: '' });
+                }
+              }}
               className={inputCls}
-            />
+            >
+              <option value="">— Select GPU —</option>
+              {GPU_CATALOG.map((g) => (
+                <option key={g.type} value={g.type}>{g.label}</option>
+              ))}
+            </select>
           </Field>
           <Field label="Count">
             <input
@@ -403,27 +435,7 @@ export function CreateModelDeploymentTemplate({
               className={inputCls}
             />
           </Field>
-          <Field label="Interconnect">
-            <select
-              value={spec.accelerator?.interconnect ?? ''}
-              onChange={(e) => updateSpec('accelerator', { interconnect: e.target.value })}
-              className={inputCls}
-            >
-              {INTERCONNECT_OPTIONS.map((o) => (
-                <option key={o || 'none'} value={o}>{o || '—'}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="VRAM (GB)">
-            <input
-              type="number"
-              min={0}
-              value={spec.accelerator?.vramGb ?? ''}
-              onChange={(e) => updateSpec('accelerator', { vramGb: e.target.value === '' ? undefined : Number(e.target.value) })}
-              className={inputCls}
-            />
-          </Field>
-          <Field label="SKU hint" wide>
+          <Field label="SKU hint">
             <input
               type="text"
               value={spec.accelerator?.skuHint ?? ''}
@@ -434,96 +446,101 @@ export function CreateModelDeploymentTemplate({
           </Field>
         </Section>
 
-        {/* Parallelism */}
-        <Section title="Parallelism">
-          {(['tp', 'pp', 'dp', 'ep', 'sp', 'cp'] as const).map((k) => (
-            <Field key={k} label={k.toUpperCase()}>
+        {/* Engine (mega-group: engine selection + tuning) */}
+        <Group title="Engine">
+          <SubSection title="Engine">
+            <Field label="Type">
+              <select
+                value={spec.engine?.type ?? 'vllm'}
+                onChange={(e) => updateSpec('engine', { type: e.target.value })}
+                className={inputCls}
+              >
+                {ENGINE_TYPES.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Version">
               <input
-                type="number"
-                min={1}
-                value={spec.parallelism?.[k] ?? 1}
-                onChange={(e) => updateSpec('parallelism', { [k]: Number(e.target.value) })}
+                type="text"
+                value={spec.engine?.version ?? ''}
+                onChange={(e) => updateSpec('engine', { version: e.target.value })}
+                placeholder="0.6.3"
                 className={inputCls}
               />
             </Field>
-          ))}
-        </Section>
+            <Field label="Ready timeout (s)">
+              <input
+                type="number"
+                value={spec.engine?.readyTimeoutSeconds ?? 600}
+                onChange={(e) => updateSpec('engine', { readyTimeoutSeconds: Number(e.target.value) })}
+                className={inputCls}
+              />
+            </Field>
+            <Field label="Image" wide>
+              <input
+                type="text"
+                value={spec.engine?.image ?? ''}
+                onChange={(e) => updateSpec('engine', { image: e.target.value })}
+                placeholder="vllm/vllm-openai:v0.6.3"
+                className={inputCls}
+              />
+            </Field>
+          </SubSection>
 
-        {/* Engine args (free-form key/value, with curated knobs surfaced) */}
-        <EngineArgsSection
-          args={spec.engineArgs ?? {}}
-          onChange={(next) => setSpec((prev) => ({ ...prev, engineArgs: next }))}
-        />
+          <EngineArgsSection
+            bare
+            args={spec.engineArgs ?? {}}
+            onChange={(next) => setSpec((prev) => ({ ...prev, engineArgs: next }))}
+          />
 
+          <SubSection title="Parallelism">
+            {(['tp', 'pp', 'dp', 'ep', 'sp', 'cp'] as const).map((k) => (
+              <Field key={k} label={k.toUpperCase()}>
+                <input
+                  type="number"
+                  min={1}
+                  value={spec.parallelism?.[k] ?? 1}
+                  onChange={(e) => updateSpec('parallelism', { [k]: Number(e.target.value) })}
+                  className={inputCls}
+                />
+              </Field>
+            ))}
+          </SubSection>
 
-        {/* Quantization */}
-        <Section title="Quantization">
-          <Field label="Weight">
-            <select
-              value={spec.quantization?.weight ?? ''}
-              onChange={(e) => updateSpec('quantization', { weight: e.target.value })}
-              className={inputCls}
-            >
-              {WEIGHT_QUANT_OPTIONS.map((w) => (
-                <option key={w || 'none'} value={w}>{w || '—'}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="KV cache">
-            <select
-              value={spec.quantization?.kvCache ?? ''}
-              onChange={(e) => updateSpec('quantization', { kvCache: e.target.value })}
-              className={inputCls}
-            >
-              {KV_QUANT_OPTIONS.map((q) => (
-                <option key={q || 'none'} value={q}>{q || '—'}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Pre-quantized weights URI" wide>
-            <input
-              type="text"
-              value={spec.quantization?.weightsArtifactUri ?? ''}
-              onChange={(e) => updateSpec('quantization', { weightsArtifactUri: e.target.value })}
-              className={inputCls}
-            />
-          </Field>
-        </Section>
-
-        {/* Provider */}
-        <Section title="Provider">
-          <Field label="Type">
-            <select
-              value={spec.providerConfig?.type ?? 'k8s'}
-              onChange={(e) => updateSpec('providerConfig', { type: e.target.value })}
-              className={inputCls}
-            >
-              {PROVIDER_TYPES.map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Deployment mode">
-            <select
-              value={spec.deploymentMode ?? 'dedicated'}
-              onChange={(e) => setSpec((prev) => ({ ...prev, deploymentMode: e.target.value }))}
-              className={inputCls}
-            >
-              {DEPLOYMENT_MODES.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Provider extras (key=value, one per line)" wide>
-            <textarea
-              value={providerExtraRaw}
-              onChange={(e) => setProviderExtraRaw(e.target.value)}
-              placeholder={'namespace=aibrix-inference\nservice_account=aibrix-engine'}
-              rows={3}
-              className={`${inputCls} font-mono`}
-            />
-          </Field>
-        </Section>
+          <SubSection title="Quantization">
+            <Field label="Weight">
+              <select
+                value={spec.quantization?.weight ?? ''}
+                onChange={(e) => updateSpec('quantization', { weight: e.target.value })}
+                className={inputCls}
+              >
+                {WEIGHT_QUANT_OPTIONS.map((w) => (
+                  <option key={w || 'none'} value={w}>{w || '—'}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="KV cache">
+              <select
+                value={spec.quantization?.kvCache ?? ''}
+                onChange={(e) => updateSpec('quantization', { kvCache: e.target.value })}
+                className={inputCls}
+              >
+                {KV_QUANT_OPTIONS.map((q) => (
+                  <option key={q || 'none'} value={q}>{q || '—'}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Pre-quantized weights URI" wide>
+              <input
+                type="text"
+                value={spec.quantization?.weightsArtifactUri ?? ''}
+                onChange={(e) => updateSpec('quantization', { weightsArtifactUri: e.target.value })}
+                className={inputCls}
+              />
+            </Field>
+          </SubSection>
+        </Group>
 
         {/* Endpoints */}
         <Section title="Supported endpoints">
@@ -547,22 +564,30 @@ export function CreateModelDeploymentTemplate({
             })}
           </div>
         </Section>
-      </div>
+      </fieldset>
 
       <div className="flex items-center gap-3 mt-6">
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-white text-sm rounded-lg hover:bg-slate-700 disabled:opacity-50"
-        >
-          {isEdit ? <Save className="w-4 h-4" /> : <Trash2 className="w-4 h-4 hidden" />}
-          {saving ? 'Saving…' : isEdit ? 'Save Changes' : 'Create Template'}
-        </button>
+        {!isView && (
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-white text-sm rounded-lg hover:bg-slate-700 disabled:opacity-50"
+          >
+            {isEdit && <Save className="w-4 h-4" />}
+            {saving
+              ? 'Saving…'
+              : isEdit
+              ? 'Save Changes'
+              : isClone
+              ? 'Create New Version'
+              : 'Create Template'}
+          </button>
+        )}
         <button
           onClick={onBack}
           className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"
         >
-          Cancel
+          {isView ? 'Back' : 'Cancel'}
         </button>
       </div>
     </div>
@@ -576,6 +601,26 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
       <h3 className="text-sm mb-4">{title}</h3>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">{children}</div>
+    </div>
+  );
+}
+
+// Group wraps a logically related set of subsections inside one larger card.
+function Group({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+      <h3 className="text-sm mb-4">{title}</h3>
+      <div className="divide-y divide-gray-100">{children}</div>
+    </div>
+  );
+}
+
+// SubSection is a Section without the card chrome — used inside Group.
+function SubSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="py-5 first:pt-0 last:pb-0">
+      <h4 className="text-xs font-medium uppercase tracking-wide text-gray-500 mb-3">{title}</h4>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">{children}</div>
     </div>
   );
@@ -598,61 +643,102 @@ function Field({
   );
 }
 
+type CustomRow = { id: string; key: string; value: string };
+
+function newRowId(): string {
+  return `row_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function EngineArgsSection({
   args,
   onChange,
+  bare = false,
 }: {
   args: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
+  bare?: boolean;
 }) {
+  // Custom flags live in local array state so editing key/value to empty
+  // doesn't collapse the row (which the prior Record<string,string> design
+  // forced — empty string can't address an entry, and two empty keys can't
+  // coexist). Known-knob values still live in `args` and are synced through
+  // setKey below. We re-derive customRows from props when an external load
+  // happens (template fetch / clone) but skip our own emissions to avoid an
+  // update loop.
+  const [customRows, setCustomRows] = useState<CustomRow[]>([]);
+  const lastEmittedRef = useRef<Record<string, string> | null>(null);
+
+  useEffect(() => {
+    if (lastEmittedRef.current === args) return;
+    const fromProps = Object.entries(args)
+      .filter(([k]) => !KNOWN_KEYS.has(k))
+      .map(([k, v]) => ({ id: newRowId(), key: k, value: v }));
+    setCustomRows(fromProps);
+  }, [args]);
+
+  // Compose final Record from current known-knob values plus custom rows
+  // (skipping rows whose key is blank — they are placeholders the user is
+  // still typing into).
+  const compose = (rows: CustomRow[], knownOverride?: { key: string; value: string | undefined }) => {
+    const next: Record<string, string> = {};
+    for (const [k, v] of Object.entries(args)) {
+      if (KNOWN_KEYS.has(k)) next[k] = v;
+    }
+    if (knownOverride) {
+      const { key, value } = knownOverride;
+      if (value === undefined || value === '') delete next[key];
+      else next[key] = value;
+    }
+    for (const r of rows) {
+      const k = r.key.trim();
+      if (k) next[k] = r.value;
+    }
+    return next;
+  };
+
+  const emit = (rows: CustomRow[], knownOverride?: { key: string; value: string | undefined }) => {
+    const next = compose(rows, knownOverride);
+    lastEmittedRef.current = next;
+    onChange(next);
+  };
+
   const setKey = (key: string, value: string | undefined) => {
-    const next = { ...args };
-    if (value === undefined || value === '') {
-      delete next[key];
-    } else {
-      next[key] = value;
-    }
-    onChange(next);
+    emit(customRows, { key, value });
   };
 
-  // Stable per-row IDs for React keys. Using the editable map key as the React
-  // `key` would unmount/remount the input on every keystroke and drop focus —
-  // we mint an ID once per row and migrate it across renames.
-  const rowIdsRef = useRef<Map<string, string>>(new Map());
-  const rowIdFor = (k: string) => {
-    let id = rowIdsRef.current.get(k);
-    if (!id) {
-      id = `row_${Math.random().toString(36).slice(2, 10)}`;
-      rowIdsRef.current.set(k, id);
-    }
-    return id;
+  const updateRow = (id: string, patch: Partial<Pick<CustomRow, 'key' | 'value'>>) => {
+    const next = customRows.map((r) => (r.id === id ? { ...r, ...patch } : r));
+    setCustomRows(next);
+    emit(next);
   };
 
-  const renameKey = (oldKey: string, newKey: string) => {
-    if (newKey === oldKey) return;
-    const id = rowIdsRef.current.get(oldKey);
-    if (id) {
-      rowIdsRef.current.delete(oldKey);
-      if (newKey) rowIdsRef.current.set(newKey, id);
-    }
-    const next = { ...args };
-    if (oldKey in next) {
-      const v = next[oldKey];
-      delete next[oldKey];
-      if (newKey) next[newKey] = v;
-    }
-    onChange(next);
+  const addRow = () => {
+    setCustomRows((rows) => [...rows, { id: newRowId(), key: '', value: '' }]);
+    // Don't emit yet — a row with empty key contributes nothing to the wire format.
   };
 
-  const customEntries = Object.entries(args).filter(([k]) => !KNOWN_KEYS.has(k));
+  const removeRow = (id: string) => {
+    const next = customRows.filter((r) => r.id !== id);
+    setCustomRows(next);
+    emit(next);
+  };
+
+  const wrapperClass = bare
+    ? 'py-5 first:pt-0 last:pb-0'
+    : 'bg-white rounded-xl shadow-sm border border-gray-100 p-6';
+  const headerClass = bare
+    ? 'text-xs font-medium uppercase tracking-wide text-gray-500'
+    : 'text-sm';
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-      <div className="mb-4">
-        <h3 className="text-sm">Engine args</h3>
-        <p className="text-xs text-gray-500 mt-1">
-          Key/value flags forwarded to the engine. Common knobs are listed below; use Custom for engine-specific flags.
-        </p>
+    <div className={wrapperClass}>
+      <div className="mb-3">
+        <h3 className={headerClass}>Engine args</h3>
+        {!bare && (
+          <p className="text-xs text-gray-500 mt-1">
+            Key/value flags forwarded to the engine. Common knobs are listed below; use Custom for engine-specific flags.
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
@@ -695,35 +781,35 @@ function EngineArgsSection({
           <h4 className="text-xs text-gray-700">Custom flags</h4>
           <button
             type="button"
-            onClick={() => onChange({ ...args, '': '' })}
+            onClick={addRow}
             className="text-xs text-teal-600 hover:text-teal-700"
           >
             + Add
           </button>
         </div>
-        {customEntries.length === 0 ? (
+        {customRows.length === 0 ? (
           <p className="text-xs text-gray-400">No custom flags set.</p>
         ) : (
           <div className="space-y-2">
-            {customEntries.map(([k, v]) => (
-              <div key={rowIdFor(k)} className="flex items-center gap-2">
+            {customRows.map((row) => (
+              <div key={row.id} className="flex items-center gap-2">
                 <input
                   type="text"
-                  value={k}
+                  value={row.key}
                   placeholder="flag_name"
-                  onChange={(e) => renameKey(k, e.target.value)}
+                  onChange={(e) => updateRow(row.id, { key: e.target.value })}
                   className={`${inputCls} flex-1 font-mono`}
                 />
                 <input
                   type="text"
-                  value={v}
+                  value={row.value}
                   placeholder="value"
-                  onChange={(e) => setKey(k, e.target.value)}
+                  onChange={(e) => updateRow(row.id, { value: e.target.value })}
                   className={`${inputCls} flex-1 font-mono`}
                 />
                 <button
                   type="button"
-                  onClick={() => setKey(k, undefined)}
+                  onClick={() => removeRow(row.id)}
                   className="px-2 py-1 text-xs text-gray-400 hover:text-red-600"
                   aria-label="Remove"
                 >

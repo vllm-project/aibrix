@@ -18,8 +18,11 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -31,6 +34,10 @@ import (
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/handler"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
+	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
+	plannerimpl "github.com/vllm-project/aibrix/apps/console/api/planner/impl"
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager"
+	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 
 	"github.com/vllm-project/aibrix/apps/console/api/config"
@@ -43,52 +50,55 @@ type Server struct {
 	store      store.Store
 	cfg        *config.Config
 	auth       *middleware.AuthMiddleware
-	mysqlStore *store.MySQLStore // nil if using memory store
 }
 
 // New creates a new console Server from configuration.
 func New(cfg *config.Config) *Server {
-	var s store.Store
-	var mysqlStore *store.MySQLStore
+	s, err := store.NewFromURI(cfg.StoreURI, cfg.SecretsEncryptionKey)
+	if err != nil {
+		klog.Fatalf("Failed to construct store: %v", err)
+	}
+	klog.Infof("Using store %s", cfg.StoreURI)
 
-	switch cfg.StoreType {
-	case "mysql":
-		ms, err := store.NewMySQLStore(cfg.MySQLDSN, cfg.SecretsEncryptionKey)
-		if err != nil {
-			klog.Fatalf("Failed to connect to MySQL: %v", err)
+	// Dev-mode conveniences. Seeding is opt-in so production / shared envs
+	// start with an empty store.
+	if cfg.DevMode {
+		if seeder, ok := s.(interface{ LoadDemoData() error }); ok {
+			if err := seeder.LoadDemoData(); err != nil {
+				klog.Fatalf("Failed to seed demo data: %v", err)
+			}
+			klog.Info("Dev mode: demo data seeded")
 		}
-		if err := ms.RunMigrations(); err != nil {
-			klog.Fatalf("Failed to run MySQL migrations: %v", err)
-		}
-		if err := ms.LoadDemoData(); err != nil {
-			klog.Fatalf("Failed to load MySQL demo data: %v", err)
-		}
-		s = ms
-		mysqlStore = ms
-		klog.Info("Using MySQL store")
-	default:
-		s = store.NewMemoryStore()
-		klog.Info("Using in-memory store")
 	}
 
 	authCfg := middleware.AuthConfig{
-		Mode:             cfg.AuthMode,
-		OIDCIssuerURL:    cfg.OIDCIssuerURL,
-		OIDCClientID:     cfg.OIDCClientID,
-		OIDCClientSecret: cfg.OIDCClientSecret,
-		OIDCRedirectURL:  cfg.OIDCRedirectURL,
-		SessionSecret:    cfg.SessionSecret,
-		DevUserName:      cfg.DevUserName,
-		DevUserEmail:     cfg.DevUserEmail,
-		BasicUsername:    cfg.BasicUsername,
-		BasicPassword:    cfg.BasicPassword,
+		Mode:                      cfg.AuthMode,
+		OIDCIssuerURL:             cfg.OIDCIssuerURL,
+		OIDCClientID:              cfg.OIDCClientID,
+		OIDCClientSecret:          cfg.OIDCClientSecret,
+		OIDCRedirectURL:           cfg.OIDCRedirectURL,
+		OIDCPostLogoutRedirectURL: cfg.OIDCPostLogoutRedirectURL,
+		OIDCEndSessionURL:         cfg.OIDCEndSessionURL,
+		OIDCGroupsClaim:           cfg.OIDCGroupsClaim,
+		OIDCAdminGroups:           cfg.OIDCAdminGroups,
+		OIDCAdminEmails:           cfg.OIDCAdminEmails,
+		OIDCSigningAlg:            cfg.OIDCSigningAlg,
+		SessionSecret:             cfg.SessionSecret,
+		DevUserName:               cfg.DevUserName,
+		DevUserEmail:              cfg.DevUserEmail,
+		BasicUsername:             cfg.BasicUsername,
+		BasicPassword:             cfg.BasicPassword,
+	}
+
+	auth, err := middleware.NewAuthMiddleware(authCfg)
+	if err != nil {
+		klog.Fatalf("Failed to construct auth middleware: %v", err)
 	}
 
 	return &Server{
-		store:      s,
-		cfg:        cfg,
-		auth:       middleware.NewAuthMiddleware(authCfg),
-		mysqlStore: mysqlStore,
+		store: s,
+		cfg:   cfg,
+		auth:  auth,
 	}
 }
 
@@ -101,9 +111,16 @@ func (s *Server) StartGRPC(addr string) error {
 
 	s.grpcServer = grpc.NewServer()
 
+	batchClient := plannerclient.NewOpenAIBatchClient(s.cfg.MetadataServiceURL)
+	rm, err := resource_manager.NewResourceManager(rmtypes.ResourceProvisionTypeKubernetes, s.store)
+	if err != nil {
+		return fmt.Errorf("resource manager init: %w", err)
+	}
+	planner := plannerimpl.NewPassthrough(batchClient, rm.Provisioner)
+
 	// Register all service handlers
 	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
-	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.cfg.MetadataServiceURL, s.cfg.DefaultBatchModelDeploymentTemplate))
+	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, planner, s.cfg.MetadataServiceURL, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
 	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))
 	pb.RegisterAPIKeyServiceServer(s.grpcServer, handler.NewAPIKeyHandler(s.store))
@@ -186,10 +203,14 @@ func (s *Server) Shutdown(ctx context.Context) {
 		s.grpcServer.GracefulStop()
 	}
 	if s.httpServer != nil {
-		_ = s.httpServer.Shutdown(ctx)
+		if err := s.httpServer.Shutdown(ctx); err != nil {
+			klog.Errorf("failed to shutdown http server: %v", err)
+		}
 	}
-	if s.mysqlStore != nil {
-		_ = s.mysqlStore.Close()
+	if s.store != nil {
+		if err := s.store.Close(); err != nil {
+			klog.Errorf("failed to close store: %v", err)
+		}
 	}
 }
 
@@ -242,16 +263,28 @@ func corsMiddleware(allowedOrigins string) func(http.Handler) http.Handler {
 }
 
 // staticFileMiddleware serves static files from dir for non-API paths.
-// API paths (/api/) are passed through to the next handler.
+// API paths (/api/) are passed through to the next handler. Non-API paths
+// that don't match a real file fall back to index.html so the React Router
+// SPA can render deep links (e.g. /models/abc, /batch/job-xyz) on hard
+// reload or external link.
 func staticFileMiddleware(dir string, next http.Handler) http.Handler {
 	fs := http.FileServer(http.Dir(dir))
+	indexPath := filepath.Join(dir, "index.html")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// API requests go to the backend
-		if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/api" {
+		if strings.HasPrefix(r.URL.Path, "/api") {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Try to serve static file
+		// SPA fallback: any path that doesn't map to a real file gets index.html.
+		// "/" itself falls through to FileServer which serves index.html.
+		if r.URL.Path != "/" {
+			rel := filepath.Join(dir, filepath.Clean(r.URL.Path))
+			if _, err := os.Stat(rel); os.IsNotExist(err) {
+				http.ServeFile(w, r, indexPath)
+				return
+			}
+		}
 		fs.ServeHTTP(w, r)
 	})
 }
