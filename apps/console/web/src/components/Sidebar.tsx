@@ -23,8 +23,9 @@ export function Sidebar() {
       .catch(() => {});
   }, []);
 
-  const displayName = user?.name || user?.email || 'User';
+  const displayName = user?.name || user?.username || user?.email || '';
   const initial = displayName.charAt(0).toUpperCase();
+  const avatarUrl = user?.picture || '';
 
   // Settings entry intentionally omitted — API Keys / Secrets pages exist but
   // are not yet wired to backend behavior.
@@ -100,9 +101,18 @@ export function Sidebar() {
       {user && (
         <div className="p-3 border-t border-slate-700/50">
           <div className="flex items-center gap-2.5 px-3 py-2">
-            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-teal-500 to-cyan-500 flex items-center justify-center text-white text-xs">
-              {initial}
-            </div>
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt={displayName}
+                referrerPolicy="no-referrer"
+                className="w-7 h-7 rounded-full object-cover"
+              />
+            ) : (
+              <div className="w-7 h-7 rounded-full bg-gradient-to-br from-teal-500 to-cyan-500 flex items-center justify-center text-white text-xs">
+                {initial}
+              </div>
+            )}
             <div className="text-xs text-slate-400 truncate">{displayName}</div>
           </div>
         </div>
