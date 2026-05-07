@@ -14,67 +14,58 @@
 
 import importlib
 import logging
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from vllm.v1.core.sched.output import SchedulerOutput
 
 logger = logging.getLogger(__name__)
 
 VLLM_V1_WORKER_GPU_MODEL_RUNNER_MODULE = "vllm.v1.worker.gpu_model_runner"
 
-# Track if patches are applied
-_patches_applied = False
-
 
 def _apply_gpu_model_runner_patches(module):
-    """Apply patches to an already-imported gpu_model_runner module."""
+    """Apply AIBrix patches to vLLM's GPUModelRunner.
+
+    Wraps execute_model to:
+    1. Trigger KV cache loading from external L1 cache before the forward
+       pass (via kv_connector.start_load_kv_before_update)
+    2. Trigger saving to external L1 cache after the forward pass
+       (via kv_connector.wait_for_save)
+
+    With get_num_new_matched_tokens implemented on the scheduler side
+    (see aibrix_offloading_connector_type1.AIBrixOffloadingConnector),
+    vLLM adjusts num_computed_tokens / num_scheduled_tokens before the
+    worker receives scheduler_output. Therefore this patch does NOT need
+    to preprocess scheduler_output — it only triggers the data transfer.
+    """
     GPUModelRunner = module.GPUModelRunner
 
-    # ------------------------------------------------------------------
-    # Source-patch detection: if GPUModelRunner already has patched signature,
-    # the source-code patch is in place and we should not double-patch.
-    # ------------------------------------------------------------------
-    if getattr(GPUModelRunner, "_aibrix_patched", False):
-        logger.info("[AIBrix] vLLM source patch detected, skipping patch")
+    # Detect already-patched (can happen when the connector module is
+    # reloaded across fork boundaries): check the live method binding,
+    # not class flags that may survive forks without the binding.
+    if GPUModelRunner.execute_model.__name__ == "_patched_execute_model":
+        logger.info("[AIBrix] GPUModelRunner already monkey-patched, skipping")
         return
 
-    # Check if _update_states already accepts load_results (source patch)
+    # Source-patch detection: if vLLM itself has been patched to accept
+    # load_results in _update_states, we skip the monkey-patch.
     import inspect
 
     sig = inspect.signature(GPUModelRunner._update_states)
     if "load_results" in sig.parameters:
         logger.info(
-            "[AIBrix] vLLM source patch detected, _update_states has "
-            "load_results, skipping patch"
+            "[AIBrix] vLLM source patch detected, skipping monkey-patch"
         )
         return
 
-    logger.info("[AIBrix] Applying patches to vLLM GPUModelRunner...")
+    logger.info("[AIBrix] Applying monkey-patch to GPUModelRunner...")
 
-    # Import has_kv_transfer_group at patch time to avoid import errors
     from vllm.distributed.kv_transfer import has_kv_transfer_group
 
-    # ---- Patch 1: GPUModelRunner.execute_model -----------------------
-    # This patch intercepts execute_model to:
-    # 1. Call kv_connector_load_before_update() before _update_states
-    # 2. Store load_results in context for _update_states to use
     _orig_execute_model = GPUModelRunner.execute_model
 
     def _patched_execute_model(self, scheduler_output, *args, **kwargs):
-        """Wrapped execute_model that calls KV connector before state updates"""
-        # Clear previous load_results
-        self._aibrix_load_results = {}
-
-        # Get load_results from KV connector before _update_states
-        if has_kv_transfer_group() and hasattr(
-            self, "kv_connector_load_before_update"
-        ):
-            self._aibrix_load_results = self.kv_connector_load_before_update(
-                scheduler_output
-            )
-        elif has_kv_transfer_group():
-            # Fallback: call directly using mixin method
+        """Wrapped execute_model that triggers KV load before and
+        KV save after the forward pass."""
+        # LOAD phase: fetch KV from external cache into GPU buffers
+        if has_kv_transfer_group():
             from vllm.distributed.kv_transfer import get_kv_transfer_group
 
             kv_connector = get_kv_transfer_group()
@@ -82,131 +73,40 @@ def _apply_gpu_model_runner_patches(module):
                 kv_connector.bind_connector_metadata(
                     scheduler_output.kv_connector_metadata
                 )
-                self._aibrix_load_results = (
-                    kv_connector.start_load_kv_before_update()
-                )
+                kv_connector.start_load_kv_before_update()
 
-        # Call original execute_model - it will call _update_states
-        return _orig_execute_model(self, scheduler_output, *args, **kwargs)
+        # Forward pass
+        result = _orig_execute_model(self, scheduler_output, *args, **kwargs)
+
+        # SAVE phase: push new KV to external cache.
+        # vLLM's native _get_kv_connector_output context manager may have
+        # cleared _connector_metadata by this point, so we re-bind it.
+        if has_kv_transfer_group():
+            from vllm.distributed.kv_transfer import get_kv_transfer_group
+
+            kv_connector = get_kv_transfer_group()
+            if scheduler_output.kv_connector_metadata is not None:
+                try:
+                    kv_connector.bind_connector_metadata(
+                        scheduler_output.kv_connector_metadata
+                    )
+                    kv_connector.wait_for_save()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[AIBrix] wait_for_save failed: %r", e)
+
+        return result
 
     GPUModelRunner.execute_model = _patched_execute_model
-
-    # ---- Patch 2: GPUModelRunner._update_states ----------------------
-    # This patch pre-processes load_results before calling original
-    # _update_states, then fixes up cached request states afterward.
-    _orig_update_states = GPUModelRunner._update_states
-
-    def _patched_update_states(self, scheduler_output: "SchedulerOutput"):
-        """Wrapped _update_states that handles AIBrix KV load_results."""
-        load_results = getattr(self, "_aibrix_load_results", {})
-
-        # 1. Adjust scheduler_output before original
-        # 1.1 For new requests: modify scheduler_output.scheduled_new_reqs in
-        # place
-        _preprocess_new_reqs(scheduler_output, load_results)
-
-        # 1.2 For cached requests: modify scheduler_output.scheduled_cached_reqs
-        # in place.
-        _preprocess_cached_reqs(scheduler_output, load_results)
-
-        # 2. call original _update_states ----
-        _orig_update_states(self, scheduler_output)
-
-    GPUModelRunner._update_states = _patched_update_states
-
-    # Mark class so we never double-patch
-    GPUModelRunner._aibrix_patched = True
-    logger.info("[AIBrix] GPUModelRunner patched successfully")
-
-
-def _preprocess_new_reqs(
-    scheduler_output: "SchedulerOutput",
-    load_results: dict[str, int],
-) -> None:
-    """Pre-process load_results for new requests.
-
-    Modifies scheduler_output.scheduled_new_reqs in place:
-    - Increases num_computed_tokens by num_loaded_tokens
-    - Decreases num_scheduled_tokens by num_loaded_tokens
-    - Decreases total_num_scheduled_tokens by num_loaded_tokens
-    """
-    if not load_results:
-        return
-
-    for new_req_data in scheduler_output.scheduled_new_reqs:
-        req_id = new_req_data.req_id
-        num_loaded_tokens = load_results.get(req_id, 0)
-
-        if num_loaded_tokens <= 0:
-            continue
-
-        num_scheduled_tokens = scheduler_output.num_scheduled_tokens[req_id]
-
-        # If all tokens would be loaded, leave at least one for compute
-        if num_loaded_tokens == num_scheduled_tokens:
-            num_loaded_tokens -= 1
-
-        # Adjust computed and scheduled tokens
-        new_req_data.num_computed_tokens += num_loaded_tokens
-        scheduler_output.num_scheduled_tokens[req_id] -= num_loaded_tokens
-        scheduler_output.total_num_scheduled_tokens -= num_loaded_tokens
-
-
-def _preprocess_cached_reqs(
-    scheduler_output: "SchedulerOutput",
-    load_results: dict[str, int],
-) -> None:
-    """Pre-process load_results for cached/running requests.
-
-    Modifies scheduler_output.scheduled_cached_reqs in place:
-    - Increases num_computed_tokens[i] by num_loaded_tokens
-    - Updates new_token_ids[i] if available
-    - Decreases num_scheduled_tokens[req_id] by num_loaded_tokens
-    - Decreases total_num_scheduled_tokens by num_loaded_tokens
-    """
-    if not load_results:
-        return
-
-    req_data = scheduler_output.scheduled_cached_reqs
-
-    for i, req_id in enumerate(req_data.req_ids):
-        num_loaded_tokens = load_results.get(req_id, 0)
-
-        if num_loaded_tokens <= 0:
-            continue
-
-        num_scheduled_tokens = scheduler_output.num_scheduled_tokens[req_id]
-
-        # If all tokens would be loaded, leave at least one for compute
-        if num_loaded_tokens == num_scheduled_tokens:
-            num_loaded_tokens -= 1
-
-        # Adjust computed and scheduled tokens
-        req_data.num_computed_tokens[i] += num_loaded_tokens
-        if req_data.new_token_ids and req_data.new_token_ids[i]:
-            req_data.new_token_ids[i] = req_data.new_token_ids[i][
-                num_loaded_tokens:
-            ]
-
-        scheduler_output.num_scheduled_tokens[req_id] -= num_loaded_tokens
-        scheduler_output.total_num_scheduled_tokens -= num_loaded_tokens
+    logger.info("[AIBrix] GPUModelRunner monkey-patched successfully")
 
 
 def aibrix_patch_vllm():
-    """Apply AIBrix patches to vLLM"""
-    global _patches_applied
-    if _patches_applied:
-        logger.info("[AIBrix] Already patched — skipping")
-        return
-
-    # Patch GPUModelRunner
+    """Apply AIBrix patches to vLLM at import time."""
     try:
         module = importlib.import_module(VLLM_V1_WORKER_GPU_MODEL_RUNNER_MODULE)
         _apply_gpu_model_runner_patches(module)
     except ImportError as e:
-        logger.warning("[AIBrix] Failed to patch gpu_model_runner: %s", e)
-
-    _patches_applied = True
+        logger.warning("[AIBrix] Failed to import gpu_model_runner: %s", e)
 
 
 aibrix_patch_vllm()

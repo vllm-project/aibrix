@@ -138,6 +138,72 @@ def test_type2_connector_inherits_from_type1_connector():
     )
 
 
+def test_type1_scheduler_init_assigns_tracker_enabled():
+    """The Scheduler must compute ``_tracker_enabled`` in ``__init__``
+    by checking the ``AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND`` env. If a
+    future change drops or renames that gate, the scheduler tracker
+    could be enabled in L2-backed deployments and clobber the
+    worker-reconciliation contract.
+    """
+    tree = _parse(TYPE1_SRC)
+    scheduler = _find_class(tree, "AIBrixOffloadingConnectorScheduler")
+    assert scheduler is not None, (
+        "AIBrixOffloadingConnectorScheduler not found in type1 source"
+    )
+
+    # Find the __init__ method and inspect its body.
+    init_fn = None
+    for node in scheduler.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "__init__":
+            init_fn = node
+            break
+    assert init_fn is not None, "Scheduler.__init__ not found"
+
+    # Walk the init body looking for ``self._tracker_enabled = ...``
+    # whose RHS references AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND.
+    init_src = ast.unparse(init_fn)
+    assert "self._tracker_enabled" in init_src, (
+        "Scheduler.__init__ does not assign self._tracker_enabled — "
+        "the L2 gate is missing"
+    )
+    assert "AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND" in init_src, (
+        "Scheduler.__init__ does not reference "
+        "AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND — the gate is no longer "
+        "driven by the documented env variable"
+    )
+
+
+def test_aibrix_worker_meta_uses_block_offset_schema():
+    """``AIBrixWorkerMeta`` must carry ``(start_block_idx, num_blocks)``
+    tuples per request, not just token counts. Without the offset, the
+    scheduler can't tell which slice of ``request.block_hashes`` to
+    mark as cached or to invalidate when the worker reports a partial
+    save / failed load. This is the schema the Gemini review on
+    PR #2146 flagged (Bugs 1 and 2 of the saved/failed_load reporting).
+    """
+    tree = _parse(TYPE1_SRC)
+    cls = _find_class(tree, "AIBrixWorkerMeta")
+    assert cls is not None, "AIBrixWorkerMeta not found in type1 source"
+    src = ast.unparse(cls)
+    assert "saved_blocks" in src, (
+        "AIBrixWorkerMeta missing saved_blocks field — the scheduler "
+        "can't map worker reports to block_hashes without an offset"
+    )
+    assert "failed_load_blocks" in src, (
+        "AIBrixWorkerMeta missing failed_load_blocks field — the "
+        "scheduler can't invalidate the correct slice of block_hashes"
+    )
+    # The old token-count schema must be gone.
+    assert "saved_tokens:" not in src, (
+        "AIBrixWorkerMeta still carries the old saved_tokens field — "
+        "the offset bug from #2146 review is back"
+    )
+    assert "failed_load_tokens:" not in src, (
+        "AIBrixWorkerMeta still carries the old failed_load_tokens "
+        "field — the tail-invalidation bug from #2146 review is back"
+    )
+
+
 def test_type2_scheduler_and_worker_inherit_from_type1():
     """Type2's Scheduler / Worker must inherit from their Type1
     counterparts (aliased as Type1Scheduler / Type1Worker in type2).
