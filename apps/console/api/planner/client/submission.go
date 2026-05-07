@@ -20,16 +20,10 @@ import (
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 )
 
-// =============================================================================
-// MDS submission payload
-//
-// AIBrixExtraBody mirrors the planner -> MDS contract under
-// extra_body.aibrix. The struct carries the full AIBrix extension
-// payload the BatchClient serializes onto POST /v1/batches.
-// =============================================================================
-
-// AIBrixExtraBody is the in-memory contract between the planner and the
-// MDS adapter.
+// AIBrixExtraBody is the AIBrix-specific extension the BatchClient
+// serializes onto POST /v1/batches via the openai-go SDK's extra_body
+// channel. Everything else on the submission rides on openai.BatchNewParams
+// directly — this struct is the only piece of the contract we own.
 type AIBrixExtraBody struct {
 	JobID           string `json:"job_id,omitempty"`
 	PlannerDecision *struct {
@@ -43,20 +37,4 @@ type AIBrixExtraBody struct {
 		} `json:"resource_details,omitempty"`
 	} `json:"planner_decision,omitempty"`
 	ModelTemplate *plannerapi.ModelTemplateRef `json:"model_template,omitempty"`
-}
-
-// MDSExtraBody is the wrapper that lands as extra_body on the openai-go
-// client call. The "aibrix" key is the only namespace MDS understands.
-type MDSExtraBody struct {
-	AIBrix AIBrixExtraBody `json:"aibrix"`
-}
-
-// MDSBatchSubmission is the fully prepared submit payload for
-// POST /v1/batches.
-type MDSBatchSubmission struct {
-	InputFileID      string            `json:"input_file_id"`
-	Endpoint         string            `json:"endpoint"`
-	CompletionWindow string            `json:"completion_window"`
-	Metadata         map[string]string `json:"metadata,omitempty"`
-	ExtraBody        MDSExtraBody      `json:"extra_body"`
 }

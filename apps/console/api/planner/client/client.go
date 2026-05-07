@@ -16,7 +16,6 @@ limitations under the License.
 
 // Package client defines the planner -> Metadata Service adapter: the
 // BatchClient interface, the request/response shapes its methods carry,
-// the MDSBatchSubmission a worker builds before calling CreateBatch,
 // and the AIBrixExtraBody fields that feed extra_body.aibrix.*.
 //
 // The package also ships one concrete BatchClient implementation,
@@ -28,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
@@ -47,8 +47,9 @@ import (
 // fields to add today. Re-introduce a thin wrapper here when planner
 // state needs to ride alongside the MDS batch on read.
 type BatchClient interface {
-	CreateBatch(ctx context.Context, req *MDSBatchSubmission) (*openai.Batch, error)
+	CreateBatch(ctx context.Context, params openai.BatchNewParams, aibrix AIBrixExtraBody) (*openai.Batch, error)
 	GetBatch(ctx context.Context, batchID string) (*openai.Batch, error)
+	CancelBatch(ctx context.Context, batchID string) (*openai.Batch, error)
 	ListBatches(ctx context.Context, req *ListBatchesRequest) (*ListBatchesResponse, error)
 }
 
@@ -106,38 +107,24 @@ type OpenAIBatchClient struct {
 }
 
 // NewOpenAIBatchClient constructs a BatchClient pointed at the metadata
-// service's base URL (without the trailing /v1).
+// service's base URL (without the trailing /v1). The HTTP transport is
+// wrapped with loggingTransport so BFF↔MDS request/response bodies
+// surface at klog -v=2 (4xx/5xx always log at info).
 func NewOpenAIBatchClient(metadataServiceURL string) *OpenAIBatchClient {
 	baseURL := strings.TrimRight(metadataServiceURL, "/") + "/v1"
+	httpClient := &http.Client{Transport: &loggingTransport{base: http.DefaultTransport}}
 	c := openai.NewClient(
 		option.WithBaseURL(baseURL),
 		option.WithAPIKey("aibrix-console"),
+		option.WithHTTPClient(httpClient),
 	)
 	return &OpenAIBatchClient{client: c}
 }
 
 var _ BatchClient = (*OpenAIBatchClient)(nil)
 
-func (c *OpenAIBatchClient) CreateBatch(ctx context.Context, req *MDSBatchSubmission) (*openai.Batch, error) {
-	if req == nil {
-		return nil, fmt.Errorf("openai batch client: nil request")
-	}
-
-	completionWindow := req.CompletionWindow
-	if completionWindow == "" {
-		completionWindow = string(openai.BatchNewParamsCompletionWindow24h)
-	}
-	params := openai.BatchNewParams{
-		InputFileID:      req.InputFileID,
-		Endpoint:         openai.BatchNewParamsEndpoint(req.Endpoint),
-		CompletionWindow: openai.BatchNewParamsCompletionWindow(completionWindow),
-	}
-	if len(req.Metadata) > 0 {
-		params.Metadata = req.Metadata
-	}
-
-	opts := buildExtraBodyOptions(req.ExtraBody.AIBrix)
-
+func (c *OpenAIBatchClient) CreateBatch(ctx context.Context, params openai.BatchNewParams, aibrix AIBrixExtraBody) (*openai.Batch, error) {
+	opts := buildExtraBodyOptions(aibrix)
 	batch, err := c.client.Batches.New(ctx, params, opts...)
 	if err != nil {
 		// errors.Join preserves the inner *openai.Error so callers can
@@ -153,6 +140,13 @@ func (c *OpenAIBatchClient) GetBatch(ctx context.Context, batchID string) (*open
 		return nil, fmt.Errorf("openai batch client: empty batch ID")
 	}
 	return c.client.Batches.Get(ctx, batchID)
+}
+
+func (c *OpenAIBatchClient) CancelBatch(ctx context.Context, batchID string) (*openai.Batch, error) {
+	if batchID == "" {
+		return nil, fmt.Errorf("openai batch client: empty batch ID")
+	}
+	return c.client.Batches.Cancel(ctx, batchID)
 }
 
 func (c *OpenAIBatchClient) ListBatches(ctx context.Context, req *ListBatchesRequest) (*ListBatchesResponse, error) {

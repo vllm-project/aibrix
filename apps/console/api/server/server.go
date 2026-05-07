@@ -120,7 +120,7 @@ func (s *Server) StartGRPC(addr string) error {
 
 	// Register all service handlers
 	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
-	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, planner, s.cfg.MetadataServiceURL, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode))
+	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, planner, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
 	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))
 	pb.RegisterAPIKeyServiceServer(s.grpcServer, handler.NewAPIKeyHandler(s.store))
