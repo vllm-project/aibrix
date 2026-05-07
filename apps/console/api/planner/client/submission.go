@@ -17,7 +17,7 @@ limitations under the License.
 package client
 
 import (
-	"github.com/vllm-project/aibrix/apps/console/api/planner/api"
+	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 )
 
 // =============================================================================
