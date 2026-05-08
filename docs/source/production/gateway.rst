@@ -290,4 +290,4 @@ If the ``config-profile`` header is omitted, the model's ``defaultProfile`` is u
 This allows the same gateway to enforce different routing strategies, prompt-length bucketing,
 and PD modes per model without deploying separate gateway instances.
 
-For full schema details, profile examples, and annotation format see `Model Config and Profiles <../designs/model-config-profiles.rst>`_.
+For config profile setup and the full annotation schema see :ref:`config_profiles` in the Gateway Routing guide. For production guidance including RPS limiting see :ref:`model_deployment_production`.

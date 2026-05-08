@@ -38,30 +38,45 @@ Documentation
    :caption: Architecture
 
    designs/architecture.rst
-   designs/aibrix-stormservice.rst
    designs/aibrix-router.rst
-   designs/aibrix-kvcache-offloading-framework.rst
-   designs/aibrix-autoscaler.rst
    designs/aibrix-engine-runtime.rst
-   designs/model-config-profiles.rst
+   designs/aibrix-autoscaler.rst
+   designs/aibrix-kvcache-offloading-framework.rst
+   designs/aibrix-stormservice.rst
 
 .. toctree::
    :maxdepth: 1
-   :caption: User Manuals
+   :caption: Gateway & Routing
+
+   features/gateway-plugins.rst
+   features/pd-disaggregation.rst
+   features/semantic-router.rst
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Model Serving
+
+   features/lora-dynamic-loading.rst
+   features/multi-node-inference.rst
+   features/multi-engine.rst
+   features/heterogeneous-gpu.rst
+   features/runtime.rst
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Scaling & Performance
+
+   features/autoscaling/autoscaling.rst
+   features/kvcache-offloading.rst
+   features/kv-event-sync.rst
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Batch & Testing
 
    features/batch-api.rst
    features/batch-templates.rst
-   features/lora-dynamic-loading.rst
-   features/gateway-plugins.rst
-   features/multi-node-inference.rst
-   features/heterogeneous-gpu.rst
-   features/autoscaling/autoscaling.rst
-   features/runtime.rst
-   features/kvcache-offloading.rst
-   features/kv-event-sync.rst
    features/benchmark-and-generator.rst
-   features/multi-engine.rst
-   features/semantic-router.rst
 
 .. toctree::
    :maxdepth: 1
@@ -74,8 +89,9 @@ Documentation
    :maxdepth: 1
    :caption: Production Readiness
 
-   production/observability.rst
    production/gateway.rst
+   production/model-deployment.rst
+   production/observability.rst
 
 .. toctree::
    :maxdepth: 1
