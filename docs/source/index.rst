@@ -61,6 +61,7 @@ Documentation
    features/kv-event-sync.rst
    features/benchmark-and-generator.rst
    features/multi-engine.rst
+   features/semantic-router.rst
 
 .. toctree::
    :maxdepth: 1
