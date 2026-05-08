@@ -398,6 +398,9 @@ def build_app(args: argparse.Namespace, params={}):
                 "BatchJob metastore persistence enabled",
                 metastore_type=settings.METASTORE_TYPE.value,
             )
+            # To pass lint check
+            assert infrastructure_context.template_registry is not None
+            assert infrastructure_context.profile_registry is not None
             job_entity_manager = JobCache(
                 template_registry=infrastructure_context.template_registry,
                 profile_registry=infrastructure_context.profile_registry,
