@@ -61,7 +61,7 @@ Before you begin, make sure you have:
 - Model weights pre-staged on your nodes at ``/data01/models/``, or access to pull them from HuggingFace.
 
 .. tip::
-    The sample uses ``Qwen3-8B`` and ``llama-3.1-8b-instruct``. Each model requires one GPU with at least 48 GB of GPU memory.
+    The sample uses ``qwen3-8b`` and ``llama3-8b-instruct``. Each model requires one GPU with at least 48 GB of GPU memory.
 
 ----
 
