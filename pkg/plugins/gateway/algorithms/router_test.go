@@ -593,6 +593,20 @@ func TestValidateRejectsNonScorerInMultiStrategy(t *testing.T) {
 	assert.Equal(t, types.RoutingAlgorithm("validate-non-scorer"), algorithm)
 }
 
+func TestValidateRejectsNilProviderInMultiStrategy(t *testing.T) {
+	rm := NewRouterManager()
+	rm.RegisterProvider(types.RoutingAlgorithm("validate-scorer"), func(_ *types.RoutingContext) (types.Router, error) {
+		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}, nil
+	})
+	rm.routerMu.Lock()
+	rm.routerFactory[types.RoutingAlgorithm("validate-nil-provider")] = nil
+	rm.routerMu.Unlock()
+
+	algorithm, ok := rm.Validate("validate-scorer,validate-nil-provider")
+	assert.False(t, ok)
+	assert.Equal(t, types.RoutingAlgorithm(RouterNotSet), algorithm)
+}
+
 func podsFromCache(c *cache.Store) *utils.PodArray {
 	return &utils.PodArray{Pods: c.ListPods()}
 }

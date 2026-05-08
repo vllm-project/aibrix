@@ -394,6 +394,9 @@ func (rm *RouterManager) Validate(algorithms string) (types.RoutingAlgorithm, bo
 			return RouterNotSet, false
 		}
 		if len(cfg.Items) > 1 {
+			if provider == nil {
+				return RouterNotSet, false
+			}
 			router, err := provider(types.RoutingAlgorithm(algorithms).NewContext(context.Background(), "", "", "validate", ""))
 			if err != nil {
 				return RouterNotSet, false

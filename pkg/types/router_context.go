@@ -358,6 +358,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ConfigProfile = nil
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
+	r.targetPort.Store(0)
 	r.lastError.Store(nil)
 	// debugDelay will be reset by tests.
 	r.tokens = nil
