@@ -495,6 +495,32 @@ func TestSelectSingleStrategyUsesLegacyRouter(t *testing.T) {
 	assert.Same(t, expectedRouter, actualRouter)
 }
 
+func TestSelectCachesMultiStrategyRouter(t *testing.T) {
+	rm := NewRouterManager()
+	providerCalls := 0
+	registerScorer := func(name types.RoutingAlgorithm) {
+		rm.RegisterProvider(name, func(_ *types.RoutingContext) (types.Router, error) {
+			providerCalls++
+			return &fakeScoreableRouter{
+				fakeScorer: fakeScorer{polarity: types.PolarityMost},
+			}, nil
+		})
+	}
+	registerScorer(types.RoutingAlgorithm("cached-s1"))
+	registerScorer(types.RoutingAlgorithm("cached-s2"))
+
+	ctx1 := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("cached-s1,cached-s2"), "test-model", "hello", "req-cache-1", "")
+	router1, err := rm.Select(ctx1)
+	assert.NoError(t, err)
+
+	ctx2 := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("cached-s1,cached-s2"), "test-model", "hello", "req-cache-2", "")
+	router2, err := rm.Select(ctx2)
+	assert.NoError(t, err)
+
+	assert.Same(t, router1, router2)
+	assert.Equal(t, 2, providerCalls)
+}
+
 func podsFromCache(c *cache.Store) *utils.PodArray {
 	return &utils.PodArray{Pods: c.ListPods()}
 }

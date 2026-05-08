@@ -345,6 +345,7 @@ type RouterManager struct {
 	routerDoneInit    context.CancelFunc
 	routerFactory     map[types.RoutingAlgorithm]types.RouterProviderFunc
 	routerConstructor map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc
+	multiRouterCache  map[string]*multiStrategyRouter
 	routerMu          sync.RWMutex
 }
 
@@ -353,6 +354,7 @@ func NewRouterManager() *RouterManager {
 	rm.routerInited, rm.routerDoneInit = context.WithTimeout(context.Background(), 5*time.Second)
 	rm.routerFactory = make(map[types.RoutingAlgorithm]types.RouterProviderFunc)
 	rm.routerConstructor = make(map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc)
+	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
 	return rm
 }
 
@@ -390,7 +392,7 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 	cfg, err := ParseMultiRouterConfig(algStr)
 	if err == nil {
 		if len(cfg.Items) > 1 {
-			multiRouter, err := newMultiStrategyRouter(cfg, rm, ctx)
+			multiRouter, err := rm.getOrCreateMultiStrategyRouter(algStr, cfg, ctx)
 			if err == nil {
 				return multiRouter, nil
 			}
@@ -424,9 +426,32 @@ func Select(ctx *types.RoutingContext) (types.Router, error) {
 	return defaultRM.Select(ctx)
 }
 
+func (rm *RouterManager) getOrCreateMultiStrategyRouter(algStr string, cfg *MultiRouterConfig, ctx *types.RoutingContext) (*multiStrategyRouter, error) {
+	rm.routerMu.RLock()
+	if router, ok := rm.multiRouterCache[algStr]; ok {
+		rm.routerMu.RUnlock()
+		return router, nil
+	}
+	rm.routerMu.RUnlock()
+
+	router, err := newMultiStrategyRouter(cfg, rm, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	rm.routerMu.Lock()
+	defer rm.routerMu.Unlock()
+	if cached, ok := rm.multiRouterCache[algStr]; ok {
+		return cached, nil
+	}
+	rm.multiRouterCache[algStr] = router
+	return router, nil
+}
+
 func (rm *RouterManager) Register(algorithm types.RoutingAlgorithm, constructor types.RouterConstructor) {
 	rm.routerMu.Lock()
 	defer rm.routerMu.Unlock()
+	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
 	rm.routerConstructor[algorithm] = func() types.RouterProviderFunc {
 		router, err := constructor()
 		if err != nil {
@@ -446,6 +471,7 @@ func (rm *RouterManager) RegisterProvider(algorithm types.RoutingAlgorithm, prov
 	rm.routerMu.Lock()
 	defer rm.routerMu.Unlock()
 	rm.routerFactory[algorithm] = provider
+	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
 	klog.Infof("Registered router for %s", algorithm)
 }
 func RegisterProvider(algorithm types.RoutingAlgorithm, provider types.RouterProviderFunc) {
@@ -485,6 +511,7 @@ func (rm *RouterManager) Init() {
 		rm.routerFactory[algorithm] = constructor()
 		klog.Infof("Registered router for %s", algorithm)
 	}
+	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
 	rm.routerDoneInit()
 }
 func Init() {
