@@ -31,8 +31,6 @@ from aibrix.batch.template import (
     ModelSourceType,
     ParallelismSpec,
     ProfileOverridesSpec,
-    ProviderConfig,
-    ProviderType,
     StorageBackend,
     StorageSpec,
     TemplateOverridesSpec,
@@ -46,7 +44,6 @@ def _minimal_template_spec(**overrides):
         "engine": EngineSpec(type=EngineType.VLLM, version="0.6.3", image="x"),
         "model_source": ModelSourceSpec(type=ModelSourceType.S3, uri="s3://x"),
         "accelerator": AcceleratorSpec(type="H100", count=1),
-        "provider_config": ProviderConfig(type=ProviderType.K8S),
         "supported_endpoints": [BatchJobEndpoint.CHAT_COMPLETIONS],
     }
     base.update(overrides)

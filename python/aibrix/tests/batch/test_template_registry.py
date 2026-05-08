@@ -42,7 +42,6 @@ def _valid_template(name="m", version="v1", status="active"):
             "engine": {"type": "mock", "version": "0.1", "image": "x"},
             "model_source": {"type": "local", "uri": "/x"},
             "accelerator": {"type": "cpu", "count": 1},
-            "provider_config": {"type": "k8s"},
             "supported_endpoints": ["/v1/chat/completions"],
         },
     }

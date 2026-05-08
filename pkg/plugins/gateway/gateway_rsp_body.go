@@ -28,8 +28,8 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/packages/ssestream"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/packages/ssestream"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 

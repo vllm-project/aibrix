@@ -48,7 +48,6 @@ from .schema import (
     ModelDeploymentTemplate,
     ModelDeploymentTemplateList,
     Priority,
-    ProviderType,
     TemplateStatus,
 )
 
@@ -222,12 +221,6 @@ def _warn_deferred_template_fields(t: ModelDeploymentTemplate) -> List[str]:
             f"only 'dedicated' is honored at runtime today (shared/external "
             f"depend on the worker/engine decoupling that is not yet "
             f"implemented)"
-        )
-
-    if spec.provider_config.type != ProviderType.K8S:
-        warnings.append(
-            f"provider_config.type='{spec.provider_config.type.value}' is "
-            f"accepted but only 'k8s' is implemented today"
         )
 
     return warnings

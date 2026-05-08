@@ -99,8 +99,13 @@ class EngineSpec(_Strict):
         description="Raw flags appended to engine startup command, e.g. ['--port=8000']",
     )
     health_endpoint: str = Field(
-        default="/health",
-        description="HTTP path checked for readiness",
+        default="",
+        description=(
+            "HTTP path checked for readiness. Empty (the default) lets the "
+            "renderer pick the per-engine convention (vllm/sglang/trtllm/"
+            "lmdeploy/mock all use /health). Override only when fronting the "
+            "engine with a reverse proxy that rewrites the path."
+        ),
     )
     ready_timeout_seconds: int = Field(
         default=600,
@@ -119,7 +124,6 @@ class ModelSourceType(str, Enum):
     HUGGINGFACE = "huggingface"
     S3 = "s3"
     LOCAL = "local"
-    REGISTRY = "registry"  # internal model registry
 
 
 class ModelSourceSpec(_Strict):
@@ -129,7 +133,7 @@ class ModelSourceSpec(_Strict):
     uri: str = Field(description="URI or path to model artifacts")
     revision: Optional[str] = Field(
         default=None,
-        description="Git revision / tag for HF, version for registry",
+        description="Git revision / tag for HuggingFace; ignored for other sources",
     )
     tokenizer_path: Optional[str] = Field(
         default=None,
@@ -249,35 +253,6 @@ class QuantizationSpec(_Strict):
     )
 
 
-class ProviderType(str, Enum):
-    """Compute provider.
-
-    Today only K8S is honored at runtime. EXTERNAL is reserved for the
-    case where the worker points at an existing OpenAI-compatible URL.
-    Other providers are accepted by the schema and require resolver
-    implementations to take effect.
-    """
-
-    K8S = "k8s"
-    RUNPOD = "runpod"
-    LAMBDA_LABS = "lambda_labs"
-    EC2 = "ec2"
-    GCP = "gcp"
-    EXTERNAL = "external"
-
-
-class ProviderConfig(_Lenient):
-    """Provider-specific configuration.
-
-    The 'type' field selects the provider; remaining fields are
-    interpreted by the corresponding resolver. Lenient base allows
-    provider-specific keys (e.g. K8s 'namespace', RunPod 'gpu_type_id')
-    without per-provider type definitions.
-    """
-
-    type: ProviderType
-
-
 class DeploymentMode(str, Enum):
     """How the engine instance is materialized.
 
@@ -297,7 +272,7 @@ class ModelDeploymentTemplateSpec(_Strict):
     """Full deployment template body.
 
     Required: engine, model_source, accelerator, parallelism,
-    supported_endpoints, provider_config.
+    supported_endpoints.
 
     Cross-field invariant: parallelism.world_size == accelerator.count.
     """
@@ -308,7 +283,6 @@ class ModelDeploymentTemplateSpec(_Strict):
     parallelism: ParallelismSpec = Field(default_factory=ParallelismSpec)
     engine_args: EngineArgsSpec = Field(default_factory=EngineArgsSpec)
     quantization: QuantizationSpec = Field(default_factory=QuantizationSpec)
-    provider_config: ProviderConfig
     supported_endpoints: List[BatchJobEndpoint] = Field(
         min_length=1,
         description="OpenAI endpoints this deployment can serve",

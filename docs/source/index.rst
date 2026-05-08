@@ -43,6 +43,7 @@ Documentation
    designs/aibrix-kvcache-offloading-framework.rst
    designs/aibrix-autoscaler.rst
    designs/aibrix-engine-runtime.rst
+   designs/model-config-profiles.rst
 
 .. toctree::
    :maxdepth: 1
@@ -73,6 +74,7 @@ Documentation
    :caption: Production Readiness
 
    production/observability.rst
+   production/gateway.rst
 
 .. toctree::
    :maxdepth: 1

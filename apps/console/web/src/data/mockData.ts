@@ -102,6 +102,9 @@ export interface Model {
     parameters: string;
   };
   tags: string[];
+  // Identifier callers must put in `body.model` for inference. Empty when the
+  // model isn't deployed yet — the validator should skip the identifier check.
+  servingName?: string;
 }
 
 // Mock jobs used as a fallback when the Console BFF is unreachable

@@ -1,11 +1,10 @@
-import { Key, Shield, Gauge, ChevronLeft } from 'lucide-react';
+import { Key, Shield, ChevronLeft } from 'lucide-react';
 
-export type SettingsTab = 'api-keys' | 'secrets' | 'quotas';
+export type SettingsTab = 'api-keys' | 'secrets';
 
 const tabs = [
   { id: 'api-keys' as SettingsTab, icon: Key, label: 'API Keys' },
   { id: 'secrets' as SettingsTab, icon: Shield, label: 'Secrets' },
-  { id: 'quotas' as SettingsTab, icon: Gauge, label: 'Quotas' },
 ];
 
 interface SettingsSidebarProps {

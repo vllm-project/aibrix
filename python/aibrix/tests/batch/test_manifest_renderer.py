@@ -35,7 +35,6 @@ from aibrix.batch.manifest import (
     RenderError,
     TemplateNotFound,
     UnsupportedDeploymentMode,
-    UnsupportedProvider,
 )
 from aibrix.batch.template import (
     local_profile_registry,
@@ -68,7 +67,6 @@ def _vllm_template(name="vllm-prod", count=4, **engine_args):
             "accelerator": {"type": "H100", "count": count},
             "parallelism": {"tp": count},
             "engine_args": engine_args,
-            "provider_config": {"type": "k8s", "namespace": "aibrix-inference"},
             "supported_endpoints": ["/v1/chat/completions", "/v1/embeddings"],
             "deployment_mode": "dedicated",
         },
@@ -89,7 +87,6 @@ def _mock_template(name="mock"):
             "model_source": {"type": "local", "uri": "/x"},
             "accelerator": {"type": "cpu", "count": 1},
             "parallelism": {"tp": 1},
-            "provider_config": {"type": "k8s"},
             "supported_endpoints": ["/v1/chat/completions"],
         },
     }
@@ -170,7 +167,8 @@ class TestRendererHappyPath:
         )
         m = r.render(session_id="s1", spec=_spec(), job_name="batch-1")
         assert m["metadata"]["name"] == "batch-1"
-        assert m["metadata"]["namespace"] == "aibrix-inference"
+        # Templates are provider-agnostic; namespace is the system default.
+        assert m["metadata"]["namespace"] == "default"
         engine = _engine_container(m)
         assert engine["image"] == "vllm/vllm-openai:v0.6.3"
         assert engine["resources"]["limits"]["nvidia.com/gpu"] == "4"
@@ -356,13 +354,6 @@ class TestRendererValidation:
         t["spec"]["deployment_mode"] = "external"
         r = renderer_factory(templates=[t], profiles=[_profile()])
         with pytest.raises(UnsupportedDeploymentMode):
-            r.render(session_id="s1", spec=_spec())
-
-    def test_rejects_non_k8s_provider(self, renderer_factory):
-        t = _vllm_template(count=1)
-        t["spec"]["provider_config"] = {"type": "runpod"}
-        r = renderer_factory(templates=[t], profiles=[_profile()])
-        with pytest.raises(UnsupportedProvider):
             r.render(session_id="s1", spec=_spec())
 
 

@@ -17,21 +17,90 @@ limitations under the License.
 package store
 
 import (
+	"context"
+	"fmt"
+	"time"
+
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	"github.com/vllm-project/aibrix/apps/console/api/store/models"
+	"gorm.io/gorm/clause"
 )
 
-func (s *MemoryStore) loadDemoData() {
-	s.loadDemoDeployments()
-	s.loadDemoJobs()
-	s.loadDemoModels()
-	s.loadDemoModelDeploymentTemplates()
-	s.loadDemoAPIKeys()
-	s.loadDemoSecrets()
-	s.loadDemoQuotas()
+// onConflictSkip is used by demo seeders so re-running against an existing
+// (e.g. file-backed sqlite) database is a no-op instead of a primary-key failure.
+var onConflictSkip = clause.OnConflict{DoNothing: true}
+
+type apiKeyEntry struct {
+	key    *pb.APIKey
+	secret string // full unmasked key
 }
 
-func (s *MemoryStore) loadDemoDeployments() {
-	s.deployments = []*pb.Deployment{
+type secretEntry struct {
+	secret *pb.Secret
+	value  string
+}
+
+func (s *GORMStore) loadDemoData() error {
+	if err := s.loadDemoDeployments(); err != nil {
+		return err
+	}
+	if err := s.loadDemoJobs(); err != nil {
+		return err
+	}
+	if err := s.loadDemoModels(); err != nil {
+		return err
+	}
+	if err := s.loadDemoModelDeploymentTemplates(); err != nil {
+		return err
+	}
+	if err := s.loadDemoAPIKeys(); err != nil {
+		return err
+	}
+	if err := s.loadDemoSecrets(); err != nil {
+		return err
+	}
+	if err := s.loadDemoQuotas(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// LoadDemoData populates the store with demo records. Safe to call once on a
+// fresh store; calling on a store that already has data appends and may yield
+// duplicate IDs depending on the demo seed.
+func (s *GORMStore) LoadDemoData() error {
+	return s.loadDemoData()
+}
+
+// ListDemoJobs returns the full pb.Job records (including OpenAI Batch state
+// fields) currently stored, used by the JobHandler dev fallback when MDS is
+// unreachable. Unlike the Store.ListJobs interface method which only surfaces
+// the Console-owned overlay subset, this method returns whatever was seeded
+// directly into s.
+func (s *GORMStore) ListDemoJobs() []*pb.Job {
+	var jobs []*models.Job
+	if err := s.db.Order("created_at DESC").Find(&jobs).Error; err != nil {
+		return nil
+	}
+	out := make([]*pb.Job, 0, len(jobs))
+	for _, j := range jobs {
+		pbJob, err := j.ToPB()
+		if err != nil {
+			continue
+		}
+		out = append(out, pbJob)
+	}
+	return out
+}
+
+// GetDemoJob looks up a single full pb.Job by id. Counterpart of ListDemoJobs.
+func (s *GORMStore) GetDemoJob(id string) (*pb.Job, bool) {
+	job, err := s.GetJob(context.Background(), id)
+	return job, err == nil
+}
+
+func (s *GORMStore) loadDemoDeployments() error {
+	deployments := []*pb.Deployment{
 		{
 			Id:             "deploy-1",
 			Name:           "gsm-8k-20260118",
@@ -46,28 +115,77 @@ func (s *MemoryStore) loadDemoDeployments() {
 			Status:         "Ready",
 		},
 	}
+
+	for _, pbDep := range deployments {
+		var dep models.Deployment
+		if err := dep.FromPB(pbDep); err != nil {
+			return fmt.Errorf("convert demo deployment %s: %w", pbDep.Id, err)
+		}
+		if err := s.db.Clauses(onConflictSkip).Create(&dep).Error; err != nil {
+			return fmt.Errorf("insert demo deployment %s: %w", dep.ID, err)
+		}
+	}
+	return nil
 }
 
-func (s *MemoryStore) loadDemoJobs() {
-	// The store only persists Console-owned fields. OpenAI Batch state for
-	// these demo IDs is synthesized by the JobHandler dev fallback when the
-	// metadata service is unreachable.
-	s.jobs = map[string]*pb.Job{
+func (s *GORMStore) loadDemoJobs() error {
+	// Full OpenAI Batch records, including state fields normally owned by the
+	// metadata service. The Store interface (UpsertJob/GetJob/ListJobs) only
+	// surfaces the Console-owned subset; the JobHandler dev fallback uses
+	// ListDemoJobs / GetDemoJob to retrieve these full records when MDS is
+	// unavailable.
+	now := time.Now().UTC().Unix()
+	jobs := map[string]*pb.Job{
 		"batch_demo_27a6ee2c": {
-			Id:        "batch_demo_27a6ee2c",
-			Name:      "gsm-8k-20260118",
-			CreatedBy: "demo@aibrix.ai",
+			Id:               "batch_demo_27a6ee2c",
+			Object:           "batch",
+			Endpoint:         "/v1/chat/completions",
+			Model:            "Llama 3.3 70B Instruct",
+			InputDataset:     "file_demo_in_001",
+			OutputDataset:    "file_demo_out_001",
+			CompletionWindow: "24h",
+			Status:           "completed",
+			CreatedAt:        now - 86400,
+			InProgressAt:     now - 86400 + 60,
+			FinalizingAt:     now - 3700,
+			CompletedAt:      now - 3600,
+			ExpiresAt:        now,
+			RequestCounts:    &pb.JobRequestCounts{Total: 1000, Completed: 998, Failed: 2},
+			Usage:            &pb.JobUsage{InputTokens: 250000, OutputTokens: 180000, TotalTokens: 430000},
+			Name:             "gsm-8k-20260118",
+			CreatedBy:        "demo@aibrix.ai",
 		},
 		"batch_demo_a0b13ef5": {
-			Id:        "batch_demo_a0b13ef5",
-			Name:      "gsm-8k-20260118-v2",
-			CreatedBy: "demo@aibrix.ai",
+			Id:               "batch_demo_a0b13ef5",
+			Object:           "batch",
+			Endpoint:         "/v1/chat/completions",
+			Model:            "GLM-5",
+			InputDataset:     "file_demo_in_002",
+			CompletionWindow: "24h",
+			Status:           "in_progress",
+			CreatedAt:        now - 1800,
+			InProgressAt:     now - 1700,
+			ExpiresAt:        now - 1800 + 86400,
+			RequestCounts:    &pb.JobRequestCounts{Total: 500, Completed: 250, Failed: 0},
+			Name:             "gsm-8k-20260118-v2",
+			CreatedBy:        "demo@aibrix.ai",
 		},
 	}
+
+	for _, pbJob := range jobs {
+		var job models.Job
+		if err := job.FromPB(pbJob); err != nil {
+			return fmt.Errorf("convert demo job %s: %w", pbJob.Id, err)
+		}
+		if err := s.db.Clauses(onConflictSkip).Create(&job).Error; err != nil {
+			return fmt.Errorf("insert demo job %s: %w", job.ID, err)
+		}
+	}
+	return nil
 }
 
-func (s *MemoryStore) loadDemoModels() {
-	s.models = []*pb.Model{
+func (s *GORMStore) loadDemoModels() error {
+	dmodels := []*pb.Model{
 		{
 			Id: "model-minimax-m2.5", Name: "MiniMax-M2.5",
 			IconBg: "bg-red-100", IconText: "M", IconTextColor: "text-red-600",
@@ -78,6 +196,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 10, 2026", ProviderName: "MiniMax", HuggingFace: "minimax/MiniMax-M2.5"},
 			Specification: &pb.ModelSpecification{Parameters: "250B"},
 			Tags:          []string{"Serverless"},
+			ServingName:   "minimax/MiniMax-M2.5",
 		},
 		{
 			Id: "model-glm-5", Name: "GLM-5",
@@ -89,6 +208,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 12, 2026", ProviderName: "Z.ai", HuggingFace: "zai-org/GLM-5"},
 			Specification: &pb.ModelSpecification{MixtureOfExperts: true, Parameters: "700B"},
 			Tags:          []string{"Serverless"},
+			ServingName:   "zai-org/GLM-5",
 		},
 		{
 			Id: "model-kimi-k2.5", Name: "Kimi K2.5",
@@ -100,6 +220,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 8, 2026", ProviderName: "Moonshot AI", HuggingFace: "moonshot/kimi-k2.5"},
 			Specification: &pb.ModelSpecification{MixtureOfExperts: true, Parameters: "400B"},
 			Tags:          []string{"Serverless", "Tunable"},
+			ServingName:   "moonshot/kimi-k2.5",
 		},
 		{
 			Id: "model-deepseek-v3.2", Name: "Deepseek v3.2",
@@ -111,6 +232,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Jan 25, 2026", ProviderName: "DeepSeek", HuggingFace: "deepseek-ai/deepseek-v3.2"},
 			Specification: &pb.ModelSpecification{MixtureOfExperts: true, Parameters: "671B"},
 			Tags:          []string{"Serverless"},
+			ServingName:   "deepseek-ai/deepseek-v3.2",
 		},
 		{
 			Id: "model-llama-3.3-70b", Name: "Llama 3.3 70B Instruct",
@@ -122,6 +244,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Dec 10, 2025", ProviderName: "Meta", HuggingFace: "meta-llama/Llama-3.3-70B-Instruct"},
 			Specification: &pb.ModelSpecification{Parameters: "70B"},
 			Tags:          []string{"Serverless", "Tunable", "Function Calling"},
+			ServingName:   "meta-llama/Llama-3.3-70B-Instruct",
 		},
 		// Audio
 		{
@@ -133,6 +256,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Oct 20, 2025", ProviderName: "OpenAI", HuggingFace: "openai/whisper-large-v3"},
 			Specification: &pb.ModelSpecification{Calibrated: true, Parameters: "1.5B"},
 			Tags:          []string{"Serverless"},
+			ServingName:   "openai/whisper-large-v3",
 		},
 		// Image
 		{
@@ -144,6 +268,7 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Feb 1, 2026", ProviderName: "Black Forest Labs"},
 			Specification: &pb.ModelSpecification{Parameters: "12B"},
 			Tags:          []string{"Serverless"},
+			ServingName:   "black-forest-labs/FLUX.1-Kontext-pro",
 		},
 		// Embedding
 		{
@@ -156,146 +281,83 @@ func (s *MemoryStore) loadDemoModels() {
 			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "Sep 1, 2025", ProviderName: "Nomic AI", HuggingFace: "nomic-ai/nomic-embed-text-v1.5"},
 			Specification: &pb.ModelSpecification{Parameters: "137M"},
 			Tags:          []string{"Serverless"},
+			ServingName:   "nomic-ai/nomic-embed-text-v1.5",
+		},
+		{
+			// Test-only entry whose template + serving_name align with the
+			// `mock-vllm` ModelDeploymentTemplate registered in the MDS
+			// ConfigMap. Lets the console e2e demo submit a batch end-to-end
+			// without a real engine.
+			Id: "model-mock-vllm", Name: "Mock Engine (Test)",
+			IconBg: "bg-gray-100", IconText: "M", IconTextColor: "text-gray-700",
+			Categories:    []string{"LLM"},
+			ContextLength: "—",
+			Description:   "OpenAI-compatible echo engine for batch e2e testing. Pairs with the mock-vllm template registered in MDS.",
+			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "—", ProviderName: "AIBrix"},
+			Specification: &pb.ModelSpecification{Parameters: "—"},
+			Tags:          []string{"Test"},
+			ServingName:   "/models/mock",
 		},
 	}
+
+	for _, pbModel := range dmodels {
+		var model models.Model
+		if err := model.FromPB(pbModel); err != nil {
+			return fmt.Errorf("convert demo model %s: %w", pbModel.Id, err)
+		}
+		if err := s.db.Clauses(onConflictSkip).Create(&model).Error; err != nil {
+			return fmt.Errorf("insert demo model %s: %w", model.ID, err)
+		}
+	}
+	return nil
 }
 
-func (s *MemoryStore) loadDemoModelDeploymentTemplates() {
+func (s *GORMStore) loadDemoModelDeploymentTemplates() error {
 	now := "2026-04-26T00:00:00Z"
 
-	s.templates = []*pb.ModelDeploymentTemplate{
+	// Only the mock-vllm template — name + spec mirror the entry registered
+	// in the MDS ConfigMap (aibrix-model-deployment-templates) so a batch
+	// submitted from console resolves end-to-end without bespoke setup.
+	templates := []*pb.ModelDeploymentTemplate{
 		{
-			Id:        "tpl-llama3-70b-prod",
-			Name:      "llama3-70b-prod",
-			Version:   "v1.3.0",
+			Id:        "tpl-mock-vllm",
+			Name:      "mock-vllm",
+			Version:   "v0.0.1",
 			Status:    "active",
-			ModelId:   "model-llama-3.3-70b",
+			ModelId:   "model-mock-vllm",
 			CreatedAt: now,
 			UpdatedAt: now,
 			Spec: &pb.ModelDeploymentTemplateSpec{
 				Engine: &pb.EngineSpec{
-					Type:                "vllm",
-					Version:             "0.6.3",
-					Image:               "vllm/vllm-openai:v0.6.3",
-					Invocation:          "http_server",
-					ServeArgs:           []string{"--port=8000", "--enable-prefix-caching", "--enable-chunked-prefill"},
-					HealthEndpoint:      "/health",
-					ReadyTimeoutSeconds: 600,
-				},
-				ModelSource: &pb.ModelSourceSpec{
-					Type:             "s3",
-					Uri:              "s3://aibrix-models/llama3-70b-instruct/",
-					TokenizerPath:    "tokenizer/",
-					ChatTemplatePath: "templates/llama3.jinja",
-				},
-				Accelerator: &pb.AcceleratorSpec{
-					Type:         "H100-SXM",
-					Count:        4,
-					Interconnect: "nvlink",
-					VramGb:       80,
-					SkuHint:      "aws/p5.48xlarge",
-				},
-				Parallelism: &pb.ParallelismSpec{Tp: 4, Pp: 1, Dp: 1},
-				EngineArgs: map[string]string{
-					"max_num_batched_tokens": "32768",
-					"max_num_seqs":           "256",
-					"max_model_len":          "32768",
-					"gpu_memory_utilization": "0.92",
-					"enable_prefix_caching":  "true",
-					"enable_chunked_prefill": "true",
-				},
-				Quantization: &pb.QuantizationSpec{Weight: "fp8", KvCache: "fp8_e4m3"},
-				ProviderConfig: &pb.ProviderConfig{
-					Type:  "k8s",
-					Extra: map[string]string{"namespace": "aibrix-inference", "service_account": "aibrix-engine"},
-				},
-				SupportedEndpoints: []string{"/v1/chat/completions", "/v1/completions"},
-				DeploymentMode:     "dedicated",
-			},
-		},
-		{
-			Id:        "tpl-llama3-70b-dev",
-			Name:      "llama3-70b-dev",
-			Version:   "v0.2.0",
-			Status:    "active",
-			ModelId:   "model-llama-3.3-70b",
-			CreatedAt: now,
-			UpdatedAt: now,
-			Spec: &pb.ModelDeploymentTemplateSpec{
-				Engine: &pb.EngineSpec{
-					Type:           "vllm",
-					Version:        "0.6.3",
-					Image:          "vllm/vllm-openai:v0.6.3",
+					Type:           "mock",
+					Version:        "0.1.0",
+					Image:          "aibrix/vllm-mock:nightly",
 					Invocation:     "http_server",
-					ServeArgs:      []string{"--port=8000", "--enable-prefix-caching"},
-					HealthEndpoint: "/health",
+					HealthEndpoint: "/ready",
 				},
-				ModelSource: &pb.ModelSourceSpec{
-					Type:     "huggingface",
-					Uri:      "meta-llama/Llama-3.3-70B-Instruct",
-					Revision: "main",
-				},
-				Accelerator: &pb.AcceleratorSpec{Type: "L40S", Count: 4, VramGb: 48},
-				Parallelism: &pb.ParallelismSpec{Tp: 4, Pp: 1, Dp: 1},
-				EngineArgs: map[string]string{
-					"max_num_batched_tokens": "8192",
-					"max_num_seqs":           "64",
-					"max_model_len":          "8192",
-					"gpu_memory_utilization": "0.90",
-					"enable_prefix_caching":  "true",
-				},
-				Quantization: &pb.QuantizationSpec{Weight: "bf16"},
-				ProviderConfig: &pb.ProviderConfig{
-					Type:  "k8s",
-					Extra: map[string]string{"namespace": "aibrix-inference"},
-				},
-				SupportedEndpoints: []string{"/v1/chat/completions", "/v1/completions"},
-				DeploymentMode:     "dedicated",
-			},
-		},
-		{
-			Id:        "tpl-deepseek-v32-prod",
-			Name:      "deepseek-v3.2-prod",
-			Version:   "v1.0.0",
-			Status:    "active",
-			ModelId:   "model-deepseek-v3.2",
-			CreatedAt: now,
-			UpdatedAt: now,
-			Spec: &pb.ModelDeploymentTemplateSpec{
-				Engine: &pb.EngineSpec{
-					Type:           "vllm",
-					Version:        "0.6.3",
-					Image:          "vllm/vllm-openai:v0.6.3",
-					Invocation:     "http_server",
-					ServeArgs:      []string{"--port=8000", "--enable-prefix-caching"},
-					HealthEndpoint: "/health",
-				},
-				ModelSource: &pb.ModelSourceSpec{
-					Type: "huggingface",
-					Uri:  "deepseek-ai/deepseek-v3.2",
-				},
-				Accelerator: &pb.AcceleratorSpec{Type: "H200", Count: 8, Interconnect: "nvlink", VramGb: 141},
-				Parallelism: &pb.ParallelismSpec{Tp: 8, Pp: 1, Dp: 1},
-				EngineArgs: map[string]string{
-					"max_num_seqs":           "128",
-					"max_model_len":          "128000",
-					"gpu_memory_utilization": "0.93",
-					"enable_prefix_caching":  "true",
-				},
-				Quantization: &pb.QuantizationSpec{Weight: "fp8"},
-				ProviderConfig: &pb.ProviderConfig{
-					Type:  "k8s",
-					Extra: map[string]string{"namespace": "aibrix-inference"},
-				},
-				SupportedEndpoints: []string{"/v1/chat/completions", "/v1/completions"},
+				ModelSource:        &pb.ModelSourceSpec{Type: "local", Uri: "/models/mock"},
+				Accelerator:        &pb.AcceleratorSpec{Type: "CPU", Count: 1},
+				Parallelism:        &pb.ParallelismSpec{Tp: 1},
+				SupportedEndpoints: []string{"/v1/chat/completions", "/v1/embeddings"},
 				DeploymentMode:     "dedicated",
 			},
 		},
 	}
+
+	for _, pbTpl := range templates {
+		var tpl models.ModelDeploymentTemplate
+		if err := tpl.FromPB(pbTpl); err != nil {
+			return fmt.Errorf("convert demo template %s: %w", pbTpl.Id, err)
+		}
+		if err := s.db.Clauses(onConflictSkip).Create(&tpl).Error; err != nil {
+			return fmt.Errorf("insert demo template %s: %w", tpl.ID, err)
+		}
+	}
+	return nil
 }
 
-func (s *MemoryStore) loadDemoAPIKeys() {
-	s.apiKeys = []*apiKeyEntry{
+func (s *GORMStore) loadDemoAPIKeys() error {
+	apiKeys := []*apiKeyEntry{
 		{
 			key: &pb.APIKey{
 				Id:        "key_5VFKZKA2qxmqU5aJ",
@@ -306,19 +368,41 @@ func (s *MemoryStore) loadDemoAPIKeys() {
 			secret: "WSo2xxxxxxxxxxxxxxxxxx",
 		},
 	}
+	for _, entry := range apiKeys {
+		var key models.APIKey
+		if err := key.FromPB(entry.key); err != nil {
+			return fmt.Errorf("convert demo api key %s: %w", entry.key.Id, err)
+		}
+		key.KeyHash = entry.secret
+		if err := s.db.Clauses(onConflictSkip).Create(&key).Error; err != nil {
+			return fmt.Errorf("insert demo api key %s: %w", key.ID, err)
+		}
+	}
+	return nil
 }
 
-func (s *MemoryStore) loadDemoSecrets() {
-	s.secrets = []*secretEntry{
+func (s *GORMStore) loadDemoSecrets() error {
+	secrets := []*secretEntry{
 		{
 			secret: &pb.Secret{Id: "1", Name: "GENERAL_SECRET_KEY"},
 			value:  "secret-value",
 		},
 	}
+	for _, entry := range secrets {
+		var secretModel models.Secret
+		if err := secretModel.FromPB(entry.secret); err != nil {
+			return fmt.Errorf("convert demo secret %s: %w", entry.secret.Id, err)
+		}
+		secretModel.EncryptedValue = entry.value
+		if err := s.db.Clauses(onConflictSkip).Create(&secretModel).Error; err != nil {
+			return fmt.Errorf("insert demo secret %s: %w", secretModel.ID, err)
+		}
+	}
+	return nil
 }
 
-func (s *MemoryStore) loadDemoQuotas() {
-	s.quotas = []*pb.Quota{
+func (s *GORMStore) loadDemoQuotas() error {
+	quotas := []*pb.Quota{
 		{Id: "1", Name: "Deployed Model Count", QuotaId: "deployed-model-count", CurrentUsage: 0, UsagePercentage: 0, Quota: 100},
 		{Id: "2", Name: "Eval Protocol Free Daily Credits", QuotaId: "eval-protocol-free-daily-credits", CurrentUsage: 0, UsagePercentage: 0, Quota: 0},
 		{Id: "3", Name: "GLOBAL - A100 Count", QuotaId: "global--a100-count", CurrentUsage: 0, UsagePercentage: 0, Quota: 16},
@@ -327,4 +411,14 @@ func (s *MemoryStore) loadDemoQuotas() {
 		{Id: "6", Name: "GLOBAL - H200 Count", QuotaId: "global--h200-count", CurrentUsage: 0, UsagePercentage: 0, Quota: 16},
 		{Id: "7", Name: "Job Submission Count", QuotaId: "job-submission-count", CurrentUsage: 0, UsagePercentage: 0, Quota: 8},
 	}
+	for _, pbQuota := range quotas {
+		var quota models.Quota
+		if err := quota.FromPB(pbQuota); err != nil {
+			return fmt.Errorf("convert demo quota %s: %w", pbQuota.Id, err)
+		}
+		if err := s.db.Clauses(onConflictSkip).Create(&quota).Error; err != nil {
+			return fmt.Errorf("insert demo quota %s: %w", quota.QuotaID, err)
+		}
+	}
+	return nil
 }

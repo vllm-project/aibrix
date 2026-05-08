@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { ChevronLeft, Copy, Trash2, CheckCircle, XCircle } from 'lucide-react';
+import { ChevronLeft, Copy, Trash2, CheckCircle, XCircle, Download } from 'lucide-react';
 import { getJob } from '../utils/api';
-import { Job, JobStatus, mockJobs } from '../data/mockData';
+import { Job, JobStatus } from '../data/mockData';
 
 interface JobDetailProps {
   jobId: string | null;
@@ -35,23 +35,46 @@ function statusClass(s: JobStatus): string {
 export function JobDetail({ jobId, onBack }: JobDetailProps) {
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(true);
-  const [usingMock, setUsingMock] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!jobId) return;
-    setLoading(true);
-    getJob(jobId)
-      .then(j => {
-        setJob(j);
-        setUsingMock(false);
-      })
-      .catch(err => {
-        console.error('Failed to fetch job:', err);
-        const fallback = mockJobs.find(j => j.id === jobId) || mockJobs[0] || null;
-        setJob(fallback);
-        setUsingMock(fallback !== null);
-      })
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const TERMINAL = new Set(['completed', 'failed', 'expired', 'cancelled']);
+
+    const fetchJob = (initial: boolean) => {
+      if (initial) {
+        setLoading(true);
+        setLoadError(null);
+      }
+      getJob(jobId)
+        .then(j => {
+          if (cancelled) return;
+          setJob(j);
+          if (!TERMINAL.has(j.status)) {
+            timer = setTimeout(() => fetchJob(false), 5000);
+          }
+        })
+        .catch(err => {
+          if (cancelled) return;
+          console.error('Failed to fetch job:', err);
+          if (initial) {
+            setLoadError(err instanceof Error ? err.message : String(err));
+            setJob(null);
+          }
+          timer = setTimeout(() => fetchJob(false), 10000);
+        })
+        .finally(() => {
+          if (!cancelled && initial) setLoading(false);
+        });
+    };
+
+    fetchJob(true);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [jobId]);
 
   if (loading) {
@@ -71,7 +94,11 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
         <button onClick={onBack} className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-4">
           <ChevronLeft className="w-4 h-4" /> Back
         </button>
-        <p>Job not found</p>
+        {loadError ? (
+          <p className="text-sm text-red-600">Failed to load job: {loadError}</p>
+        ) : (
+          <p>Job not found</p>
+        )}
       </div>
     );
   }
@@ -104,7 +131,6 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
               <span className={`inline-flex px-2.5 py-1 text-xs rounded-full ${statusClass(job.status)}`}>
                 {job.status}
               </span>
-              {usingMock && <span className="text-xs text-amber-600">Example data</span>}
             </div>
           </div>
 
@@ -260,25 +286,32 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                   </code>
                 </div>
               )}
-              <div>
-                <div className="text-gray-500 mb-1">Input Dataset</div>
-                <code className="text-sm bg-gray-100 px-2 py-1 rounded-md">{job.inputDataset}</code>
-              </div>
-              {job.outputDataset && (
-                <div>
-                  <div className="text-gray-500 mb-1">Output Dataset</div>
-                  <code className="text-sm bg-gray-100 px-2 py-1 rounded-md">{job.outputDataset}</code>
-                </div>
-              )}
-              {job.errorDataset && (
-                <div>
-                  <div className="text-gray-500 mb-1">Error Dataset</div>
-                  <code className="text-sm bg-gray-100 px-2 py-1 rounded-md">{job.errorDataset}</code>
-                </div>
-              )}
+              {job.inputDataset && <FileRow label="Input Dataset" fileId={job.inputDataset} />}
+              {job.outputDataset && <FileRow label="Output Dataset" fileId={job.outputDataset} />}
+              {job.errorDataset && <FileRow label="Error Dataset" fileId={job.errorDataset} />}
             </div>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function FileRow({ label, fileId }: { label: string; fileId: string }) {
+  return (
+    <div>
+      <div className="text-gray-500 mb-1">{label}</div>
+      <div className="flex items-center gap-2">
+        <code className="text-sm bg-gray-100 px-2 py-1 rounded-md">{fileId}</code>
+        <a
+          href={`/api/v1/files/${encodeURIComponent(fileId)}/content`}
+          download
+          className="inline-flex items-center gap-1 px-2 py-1 text-xs text-teal-600 hover:text-teal-700 hover:bg-teal-50 rounded-md transition-colors"
+          title="Download file content"
+        >
+          <Download className="w-3.5 h-3.5" />
+          Download
+        </a>
       </div>
     </div>
   );
