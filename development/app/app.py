@@ -100,13 +100,6 @@ def auth_error(status):
     )
 
 
-def auth_if_configured(func):
-    """Require bearer auth only when the mock was started with --api_key."""
-    if api_key is None:
-        return func
-    return auth.login_required(func)
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -375,7 +368,7 @@ def ready():
 
 
 @app.route("/v1/models", methods=["GET"])
-@auth_if_configured
+@auth.login_required
 def get_models():
     return jsonify({"object": "list", "data": models})
 
@@ -385,7 +378,7 @@ def get_models():
 # =============================================================================
 
 @app.route("/v1/load_lora_adapter", methods=["POST"])
-@auth_if_configured
+@auth.login_required
 def load_lora_adapter():
     """
     Load a LoRA adapter. Matches vLLM error handling behavior.
@@ -432,7 +425,7 @@ def load_lora_adapter():
 
 
 @app.route("/v1/unload_lora_adapter", methods=["POST"])
-@auth_if_configured
+@auth.login_required
 def unload_lora_adapter():
     """
     Unload a LoRA adapter. Matches vLLM error handling behavior.
@@ -466,7 +459,7 @@ def unload_lora_adapter():
 # =============================================================================
 
 @app.route("/v1/completions", methods=["POST"])
-@auth_if_configured
+@auth.login_required
 def completion():
     try:
         prompt = request.json.get("prompt")
@@ -608,7 +601,7 @@ def completion():
 
 
 @app.route("/v1/chat/completions", methods=["POST"])
-@auth_if_configured
+@auth.login_required
 def chat_completions():
     try:
         messages = request.json.get("messages")
@@ -850,7 +843,7 @@ def chat_completions():
 
 
 @app.route("/v1/audio/speech", methods=["POST"])
-@auth_if_configured
+@auth.login_required
 def audio_speech():
     """
     Simulates the OpenAI text-to-speech endpoint.
@@ -941,7 +934,7 @@ def audio_speech():
 
 
 @app.route("/v1/audio/voices", methods=["GET"])
-@auth_if_configured
+@auth.login_required
 def audio_voices():
     """
     Returns available TTS voices (vLLM-Omni compatible).
@@ -955,7 +948,7 @@ def audio_voices():
 
 
 @app.route("/v1/audio/transcriptions", methods=["POST"])
-@auth_if_configured
+@auth.login_required
 def audio_transcriptions():
     """
     Simulates the OpenAI audio transcription endpoint.
@@ -1070,7 +1063,7 @@ def audio_transcriptions():
 
 
 @app.route("/v1/audio/translations", methods=["POST"])
-@auth_if_configured
+@auth.login_required
 def audio_translations():
     """
     Simulates the OpenAI audio translation endpoint.
@@ -1180,7 +1173,7 @@ def audio_translations():
 
 
 @app.route("/v1/embeddings", methods=["POST"])
-@auth_if_configured
+@auth.login_required
 def embeddings():
     try:
         input_data = request.json.get("input")
@@ -1327,7 +1320,7 @@ def embeddings():
 
 
 @app.route("/v1/images/generations", methods=["POST"])
-@auth_if_configured
+@auth.login_required
 def images_generations():
     """
     Simulates the OpenAI image generation endpoint.
@@ -1385,7 +1378,7 @@ def images_generations():
 
 
 @app.route("/v1/video/generations", methods=["POST"])
-@auth_if_configured
+@auth.login_required
 def video_generations():
     """
     Simulates a video generation endpoint.
@@ -1434,7 +1427,7 @@ def video_generations():
 
 
 @app.route("/v1/videos", methods=["POST"])
-@auth_if_configured
+@auth.login_required
 def vllm_omni_videos():
     """
     Simulates the vLLM-Omni /v1/videos endpoint (Wan2.2).
@@ -1485,7 +1478,7 @@ def vllm_omni_videos():
 
 
 @app.route("/v1/rerank", methods=["POST"])
-@auth_if_configured
+@auth.login_required
 def rerank():
     """
     Simulates the rerank endpoint (vLLM/JinaAI format).
@@ -1562,7 +1555,7 @@ def version():
 
 
 @app.route("/tokenize", methods=["POST"])
-@auth_if_configured
+@auth.login_required
 def tokenize():
     """
     Simulates the tokenize endpoint.
@@ -1604,7 +1597,7 @@ def tokenize():
 
 
 @app.route("/detokenize", methods=["POST"])
-@auth_if_configured
+@auth.login_required
 def detokenize():
     """
     Simulates the detokenize endpoint.
