@@ -169,6 +169,8 @@ func (m *multiStrategyRouter) Route(ctx *types.RoutingContext, readyPodList type
 
 	if len(pods) == 1 {
 		ctx.SetTargetPod(pods[0])
+		m.setTargetPortIfNeeded(ctx, readyPodList, pods[0])
+		m.runPostRouteUpdates(ctx, readyPodList, pods[0])
 		return ctx.TargetAddress(), nil
 	}
 
@@ -180,6 +182,7 @@ func (m *multiStrategyRouter) Route(ctx *types.RoutingContext, readyPodList type
 	// Store target pod for updating cache if needed
 	ctx.SetTargetPod(topPod)
 	m.setTargetPortIfNeeded(ctx, readyPodList, topPod)
+	m.runPostRouteUpdates(ctx, readyPodList, topPod)
 
 	return ctx.TargetAddress(), nil
 }
@@ -198,6 +201,19 @@ func (m *multiStrategyRouter) setTargetPortIfNeeded(ctx *types.RoutingContext, r
 	}
 	if port := selectTargetPortForPodWithLeastRequestCount(leastRequest.cache, targetPod, readyPodList.ListPortsForPod()); port != 0 {
 		ctx.SetTargetPort(port)
+	}
+}
+
+func (m *multiStrategyRouter) runPostRouteUpdates(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) {
+	for _, item := range m.config.Items {
+		scorer := m.scorers[item.Name]
+		updater, ok := scorer.(types.PostRouteUpdater)
+		if !ok {
+			continue
+		}
+		if err := updater.PostRouteUpdate(ctx, readyPodList, targetPod); err != nil {
+			klog.Warningf("post-route update for strategy %s failed: %v", item.Name, err)
+		}
 	}
 }
 
@@ -290,18 +306,6 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 			winnerFlag, pod.Name, finalScores[pod], strings.Join(diags[pod].StrategyLog, ", ")))
 	}
 	klog.V(4).Info(logBuilder.String())
-
-	// 6. Post-route execution (for strategies that need to inject headers or update state)
-	// (Note: The existing loop handles PostRouteUpdate. We can expand it later if needed.)
-	for name, scorer := range m.scorers {
-		updater, ok := scorer.(types.PostRouteUpdater)
-		if !ok {
-			continue
-		}
-		if err := updater.PostRouteUpdate(ctx, readyPodList, winner); err != nil {
-			return nil, nil, fmt.Errorf("post-route update for strategy %s failed: %w", name, err)
-		}
-	}
 
 	return winner, finalScores, nil
 }

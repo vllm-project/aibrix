@@ -18,6 +18,7 @@ package routingalgorithms
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand"
 	"reflect"
@@ -229,12 +230,18 @@ type fakeScorerWithPostRoute struct {
 	fakeScorer
 	called          bool
 	calledTargetPod *v1.Pod
+	order           *[]string
+	name            string
+	err             error
 }
 
 func (f *fakeScorerWithPostRoute) PostRouteUpdate(_ *types.RoutingContext, _ types.PodList, targetPod *v1.Pod) error {
 	f.called = true
 	f.calledTargetPod = targetPod
-	return nil
+	if f.order != nil {
+		*f.order = append(*f.order, f.name)
+	}
+	return f.err
 }
 
 type portWrapper struct {
@@ -486,6 +493,63 @@ func TestMultiStrategyRouterRoute_PostRouteUpdate(t *testing.T) {
 	assert.True(t, postRouteScorer.called)
 	assert.Same(t, podB, postRouteScorer.calledTargetPod)
 	assert.Equal(t, "pod-b", ctx.TargetPod().Name)
+}
+
+func TestMultiStrategyRouterRoute_PostRouteUpdateForSinglePod(t *testing.T) {
+	pod := newPod("pod-a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	postRouteScorer := &fakeScorerWithPostRoute{
+		fakeScorer: fakeScorer{polarity: types.PolarityMost},
+	}
+	m := &multiStrategyRouter{
+		config: &MultiRouterConfig{Items: []RouterItem{{Name: "post-route", Coefficient: 1}}},
+		scorers: map[string]types.PodScorer{
+			"post-route": postRouteScorer,
+		},
+	}
+
+	ctx := types.NewRoutingContext(context.Background(), RouterNotSet, "test-model", "hello", "req-single-post-route", "")
+	address, err := m.Route(ctx, wrapper{pods: []*v1.Pod{pod}})
+
+	assert.NoError(t, err)
+	assert.Equal(t, "1.1.1.1:8000", address)
+	assert.True(t, postRouteScorer.called)
+	assert.Same(t, pod, postRouteScorer.calledTargetPod)
+}
+
+func TestMultiStrategyRouterRoute_PostRouteUpdateOrderAndErrorHandling(t *testing.T) {
+	podA := newPod("pod-a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podB := newPod("pod-b", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	var order []string
+	first := &fakeScorerWithPostRoute{
+		fakeScorer: fakeScorer{polarity: types.PolarityMost, scores: map[*v1.Pod]float64{podA: 1, podB: 2}},
+		order:      &order,
+		name:       "first",
+		err:        fmt.Errorf("post-route update failed"),
+	}
+	second := &fakeScorerWithPostRoute{
+		fakeScorer: fakeScorer{polarity: types.PolarityMost, scores: map[*v1.Pod]float64{podA: 1, podB: 2}},
+		order:      &order,
+		name:       "second",
+	}
+	m := &multiStrategyRouter{
+		config: &MultiRouterConfig{Items: []RouterItem{
+			{Name: "first", Coefficient: 1},
+			{Name: "second", Coefficient: 1},
+		}},
+		scorers: map[string]types.PodScorer{
+			"second": second,
+			"first":  first,
+		},
+	}
+
+	ctx := types.NewRoutingContext(context.Background(), RouterNotSet, "test-model", "hello", "req-post-route-order", "")
+	address, err := m.Route(ctx, wrapper{pods: []*v1.Pod{podA, podB}})
+
+	assert.NoError(t, err)
+	assert.Equal(t, "2.2.2.2:8000", address)
+	assert.Equal(t, []string{"first", "second"}, order)
+	assert.True(t, first.called)
+	assert.True(t, second.called)
 }
 
 func TestMultiStrategyRouterRoute_SelectsLeastLoadedPortForMultiPortPod(t *testing.T) {
