@@ -601,6 +601,7 @@ def main():
 
     if args.dry_run:
         from aibrix.storage import StorageType  # local import: avoid cycle
+
         settings.STORAGE_TYPE = StorageType.LOCAL
         settings.METASTORE_TYPE = StorageType.LOCAL
 

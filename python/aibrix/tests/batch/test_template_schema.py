@@ -25,6 +25,8 @@ from aibrix.batch.template import (
     EngineArgsSpec,
     EngineSpec,
     EngineType,
+    MetastoreBackend,
+    MetastoreSpec,
     ModelDeploymentTemplate,
     ModelDeploymentTemplateList,
     ModelSourceSpec,
@@ -172,6 +174,20 @@ class TestBatchProfile:
     def test_storage_bucket_required(self):
         with pytest.raises(ValidationError):
             StorageSpec(backend=StorageBackend.S3, bucket="")
+
+    def test_metastore_config_is_accepted(self):
+        p = BatchProfile(
+            name="p1",
+            spec={
+                "storage": StorageSpec(backend=StorageBackend.S3, bucket="b"),
+                "metastore": MetastoreSpec(
+                    backend=MetastoreBackend.REDIS,
+                    endpoint_url="redis.default.svc.cluster.local",
+                ),
+            },
+        )
+        assert p.spec.metastore is not None
+        assert p.spec.metastore.backend == MetastoreBackend.REDIS
 
 
 class TestBatchProfileList:

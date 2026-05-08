@@ -508,14 +508,13 @@ class JobManifestRenderer(_RendererSupport):
         """Inject storage and metastore env vars into batch-worker container.
 
         Storage env comes from the per-batch profile (where files live).
-        Metastore env comes from the process-global metastore type
-        (where transient state is cached); see build_metastore_env() for
-        the rationale on keeping it process-global.
+        Metastore env comes from per-profile metastore settings when
+        configured, otherwise from the process-global metastore type.
         """
         worker = self._find_container(manifest, _WORKER_CONTAINER_NAME)
         existing_names = {entry["name"] for entry in worker["env"]}
 
-        for entry in build_storage_env(profile) + build_metastore_env():
+        for entry in build_storage_env(profile) + build_metastore_env(profile):
             if entry["name"] not in existing_names:
                 worker["env"].append(entry)
                 existing_names.add(entry["name"])

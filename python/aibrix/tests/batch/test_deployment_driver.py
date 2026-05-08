@@ -14,6 +14,7 @@
 
 import asyncio
 import contextlib
+import io
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Optional
@@ -21,7 +22,7 @@ from typing import Optional
 import pytest
 
 import aibrix.batch.job_driver.deployment_driver as deployment_driver_module
-from aibrix.batch.job_driver import DeploymentDriver
+from aibrix.batch.job_driver import DeploymentJobDriver
 from aibrix.batch.job_driver.driver_factory import create_job_driver
 from aibrix.batch.job_entity import (
     BatchJob,
@@ -233,6 +234,53 @@ async def test_kubernetes_service_inference_client_logs_single_warning_on_port_f
     ]
 
 
+def test_kubernetes_service_inference_client_port_forward_parses_assigned_local_port(
+    monkeypatch,
+):
+    client = deployment_driver_module.KubernetesServiceInferenceClient(
+        core_v1_api=FakeCoreV1Api(),
+        namespace="default",
+        service_name="svc",
+        model_name="model-a",
+        service_port=8000,
+        base_url="http://svc.default.svc.cluster.local:8000",
+    )
+    commands = []
+    assigned_port = 39123
+
+    class _FakeProcess:
+        def __init__(self):
+            self.stdout = io.StringIO(
+                f"Forwarding from 127.0.0.1:{assigned_port} -> 8000\n"
+            )
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+    def _popen(command, **kwargs):
+        commands.append(command)
+        return _FakeProcess()
+
+    monkeypatch.setattr(deployment_driver_module.subprocess, "Popen", _popen)
+
+    base_url = client._start_port_forward()
+
+    assert commands == [
+        [
+            "kubectl",
+            "-n",
+            "default",
+            "port-forward",
+            "service/svc",
+            ":8000",
+        ]
+    ]
+    assert base_url == f"http://127.0.0.1:{assigned_port}"
+
+
 def _make_job(job_id: str = "job-123456789abc") -> BatchJob:
     spec = BatchJobSpec.from_strings(
         input_file_id="input-file-1",
@@ -298,7 +346,7 @@ async def test_deployment_driver_creates_runtime_and_finalizes_with_temp_files()
     entity_manager = FakeEntityManager()
     apps_api = FakeAppsV1Api()
     core_api = FakeCoreV1Api()
-    driver = DeploymentDriver(
+    driver = DeploymentJobDriver(
         _make_infrastructure_context(apps_v1_api=apps_api, core_v1_api=core_api),
         progress_manager=progress_manager,
         entity_manager=entity_manager,
@@ -378,7 +426,7 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
     entity_manager = FakeEntityManager()
     apps_api = FakeAppsV1Api()
     core_api = FakeCoreV1Api()
-    driver = DeploymentDriver(
+    driver = DeploymentJobDriver(
         _make_infrastructure_context(apps_v1_api=apps_api, core_v1_api=core_api),
         progress_manager=progress_manager,
         entity_manager=entity_manager,
@@ -419,7 +467,7 @@ def test_create_job_driver_uses_deployment_driver_for_scheduler_jobs(monkeypatch
 
     If the factory regresses and falls back to the local/simple path,
     metadata-server jobs that request deployment execution will silently
-    stop using DeploymentDriver.
+    stop using DeploymentJobDriver.
     """
     job = _make_job()
     entity_manager = FakeEntityManager()
@@ -427,7 +475,7 @@ def test_create_job_driver_uses_deployment_driver_for_scheduler_jobs(monkeypatch
     simple_sentinel = object()
 
     monkeypatch.setattr(
-        "aibrix.batch.job_driver.driver_factory.DeploymentDriver",
+        "aibrix.batch.job_driver.driver_factory.DeploymentJobDriver",
         lambda context, progress_manager, entity_manager, **kwargs: deployment_sentinel,
     )
     monkeypatch.setattr(
@@ -448,11 +496,11 @@ def test_create_job_driver_uses_deployment_driver_for_scheduler_jobs(monkeypatch
 def test_create_job_driver_passes_infrastructure_context_to_deployment_driver(
     monkeypatch,
 ):
-    """Protect infrastructure propagation into DeploymentDriver.
+    """Protect infrastructure propagation into DeploymentJobDriver.
 
-    DeploymentDriver now depends on the shared infrastructure context for
+    DeploymentJobDriver now depends on the shared infrastructure context for
     registries and Kubernetes APIs. This catches regressions where the
-    factory still chooses DeploymentDriver but forgets to forward that
+    factory still chooses DeploymentJobDriver but forgets to forward that
     context.
     """
     job = _make_job()
@@ -467,7 +515,7 @@ def test_create_job_driver_passes_infrastructure_context_to_deployment_driver(
         return object()
 
     monkeypatch.setattr(
-        "aibrix.batch.job_driver.driver_factory.DeploymentDriver",
+        "aibrix.batch.job_driver.driver_factory.DeploymentJobDriver",
         _deployment_driver,
     )
 

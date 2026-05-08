@@ -14,7 +14,7 @@
 
 import asyncio
 import json
-import socket
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -48,6 +48,7 @@ class DeploymentRuntime:
 
 class KubernetesServiceInferenceClient:
     _gateway_base_url = "http://127.0.0.1:8888"
+    _PORT_FORWARD_URL_RE = re.compile(r"(?:127\.0\.0\.1|localhost):(\d+)")
 
     def __init__(
         self,
@@ -80,7 +81,9 @@ class KubernetesServiceInferenceClient:
         except Exception as ex:
             attempt_failures.append(f"service proxy failed: {ex}")
             try:
-                result = await self._gateway_inference_request(endpoint, request_payload)
+                result = await self._gateway_inference_request(
+                    endpoint, request_payload
+                )
                 logger.warning(
                     "Inference request succeeded via gateway after fallback",
                     service_name=self._service_name,
@@ -91,7 +94,9 @@ class KubernetesServiceInferenceClient:
                 return result
             except Exception as gateway_ex:
                 attempt_failures.append(f"gateway failed: {gateway_ex}")
-                result = await self._fallback_inference_request(endpoint, request_payload)
+                result = await self._fallback_inference_request(
+                    endpoint, request_payload
+                )
                 logger.warning(
                     "Inference request succeeded via port-forward after fallback",
                     service_name=self._service_name,
@@ -164,7 +169,6 @@ class KubernetesServiceInferenceClient:
             and self._fallback_base_url is not None
         ):
             return self._fallback_base_url
-        local_port = self._reserve_local_port()
         process = subprocess.Popen(
             [
                 "kubectl",
@@ -172,7 +176,7 @@ class KubernetesServiceInferenceClient:
                 self._namespace,
                 "port-forward",
                 f"service/{self._service_name}",
-                f"{local_port}:{self._service_port}",
+                f":{self._service_port}",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -186,7 +190,8 @@ class KubernetesServiceInferenceClient:
                     f"port-forward exited early for {self._service_name}: {output}"
                 )
             line = process.stdout.readline() if process.stdout is not None else ""
-            if f"127.0.0.1:{local_port}" in line or f"localhost:{local_port}" in line:
+            if match := self._PORT_FORWARD_URL_RE.search(line):
+                local_port = int(match.group(1))
                 self._port_forward_process = process
                 return f"http://127.0.0.1:{local_port}"
         process.terminate()
@@ -194,14 +199,8 @@ class KubernetesServiceInferenceClient:
             f"Timed out waiting for port-forward for {self._service_name}"
         )
 
-    @staticmethod
-    def _reserve_local_port() -> int:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind(("127.0.0.1", 0))
-            return int(sock.getsockname()[1])
 
-
-class deploymentJobDriver(LocalJobDriver):
+class DeploymentJobDriver(LocalJobDriver):
     def __init__(
         self,
         context: InfrastructureContext,
@@ -228,7 +227,7 @@ class deploymentJobDriver(LocalJobDriver):
     @staticmethod
     def _build_renderer(context: InfrastructureContext) -> DeploymentManifestRenderer:
         if context.template_registry is None:
-            raise ValueError("DeploymentDriver requires template registry")
+            raise ValueError("DeploymentJobDriver requires template registry")
         return DeploymentManifestRenderer(
             context.template_registry, context.profile_registry
         )
@@ -248,7 +247,7 @@ class deploymentJobDriver(LocalJobDriver):
         if job.job_id is None:
             raise ValueError("job_id is required")
         if job.spec.aibrix is None or job.spec.model_template_name is None:
-            raise ValueError("DeploymentDriver requires spec.aibrix.model_template")
+            raise ValueError("DeploymentJobDriver requires spec.aibrix.model_template")
 
         deployment_name = self._deployment_name(job.job_id)
         service_name = self._service_name(job.job_id)
@@ -459,7 +458,7 @@ class deploymentJobDriver(LocalJobDriver):
         except asyncio.CancelledError:
             if self._delete_requested.is_set():
                 logger.info(
-                    "DeploymentDriver execution interrupted by job deletion.",
+                    "DeploymentJobDriver execution interrupted by job deletion.",
                     job_id=job_id,
                 )  # type: ignore[call-arg]
                 return
@@ -485,24 +484,3 @@ class deploymentJobDriver(LocalJobDriver):
         await self._snapshot_usage_to_status(job_id)
         self._drop_usage_state(job_id)
         return job
-
-
-_deployment_job_driver: Optional[deploymentJobDriver] = None
-
-
-def DeploymentDriver(
-    context: InfrastructureContext,
-    progress_manager: JobProgressManager,
-    entity_manager: JobEntityManager,
-    renderer: Optional[DeploymentManifestRenderer] = None,
-) -> deploymentJobDriver:
-    global _deployment_job_driver
-
-    if _deployment_job_driver is None:
-        _deployment_job_driver = deploymentJobDriver(
-            context,
-            progress_manager,
-            entity_manager,
-            renderer=renderer,
-        )
-    return _deployment_job_driver

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .deployment_driver import DeploymentDriver
+from .deployment_driver import DeploymentJobDriver
 from .driver import JobDriver
 from .driver_factory import create_job_driver
 from .inference_client import (
@@ -27,7 +27,7 @@ from .progress_manager import JobProgressManager
 __all__ = [
     "create_job_driver",
     "JobDriver",
-    "DeploymentDriver",
+    "DeploymentJobDriver",
     "InferenceEngineClient",
     "EchoInferenceEngineClient",
     "LocalJobDriver",

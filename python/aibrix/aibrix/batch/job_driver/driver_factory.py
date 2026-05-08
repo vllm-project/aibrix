@@ -24,7 +24,7 @@ from aibrix.batch.job_entity import (
 )
 from aibrix.context import InfrastructureContext
 
-from .deployment_driver import DeploymentDriver
+from .deployment_driver import DeploymentJobDriver
 from .driver import JobDriver
 from .local_driver import LocalJobDriver
 from .progress_manager import JobProgressManager
@@ -54,7 +54,7 @@ def create_job_driver(
             and entity_manager is not None
             and job.spec.model_template_name is not None
         ):
-            return DeploymentDriver(
+            return DeploymentJobDriver(
                 context,
                 progress_manager,
                 entity_manager,

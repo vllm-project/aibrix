@@ -96,6 +96,9 @@ class DeploymentManifestRenderer(_RendererSupport):
             }
         ]
         if self._needs_model_download(template):
+            # TODO: Hardcoding the host path to /root/models makes the deployment manifest
+            # dependent on a specific node filesystem layout, which may not be portable.
+            # Consider making this base path configurable via the InfrastructureContext or BatchProfile.
             volumes.append(
                 {
                     "name": _MODEL_VOLUME_NAME,

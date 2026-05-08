@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from aibrix import envs
 from aibrix.batch.job_entity import (
     BatchJobSpec,
     BatchJobTransformer,
@@ -98,16 +99,19 @@ def _mock_template(name="mock"):
     }
 
 
-def _profile(name="default-profile", backend="s3", bucket="b"):
+def _profile(name="default-profile", backend="s3", bucket="b", metastore=None):
+    spec = {
+        "storage": {
+            "backend": backend,
+            "bucket": bucket,
+            "credentials_secret_ref": "creds",
+        },
+    }
+    if metastore is not None:
+        spec["metastore"] = metastore
     return {
         "name": name,
-        "spec": {
-            "storage": {
-                "backend": backend,
-                "bucket": bucket,
-                "credentials_secret_ref": "creds",
-            },
-        },
+        "spec": spec,
     }
 
 
@@ -518,8 +522,8 @@ class TestMetastoreEnv:
         )
         monkeypatch.delenv("WORKER_REDIS_HOST", raising=False)
         monkeypatch.delenv("WORKER_REDIS_PORT", raising=False)
-        monkeypatch.setenv("REDIS_HOST", "redis-shared.aibrix.svc")
-        monkeypatch.setenv("REDIS_PORT", "16379")
+        monkeypatch.setattr(envs, "STORAGE_REDIS_HOST", "redis-shared.aibrix.svc")
+        monkeypatch.setattr(envs, "STORAGE_REDIS_PORT", "16379")
 
         r = renderer_factory(
             templates=[_vllm_template(count=1)],
@@ -531,6 +535,77 @@ class TestMetastoreEnv:
         }
         assert env["REDIS_HOST"] == "redis-shared.aibrix.svc"
         assert env["REDIS_PORT"] == "16379"
+
+    def test_profile_metastore_endpoint_url_overrides_process_host(
+        self, renderer_factory, monkeypatch
+    ):
+        from aibrix.batch.storage import batch_metastore
+        from aibrix.storage import StorageType
+
+        monkeypatch.setattr(
+            batch_metastore, "get_metastore_type", lambda: StorageType.REDIS
+        )
+        monkeypatch.setattr(envs, "STORAGE_REDIS_HOST", "redis-shared.aibrix.svc")
+        monkeypatch.setattr(envs, "STORAGE_REDIS_PORT", "16379")
+
+        r = renderer_factory(
+            templates=[_vllm_template(count=1)],
+            profiles=[
+                _profile(
+                    metastore={
+                        "backend": "redis",
+                        "endpoint_url": "redis-profile.aibrix.svc",
+                    }
+                )
+            ],
+        )
+        m = r.render(session_id="s1", spec=_spec())
+        env = {e["name"]: e for e in _worker_container(m)["env"]}
+        assert env["REDIS_HOST"]["value"] == "redis-profile.aibrix.svc"
+        assert env["REDIS_PORT"]["value"] == "16379"
+
+    def test_profile_metastore_secret_endpoint_has_fallback_host(
+        self, renderer_factory, monkeypatch
+    ):
+        from aibrix.batch.storage import batch_metastore
+        from aibrix.storage import StorageType
+
+        monkeypatch.setattr(
+            batch_metastore, "get_metastore_type", lambda: StorageType.REDIS
+        )
+        monkeypatch.delenv("WORKER_REDIS_HOST", raising=False)
+        monkeypatch.delenv("WORKER_REDIS_PORT", raising=False)
+
+        r = renderer_factory(
+            templates=[_vllm_template(count=1)],
+            profiles=[
+                _profile(
+                    metastore={
+                        "backend": "redis",
+                        "credentials_secret_ref": "redis-creds",
+                        "endpoint_url": "redis-profile.aibrix.svc",
+                    }
+                )
+            ],
+        )
+        m = r.render(session_id="s1", spec=_spec())
+        env = {e["name"]: e for e in _worker_container(m)["env"]}
+        assert env["REDIS_HOST"]["valueFrom"]["secretKeyRef"] == {
+            "name": "redis-creds",
+            "key": "host",
+        }
+        assert env["REDIS_PORT"]["valueFrom"]["secretKeyRef"] == {
+            "name": "redis-creds",
+            "key": "port",
+        }
+        assert env["REDIS_DB"]["valueFrom"]["secretKeyRef"] == {
+            "name": "redis-creds",
+            "key": "db",
+        }
+        assert env["REDIS_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+            "name": "redis-creds",
+            "key": "password",
+        }
 
 
 class TestMockEngineOverrideNoop:
