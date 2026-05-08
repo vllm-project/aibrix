@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package client
+package utils
 
 import (
 	"bytes"
@@ -26,15 +26,26 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// loggingTransport dumps every request and response between the planner
-// and MDS at klog -v=2 (verbose). Errors and non-2xx responses always log
-// at info. Enable verbose dumps with `--v=2` (or env KLOG_V=2) when
-// debugging the OpenAI SDK payloads.
-type loggingTransport struct {
-	base http.RoundTripper
+const maxLoggedBodyBytes = 8192
+
+// loggingTransport dumps every request and response between the BFF and MDS
+// at klog -v=2 (verbose). Errors and non-2xx responses always log at info.
+// Enable with `--v=2` (or env KLOG_V=2) when debugging the OpenAI SDK payloads.
+type LoggingTransport struct {
+	Base  http.RoundTripper
+	Label string
 }
 
-func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t *LoggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.Base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	label := t.Label
+	if label == "" {
+		label = "HTTP"
+	}
+
 	verbose := klog.V(2).Enabled()
 
 	var reqBody []byte
@@ -47,12 +58,12 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		req.Body = io.NopCloser(bytes.NewReader(reqBody))
 	}
 	if verbose {
-		klog.V(2).Infof("[PLANNER→MDS] %s %s\n%s", req.Method, req.URL.String(), prettyBody(reqBody))
+		klog.V(2).Infof("[%s] %s %s\n%s", label, req.Method, req.URL.String(), prettyBody(reqBody))
 	}
 
-	resp, err := t.base.RoundTrip(req)
+	resp, err := base.RoundTrip(req)
 	if err != nil {
-		klog.Warningf("[PLANNER→MDS] %s %s ERROR %v", req.Method, req.URL.String(), err)
+		klog.Warningf("[%s] %s %s ERROR %v", label, req.Method, req.URL.String(), err)
 		return resp, err
 	}
 
@@ -60,21 +71,19 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		respBody, rerr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if rerr != nil {
-			klog.Warningf("[PLANNER→MDS] %s %s -> %d (read body failed: %v)",
-				req.Method, req.URL.String(), resp.StatusCode, rerr)
+			klog.Warningf("[%s] %s %s -> %d (read body failed: %v)",
+				label, req.Method, req.URL.String(), resp.StatusCode, rerr)
 			return resp, nil
 		}
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		if resp.StatusCode >= 400 {
-			klog.Warningf("[PLANNER→MDS] %s %s -> %d\n%s", req.Method, req.URL.String(), resp.StatusCode, prettyBody(respBody))
+			klog.Warningf("[%s] %s %s -> %d\n%s", label, req.Method, req.URL.String(), resp.StatusCode, prettyBody(respBody))
 		} else {
-			klog.V(2).Infof("[PLANNER→MDS] %s %s -> %d\n%s", req.Method, req.URL.String(), resp.StatusCode, prettyBody(respBody))
+			klog.V(2).Infof("[%s] %s %s -> %d\n%s", label, req.Method, req.URL.String(), resp.StatusCode, prettyBody(respBody))
 		}
 	}
 	return resp, nil
 }
-
-const maxLoggedBodyBytes = 8192
 
 // prettyBody indents JSON for readability and truncates oversized bodies.
 // Non-JSON bodies are returned as-is (also truncated).

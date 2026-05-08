@@ -32,6 +32,7 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/vllm-project/aibrix/apps/console/api/utils"
 )
 
 // =============================================================================
@@ -52,7 +53,6 @@ type BatchClient interface {
 	CancelBatch(ctx context.Context, batchID string) (*openai.Batch, error)
 	ListBatches(ctx context.Context, req *ListBatchesRequest) (*ListBatchesResponse, error)
 }
-
 
 // =============================================================================
 // ListBatches request / response
@@ -108,11 +108,14 @@ type OpenAIBatchClient struct {
 
 // NewOpenAIBatchClient constructs a BatchClient pointed at the metadata
 // service's base URL (without the trailing /v1). The HTTP transport is
-// wrapped with loggingTransport so BFF↔MDS request/response bodies
+// wrapped with a shared logging transport so BFF↔MDS request/response bodies
 // surface at klog -v=2 (4xx/5xx always log at info).
 func NewOpenAIBatchClient(metadataServiceURL string) *OpenAIBatchClient {
 	baseURL := strings.TrimRight(metadataServiceURL, "/") + "/v1"
-	httpClient := &http.Client{Transport: &loggingTransport{base: http.DefaultTransport}}
+	httpClient := &http.Client{Transport: &utils.LoggingTransport{
+		Base:  http.DefaultTransport,
+		Label: "PLANNER->MDS",
+	}}
 	c := openai.NewClient(
 		option.WithBaseURL(baseURL),
 		option.WithAPIKey("aibrix-console"),
