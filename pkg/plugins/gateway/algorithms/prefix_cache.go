@@ -446,7 +446,7 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 
 func (p prefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) error {
 	if p.kvSyncRouter != nil {
-		return nil
+		return p.kvSyncRouter.PostRouteUpdate(ctx, readyPodList, targetPod)
 	}
 
 	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
@@ -461,6 +461,37 @@ func (p prefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodLi
 	}
 
 	return nil
+}
+
+func (k *kvSyncPrefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) error {
+	pods := readyPodList.All()
+	modelName := ctx.Model
+	if modelName == "" && len(pods) > 0 {
+		modelName = pods[0].Labels[constants.ModelLabelName]
+	}
+
+	tokenizerToUse := k.getTokenizerForRequest(ctx, readyPodList)
+	if tokenizerToUse == nil {
+		return fmt.Errorf("TokenizerPool not initialized for KV sync router")
+	}
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return err
+	}
+
+	readyPodsMap := map[string]struct{}{}
+	for _, pod := range pods {
+		readyPodsMap[fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)] = struct{}{}
+	}
+	if k.syncIndexer == nil {
+		return fmt.Errorf("sync indexer not available for KV sync routing")
+	}
+	_, prefixHashes := k.syncIndexer.MatchPrefix(modelName, int64(-1), tokens, readyPodsMap)
+	if len(prefixHashes) == 0 {
+		return nil
+	}
+	selectedPodKey := fmt.Sprintf("%s/%s", targetPod.Namespace, targetPod.Name)
+	return k.syncIndexer.AddPrefix(modelName, int64(-1), selectedPodKey, prefixHashes)
 }
 
 // ScoreAll traverses the Radix Tree to calculate the prefix match ratio (matched tokens / total tokens) for all ready pods.
