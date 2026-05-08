@@ -6,7 +6,7 @@ import pytest
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
 from aibrix.batch.job_entity import BatchJobSpec, BatchJobState, JobEntityManager
-from aibrix.metadata.cache.mongo_job import MongoJobCache
+from aibrix.metadata.cache.mongodb import MongoJobCache
 
 
 def _nested_value(document, key):
