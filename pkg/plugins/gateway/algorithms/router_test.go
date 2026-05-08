@@ -35,6 +35,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2"
 )
 
 const testModelName = "test-model"
@@ -469,6 +470,31 @@ func TestNormalizeScoresArrayHandlesInfiniteValues(t *testing.T) {
 	assert.InDelta(t, 1.0, normScores[1], 1e-9)
 	assert.InDelta(t, 0.0, normScores[2], 1e-9)
 	assert.Equal(t, 0.0, normScores[3])
+}
+
+func TestScoreAndRankWithDiagnosticLoggingDisabled(t *testing.T) {
+	if klog.V(4).Enabled() {
+		t.Skip("V(4) logging is enabled; this test specifically covers the no-diagnostic-allocation path")
+	}
+
+	podA := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "podA"}}
+	podB := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "podB"}}
+	m := &multiStrategyRouter{
+		config: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
+		scorers: map[string]types.PodScorer{
+			"s1": &fakeScorer{
+				polarity: types.PolarityMost,
+				scores:   map[*v1.Pod]float64{podA: 1, podB: 2},
+			},
+		},
+	}
+
+	winner, scores, err := m.scoreAndRank(&types.RoutingContext{}, wrapper{pods: []*v1.Pod{podA, podB}})
+
+	assert.NoError(t, err)
+	assert.Same(t, podB, winner)
+	assert.InDelta(t, 0.0, scores[podA], 1e-9)
+	assert.InDelta(t, 1.0, scores[podB], 1e-9)
 }
 
 func TestMultiStrategyRouterRoute_PostRouteUpdate(t *testing.T) {

@@ -75,18 +75,21 @@ func (r leastUtilRouter) Polarity() types.Polarity {
 }
 
 func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	pods := readyPodList.All()
+	scores, scored, err := r.ScoreAll(ctx, readyPodList)
+	if err != nil {
+		return "", err
+	}
+
 	var targetPod *v1.Pod
 	minUtilization := math.MaxFloat64 // <= 1 in general
 	var candidatePods []*v1.Pod
 
-	for _, pod := range readyPodList.All() {
-		utilization, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.EngineUtilization)
-		if err != nil {
-			klog.Error(err)
+	for i, pod := range pods {
+		if !scored[i] {
 			continue
 		}
-		utilizationValue := utilization.GetSimpleValue()
-		klog.V(4).Infof("pod: %v, podIP: %v, engine utilization: %v", pod.Name, pod.Status.PodIP, utilizationValue)
+		utilizationValue := scores[i]
 
 		if utilizationValue < minUtilization {
 			minUtilization = utilizationValue
@@ -103,7 +106,7 @@ func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 	// Use fallback if no valid metrics
 	if targetPod == nil {
 		var err error
-		targetPod, err = SelectRandomPodAsFallback(ctx, readyPodList.All(), rand.Intn)
+		targetPod, err = SelectRandomPodAsFallback(ctx, pods, rand.Intn)
 		if err != nil {
 			return "", err
 		}

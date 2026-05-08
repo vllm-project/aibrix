@@ -221,14 +221,18 @@ func (m *multiStrategyRouter) runPostRouteUpdates(ctx *types.RoutingContext, rea
 func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodList types.PodList) (*v1.Pod, map[*v1.Pod]float64, error) {
 	pods := readyPodList.All()
 	finalScores := make(map[*v1.Pod]float64)
+	logEnabled := klog.V(4).Enabled()
 
 	// To collect diagnostic info for klog
 	type podDiag struct {
 		StrategyLog []string
 	}
-	diags := make(map[*v1.Pod]*podDiag)
-	for _, pod := range pods {
-		diags[pod] = &podDiag{}
+	var diags map[*v1.Pod]*podDiag
+	if logEnabled {
+		diags = make(map[*v1.Pod]*podDiag)
+		for _, pod := range pods {
+			diags[pod] = &podDiag{}
+		}
 	}
 
 	// Calculate total weight to act as denominator
@@ -262,13 +266,15 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 			weightedScore := normScores[i] * weightFraction
 			finalScores[pod] += weightedScore
 
-			// Record diagnostic information for this pod and strategy
-			rawScoreStr := "N/A"
-			if scored[i] {
-				rawScoreStr = fmt.Sprintf("%.2f", scores[i])
+			if logEnabled {
+				// Record diagnostic information for this pod and strategy
+				rawScoreStr := "N/A"
+				if scored[i] {
+					rawScoreStr = fmt.Sprintf("%.2f", scores[i])
+				}
+				diagStr := fmt.Sprintf("%s(raw:%s, norm:%.2f, weight:%.3f)", item.Name, rawScoreStr, normScores[i], weightedScore)
+				diags[pod].StrategyLog = append(diags[pod].StrategyLog, diagStr)
 			}
-			diagStr := fmt.Sprintf("%s(raw:%s, norm:%.2f, weight:%.3f)", item.Name, rawScoreStr, normScores[i], weightedScore)
-			diags[pod].StrategyLog = append(diags[pod].StrategyLog, diagStr)
 		}
 	}
 
@@ -291,21 +297,23 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 		return nil, nil, errors.New("no valid target pod found after scoring")
 	}
 
-	// Tie-break: select the first pod in the original order
+	// Tie-break: select the first pod in the shuffled ready list
 	winner := topPods[0]
 
 	// 5. Log the routing decision and all candidate metrics to klog
-	var logBuilder strings.Builder
-	logBuilder.WriteString(fmt.Sprintf("Multi-strategy routing decision for request [%s]. Selected target pod: [%s]. Candidate pod details:\n", ctx.RequestID, winner.Name))
-	for _, pod := range pods {
-		winnerFlag := " "
-		if pod.Name == winner.Name {
-			winnerFlag = "*"
+	if logEnabled {
+		var logBuilder strings.Builder
+		logBuilder.WriteString(fmt.Sprintf("Multi-strategy routing decision for request [%s]. Selected target pod: [%s]. Candidate pod details:\n", ctx.RequestID, winner.Name))
+		for _, pod := range pods {
+			winnerFlag := " "
+			if pod.Name == winner.Name {
+				winnerFlag = "*"
+			}
+			logBuilder.WriteString(fmt.Sprintf("  [%s] Pod: %-30s | FinalScore: %.4f | Details: %s\n",
+				winnerFlag, pod.Name, finalScores[pod], strings.Join(diags[pod].StrategyLog, ", ")))
 		}
-		logBuilder.WriteString(fmt.Sprintf("  [%s] Pod: %-30s | FinalScore: %.4f | Details: %s\n",
-			winnerFlag, pod.Name, finalScores[pod], strings.Join(diags[pod].StrategyLog, ", ")))
+		klog.V(4).Info(logBuilder.String())
 	}
-	klog.V(4).Info(logBuilder.String())
 
 	return winner, finalScores, nil
 }

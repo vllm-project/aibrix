@@ -159,3 +159,27 @@ func TestSessionAffinity_ScoreAll(t *testing.T) {
 	// Check polarity
 	assert.Equal(t, types.PolarityMost, scorer.Polarity())
 }
+
+func TestSessionAffinityPostRouteUpdateFollowsFinalTargetPod(t *testing.T) {
+	podA := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pA", Labels: map[string]string{"model.aibrix.ai/port": "8000"}},
+		Status:     v1.PodStatus{PodIP: "1.1.1.1", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
+	}
+	podB := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pB", Labels: map[string]string{"model.aibrix.ai/port": "8000"}},
+		Status:     v1.PodStatus{PodIP: "2.2.2.2", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
+	}
+	podList := newMockPodList([]*v1.Pod{podA, podB}, nil)
+	router := &sessionAffinityRouter{}
+	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
+	ctx.ReqHeaders = map[string]string{
+		sessionIDHeader: base64.StdEncoding.EncodeToString([]byte("1.1.1.1:8000")),
+	}
+
+	err := router.PostRouteUpdate(ctx, podList, podB)
+	assert.NoError(t, err)
+
+	sessionBytes, decodeErr := base64.StdEncoding.DecodeString(ctx.RespHeaders[sessionIDHeader])
+	assert.NoError(t, decodeErr)
+	assert.Equal(t, "2.2.2.2:8000", string(sessionBytes))
+}
