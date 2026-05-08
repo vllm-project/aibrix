@@ -237,6 +237,17 @@ func (f *fakeScorerWithPostRoute) PostRouteUpdate(_ *types.RoutingContext, _ typ
 	return nil
 }
 
+type portWrapper struct {
+	pods  []*v1.Pod
+	ports map[string][]int
+}
+
+func (w portWrapper) All() []*v1.Pod                     { return w.pods }
+func (w portWrapper) ListPortsForPod() map[string][]int  { return w.ports }
+func (w portWrapper) Indexes() []string                  { return nil }
+func (w portWrapper) ListByIndex(index string) []*v1.Pod { return nil }
+func (w portWrapper) Len() int                           { return len(w.pods) }
+
 func TestScoreAndRank(t *testing.T) {
 	podA := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "podA"}}
 	podB := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "podB"}}
@@ -475,6 +486,49 @@ func TestMultiStrategyRouterRoute_PostRouteUpdate(t *testing.T) {
 	assert.True(t, postRouteScorer.called)
 	assert.Same(t, podB, postRouteScorer.calledTargetPod)
 	assert.Equal(t, "pod-b", ctx.TargetPod().Name)
+}
+
+func TestMultiStrategyRouterRoute_SelectsLeastLoadedPortForMultiPortPod(t *testing.T) {
+	model := "test-model"
+	podA := newPod("pod-a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podA.Spec.Containers = []v1.Container{{Env: []v1.EnvVar{{Name: "data-parallel-size", Value: "2"}}}}
+	podB := newPod("pod-b", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	c := cache.NewWithPodsMetricsForTest(
+		[]*v1.Pod{podA, podB},
+		model,
+		map[string]map[string]metrics.MetricValue{
+			"pod-a": {
+				metrics.RealtimeNumRequestsRunning:           &metrics.SimpleMetricValue{Value: 0},
+				metrics.RealtimeNumRequestsRunning + "/8000": &metrics.SimpleMetricValue{Value: 20},
+				metrics.RealtimeNumRequestsRunning + "/8001": &metrics.SimpleMetricValue{Value: 1},
+			},
+			"pod-b": {
+				metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 100},
+			},
+		})
+
+	m := &multiStrategyRouter{
+		config: &MultiRouterConfig{Items: []RouterItem{
+			{Name: "fixed", Coefficient: 100},
+			{Name: string(RouterLeastRequest), Coefficient: 1},
+		}},
+		scorers: map[string]types.PodScorer{
+			"fixed":                    &fakeScorer{polarity: types.PolarityMost, scores: map[*v1.Pod]float64{podA: 1, podB: 0}},
+			string(RouterLeastRequest): &leastRequestRouter{cache: c},
+		},
+	}
+	ctx := types.NewRoutingContext(context.Background(), RouterNotSet, model, "hello", "req-multi-port", "")
+	address, err := m.Route(ctx, portWrapper{
+		pods: []*v1.Pod{podA, podB},
+		ports: map[string][]int{
+			"pod-a": {8000, 8001},
+			"pod-b": {8000},
+		},
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, "1.1.1.1:8001", address)
+	assert.Equal(t, 8001, ctx.TargetPort())
 }
 
 func TestSelectSingleStrategyUsesLegacyRouter(t *testing.T) {

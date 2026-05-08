@@ -179,8 +179,26 @@ func (m *multiStrategyRouter) Route(ctx *types.RoutingContext, readyPodList type
 
 	// Store target pod for updating cache if needed
 	ctx.SetTargetPod(topPod)
+	m.setTargetPortIfNeeded(ctx, readyPodList, topPod)
 
 	return ctx.TargetAddress(), nil
+}
+
+func (m *multiStrategyRouter) setTargetPortIfNeeded(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) {
+	if !isMultiPortPods(readyPodList.All()) {
+		return
+	}
+	scorer, ok := m.scorers[string(RouterLeastRequest)]
+	if !ok {
+		return
+	}
+	leastRequest, ok := scorer.(*leastRequestRouter)
+	if !ok {
+		return
+	}
+	if port := selectTargetPortForPodWithLeastRequestCount(leastRequest.cache, targetPod, readyPodList.ListPortsForPod()); port != 0 {
+		ctx.SetTargetPort(port)
+	}
 }
 
 // scoreAndRank calculates final scores for all pods and returns the winner

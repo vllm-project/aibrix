@@ -220,6 +220,40 @@ func selectTargetPodAndPortWithLeastRequestCount(cache cache.Cache, readyPods []
 	return targetPod, targetPort
 }
 
+func selectTargetPortForPodWithLeastRequestCount(cache cache.Cache, pod *v1.Pod, portsMap map[string][]int) int {
+	if pod == nil {
+		return 0
+	}
+	podPorts := portsMap[pod.Name]
+	if len(podPorts) == 0 {
+		return 0
+	}
+	if len(podPorts) == 1 {
+		return podPorts[0]
+	}
+
+	minCount := math.MaxInt32
+	targetPorts := make([]int, 0, len(podPorts))
+	for _, port := range podPorts {
+		metricName := metrics.RealtimeNumRequestsRunning + "/" + strconv.Itoa(port)
+		count := 0
+		if val, err := cache.GetMetricValueByPod(pod.Name, pod.Namespace, metricName); err == nil && val != nil {
+			count = int(val.GetSimpleValue())
+		}
+		if count < minCount {
+			minCount = count
+			targetPorts = []int{port}
+		} else if count == minCount {
+			targetPorts = append(targetPorts, port)
+		}
+	}
+
+	if len(targetPorts) == 0 {
+		return 0
+	}
+	return targetPorts[rand.Intn(len(targetPorts))]
+}
+
 // getRequestCounts returns running request count for each pod tracked by gateway.
 // Note: Currently, gateway instance tracks active running request counts for each pod locally,
 // if multiple gateway instances are active then state is not shared across them.
