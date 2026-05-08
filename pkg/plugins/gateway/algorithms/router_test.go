@@ -575,6 +575,24 @@ func TestSelectCachesMultiStrategyRouter(t *testing.T) {
 	assert.Equal(t, 2, providerCalls)
 }
 
+func TestValidateRejectsNonScorerInMultiStrategy(t *testing.T) {
+	rm := NewRouterManager()
+	rm.RegisterProvider(types.RoutingAlgorithm("validate-scorer"), func(_ *types.RoutingContext) (types.Router, error) {
+		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}, nil
+	})
+	rm.RegisterProvider(types.RoutingAlgorithm("validate-non-scorer"), func(_ *types.RoutingContext) (types.Router, error) {
+		return randomRouter{}, nil
+	})
+
+	algorithm, ok := rm.Validate("validate-scorer,validate-non-scorer")
+	assert.False(t, ok)
+	assert.Equal(t, types.RoutingAlgorithm(RouterNotSet), algorithm)
+
+	algorithm, ok = rm.Validate("validate-non-scorer")
+	assert.True(t, ok)
+	assert.Equal(t, types.RoutingAlgorithm("validate-non-scorer"), algorithm)
+}
+
 func podsFromCache(c *cache.Store) *utils.PodArray {
 	return &utils.PodArray{Pods: c.ListPods()}
 }

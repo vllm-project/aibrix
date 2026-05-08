@@ -389,8 +389,18 @@ func (rm *RouterManager) Validate(algorithms string) (types.RoutingAlgorithm, bo
 
 	// Validate each strategy in the configuration
 	for _, item := range cfg.Items {
-		if _, ok := rm.routerFactory[types.RoutingAlgorithm(item.Name)]; !ok {
+		provider, ok := rm.routerFactory[types.RoutingAlgorithm(item.Name)]
+		if !ok {
 			return RouterNotSet, false
+		}
+		if len(cfg.Items) > 1 {
+			router, err := provider(types.RoutingAlgorithm(algorithms).NewContext(context.Background(), "", "", "validate", ""))
+			if err != nil {
+				return RouterNotSet, false
+			}
+			if _, ok := router.(types.PodScorer); !ok {
+				return RouterNotSet, false
+			}
 		}
 	}
 
