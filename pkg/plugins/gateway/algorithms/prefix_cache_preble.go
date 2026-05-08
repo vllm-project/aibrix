@@ -624,7 +624,7 @@ func (p *prefixCacheAndLoadRouter) ScoreAll(ctx *types.RoutingContext, readyPodL
 		return nil, nil, err
 	}
 
-	node, matchedTokens, _ := p.cache.AddPrefix(tokens, ctx.Model, "")
+	node, matchedTokens := p.cache.MatchPrefixNodeReadOnly(tokens)
 	matchRatio := 0.0
 	if len(tokens) > 0 {
 		matchRatio = float64(len(matchedTokens)) / float64(len(tokens))
