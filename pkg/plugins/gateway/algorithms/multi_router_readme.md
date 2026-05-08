@@ -58,7 +58,7 @@ AIBRIX_ROUTING_ALGORITHM: "least-request,throughput:2,least-latency:0"
 ```yaml
 AIBRIX_ROUTING_ALGORITHM: "least-request:1,invalid-strategy:1"
 ```
-* Because `invalid-strategy` is not a registered algorithm, the multi-strategy parser will fail. The Gateway will gracefully fall back to using the default **Random Router** to ensure requests continue to be served without interruption.
+* Because `invalid-strategy` is not a registered algorithm, the multi-strategy parser will fail. To preserve the API contract, the Gateway will reject the request with a **400 Bad Request** error rather than silently falling back to a random router.
 
 ### Example 5: Multi-Strategy Finding the Sweet Spot
 In reality, a pod with the absolute minimum active requests might have just recovered from being severely overloaded. Multi-strategy routing prevents routing to extreme outliers by considering multiple dimensions.
