@@ -196,20 +196,31 @@ def build_metastore_env() -> List[Dict[str, Any]]:
 def _redis_env() -> List[Dict[str, Any]]:
     """Worker env vars for a Redis metastore.
 
-    Values come from process env (``REDIS_HOST`` / ``REDIS_PORT`` /
-    ``REDIS_DB``), with sensible legacy-compatible fallbacks. Worker
-    pods inherit the metadata service's view of the Redis instance.
+    Worker pods may need a different Redis address than the metadata
+    service has — e.g. when the metadata service runs off-cluster
+    against ``localhost`` via port-forward, transparently propagating
+    that to worker pods would leave them pointing at their own
+    loopback. ``WORKER_REDIS_HOST`` / ``WORKER_REDIS_PORT`` override
+    what gets injected into worker pods; without them, fall back to
+    the metadata service's own ``REDIS_HOST`` / ``REDIS_PORT``.
+
+    Production (metadata in-cluster): set only ``REDIS_HOST`` —
+    workers and metadata share the same Service DNS name.
+    Dev (metadata on host): set ``REDIS_HOST=localhost`` for the
+    metadata process and ``WORKER_REDIS_HOST=<service-dns>`` for
+    the workers.
     """
     import os
 
+    worker_host = os.environ.get("WORKER_REDIS_HOST") or os.environ.get(
+        "REDIS_HOST",
+        "aibrix-redis-master.aibrix-system.svc.cluster.local",
+    )
+    worker_port = os.environ.get("WORKER_REDIS_PORT") or os.environ.get(
+        "REDIS_PORT", "6379"
+    )
     return [
-        {
-            "name": "REDIS_HOST",
-            "value": os.environ.get(
-                "REDIS_HOST",
-                "aibrix-redis-master.aibrix-system.svc.cluster.local",
-            ),
-        },
-        {"name": "REDIS_PORT", "value": os.environ.get("REDIS_PORT", "6379")},
+        {"name": "REDIS_HOST", "value": worker_host},
+        {"name": "REDIS_PORT", "value": worker_port},
         {"name": "REDIS_DB", "value": os.environ.get("REDIS_DB", "0")},
     ]

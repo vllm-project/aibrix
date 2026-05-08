@@ -97,10 +97,9 @@ class _StubBatchDriver:
         return await coro
 
 
-def _make_request(*, persist: bool, manager_jobs: Optional[dict] = None):
+def _make_request(*, manager_jobs: Optional[dict] = None):
     state = SimpleNamespace(
         batch_driver=_StubBatchDriver(manager_jobs or {}),
-        batch_metastore_persist=persist,
     )
     return SimpleNamespace(app=SimpleNamespace(state=state))
 
@@ -110,7 +109,7 @@ async def test_metastore_hit_returns_metastore_document():
     job = _make_job("batch-store-hit")
 
     # JobManager has nothing — proves we did not fall through.
-    request = _make_request(persist=True, manager_jobs={})
+    request = _make_request(manager_jobs={})
 
     async def fake_get(batch_id: str) -> Optional[BatchJob]:
         return job if batch_id == "batch-store-hit" else None
@@ -127,7 +126,7 @@ async def test_metastore_miss_falls_back_to_job_manager():
     not yet observed the new job but the metadata service already
     seeded its JobManager pool synchronously on POST."""
     job = _make_job("batch-gap")
-    request = _make_request(persist=True, manager_jobs={"batch-gap": job})
+    request = _make_request(manager_jobs={"batch-gap": job})
 
     async def fake_get(batch_id: str) -> Optional[BatchJob]:
         return None
@@ -139,20 +138,8 @@ async def test_metastore_miss_falls_back_to_job_manager():
 
 
 @pytest.mark.asyncio
-async def test_persistence_off_uses_job_manager():
-    job = _make_job("batch-no-store")
-    request = _make_request(persist=False, manager_jobs={"batch-no-store": job})
-
-    # No patch needed: with persist=False, _resolve_batch_job must not
-    # call get_batch_job at all.
-    result = await _resolve_batch_job(request, "batch-no-store")
-    assert result is not None
-    assert result.status.job_id == "batch-no-store"
-
-
-@pytest.mark.asyncio
 async def test_both_miss_returns_none():
-    request = _make_request(persist=True, manager_jobs={})
+    request = _make_request(manager_jobs={})
 
     async def fake_get(batch_id: str) -> Optional[BatchJob]:
         return None
@@ -174,7 +161,7 @@ async def test_metastore_takes_precedence_over_job_manager():
     stale = _make_job("batch-fresh")
     stale.status.state = BatchJobState.IN_PROGRESS
     stale.status.request_counts.completed = 5
-    request = _make_request(persist=True, manager_jobs={"batch-fresh": stale})
+    request = _make_request(manager_jobs={"batch-fresh": stale})
 
     async def fake_get(batch_id: str) -> Optional[BatchJob]:
         return fresh if batch_id == "batch-fresh" else None
