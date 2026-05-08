@@ -37,6 +37,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const testModelName = "test-model"
+
 func TestParseMultiRouterConfig(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -486,7 +488,7 @@ func TestMultiStrategyRouterRoute_PostRouteUpdate(t *testing.T) {
 		},
 	}
 
-	ctx := types.NewRoutingContext(context.Background(), RouterNotSet, "test-model", "hello", "req-post-route", "")
+	ctx := types.NewRoutingContext(context.Background(), RouterNotSet, testModelName, "hello", "req-post-route", "")
 	address, err := m.Route(ctx, wrapper{pods: []*v1.Pod{podA, podB}})
 	assert.NoError(t, err)
 	assert.Equal(t, "2.2.2.2:8000", address)
@@ -507,7 +509,7 @@ func TestMultiStrategyRouterRoute_PostRouteUpdateForSinglePod(t *testing.T) {
 		},
 	}
 
-	ctx := types.NewRoutingContext(context.Background(), RouterNotSet, "test-model", "hello", "req-single-post-route", "")
+	ctx := types.NewRoutingContext(context.Background(), RouterNotSet, testModelName, "hello", "req-single-post-route", "")
 	address, err := m.Route(ctx, wrapper{pods: []*v1.Pod{pod}})
 
 	assert.NoError(t, err)
@@ -542,7 +544,7 @@ func TestMultiStrategyRouterRoute_PostRouteUpdateOrderAndErrorHandling(t *testin
 		},
 	}
 
-	ctx := types.NewRoutingContext(context.Background(), RouterNotSet, "test-model", "hello", "req-post-route-order", "")
+	ctx := types.NewRoutingContext(context.Background(), RouterNotSet, testModelName, "hello", "req-post-route-order", "")
 	address, err := m.Route(ctx, wrapper{pods: []*v1.Pod{podA, podB}})
 
 	assert.NoError(t, err)
@@ -553,7 +555,7 @@ func TestMultiStrategyRouterRoute_PostRouteUpdateOrderAndErrorHandling(t *testin
 }
 
 func TestMultiStrategyRouterRoute_SelectsLeastLoadedPortForMultiPortPod(t *testing.T) {
-	model := "test-model"
+	model := testModelName
 	podA := newPod("pod-a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
 	podA.Spec.Containers = []v1.Container{{Env: []v1.EnvVar{{Name: "data-parallel-size", Value: "2"}}}}
 	podB := newPod("pod-b", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
@@ -602,7 +604,7 @@ func TestSelectSingleStrategyUsesLegacyRouter(t *testing.T) {
 		return expectedRouter, nil
 	})
 
-	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("scoreable-test-router"), "test-model", "hello", "req-select", "")
+	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("scoreable-test-router"), testModelName, "hello", "req-select", "")
 	router, err := rm.Select(ctx)
 	assert.NoError(t, err)
 
@@ -627,11 +629,11 @@ func TestSelectCachesMultiStrategyRouter(t *testing.T) {
 	registerScorer(types.RoutingAlgorithm("cached-s1"))
 	registerScorer(types.RoutingAlgorithm("cached-s2"))
 
-	ctx1 := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("cached-s1,cached-s2"), "test-model", "hello", "req-cache-1", "")
+	ctx1 := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("cached-s1,cached-s2"), testModelName, "hello", "req-cache-1", "")
 	router1, err := rm.Select(ctx1)
 	assert.NoError(t, err)
 
-	ctx2 := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("cached-s1,cached-s2"), "test-model", "hello", "req-cache-2", "")
+	ctx2 := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("cached-s1,cached-s2"), testModelName, "hello", "req-cache-2", "")
 	router2, err := rm.Select(ctx2)
 	assert.NoError(t, err)
 
@@ -765,7 +767,7 @@ func TestWithIPPods(t *testing.T) {
 	// two case:
 	// case 1: pod ready
 	// case 2: pod ready & terminating -> we can send request at this moment.
-	model := "test-model"
+	model := testModelName
 	c := cache.NewWithPodsMetricsForTest(
 		[]*v1.Pod{
 			{
@@ -1005,7 +1007,7 @@ func TestMultiStrategyRouter_Route(t *testing.T) {
 
 func TestE2EMultiStrategyRouting(t *testing.T) {
 	// Initialize cache with specific metrics for different pods to simulate real environment
-	model := "test-model"
+	model := testModelName
 	podA := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "podA", Namespace: "default"},
 		Status: v1.PodStatus{
