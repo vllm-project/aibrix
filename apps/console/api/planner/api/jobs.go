@@ -44,22 +44,7 @@ type EnqueueRequest struct {
 	BatchParams openai.BatchNewParams `json:"batch_params"`
 }
 
-// EnqueueResult is the planner's response to a successful Enqueue.
-//
-// JobID echoes the user-facing identity from the request so callers
-// don't have to carry it across the boundary themselves.
-//
-// Batch is the MDS-side openai.Batch when the planner submits to MDS
-// inline (passthrough mode). Future queued planners that defer the
-// MDS submit may return Batch == nil and rely on the caller polling
-// GetJob — that's why this is a wrapper rather than just *openai.Batch
-// directly.
-type EnqueueResult struct {
-	JobID string        `json:"job_id"`
-	Batch *openai.Batch `json:"batch,omitempty"`
-}
-
-// JobView is the planner's JobID-keyed read result, returned from
+// Job is the planner's JobID-keyed result, returned from Enqueue,
 // GetJob, Cancel, and each entry of ListJobs.
 //
 // JobID is the Console-generated correlation key and the only id
@@ -67,8 +52,12 @@ type EnqueueResult struct {
 // is an internal implementation detail of the planner and is not
 // exposed here; callers above the planner read job.Batch.ID only
 // for rendering MDS-native fields, never for lookups.
-
-type JobView struct {
+//
+// Batch is the MDS-side openai.Batch when the planner has submitted
+// to MDS. Future queued planners that defer the MDS submit may
+// return Batch == nil on Enqueue and rely on the caller polling
+// GetJob.
+type Job struct {
 	JobID string        `json:"job_id"`
 	Batch *openai.Batch `json:"batch,omitempty"`
 }
@@ -87,11 +76,11 @@ type ListJobsRequest struct {
 
 // ListJobsResponse is the planner-facing paginated read result.
 //
-// Each entry is a JobView so the JobID rides alongside the MDS batch
+// Each entry is a Job so the JobID rides alongside the MDS batch
 // view; HasMore mirrors the OpenAI SDK's batch list page semantics.
 type ListJobsResponse struct {
-	Data    []*JobView `json:"data"`
-	HasMore bool       `json:"has_more"`
+	Data    []*Job `json:"data"`
+	HasMore bool   `json:"has_more"`
 }
 
 // =============================================================================

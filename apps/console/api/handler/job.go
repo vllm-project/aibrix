@@ -21,7 +21,7 @@ limitations under the License.
 //     translation; the handler never holds an MDS batch.ID.
 //   - Persists Console-owned fields (id, display name, created_by, future:
 //     organization, tags ...) in the local store.
-//   - Aggregates Planner JobViews into the wire-level *pb.Job returned to the UI.
+//   - Aggregates Planner Jobs into the wire-level *pb.Job returned to the UI.
 //
 // The AIBrix-only extension `aibrix.model_template` is forwarded to MDS by the
 // planner's BatchClient via the OpenAI SDK's `extra_body` channel.
@@ -109,8 +109,8 @@ func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb
 	}
 
 	jobs := make([]*pb.Job, 0, len(resp.Data))
-	for _, view := range resp.Data {
-		jobs = append(jobs, mergeJob(view, nil))
+	for _, job := range resp.Data {
+		jobs = append(jobs, mergeJob(job, nil))
 	}
 	// SDK CursorPage exposes Data and HasMore. first_id / last_id ride along
 	// in the upstream JSON but are not surfaced as named fields; the UI
@@ -128,22 +128,22 @@ func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
-	view, err := h.planner.GetJob(ctx, req.Id)
+	job, err := h.planner.GetJob(ctx, req.Id)
 	if err != nil {
 		// Dev fallback: return the demo job if MDS is unreachable.
 		if h.devMode {
 			if dev, ok := h.store.(interface {
 				GetDemoJob(id string) (*pb.Job, bool)
 			}); ok {
-				if job, found := dev.GetDemoJob(req.Id); found {
+				if demoJob, found := dev.GetDemoJob(req.Id); found {
 					klog.Warningf("MDS unreachable, falling back to demo job %s: %v", req.Id, err)
-					return job, nil
+					return demoJob, nil
 				}
 			}
 		}
 		return nil, mapPlannerError(err, "get batch")
 	}
-	return mergeJob(view, nil), nil
+	return mergeJob(job, nil), nil
 }
 
 // CreateJob calls POST /v1/batches with console-owned fields (display name,
@@ -219,11 +219,11 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 		},
 	}
 
-	result, err := h.planner.Enqueue(ctx, enqueueReq)
+	job, err := h.planner.Enqueue(ctx, enqueueReq)
 	if err != nil {
 		return nil, mapPlannerError(err, "create batch")
 	}
-	return mergeJob(&plannerapi.JobView{JobID: result.JobID, Batch: result.Batch}, nil), nil
+	return mergeJob(job, nil), nil
 }
 
 // CancelJob routes through Planner.Cancel; the planner resolves JobID
@@ -232,11 +232,11 @@ func (h *JobHandler) CancelJob(ctx context.Context, req *pb.CancelJobRequest) (*
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
-	view, err := h.planner.Cancel(ctx, req.Id)
+	job, err := h.planner.Cancel(ctx, req.Id)
 	if err != nil {
 		return nil, mapPlannerError(err, "cancel batch")
 	}
-	return mergeJob(view, nil), nil
+	return mergeJob(job, nil), nil
 }
 
 // currentUserEmail returns the authenticated user's email if available, else
@@ -294,13 +294,13 @@ func mapPlannerError(err error, op string) error {
 	return mapSDKError(err, op)
 }
 
-// mergeJob aggregates the planner's JobView with optional Console overlay.
+// mergeJob aggregates the planner's Job with optional Console overlay.
 // pb.Job.Id is set to the planner's JobID — the MDS batch.ID never reaches
 // this layer. Console-owned fields (display name, created_by, template
 // binding) are read out of batch.metadata under the aibrix.console.*
 // namespace; the overlay argument is plumbing for the future store-backed
 // reconcile path and is expected to be nil today.
-func mergeJob(v *plannerapi.JobView, overlay *pb.Job) *pb.Job {
+func mergeJob(v *plannerapi.Job, overlay *pb.Job) *pb.Job {
 	job := &pb.Job{}
 	if v != nil {
 		job.Id = v.JobID

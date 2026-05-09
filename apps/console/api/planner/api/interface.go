@@ -24,12 +24,12 @@ import (
 //
 // Console.CreateJob builds an EnqueueRequest and calls Enqueue. All
 // reads (GetJob, ListJobs, Cancel) take the Console-generated JobID
-// and return a JobView; the MDS batch.ID never crosses this boundary
+// and return a Job; the MDS batch.ID never crosses this boundary
 // upward. The planner owns the JobID -> batch.ID translation
 // (in-memory in Passthrough, durable in the queued planner).
 type Planner interface {
-	Enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueResult, error)
-	GetJob(ctx context.Context, jobID string) (*JobView, error)
+	Enqueue(ctx context.Context, req *EnqueueRequest) (*Job, error)
+	GetJob(ctx context.Context, jobID string) (*Job, error)
 	ListJobs(ctx context.Context, req *ListJobsRequest) (*ListJobsResponse, error)
-	Cancel(ctx context.Context, jobID string) (*JobView, error)
+	Cancel(ctx context.Context, jobID string) (*Job, error)
 }

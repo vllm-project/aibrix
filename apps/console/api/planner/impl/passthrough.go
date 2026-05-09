@@ -64,7 +64,7 @@ func NewPassthrough(bc plannerclient.BatchClient, prov provisioner.Provisioner) 
 
 var _ plannerapi.Planner = (*Passthrough)(nil)
 
-func (p *Passthrough) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (*plannerapi.EnqueueResult, error) {
+func (p *Passthrough) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (*plannerapi.Job, error) {
 	if req == nil {
 		return nil, fmt.Errorf("%w: nil request", plannerapi.ErrInvalidJob)
 	}
@@ -105,22 +105,10 @@ func (p *Passthrough) Enqueue(ctx context.Context, req *plannerapi.EnqueueReques
 			} `json:"resource_details,omitempty"`
 		}{
 			ProvisionID: provResult.ProvisionID,
-			ResourceDetails: []struct {
-				ResourceType    string `json:"resource_type"`
-				EndpointCluster string `json:"endpoint_cluster,omitempty"`
-				GPUType         string `json:"gpu_type,omitempty"`
-				WorkerNum       int    `json:"worker_num,omitempty"`
-			}{
-				{
-					// Temporary test values so MDS exercises the deployment-backed
-					// driver path until the planner/resource manager returns richer
-					// allocation details.
-					ResourceType:    "deployment",
-					EndpointCluster: "test-cluster",
-					GPUType:         "H100",
-					WorkerNum:       1,
-				},
-			},
+			// ResourceDetails left empty: the resource manager doesn't
+			// return allocation details in kubernetes modes, and MDS doesn't read
+			// them on this path yet. This part will be extended later with more
+			// resource types.
 		},
 		ModelTemplate: req.ModelTemplate,
 	}
@@ -134,14 +122,14 @@ func (p *Passthrough) Enqueue(ctx context.Context, req *plannerapi.EnqueueReques
 	}
 
 	p.remember(req.JobID, batch.ID)
-	return &plannerapi.EnqueueResult{JobID: req.JobID, Batch: batch}, nil
+	return &plannerapi.Job{JobID: req.JobID, Batch: batch}, nil
 }
 
 // GetJob resolves the JobID to its MDS batch.ID via the in-memory map
 // and forwards to the MDS batch endpoint. Returns ErrJobNotFound when
 // the JobID is unknown to this process (typical for jobs created
 // before the BFF restarted, until ListJobs warms the cache).
-func (p *Passthrough) GetJob(ctx context.Context, jobID string) (*plannerapi.JobView, error) {
+func (p *Passthrough) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, error) {
 	if jobID == "" {
 		return nil, fmt.Errorf("%w: empty job_id", plannerapi.ErrInvalidJob)
 	}
@@ -154,11 +142,11 @@ func (p *Passthrough) GetJob(ctx context.Context, jobID string) (*plannerapi.Job
 	if err != nil {
 		return nil, err
 	}
-	return &plannerapi.JobView{JobID: jobID, Batch: batch}, nil
+	return &plannerapi.Job{JobID: jobID, Batch: batch}, nil
 }
 
 // Cancel resolves JobID to batch.ID and forwards to MDS.
-func (p *Passthrough) Cancel(ctx context.Context, jobID string) (*plannerapi.JobView, error) {
+func (p *Passthrough) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, error) {
 	if jobID == "" {
 		return nil, fmt.Errorf("%w: empty job_id", plannerapi.ErrInvalidJob)
 	}
@@ -171,7 +159,7 @@ func (p *Passthrough) Cancel(ctx context.Context, jobID string) (*plannerapi.Job
 	if err != nil {
 		return nil, err
 	}
-	return &plannerapi.JobView{JobID: jobID, Batch: batch}, nil
+	return &plannerapi.Job{JobID: jobID, Batch: batch}, nil
 }
 
 // ListJobs walks MDS batches and tags each one with the JobID from the
@@ -188,10 +176,10 @@ func (p *Passthrough) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequ
 	if err != nil {
 		return nil, err
 	}
-	out := make([]*plannerapi.JobView, 0, len(resp.Data))
+	out := make([]*plannerapi.Job, 0, len(resp.Data))
 	p.mu.RLock()
 	for _, b := range resp.Data {
-		out = append(out, &plannerapi.JobView{JobID: p.jobByBatch[b.ID], Batch: b})
+		out = append(out, &plannerapi.Job{JobID: p.jobByBatch[b.ID], Batch: b})
 	}
 	p.mu.RUnlock()
 	return &plannerapi.ListJobsResponse{Data: out, HasMore: resp.HasMore}, nil
