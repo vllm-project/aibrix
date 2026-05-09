@@ -21,9 +21,7 @@ import (
 	"strconv"
 
 	v1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -668,34 +666,3 @@ func GetRoleSyncer(cli client.Client, role *orchestrationv1alpha1.RoleSpec) Role
 	}
 }
 
-// cleanupOrphanPodSets detects and deletes PodSets that were created by the old
-// PodSetRoleSyncer when podGroupSize switches from >1 to <=1.
-// Returns true if any orphan PodSets were deleted.
-func cleanupOrphanPodSets(ctx context.Context, cli client.Client, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
-	allPodSets, err := getRolePodSets(ctx, cli, roleSet.Namespace, roleSet.Name, role.Name)
-	if err != nil {
-		return false, err
-	}
-
-	var orphanPodSets []*orchestrationv1alpha1.PodSet
-	for _, podSet := range allPodSets {
-		if isOwnedByRoleSet(podSet, roleSet) {
-			orphanPodSets = append(orphanPodSets, podSet)
-		}
-	}
-
-	if len(orphanPodSets) == 0 {
-		return false, nil
-	}
-
-	klog.V(4).Infof("[cleanupOrphanPodSets] found %d orphan podsets for roleset %s/%s role %s, cleaning up",
-		len(orphanPodSets), roleSet.Namespace, roleSet.Name, role.Name)
-	var errs []error
-	for _, podSet := range orphanPodSets {
-		// Child Pods will be garbage collected via OwnerReferences by the Kubernetes GC.
-		if err := cli.Delete(ctx, podSet); err != nil && !apierrors.IsNotFound(err) {
-			errs = append(errs, err)
-		}
-	}
-	return true, utilerrors.NewAggregate(errs)
-}
