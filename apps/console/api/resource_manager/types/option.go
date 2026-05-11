@@ -25,7 +25,7 @@ type ListOptions struct {
 	Regions *[]RegionSpec `json:"regions,omitempty"`
 
 	// Status filters by provision status.
-	Status ProvisionStatus `json:"status,omitempty"`
+	Status *ProvisionStatus `json:"status,omitempty"`
 
 	// Offset is the pagination offset.
 	Offset int `json:"offset,omitempty"`

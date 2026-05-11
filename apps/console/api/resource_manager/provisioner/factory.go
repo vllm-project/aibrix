@@ -14,18 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package catalog
+package provisioner
 
 import (
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
+	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
 
-// CatalogRegistry manages catalogs for different providers.
-type CatalogRegistry interface {
-	// GetCatalog returns the catalog for the given provider.
-	// Returns ErrUnsupportedCatalog if the provider is not supported.
-	GetCatalog(provider types.ResourceProvisionType) (Catalog, error)
-
-	// RegisterCatalog registers a catalog for a provider.
-	RegisterCatalog(provider types.ResourceProvisionType, catalog Catalog)
+func NewProvisioner(provider types.ResourceProvisionType, s store.Store) (Provisioner, error) {
+	switch provider {
+	case types.ResourceProvisionTypeKubernetes:
+		return NewK8sProvisioner(s)
+	default:
+		return nil, types.ErrUnsupportedProvisioner
+	}
 }

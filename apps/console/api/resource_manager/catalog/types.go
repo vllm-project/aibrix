@@ -37,6 +37,38 @@ type RegionResource struct {
 	// Region is the region identifier, provider-specific.
 	Region *types.RegionSpec `json:"region"`
 
+	// "overview": [
+	//     {
+	//         "key": "xxx.kubernetes.io/minipod",
+	//         "stat": {
+	//             "spot" : {
+	//                 "allocated": {
+	//                     "gpu": {
+	//                         "NVIDIA-H20": "2118"
+	//                     },
+	//                     "instance": {
+	//                         "ae5.sx-nvidia.h20.96g.1x": "12",
+	//                         "age5.2x-nvidia.h20.96g.8x": "2",
+	//                         "are7.1xl-nvidia.h20.96g.4x": "4",
+	//                         "are7.2xl-nvidia.h20.96g.8x": "228",
+	//                         "are8.sx-nvidia.h20.96g.2x": "125"
+	//                     }
+	//                 },
+	//                 "allocatable": {
+	//                     "gpu": {
+	//                         "NVIDIA-H20": "898"
+	//                     }
+	//                 },
+	//                 "supply": {
+	//                     "gpu": {
+	//                         "NVIDIA-H20": "3016"
+	//                     }
+	//                 },
+	//             },
+	//         },
+	//         "value": "abc-fcten9xi29f9dxas9e21",
+	//     }
+	// ]
 	Overview []RegionResourceItem `json:"overview"`
 
 	Breakdown map[string][]RegionResourceItem `json:"breakdown,omitempty"`
@@ -47,10 +79,7 @@ type RegionResourceItem struct {
 	// NextLevel provides next-level resource statistics.
 	NextLevel []RegionResourceItem `json:"nextLevel,omitempty"`
 
-	// Key is the resource key (e.g., accelerator type, instance type).
-	// Example:
-	//   - "accelerator_type": "a100"
-	//   - "instance_type": "p4d.24xlarge"
+	// Key is the resource key (e.g., minipod, bigpod).
 	Key string `json:"key"`
 
 	// Value is the resource value.
@@ -94,7 +123,7 @@ type ScheduledResourceStatItem struct {
 	Allocatable ScheduledResourceItem `json:"allocatable"`
 }
 
-// ResourceItem maps resource names to quantities (node -> resource -> quantity).
+// ResourceItem maps resource names to quantities (resource type -> resource name -> quantity).
 type ResourceItem map[string]map[string]string
 
 // ScheduledResourceItem maps timestamps to ResourceItem.

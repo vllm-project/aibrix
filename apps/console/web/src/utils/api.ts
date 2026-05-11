@@ -36,6 +36,9 @@ export interface UserInfo {
   id: string;
   email: string;
   name: string;
+  role: string;
+  username: string;
+  picture: string;
 }
 
 export type JobEndpoint =

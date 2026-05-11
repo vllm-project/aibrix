@@ -114,6 +114,19 @@ var _ = Describe("RouterContext", func() {
 		Expect(ctx.TargetPod()).To(BeNil())
 	})
 
+	It("should reset target port when reused", func() {
+		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
+		ctx.SetTargetPort(8001)
+		Expect(ctx.TargetPort()).To(Equal(8001))
+
+		ctx.Delete()
+		ctx2 := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r2", "")
+		Expect(ctx2).To(BeIdenticalTo(ctx))
+		Expect(ctx2.TargetPort()).To(Equal(0))
+
+		ctx2.Delete()
+	})
+
 	It("should SetTargetPod twice ok but will not change original value", func() {
 		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
 		pod := &v1.Pod{}
