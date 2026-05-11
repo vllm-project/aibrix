@@ -416,7 +416,7 @@ class DeploymentJobDriver(LocalJobDriver):
         try:
             return await self._execute_job_inner(job_id)
         finally:
-            if self._active_runtime is not None and self._delete_requested.is_set():
+            if self._active_runtime is not None:
                 await self._teardown_runtime(self._active_runtime)
             if self._inference_client is not None and hasattr(
                 self._inference_client, "close"

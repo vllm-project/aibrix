@@ -18,7 +18,7 @@ import uuid
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
-from aibrix.batch.template import BatchProfile, EngineType, ModelDeploymentTemplate
+from aibrix.batch.template import BatchProfile, ModelDeploymentTemplate
 from aibrix.downloader.utils import infer_model_name
 
 from .downloader_env import build_downloader_env
@@ -292,7 +292,7 @@ class DeploymentManifestRenderer(_RendererSupport):
         }
 
     def _needs_runtime_sidecar(self, template: ModelDeploymentTemplate) -> bool:
-        return template.spec.engine.type != EngineType.MOCK
+        return False
 
     def _localize_model_source(
         self,

@@ -36,13 +36,18 @@ from aibrix.batch.job_entity import (
     TypeMeta,
 )
 from aibrix.batch.job_manager import JobManager
+from aibrix.context import InfrastructureContext
+
+
+def _job_manager() -> JobManager:
+    return JobManager(InfrastructureContext())
 
 
 @pytest.mark.asyncio
 async def test_local_job_cancellation():
     """Test cancelling a local job (without entity manager)."""
     # Create job manager without entity manager
-    job_manager = JobManager()
+    job_manager = _job_manager()
 
     # Create a job
     await job_manager.create_job(
@@ -76,7 +81,7 @@ async def test_local_job_cancellation():
 @pytest.mark.asyncio
 async def test_cancel_nonexistent_job():
     """Test cancelling a job that doesn't exist."""
-    job_manager = JobManager()
+    job_manager = _job_manager()
 
     # Try to cancel non-existent job
     result = await job_manager.cancel_job("nonexistent-job-id")
@@ -86,7 +91,7 @@ async def test_cancel_nonexistent_job():
 @pytest.mark.asyncio
 async def test_cancel_job_already_done():
     """Test cancelling a job that's already in done state."""
-    job_manager = JobManager()
+    job_manager = _job_manager()
 
     # Create a job
     await job_manager.create_job(
@@ -112,7 +117,7 @@ async def test_cancel_job_already_done():
 @pytest.mark.asyncio
 async def test_job_committed_handler():
     """Test that job_committed_handler correctly adds jobs to pending."""
-    job_manager = JobManager()
+    job_manager = _job_manager()
 
     # Create a mock BatchJob
     batch_job = BatchJob(
@@ -147,7 +152,7 @@ async def test_job_committed_handler():
 
 @pytest.mark.asyncio
 async def test_validate_job_finalizes_worker_style_validation_failure(monkeypatch):
-    job_manager = JobManager()
+    job_manager = _job_manager()
 
     batch_job = BatchJob(
         typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
@@ -195,7 +200,7 @@ async def test_validate_job_finalizes_worker_style_validation_failure(monkeypatc
 @pytest.mark.asyncio
 async def test_job_deleted_handler():
     """Test that job_deleted_handler correctly moves jobs to done state."""
-    job_manager = JobManager()
+    job_manager = _job_manager()
 
     # Create a mock BatchJob in pending state
     batch_job = BatchJob(
@@ -311,7 +316,7 @@ async def test_async_create_job():
 
     # Create job manager with entity manager
     asyncio.get_running_loop().name = "test_async_create_job"
-    job_manager = JobManager()
+    job_manager = _job_manager()
     await job_manager.set_job_entity_manager(mock_entity_manager)
 
     # Create a job using the async method
@@ -352,7 +357,7 @@ async def test_async_create_job_with_timeout():
     mock_entity_manager = MockJobEntityManager(delay=2.0)
 
     asyncio.get_running_loop().name = "test_async_create_job_with_timeout"
-    job_manager = JobManager()
+    job_manager = _job_manager()
     await job_manager.set_job_entity_manager(mock_entity_manager)
 
     # Attempt to create job with short timeout
@@ -392,7 +397,7 @@ async def test_async_create_job_throws_error():
     mock_entity_manager.should_fail = True
 
     asyncio.get_running_loop().name = "test_async_create_job_throws_error"
-    job_manager = JobManager()
+    job_manager = _job_manager()
     await job_manager.set_job_entity_manager(mock_entity_manager)
 
     # Attempt to create job
@@ -420,7 +425,7 @@ async def test_multiple_concurrent_job_creation():
     mock_entity_manager = MockJobEntityManager(delay=0.1)
 
     asyncio.get_running_loop().name = "test_multiple_concurrent_job_creation"
-    job_manager = JobManager()
+    job_manager = _job_manager()
     await job_manager.set_job_entity_manager(mock_entity_manager)
 
     # Create multiple jobs concurrently

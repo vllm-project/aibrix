@@ -27,6 +27,27 @@ from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
 
 
+def _args(**overrides):
+    defaults = {
+        "enable_fastapi_docs": False,
+        "disable_k8s_support": False,
+        "disable_batch_api": True,
+        "disable_file_api": True,
+        "disable_inference_endpoint": True,
+        "enable_k8s_job": False,
+        "enable_mongo_job": False,
+        "enable_redis_job": False,
+        "registry_provider": "configmap",
+        "dry_run": False,
+        "k8s_namespace": "default",
+        "k8s_job_patch": None,
+        "kopf_startup_timeout": 30.0,
+        "kopf_shutdown_timeout": 10.0,
+    }
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
 @pytest.fixture(autouse=True)
 def _local_storage_settings():
     old_storage = settings.STORAGE_TYPE
@@ -42,12 +63,7 @@ def _local_storage_settings():
 
 def test_build_app_without_k8s_job():
     """Test building app without K8s job support."""
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
-        disable_batch_api=True,
-        disable_file_api=True,
-        enable_k8s_job=False,
-    )
+    args = _args()
 
     app = build_app(args)
 
@@ -58,13 +74,10 @@ def test_build_app_without_k8s_job():
 
 def test_build_app_with_k8s_job():
     """Test building app with K8s job support."""
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
+    args = _args(
         disable_batch_api=False,
-        disable_file_api=True,
         enable_k8s_job=True,
         k8s_namespace="test-namespace",
-        k8s_job_patch=None,
         kopf_startup_timeout=5.0,
         kopf_shutdown_timeout=2.0,
     )
@@ -94,21 +107,16 @@ def test_build_app_with_k8s_job():
 
 
 def test_build_app_with_redis_job(monkeypatch):
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
+    args = _args(
         disable_batch_api=False,
-        disable_file_api=True,
-        enable_k8s_job=False,
-        enable_mongo_job=False,
         enable_redis_job=True,
-        k8s_job_patch=None,
         dry_run=True,
     )
     monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_HOST", "redis-service")
     monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PORT", 6380)
     monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_DB", 2)
     monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PASSWORD", "secret")
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_REDIS_PREFIX", "batch_jobs_test")
+    monkeypatch.setattr("aibrix.metadata.app.envs.DB_REDIS_PREFIX", "batch_jobs_test:")
 
     with patch("aibrix.metadata.app.RedisJobCache") as redis_job_cache:
         app = build_app(args)
@@ -119,19 +127,14 @@ def test_build_app_with_redis_job(monkeypatch):
         port=6380,
         db=2,
         password="secret",
-        key_prefix="batch_jobs_test",
+        key_prefix="batch_jobs_test:batch_jobs",
     )
 
 
 def test_build_app_with_mongo_job(monkeypatch):
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
+    args = _args(
         disable_batch_api=False,
-        disable_file_api=True,
-        enable_k8s_job=False,
         enable_mongo_job=True,
-        enable_redis_job=False,
-        k8s_job_patch=None,
         dry_run=True,
     )
     monkeypatch.setattr(
@@ -152,14 +155,9 @@ def test_build_app_with_mongo_job(monkeypatch):
 
 
 def test_build_app_with_redis_job_missing_env(monkeypatch):
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
+    args = _args(
         disable_batch_api=False,
-        disable_file_api=True,
-        enable_k8s_job=False,
-        enable_mongo_job=False,
         enable_redis_job=True,
-        k8s_job_patch=None,
         dry_run=True,
     )
     monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_HOST", None)
@@ -175,14 +173,9 @@ def test_build_app_with_redis_job_missing_env(monkeypatch):
 
 
 def test_build_app_with_mongo_job_missing_env(monkeypatch):
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
+    args = _args(
         disable_batch_api=False,
-        disable_file_api=True,
-        enable_k8s_job=False,
         enable_mongo_job=True,
-        enable_redis_job=False,
-        k8s_job_patch=None,
         dry_run=True,
     )
     monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_URI", None)
@@ -197,12 +190,7 @@ def test_build_app_with_mongo_job_missing_env(monkeypatch):
 
 def test_status_endpoint_without_k8s():
     """Test /status endpoint without K8s support."""
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
-        disable_batch_api=True,
-        disable_file_api=True,
-        enable_k8s_job=False,
-    )
+    args = _args()
 
     app = build_app(args)
     client = TestClient(app)
@@ -222,12 +210,9 @@ def test_status_endpoint_without_k8s():
 
 def test_status_endpoint_with_k8s():
     """Test /status endpoint with K8s support."""
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
+    args = _args(
         disable_batch_api=False,
-        disable_file_api=True,
         enable_k8s_job=True,
-        k8s_job_patch=None,
         k8s_namespace="test-namespace",
         kopf_startup_timeout=5.0,
         kopf_shutdown_timeout=2.0,
@@ -267,12 +252,7 @@ def test_status_endpoint_with_k8s():
 
 def test_healthz_endpoint():
     """Test /healthz endpoint."""
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
-        disable_batch_api=True,
-        disable_file_api=True,
-        enable_k8s_job=False,
-    )
+    args = _args()
 
     app = build_app(args)
     client = TestClient(app)
@@ -286,12 +266,7 @@ def test_healthz_endpoint():
 
 def test_ready_endpoint():
     """Test /readyz endpoint."""
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
-        disable_batch_api=True,
-        disable_file_api=True,
-        enable_k8s_job=False,
-    )
+    args = _args()
 
     app = build_app(args)
     client = TestClient(app)

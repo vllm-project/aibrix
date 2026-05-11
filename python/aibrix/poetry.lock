@@ -2085,14 +2085,14 @@ files = [
 
 [[package]]
 name = "kopf"
-version = "1.44.3"
+version = "1.44.5"
 description = "Kubernetes Operator Pythonic Framework (Kopf)"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "kopf-1.44.3-py3-none-any.whl", hash = "sha256:e4776011ba1523ab688d43930382f7fc96e01153e36c1c97c71d86ef25670e1e"},
-    {file = "kopf-1.44.3.tar.gz", hash = "sha256:37b93ec88deaf08331f0d2a1824a38ef2b508b4d72c022b13bd6302dd3419738"},
+    {file = "kopf-1.44.5-py3-none-any.whl", hash = "sha256:9aa9e1238856f110d6abd792eb840a1aada80dff51de5a67de7d64d25bf23154"},
+    {file = "kopf-1.44.5.tar.gz", hash = "sha256:6e806d816456fa9d43dca90b01160d92e3714173745adb85fa862511d9c652e2"},
 ]
 
 [package.dependencies]
@@ -5309,4 +5309,4 @@ testing = ["coverage[toml]", "zope.event", "zope.testing"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.13"
-content-hash = "61bb5be8be4b21548b9ed4ba7b69ebca76945c82f59636e6dbe2f49625bb196c"
+content-hash = "85255f894929f086f9ccc35bc72acff4fe1b59bcf56b8367af9f0afd49e6043d"

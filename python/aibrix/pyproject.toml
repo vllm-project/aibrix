@@ -75,7 +75,7 @@ aiohttp = "^3.11.7"
 filelock = "^3.16.1"
 structlog = "^24.4.0"
 pydantic-settings = "^2.6.1"
-kopf = {extras = ["uvloop"], version = "^1.37.2"}
+kopf = {extras = ["uvloop"], version = "^1.44.5"}
 PyYAML = "^6.0.1"
 types-PyYAML = "^6.0.12.20240917"
 python-multipart = "^0.0.20"
