@@ -415,8 +415,8 @@ async def test_deployment_driver_creates_runtime_and_finalizes_with_temp_files()
         created_service["spec"]["selector"]["model.aibrix.ai/name"]
         == "batch-job-12345678-svc"
     )
-    assert core_api.deleted == []
-    assert apps_api.deleted == []
+    assert core_api.deleted == [('default', 'batch-job-12345678-svc')]
+    assert apps_api.deleted == [('default', 'batch-job-12345678-engine')]
 
 
 @pytest.mark.asyncio
