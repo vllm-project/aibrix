@@ -18,24 +18,18 @@ package plannerapi
 
 import (
 	"context"
-
-	"github.com/openai/openai-go/v3"
 )
 
 // Planner is the Console BFF -> planner boundary.
 //
-// Console.CreateJob builds an EnqueueRequest and calls Enqueue, which
-// returns the live batch view. ListJobs / GetJob are the read seam:
-// Console always goes through the Planner so that future queued
-// implementations can overlay planner-side state (queued / claimed /
-// retryable_failure) onto the MDS batch view without changing the
-// handler.
-//
-// Cancellation flows through MDS directly (the OpenAI Batches API
-// exposes /cancel) and is intentionally not part of this interface;
-// the Planner observes the resulting MDS terminal state at read time.
+// Console.CreateJob builds an EnqueueRequest and calls Enqueue. All
+// reads (GetJob, ListJobs, Cancel) take the Console-generated JobID
+// and return a Job; the MDS batch.ID never crosses this boundary
+// upward. The planner owns the JobID -> batch.ID translation
+// (in-memory in Passthrough, durable in the queued planner).
 type Planner interface {
-	Enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueResult, error)
-	GetJob(ctx context.Context, jobID string) (*openai.Batch, error)
+	Enqueue(ctx context.Context, req *EnqueueRequest) (*Job, error)
+	GetJob(ctx context.Context, jobID string) (*Job, error)
 	ListJobs(ctx context.Context, req *ListJobsRequest) (*ListJobsResponse, error)
+	Cancel(ctx context.Context, jobID string) (*Job, error)
 }

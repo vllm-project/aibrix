@@ -20,22 +20,19 @@ limitations under the License.
 // Console -> Planner -> RM -> MDS path end-to-end before the durable
 // task store and async worker land. Enqueue inlines Provisioner.Provision
 // followed by BatchClient.CreateBatch on the calling goroutine; reads
-// forward straight to BatchClient.
+// (GetJob, ListJobs, Cancel) take a JobID and resolve to the MDS batch
+// ID via an in-memory JobID -> batch.ID map populated on Enqueue.
 //
-// EnqueueRequest.JobID / EnqueueResult.JobID are part of the Planner
-// contract for the queued planner that follows; passthrough echoes the
-// field through but does not maintain its own JobID <-> BatchID map.
-// pb.Job.Id today is MDS batch.ID — Console-facing identity reverts to
-// MDS namespace until the queued planner provides durable JobID storage.
+// The map is restart-lossy and is replaced by the queued planner's
+// durable index in a follow-up; crash recovery is out of scope here.
 package impl
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
-	"github.com/google/uuid"
-	"github.com/openai/openai-go/v3"
 	"k8s.io/klog/v2"
 
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
@@ -49,86 +46,125 @@ import (
 type Passthrough struct {
 	bc   plannerclient.BatchClient
 	prov provisioner.Provisioner
+
+	mu         sync.RWMutex
+	batchByJob map[string]string // JobID -> batch.ID (for GetJob / Cancel)
+	jobByBatch map[string]string // batch.ID -> JobID (for ListJobs tagging)
 }
 
 // NewPassthrough constructs a Passthrough Planner. Both bc and prov are required.
 func NewPassthrough(bc plannerclient.BatchClient, prov provisioner.Provisioner) *Passthrough {
-	return &Passthrough{bc: bc, prov: prov}
+	return &Passthrough{
+		bc:         bc,
+		prov:       prov,
+		batchByJob: make(map[string]string),
+		jobByBatch: make(map[string]string),
+	}
 }
 
 var _ plannerapi.Planner = (*Passthrough)(nil)
 
-func (p *Passthrough) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (*plannerapi.EnqueueResult, error) {
+func (p *Passthrough) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (*plannerapi.Job, error) {
 	if req == nil {
 		return nil, fmt.Errorf("%w: nil request", plannerapi.ErrInvalidJob)
 	}
-	if req.BatchPayload.InputFileID == "" {
+	if req.JobID == "" {
+		return nil, fmt.Errorf("%w: missing job_id", plannerapi.ErrInvalidJob)
+	}
+	if req.BatchParams.InputFileID == "" {
 		return nil, fmt.Errorf("%w: missing input_file_id", plannerapi.ErrInvalidJob)
 	}
-	if req.BatchPayload.Endpoint == "" {
+	if req.BatchParams.Endpoint == "" {
 		return nil, fmt.Errorf("%w: missing endpoint", plannerapi.ErrInvalidJob)
 	}
 	if p.prov == nil {
 		return nil, fmt.Errorf("%w: missing provisioner", plannerapi.ErrInsufficientResources)
 	}
 
-	taskID := req.JobID
-	if taskID == "" {
-		taskID = "tsk-" + uuid.NewString()
-	}
 	provReq := &rmtypes.ResourceProvision{
 		Spec: rmtypes.ResourceProvisionSpec{
 			Credential: rmtypes.ResourceCredential{Provider: p.prov.Type()},
 		},
-		IdempotencyKey: taskID,
+		IdempotencyKey: req.JobID,
 	}
 	provResult, err := p.prov.Provision(ctx, provReq)
 	if err != nil {
 		return nil, errors.Join(plannerapi.ErrInsufficientResources, err)
 	}
 
-	submission := &plannerclient.MDSBatchSubmission{
-		InputFileID:      req.BatchPayload.InputFileID,
-		Endpoint:         req.BatchPayload.Endpoint,
-		CompletionWindow: req.BatchPayload.CompletionWindow,
-		Metadata:         req.BatchPayload.Metadata,
-		ExtraBody: plannerclient.MDSExtraBody{
-			AIBrix: plannerclient.AIBrixExtraBody{
-				JobID: req.JobID,
-				PlannerDecision: &struct {
-					ProvisionID               string `json:"provision_id,omitempty"`
-					ProvisionResourceDeadline int64  `json:"provision_resource_deadline,omitempty"`
-				}{
-					ProvisionID: provResult.ProvisionID,
-				},
-				ModelTemplate: req.ModelTemplate,
-			},
+	aibrix := plannerclient.AIBrixExtraBody{
+		JobID: req.JobID,
+		PlannerDecision: &struct {
+			ProvisionID               string `json:"provision_id,omitempty"`
+			ProvisionResourceDeadline int64  `json:"provision_resource_deadline,omitempty"`
+			ResourceDetails           []struct {
+				ResourceType    string `json:"resource_type"`
+				EndpointCluster string `json:"endpoint_cluster,omitempty"`
+				GPUType         string `json:"gpu_type,omitempty"`
+				WorkerNum       int    `json:"worker_num,omitempty"`
+			} `json:"resource_details,omitempty"`
+		}{
+			ProvisionID: provResult.ProvisionID,
+			// ResourceDetails left empty: the resource manager doesn't
+			// return allocation details in kubernetes modes, and MDS doesn't read
+			// them on this path yet. This part will be extended later with more
+			// resource types.
 		},
+		ModelTemplate: req.ModelTemplate,
 	}
 
-	klog.Infof("[planner.passthrough] enqueue job_id=%q task_id=%q provision_id=%q model_template=%v",
-		req.JobID, taskID, provResult.ProvisionID, req.ModelTemplate)
+	klog.Infof("[planner.passthrough] enqueue job_id=%q provision_id=%q model_template=%v",
+		req.JobID, provResult.ProvisionID, req.ModelTemplate)
 
-	batch, err := p.bc.CreateBatch(ctx, submission)
+	batch, err := p.bc.CreateBatch(ctx, req.BatchParams, aibrix)
 	if err != nil {
 		return nil, err
 	}
 
-	return &plannerapi.EnqueueResult{JobID: req.JobID, Batch: batch}, nil
+	p.remember(req.JobID, batch.ID)
+	return &plannerapi.Job{JobID: req.JobID, Batch: batch}, nil
 }
 
-// GetJob forwards directly to the MDS batch endpoint. Today the
-// caller's input is the MDS batch.ID; once durable JobID storage
-// lands the planner will translate JobID -> BatchID here first.
-func (p *Passthrough) GetJob(ctx context.Context, jobID string) (*openai.Batch, error) {
+// GetJob resolves the JobID to its MDS batch.ID via the in-memory map
+// and forwards to the MDS batch endpoint. Returns ErrJobNotFound when
+// the JobID is unknown to this process (typical for jobs created
+// before the BFF restarted, until ListJobs warms the cache).
+func (p *Passthrough) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, error) {
 	if jobID == "" {
 		return nil, fmt.Errorf("%w: empty job_id", plannerapi.ErrInvalidJob)
 	}
-	klog.Infof("[planner.passthrough] get_job id=%q", jobID)
-	return p.bc.GetBatch(ctx, jobID)
+	batchID, ok := p.lookup(jobID)
+	if !ok {
+		return nil, fmt.Errorf("%w: job_id %q", plannerapi.ErrJobNotFound, jobID)
+	}
+	klog.Infof("[planner.passthrough] get_job job_id=%q batch_id=%q", jobID, batchID)
+	batch, err := p.bc.GetBatch(ctx, batchID)
+	if err != nil {
+		return nil, err
+	}
+	return &plannerapi.Job{JobID: jobID, Batch: batch}, nil
 }
 
-// ListJobs forwards MDS batches verbatim.
+// Cancel resolves JobID to batch.ID and forwards to MDS.
+func (p *Passthrough) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, error) {
+	if jobID == "" {
+		return nil, fmt.Errorf("%w: empty job_id", plannerapi.ErrInvalidJob)
+	}
+	batchID, ok := p.lookup(jobID)
+	if !ok {
+		return nil, fmt.Errorf("%w: job_id %q", plannerapi.ErrJobNotFound, jobID)
+	}
+	klog.Infof("[planner.passthrough] cancel job_id=%q batch_id=%q", jobID, batchID)
+	batch, err := p.bc.CancelBatch(ctx, batchID)
+	if err != nil {
+		return nil, err
+	}
+	return &plannerapi.Job{JobID: jobID, Batch: batch}, nil
+}
+
+// ListJobs walks MDS batches and tags each one with the JobID from the
+// in-memory reverse map. Batches not enqueued in this process incarnation
+// surface with empty JobID (crash recovery is out of scope).
 func (p *Passthrough) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest) (*plannerapi.ListJobsResponse, error) {
 	listReq := &plannerclient.ListBatchesRequest{}
 	if req != nil {
@@ -140,5 +176,25 @@ func (p *Passthrough) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequ
 	if err != nil {
 		return nil, err
 	}
-	return &plannerapi.ListJobsResponse{Data: resp.Data, HasMore: resp.HasMore}, nil
+	out := make([]*plannerapi.Job, 0, len(resp.Data))
+	p.mu.RLock()
+	for _, b := range resp.Data {
+		out = append(out, &plannerapi.Job{JobID: p.jobByBatch[b.ID], Batch: b})
+	}
+	p.mu.RUnlock()
+	return &plannerapi.ListJobsResponse{Data: out, HasMore: resp.HasMore}, nil
+}
+
+func (p *Passthrough) lookup(jobID string) (string, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	id, ok := p.batchByJob[jobID]
+	return id, ok
+}
+
+func (p *Passthrough) remember(jobID, batchID string) {
+	p.mu.Lock()
+	p.batchByJob[jobID] = batchID
+	p.jobByBatch[batchID] = jobID
+	p.mu.Unlock()
 }

@@ -218,6 +218,66 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 	return ctx.TargetAddress(), nil
 }
 
+// ScoreAll computes the scores for all ready pods in a single batch operation.
+func (r *BasicVTCRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	readyPods := readyPodList.All()
+	scores := make([]float64, len(readyPods))
+	scored := make([]bool, len(readyPods))
+
+	user := ctx.User
+	if user == nil {
+		return scores, scored, fmt.Errorf("VTC routing not possible: user is nil")
+	}
+
+	userTokens, err := r.tokenTracker.GetTokenCount(ctx.Context, *user)
+	if err != nil {
+		userTokens = 0
+	}
+
+	minTokens, err := r.tokenTracker.GetMinTokenCount(ctx.Context)
+	if err != nil {
+		minTokens = tokenTrackerMinTokens
+	}
+
+	maxTokens, err := r.tokenTracker.GetMaxTokenCount(ctx.Context)
+	if err != nil {
+		maxTokens = tokenTrackerMaxTokens
+	}
+
+	for i, pod := range readyPods {
+		adaptiveBucketSize := math.Max(tokenTrackerMinTokens, (minTokens+maxTokens)/2)
+		normalizedTokens := math.Min(float64(userTokens)/adaptiveBucketSize, float64(len(readyPods)-1))
+		fairnessScore := math.Abs(float64(i) - normalizedTokens)
+
+		var podLoad float64
+		if r.cache != nil {
+			reqCount, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.NumRequestsRunning)
+			if err != nil {
+				podLoad = 0
+			} else {
+				podLoad = reqCount.GetSimpleValue()
+			}
+		} else {
+			podLoad = 0
+		}
+
+		utilizationScore := min(podLoad/maxPodLoad, 1.0)
+		randomFactor := rand.Float64() * 0.1
+
+		score := (fairnessWeight * fairnessScore) + (utilizationWeight * utilizationScore) + randomFactor
+
+		scores[i] = score
+		scored[i] = true
+	}
+
+	return scores, scored, nil
+}
+
+// Polarity returns whether higher or lower score is better.
+func (r *BasicVTCRouter) Polarity() types.Polarity {
+	return types.PolarityLeast
+}
+
 func (r *BasicVTCRouter) SubscribedMetrics() []string {
 	return []string{
 		metrics.NumRequestsRunning,

@@ -36,24 +36,28 @@ type EnqueueRequest struct {
 	// ModelDeploymentTemplate reference. The planner projects it into
 	// extra_body.aibrix.model_template when submitting to MDS.
 	ModelTemplate *ModelTemplateRef `json:"model_template,omitempty"`
-	// BatchPayload is the OpenAI-batch-format submission body MDS will execute.
-	// Console-owned attribution (created_by, display_name, ...) rides on
-	// BatchPayload.Metadata under the aibrix.console.* namespace and is the
-	// single source of truth for read-back via GetJob.
-	BatchPayload BatchPayload `json:"batch_payload"`
+	// BatchParams is the OpenAI-batch-format submission MDS will execute,
+	// in the openai-go SDK's native shape. Console-owned attribution
+	// (created_by, display_name, ...) rides on BatchParams.Metadata under
+	// the aibrix.console.* namespace and is the single source of truth
+	// for read-back via GetJob.
+	BatchParams openai.BatchNewParams `json:"batch_params"`
 }
 
-// EnqueueResult is the planner's response to a successful Enqueue.
+// Job is the planner's JobID-keyed result, returned from Enqueue,
+// GetJob, Cancel, and each entry of ListJobs.
 //
-// JobID echoes the user-facing identity from the request so callers
-// don't have to carry it across the boundary themselves.
+// JobID is the Console-generated correlation key and the only id
+// that crosses the planner boundary upward. The MDS-side batch.ID
+// is an internal implementation detail of the planner and is not
+// exposed here; callers above the planner read job.Batch.ID only
+// for rendering MDS-native fields, never for lookups.
 //
-// Batch is the MDS-side openai.Batch when the planner submits to MDS
-// inline (passthrough mode). Future queued planners that defer the
-// MDS submit may return Batch == nil and rely on the caller polling
-// GetJob — that's why this is a wrapper rather than just *openai.Batch
-// directly.
-type EnqueueResult struct {
+// Batch is the MDS-side openai.Batch when the planner has submitted
+// to MDS. Future queued planners that defer the MDS submit may
+// return Batch == nil on Enqueue and rely on the caller polling
+// GetJob.
+type Job struct {
 	JobID string        `json:"job_id"`
 	Batch *openai.Batch `json:"batch,omitempty"`
 }
@@ -72,15 +76,11 @@ type ListJobsRequest struct {
 
 // ListJobsResponse is the planner-facing paginated read result.
 //
-// Data and HasMore intentionally mirror the OpenAI SDK's batch list page
-// fields so the planner can stay OpenAI-compatible while still owning a
-// stable boundary type. ListJobs forwards MDS batches verbatim; planner-
-// side JobID overlay is not attached here because the passthrough planner
-// does not maintain a durable JobID -> BatchID mapping yet.
-
+// Each entry is a Job so the JobID rides alongside the MDS batch
+// view; HasMore mirrors the OpenAI SDK's batch list page semantics.
 type ListJobsResponse struct {
-	Data    []*openai.Batch `json:"data"`
-	HasMore bool            `json:"has_more"`
+	Data    []*Job `json:"data"`
+	HasMore bool   `json:"has_more"`
 }
 
 // =============================================================================
@@ -94,18 +94,3 @@ type ModelTemplateRef struct {
 	Version string `json:"version,omitempty"`
 }
 
-// =============================================================================
-// OpenAI-batch payload
-// =============================================================================
-
-// BatchPayload is the OpenAI-batch-format submission MDS will execute.
-//
-// The InputFileID must already exist in MDS (uploaded out-of-band, typically
-// via the console's FileHandler proxy). The planner does not upload files;
-// it only creates the batch record referencing an existing file.
-type BatchPayload struct {
-	InputFileID      string            `json:"input_file_id"`
-	Endpoint         string            `json:"endpoint"`
-	CompletionWindow string            `json:"completion_window"`
-	Metadata         map[string]string `json:"metadata,omitempty"`
-}

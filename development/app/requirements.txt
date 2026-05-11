@@ -1,6 +1,6 @@
 # Core dependencies for mocked vLLM app
 flask
-Flask-HTTPAuth
+Flask-HTTPAuth==4.8.0
 
 # Optional: only needed when running in Kubernetes
 # kubernetes

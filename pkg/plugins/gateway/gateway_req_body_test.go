@@ -270,7 +270,55 @@ func Test_handleRequestBody(t *testing.T) {
 			},
 		},
 		{
-			name:        "invalid routing strategy - should return 400 BadRequest",
+			name:        "invalid multi-routing strategy - should return 400 BadRequest",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "least-request:1,invalid-strategy:2",
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
+						{
+							ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
+							Status: v1.PodStatus{
+								PodIP:      "1.2.3.4",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_BadRequest,
+				model:      "test-model",
+				stream:     false,
+				term:       0,
+				routingCtx: &types.RoutingContext{},
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				// buildErrorResponse returns x-error-routing: true (no Content-Type in headers)
+				headers := resp.GetImmediateResponse().GetHeaders().GetSetHeaders()
+				assert.GreaterOrEqual(t, len(headers), 1)
+				foundErrorRouting := false
+				for _, h := range headers {
+					if h.Header.Key == HeaderErrorRouting && string(h.Header.RawValue) == "true" {
+						foundErrorRouting = true
+						break
+					}
+				}
+				assert.True(t, foundErrorRouting, "expected x-error-routing header")
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+				assert.NotNil(t, routingCtx)
+			},
+		},
+		{
+			name:        "invalid routing strategy from Context Profile - should return 400 BadRequest",
 			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
 			user: utils.User{
 				Name: "test-user",
@@ -281,6 +329,7 @@ func Test_handleRequestBody(t *testing.T) {
 				podList := &utils.PodArray{
 					Pods: []*v1.Pod{
 						{
+							ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
 							Status: v1.PodStatus{
 								PodIP:      "1.2.3.4",
 								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
