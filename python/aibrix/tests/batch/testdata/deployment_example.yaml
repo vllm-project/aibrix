@@ -34,33 +34,34 @@ spec:
         prometheus.io/scrape: "true"
     spec:
       containers:
-        - name: aibrix-runtime
-          # Runtime sidecar is always injected before the engine container.
-          image: aibrix/runtime:nightly
-          command:
-            - aibrix_runtime
-            - --port
-            - "8080"
-          env:
-            - name: INFERENCE_ENGINE
-              value: vllm
-            - name: INFERENCE_ENGINE_ENDPOINT
-              value: http://localhost:8000
-          ports:
-            - containerPort: 8080
-              protocol: TCP
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: 8080
-            initialDelaySeconds: 3
-            periodSeconds: 2
-          readinessProbe:
-            httpGet:
-              path: /ready
-              port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 10
+        # aibrix-runtime will not be included in the deployment.
+        # - name: aibrix-runtime
+        #   # Runtime sidecar is always injected before the engine container.
+        #   image: aibrix/runtime:nightly
+        #   command:
+        #     - aibrix_runtime
+        #     - --port
+        #     - "8080"
+        #   env:
+        #     - name: INFERENCE_ENGINE
+        #       value: vllm
+        #     - name: INFERENCE_ENGINE_ENDPOINT
+        #       value: http://localhost:8000
+        #   ports:
+        #     - containerPort: 8080
+        #       protocol: TCP
+        #   livenessProbe:
+        #     httpGet:
+        #       path: /healthz
+        #       port: 8080
+        #     initialDelaySeconds: 3
+        #     periodSeconds: 2
+        #   readinessProbe:
+        #     httpGet:
+        #       path: /ready
+        #       port: 8080
+        #     initialDelaySeconds: 5
+        #     periodSeconds: 10
         - name: llm-engine
           # Engine image, port, health path, model URI, and GPU count come from model_template.spec.
           image: ignored-by-override

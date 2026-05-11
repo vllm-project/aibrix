@@ -184,7 +184,7 @@ def test_build_downloader_env_and_remote_init_container(tmp_path):
 
     deployment = rendered["deployment"]
     init_container = deployment["spec"]["template"]["spec"]["initContainers"][0]
-    engine_container = deployment["spec"]["template"]["spec"]["containers"][1]
+    engine_container = deployment["spec"]["template"]["spec"]["containers"][0]
 
     assert init_container["command"] == [
         "aibrix_download",
