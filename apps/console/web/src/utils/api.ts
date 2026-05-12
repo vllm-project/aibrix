@@ -114,15 +114,37 @@ export interface ListJobsResponse {
 
 export interface CreateDeploymentRequest {
   name: string;
-  baseModel: string;
-  region: string;
-  acceleratorType: string;
-  acceleratorCount: number;
+  baseModel?: string;
+  region?: string;
+  acceleratorType?: string;
+  acceleratorCount?: number;
   quantization?: string;
-  minReplicas: number;
+  minReplicas?: number;
   maxReplicas?: number;
   enableAutoScaling?: boolean;
   enableMultiLora?: boolean;
+  template?: DeploymentTemplateRef;
+  implementation?: DeploymentImplementationRef;
+  overrides?: DeploymentOverrides;
+}
+
+export interface DeploymentTemplateRef {
+  modelId: string;
+  templateId: string;
+}
+
+export interface DeploymentImplementationRef {
+  kind: string;
+  profile?: string;
+}
+
+export interface DeploymentOverrides {
+  region?: string;
+  minReplicas?: number;
+  maxReplicas?: number;
+  enableAutoScaling?: boolean;
+  enableMultiLora?: boolean;
+  engineArgs?: Record<string, string>;
 }
 
 // --- Model Deployment Templates ---
@@ -185,6 +207,23 @@ export interface ModelDeploymentTemplateSpec {
   quantization?: QuantizationSpec;
   supportedEndpoints?: string[];
   deploymentMode?: string;
+  topology?: DeploymentTopologySpec;
+  compatibility?: DeploymentCompatibilitySpec;
+  scalingDefaults?: DeploymentScalingDefaultsSpec;
+}
+
+export interface DeploymentTopologySpec {
+  kind?: string;
+}
+
+export interface DeploymentCompatibilitySpec {
+  implementationKinds?: string[];
+}
+
+export interface DeploymentScalingDefaultsSpec {
+  minReplicas?: number;
+  maxReplicas?: number;
+  enableAutoScaling?: boolean;
 }
 
 export interface ModelDeploymentTemplate {

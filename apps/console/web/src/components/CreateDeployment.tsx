@@ -1,13 +1,24 @@
-import { useState } from 'react';
-import { ChevronLeft, Search, Check, Info, Rocket } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ChevronLeft, Search, Info, Rocket } from 'lucide-react';
+import {
+  createDeployment,
+  listModelDeploymentTemplates,
+  listModels,
+} from '../utils/api';
+import type { ModelDeploymentTemplate } from '../utils/api';
+import type { Model } from '../data/mockData';
 
 interface CreateDeploymentProps {
   onBack: () => void;
+  onCreated?: (deploymentId: string) => void;
 }
 
-export function CreateDeployment({ onBack }: CreateDeploymentProps) {
+export function CreateDeployment({ onBack, onCreated }: CreateDeploymentProps) {
   const [deploymentName, setDeploymentName] = useState('gsm8k-math-sample');
-  const [selectedModel, setSelectedModel] = useState('Qwen2.5 72B');
+  const [models, setModels] = useState<Model[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState('');
+  const [templates, setTemplates] = useState<ModelDeploymentTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [region, setRegion] = useState('GLOBAL');
   const [selectedTab, setSelectedTab] = useState<'model-library' | 'custom'>('model-library');
@@ -23,15 +34,172 @@ export function CreateDeployment({ onBack }: CreateDeploymentProps) {
   const [scaleDown, setScaleDown] = useState('10');
   const [optimizeLongPrompts, setOptimizeLongPrompts] = useState(false);
   const [enableMultiLoRA, setEnableMultiLoRA] = useState(true);
+  const [implementationKind, setImplementationKind] = useState('k8s-deployment');
+  const [loadingModels, setLoadingModels] = useState(true);
+  const [loadingTemplates, setLoadingTemplates] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const models = [
-    'Qwen2.5 32B',
-    'Qwen2.5 72B',
-    'Qwen2.5 72B Instruct',
-    'Qwen2.5-Coder 15B Instruct',
-    'Qwen2.5-Coder 15B',
-    'DeepSeek v3.2',
-  ];
+  const selectedModel = useMemo(
+    () => models.find((model: Model) => model.id === selectedModelId) ?? null,
+    [models, selectedModelId],
+  );
+
+  const selectedTemplate = useMemo(
+    () => templates.find((template: ModelDeploymentTemplate) => template.id === selectedTemplateId) ?? null,
+    [templates, selectedTemplateId],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingModels(true);
+    listModels()
+      .then((items) => {
+        if (cancelled) return;
+        setModels(items);
+        setSelectedModelId((current: string) => current || items[0]?.id || '');
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : 'Failed to load models.');
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingModels(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedModelId) {
+      setTemplates([]);
+      setSelectedTemplateId('');
+      return;
+    }
+    let cancelled = false;
+    setLoadingTemplates(true);
+    listModelDeploymentTemplates(selectedModelId, 'active')
+      .then((items) => {
+        if (cancelled) return;
+        setTemplates(items);
+        setSelectedTemplateId((current: string) => {
+          if (current && items.some((template: ModelDeploymentTemplate) => template.id === current)) {
+            return current;
+          }
+          return items[0]?.id || '';
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : 'Failed to load deployment templates.');
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingTemplates(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedModelId]);
+
+  useEffect(() => {
+    if (!selectedTemplate) return;
+    const spec = selectedTemplate.spec;
+    if (spec?.accelerator?.type) {
+      setAcceleratorType(spec.accelerator.type);
+    }
+    if (spec?.accelerator?.count && spec.accelerator.count > 0) {
+      setAcceleratorCount(String(spec.accelerator.count));
+    } else {
+      setAcceleratorCount('Auto');
+    }
+    if (spec?.quantization?.weight) {
+      setQuantization(spec.quantization.weight.toUpperCase());
+    }
+    if (spec?.scalingDefaults?.minReplicas && spec.scalingDefaults.minReplicas > 0) {
+      setMinReplicas(String(spec.scalingDefaults.minReplicas));
+    }
+    if (spec?.scalingDefaults?.maxReplicas && spec.scalingDefaults.maxReplicas > 0) {
+      setMaxReplicas(String(spec.scalingDefaults.maxReplicas));
+    }
+    if (spec?.scalingDefaults?.enableAutoScaling !== undefined) {
+      setEnableAutoScaling(spec.scalingDefaults.enableAutoScaling);
+    }
+  }, [selectedTemplate]);
+
+  const parsePositiveInt = (value: string, fallback: number) => {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  };
+
+  const normalizeAcceleratorCount = (value: string) => {
+    if (value === 'Auto') return 1;
+    return parsePositiveInt(value, 1);
+  };
+
+  const handleDeploy = async () => {
+    if (submitting) return;
+
+    const name = deploymentName.trim();
+    if (!name) {
+      setError('Deployment name is required.');
+      return;
+    }
+    if (!selectedModelId) {
+      setError('Base model is required.');
+      return;
+    }
+    if (!selectedTemplateId) {
+      setError('Deployment template is required.');
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      const deployment = await createDeployment({
+        name,
+        baseModel: selectedModel?.name,
+        region,
+        acceleratorType: acceleratorType.replace(/\s+-\s+\$.+$/, ''),
+        acceleratorCount: normalizeAcceleratorCount(acceleratorCount),
+        quantization,
+        minReplicas: parsePositiveInt(minReplicas, 1),
+        maxReplicas: enableAutoScaling ? parsePositiveInt(maxReplicas, 1) : parsePositiveInt(minReplicas, 1),
+        enableAutoScaling,
+        enableMultiLora: enableMultiLoRA,
+        template: {
+          modelId: selectedModelId,
+          templateId: selectedTemplateId,
+        },
+        implementation: {
+          kind: implementationKind,
+        },
+        overrides: {
+          region,
+          minReplicas: parsePositiveInt(minReplicas, 1),
+          maxReplicas: enableAutoScaling ? parsePositiveInt(maxReplicas, 1) : parsePositiveInt(minReplicas, 1),
+          enableAutoScaling,
+          enableMultiLora: enableMultiLoRA,
+        },
+      });
+
+      if (onCreated) {
+        onCreated(deployment.id);
+        return;
+      }
+      onBack();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create deployment.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <div className="p-8">
@@ -74,7 +242,7 @@ export function CreateDeployment({ onBack }: CreateDeploymentProps) {
                       <div className="w-5 h-5 rounded-full bg-teal-50 flex items-center justify-center">
                         <div className="w-2 h-2 rounded-full bg-teal-500"></div>
                       </div>
-                      <span>{selectedModel}</span>
+                      <span>{selectedModel?.name ?? (loadingModels ? 'Loading models...' : 'Select a model')}</span>
                     </div>
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -118,9 +286,9 @@ export function CreateDeployment({ onBack }: CreateDeploymentProps) {
                       <div className="p-2">
                         {models.map((model) => (
                           <button
-                            key={model}
+                            key={model.id}
                             onClick={() => {
-                              setSelectedModel(model);
+                              setSelectedModelId(model.id);
                               setShowModelDropdown(false);
                             }}
                             className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 rounded flex items-center gap-2"
@@ -128,7 +296,7 @@ export function CreateDeployment({ onBack }: CreateDeploymentProps) {
                             <div className="w-5 h-5 rounded-full bg-teal-50 flex items-center justify-center">
                               <div className="w-2 h-2 rounded-full bg-teal-500"></div>
                             </div>
-                            {model}
+                            {model.name}
                           </button>
                         ))}
                       </div>
@@ -150,6 +318,53 @@ export function CreateDeployment({ onBack }: CreateDeploymentProps) {
                   <option>GLOBAL</option>
                   <option>US Iowa 1</option>
                   <option>EU West</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="flex items-center gap-2 text-sm mb-2">
+                  Deployment Template
+                  <Info className="w-4 h-4 text-gray-400" />
+                </label>
+                <select
+                  value={selectedTemplateId}
+                  onChange={(e) => setSelectedTemplateId(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500"
+                  disabled={loadingTemplates || templates.length === 0}
+                >
+                  {loadingTemplates ? (
+                    <option>Loading templates...</option>
+                  ) : templates.length === 0 ? (
+                    <option value="">No active templates</option>
+                  ) : (
+                    templates.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.name} {template.version}
+                      </option>
+                    ))
+                  )}
+                </select>
+                {selectedTemplate && (
+                  <p className="mt-2 text-xs text-gray-500">
+                    Engine {selectedTemplate.spec?.engine?.type || 'unknown'} / topology {selectedTemplate.spec?.topology?.kind || 'standard'}
+                  </p>
+                )}
+              </div>
+              <div>
+                <label className="flex items-center gap-2 text-sm mb-2">
+                  Implementation
+                  <Info className="w-4 h-4 text-gray-400" />
+                </label>
+                <select
+                  value={implementationKind}
+                  onChange={(e) => setImplementationKind(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500"
+                >
+                  <option value="k8s-deployment">Native K8s Deployment</option>
                 </select>
               </div>
             </div>
@@ -424,11 +639,20 @@ export function CreateDeployment({ onBack }: CreateDeploymentProps) {
             <div className="text-sm text-gray-500">
               Projected hourly cost: <span className="text-xl text-gray-900">$0 - $11.6</span>
             </div>
-            <button className="px-6 py-2.5 bg-teal-600 text-white rounded-lg text-sm hover:bg-teal-700 transition-colors flex items-center gap-2">
-              Deploy
+            <button
+              onClick={handleDeploy}
+              disabled={submitting}
+              className="px-6 py-2.5 bg-teal-600 text-white rounded-lg text-sm hover:bg-teal-700 disabled:bg-teal-400 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+            >
+              {submitting ? 'Deploying...' : 'Deploy'}
               <Rocket className="w-4 h-4" />
             </button>
           </div>
+          {error && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {error}
+            </div>
+          )}
         </div>
 
         {/* Right sidebar - info */}

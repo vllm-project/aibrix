@@ -32,6 +32,7 @@ import (
 	"google.golang.org/grpc/reflection"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/apps/console/api/deployment/driver"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/handler"
 	"github.com/vllm-project/aibrix/apps/console/api/metrics"
@@ -156,9 +157,12 @@ func (s *Server) StartGRPC(addr string) error {
 	if err := s.planner.Recover(context.Background()); err != nil {
 		klog.Warningf("planner recovery failed (continuing without recovered jobs): %v", err)
 	}
+	deploymentDrivers := driver.NewRegistry(
+		driver.NewK8sDeploymentDriver(s.cfg),
+	)
 
 	// Register all service handlers
-	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
+	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store, deploymentDrivers))
 	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.planner, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode, s.injector))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
 	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))

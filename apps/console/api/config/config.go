@@ -138,6 +138,17 @@ type Config struct {
 	// Metrics holds the metrics configuration.
 	// When nil, no metrics backends are initialised and all emissions are no-ops.
 	Metrics *MetricsConfig
+
+	// Kubernetes deployment driver settings. These configure how the Console
+	// talks to the Kubernetes API server when the deployment implementation is
+	// "k8s-deployment".
+	K8sKubeconfig              string
+	K8sContext                 string
+	K8sNamespace               string
+	K8sServiceType             string
+	K8sContainerPort           int32
+	K8sServicePort             int32
+	K8sHPATargetCPUUtilization int32
 }
 
 // Load reads configuration from environment variables and applies sensible defaults.
@@ -196,6 +207,13 @@ func Load() (*Config, error) {
 		DevMode:                             envBool("DEV_MODE", false),
 		ErrorInjectionEnabled:               envBool("ERROR_INJECTION_ENABLED", false),
 		Metrics:                             loadMetricsConfig(),
+		K8sKubeconfig:                       envOrDefault("K8S_KUBECONFIG", os.Getenv("KUBECONFIG")),
+		K8sContext:                          envOrDefault("K8S_CONTEXT", ""),
+		K8sNamespace:                        envOrDefault("K8S_NAMESPACE", "default"),
+		K8sServiceType:                      envOrDefault("K8S_SERVICE_TYPE", "ClusterIP"),
+		K8sContainerPort:                    envInt32("K8S_CONTAINER_PORT", 8000),
+		K8sServicePort:                      envInt32("K8S_SERVICE_PORT", 8000),
+		K8sHPATargetCPUUtilization:          envInt32("K8S_HPA_TARGET_CPU_UTILIZATION", 80),
 	}, nil
 }
 
@@ -217,6 +235,16 @@ func envBool(key string, fallback bool) bool {
 func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envInt32(key string, fallback int32) int32 {
+	if v := os.Getenv(key); v != "" {
+		var parsed int
+		if _, err := fmt.Sscanf(v, "%d", &parsed); err == nil {
+			return int32(parsed)
+		}
 	}
 	return fallback
 }
