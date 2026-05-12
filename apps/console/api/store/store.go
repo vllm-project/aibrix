@@ -29,6 +29,7 @@ type Store interface {
 	ListDeployments(ctx context.Context, search string) ([]*pb.Deployment, error)
 	GetDeployment(ctx context.Context, id string) (*pb.Deployment, error)
 	CreateDeployment(ctx context.Context, req *pb.CreateDeploymentRequest) (*pb.Deployment, error)
+	SaveDeployment(ctx context.Context, deployment *pb.Deployment) (*pb.Deployment, error)
 	DeleteDeployment(ctx context.Context, id string) error
 
 	// Jobs — store persists only the Console-owned fields of *pb.Job

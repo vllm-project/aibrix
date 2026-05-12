@@ -18,6 +18,9 @@ import type { SettingsTab } from './components/Settings';
 import { ModelLibrary } from './components/ModelLibrary';
 import { ModelDetail } from './components/ModelDetail';
 import { CreateModelDeploymentTemplate } from './components/CreateModelDeploymentTemplate';
+import { Deployments } from './components/Deployments';
+import { CreateDeployment } from './components/CreateDeployment';
+import { DeploymentDetail } from './components/DeploymentDetail';
 import { Playground } from './components/Playground';
 import { ApiKeysPage } from './components/settings/ApiKeysPage';
 import { SecretsPage } from './components/settings/SecretsPage';
@@ -92,6 +95,45 @@ function PlaygroundRoute() {
   return <Playground onNavigateToModel={(id) => navigate(`/models/${id}`)} />;
 }
 
+function DeploymentsRoute() {
+  const [view, setView] = useState<'list' | 'create' | 'detail'>('list');
+  const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
+
+  if (view === 'create') {
+    return (
+      <CreateDeployment
+        onBack={() => setView('list')}
+        onCreated={(deploymentId) => {
+          setSelectedDeploymentId(deploymentId);
+          setView('detail');
+        }}
+      />
+    );
+  }
+
+  if (view === 'detail' && selectedDeploymentId) {
+    return (
+      <DeploymentDetail
+        deploymentId={selectedDeploymentId}
+        onBack={() => {
+          setSelectedDeploymentId(null);
+          setView('list');
+        }}
+      />
+    );
+  }
+
+  return (
+    <Deployments
+      onCreateDeployment={() => setView('create')}
+      onSelectDeployment={(id) => {
+        setSelectedDeploymentId(id);
+        setView('detail');
+      }}
+    />
+  );
+}
+
 function ComingSoon({ title, description, features }: {
   title: string;
   description: string;
@@ -124,20 +166,6 @@ function ComingSoon({ title, description, features }: {
         </div>
       </div>
     </div>
-  );
-}
-
-function DeploymentsComingSoon() {
-  return (
-    <ComingSoon
-      title="Online Deployments"
-      description="Spin up dedicated, low-latency endpoints for online inference using a deployment template. The control plane work is still in progress."
-      features={[
-        'Launch deployments from a registered model + deployment template',
-        'Live status, replicas, and accelerator usage per endpoint',
-        'Roll, pause, and tear down without leaving the console',
-      ]}
-    />
   );
 }
 
@@ -229,7 +257,7 @@ export default function App() {
               element={<TemplateFormRoute mode="clone" />}
             />
 
-            <Route path="/deployments" element={<DeploymentsComingSoon />} />
+            <Route path="/deployments" element={<DeploymentsRoute />} />
             <Route path="/lora" element={<LoraComingSoon />} />
 
             <Route path="/settings" element={<Navigate to="/settings/api-keys" replace />} />
