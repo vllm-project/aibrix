@@ -20,16 +20,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"math"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/packages/ssestream"
+	"github.com/tidwall/gjson"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
@@ -80,31 +77,47 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	}()
 
 	if stream {
-		t := &http.Response{
-			Body: io.NopCloser(bytes.NewReader(b.ResponseBody.GetBody())),
-		}
-		streaming := ssestream.NewStream[openai.ChatCompletionChunk](ssestream.NewDecoder(t), nil)
-		defer func() {
-			_ = streaming.Close()
-		}()
-		for streaming.Next() {
-			evt := streaming.Current()
-			if len(evt.Choices) == 0 {
-				// Do not overwrite model, res can be empty.
-				promptTokens = evt.Usage.PromptTokens
-				totalTokens = evt.Usage.TotalTokens
-				completionTokens = evt.Usage.CompletionTokens
+		bodyBytes := b.ResponseBody.GetBody()
+
+		// Pre-filter to avoid processing if "usage" isn't present
+		if bytes.Contains(bodyBytes, []byte(`"usage"`)) {
+			remaining := bodyBytes
+
+			for len(remaining) > 0 {
+				var line []byte
+				// Manually find the newline to avoid the allocations of bytes.Split
+				if idx := bytes.IndexByte(remaining, '\n'); idx >= 0 {
+					line = remaining[:idx]
+					remaining = remaining[idx+1:]
+				} else {
+					line = remaining
+					remaining = nil
+				}
+				line = bytes.TrimSpace(line)
+
+				// Look for the SSE data prefix
+				if bytes.HasPrefix(line, []byte("data:")) {
+					// Slice the "data:" prefix (zero allocation)
+					jsonBytes := bytes.TrimSpace(line[5:])
+
+					// Check for the end of the stream
+					if bytes.Equal(jsonBytes, []byte("[DONE]")) {
+						continue
+					}
+
+					// use gjson.GetBytes accelerate
+					usageResult := gjson.GetBytes(jsonBytes, "usage")
+					if usageResult.Exists() && usageResult.IsObject() {
+						promptTokens = usageResult.Get("prompt_tokens").Int()
+						completionTokens = usageResult.Get("completion_tokens").Int()
+						totalTokens = usageResult.Get("total_tokens").Int()
+					}
+				}
 			}
-		}
-		if err := streaming.Err(); err != nil {
-			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
-			complete = true
-			return generateErrorResponse(
-				envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderErrorStreaming, RawValue: []byte("true"),
-				}}},
-				err.Error(), "", ""), complete
+			// observability log
+			if promptTokens == 0 && totalTokens == 0 {
+				klog.Warningf("usage string detected but no valid tokens parsed, requestID: %s", requestID)
+			}
 		}
 	} else {
 		if isLanguageRequest(routerCtx.ReqPath) {
