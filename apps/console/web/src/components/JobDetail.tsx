@@ -19,6 +19,8 @@ function statusClass(s: JobStatus): string {
   switch (s) {
     case 'completed':
       return 'bg-emerald-50 text-emerald-700 border border-emerald-200';
+    case 'pending':
+    case 'provisioning':
     case 'in_progress':
     case 'validating':
     case 'finalizing':

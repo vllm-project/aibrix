@@ -145,8 +145,8 @@ message Job {
   string model = 4;
   string input_dataset = 5;
   string completion_window = 6;
-  // 8-state OpenAI status:
-  // validating | in_progress | finalizing | completed | failed | expired | cancelling | cancelled
+  // Console-facing job status: the 8-state OpenAI batch lifecycle plus
+  // two planner statuses: pending and provisioning.
   string status = 7;
   string output_dataset = 8;
   string error_dataset = 9;

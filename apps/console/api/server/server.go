@@ -19,6 +19,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -34,6 +35,7 @@ import (
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/handler"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
+	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	plannerimpl "github.com/vllm-project/aibrix/apps/console/api/planner/impl"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager"
@@ -50,6 +52,7 @@ type Server struct {
 	store      store.Store
 	cfg        *config.Config
 	auth       *middleware.AuthMiddleware
+	planner    plannerapi.Planner
 }
 
 // New creates a new console Server from configuration.
@@ -116,7 +119,8 @@ func (s *Server) StartGRPC(addr string) error {
 	if err != nil {
 		return fmt.Errorf("resource manager init: %w", err)
 	}
-	planner := plannerimpl.NewPassthrough(batchClient, rm.Provisioner)
+	planner := plannerimpl.NewQueued(batchClient, rm.Provisioner, plannerimpl.DefaultWorkerCount)
+	s.planner = planner
 
 	// Register all service handlers
 	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
@@ -205,6 +209,11 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if s.httpServer != nil {
 		if err := s.httpServer.Shutdown(ctx); err != nil {
 			klog.Errorf("failed to shutdown http server: %v", err)
+		}
+	}
+	if c, ok := s.planner.(io.Closer); ok {
+		if err := c.Close(); err != nil {
+			klog.Errorf("failed to close planner: %v", err)
 		}
 	}
 	if s.store != nil {

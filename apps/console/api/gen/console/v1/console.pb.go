@@ -465,8 +465,8 @@ type Job struct {
 	Model            string `protobuf:"bytes,4,opt,name=model,proto3" json:"model,omitempty"`
 	InputDataset     string `protobuf:"bytes,5,opt,name=input_dataset,json=inputDataset,proto3" json:"input_dataset,omitempty"`
 	CompletionWindow string `protobuf:"bytes,6,opt,name=completion_window,json=completionWindow,proto3" json:"completion_window,omitempty"`
-	// 8-state OpenAI status:
-	// validating | in_progress | finalizing | completed | failed | expired | cancelling | cancelled
+	// Console-facing job status: the 8-state OpenAI batch lifecycle plus
+	// two planner statuses: pending and provisioning.
 	Status        string `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`
 	OutputDataset string `protobuf:"bytes,8,opt,name=output_dataset,json=outputDataset,proto3" json:"output_dataset,omitempty"`
 	ErrorDataset  string `protobuf:"bytes,9,opt,name=error_dataset,json=errorDataset,proto3" json:"error_dataset,omitempty"`
