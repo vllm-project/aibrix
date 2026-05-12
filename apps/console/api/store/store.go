@@ -83,8 +83,8 @@ type Store interface {
 	// Returns nil and a NotFound error if the key doesn't exist.
 	GetProvisionByIdempotencyKey(ctx context.Context, idempotencyKey string) (*types.ProvisionResult, error)
 
-	// InsertProvision stores a provision result with the given idempotency key.
-	InsertProvision(ctx context.Context, idempotencyKey string, result *types.ProvisionResult) error
+	// UpsertProvision inserts/updates a provision result with the given idempotency key.
+	UpsertProvision(ctx context.Context, result *types.ProvisionResult) error
 
 	// UpdateProvisionStatus updates the status of a provision result.
 	UpdateProvisionStatus(ctx context.Context, provisionId string, status types.ProvisionStatus) error
