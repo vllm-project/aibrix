@@ -104,8 +104,8 @@ func (p *K8sProvisioner) Provision(ctx context.Context, req *types.ResourceProvi
 		Kubernetes:     &types.KubernetesProvisionDetail{},
 	}
 
-	if err := p.store.InsertProvision(ctx, req.IdempotencyKey, result); err != nil {
-		return nil, fmt.Errorf("insert provision: %w", err)
+	if err := p.store.UpsertProvision(ctx, result); err != nil {
+		return nil, fmt.Errorf("upsert provision: %w", err)
 	}
 
 	return result, nil

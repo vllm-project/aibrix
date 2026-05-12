@@ -678,13 +678,19 @@ func (s *GORMStore) GetProvisionByIdempotencyKey(ctx context.Context, idempotenc
 	return res, nil
 }
 
-func (s *GORMStore) InsertProvision(ctx context.Context, idempotencyKey string, result *types.ProvisionResult) error {
+func (s *GORMStore) UpsertProvision(ctx context.Context, result *types.ProvisionResult) error {
+	if result == nil {
+		return fmt.Errorf("provision result is required")
+	}
+	if result.IdempotencyKey == "" {
+		return fmt.Errorf("idempotency key is required")
+	}
 	record, err := result.ToProvisionRecord()
 	if err != nil {
 		return fmt.Errorf("failed to convert provision result to record: %w", err)
 	}
 	rec := models.ProvisionResult{
-		IdempotencyKey: idempotencyKey,
+		IdempotencyKey: result.IdempotencyKey,
 		ProvisionID:    record.ProvisionID,
 		Region:         record.Region,
 		Status:         record.Status,
@@ -693,8 +699,11 @@ func (s *GORMStore) InsertProvision(ctx context.Context, idempotencyKey string, 
 		UpdatedAt:      record.UpdatedAt,
 		Deleted:        false,
 	}
-	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "idempotency_key"}}, DoUpdates: clause.AssignmentColumns([]string{"provision_id", "region", "status", "payload", "created_at", "updated_at", "deleted"})}).Create(&rec).Error; err != nil {
-		return fmt.Errorf("failed to set provision result: %w", err)
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "idempotency_key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"provision_id", "region", "status", "payload", "updated_at", "deleted"}),
+	}).Create(&rec).Error; err != nil {
+		return fmt.Errorf("failed to upsert provision result: %w", err)
 	}
 	return nil
 }

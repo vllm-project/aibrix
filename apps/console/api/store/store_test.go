@@ -863,25 +863,70 @@ func TestMemoryStore(t *testing.T) {
 	})
 
 	t.Run("Provision", func(t *testing.T) {
-		t.Run("InsertProvision", func(t *testing.T) {
+		t.Run("UpsertProvision_Insert", func(t *testing.T) {
 			result := &types.ProvisionResult{
-				ProvisionID: "prov-123",
-				Status:      types.ProvisionStatusPending,
+				IdempotencyKey: "idem-key-1",
+				ProvisionID:    "prov-123",
+				Status:         types.ProvisionStatusPending,
 			}
-			err := s.InsertProvision(ctx, "idem-key-1", result)
+			err := s.UpsertProvision(ctx, result)
 			if err != nil {
-				t.Fatalf("InsertProvision failed: %v", err)
+				t.Fatalf("UpsertProvision failed: %v", err)
+			}
+		})
+
+		t.Run("UpsertProvision_Update", func(t *testing.T) {
+			// First insert
+			result := &types.ProvisionResult{
+				IdempotencyKey: "idem-key-upsert",
+				ProvisionID:    "prov-upsert-1",
+				Status:         types.ProvisionStatusPending,
+			}
+			err := s.UpsertProvision(ctx, result)
+			if err != nil {
+				t.Fatalf("UpsertProvision (insert) failed: %v", err)
+			}
+
+			// Retrieve to get the original CreatedAt
+			original, err := s.GetProvision(ctx, "prov-upsert-1")
+			if err != nil {
+				t.Fatalf("GetProvision failed: %v", err)
+			}
+
+			// Update with same idempotency key but different provision_id and status
+			updated := &types.ProvisionResult{
+				IdempotencyKey: "idem-key-upsert",
+				ProvisionID:    "prov-upsert-2",
+				Status:         types.ProvisionStatusRunning,
+			}
+			err = s.UpsertProvision(ctx, updated)
+			if err != nil {
+				t.Fatalf("UpsertProvision (update) failed: %v", err)
+			}
+
+			// Retrieve the updated record
+			retrieved, err := s.GetProvision(ctx, "prov-upsert-2")
+			if err != nil {
+				t.Fatalf("GetProvision after update failed: %v", err)
+			}
+			if retrieved.Status != types.ProvisionStatusRunning {
+				t.Errorf("expected status 'running', got %q", retrieved.Status)
+			}
+			// Verify CreatedAt is preserved
+			if !retrieved.CreatedAt.Equal(original.CreatedAt) {
+				t.Errorf("CreatedAt should be preserved: original=%v, retrieved=%v", original.CreatedAt, retrieved.CreatedAt)
 			}
 		})
 
 		t.Run("GetProvision", func(t *testing.T) {
 			result := &types.ProvisionResult{
-				ProvisionID: "prov-456",
-				Status:      types.ProvisionStatusPending,
+				IdempotencyKey: "idem-key-2",
+				ProvisionID:    "prov-456",
+				Status:         types.ProvisionStatusPending,
 			}
-			err := s.InsertProvision(ctx, "idem-key-2", result)
+			err := s.UpsertProvision(ctx, result)
 			if err != nil {
-				t.Fatalf("InsertProvision for get test failed: %v", err)
+				t.Fatalf("UpsertProvision for get test failed: %v", err)
 			}
 
 			retrieved, err := s.GetProvision(ctx, "prov-456")
@@ -909,11 +954,12 @@ func TestMemoryStore(t *testing.T) {
 
 		t.Run("ExistsProvision", func(t *testing.T) {
 			result := &types.ProvisionResult{
-				ProvisionID: "prov-789",
-				Status:      types.ProvisionStatusPending,
+				IdempotencyKey: "idem-key-3",
+				ProvisionID:    "prov-789",
+				Status:         types.ProvisionStatusPending,
 			}
-			if err := s.InsertProvision(ctx, "idem-key-3", result); err != nil {
-				t.Fatalf("InsertProvision failed: %v", err)
+			if err := s.UpsertProvision(ctx, result); err != nil {
+				t.Fatalf("UpsertProvision failed: %v", err)
 			}
 
 			exists, err := s.ExistsProvision(ctx, "prov-789")
@@ -935,11 +981,12 @@ func TestMemoryStore(t *testing.T) {
 
 		t.Run("UpdateProvisionStatus", func(t *testing.T) {
 			result := &types.ProvisionResult{
-				ProvisionID: "prov-update",
-				Status:      types.ProvisionStatusPending,
+				IdempotencyKey: "idem-key-update",
+				ProvisionID:    "prov-update",
+				Status:         types.ProvisionStatusPending,
 			}
-			if err := s.InsertProvision(ctx, "idem-key-update", result); err != nil {
-				t.Fatalf("InsertProvision failed: %v", err)
+			if err := s.UpsertProvision(ctx, result); err != nil {
+				t.Fatalf("UpsertProvision failed: %v", err)
 			}
 
 			err := s.UpdateProvisionStatus(ctx, "prov-update", types.ProvisionStatusRunning)
@@ -958,11 +1005,12 @@ func TestMemoryStore(t *testing.T) {
 
 		t.Run("DeleteProvision", func(t *testing.T) {
 			result := &types.ProvisionResult{
-				ProvisionID: "prov-delete",
-				Status:      types.ProvisionStatusPending,
+				IdempotencyKey: "idem-key-delete",
+				ProvisionID:    "prov-delete",
+				Status:         types.ProvisionStatusPending,
 			}
-			if err := s.InsertProvision(ctx, "idem-key-delete", result); err != nil {
-				t.Fatalf("InsertProvision failed: %v", err)
+			if err := s.UpsertProvision(ctx, result); err != nil {
+				t.Fatalf("UpsertProvision failed: %v", err)
 			}
 
 			err := s.DeleteProvision(ctx, "prov-delete")
@@ -981,11 +1029,12 @@ func TestMemoryStore(t *testing.T) {
 			// Insert multiple provisions
 			for i := 1; i <= 3; i++ {
 				result := &types.ProvisionResult{
-					ProvisionID: fmt.Sprintf("prov-list-%d", i),
-					Status:      types.ProvisionStatusPending,
+					IdempotencyKey: fmt.Sprintf("idem-key-list-%d", i),
+					ProvisionID:    fmt.Sprintf("prov-list-%d", i),
+					Status:         types.ProvisionStatusPending,
 				}
-				if err := s.InsertProvision(ctx, fmt.Sprintf("idem-key-list-%d", i), result); err != nil {
-					t.Fatalf("InsertProvision failed: %v", err)
+				if err := s.UpsertProvision(ctx, result); err != nil {
+					t.Fatalf("UpsertProvision failed: %v", err)
 				}
 			}
 
@@ -1024,21 +1073,23 @@ func TestMemoryStore(t *testing.T) {
 			}
 
 			resultA := &types.ProvisionResult{
-				ProvisionID: "prov-region-a",
-				Status:      types.ProvisionStatusPending,
-				Region:      string(regionABytes),
+				IdempotencyKey: "idem-key-region-a",
+				ProvisionID:    "prov-region-a",
+				Status:         types.ProvisionStatusPending,
+				Region:         string(regionABytes),
 			}
-			if err := s.InsertProvision(ctx, "idem-key-region-a", resultA); err != nil {
-				t.Fatalf("InsertProvision regionA failed: %v", err)
+			if err := s.UpsertProvision(ctx, resultA); err != nil {
+				t.Fatalf("UpsertProvision regionA failed: %v", err)
 			}
 
 			resultB := &types.ProvisionResult{
-				ProvisionID: "prov-region-b",
-				Status:      types.ProvisionStatusPending,
-				Region:      string(regionBBytes),
+				IdempotencyKey: "idem-key-region-b",
+				ProvisionID:    "prov-region-b",
+				Status:         types.ProvisionStatusPending,
+				Region:         string(regionBBytes),
 			}
-			if err := s.InsertProvision(ctx, "idem-key-region-b", resultB); err != nil {
-				t.Fatalf("InsertProvision regionB failed: %v", err)
+			if err := s.UpsertProvision(ctx, resultB); err != nil {
+				t.Fatalf("UpsertProvision regionB failed: %v", err)
 			}
 
 			regions := []types.RegionSpec{regionA}
