@@ -79,7 +79,10 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	if stream {
 		bodyBytes := b.ResponseBody.GetBody()
 
-		// Pre-filter to avoid processing if "usage" isn't present
+		// The previous implementation unmarshalled every single SSE chunk into a struct (openai.ChatCompletionChunk).
+		// This caused significant CPU overhead and high GC pressure under heavy concurrency.
+		// The new implementation uses zero-allocation  byte scanning and pre-filtering,
+		// selectively extracting only the "usage" metadata via gjson for the final chunks.
 		if bytes.Contains(bodyBytes, []byte(`"usage"`)) {
 			remaining := bodyBytes
 
@@ -93,6 +96,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 					line = remaining
 					remaining = nil
 				}
+
+				// Handle SSE \r\n line endings. bytes.TrimSpace safely strips trailing \r
+				// as well as any leading/trailing whitespace.
 				line = bytes.TrimSpace(line)
 
 				// Look for the SSE data prefix
@@ -105,18 +111,33 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 						continue
 					}
 
-					// use gjson.GetBytes accelerate
+					// While gjson.ValidBytes is O(N), it does not degrade gateway throughput.
+					// Guarded by the bytes.Contains pre-filter, it bypasses the hot path of streaming standard text
+					// and only executes on final chunks, ensuring strict correctness.
+					if !gjson.ValidBytes(jsonBytes) {
+						complete = true
+						return generateErrorResponse(
+							envoyTypePb.StatusCode_InternalServerError,
+							[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+								Key: HeaderErrorStreaming, RawValue: []byte("true"),
+							}}},
+							"malformed JSON in SSE stream", "", ""), complete
+					}
+
+					// gjson avoids full deserialization by only extracting the usage field.
 					usageResult := gjson.GetBytes(jsonBytes, "usage")
 					if usageResult.Exists() && usageResult.IsObject() {
+						// Assumption: The upstream sends the usage object only in the final chunk
+						// (standard vLLM/OpenAI behavior). We overwrite/set the values here.
 						promptTokens = usageResult.Get("prompt_tokens").Int()
 						completionTokens = usageResult.Get("completion_tokens").Int()
 						totalTokens = usageResult.Get("total_tokens").Int()
 					}
 				}
 			}
-			// observability log
+			// warnings when "usage" is triggered by a false positive in generated content.
 			if promptTokens == 0 && totalTokens == 0 {
-				klog.Warningf("usage string detected but no valid tokens parsed, requestID: %s", requestID)
+				klog.V(4).Infof("usage string detected but no valid tokens parsed (likely generated text), requestID: %s", requestID)
 			}
 		}
 	} else {
