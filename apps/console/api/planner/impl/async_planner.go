@@ -33,10 +33,10 @@ import (
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 )
 
-// Queued is an asynchronous Planner. Enqueue records the job in memory,
+// Scheduler is an asynchronous Planner. Enqueue records the job in memory,
 // returns a placeholder batch in "pending" status, and lets workers run
 // Provision + CreateBatch in the background.
-type Queued struct {
+type Scheduler struct {
 	bc   plannerclient.BatchClient
 	prov provisioner.Provisioner
 
@@ -86,14 +86,14 @@ const queueCapacity = 256
 // DefaultWorkerCount sizes the worker pool.
 const DefaultWorkerCount = 4
 
-// NewQueued constructs a Queued Planner and starts workerCount background
-// workers. workerCount < 1 is floored to 1.
-func NewQueued(bc plannerclient.BatchClient, prov provisioner.Provisioner, workerCount int) *Queued {
+// NewScheduler constructs an asynchronous Scheduler Planner and starts
+// workerCount background workers. workerCount < 1 is floored to 1.
+func NewScheduler(bc plannerclient.BatchClient, prov provisioner.Provisioner, workerCount int) *Scheduler {
 	if workerCount < 1 {
 		workerCount = 1
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	q := &Queued{
+	q := &Scheduler{
 		bc:         bc,
 		prov:       prov,
 		submit:     make(chan string, queueCapacity),
@@ -106,20 +106,20 @@ func NewQueued(bc plannerclient.BatchClient, prov provisioner.Provisioner, worke
 	for i := 0; i < workerCount; i++ {
 		go q.run()
 	}
-	klog.Infof("[planner.queued] started worker pool size=%d capacity=%d", workerCount, queueCapacity)
+	klog.Infof("[planner.scheduler] started worker pool size=%d capacity=%d", workerCount, queueCapacity)
 	return q
 }
 
-var _ plannerapi.Planner = (*Queued)(nil)
+var _ plannerapi.Planner = (*Scheduler)(nil)
 
 // Close cancels in-flight work and waits for workers to exit.
-func (q *Queued) Close() error {
+func (q *Scheduler) Close() error {
 	q.baseCancel()
 	q.wg.Wait()
 	return nil
 }
 
-func (q *Queued) run() {
+func (q *Scheduler) run() {
 	defer q.wg.Done()
 	for {
 		select {
@@ -131,7 +131,7 @@ func (q *Queued) run() {
 	}
 }
 
-func (q *Queued) process(jobID string) {
+func (q *Scheduler) process(jobID string) {
 	// Check-and-flip Pending -> Provisioning under the same lock.
 	q.mu.Lock()
 	job, ok := q.jobs[jobID]
@@ -143,7 +143,7 @@ func (q *Queued) process(jobID string) {
 		// Cancel raced ahead; drop without provisioning.
 		state := job.state
 		q.mu.Unlock()
-		klog.Infof("[planner.queued] skip job_id=%q state=%d", jobID, state)
+		klog.Infof("[planner.scheduler] skip job_id=%q state=%d", jobID, state)
 		return
 	}
 	job.state = jobStateProvisioning
@@ -179,14 +179,14 @@ func (q *Queued) process(jobID string) {
 		ModelTemplate: req.ModelTemplate,
 	}
 
-	klog.Infof("[planner.queued] submit job_id=%q provision_id=%q model_template=%v",
+	klog.Infof("[planner.scheduler] submit job_id=%q provision_id=%q model_template=%v",
 		req.JobID, provResult.ProvisionID, req.ModelTemplate)
 
 	batch, err := q.bc.CreateBatch(q.baseCtx, req.BatchParams, aibrix)
 	if err != nil {
 		// Best-effort release; surface the original CreateBatch error.
 		if relErr := q.prov.Release(q.baseCtx, provResult.ProvisionID); relErr != nil {
-			klog.Warningf("[planner.queued] release after CreateBatch failure job_id=%q provision_id=%q: %v",
+			klog.Warningf("[planner.scheduler] release after CreateBatch failure job_id=%q provision_id=%q: %v",
 				jobID, provResult.ProvisionID, relErr)
 		}
 		q.markFailed(jobID, err)
@@ -203,19 +203,19 @@ func (q *Queued) process(jobID string) {
 	q.mu.Unlock()
 }
 
-func (q *Queued) markFailed(jobID string, err error) {
+func (q *Scheduler) markFailed(jobID string, err error) {
 	q.mu.Lock()
 	if job, ok := q.jobs[jobID]; ok {
 		job.state = jobStateFailed
 		job.err = err
 	}
 	q.mu.Unlock()
-	klog.Warningf("[planner.queued] job_id=%q failed: %v", jobID, err)
+	klog.Warningf("[planner.scheduler] job_id=%q failed: %v", jobID, err)
 }
 
 // Enqueue records the job, pushes it onto the worker channel, and returns
 // a placeholder batch in "pending" status.
-func (q *Queued) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (*plannerapi.Job, error) {
+func (q *Scheduler) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (*plannerapi.Job, error) {
 	if req == nil {
 		return nil, fmt.Errorf("%w: nil request", plannerapi.ErrInvalidJob)
 	}
@@ -254,7 +254,7 @@ func (q *Queued) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (*
 		return nil, fmt.Errorf("planner closed: %w", q.baseCtx.Err())
 	}
 
-	klog.Infof("[planner.queued] enqueue job_id=%q", req.JobID)
+	klog.Infof("[planner.scheduler] enqueue job_id=%q", req.JobID)
 	return &plannerapi.Job{
 		JobID: req.JobID,
 		Batch: placeholderBatch(req, statusFor(jobStatePending), time.Now()),
@@ -263,7 +263,7 @@ func (q *Queued) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (*
 
 // GetJob resolves the JobID. Submitted jobs forward to MDS; others return
 // a placeholder batch with status derived from jobState.
-func (q *Queued) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, error) {
+func (q *Scheduler) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, error) {
 	if jobID == "" {
 		return nil, fmt.Errorf("%w: empty job_id", plannerapi.ErrInvalidJob)
 	}
@@ -280,7 +280,7 @@ func (q *Queued) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, err
 	q.mu.RUnlock()
 
 	if state == jobStateSubmitted {
-		klog.Infof("[planner.queued] get_job job_id=%q batch_id=%q", jobID, batchID)
+		klog.Infof("[planner.scheduler] get_job job_id=%q batch_id=%q", jobID, batchID)
 		batch, err := q.bc.GetBatch(ctx, batchID)
 		if err != nil {
 			return nil, err
@@ -298,7 +298,7 @@ func (q *Queued) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, err
 //
 // Known gap: a cancel that lands mid-Provision or mid-CreateBatch can still
 // lose the race and end up submitted.
-func (q *Queued) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, error) {
+func (q *Scheduler) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, error) {
 	if jobID == "" {
 		return nil, fmt.Errorf("%w: empty job_id", plannerapi.ErrInvalidJob)
 	}
@@ -319,10 +319,10 @@ func (q *Queued) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, err
 
 	switch state {
 	case jobStatePending, jobStateProvisioning:
-		klog.Infof("[planner.queued] cancel pre-submit job_id=%q state=%d", jobID, state)
+		klog.Infof("[planner.scheduler] cancel pre-submit job_id=%q state=%d", jobID, state)
 		return &plannerapi.Job{JobID: jobID, Batch: placeholderBatch(req, openai.BatchStatusCancelled, enqueuedAt)}, nil
 	case jobStateSubmitted:
-		klog.Infof("[planner.queued] cancel submitted job_id=%q batch_id=%q", jobID, batchID)
+		klog.Infof("[planner.scheduler] cancel submitted job_id=%q batch_id=%q", jobID, batchID)
 		batch, err := q.bc.CancelBatch(ctx, batchID)
 		if err != nil {
 			return nil, err
@@ -335,13 +335,13 @@ func (q *Queued) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, err
 
 // ListJobs merges MDS batches with local not-yet-submitted jobs. Local jobs
 // are shown only on the first page so the MDS cursor remains valid.
-func (q *Queued) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest) (*plannerapi.ListJobsResponse, error) {
+func (q *Scheduler) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest) (*plannerapi.ListJobsResponse, error) {
 	listReq := &plannerclient.ListBatchesRequest{}
 	if req != nil {
 		listReq.Limit = req.Limit
 		listReq.After = req.After
 	}
-	klog.Infof("[planner.queued] list_jobs limit=%d after=%q", listReq.Limit, listReq.After)
+	klog.Infof("[planner.scheduler] list_jobs limit=%d after=%q", listReq.Limit, listReq.After)
 	resp, err := q.bc.ListBatches(ctx, listReq)
 	if err != nil {
 		return nil, err
@@ -361,7 +361,7 @@ func (q *Queued) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest) 
 
 // unsubmittedJobs returns the non-submitted planner-tracked jobs, newest
 // first.
-func (q *Queued) unsubmittedJobs() []*plannerapi.Job {
+func (q *Scheduler) unsubmittedJobs() []*plannerapi.Job {
 	q.mu.RLock()
 	unsubmitted := make([]*queuedJob, 0)
 	for _, j := range q.jobs {
@@ -383,7 +383,7 @@ func (q *Queued) unsubmittedJobs() []*plannerapi.Job {
 	return out
 }
 
-func (q *Queued) deleteJob(jobID string) {
+func (q *Scheduler) deleteJob(jobID string) {
 	q.mu.Lock()
 	delete(q.jobs, jobID)
 	q.mu.Unlock()

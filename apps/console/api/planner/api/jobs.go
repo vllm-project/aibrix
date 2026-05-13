@@ -54,7 +54,7 @@ type EnqueueRequest struct {
 // for rendering MDS-native fields, never for lookups.
 //
 // Batch is the MDS-side openai.Batch when the planner has submitted
-// to MDS. Future queued planners that defer the MDS submit may
+// to MDS. Future asynchronous planners that defer the MDS submit may
 // return Batch == nil on Enqueue and rely on the caller polling
 // GetJob.
 type Job struct {
@@ -93,4 +93,3 @@ type ModelTemplateRef struct {
 	Name    string `json:"name"`
 	Version string `json:"version,omitempty"`
 }
-

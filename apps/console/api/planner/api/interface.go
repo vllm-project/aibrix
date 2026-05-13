@@ -26,7 +26,7 @@ import (
 // reads (GetJob, ListJobs, Cancel) take the Console-generated JobID
 // and return a Job; the MDS batch.ID never crosses this boundary
 // upward. The planner owns the JobID -> batch.ID translation
-// (in-memory in Passthrough, durable in the queued planner).
+// (in-memory in Passthrough, durable in the async Scheduler).
 type Planner interface {
 	Enqueue(ctx context.Context, req *EnqueueRequest) (*Job, error)
 	GetJob(ctx context.Context, jobID string) (*Job, error)

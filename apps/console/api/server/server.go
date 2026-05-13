@@ -119,7 +119,7 @@ func (s *Server) StartGRPC(addr string) error {
 	if err != nil {
 		return fmt.Errorf("resource manager init: %w", err)
 	}
-	planner := plannerimpl.NewQueued(batchClient, rm.Provisioner, plannerimpl.DefaultWorkerCount)
+	planner := plannerimpl.NewScheduler(batchClient, rm.Provisioner, plannerimpl.DefaultWorkerCount)
 	s.planner = planner
 
 	// Register all service handlers

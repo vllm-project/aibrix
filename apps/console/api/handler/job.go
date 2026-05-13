@@ -169,7 +169,7 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 		completionWindow = string(openai.BatchNewParamsCompletionWindow24h)
 	}
 
-	// Console-generated JobID. The queued planner will own a durable
+	// Console-generated JobID. The async Scheduler will own a durable
 	// JobID -> BatchID map; until then the planner keeps it in-memory.
 	jobID := "job_" + uuid.NewString()
 

@@ -23,5 +23,5 @@ limitations under the License.
 // imports lives here. The planner -> MDS adapter is rooted at the
 // sibling package .../planner/client; the synchronous reference
 // implementation lives at .../planner/impl. Worker / store / scheduler
-// packages will join when the queued planner lands.
+// packages will join when the async Scheduler lands.
 package plannerapi
