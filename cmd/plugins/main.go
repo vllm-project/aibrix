@@ -180,7 +180,7 @@ func main() {
 		}
 	}()
 
-	klog.Infof("GOMAXPROCS is: %d\n", runtime.GOMAXPROCS(0))
+	klog.Infof("GOMAXPROCS is: %d", runtime.GOMAXPROCS(0))
 
 	var gracefulStop = make(chan os.Signal, 1)
 	signal.Notify(gracefulStop, syscall.SIGINT, syscall.SIGTERM)
