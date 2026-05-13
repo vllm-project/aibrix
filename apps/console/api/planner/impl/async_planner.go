@@ -33,10 +33,10 @@ import (
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 )
 
-// Scheduler is an asynchronous Planner. Enqueue records the job in memory,
+// AsyncPlanner is an asynchronous Planner. Enqueue records the job in memory,
 // returns a placeholder batch in "pending" status, and lets workers run
-// Provision + CreateBatch in the background.
-type Scheduler struct {
+// Provision, wait for the resource to reach Running, then CreateBatch.
+type AsyncPlanner struct {
 	bc   plannerclient.BatchClient
 	prov provisioner.Provisioner
 
@@ -49,6 +49,10 @@ type Scheduler struct {
 	mu         sync.RWMutex          // guards jobs and jobByBatch
 	jobs       map[string]*queuedJob // JobID -> state
 	jobByBatch map[string]string     // batch.ID -> JobID (for ListJobs tagging)
+
+	// provPollInterval is how often waitForProvisionReady polls the RM.
+	// Same-package tests override for fast assertions.
+	provPollInterval time.Duration
 }
 
 // jobState is the planner-side lifecycle. Before submission, statusFor maps
@@ -59,8 +63,10 @@ type Scheduler struct {
 //	Provisioning → worker holds the job; Provision + CreateBatch in flight.
 //	Submitted    → CreateBatch returned; MDS owns the lifecycle from here.
 //	Failed       → Provision or CreateBatch errored.
-//	Canceled     → user-canceled while Pending or Provisioning. See Cancel
-//	               for the MVP cancellation-race gap.
+//	Canceled     → user-canceled. A cancel landing mid-Provision or
+//	               mid-CreateBatch is honored at the post-CreateBatch
+//	               checkpoint: state stays Canceled, CancelBatch is
+//	               forwarded to MDS, and the resource is released.
 type jobState int
 
 const (
@@ -77,6 +83,21 @@ type queuedJob struct {
 	batchID    string // populated when state == jobStateSubmitted
 	err        error  // populated when state == jobStateFailed
 	enqueuedAt time.Time
+	failedAt   time.Time // populated when state == jobStateFailed
+	canceledAt time.Time // populated when state == jobStateCanceled
+}
+
+// terminalTime returns the timestamp at which the job transitioned into a
+// terminal state, or the zero value if it isn't terminal. Caller holds the
+// lock guarding queuedJob.state.
+func terminalTime(j *queuedJob) time.Time {
+	switch j.state {
+	case jobStateFailed:
+		return j.failedAt
+	case jobStateCanceled:
+		return j.canceledAt
+	}
+	return time.Time{}
 }
 
 // queueCapacity caps the submit channel. When full, Enqueue blocks on the
@@ -84,42 +105,52 @@ type queuedJob struct {
 const queueCapacity = 256
 
 // DefaultWorkerCount sizes the worker pool.
-const DefaultWorkerCount = 4
+const DefaultWorkerCount = 8
 
-// NewScheduler constructs an asynchronous Scheduler Planner and starts
+// defaultProvPollInterval matches the cadence used by Provisioner-level
+// integration tests when waiting for "running" status.
+const defaultProvPollInterval = 5 * time.Second
+
+// provReadyTimeout caps how long a single worker will wait for a
+// provision to reach Running. Beyond this, the job is marked Failed and
+// the resource is released.
+const provReadyTimeout = 2 * time.Minute
+
+// NewAsyncPlanner constructs an asynchronous AsyncPlanner Planner and starts
 // workerCount background workers. workerCount < 1 is floored to 1.
-func NewScheduler(bc plannerclient.BatchClient, prov provisioner.Provisioner, workerCount int) *Scheduler {
+func NewAsyncPlanner(bc plannerclient.BatchClient, prov provisioner.Provisioner, workerCount int) *AsyncPlanner {
 	if workerCount < 1 {
 		workerCount = 1
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	q := &Scheduler{
-		bc:         bc,
-		prov:       prov,
-		submit:     make(chan string, queueCapacity),
-		baseCtx:    ctx,
-		baseCancel: cancel,
-		jobs:       make(map[string]*queuedJob),
-		jobByBatch: make(map[string]string),
+	q := &AsyncPlanner{
+		bc:               bc,
+		prov:             prov,
+		submit:           make(chan string, queueCapacity),
+		baseCtx:          ctx,
+		baseCancel:       cancel,
+		jobs:             make(map[string]*queuedJob),
+		jobByBatch:       make(map[string]string),
+		provPollInterval: defaultProvPollInterval,
 	}
 	q.wg.Add(workerCount)
 	for i := 0; i < workerCount; i++ {
 		go q.run()
 	}
-	klog.Infof("[planner.scheduler] started worker pool size=%d capacity=%d", workerCount, queueCapacity)
+	klog.Infof("[planner] started worker pool size=%d capacity=%d", workerCount, queueCapacity)
 	return q
 }
 
-var _ plannerapi.Planner = (*Scheduler)(nil)
+var _ plannerapi.Planner = (*AsyncPlanner)(nil)
 
 // Close cancels in-flight work and waits for workers to exit.
-func (q *Scheduler) Close() error {
+func (q *AsyncPlanner) Close() error {
 	q.baseCancel()
 	q.wg.Wait()
 	return nil
 }
 
-func (q *Scheduler) run() {
+func (q *AsyncPlanner) run() {
 	defer q.wg.Done()
 	for {
 		select {
@@ -131,8 +162,8 @@ func (q *Scheduler) run() {
 	}
 }
 
-func (q *Scheduler) process(jobID string) {
-	// Check-and-flip Pending -> Provisioning under the same lock.
+func (q *AsyncPlanner) process(jobID string) {
+	// Atomic check-and-flip Pending → Provisioning.
 	q.mu.Lock()
 	job, ok := q.jobs[jobID]
 	if !ok {
@@ -143,7 +174,7 @@ func (q *Scheduler) process(jobID string) {
 		// Cancel raced ahead; drop without provisioning.
 		state := job.state
 		q.mu.Unlock()
-		klog.Infof("[planner.scheduler] skip job_id=%q state=%d", jobID, state)
+		klog.Infof("[planner] skip job_id=%q state=%d", jobID, state)
 		return
 	}
 	job.state = jobStateProvisioning
@@ -162,6 +193,17 @@ func (q *Scheduler) process(jobID string) {
 		return
 	}
 
+	// Provision returns when the request is accepted, not when the resource
+	// is ready. Wait for Running before submitting to MDS, which rejects
+	// batches that point to not-yet-ready provisions.
+	if err := q.waitForProvisionReady(provResult.ProvisionID); err != nil {
+		q.releaseAfter(jobID, provResult.ProvisionID, "wait failure")
+		q.markFailed(jobID, errors.Join(plannerapi.ErrInsufficientResources, err))
+		return
+	}
+	klog.Infof("[planner] provision ready job_id=%q provision_id=%q provider=%q",
+		jobID, provResult.ProvisionID, q.prov.Type())
+
 	aibrix := plannerclient.AIBrixExtraBody{
 		JobID: req.JobID,
 		PlannerDecision: &struct {
@@ -179,43 +221,100 @@ func (q *Scheduler) process(jobID string) {
 		ModelTemplate: req.ModelTemplate,
 	}
 
-	klog.Infof("[planner.scheduler] submit job_id=%q provision_id=%q model_template=%v",
+	klog.Infof("[planner] submit job_id=%q provision_id=%q model_template=%v",
 		req.JobID, provResult.ProvisionID, req.ModelTemplate)
 
 	batch, err := q.bc.CreateBatch(q.baseCtx, req.BatchParams, aibrix)
 	if err != nil {
-		// Best-effort release; surface the original CreateBatch error.
-		if relErr := q.prov.Release(q.baseCtx, provResult.ProvisionID); relErr != nil {
-			klog.Warningf("[planner.scheduler] release after CreateBatch failure job_id=%q provision_id=%q: %v",
-				jobID, provResult.ProvisionID, relErr)
-		}
+		q.releaseAfter(jobID, provResult.ProvisionID, "CreateBatch failure")
 		q.markFailed(jobID, err)
 		return
 	}
 
-	// Record batch.ID and mark the job submitted.
+	// Cancel may have raced in during Provision or CreateBatch. Record the
+	// batch.ID either way so ListJobs can tag it; only flip to Submitted if
+	// no cancel landed. On race, forward CancelBatch to MDS and release the
+	// provisioned resource.
+	canceled := false
 	q.mu.Lock()
 	if job, ok := q.jobs[jobID]; ok {
-		job.state = jobStateSubmitted
 		job.batchID = batch.ID
 		q.jobByBatch[batch.ID] = jobID
+		if job.state == jobStateCanceled {
+			canceled = true
+		} else {
+			job.state = jobStateSubmitted
+		}
 	}
 	q.mu.Unlock()
+
+	if !canceled {
+		return
+	}
+	klog.Infof("[planner] cancel raced submit; forwarding to MDS job_id=%q batch_id=%q", jobID, batch.ID)
+	if _, err := q.bc.CancelBatch(q.baseCtx, batch.ID); err != nil {
+		klog.Warningf("[planner] race cancel forward failed job_id=%q batch_id=%q: %v", jobID, batch.ID, err)
+	}
+	q.releaseAfter(jobID, provResult.ProvisionID, "cancel-race")
 }
 
-func (q *Scheduler) markFailed(jobID string, err error) {
+// waitForProvisionReady polls the RM until the provision reaches Running
+// or Failed, the timeout elapses, or the scheduler is shutting down.
+// Provisioner.Provision returns when the request is accepted, not when the
+// resource is ready; Planner must wait for Running before invoking CreateBatch.
+func (q *AsyncPlanner) waitForProvisionReady(provisionID string) error {
+	filter := &rmtypes.ListOptions{ProvisionIDs: &[]string{provisionID}}
+	deadline := time.Now().Add(provReadyTimeout)
+	for {
+		results, err := q.prov.List(q.baseCtx, filter)
+		switch {
+		case err != nil:
+			klog.Warningf("[planner] poll provision_id=%q: %v", provisionID, err)
+		case len(results) == 0:
+			return fmt.Errorf("provision %q not found", provisionID)
+		default:
+			switch results[0].Status {
+			case rmtypes.ProvisionStatusRunning:
+				return nil
+			case rmtypes.ProvisionStatusFailed:
+				return fmt.Errorf("provision failed: %s", results[0].ErrorMessage)
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("provision %q did not reach Running within %v", provisionID, provReadyTimeout)
+		}
+		select {
+		case <-q.baseCtx.Done():
+			return q.baseCtx.Err()
+		case <-time.After(q.provPollInterval):
+		}
+	}
+}
+
+// releaseAfter performs a best-effort RM release and logs failures. The
+// reason string ("wait failure", "CreateBatch failure", "cancel-race")
+// appears in the log line so each call site is self-identifying.
+func (q *AsyncPlanner) releaseAfter(jobID, provisionID, reason string) {
+	if err := q.prov.Release(q.baseCtx, provisionID); err != nil {
+		klog.Warningf("[planner] release after %s job_id=%q provision_id=%q: %v",
+			reason, jobID, provisionID, err)
+	}
+}
+
+func (q *AsyncPlanner) markFailed(jobID string, err error) {
 	q.mu.Lock()
 	if job, ok := q.jobs[jobID]; ok {
 		job.state = jobStateFailed
 		job.err = err
+		job.failedAt = time.Now()
 	}
 	q.mu.Unlock()
-	klog.Warningf("[planner.scheduler] job_id=%q failed: %v", jobID, err)
+	klog.Warningf("[planner] job_id=%q failed: %v", jobID, err)
 }
 
 // Enqueue records the job, pushes it onto the worker channel, and returns
 // a placeholder batch in "pending" status.
-func (q *Scheduler) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (*plannerapi.Job, error) {
+func (q *AsyncPlanner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (*plannerapi.Job, error) {
 	if req == nil {
 		return nil, fmt.Errorf("%w: nil request", plannerapi.ErrInvalidJob)
 	}
@@ -232,6 +331,7 @@ func (q *Scheduler) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest)
 		return nil, fmt.Errorf("%w: missing provisioner", plannerapi.ErrInsufficientResources)
 	}
 
+	now := time.Now()
 	q.mu.Lock()
 	if _, exists := q.jobs[req.JobID]; exists {
 		q.mu.Unlock()
@@ -240,7 +340,7 @@ func (q *Scheduler) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest)
 	q.jobs[req.JobID] = &queuedJob{
 		req:        req,
 		state:      jobStatePending,
-		enqueuedAt: time.Now(),
+		enqueuedAt: now,
 	}
 	q.mu.Unlock()
 
@@ -254,16 +354,16 @@ func (q *Scheduler) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest)
 		return nil, fmt.Errorf("planner closed: %w", q.baseCtx.Err())
 	}
 
-	klog.Infof("[planner.scheduler] enqueue job_id=%q", req.JobID)
+	klog.Infof("[planner] enqueue job_id=%q", req.JobID)
 	return &plannerapi.Job{
 		JobID: req.JobID,
-		Batch: placeholderBatch(req, statusFor(jobStatePending), time.Now()),
+		Batch: placeholderBatch(req, statusFor(jobStatePending), now, time.Time{}),
 	}, nil
 }
 
 // GetJob resolves the JobID. Submitted jobs forward to MDS; others return
 // a placeholder batch with status derived from jobState.
-func (q *Scheduler) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, error) {
+func (q *AsyncPlanner) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, error) {
 	if jobID == "" {
 		return nil, fmt.Errorf("%w: empty job_id", plannerapi.ErrInvalidJob)
 	}
@@ -277,10 +377,11 @@ func (q *Scheduler) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, 
 	batchID := job.batchID
 	req := job.req
 	enqueuedAt := job.enqueuedAt
+	terminalAt := terminalTime(job)
 	q.mu.RUnlock()
 
 	if state == jobStateSubmitted {
-		klog.Infof("[planner.scheduler] get_job job_id=%q batch_id=%q", jobID, batchID)
+		klog.Infof("[planner] get_job job_id=%q batch_id=%q", jobID, batchID)
 		batch, err := q.bc.GetBatch(ctx, batchID)
 		if err != nil {
 			return nil, err
@@ -289,16 +390,15 @@ func (q *Scheduler) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, 
 	}
 	return &plannerapi.Job{
 		JobID: jobID,
-		Batch: placeholderBatch(req, statusFor(state), enqueuedAt),
+		Batch: placeholderBatch(req, statusFor(state), enqueuedAt, terminalAt),
 	}, nil
 }
 
 // Cancel marks a pending/provisioning job canceled, or forwards cancel to
-// MDS for a submitted job.
-//
-// Known gap: a cancel that lands mid-Provision or mid-CreateBatch can still
-// lose the race and end up submitted.
-func (q *Scheduler) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, error) {
+// MDS for a submitted job. A cancel that lands mid-Provision or
+// mid-CreateBatch is honored at the worker's post-CreateBatch checkpoint
+// (which forwards CancelBatch and releases the resource).
+func (q *AsyncPlanner) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, error) {
 	if jobID == "" {
 		return nil, fmt.Errorf("%w: empty job_id", plannerapi.ErrInvalidJob)
 	}
@@ -312,17 +412,23 @@ func (q *Scheduler) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, 
 	batchID := job.batchID
 	req := job.req
 	enqueuedAt := job.enqueuedAt
+	var terminalAt time.Time
 	if state == jobStatePending || state == jobStateProvisioning {
+		now := time.Now()
 		job.state = jobStateCanceled
+		job.canceledAt = now
+		terminalAt = now
+	} else {
+		terminalAt = terminalTime(job)
 	}
 	q.mu.Unlock()
 
 	switch state {
 	case jobStatePending, jobStateProvisioning:
-		klog.Infof("[planner.scheduler] cancel pre-submit job_id=%q state=%d", jobID, state)
-		return &plannerapi.Job{JobID: jobID, Batch: placeholderBatch(req, openai.BatchStatusCancelled, enqueuedAt)}, nil
+		klog.Infof("[planner] cancel pre-submit job_id=%q state=%d", jobID, state)
+		return &plannerapi.Job{JobID: jobID, Batch: placeholderBatch(req, openai.BatchStatusCancelled, enqueuedAt, terminalAt)}, nil
 	case jobStateSubmitted:
-		klog.Infof("[planner.scheduler] cancel submitted job_id=%q batch_id=%q", jobID, batchID)
+		klog.Infof("[planner] cancel submitted job_id=%q batch_id=%q", jobID, batchID)
 		batch, err := q.bc.CancelBatch(ctx, batchID)
 		if err != nil {
 			return nil, err
@@ -330,18 +436,17 @@ func (q *Scheduler) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, 
 		return &plannerapi.Job{JobID: jobID, Batch: batch}, nil
 	}
 	// Already terminal (failed/canceled) — return current view, no double-cancel side effects.
-	return &plannerapi.Job{JobID: jobID, Batch: placeholderBatch(req, statusFor(state), enqueuedAt)}, nil
+	return &plannerapi.Job{JobID: jobID, Batch: placeholderBatch(req, statusFor(state), enqueuedAt, terminalAt)}, nil
 }
 
 // ListJobs merges MDS batches with local not-yet-submitted jobs. Local jobs
 // are shown only on the first page so the MDS cursor remains valid.
-func (q *Scheduler) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest) (*plannerapi.ListJobsResponse, error) {
+func (q *AsyncPlanner) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest) (*plannerapi.ListJobsResponse, error) {
 	listReq := &plannerclient.ListBatchesRequest{}
 	if req != nil {
 		listReq.Limit = req.Limit
 		listReq.After = req.After
 	}
-	klog.Infof("[planner.scheduler] list_jobs limit=%d after=%q", listReq.Limit, listReq.After)
 	resp, err := q.bc.ListBatches(ctx, listReq)
 	if err != nil {
 		return nil, err
@@ -360,13 +465,25 @@ func (q *Scheduler) ListJobs(ctx context.Context, req *plannerapi.ListJobsReques
 }
 
 // unsubmittedJobs returns the non-submitted planner-tracked jobs, newest
-// first.
-func (q *Scheduler) unsubmittedJobs() []*plannerapi.Job {
+// first. Mutable fields are snapshotted under the lock so the rendering
+// loop doesn't race against concurrent state transitions.
+func (q *AsyncPlanner) unsubmittedJobs() []*plannerapi.Job {
+	type snap struct {
+		req        *plannerapi.EnqueueRequest
+		state      jobState
+		enqueuedAt time.Time
+		terminalAt time.Time
+	}
 	q.mu.RLock()
-	unsubmitted := make([]*queuedJob, 0)
-	for _, j := range q.jobs {
-		if j.state != jobStateSubmitted {
-			unsubmitted = append(unsubmitted, j)
+	unsubmitted := make([]snap, 0)
+	for _, job := range q.jobs {
+		if job.state != jobStateSubmitted {
+			unsubmitted = append(unsubmitted, snap{
+				req:        job.req,
+				state:      job.state,
+				enqueuedAt: job.enqueuedAt,
+				terminalAt: terminalTime(job),
+			})
 		}
 	}
 	q.mu.RUnlock()
@@ -374,16 +491,16 @@ func (q *Scheduler) unsubmittedJobs() []*plannerapi.Job {
 		return unsubmitted[i].enqueuedAt.After(unsubmitted[k].enqueuedAt)
 	})
 	out := make([]*plannerapi.Job, 0, len(unsubmitted))
-	for _, j := range unsubmitted {
+	for _, job := range unsubmitted {
 		out = append(out, &plannerapi.Job{
-			JobID: j.req.JobID,
-			Batch: placeholderBatch(j.req, statusFor(j.state), j.enqueuedAt),
+			JobID: job.req.JobID,
+			Batch: placeholderBatch(job.req, statusFor(job.state), job.enqueuedAt, job.terminalAt),
 		})
 	}
 	return out
 }
 
-func (q *Scheduler) deleteJob(jobID string) {
+func (q *AsyncPlanner) deleteJob(jobID string) {
 	q.mu.Lock()
 	delete(q.jobs, jobID)
 	q.mu.Unlock()
@@ -404,9 +521,10 @@ func statusFor(s jobState) openai.BatchStatus {
 	return openai.BatchStatus("pending")
 }
 
-// placeholderBatch builds the batch view for jobs that do not yet have an
-// MDS batch.ID.
-func placeholderBatch(req *plannerapi.EnqueueRequest, st openai.BatchStatus, enqueuedAt time.Time) *openai.Batch {
+// placeholderBatch builds the batch view for jobs without an MDS batch.ID.
+// terminalAt is the recorded transition time for failed/canceled states;
+// a zero value leaves FailedAt/CancelledAt at zero.
+func placeholderBatch(req *plannerapi.EnqueueRequest, st openai.BatchStatus, enqueuedAt, terminalAt time.Time) *openai.Batch {
 	b := &openai.Batch{
 		Object:           "batch",
 		Status:           st,
@@ -418,11 +536,13 @@ func placeholderBatch(req *plannerapi.EnqueueRequest, st openai.BatchStatus, enq
 	if len(req.BatchParams.Metadata) > 0 {
 		b.Metadata = map[string]string(req.BatchParams.Metadata)
 	}
-	switch st {
-	case openai.BatchStatusFailed:
-		b.FailedAt = time.Now().Unix()
-	case openai.BatchStatusCancelled:
-		b.CancelledAt = time.Now().Unix()
+	if !terminalAt.IsZero() {
+		switch st {
+		case openai.BatchStatusFailed:
+			b.FailedAt = terminalAt.Unix()
+		case openai.BatchStatusCancelled:
+			b.CancelledAt = terminalAt.Unix()
+		}
 	}
 	return b
 }

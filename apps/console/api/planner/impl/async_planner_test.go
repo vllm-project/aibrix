@@ -44,6 +44,7 @@ import (
 type fakeProvisioner struct {
 	ProvisionFn func(ctx context.Context, req *rmtypes.ResourceProvision) (*rmtypes.ProvisionResult, error)
 	ReleaseFn   func(ctx context.Context, provisionID string) error
+	ListFn      func(ctx context.Context, opts *rmtypes.ListOptions) ([]*rmtypes.ProvisionResult, error)
 
 	mu             sync.Mutex
 	provisionCalls []string // JobID (IdempotencyKey) of each Provision
@@ -93,6 +94,21 @@ func (f *fakeProvisioner) Release(ctx context.Context, provisionID string) error
 }
 
 func (f *fakeProvisioner) List(ctx context.Context, opts *rmtypes.ListOptions) ([]*rmtypes.ProvisionResult, error) {
+	if f.ListFn != nil {
+		return f.ListFn(ctx, opts)
+	}
+	// Default: every queried ProvisionID is Running so existing tests
+	// (which don't care about wait-for-ready) see immediate readiness.
+	if opts != nil && opts.ProvisionIDs != nil {
+		out := make([]*rmtypes.ProvisionResult, 0, len(*opts.ProvisionIDs))
+		for _, id := range *opts.ProvisionIDs {
+			out = append(out, &rmtypes.ProvisionResult{
+				ProvisionID: id,
+				Status:      rmtypes.ProvisionStatusRunning,
+			})
+		}
+		return out, nil
+	}
 	return nil, nil
 }
 
@@ -164,12 +180,12 @@ func (b *fakeBatchClient) snapshot() (creates, cancels []string) {
 // Helpers
 // =============================================================================
 
-// newTestScheduler builds a Scheduler with the given fakes and worker count
+// newTestAsyncPlanner builds a AsyncPlanner with the given fakes and worker count
 // and registers a cleanup that calls Close so leaked workers can't bleed
 // across tests.
-func newTestScheduler(t *testing.T, bc plannerclient.BatchClient, prov *fakeProvisioner, workers int) *Scheduler {
+func newTestAsyncPlanner(t *testing.T, bc plannerclient.BatchClient, prov *fakeProvisioner, workers int) *AsyncPlanner {
 	t.Helper()
-	q := NewScheduler(bc, prov, workers)
+	q := NewAsyncPlanner(bc, prov, workers)
 	t.Cleanup(func() {
 		_ = q.Close()
 	})
@@ -211,7 +227,7 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) 
 func TestEnqueueValidation(t *testing.T) {
 	prov := &fakeProvisioner{}
 	bc := &fakeBatchClient{}
-	q := newTestScheduler(t, bc, prov, 1)
+	q := newTestAsyncPlanner(t, bc, prov, 1)
 
 	cases := []struct {
 		name    string
@@ -247,7 +263,7 @@ func TestEnqueueValidation(t *testing.T) {
 }
 
 func TestEnqueueWithNilProvisioner(t *testing.T) {
-	q := NewScheduler(&fakeBatchClient{}, nil, 1)
+	q := NewAsyncPlanner(&fakeBatchClient{}, nil, 1)
 	t.Cleanup(func() { _ = q.Close() })
 
 	_, err := q.Enqueue(context.Background(), validReq("j1"))
@@ -268,7 +284,7 @@ func TestDuplicateJobIDRejected(t *testing.T) {
 			return &rmtypes.ProvisionResult{ProvisionID: "p1"}, nil
 		},
 	}
-	q := newTestScheduler(t, &fakeBatchClient{}, prov, 1)
+	q := newTestAsyncPlanner(t, &fakeBatchClient{}, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-dup")); err != nil {
 		t.Fatalf("first Enqueue: %v", err)
@@ -294,7 +310,7 @@ func TestEnqueueReturnsPendingPlaceholder(t *testing.T) {
 			return nil, errors.New("provision aborted by test")
 		},
 	}
-	q := newTestScheduler(t, &fakeBatchClient{}, prov, 1)
+	q := newTestAsyncPlanner(t, &fakeBatchClient{}, prov, 1)
 
 	job, err := q.Enqueue(context.Background(), validReq("j1"))
 	if err != nil {
@@ -312,7 +328,7 @@ func TestEnqueueReturnsPendingPlaceholder(t *testing.T) {
 func TestHappyPathReachesSubmitted(t *testing.T) {
 	prov := &fakeProvisioner{} // default success
 	bc := &fakeBatchClient{}   // default success, batch.ID = "batch-<JobID>"
-	q := newTestScheduler(t, bc, prov, 1)
+	q := newTestAsyncPlanner(t, bc, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j1")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -356,7 +372,7 @@ func TestSlowProvisionDoesNotBlockEnqueue(t *testing.T) {
 			return &rmtypes.ProvisionResult{ProvisionID: "p-" + req.IdempotencyKey}, nil
 		},
 	}
-	q := newTestScheduler(t, &fakeBatchClient{}, prov, 1)
+	q := newTestAsyncPlanner(t, &fakeBatchClient{}, prov, 1)
 
 	start := time.Now()
 	_, err := q.Enqueue(context.Background(), validReq("j-slow"))
@@ -396,7 +412,7 @@ func TestWorkerPoolReachesConcurrency(t *testing.T) {
 			return &rmtypes.ProvisionResult{ProvisionID: "p-" + req.IdempotencyKey}, nil
 		},
 	}
-	q := newTestScheduler(t, &fakeBatchClient{}, prov, workers)
+	q := newTestAsyncPlanner(t, &fakeBatchClient{}, prov, workers)
 
 	for i := 0; i < submitted; i++ {
 		if _, err := q.Enqueue(context.Background(), validReq(fmt.Sprintf("j%d", i))); err != nil {
@@ -446,7 +462,7 @@ func TestProvisionFailureMarksFailed(t *testing.T) {
 		},
 	}
 	bc := &fakeBatchClient{}
-	q := newTestScheduler(t, bc, prov, 1)
+	q := newTestAsyncPlanner(t, bc, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-bad")); err != nil {
 		t.Fatalf("Enqueue j-bad: %v", err)
@@ -482,6 +498,93 @@ func TestProvisionFailureMarksFailed(t *testing.T) {
 	}
 }
 
+// TestWaitsForProvisionRunningBeforeCreateBatch: Provision returns when the
+// request is accepted, not when the resource is ready. The worker must
+// poll List until status=Running before calling CreateBatch, since MDS
+// rejects batches that point to not-yet-ready provisions.
+func TestWaitsForProvisionRunningBeforeCreateBatch(t *testing.T) {
+	var polls atomic.Int32
+	prov := &fakeProvisioner{
+		ListFn: func(ctx context.Context, opts *rmtypes.ListOptions) ([]*rmtypes.ProvisionResult, error) {
+			// First two polls report Provisioning; third reports Running.
+			n := polls.Add(1)
+			status := rmtypes.ProvisionStatusProvisioning
+			if n >= 3 {
+				status = rmtypes.ProvisionStatusRunning
+			}
+			ids := *opts.ProvisionIDs
+			out := make([]*rmtypes.ProvisionResult, 0, len(ids))
+			for _, id := range ids {
+				out = append(out, &rmtypes.ProvisionResult{ProvisionID: id, Status: status})
+			}
+			return out, nil
+		},
+	}
+	bc := &fakeBatchClient{}
+	q := newTestAsyncPlanner(t, bc, prov, 1)
+	q.provPollInterval = 10 * time.Millisecond // fast polling for the test
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-wait")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// CreateBatch must only fire after we've observed Running (poll #3+).
+	waitFor(t, 2*time.Second, func() bool {
+		creates, _ := bc.snapshot()
+		return len(creates) == 1
+	}, "CreateBatch never ran")
+
+	if got := polls.Load(); got < 3 {
+		t.Errorf("polls before CreateBatch = %d; want ≥ 3", got)
+	}
+}
+
+// TestProvisionFailedDuringPollingMarksFailed: if the RM reports a Failed
+// status while we're polling, the planner must mark the job Failed,
+// release the provision, and skip CreateBatch entirely.
+func TestProvisionFailedDuringPollingMarksFailed(t *testing.T) {
+	prov := &fakeProvisioner{
+		ListFn: func(ctx context.Context, opts *rmtypes.ListOptions) ([]*rmtypes.ProvisionResult, error) {
+			ids := *opts.ProvisionIDs
+			out := make([]*rmtypes.ProvisionResult, 0, len(ids))
+			for _, id := range ids {
+				out = append(out, &rmtypes.ProvisionResult{
+					ProvisionID:  id,
+					Status:       rmtypes.ProvisionStatusFailed,
+					ErrorMessage: "synthetic failure during provisioning",
+				})
+			}
+			return out, nil
+		},
+	}
+	bc := &fakeBatchClient{}
+	q := newTestAsyncPlanner(t, bc, prov, 1)
+	q.provPollInterval = 10 * time.Millisecond
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-prov-fail")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// Job should land in Failed state with Release called and no CreateBatch.
+	waitFor(t, 2*time.Second, func() bool {
+		_, releases, _ := prov.snapshot()
+		return len(releases) == 1 && releases[0] == "prov-j-prov-fail"
+	}, "Release was not called after provision failure")
+
+	creates, _ := bc.snapshot()
+	if len(creates) != 0 {
+		t.Errorf("CreateBatch was called despite provision failure: %v", creates)
+	}
+
+	got, err := q.GetJob(context.Background(), "j-prov-fail")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Batch.Status != openai.BatchStatusFailed {
+		t.Errorf("GetJob status = %v; want failed", got.Batch.Status)
+	}
+}
+
 // TestCreateBatchFailureReleasesResource: if Provision succeeds but the
 // subsequent CreateBatch fails, the planner must call Release so the
 // already-allocated RM resource doesn't leak. This is the regression test
@@ -493,7 +596,7 @@ func TestCreateBatchFailureReleasesResource(t *testing.T) {
 			return nil, errors.New("mds 503")
 		},
 	}
-	q := newTestScheduler(t, bc, prov, 1)
+	q := newTestAsyncPlanner(t, bc, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-fail")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -528,7 +631,7 @@ func TestCreateBatchFailureReleaseErrorIsLoggedNotSurfaced(t *testing.T) {
 			return nil, errors.New("mds 503")
 		},
 	}
-	q := newTestScheduler(t, bc, prov, 1)
+	q := newTestAsyncPlanner(t, bc, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-rfail")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -561,7 +664,7 @@ func TestCancelQueuedJobBeforeWorkerPicksUp(t *testing.T) {
 		},
 	}
 	bc := &fakeBatchClient{}
-	q := newTestScheduler(t, bc, prov, 1)
+	q := newTestAsyncPlanner(t, bc, prov, 1)
 
 	// Job A occupies the single worker; job B sits in the channel.
 	if _, err := q.Enqueue(context.Background(), validReq("j-A")); err != nil {
@@ -611,7 +714,7 @@ func TestCancelQueuedJobBeforeWorkerPicksUp(t *testing.T) {
 func TestCancelSubmittedJobForwardsToMDS(t *testing.T) {
 	prov := &fakeProvisioner{}
 	bc := &fakeBatchClient{}
-	q := newTestScheduler(t, bc, prov, 1)
+	q := newTestAsyncPlanner(t, bc, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-sub")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -637,22 +740,107 @@ func TestCancelSubmittedJobForwardsToMDS(t *testing.T) {
 }
 
 func TestCancelUnknownJobReturnsNotFound(t *testing.T) {
-	q := newTestScheduler(t, &fakeBatchClient{}, &fakeProvisioner{}, 1)
+	q := newTestAsyncPlanner(t, &fakeBatchClient{}, &fakeProvisioner{}, 1)
 	_, err := q.Cancel(context.Background(), "j-ghost")
 	if !errors.Is(err, plannerapi.ErrJobNotFound) {
 		t.Errorf("want ErrJobNotFound; got %v", err)
 	}
 }
 
+// TestCancelDuringProvisioningHonoredAfterCreateBatch: Cancel arrives while
+// the worker is parked inside Provision. User sees cancelled immediately;
+// the worker's in-flight Provision continues to completion, CreateBatch
+// runs and returns a batch.ID, then the post-CreateBatch checkpoint
+// detects the cancel, forwards CancelBatch to MDS, and releases the
+// provisioned resource.
+func TestCancelDuringProvisioningHonoredAfterCreateBatch(t *testing.T) {
+	provGate := make(chan struct{})
+	prov := &fakeProvisioner{
+		ProvisionFn: func(ctx context.Context, req *rmtypes.ResourceProvision) (*rmtypes.ProvisionResult, error) {
+			<-provGate
+			return &rmtypes.ProvisionResult{ProvisionID: "prov-" + req.IdempotencyKey}, nil
+		},
+	}
+	bc := &fakeBatchClient{}
+	q := newTestAsyncPlanner(t, bc, prov, 1)
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-mid-prov")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		provs, _, _ := prov.snapshot()
+		return len(provs) == 1
+	}, "worker never entered Provision")
+
+	job, err := q.Cancel(context.Background(), "j-mid-prov")
+	if err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if job.Batch.Status != openai.BatchStatusCancelled {
+		t.Errorf("Cancel returned status = %v; want cancelled", job.Batch.Status)
+	}
+
+	close(provGate)
+
+	waitFor(t, 2*time.Second, func() bool {
+		_, cancels := bc.snapshot()
+		_, releases, _ := prov.snapshot()
+		return len(cancels) == 1 && cancels[0] == "batch-j-mid-prov" &&
+			len(releases) == 1 && releases[0] == "prov-j-mid-prov"
+	}, "expected CancelBatch forward + Release after cancel-during-Provisioning")
+}
+
+// TestCancelDuringCreateBatchHonored: Cancel arrives while the worker is
+// parked inside CreateBatch. Provision had already returned, so the
+// resource is allocated. The post-CreateBatch checkpoint detects the
+// cancel, forwards CancelBatch to MDS so the batch doesn't run unattended,
+// and releases the resource.
+func TestCancelDuringCreateBatchHonored(t *testing.T) {
+	createGate := make(chan struct{})
+	bc := &fakeBatchClient{
+		CreateFn: func(ctx context.Context, params openai.BatchNewParams, aibrix plannerclient.AIBrixExtraBody) (*openai.Batch, error) {
+			<-createGate
+			return &openai.Batch{ID: "batch-" + aibrix.JobID, Status: openai.BatchStatusInProgress}, nil
+		},
+	}
+	prov := &fakeProvisioner{} // default returns ProvisionID="prov-<JobID>"
+	q := newTestAsyncPlanner(t, bc, prov, 1)
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-mid-create")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		creates, _ := bc.snapshot()
+		return len(creates) == 1
+	}, "worker never entered CreateBatch")
+
+	if _, err := q.Cancel(context.Background(), "j-mid-create"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	close(createGate)
+
+	waitFor(t, 2*time.Second, func() bool {
+		_, cancels := bc.snapshot()
+		_, releases, _ := prov.snapshot()
+		return len(cancels) == 1 && cancels[0] == "batch-j-mid-create" &&
+			len(releases) == 1 && releases[0] == "prov-j-mid-create"
+	}, "expected CancelBatch forward + Release after cancel-during-CreateBatch")
+
+	// Post-race state: GetJob takes the non-Submitted branch and returns
+	// a placeholder with status=cancelled.
+	got, err := q.GetJob(context.Background(), "j-mid-create")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Batch.Status != openai.BatchStatusCancelled {
+		t.Errorf("post-race GetJob status = %v; want cancelled", got.Batch.Status)
+	}
+}
+
 // =============================================================================
 // Shutdown / lifecycle
 // =============================================================================
-//
-// MVP note: tests for the Cancel-during-Provisioning and Cancel-during-
-// CreateBatch races were removed alongside the race-handling that used
-// to live in markSubmitted (now inlined into process()). See the doc
-// comment on Cancel in async_planner.go for the accepted correctness
-// gap and the TODO for restoring this when UI Cancel ships.
 
 // TestCloseCancelsInflightProvision: when Close fires while N workers are
 // mid-Provision, baseCtx cancellation must propagate into each in-flight
@@ -671,7 +859,7 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 			return nil, ctx.Err()
 		},
 	}
-	q := NewScheduler(&fakeBatchClient{}, prov, workers)
+	q := NewAsyncPlanner(&fakeBatchClient{}, prov, workers)
 
 	for i := 0; i < workers; i++ {
 		if _, err := q.Enqueue(context.Background(), validReq(fmt.Sprintf("j%d", i))); err != nil {
@@ -704,7 +892,7 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 }
 
 func TestCloseIsIdempotent(t *testing.T) {
-	q := NewScheduler(&fakeBatchClient{}, &fakeProvisioner{}, 2)
+	q := NewAsyncPlanner(&fakeBatchClient{}, &fakeProvisioner{}, 2)
 	if err := q.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
 	}
@@ -728,7 +916,7 @@ func TestCloseIsIdempotent(t *testing.T) {
 func TestWorkerCountFloor(t *testing.T) {
 	prov := &fakeProvisioner{}
 	bc := &fakeBatchClient{}
-	q := newTestScheduler(t, bc, prov, 0) // explicitly degenerate
+	q := newTestAsyncPlanner(t, bc, prov, 0) // explicitly degenerate
 
 	if _, err := q.Enqueue(context.Background(), validReq("j1")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -746,7 +934,7 @@ func TestWorkerCountFloor(t *testing.T) {
 // =============================================================================
 
 func TestGetJobUnknownReturnsNotFound(t *testing.T) {
-	q := newTestScheduler(t, &fakeBatchClient{}, &fakeProvisioner{}, 1)
+	q := newTestAsyncPlanner(t, &fakeBatchClient{}, &fakeProvisioner{}, 1)
 	_, err := q.GetJob(context.Background(), "j-ghost")
 	if !errors.Is(err, plannerapi.ErrJobNotFound) {
 		t.Errorf("want ErrJobNotFound; got %v", err)
@@ -761,7 +949,7 @@ func TestGetJobUnknownReturnsNotFound(t *testing.T) {
 // Provision and is blocked on the fake), so its status is "provisioning".
 // The pending window — between Enqueue and the worker picking the JobID
 // off the submit channel — is too narrow to assert on deterministically;
-// it's exercised by other tests that use a 0-worker Scheduler.
+// it's exercised by other tests that use a 0-worker AsyncPlanner.
 func TestListJobsMergesProvisioningAndMDS(t *testing.T) {
 	// Block Provision so the local job stays unsubmitted while ListJobs
 	// runs — that's how unsubmittedJobs picks it up.
@@ -786,7 +974,7 @@ func TestListJobsMergesProvisioningAndMDS(t *testing.T) {
 			}, nil
 		},
 	}
-	q := newTestScheduler(t, bc, prov, 1)
+	q := newTestAsyncPlanner(t, bc, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-provisioning")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -836,7 +1024,7 @@ func TestListJobsMergesProvisioningAndMDS(t *testing.T) {
 func TestConcurrentEnqueuesNoRace(t *testing.T) {
 	prov := &fakeProvisioner{}
 	bc := &fakeBatchClient{}
-	q := newTestScheduler(t, bc, prov, 4)
+	q := newTestAsyncPlanner(t, bc, prov, 4)
 
 	const N = 50
 	var wg sync.WaitGroup
