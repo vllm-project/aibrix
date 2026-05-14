@@ -206,16 +206,7 @@ func (q *AsyncPlanner) process(jobID string) {
 
 	aibrix := plannerclient.AIBrixExtraBody{
 		JobID: req.JobID,
-		PlannerDecision: &struct {
-			ProvisionID               string `json:"provision_id,omitempty"`
-			ProvisionResourceDeadline int64  `json:"provision_resource_deadline,omitempty"`
-			ResourceDetails           []struct {
-				ResourceType    string `json:"resource_type"`
-				EndpointCluster string `json:"endpoint_cluster,omitempty"`
-				GPUType         string `json:"gpu_type,omitempty"`
-				WorkerNum       int    `json:"worker_num,omitempty"`
-			} `json:"resource_details,omitempty"`
-		}{
+		PlannerDecision: &plannerclient.PlannerDecision{
 			ProvisionID: provResult.ProvisionID,
 		},
 		ModelTemplate: req.ModelTemplate,
@@ -346,11 +337,14 @@ func (q *AsyncPlanner) Enqueue(ctx context.Context, req *plannerapi.EnqueueReque
 
 	select {
 	case q.submit <- req.JobID:
+		// Happy path: a worker will dequeue and drive the entry; nothing to roll back.
 	case <-ctx.Done():
-		q.deleteJob(req.JobID)
+		// Caller gave up while q.submit was full; the bookkeeping insert is orphaned.
+		q.rollbackEnqueue(req.JobID)
 		return nil, ctx.Err()
 	case <-q.baseCtx.Done():
-		q.deleteJob(req.JobID)
+		// Planner shutting down while q.submit was full; roll back the orphaned insert.
+		q.rollbackEnqueue(req.JobID)
 		return nil, fmt.Errorf("planner closed: %w", q.baseCtx.Err())
 	}
 
@@ -500,7 +494,10 @@ func (q *AsyncPlanner) unsubmittedJobs() []*plannerapi.Job {
 	return out
 }
 
-func (q *AsyncPlanner) deleteJob(jobID string) {
+// rollbackEnqueue undoes the q.jobs insert from Enqueue when Enqueue fails.
+// Not called on processing failures — markFailed keeps those entries in
+// q.jobs so callers can observe them.
+func (q *AsyncPlanner) rollbackEnqueue(jobID string) {
 	q.mu.Lock()
 	delete(q.jobs, jobID)
 	q.mu.Unlock()

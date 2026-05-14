@@ -19,7 +19,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -119,12 +118,11 @@ func (s *Server) StartGRPC(addr string) error {
 	if err != nil {
 		return fmt.Errorf("resource manager init: %w", err)
 	}
-	planner := plannerimpl.NewAsyncPlanner(batchClient, rm.Provisioner, plannerimpl.DefaultWorkerCount)
-	s.planner = planner
+	s.planner = plannerimpl.NewAsyncPlanner(batchClient, rm.Provisioner, plannerimpl.DefaultWorkerCount)
 
 	// Register all service handlers
 	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
-	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, planner, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode))
+	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.planner, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
 	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))
 	pb.RegisterAPIKeyServiceServer(s.grpcServer, handler.NewAPIKeyHandler(s.store))
@@ -211,8 +209,8 @@ func (s *Server) Shutdown(ctx context.Context) {
 			klog.Errorf("failed to shutdown http server: %v", err)
 		}
 	}
-	if c, ok := s.planner.(io.Closer); ok {
-		if err := c.Close(); err != nil {
+	if s.planner != nil {
+		if err := s.planner.Close(); err != nil {
 			klog.Errorf("failed to close planner: %v", err)
 		}
 	}

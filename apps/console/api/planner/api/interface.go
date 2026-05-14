@@ -27,9 +27,14 @@ import (
 // and return a Job; the MDS batch.ID never crosses this boundary
 // upward. The planner owns the JobID -> batch.ID translation
 // (in-memory today; durable when the persistence follow-up lands).
+//
+// Close stops background workers and releases resources; callers
+// (e.g. Server.Shutdown) invoke it on shutdown without a runtime
+// type assertion.
 type Planner interface {
 	Enqueue(ctx context.Context, req *EnqueueRequest) (*Job, error)
 	GetJob(ctx context.Context, jobID string) (*Job, error)
 	ListJobs(ctx context.Context, req *ListJobsRequest) (*ListJobsResponse, error)
 	Cancel(ctx context.Context, jobID string) (*Job, error)
+	Close() error
 }
