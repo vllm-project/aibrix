@@ -216,6 +216,18 @@ class JobMetaInfo(BatchJob):
         return True
 
 
+def _preserve_local_timestamps(
+    old_status: BatchJobStatus, new_status: BatchJobStatus
+) -> None:
+    """Carry forward timestamps + usage."""
+    for field in ("in_progress_at", "usage"):
+        if (
+            getattr(new_status, field) is None
+            and getattr(old_status, field) is not None
+        ):
+            setattr(new_status, field, getattr(old_status, field))
+
+
 class JobManager(JobProgressManager):
     # Valid state transitions are defined as:
     # 1. Started -> Validating -> In_progress -> Finalizing -> Finalzed(condition: completed)
@@ -286,12 +298,13 @@ class JobManager(JobProgressManager):
         meta_data: dict,
         timeout: float = 30.0,
         initial_state: BatchJobState = BatchJobState.CREATED,
+        request_count: int = 0,
     ) -> str:
         job_spec = BatchJobSpec.from_strings(
             input_file_id, api_endpoint, completion_window, meta_data
         )
         return await self.create_job_with_spec(
-            session_id, job_spec, timeout, initial_state
+            session_id, job_spec, timeout, initial_state, request_count
         )
 
     async def create_job_with_spec(
@@ -300,6 +313,7 @@ class JobManager(JobProgressManager):
         job_spec: BatchJobSpec,
         timeout: float = 30.0,
         initial_state: BatchJobState = BatchJobState.CREATED,
+        request_count: int = 0,
     ) -> str:
         """
         Async job creation that waits for job ID to be available.
@@ -334,6 +348,22 @@ class JobManager(JobProgressManager):
                 submit_task = asyncio.create_task(
                     self._job_entity_manager.submit_job(session_id, job_spec)
                 )
+
+                # If the submit task fails before the future is resolved
+                # (e.g. RenderError on a malformed BatchJobSpec), forward
+                # the real exception so wait_for() returns immediately
+                # with a useful error instead of stalling for the full
+                # ``timeout`` seconds. Without this, every render-time
+                # rejection looked like a 408 to the client.
+                def _propagate_submit_failure(t: "asyncio.Task[None]") -> None:
+                    if t.cancelled():
+                        return
+                    exc = t.exception()
+                    if exc is None or job_future.done():
+                        return
+                    job_future.set_exception(exc)
+
+                submit_task.add_done_callback(_propagate_submit_failure)
 
                 # Wait for job ID with timeout
                 try:
@@ -374,7 +404,7 @@ class JobManager(JobProgressManager):
                 self._creating_jobs.pop(session_id, None)
 
         # Local job handling.
-        job = BatchJob.new_local(job_spec)
+        job = BatchJob.new_local(job_spec, request_count=request_count)
         job.status.state = initial_state
         await self.job_committed_handler(job)
 
@@ -669,10 +699,12 @@ class JobManager(JobProgressManager):
             if old_category == new_category:
                 # avoid override local metainfo by update status only
                 old_job.metadata = new_job.metadata  # Update resource version
+                _preserve_local_timestamps(old_job.status, new_job.status)
                 old_job.status = new_job.status  # Update status
                 new_job = old_job
             else:
                 # Move job from old category to new category
+                _preserve_local_timestamps(old_job.status, new_job.status)
                 del old_category[job_id]
                 new_category[job_id] = new_job
                 logger.debug(

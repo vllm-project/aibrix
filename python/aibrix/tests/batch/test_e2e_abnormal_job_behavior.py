@@ -61,7 +61,7 @@ def generate_batch_input_data(num_requests: int = 3) -> str:
     lines = []
     for i in range(num_requests):
         request = base_request.copy()
-        request["custom_id"] = f"request-{i+1}"
+        request["custom_id"] = f"request-{i + 1}"
         lines.append(json.dumps(request))
 
     return "\n".join(lines)
@@ -330,6 +330,7 @@ class FailingJobManager(JobManager):
         job_spec: BatchJobSpec,
         timeout: float = 30.0,
         initial_state: BatchJobState = BatchJobState.CREATED,
+        request_count: int = 0,
     ) -> str:
         """Override create_job to inject fail_after_n_requests in opts."""
         # Create job spec with opts if needed
@@ -343,7 +344,7 @@ class FailingJobManager(JobManager):
             job_spec.completion_window = self.expiration
 
         return await super().create_job_with_spec(
-            session_id, job_spec, timeout, initial_state
+            session_id, job_spec, timeout, initial_state, request_count
         )
 
 

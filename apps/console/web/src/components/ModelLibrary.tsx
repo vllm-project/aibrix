@@ -47,9 +47,7 @@ function getPricingSummary(model: Model): string {
   if (p.cachedInput) parts.push(`${p.cachedInput} Cached Input`);
   if (p.output) parts.push(`${p.output} Output`);
   if (p.perMinute) parts.push(p.perMinute);
-  if (p.perStep) parts.push(p.perStep);
-  if (p.perEa) parts.push(p.perEa);
-  if (p.perTokens) parts.push(p.perTokens);
+  if (p.perImage) parts.push(p.perImage);
   if (model.contextLength) parts.push(model.contextLength);
   return parts.join(' • ');
 }

@@ -36,17 +36,34 @@ export interface UserInfo {
   id: string;
   email: string;
   name: string;
+  role: string;
+  username: string;
+  picture: string;
 }
 
+export type JobEndpoint =
+  | '/v1/chat/completions'
+  | '/v1/completions'
+  | '/v1/embeddings'
+  | '/v1/rerank';
+
 export interface CreateJobRequest {
-  model: string;
-  datasetId: string;
-  displayName: string;
-  maxTokens?: number;
-  temperature?: number;
-  topP?: number;
-  n?: number;
-  quantization?: string;
+  inputDataset: string;
+  endpoint: JobEndpoint;
+  completionWindow?: '24h';
+  name: string;
+  // ModelDeploymentTemplate binding picked by the create-job wizard. The SDK
+  // path may omit these and rely on metadata-service-side resolution via
+  // extra_body.aibrix.model_template.
+  modelTemplateName?: string;
+  modelTemplateVersion?: string;
+}
+
+export interface ListJobsResponse {
+  jobs: Job[];
+  firstId?: string;
+  lastId?: string;
+  hasMore: boolean;
 }
 
 export interface CreateDeploymentRequest {
@@ -60,6 +77,96 @@ export interface CreateDeploymentRequest {
   maxReplicas?: number;
   enableAutoScaling?: boolean;
   enableMultiLora?: boolean;
+}
+
+// --- Model Deployment Templates ---
+//
+// Mirrors apps/console/api/proto/console/v1/console.proto. The proto comment
+// notes that this duplicates python/aibrix/aibrix/batch/template/schema.py;
+// once both sides converge we collapse to one source.
+
+export interface EngineSpec {
+  type?: string;
+  version?: string;
+  image?: string;
+  invocation?: string;
+  serveArgs?: string[];
+  healthEndpoint?: string;
+  readyTimeoutSeconds?: number;
+  metricsEndpoint?: string;
+}
+
+export interface ModelSourceSpec {
+  type?: string;
+  uri?: string;
+  revision?: string;
+  tokenizerPath?: string;
+  chatTemplatePath?: string;
+  authSecretRef?: string;
+}
+
+export interface AcceleratorSpec {
+  type?: string;
+  count?: number;
+  interconnect?: string;
+  vramGb?: number;
+  skuHint?: string;
+}
+
+export interface ParallelismSpec {
+  tp?: number;
+  pp?: number;
+  dp?: number;
+  ep?: number;
+  sp?: number;
+  cp?: number;
+}
+
+export interface QuantizationSpec {
+  weight?: string;
+  kvCache?: string;
+  weightsArtifactUri?: string;
+}
+
+export interface ModelDeploymentTemplateSpec {
+  engine?: EngineSpec;
+  modelSource?: ModelSourceSpec;
+  accelerator?: AcceleratorSpec;
+  parallelism?: ParallelismSpec;
+  // engineArgs is a free-form key/value map. Common knobs are surfaced by
+  // the form as curated inputs; everything else flows through directly.
+  engineArgs?: Record<string, string>;
+  quantization?: QuantizationSpec;
+  supportedEndpoints?: string[];
+  deploymentMode?: string;
+}
+
+export interface ModelDeploymentTemplate {
+  id: string;
+  name: string;
+  version: string;
+  status: string;
+  modelId: string;
+  spec?: ModelDeploymentTemplateSpec;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CreateModelDeploymentTemplateRequest {
+  name: string;
+  version?: string;
+  status?: string;
+  modelId: string;
+  spec: ModelDeploymentTemplateSpec;
+}
+
+export interface UpdateModelDeploymentTemplateRequest {
+  id: string;
+  modelId: string;
+  name?: string;
+  version?: string;
+  status?: string;
+  spec?: ModelDeploymentTemplateSpec;
 }
 
 // --- Case conversion utilities ---
@@ -112,6 +219,22 @@ class APIError extends Error {
   }
 }
 
+// cachedAuthMode is populated by getAuthConfig(); apiFetch consults it to
+// decide whether a 401 should kick the user to the OIDC login flow.
+let cachedAuthMode: string | null = null;
+
+// Endpoints whose own 401 responses must NOT trigger the OIDC redirect,
+// because they are part of the unauthenticated bootstrap path.
+const NO_AUTO_REDIRECT_PREFIXES = [
+  '/api/v1/auth/',
+  '/api/v1/health',
+];
+
+function shouldAutoRedirectOnUnauthorized(url: string): boolean {
+  if (cachedAuthMode !== 'oidc') return false;
+  return !NO_AUTO_REDIRECT_PREFIXES.some(p => url.startsWith(p));
+}
+
 async function apiFetch<T>(
   url: string,
   options?: RequestInit,
@@ -126,6 +249,15 @@ async function apiFetch<T>(
   });
 
   if (!response.ok) {
+    if (response.status === 401 && shouldAutoRedirectOnUnauthorized(url)) {
+      const returnTo = window.location.pathname + window.location.search;
+      window.location.assign(
+        `/api/v1/auth/login?return=${encodeURIComponent(returnTo)}`,
+      );
+      // Returns a never-resolving promise so callers don't try to parse
+      // the 401 body during the navigation.
+      return new Promise<T>(() => {});
+    }
     const text = await response.text().catch(() => 'Unknown error');
     throw new APIError(text, response.status);
   }
@@ -147,11 +279,17 @@ function buildQuery(params: Record<string, string | undefined>): string {
 }
 
 // --- Jobs ---
+//
+// The Console BFF (`/api/v1/jobs`) proxies to the metadata service
+// `/v1/batches` API and merges with Console-side fields persisted in the
+// store. The Job shape is a superset of OpenAI Batch.
 
-export async function listJobs(search?: string, status?: string): Promise<Job[]> {
-  const query = buildQuery({ search, status });
-  const data = await apiFetch<{ jobs: Job[] }>(`/api/v1/jobs${query}`);
-  return data.jobs || [];
+export async function listJobs(params?: { after?: string; limit?: number }): Promise<ListJobsResponse> {
+  const query = buildQuery({
+    after: params?.after,
+    limit: params?.limit !== undefined ? String(params.limit) : undefined,
+  });
+  return apiFetch<ListJobsResponse>(`/api/v1/jobs${query}`);
 }
 
 export async function getJob(id: string): Promise<Job> {
@@ -162,6 +300,13 @@ export async function createJob(req: CreateJobRequest): Promise<Job> {
   return apiFetch<Job>('/api/v1/jobs', {
     method: 'POST',
     body: JSON.stringify(camelToSnake(req)),
+  });
+}
+
+export async function cancelJob(id: string): Promise<Job> {
+  return apiFetch<Job>(`/api/v1/jobs/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+    body: '{}',
   });
 }
 
@@ -200,6 +345,77 @@ export async function listModels(search?: string, category?: string): Promise<Mo
 
 export async function getModel(id: string): Promise<Model> {
   return apiFetch<Model>(`/api/v1/models/${encodeURIComponent(id)}`);
+}
+
+// --- Model Deployment Templates ---
+
+export async function listModelDeploymentTemplates(
+  modelId: string,
+  status?: string,
+): Promise<ModelDeploymentTemplate[]> {
+  const query = buildQuery({ status });
+  const data = await apiFetch<{ templates: ModelDeploymentTemplate[] }>(
+    `/api/v1/models/${encodeURIComponent(modelId)}/deployment-templates${query}`,
+  );
+  return data.templates || [];
+}
+
+export async function getModelDeploymentTemplate(
+  modelId: string,
+  id: string,
+): Promise<ModelDeploymentTemplate> {
+  return apiFetch<ModelDeploymentTemplate>(
+    `/api/v1/models/${encodeURIComponent(modelId)}/deployment-templates/${encodeURIComponent(id)}`,
+  );
+}
+
+export async function createModelDeploymentTemplate(
+  req: CreateModelDeploymentTemplateRequest,
+): Promise<ModelDeploymentTemplate> {
+  return apiFetch<ModelDeploymentTemplate>(
+    `/api/v1/models/${encodeURIComponent(req.modelId)}/deployment-templates`,
+    {
+      method: 'POST',
+      body: JSON.stringify(camelToSnake(req)),
+    },
+  );
+}
+
+export async function updateModelDeploymentTemplate(
+  req: UpdateModelDeploymentTemplateRequest,
+): Promise<ModelDeploymentTemplate> {
+  return apiFetch<ModelDeploymentTemplate>(
+    `/api/v1/models/${encodeURIComponent(req.modelId)}/deployment-templates/${encodeURIComponent(req.id)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(camelToSnake(req)),
+    },
+  );
+}
+
+export async function deleteModelDeploymentTemplate(
+  modelId: string,
+  id: string,
+): Promise<void> {
+  return apiFetch<void>(
+    `/api/v1/models/${encodeURIComponent(modelId)}/deployment-templates/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+  );
+}
+
+// resolveModelDeploymentTemplate looks up a template by (modelId, name, version).
+// version="" means "latest active". This is the same lookup that batch SDK
+// callers will use when they pass model_template + model_template_version
+// in extra_body.aibrix.
+export async function resolveModelDeploymentTemplate(
+  modelId: string,
+  name: string,
+  version?: string,
+): Promise<ModelDeploymentTemplate> {
+  const query = buildQuery({ version });
+  return apiFetch<ModelDeploymentTemplate>(
+    `/api/v1/models/${encodeURIComponent(modelId)}/deployment-templates/by-name/${encodeURIComponent(name)}${query}`,
+  );
 }
 
 // --- API Keys ---
@@ -286,15 +502,24 @@ export async function listFiles(): Promise<FileInfo[]> {
 // --- Auth ---
 
 export async function getAuthConfig(): Promise<{ mode: string; providerName?: string }> {
-  return apiFetch<{ mode: string; providerName?: string }>('/api/v1/auth/config');
+  const cfg = await apiFetch<{ mode: string; providerName?: string }>(
+    '/api/v1/auth/config',
+  );
+  cachedAuthMode = cfg.mode;
+  return cfg;
 }
 
 export async function getUserInfo(): Promise<UserInfo | null> {
   return apiFetch<UserInfo | null>('/api/v1/auth/userinfo');
 }
 
-export async function logout(): Promise<void> {
-  return apiFetch<void>('/api/v1/auth/logout', {
+export interface LogoutResponse {
+  message: string;
+  redirectUrl?: string;
+}
+
+export async function logout(): Promise<LogoutResponse> {
+  return apiFetch<LogoutResponse>('/api/v1/auth/logout', {
     method: 'POST',
   });
 }

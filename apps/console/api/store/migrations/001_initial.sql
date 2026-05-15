@@ -41,32 +41,23 @@ CREATE TABLE IF NOT EXISTS deployments (
 
 -- ---------------------------------------------------------------------------
 -- Jobs (Batch Inference)
--- Core fields from the Job protobuf message plus a config JSON column for
--- optional parameters (max_tokens, temperature, top_p, n, quantization).
+--
+-- The Console persists only the product-side fields it owns (id, display
+-- name, created_by, future: organization, tags, ...). OpenAI Batch state
+-- (status, usage, request_counts, timestamps, ...) lives in the metadata
+-- service and is fetched at request time by the JobHandler, then merged
+-- with this row to produce the wire-level Job.
+--
+-- The id column equals the metadata service's batch id (e.g. "batch_xxx").
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS jobs (
-    id                VARCHAR(36)   NOT NULL PRIMARY KEY,
-    name              VARCHAR(255)  NOT NULL,
-    inference_id      VARCHAR(255)  NOT NULL,
-    model             VARCHAR(255)  NOT NULL DEFAULT '',
-    model_id          VARCHAR(255)  NOT NULL DEFAULT '',
-    input_dataset     VARCHAR(255)  NOT NULL DEFAULT '',
-    input_dataset_id  VARCHAR(255)  NOT NULL DEFAULT '',
-    create_date       VARCHAR(255)  NOT NULL DEFAULT '',
-    create_time       VARCHAR(255)  NOT NULL DEFAULT '',
+    id                VARCHAR(64)   NOT NULL PRIMARY KEY,
+    name              VARCHAR(255)  NOT NULL DEFAULT '',
     created_by        VARCHAR(255)  NOT NULL DEFAULT '',
-    status            VARCHAR(255)  NOT NULL DEFAULT 'Validating',
-    full_path         VARCHAR(1000) NOT NULL DEFAULT '',
-
-    -- Optional job configuration stored as JSON
-    config            JSON,
 
     created_at        TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at        TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    INDEX idx_jobs_name (name),
-    INDEX idx_jobs_status (status),
-    INDEX idx_jobs_inference_id (inference_id),
     INDEX idx_jobs_created_by (created_by)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -164,4 +155,22 @@ CREATE TABLE IF NOT EXISTS users (
 
     UNIQUE INDEX idx_users_email (email),
     INDEX idx_users_external_id (external_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- Provision Results
+-- Stores provision results for idempotency key deduplication.
+-- Used to prevent duplicate provision requests with the same idempotency key.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS provision_results (
+    idempotency_key   VARCHAR(255)  NOT NULL PRIMARY KEY,
+    provision_id      VARCHAR(255)  NOT NULL,
+    status            VARCHAR(64)   NOT NULL,
+    payload           JSON,
+    created_at        TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted           BOOLEAN       NOT NULL DEFAULT FALSE,
+
+    UNIQUE INDEX idx_provision_results_provision_id (provision_id),
+    INDEX idx_provision_results_status_deleted (status, deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

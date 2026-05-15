@@ -1,0 +1,149 @@
+# Sample ConfigMap holding ModelDeploymentTemplate definitions consumed by
+# the AIBrix Batch metadata service.
+#
+# The data block is a plain YAML list (no apiVersion/kind envelope).
+# Each list item is a single template. This keeps the format aligned
+# with the CRD shape we plan to migrate to: each item maps 1:1 to a
+# CRD instance, where `spec` becomes the CRD's spec field.
+#
+# See docs/source/features/batch-templates.rst for the full guide.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aibrix-model-deployment-templates
+  namespace: aibrix-system
+  labels:
+    app.kubernetes.io/component: batch
+    app.kubernetes.io/managed-by: aibrix
+data:
+  templates.yaml: |
+    # ─────────────────────────────────────────────────────────────────
+    # Production: Llama-3-70B on H100 x4 with FP8 weights + KV cache
+    # Use case: high-throughput chat / completion batch workloads
+    # ─────────────────────────────────────────────────────────────────
+    - name: llama3-70b-prod
+      version: v1.3.0
+      status: active
+      spec:
+        engine:
+          type: vllm
+          version: "0.6.3"
+          image: "vllm/vllm-openai:v0.6.3"
+          invocation: http_server
+          serve_args:
+            - "--port=8000"
+            - "--enable-prefix-caching"
+            - "--enable-chunked-prefill"
+          health_endpoint: /health
+          ready_timeout_seconds: 600
+        model_source:
+          type: s3
+          uri: "s3://aibrix-models/llama3-70b-instruct/"
+          tokenizer_path: tokenizer/
+          chat_template_path: templates/llama3.jinja
+        accelerator:
+          type: H100-SXM
+          count: 4
+          interconnect: nvlink
+          vram_gb: 80
+          sku_hint: aws/p5.48xlarge
+        parallelism:
+          tp: 4
+          pp: 1
+          dp: 1
+        engine_args:
+          max_num_batched_tokens: 32768
+          max_num_seqs: 256
+          max_model_len: 32768
+          gpu_memory_utilization: 0.92
+          enable_prefix_caching: true
+          enable_chunked_prefill: true
+        quantization:
+          weight: fp8
+          kv_cache: fp8_e4m3
+        provider_config:
+          type: k8s
+          namespace: aibrix-inference
+          service_account: aibrix-engine
+        supported_endpoints:
+          - /v1/chat/completions
+          - /v1/completions
+        deployment_mode: dedicated
+
+    # ─────────────────────────────────────────────────────────────────
+    # Development: Qwen-7B on a single L40S, BF16 (cheap, fast iteration)
+    # ─────────────────────────────────────────────────────────────────
+    - name: qwen-7b-dev
+      version: v0.2.0
+      status: active
+      spec:
+        engine:
+          type: vllm
+          version: "0.6.3"
+          image: "vllm/vllm-openai:v0.6.3"
+          invocation: http_server
+          serve_args:
+            - "--port=8000"
+            - "--enable-prefix-caching"
+          health_endpoint: /health
+        model_source:
+          type: huggingface
+          uri: "Qwen/Qwen2.5-7B-Instruct"
+          revision: main
+          auth_secret_ref: aibrix-hf-token
+        accelerator:
+          type: L40S
+          count: 1
+          vram_gb: 48
+        parallelism:
+          tp: 1
+        engine_args:
+          max_num_batched_tokens: 8192
+          max_num_seqs: 64
+          max_model_len: 8192
+          gpu_memory_utilization: 0.90
+          enable_prefix_caching: true
+        quantization:
+          weight: bf16
+        provider_config:
+          type: k8s
+          namespace: aibrix-inference
+          service_account: aibrix-engine
+        supported_endpoints:
+          - /v1/chat/completions
+          - /v1/completions
+          - /v1/embeddings
+        deployment_mode: dedicated
+
+    # ─────────────────────────────────────────────────────────────────
+    # Mock: zero-GPU template used by integration tests + CI
+    # ─────────────────────────────────────────────────────────────────
+    - name: mock-vllm
+      version: v0.0.1
+      status: active
+      spec:
+        engine:
+          type: mock
+          version: "0.1.0"
+          image: "aibrix/vllm-mock:nightly"
+          invocation: http_server
+          serve_args:
+            - "--port=8000"
+          health_endpoint: /ready
+        model_source:
+          type: local
+          uri: /models/mock
+        accelerator:
+          type: cpu
+          count: 1
+        parallelism:
+          tp: 1
+        provider_config:
+          type: k8s
+          namespace: aibrix-inference
+        supported_endpoints:
+          - /v1/chat/completions
+          - /v1/completions
+          - /v1/embeddings
+        deployment_mode: dedicated

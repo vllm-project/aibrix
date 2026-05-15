@@ -557,7 +557,7 @@ if __name__ == "__main__":
         "--best-of",
         type=int,
         default=1,
-        help="Generates `best_of` sequences per prompt and " "returns the best one.",
+        help="Generates `best_of` sequences per prompt and returns the best one.",
     )
     parser.add_argument("--use-beam-search", action="store_true")
     parser.add_argument(

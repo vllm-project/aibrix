@@ -269,8 +269,18 @@ class LocalStorage(BaseStorage):
         limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
-        """List objects with given prefix."""
+        """List objects with given prefix.
+
+        We enumerate sidecar ``.metadata`` files rather than the data
+        files themselves, then strip the suffix to recover the original
+        key. This is necessary because ``put_object`` may append a
+        content-type-derived extension to the on-disk filename (see
+        ``generate_filename``); listing the data files would return the
+        mangled name, breaking the put → list → head_object round-trip
+        for keys that were stored without an extension.
+        """
         prefix_path = self.base_path / prefix if prefix else self.base_path
+        _METADATA_SUFFIX = ".metadata"
 
         def _list_files():
             # Parse continuation token as offset (default to 0)
@@ -288,9 +298,8 @@ class LocalStorage(BaseStorage):
                     for item in prefix_path.iterdir():
                         if item.is_file():
                             relative_path = str(item.relative_to(self.base_path))
-                            # Filter out metadata files
-                            if not relative_path.endswith(".metadata"):
-                                files.append(relative_path)
+                            if relative_path.endswith(_METADATA_SUFFIX):
+                                files.append(relative_path[: -len(_METADATA_SUFFIX)])
                         elif item.is_dir():
                             files.append(
                                 str(item.relative_to(self.base_path)) + delimiter
@@ -300,14 +309,12 @@ class LocalStorage(BaseStorage):
                     for item in prefix_path.rglob("*"):
                         if item.is_file():
                             relative_path = str(item.relative_to(self.base_path))
-                            # Filter out metadata files
-                            if not relative_path.endswith(".metadata"):
-                                files.append(relative_path)
+                            if relative_path.endswith(_METADATA_SUFFIX):
+                                files.append(relative_path[: -len(_METADATA_SUFFIX)])
             elif prefix_path.is_file():
                 relative_path = str(prefix_path.relative_to(self.base_path))
-                # Filter out metadata files
-                if not relative_path.endswith(".metadata"):
-                    files.append(relative_path)
+                if relative_path.endswith(_METADATA_SUFFIX):
+                    files.append(relative_path[: -len(_METADATA_SUFFIX)])
 
             # Sort files for consistent pagination (by filename)
             files.sort()

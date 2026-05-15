@@ -39,6 +39,7 @@ class BatchDriver:
         storage_type: StorageType = StorageType.AUTO,
         metastore_type: StorageType = StorageType.AUTO,
         llm_engine_endpoint: Optional[str] = None,
+        inference_client: Optional[InferenceEngineClient] = None,
         stand_alone: bool = False,
         params={},
     ):
@@ -47,7 +48,19 @@ class BatchDriver:
 
         Args:
             stand_alone: Set to true to start a new thread for job management.
+            inference_client: Explicit client. Preferred. Pass an
+                EchoInferenceEngineClient for --dry-run, or a
+                ProxyInferenceEngineClient for a real engine.
+            llm_engine_endpoint: Convenience shortcut for constructing a
+                ProxyInferenceEngineClient. Mutually exclusive with
+                ``inference_client``.
         """
+        if inference_client is not None and llm_engine_endpoint is not None:
+            raise ValueError(
+                "BatchDriver: pass at most one of inference_client / "
+                "llm_engine_endpoint."
+            )
+
         _storage.initialize_storage(storage_type, params)
         initialize_batch_metastore(metastore_type, params)
         self._async_thread_loop: Optional[AsyncLoopThread] = None
@@ -65,10 +78,22 @@ class BatchDriver:
             self._scheduler = JobScheduler(self._job_manager, DEFAULT_JOB_POOL_SIZE)
             self._job_manager.set_scheduler(self._scheduler)
 
-        # Initialize inference client with optional LLM engine endpoint
-        self._inference_client: Optional[InferenceEngineClient] = None
-        if llm_engine_endpoint is not None:
+        if inference_client is not None:
+            self._inference_client: Optional[InferenceEngineClient] = inference_client
+        elif llm_engine_endpoint is not None:
             self._inference_client = ProxyInferenceEngineClient(llm_engine_endpoint)
+        else:
+            # No client configured. Acceptable only when this driver does
+            # not run a scheduler (i.e. an external JobCache scheduler is
+            # in charge — K8s mode). Otherwise the scheduler would invoke
+            # inference and instantly hit the abstract base class.
+            if self._scheduler is not None:
+                raise ValueError(
+                    "BatchDriver requires an inference_client or "
+                    "llm_engine_endpoint when running its own scheduler "
+                    "(standalone execution)."
+                )
+            self._inference_client = None
 
         # Track jobs with fail_after_n_requests for stop() validation
         self._jobs_with_fail_after: set[str] = set()

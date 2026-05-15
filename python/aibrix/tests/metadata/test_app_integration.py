@@ -31,7 +31,6 @@ def test_build_app_without_k8s_job():
         disable_batch_api=True,
         disable_file_api=True,
         enable_k8s_job=False,
-        e2e_test=False,
     )
 
     app = build_app(args)
@@ -52,10 +51,17 @@ def test_build_app_with_k8s_job():
         k8s_job_patch=None,
         kopf_startup_timeout=5.0,
         kopf_shutdown_timeout=2.0,
-        e2e_test=False,
     )
 
-    with patch("aibrix.metadata.app.JobCache"):
+    # build_app constructs ConfigMap-backed template / profile registries
+    # and calls reload() on each, which would hit the K8s API. Stub
+    # them out here since this test only exercises wiring.
+    with (
+        patch("aibrix.metadata.app.JobCache"),
+        patch("aibrix.metadata.app.k8s_client.CoreV1Api"),
+        patch("aibrix.metadata.app.k8s_template_registry"),
+        patch("aibrix.metadata.app.k8s_profile_registry"),
+    ):
         app = build_app(args)
 
     # App should have kopf operator wrapper
@@ -77,7 +83,6 @@ def test_status_endpoint_without_k8s():
         disable_batch_api=True,
         disable_file_api=True,
         enable_k8s_job=False,
-        e2e_test=False,
     )
 
     app = build_app(args)
@@ -107,10 +112,14 @@ def test_status_endpoint_with_k8s():
         k8s_namespace="test-namespace",
         kopf_startup_timeout=5.0,
         kopf_shutdown_timeout=2.0,
-        e2e_test=False,
     )
 
-    with patch("aibrix.metadata.app.JobCache"):
+    with (
+        patch("aibrix.metadata.app.JobCache"),
+        patch("aibrix.metadata.app.k8s_client.CoreV1Api"),
+        patch("aibrix.metadata.app.k8s_template_registry"),
+        patch("aibrix.metadata.app.k8s_profile_registry"),
+    ):
         app = build_app(args)
 
     client = TestClient(app)
@@ -143,7 +152,6 @@ def test_healthz_endpoint():
         disable_batch_api=True,
         disable_file_api=True,
         enable_k8s_job=False,
-        e2e_test=False,
     )
 
     app = build_app(args)
@@ -163,7 +171,6 @@ def test_ready_endpoint():
         disable_batch_api=True,
         disable_file_api=True,
         enable_k8s_job=False,
-        e2e_test=False,
     )
 
     app = build_app(args)

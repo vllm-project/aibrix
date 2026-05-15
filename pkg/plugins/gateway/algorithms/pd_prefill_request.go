@@ -270,6 +270,7 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 	}
 	completionRequest["stream"] = false
 	delete(completionRequest, "stream_options")
+	delete(completionRequest, "min_tokens")
 
 	return sonic.Marshal(completionRequest)
 }

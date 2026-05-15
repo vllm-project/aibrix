@@ -436,12 +436,144 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 		return "", errors.New("no target pod found")
 	}
 
-	if len(prefixHashes) > 0 {
-		p.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Name)
+	if err := p.PostRouteUpdate(ctx, readyPodList, targetPod); err != nil {
+		return "", err
 	}
 
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
+}
+
+func (p prefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) error {
+	if p.kvSyncRouter != nil {
+		return p.kvSyncRouter.PostRouteUpdate(ctx, readyPodList, targetPod)
+	}
+
+	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return err
+	}
+
+	prefixHashes := p.prefixCacheIndexer.GetPrefixHashes(tokens)
+	if len(prefixHashes) > 0 {
+		p.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Name)
+	}
+
+	return nil
+}
+
+func (k *kvSyncPrefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) error {
+	pods := readyPodList.All()
+	modelName := ctx.Model
+	if modelName == "" && len(pods) > 0 {
+		modelName = pods[0].Labels[constants.ModelLabelName]
+	}
+
+	tokenizerToUse := k.getTokenizerForRequest(ctx, readyPodList)
+	if tokenizerToUse == nil {
+		return fmt.Errorf("TokenizerPool not initialized for KV sync router")
+	}
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return err
+	}
+
+	readyPodsMap := map[string]struct{}{}
+	for _, pod := range pods {
+		readyPodsMap[fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)] = struct{}{}
+	}
+	if k.syncIndexer == nil {
+		return fmt.Errorf("sync indexer not available for KV sync routing")
+	}
+	_, prefixHashes := k.syncIndexer.MatchPrefix(modelName, int64(-1), tokens, readyPodsMap)
+	if len(prefixHashes) == 0 {
+		return nil
+	}
+	selectedPodKey := fmt.Sprintf("%s/%s", targetPod.Namespace, targetPod.Name)
+	return k.syncIndexer.AddPrefix(modelName, int64(-1), selectedPodKey, prefixHashes)
+}
+
+// ScoreAll traverses the Radix Tree to calculate the prefix match ratio (matched tokens / total tokens) for all ready pods.
+// Unlike simple metric fetching, this dynamically calculates the score based on the specific request's input tokens.
+func (p prefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	pods := readyPodList.All()
+	scores := make([]float64, len(pods))
+	scored := make([]bool, len(pods))
+
+	if p.kvSyncRouter != nil {
+		return p.kvSyncRouter.ScoreAll(ctx, readyPodList)
+	}
+
+	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	readyPodsMap := map[string]struct{}{}
+	for _, pod := range pods {
+		readyPodsMap[pod.Name] = struct{}{}
+	}
+
+	matchedPods, _ := p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
+
+	for i, pod := range pods {
+		matchPercent := matchedPods[pod.Name]
+		scores[i] = float64(matchPercent)
+		scored[i] = true
+	}
+
+	return scores, scored, nil
+}
+
+// Polarity returns whether higher or lower score is better.
+func (p prefixCacheRouter) Polarity() types.Polarity {
+	return types.PolarityMost
+}
+
+// ScoreAll computes the scores for all ready pods in a single batch operation for KV sync router.
+func (k *kvSyncPrefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	pods := readyPodList.All()
+	scores := make([]float64, len(pods))
+	scored := make([]bool, len(pods))
+
+	modelName := ctx.Model
+	if modelName == "" && len(pods) > 0 {
+		modelName = pods[0].Labels[constants.ModelLabelName]
+	}
+
+	loraID := int64(-1)
+
+	tokenizerToUse := k.getTokenizerForRequest(ctx, readyPodList)
+	if tokenizerToUse == nil {
+		return nil, nil, fmt.Errorf("TokenizerPool not initialized for KV sync router")
+	}
+
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	readyPodsMap := map[string]struct{}{}
+	for _, pod := range pods {
+		podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+		readyPodsMap[podKey] = struct{}{}
+	}
+
+	if k.syncIndexer == nil {
+		return nil, nil, fmt.Errorf("sync indexer not available for KV sync routing")
+	}
+	matchedPods, _ := k.syncIndexer.MatchPrefix(modelName, loraID, tokens, readyPodsMap)
+
+	for i, pod := range pods {
+		podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+		matchPercent := matchedPods[podKey]
+		scores[i] = float64(matchPercent)
+		scored[i] = true
+	}
+
+	return scores, scored, nil
 }
 
 // Cleanup gracefully shuts down the TokenizerPool if it exists

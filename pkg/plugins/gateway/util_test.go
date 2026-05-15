@@ -23,7 +23,7 @@ import (
 	"github.com/bytedance/sonic"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
-	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )

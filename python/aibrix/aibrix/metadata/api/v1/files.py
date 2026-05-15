@@ -34,6 +34,12 @@ supported_extensions = {
     "jsonl",
 }
 
+# Upper bound on how many file keys list_files inspects per request.
+# The route applies purpose-filter + cursor + limit in-process, so this
+# is the largest result set we can paginate over without an indexed
+# list backend. Mirrors the equivalent compromise in batches /v1/batches.
+_LIST_FILES_FETCH_CEILING = 1000
+
 
 # OpenAI Files API models
 class FilePurpose(str, Enum):
@@ -98,6 +104,14 @@ class FileListResponse(NoExtraBaseModel):
     object: str = Field(default="list", description="The object type, always 'list'")
     data: list[FileObject] = Field(description="List of file objects")
     has_more: bool = Field(description="Whether there are more results available")
+
+
+class FileDeletedResponse(NoExtraBaseModel):
+    """Response model for file deletion. Mirrors OpenAI's DeletedFile."""
+
+    id: str = Field(description="The file identifier that was deleted")
+    object: str = Field(default="file", description="The object type, always 'file'")
+    deleted: bool = Field(default=True, description="Whether the file was deleted")
 
 
 def _validate_file_extension(filename: str) -> bool:
@@ -223,32 +237,28 @@ async def list_files(
 
         storage: BaseStorage = request.app.state.storage
 
-        # List objects from storage with pagination
-        # We fetch limit+1 to check if there are more results
-        file_keys, _ = await storage.list_objects(
-            prefix="", limit=limit + 1, continuation_token=after
+        # Mirror /v1/batches list pagination semantics: ``after`` is a
+        # file_id, not a storage continuation token. We fetch a generous
+        # page from storage and apply purpose-filter + cursor + limit in
+        # the route. This intentionally caps total visible files at
+        # ``_LIST_FILES_FETCH_CEILING`` per request — same compromise the
+        # batches list endpoint makes; revisit when an indexed list
+        # backend lands.
+        all_keys, _ = await storage.list_objects(
+            prefix="", limit=_LIST_FILES_FETCH_CEILING
         )
 
-        # Check if there are more results
-        has_more = len(file_keys) > limit
-        if has_more:
-            file_keys = file_keys[:limit]
-
-        # Build file objects list
-        file_objects = []
-        for file_id in file_keys:
+        # Build file objects (with purpose filter applied inline so we
+        # only pay head_object for what's relevant when a filter is set).
+        file_objects: list[FileObject] = []
+        for file_id in all_keys:
             try:
-                # Get metadata for each file
                 head_object = await storage.head_object(file_id)
                 metadata = head_object.metadata or {}
 
-                # Filter by purpose if specified
-                if purpose:
-                    file_purpose = metadata.get("purpose")
-                    if file_purpose != purpose:
-                        continue
+                if purpose and metadata.get("purpose") != purpose:
+                    continue
 
-                # Extract file information
                 created_at = None
                 if "created_at" in metadata:
                     try:
@@ -281,28 +291,46 @@ async def list_files(
                     except ValueError:
                         pass
 
-                file_obj = FileObject(
-                    id=file_id,
-                    bytes=head_object.content_length or 0,
-                    created_at=created_at,
-                    filename=filename,
-                    purpose=file_purpose_enum or FilePurpose.BATCH,
-                    status=file_status,
+                file_objects.append(
+                    FileObject(
+                        id=file_id,
+                        bytes=head_object.content_length or 0,
+                        created_at=created_at,
+                        filename=filename,
+                        purpose=file_purpose_enum or FilePurpose.BATCH,
+                        status=file_status,
+                    )
                 )
-                file_objects.append(file_obj)
 
             except FileNotFoundError:
-                # File was deleted between list and head operations, skip it
                 logger.warning("File not found during listing", file_id=file_id)  # type: ignore[call-arg]
                 continue
             except Exception as e:
-                # Log error but continue processing other files
                 logger.error(
                     "Error retrieving file metadata during listing",
                     file_id=file_id,
                     error=str(e),
                 )  # type: ignore[call-arg]
                 continue
+
+        # ``after`` cursor: file_id-based. If the cursor isn't found
+        # (e.g. caller passed a stale id), return an empty page rather
+        # than the entire list — that matches the batches endpoint and
+        # prevents accidental "rewind to start".
+        if after is not None:
+            for idx, fobj in enumerate(file_objects):
+                if fobj.id == after:
+                    file_objects = file_objects[idx + 1 :]
+                    break
+            else:
+                file_objects = []
+
+        # has_more is computed after both the purpose filter and the
+        # cursor have been applied; otherwise the prior code reported
+        # has_more=True any time storage held more than ``limit`` keys
+        # even when the filtered result fit on one page.
+        has_more = len(file_objects) > limit
+        file_objects = file_objects[:limit]
 
         return FileListResponse(data=file_objects, has_more=has_more)
 
@@ -538,4 +566,37 @@ async def head_file_metadata(request: Request, file_id: str) -> Response:
             error=str(storage_error),
         )  # type: ignore[call-arg]
         error_response = _create_error_response("Failed to retrieve file metadata")
+        raise HTTPException(status_code=500, detail=error_response)
+
+
+@router.delete("/{file_id}")
+async def delete_file(request: Request, file_id: str) -> FileDeletedResponse:
+    """Delete a file. Mirrors OpenAI's ``DELETE /v1/files/{file_id}``.
+
+    Returns ``{"id": file_id, "object": "file", "deleted": true}`` on
+    success and 404 if the file does not exist. The underlying object
+    storage's ``delete_object`` is a silent no-op for missing keys, so
+    we probe with ``head_object`` first to keep the wire contract
+    aligned with OpenAI (404 must surface).
+    """
+    try:
+        storage: BaseStorage = request.app.state.storage
+
+        await storage.head_object(file_id)
+        await storage.delete_object(file_id)
+
+        logger.info("File deleted", file_id=file_id)  # type: ignore[call-arg]
+        return FileDeletedResponse(id=file_id)
+
+    except FileNotFoundError:
+        logger.error("File not found for deletion", file_id=file_id)  # type: ignore[call-arg]
+        error_response = _create_error_response("File not found")
+        raise HTTPException(status_code=404, detail=error_response)
+    except Exception as storage_error:
+        logger.error(
+            "Failed to delete file",
+            file_id=file_id,
+            error=str(storage_error),
+        )  # type: ignore[call-arg]
+        error_response = _create_error_response("Failed to delete file")
         raise HTTPException(status_code=500, detail=error_response)

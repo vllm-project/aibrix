@@ -443,6 +443,12 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 	return matchedTokens, unmatchedTokens, matchedPods
 }
 
+func (c *LPRadixCache) MatchPrefixNodeReadOnly(inputTokens []int) (*TreeNode, []int) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.matchPrefixHelperReadOnly(c.rootNode, inputTokens)
+}
+
 // This is being used by GetNode
 // Uses iterative traversal to avoid stack overflow with deep trees (e.g. 30K+ token inputs).
 func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, tokens []int) (*TreeNode, []int) {
@@ -490,6 +496,46 @@ func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, tokens []int) (*TreeNod
 		// Partial match with child's key — return child as best node; update it.
 		totalMatched += prefixLen
 		touchLastAccess(child)
+		return child, tokens[:totalMatched]
+	}
+
+	if totalMatched > 0 {
+		return bestNode, tokens[:totalMatched]
+	}
+	return node, nil
+}
+
+func (c *LPRadixCache) matchPrefixHelperReadOnly(node *TreeNode, tokens []int) (*TreeNode, []int) {
+	if len(tokens) == 0 {
+		return node, nil
+	}
+
+	bestNode := node
+	totalMatched := 0
+	current := node
+
+	for totalMatched < len(tokens) {
+		remaining := tokens[totalMatched:]
+		child, ok := current.children[remaining[0]]
+		if !ok {
+			break
+		}
+		prefixLen := matchLen(child.key, remaining)
+		if prefixLen == 0 {
+			break
+		}
+
+		if prefixLen == len(child.key) {
+			totalMatched += prefixLen
+			bestNode = child
+			if totalMatched == len(tokens) {
+				return child, tokens[:totalMatched]
+			}
+			current = child
+			continue
+		}
+
+		totalMatched += prefixLen
 		return child, tokens[:totalMatched]
 	}
 

@@ -65,6 +65,10 @@ const (
 	HeaderErrorIncrRPM     = "x-error-incr-rpm"
 	HeaderErrorIncrTPM     = "x-error-incr-tpm"
 
+	// Model RPS Errors
+	HeaderErrorModelRPSExceeded = "x-error-model-rps-exceeded"
+	HeaderErrorIncrModelRPS     = "x-error-incr-model-rps"
+
 	// Rate Limiting defaults
 	DefaultRPM           = 100
 	DefaultTPMMultiplier = 1000

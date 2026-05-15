@@ -519,3 +519,107 @@ func TestHandleResponseBody_DoesNotDuplicateTrace(t *testing.T) {
 	assert.True(t, complete)
 	mockCache.AssertNotCalled(t, "DoneRequestTrace", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
+
+func TestHandleResponseBody_SSEParsing(t *testing.T) {
+	tests := []struct {
+		name             string
+		body             []byte
+		promptTokens     int64
+		completionTokens int64
+		totalTokens      int64
+		expectError      bool
+	}{
+		{
+			name:             "Normal usage chunk with \\n",
+			body:             []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}\n\n"),
+			promptTokens:     10,
+			completionTokens: 20,
+			totalTokens:      30,
+			expectError:      false,
+		},
+		{
+			name:             "Normal usage chunk with \\r\\n",
+			body:             []byte("data: {\"id\": \"2\", \"usage\": {\"prompt_tokens\": 5, \"completion_tokens\": 5, \"total_tokens\": 10}}\r\n\r\n"),
+			promptTokens:     5,
+			completionTokens: 5,
+			totalTokens:      10,
+			expectError:      false,
+		},
+		{
+			name:             "DONE terminator",
+			body:             []byte("data: [DONE]\n\n"),
+			promptTokens:     0,
+			completionTokens: 0,
+			totalTokens:      0,
+			expectError:      false,
+		},
+		{
+			name:             "Malformed JSON payload is passed through transparently",
+			body:             []byte("data: {\"id\": \"1\", \"usage\": { broken json \n\n"),
+			promptTokens:     0,
+			completionTokens: 0,
+			totalTokens:      0,
+			expectError:      true,
+		},
+		{
+			name:             "False positive 'usage' text in response",
+			body:             []byte("data: {\"id\": \"1\", \"choices\": [{\"delta\": {\"content\": \"Here is the usage example\"}}]}\n\n"),
+			promptTokens:     0,
+			completionTokens: 0,
+			totalTokens:      0,
+			expectError:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockCache := &MockCache{Cache: cache.NewForTest()}
+			mockCache.On("DoneRequestTrace", mock.Anything, "test-req-id", "test-model", tt.promptTokens, tt.completionTokens, int64(0)).Maybe()
+
+			server := &Server{
+				cache: mockCache,
+			}
+
+			routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "test-req-id", "")
+			routerCtx.ReqPath = PathChatCompletions
+			routerCtx.RequestTime = time.Now()
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        tt.body,
+						EndOfStream: true, // assume this is last chunk
+					},
+				},
+			}
+
+			// stream=true
+			resp, complete := server.HandleResponseBody(routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", true, 0, false)
+
+			if tt.expectError {
+				assert.True(t, complete)
+				assert.NotNil(t, resp)
+
+				immediateRes := resp.GetImmediateResponse()
+				assert.NotNil(t, immediateRes, "Expected ImmediateResponse on error, but got nil. Response: %v", resp)
+
+				hasErrorHeader := false
+				if immediateRes.GetHeaders() != nil {
+					for _, header := range immediateRes.GetHeaders().GetSetHeaders() {
+						if header.Header.Key == HeaderErrorStreaming {
+							hasErrorHeader = true
+							break
+						}
+					}
+				}
+				assert.True(t, hasErrorHeader, "Expected HeaderErrorStreaming to be set on error")
+			} else {
+				assert.True(t, complete)
+				assert.NotNil(t, resp)
+				assert.NotNil(t, resp.GetResponseBody(), "Expected ResponseBody on success")
+			}
+
+			mockCache.AssertExpectations(t)
+		})
+	}
+}
