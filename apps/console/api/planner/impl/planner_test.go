@@ -711,7 +711,7 @@ func TestCancelQueuedJobBeforeWorkerPicksUp(t *testing.T) {
 	}
 }
 
-func TestCancelSubmittedJobForwardsToMDS(t *testing.T) {
+func TestCancelSubmittedJobForwardsToMDSAndReleasesProvision(t *testing.T) {
 	prov := &fakeProvisioner{}
 	bc := &fakeBatchClient{}
 	q := newTestPlanner(t, bc, prov, 1)
@@ -736,6 +736,11 @@ func TestCancelSubmittedJobForwardsToMDS(t *testing.T) {
 	_, cancels := bc.snapshot()
 	if len(cancels) != 1 || cancels[0] != "batch-j-sub" {
 		t.Errorf("bc.CancelBatch calls = %v; want [batch-j-sub]", cancels)
+	}
+
+	_, releases, _ := prov.snapshot()
+	if len(releases) != 1 || releases[0] != "prov-j-sub" {
+		t.Errorf("prov.Release calls = %v; want [prov-j-sub]", releases)
 	}
 }
 
@@ -907,6 +912,27 @@ func TestCloseIsIdempotent(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("second Close deadlocked")
+	}
+}
+
+// TestEnqueueAfterCloseReturnsClosed locks down planner shutdown semantics:
+// once Close returns, new Enqueue calls must fail immediately instead of
+// slipping into the buffered pending queue.
+func TestEnqueueAfterCloseReturnsClosed(t *testing.T) {
+	q := NewPlanner(&fakeBatchClient{}, &fakeProvisioner{}, 1)
+	if err := q.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// This guards the refactor from queue-owned shutdown to planner-owned
+	// shutdown checks. Without the Enqueue-side closed check, the buffered
+	// queue can still accept a job after Close.
+	_, err := q.Enqueue(context.Background(), validReq("j-closed"))
+	if err == nil {
+		t.Fatal("Enqueue after Close unexpectedly succeeded")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want Close error to wrap context.Canceled; got %v", err)
 	}
 }
 

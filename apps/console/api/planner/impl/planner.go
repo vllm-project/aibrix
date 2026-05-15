@@ -41,7 +41,7 @@ type Planner struct {
 	bc   plannerclient.BatchClient
 	prov provisioner.Provisioner
 
-	submit chan string // buffered FIFO of pending JobIDs
+	queue pendingQueue
 
 	baseCtx    context.Context
 	baseCancel context.CancelFunc
@@ -60,7 +60,7 @@ type Planner struct {
 // it to "pending" or "provisioning". After submission, status comes from
 // MDS.
 //
-//	Pending      → buffered in submit channel, no worker yet.
+//	Pending      → buffered in the queue, no worker yet.
 //	Provisioning → worker holds the job; Provision + CreateBatch in flight.
 //	Submitted    → CreateBatch returned; MDS owns the lifecycle from here.
 //	Failed       → Provision or CreateBatch errored.
@@ -79,13 +79,14 @@ const (
 )
 
 type queuedJob struct {
-	req        *plannerapi.EnqueueRequest
-	state      jobState
-	batchID    string // populated when state == jobStateSubmitted
-	err        error  // populated when state == jobStateFailed
-	enqueuedAt time.Time
-	failedAt   time.Time // populated when state == jobStateFailed
-	canceledAt time.Time // populated when state == jobStateCanceled
+	req         *plannerapi.EnqueueRequest
+	state       jobState
+	provisionID string // populated once Provision returns accepted
+	batchID     string // populated when state == jobStateSubmitted
+	err         error  // populated when state == jobStateFailed
+	enqueuedAt  time.Time
+	failedAt    time.Time // populated when state == jobStateFailed
+	canceledAt  time.Time // populated when state == jobStateCanceled
 }
 
 // terminalTime returns the timestamp at which the job transitioned into a
@@ -100,10 +101,6 @@ func terminalTime(j *queuedJob) time.Time {
 	}
 	return time.Time{}
 }
-
-// queueCapacity caps the submit channel. When full, Enqueue blocks on the
-// caller's context.
-const queueCapacity = 256
 
 // DefaultWorkerCount sizes the worker pool.
 const DefaultWorkerCount = 8
@@ -127,7 +124,7 @@ func NewPlanner(bc plannerclient.BatchClient, prov provisioner.Provisioner, work
 	q := &Planner{
 		bc:               bc,
 		prov:             prov,
-		submit:           make(chan string, queueCapacity),
+		queue:            newFIFOPendingQueue(queueCapacity),
 		baseCtx:          ctx,
 		baseCancel:       cancel,
 		jobs:             make(map[string]*queuedJob),
@@ -146,6 +143,7 @@ var _ plannerapi.Planner = (*Planner)(nil)
 
 // Close cancels in-flight work and waits for workers to exit.
 func (q *Planner) Close() error {
+	q.queue.Close()
 	q.baseCancel()
 	q.wg.Wait()
 	return nil
@@ -154,12 +152,11 @@ func (q *Planner) Close() error {
 func (q *Planner) run() {
 	defer q.wg.Done()
 	for {
-		select {
-		case <-q.baseCtx.Done():
+		jobID, err := q.queue.Pop(q.baseCtx)
+		if err != nil {
 			return
-		case jobID := <-q.submit:
-			q.process(jobID)
 		}
+		q.process(jobID)
 	}
 }
 
@@ -171,11 +168,12 @@ func (q *Planner) process(jobID string) {
 		q.mu.Unlock()
 		return
 	}
+	// Example: a pending job is canceled before a worker picks it up, so the
+	// worker later observes a non-pending state here and skips provisioning.
 	if job.state != jobStatePending {
-		// Cancel raced ahead; drop without provisioning.
 		state := job.state
 		q.mu.Unlock()
-		klog.Infof("[planner] skip job_id=%q state=%d", jobID, state)
+		klog.Infof("[planner] invalid state before provisioning job_id=%q state=%d", jobID, state)
 		return
 	}
 	job.state = jobStateProvisioning
@@ -193,6 +191,9 @@ func (q *Planner) process(jobID string) {
 		q.markFailed(jobID, errors.Join(plannerapi.ErrInsufficientResources, err))
 		return
 	}
+	q.mu.Lock()
+	q.jobs[jobID].provisionID = provResult.ProvisionID
+	q.mu.Unlock()
 
 	// Provision returns when the request is accepted, not when the resource
 	// is ready. Wait for Running before submitting to MDS, which rejects
@@ -284,8 +285,9 @@ func (q *Planner) waitForProvisionReady(provisionID string) error {
 }
 
 // releaseAfter performs a best-effort RM release and logs failures. The
-// reason string ("wait failure", "CreateBatch failure", "cancel-race")
-// appears in the log line so each call site is self-identifying.
+// reason string ("wait failure", "CreateBatch failure", "cancel-race",
+// "cancel submitted") appears in the log line so each call site is
+// self-identifying.
 func (q *Planner) releaseAfter(jobID, provisionID, reason string) {
 	if err := q.prov.Release(q.baseCtx, provisionID); err != nil {
 		klog.Warningf("[planner] release after %s job_id=%q provision_id=%q: %v",
@@ -295,16 +297,15 @@ func (q *Planner) releaseAfter(jobID, provisionID, reason string) {
 
 func (q *Planner) markFailed(jobID string, err error) {
 	q.mu.Lock()
-	if job, ok := q.jobs[jobID]; ok {
-		job.state = jobStateFailed
-		job.err = err
-		job.failedAt = time.Now()
-	}
+	job := q.jobs[jobID]
+	job.state = jobStateFailed
+	job.err = err
+	job.failedAt = time.Now()
 	q.mu.Unlock()
 	klog.Warningf("[planner] job_id=%q failed: %v", jobID, err)
 }
 
-// Enqueue records the job, pushes it onto the worker channel, and returns
+// Enqueue records the job, pushes it onto the queue, and returns
 // a placeholder batch in "pending" status.
 func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (*plannerapi.Job, error) {
 	if req == nil {
@@ -322,6 +323,9 @@ func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (
 	if q.prov == nil {
 		return nil, fmt.Errorf("%w: missing provisioner", plannerapi.ErrInsufficientResources)
 	}
+	if err := q.baseCtx.Err(); err != nil {
+		return nil, fmt.Errorf("planner closed: %w", err)
+	}
 
 	now := time.Now()
 	q.mu.Lock()
@@ -336,17 +340,14 @@ func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (
 	}
 	q.mu.Unlock()
 
-	select {
-	case q.submit <- req.JobID:
-		// Happy path: a worker will dequeue and drive the entry; nothing to roll back.
-	case <-ctx.Done():
-		// Caller gave up while q.submit was full; the bookkeeping insert is orphaned.
+	if err := q.queue.Push(ctx, req.JobID); err != nil {
 		q.rollbackEnqueue(req.JobID)
-		return nil, ctx.Err()
-	case <-q.baseCtx.Done():
-		// Planner shutting down while q.submit was full; roll back the orphaned insert.
-		q.rollbackEnqueue(req.JobID)
-		return nil, fmt.Errorf("planner closed: %w", q.baseCtx.Err())
+		if errors.Is(err, errQueueClosed) {
+			// Planner shutting down while the queue was full; roll back the orphaned insert.
+			return nil, fmt.Errorf("planner closed: %w", q.baseCtx.Err())
+		}
+		// Caller gave up while the queue was full; the bookkeeping insert is orphaned.
+		return nil, err
 	}
 
 	klog.Infof("[planner] enqueue job_id=%q", req.JobID)
@@ -405,6 +406,7 @@ func (q *Planner) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, er
 	}
 	state := job.state
 	batchID := job.batchID
+	provisionID := job.provisionID
 	req := job.req
 	enqueuedAt := job.enqueuedAt
 	var terminalAt time.Time
@@ -428,6 +430,7 @@ func (q *Planner) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, er
 		if err != nil {
 			return nil, err
 		}
+		q.releaseAfter(jobID, provisionID, "cancel submitted")
 		return &plannerapi.Job{JobID: jobID, Batch: batch}, nil
 	}
 	// Already terminal (failed/canceled) — return current view, no double-cancel side effects.
