@@ -118,7 +118,7 @@ func (s *Server) StartGRPC(addr string) error {
 	if err != nil {
 		return fmt.Errorf("resource manager init: %w", err)
 	}
-	s.planner = plannerimpl.NewAsyncPlanner(batchClient, rm.Provisioner, plannerimpl.DefaultWorkerCount)
+	s.planner = plannerimpl.NewPlanner(batchClient, rm.Provisioner, plannerimpl.DefaultWorkerCount)
 
 	// Register all service handlers
 	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))

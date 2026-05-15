@@ -180,12 +180,12 @@ func (b *fakeBatchClient) snapshot() (creates, cancels []string) {
 // Helpers
 // =============================================================================
 
-// newTestAsyncPlanner builds a AsyncPlanner with the given fakes and worker count
+// newTestPlanner builds a Planner with the given fakes and worker count
 // and registers a cleanup that calls Close so leaked workers can't bleed
 // across tests.
-func newTestAsyncPlanner(t *testing.T, bc plannerclient.BatchClient, prov *fakeProvisioner, workers int) *AsyncPlanner {
+func newTestPlanner(t *testing.T, bc plannerclient.BatchClient, prov *fakeProvisioner, workers int) *Planner {
 	t.Helper()
-	q := NewAsyncPlanner(bc, prov, workers)
+	q := NewPlanner(bc, prov, workers)
 	t.Cleanup(func() {
 		_ = q.Close()
 	})
@@ -227,7 +227,7 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) 
 func TestEnqueueValidation(t *testing.T) {
 	prov := &fakeProvisioner{}
 	bc := &fakeBatchClient{}
-	q := newTestAsyncPlanner(t, bc, prov, 1)
+	q := newTestPlanner(t, bc, prov, 1)
 
 	cases := []struct {
 		name    string
@@ -263,7 +263,7 @@ func TestEnqueueValidation(t *testing.T) {
 }
 
 func TestEnqueueWithNilProvisioner(t *testing.T) {
-	q := NewAsyncPlanner(&fakeBatchClient{}, nil, 1)
+	q := NewPlanner(&fakeBatchClient{}, nil, 1)
 	t.Cleanup(func() { _ = q.Close() })
 
 	_, err := q.Enqueue(context.Background(), validReq("j1"))
@@ -284,7 +284,7 @@ func TestDuplicateJobIDRejected(t *testing.T) {
 			return &rmtypes.ProvisionResult{ProvisionID: "p1"}, nil
 		},
 	}
-	q := newTestAsyncPlanner(t, &fakeBatchClient{}, prov, 1)
+	q := newTestPlanner(t, &fakeBatchClient{}, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-dup")); err != nil {
 		t.Fatalf("first Enqueue: %v", err)
@@ -310,7 +310,7 @@ func TestEnqueueReturnsPendingPlaceholder(t *testing.T) {
 			return nil, errors.New("provision aborted by test")
 		},
 	}
-	q := newTestAsyncPlanner(t, &fakeBatchClient{}, prov, 1)
+	q := newTestPlanner(t, &fakeBatchClient{}, prov, 1)
 
 	job, err := q.Enqueue(context.Background(), validReq("j1"))
 	if err != nil {
@@ -328,7 +328,7 @@ func TestEnqueueReturnsPendingPlaceholder(t *testing.T) {
 func TestHappyPathReachesSubmitted(t *testing.T) {
 	prov := &fakeProvisioner{} // default success
 	bc := &fakeBatchClient{}   // default success, batch.ID = "batch-<JobID>"
-	q := newTestAsyncPlanner(t, bc, prov, 1)
+	q := newTestPlanner(t, bc, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j1")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -372,7 +372,7 @@ func TestSlowProvisionDoesNotBlockEnqueue(t *testing.T) {
 			return &rmtypes.ProvisionResult{ProvisionID: "p-" + req.IdempotencyKey}, nil
 		},
 	}
-	q := newTestAsyncPlanner(t, &fakeBatchClient{}, prov, 1)
+	q := newTestPlanner(t, &fakeBatchClient{}, prov, 1)
 
 	start := time.Now()
 	_, err := q.Enqueue(context.Background(), validReq("j-slow"))
@@ -412,7 +412,7 @@ func TestWorkerPoolReachesConcurrency(t *testing.T) {
 			return &rmtypes.ProvisionResult{ProvisionID: "p-" + req.IdempotencyKey}, nil
 		},
 	}
-	q := newTestAsyncPlanner(t, &fakeBatchClient{}, prov, workers)
+	q := newTestPlanner(t, &fakeBatchClient{}, prov, workers)
 
 	for i := 0; i < submitted; i++ {
 		if _, err := q.Enqueue(context.Background(), validReq(fmt.Sprintf("j%d", i))); err != nil {
@@ -462,7 +462,7 @@ func TestProvisionFailureMarksFailed(t *testing.T) {
 		},
 	}
 	bc := &fakeBatchClient{}
-	q := newTestAsyncPlanner(t, bc, prov, 1)
+	q := newTestPlanner(t, bc, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-bad")); err != nil {
 		t.Fatalf("Enqueue j-bad: %v", err)
@@ -521,7 +521,7 @@ func TestWaitsForProvisionRunningBeforeCreateBatch(t *testing.T) {
 		},
 	}
 	bc := &fakeBatchClient{}
-	q := newTestAsyncPlanner(t, bc, prov, 1)
+	q := newTestPlanner(t, bc, prov, 1)
 	q.provPollInterval = 10 * time.Millisecond // fast polling for the test
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-wait")); err != nil {
@@ -558,7 +558,7 @@ func TestProvisionFailedDuringPollingMarksFailed(t *testing.T) {
 		},
 	}
 	bc := &fakeBatchClient{}
-	q := newTestAsyncPlanner(t, bc, prov, 1)
+	q := newTestPlanner(t, bc, prov, 1)
 	q.provPollInterval = 10 * time.Millisecond
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-prov-fail")); err != nil {
@@ -596,7 +596,7 @@ func TestCreateBatchFailureReleasesResource(t *testing.T) {
 			return nil, errors.New("mds 503")
 		},
 	}
-	q := newTestAsyncPlanner(t, bc, prov, 1)
+	q := newTestPlanner(t, bc, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-fail")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -631,7 +631,7 @@ func TestCreateBatchFailureReleaseErrorIsLoggedNotSurfaced(t *testing.T) {
 			return nil, errors.New("mds 503")
 		},
 	}
-	q := newTestAsyncPlanner(t, bc, prov, 1)
+	q := newTestPlanner(t, bc, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-rfail")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -664,7 +664,7 @@ func TestCancelQueuedJobBeforeWorkerPicksUp(t *testing.T) {
 		},
 	}
 	bc := &fakeBatchClient{}
-	q := newTestAsyncPlanner(t, bc, prov, 1)
+	q := newTestPlanner(t, bc, prov, 1)
 
 	// Job A occupies the single worker; job B sits in the channel.
 	if _, err := q.Enqueue(context.Background(), validReq("j-A")); err != nil {
@@ -714,7 +714,7 @@ func TestCancelQueuedJobBeforeWorkerPicksUp(t *testing.T) {
 func TestCancelSubmittedJobForwardsToMDS(t *testing.T) {
 	prov := &fakeProvisioner{}
 	bc := &fakeBatchClient{}
-	q := newTestAsyncPlanner(t, bc, prov, 1)
+	q := newTestPlanner(t, bc, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-sub")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -740,7 +740,7 @@ func TestCancelSubmittedJobForwardsToMDS(t *testing.T) {
 }
 
 func TestCancelUnknownJobReturnsNotFound(t *testing.T) {
-	q := newTestAsyncPlanner(t, &fakeBatchClient{}, &fakeProvisioner{}, 1)
+	q := newTestPlanner(t, &fakeBatchClient{}, &fakeProvisioner{}, 1)
 	_, err := q.Cancel(context.Background(), "j-ghost")
 	if !errors.Is(err, plannerapi.ErrJobNotFound) {
 		t.Errorf("want ErrJobNotFound; got %v", err)
@@ -762,7 +762,7 @@ func TestCancelDuringProvisioningHonoredAfterCreateBatch(t *testing.T) {
 		},
 	}
 	bc := &fakeBatchClient{}
-	q := newTestAsyncPlanner(t, bc, prov, 1)
+	q := newTestPlanner(t, bc, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-mid-prov")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -804,7 +804,7 @@ func TestCancelDuringCreateBatchHonored(t *testing.T) {
 		},
 	}
 	prov := &fakeProvisioner{} // default returns ProvisionID="prov-<JobID>"
-	q := newTestAsyncPlanner(t, bc, prov, 1)
+	q := newTestPlanner(t, bc, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-mid-create")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -859,7 +859,7 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 			return nil, ctx.Err()
 		},
 	}
-	q := NewAsyncPlanner(&fakeBatchClient{}, prov, workers)
+	q := NewPlanner(&fakeBatchClient{}, prov, workers)
 
 	for i := 0; i < workers; i++ {
 		if _, err := q.Enqueue(context.Background(), validReq(fmt.Sprintf("j%d", i))); err != nil {
@@ -892,7 +892,7 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 }
 
 func TestCloseIsIdempotent(t *testing.T) {
-	q := NewAsyncPlanner(&fakeBatchClient{}, &fakeProvisioner{}, 2)
+	q := NewPlanner(&fakeBatchClient{}, &fakeProvisioner{}, 2)
 	if err := q.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
 	}
@@ -916,7 +916,7 @@ func TestCloseIsIdempotent(t *testing.T) {
 func TestWorkerCountFloor(t *testing.T) {
 	prov := &fakeProvisioner{}
 	bc := &fakeBatchClient{}
-	q := newTestAsyncPlanner(t, bc, prov, 0) // explicitly degenerate
+	q := newTestPlanner(t, bc, prov, 0) // explicitly degenerate
 
 	if _, err := q.Enqueue(context.Background(), validReq("j1")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -934,7 +934,7 @@ func TestWorkerCountFloor(t *testing.T) {
 // =============================================================================
 
 func TestGetJobUnknownReturnsNotFound(t *testing.T) {
-	q := newTestAsyncPlanner(t, &fakeBatchClient{}, &fakeProvisioner{}, 1)
+	q := newTestPlanner(t, &fakeBatchClient{}, &fakeProvisioner{}, 1)
 	_, err := q.GetJob(context.Background(), "j-ghost")
 	if !errors.Is(err, plannerapi.ErrJobNotFound) {
 		t.Errorf("want ErrJobNotFound; got %v", err)
@@ -949,7 +949,7 @@ func TestGetJobUnknownReturnsNotFound(t *testing.T) {
 // Provision and is blocked on the fake), so its status is "provisioning".
 // The pending window — between Enqueue and the worker picking the JobID
 // off the submit channel — is too narrow to assert on deterministically;
-// it's exercised by other tests that use a 0-worker AsyncPlanner.
+// it's exercised by other tests that use a 0-worker Planner.
 func TestListJobsMergesProvisioningAndMDS(t *testing.T) {
 	// Block Provision so the local job stays unsubmitted while ListJobs
 	// runs — that's how unsubmittedJobs picks it up.
@@ -974,7 +974,7 @@ func TestListJobsMergesProvisioningAndMDS(t *testing.T) {
 			}, nil
 		},
 	}
-	q := newTestAsyncPlanner(t, bc, prov, 1)
+	q := newTestPlanner(t, bc, prov, 1)
 
 	if _, err := q.Enqueue(context.Background(), validReq("j-provisioning")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -1024,7 +1024,7 @@ func TestListJobsMergesProvisioningAndMDS(t *testing.T) {
 func TestConcurrentEnqueuesNoRace(t *testing.T) {
 	prov := &fakeProvisioner{}
 	bc := &fakeBatchClient{}
-	q := newTestAsyncPlanner(t, bc, prov, 4)
+	q := newTestPlanner(t, bc, prov, 4)
 
 	const N = 50
 	var wg sync.WaitGroup

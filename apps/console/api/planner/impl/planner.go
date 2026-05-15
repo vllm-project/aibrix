@@ -33,10 +33,11 @@ import (
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 )
 
-// AsyncPlanner is an asynchronous Planner. Enqueue records the job in memory,
-// returns a placeholder batch in "pending" status, and lets workers run
-// Provision, wait for the resource to reach Running, then CreateBatch.
-type AsyncPlanner struct {
+// Planner is an asynchronous implementation of plannerapi.Planner.
+// Enqueue records the job in memory, returns a placeholder batch in
+// "pending" status, and lets workers run Provision, wait for the
+// resource to reach Running, then CreateBatch.
+type Planner struct {
 	bc   plannerclient.BatchClient
 	prov provisioner.Provisioner
 
@@ -116,14 +117,14 @@ const defaultProvPollInterval = 5 * time.Second
 // the resource is released.
 const provReadyTimeout = 2 * time.Minute
 
-// NewAsyncPlanner constructs an asynchronous AsyncPlanner Planner and starts
-// workerCount background workers. workerCount < 1 is floored to 1.
-func NewAsyncPlanner(bc plannerclient.BatchClient, prov provisioner.Provisioner, workerCount int) *AsyncPlanner {
+// NewPlanner constructs a Planner and starts workerCount background
+// workers. workerCount < 1 is floored to 1.
+func NewPlanner(bc plannerclient.BatchClient, prov provisioner.Provisioner, workerCount int) *Planner {
 	if workerCount < 1 {
 		workerCount = 1
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	q := &AsyncPlanner{
+	q := &Planner{
 		bc:               bc,
 		prov:             prov,
 		submit:           make(chan string, queueCapacity),
@@ -141,16 +142,16 @@ func NewAsyncPlanner(bc plannerclient.BatchClient, prov provisioner.Provisioner,
 	return q
 }
 
-var _ plannerapi.Planner = (*AsyncPlanner)(nil)
+var _ plannerapi.Planner = (*Planner)(nil)
 
 // Close cancels in-flight work and waits for workers to exit.
-func (q *AsyncPlanner) Close() error {
+func (q *Planner) Close() error {
 	q.baseCancel()
 	q.wg.Wait()
 	return nil
 }
 
-func (q *AsyncPlanner) run() {
+func (q *Planner) run() {
 	defer q.wg.Done()
 	for {
 		select {
@@ -162,7 +163,7 @@ func (q *AsyncPlanner) run() {
 	}
 }
 
-func (q *AsyncPlanner) process(jobID string) {
+func (q *Planner) process(jobID string) {
 	// Atomic check-and-flip Pending → Provisioning.
 	q.mu.Lock()
 	job, ok := q.jobs[jobID]
@@ -253,7 +254,7 @@ func (q *AsyncPlanner) process(jobID string) {
 // or Failed, the timeout elapses, or the scheduler is shutting down.
 // Provisioner.Provision returns when the request is accepted, not when the
 // resource is ready; Planner must wait for Running before invoking CreateBatch.
-func (q *AsyncPlanner) waitForProvisionReady(provisionID string) error {
+func (q *Planner) waitForProvisionReady(provisionID string) error {
 	filter := &rmtypes.ListOptions{ProvisionIDs: &[]string{provisionID}}
 	deadline := time.Now().Add(provReadyTimeout)
 	for {
@@ -285,14 +286,14 @@ func (q *AsyncPlanner) waitForProvisionReady(provisionID string) error {
 // releaseAfter performs a best-effort RM release and logs failures. The
 // reason string ("wait failure", "CreateBatch failure", "cancel-race")
 // appears in the log line so each call site is self-identifying.
-func (q *AsyncPlanner) releaseAfter(jobID, provisionID, reason string) {
+func (q *Planner) releaseAfter(jobID, provisionID, reason string) {
 	if err := q.prov.Release(q.baseCtx, provisionID); err != nil {
 		klog.Warningf("[planner] release after %s job_id=%q provision_id=%q: %v",
 			reason, jobID, provisionID, err)
 	}
 }
 
-func (q *AsyncPlanner) markFailed(jobID string, err error) {
+func (q *Planner) markFailed(jobID string, err error) {
 	q.mu.Lock()
 	if job, ok := q.jobs[jobID]; ok {
 		job.state = jobStateFailed
@@ -305,7 +306,7 @@ func (q *AsyncPlanner) markFailed(jobID string, err error) {
 
 // Enqueue records the job, pushes it onto the worker channel, and returns
 // a placeholder batch in "pending" status.
-func (q *AsyncPlanner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (*plannerapi.Job, error) {
+func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (*plannerapi.Job, error) {
 	if req == nil {
 		return nil, fmt.Errorf("%w: nil request", plannerapi.ErrInvalidJob)
 	}
@@ -357,7 +358,7 @@ func (q *AsyncPlanner) Enqueue(ctx context.Context, req *plannerapi.EnqueueReque
 
 // GetJob resolves the JobID. Submitted jobs forward to MDS; others return
 // a placeholder batch with status derived from jobState.
-func (q *AsyncPlanner) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, error) {
+func (q *Planner) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, error) {
 	if jobID == "" {
 		return nil, fmt.Errorf("%w: empty job_id", plannerapi.ErrInvalidJob)
 	}
@@ -392,7 +393,7 @@ func (q *AsyncPlanner) GetJob(ctx context.Context, jobID string) (*plannerapi.Jo
 // MDS for a submitted job. A cancel that lands mid-Provision or
 // mid-CreateBatch is honored at the worker's post-CreateBatch checkpoint
 // (which forwards CancelBatch and releases the resource).
-func (q *AsyncPlanner) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, error) {
+func (q *Planner) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, error) {
 	if jobID == "" {
 		return nil, fmt.Errorf("%w: empty job_id", plannerapi.ErrInvalidJob)
 	}
@@ -435,7 +436,7 @@ func (q *AsyncPlanner) Cancel(ctx context.Context, jobID string) (*plannerapi.Jo
 
 // ListJobs merges MDS batches with local not-yet-submitted jobs. Local jobs
 // are shown only on the first page so the MDS cursor remains valid.
-func (q *AsyncPlanner) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest) (*plannerapi.ListJobsResponse, error) {
+func (q *Planner) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest) (*plannerapi.ListJobsResponse, error) {
 	listReq := &plannerclient.ListBatchesRequest{}
 	if req != nil {
 		listReq.Limit = req.Limit
@@ -461,7 +462,7 @@ func (q *AsyncPlanner) ListJobs(ctx context.Context, req *plannerapi.ListJobsReq
 // unsubmittedJobs returns the non-submitted planner-tracked jobs, newest
 // first. Mutable fields are snapshotted under the lock so the rendering
 // loop doesn't race against concurrent state transitions.
-func (q *AsyncPlanner) unsubmittedJobs() []*plannerapi.Job {
+func (q *Planner) unsubmittedJobs() []*plannerapi.Job {
 	type snap struct {
 		req        *plannerapi.EnqueueRequest
 		state      jobState
@@ -497,7 +498,7 @@ func (q *AsyncPlanner) unsubmittedJobs() []*plannerapi.Job {
 // rollbackEnqueue undoes the q.jobs insert from Enqueue when Enqueue fails.
 // Not called on processing failures — markFailed keeps those entries in
 // q.jobs so callers can observe them.
-func (q *AsyncPlanner) rollbackEnqueue(jobID string) {
+func (q *Planner) rollbackEnqueue(jobID string) {
 	q.mu.Lock()
 	delete(q.jobs, jobID)
 	q.mu.Unlock()
