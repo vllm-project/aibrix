@@ -22,9 +22,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"syscall"
 
+	_ "go.uber.org/automaxprocs"
 	"google.golang.org/grpc"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -177,6 +179,8 @@ func main() {
 			klog.Fatalf("failed to setup profiling: %v", err)
 		}
 	}()
+
+	klog.Infof("GOMAXPROCS is: %d", runtime.GOMAXPROCS(0))
 
 	var gracefulStop = make(chan os.Signal, 1)
 	signal.Notify(gracefulStop, syscall.SIGINT, syscall.SIGTERM)

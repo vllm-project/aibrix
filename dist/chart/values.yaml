@@ -214,6 +214,7 @@ gateway:
     route:
       timeout: 120s          # e.g., "120s" or "2m"
       connectTimeout: 6s     # e.g., "6s"
+      idleTimeout: 300s      # e.g., "300s" or "5m"
     circuitBreakers:
       # The maximum number of connections for the original destination cluster.
       maxConnections: 1024

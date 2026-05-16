@@ -146,6 +146,7 @@ spec:
           route:
             cluster: original_destination_cluster
             timeout: {{ .Values.gateway.envoyPatchPolicy.route.timeout }}
+            idle_timeout: {{ .Values.gateway.envoyPatchPolicy.route.idleTimeout }}
           typed_per_filter_config:
             "envoy.filters.http.ext_proc/envoyextensionpolicy/{{ .Release.Namespace }}/{{ include "aibrix.fullname" . }}-gateway-plugins-extension-policy/extproc/0":
               "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"

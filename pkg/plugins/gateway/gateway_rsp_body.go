@@ -20,16 +20,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"math"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/packages/ssestream"
+	"github.com/tidwall/gjson"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
@@ -80,31 +77,68 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	}()
 
 	if stream {
-		t := &http.Response{
-			Body: io.NopCloser(bytes.NewReader(b.ResponseBody.GetBody())),
-		}
-		streaming := ssestream.NewStream[openai.ChatCompletionChunk](ssestream.NewDecoder(t), nil)
-		defer func() {
-			_ = streaming.Close()
-		}()
-		for streaming.Next() {
-			evt := streaming.Current()
-			if len(evt.Choices) == 0 {
-				// Do not overwrite model, res can be empty.
-				promptTokens = evt.Usage.PromptTokens
-				totalTokens = evt.Usage.TotalTokens
-				completionTokens = evt.Usage.CompletionTokens
+		bodyBytes := b.ResponseBody.GetBody()
+
+		// The previous implementation unmarshalled every single SSE chunk into a struct (openai.ChatCompletionChunk).
+		// This caused significant CPU overhead and high GC pressure under heavy concurrency.
+		// The new implementation uses zero-allocation  byte scanning and pre-filtering,
+		// selectively extracting only the "usage" metadata via gjson for the final chunks.
+		if bytes.Contains(bodyBytes, []byte(`"usage"`)) {
+			remaining := bodyBytes
+
+			for len(remaining) > 0 {
+				var line []byte
+				// Manually find the newline to avoid the allocations of bytes.Split
+				if idx := bytes.IndexByte(remaining, '\n'); idx >= 0 {
+					line = remaining[:idx]
+					remaining = remaining[idx+1:]
+				} else {
+					line = remaining
+					remaining = nil
+				}
+
+				// Handle SSE \r\n line endings. bytes.TrimSpace safely strips trailing \r
+				// as well as any leading/trailing whitespace.
+				line = bytes.TrimSpace(line)
+
+				// Look for the SSE data prefix
+				if bytes.HasPrefix(line, []byte("data:")) {
+					// Slice the "data:" prefix (zero allocation)
+					jsonBytes := bytes.TrimSpace(line[5:])
+
+					// Check for the end of the stream
+					if bytes.Equal(jsonBytes, []byte("[DONE]")) {
+						continue
+					}
+
+					// While gjson.ValidBytes is O(N), it does not degrade gateway throughput.
+					// Guarded by the bytes.Contains pre-filter, it bypasses the hot path of streaming standard text
+					// and only executes on final chunks, ensuring strict correctness.
+					if !gjson.ValidBytes(jsonBytes) {
+						complete = true
+						return generateErrorResponse(
+							envoyTypePb.StatusCode_InternalServerError,
+							[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+								Key: HeaderErrorStreaming, RawValue: []byte("true"),
+							}}},
+							"malformed JSON in SSE stream", "", ""), complete
+					}
+
+					// gjson avoids full deserialization by only extracting the usage field.
+					usageResult := gjson.GetBytes(jsonBytes, "usage")
+					if usageResult.Exists() && usageResult.IsObject() {
+						// Assumption: The upstream sends the usage object only in the final chunk
+						// (standard vLLM/OpenAI behavior). We overwrite/set the values here.
+						promptTokens = usageResult.Get("prompt_tokens").Int()
+						completionTokens = usageResult.Get("completion_tokens").Int()
+						totalTokens = usageResult.Get("total_tokens").Int()
+					}
+				}
 			}
-		}
-		if err := streaming.Err(); err != nil {
-			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
-			complete = true
-			return generateErrorResponse(
-				envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderErrorStreaming, RawValue: []byte("true"),
-				}}},
-				err.Error(), "", ""), complete
+			// warnings when "usage" is triggered by a false positive in generated content.
+			if promptTokens == 0 && totalTokens == 0 {
+				klog.V(4).Infof("usage string detected but no valid tokens parsed (likely generated text), requestID: %s", requestID)
+			}
 		}
 	} else {
 		if isLanguageRequest(routerCtx.ReqPath) {
