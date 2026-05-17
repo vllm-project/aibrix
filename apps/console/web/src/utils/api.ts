@@ -78,7 +78,7 @@ export interface CreateDeploymentRequest {
   enableAutoScaling?: boolean;
   enableMultiLora?: boolean;
   template?: DeploymentTemplateRef;
-  implementation?: DeploymentImplementationRef;
+  provider?: DeploymentProviderRef;
   overrides?: DeploymentOverrides;
 }
 
@@ -87,7 +87,7 @@ export interface DeploymentTemplateRef {
   templateId: string;
 }
 
-export interface DeploymentImplementationRef {
+export interface DeploymentProviderRef {
   kind: string;
   profile?: string;
 }
@@ -171,7 +171,7 @@ export interface DeploymentTopologySpec {
 }
 
 export interface DeploymentCompatibilitySpec {
-  implementationKinds?: string[];
+  providerKinds?: string[];
 }
 
 export interface DeploymentScalingDefaultsSpec {
@@ -359,6 +359,22 @@ export async function listDeployments(search?: string): Promise<Deployment[]> {
 
 export async function getDeployment(id: string): Promise<Deployment> {
   return apiFetch<Deployment>(`/api/v1/deployments/${encodeURIComponent(id)}`);
+}
+
+export async function refreshDeploymentStatus(id: string): Promise<Deployment> {
+  return apiFetch<Deployment>(`/api/v1/deployments/${encodeURIComponent(id)}:refreshStatus`, {
+    method: 'POST',
+    body: '{}',
+  });
+}
+
+export async function batchRefreshDeploymentStatuses(ids: string[]): Promise<Deployment[]> {
+  if (ids.length === 0) return [];
+  const data = await apiFetch<{ deployments: Deployment[] }>('/api/v1/deployments:batchRefreshStatuses', {
+    method: 'POST',
+    body: JSON.stringify(camelToSnake({ ids })),
+  });
+  return data.deployments || [];
 }
 
 export async function createDeployment(req: CreateDeploymentRequest): Promise<Deployment> {

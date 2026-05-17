@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
@@ -223,7 +224,7 @@ func (s *GORMStore) CreateDeployment(ctx context.Context, req *pb.CreateDeployme
 		GpusPerReplica: req.AcceleratorCount,
 		GpuType:        req.AcceleratorType,
 		Region:         req.Region,
-		Status:         "Deploying",
+		Status:         deploymentstatus.StatusDeploying,
 	}
 	if err := s.db.WithContext(ctx).Create(&d).Error; err != nil {
 		return nil, status.Errorf(codes.Internal, "create deployment: %v", err)

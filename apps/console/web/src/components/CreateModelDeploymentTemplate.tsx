@@ -134,6 +134,14 @@ function emptySpec(): ModelDeploymentTemplateSpec {
   };
 }
 
+function normalizeModelSourceUri(value: string | undefined): string {
+  return (value ?? '')
+    .trim()
+    .replace(/^-\s+/, '')
+    .replace(/\s+-$/, '')
+    .trim();
+}
+
 export function CreateModelDeploymentTemplate({
   modelId,
   templateId,
@@ -219,7 +227,16 @@ export function CreateModelDeploymentTemplate({
       return;
     }
 
-    const finalSpec: ModelDeploymentTemplateSpec = { ...spec };
+    const finalSpec: ModelDeploymentTemplateSpec = {
+      ...spec,
+      modelSource: spec.modelSource
+        ? {
+            ...spec.modelSource,
+            uri: normalizeModelSourceUri(spec.modelSource.uri),
+          }
+        : spec.modelSource,
+    };
+    setSpec(finalSpec);
 
     setSaving(true);
     try {

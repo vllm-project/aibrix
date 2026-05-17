@@ -1,13 +1,16 @@
-package driver
+package provider
 
 import (
 	"context"
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/vllm-project/aibrix/apps/console/api/config"
+	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -25,55 +28,84 @@ import (
 )
 
 const (
-	DefaultImplementationKind = "k8s-deployment"
+	// DefaultProviderKind is the canonical provider kind for new Kubernetes deployments.
+	DefaultProviderKind = "kubernetes"
+	// LegacyKubernetesProviderKind is accepted for existing records and templates
+	// created before the provider kind was standardized.
+	LegacyKubernetesProviderKind = "k8s-deployment"
+	kubernetesCleanupTimeout     = 30 * time.Second
 )
 
-type DeploymentDriver interface {
+type DeploymentProvider interface {
 	Kind() string
 	Validate(ctx context.Context, template *pb.ModelDeploymentTemplate, req *pb.CreateDeploymentRequest) error
 	Create(ctx context.Context, template *pb.ModelDeploymentTemplate, req *pb.CreateDeploymentRequest) (*pb.Deployment, error)
-	Get(ctx context.Context, deployment *pb.Deployment) (*pb.Deployment, error)
-	List(ctx context.Context, deployments []*pb.Deployment) ([]*pb.Deployment, error)
+	Observe(ctx context.Context, deployment *pb.Deployment) (*ObservedStatus, error)
 	Update(ctx context.Context, deployment *pb.Deployment) (*pb.Deployment, error)
 	Delete(ctx context.Context, deployment *pb.Deployment) error
 }
 
-type Registry struct {
-	drivers map[string]DeploymentDriver
+type ObservedStatus struct {
+	Status     string
+	Reason     string
+	Message    string
+	Replicas   string
+	ObservedAt int64
 }
 
-func NewRegistry(drivers ...DeploymentDriver) *Registry {
-	r := &Registry{drivers: map[string]DeploymentDriver{}}
-	for _, d := range drivers {
-		r.drivers[d.Kind()] = d
+type Registry struct {
+	providers map[string]DeploymentProvider
+}
+
+func NewRegistry(providers ...DeploymentProvider) *Registry {
+	r := &Registry{providers: map[string]DeploymentProvider{}}
+	for _, p := range providers {
+		r.providers[p.Kind()] = p
 	}
 	return r
 }
 
-func (r *Registry) Get(kind string) (DeploymentDriver, error) {
-	if kind == "" {
-		kind = DefaultImplementationKind
-	}
-	d, ok := r.drivers[kind]
+func (r *Registry) Get(kind string) (DeploymentProvider, error) {
+	kind = normalizeProviderKind(kind)
+	p, ok := r.providers[kind]
 	if !ok {
-		return nil, status.Errorf(codes.InvalidArgument, "unsupported deployment implementation kind %q", kind)
+		return nil, status.Errorf(codes.InvalidArgument, "unsupported deployment provider kind %q", kind)
 	}
-	return d, nil
+	return p, nil
 }
 
-type K8sDeploymentDriver struct {
-	cfg *config.Config
+func normalizeProviderKind(kind string) string {
+	switch kind {
+	case "", LegacyKubernetesProviderKind:
+		return DefaultProviderKind
+	default:
+		return kind
+	}
 }
 
-func NewK8sDeploymentDriver(cfg *config.Config) *K8sDeploymentDriver {
-	return &K8sDeploymentDriver{cfg: cfg}
+func isCompatibleProviderKind(kind, providerKind string) bool {
+	return normalizeProviderKind(kind) == providerKind
 }
 
-func (d *K8sDeploymentDriver) Kind() string {
-	return DefaultImplementationKind
+type KubernetesDeploymentProvider struct {
+	cfg             *config.Config
+	mu              sync.Mutex
+	cachedClientset kubernetes.Interface
+	cachedNamespace string
 }
 
-func (d *K8sDeploymentDriver) Validate(_ context.Context, template *pb.ModelDeploymentTemplate, req *pb.CreateDeploymentRequest) error {
+func NewKubernetesDeploymentProvider(cfg *config.Config) *KubernetesDeploymentProvider {
+	return &KubernetesDeploymentProvider{cfg: cfg}
+}
+
+func (d *KubernetesDeploymentProvider) Kind() string {
+	return DefaultProviderKind
+}
+
+func (d *KubernetesDeploymentProvider) Validate(_ context.Context, template *pb.ModelDeploymentTemplate, req *pb.CreateDeploymentRequest) error {
+	if req == nil {
+		return status.Error(codes.InvalidArgument, "create deployment request is required")
+	}
 	if template == nil {
 		return status.Error(codes.InvalidArgument, "deployment template is required")
 	}
@@ -85,30 +117,33 @@ func (d *K8sDeploymentDriver) Validate(_ context.Context, template *pb.ModelDepl
 	}
 
 	compatibility := template.GetSpec().GetCompatibility()
-	if compatibility != nil && len(compatibility.GetImplementationKinds()) > 0 {
+	if compatibility != nil && len(compatibility.GetProviderKinds()) > 0 {
 		allowed := false
-		for _, kind := range compatibility.GetImplementationKinds() {
-			if kind == d.Kind() {
+		for _, kind := range compatibility.GetProviderKinds() {
+			if isCompatibleProviderKind(kind, d.Kind()) {
 				allowed = true
 				break
 			}
 		}
 		if !allowed {
-			return status.Errorf(codes.FailedPrecondition, "template %q does not support implementation %q", template.GetName(), d.Kind())
+			return status.Errorf(codes.FailedPrecondition, "template %q does not support provider %q", template.GetName(), d.Kind())
 		}
 	}
 
 	if topology := template.GetSpec().GetTopology(); topology != nil && topology.GetKind() == "pd-disaggregated" {
-		return status.Errorf(codes.FailedPrecondition, "implementation %q does not support topology %q", d.Kind(), topology.GetKind())
+		return status.Errorf(codes.FailedPrecondition, "provider %q does not support topology %q", d.Kind(), topology.GetKind())
 	}
 	if template.GetSpec().GetEngine().GetImage() == "" {
-		return status.Error(codes.InvalidArgument, "template engine.image is required for k8s-deployment")
+		return status.Error(codes.InvalidArgument, "template engine.image is required for kubernetes")
+	}
+	if err := validateDeploymentSizing(template.GetSpec(), req); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func (d *K8sDeploymentDriver) Create(ctx context.Context, template *pb.ModelDeploymentTemplate, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
+func (d *KubernetesDeploymentProvider) Create(ctx context.Context, template *pb.ModelDeploymentTemplate, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
 	spec := template.GetSpec()
 	accelerator := spec.GetAccelerator()
 	overrides := req.GetOverrides()
@@ -168,7 +203,7 @@ func (d *K8sDeploymentDriver) Create(ctx context.Context, template *pb.ModelDepl
 		"app.kubernetes.io/name":     "aibrix-console-deployment",
 		"app.kubernetes.io/instance": resourceName,
 		"aibrix.io/template-id":      template.GetId(),
-		"aibrix.io/implementation":   d.Kind(),
+		"aibrix.io/provider":         d.Kind(),
 		"aibrix.io/model-id":         template.GetModelId(),
 	}
 
@@ -177,39 +212,45 @@ func (d *K8sDeploymentDriver) Create(ctx context.Context, template *pb.ModelDepl
 	if _, err := clientset.AppsV1().Deployments(namespace).Create(ctx, deployment, metav1.CreateOptions{}); err != nil {
 		return nil, status.Errorf(codes.Internal, "create deployment %q: %v", resourceName, err)
 	}
+	deploymentCreated := true
 
 	serviceName := resourceName + "-svc"
 	service := buildService(serviceName, namespace, labels, d.cfg)
 	if _, err := clientset.CoreV1().Services(namespace).Create(ctx, service, metav1.CreateOptions{}); err != nil {
-		return nil, status.Errorf(codes.Internal, "create service %q: %v", serviceName, err)
+		createErr := status.Errorf(codes.Internal, "create service %q: %v", serviceName, err)
+		cleanupErr := cleanupCreatedKubernetesResourcesWithTimeout(clientset, namespace, resourceName, deploymentCreated, false, false)
+		return nil, withRollbackError(createErr, cleanupErr)
 	}
+	serviceCreated := true
 
 	if enableAutoScaling && maxReplicas > minReplicas {
 		hpa := buildHPA(resourceName, namespace, d.cfg, minReplicas, maxReplicas)
 		if _, err := clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).Create(ctx, hpa, metav1.CreateOptions{}); err != nil {
-			return nil, status.Errorf(codes.Internal, "create hpa %q: %v", resourceName, err)
+			createErr := status.Errorf(codes.Internal, "create hpa %q: %v", resourceName, err)
+			cleanupErr := cleanupCreatedKubernetesResourcesWithTimeout(clientset, namespace, resourceName, deploymentCreated, serviceCreated, false)
+			return nil, withRollbackError(createErr, cleanupErr)
 		}
 	}
 
 	return &pb.Deployment{
-		Id:                 uuid.NewString(),
-		Name:               req.GetName(),
-		DeploymentId:       resourceName,
-		BaseModel:          baseModel,
-		BaseModelId:        baseModelID,
-		Replicas:           replicas,
-		GpusPerReplica:     accelerator.GetCount(),
-		GpuType:            accelerator.GetType(),
-		Region:             region,
-		CreatedBy:          "console-template",
-		Status:             "Deploying",
-		TemplateId:         template.GetId(),
-		TemplateVersion:    template.GetVersion(),
-		ImplementationKind: d.Kind(),
+		Id:              uuid.NewString(),
+		Name:            req.GetName(),
+		DeploymentId:    resourceName,
+		BaseModel:       baseModel,
+		BaseModelId:     baseModelID,
+		Replicas:        replicas,
+		GpusPerReplica:  accelerator.GetCount(),
+		GpuType:         accelerator.GetType(),
+		Region:          region,
+		CreatedBy:       "console-template",
+		Status:          deploymentstatus.StatusDeploying,
+		TemplateId:      template.GetId(),
+		TemplateVersion: template.GetVersion(),
+		ProviderKind:    d.Kind(),
 	}, nil
 }
 
-func (d *K8sDeploymentDriver) Get(ctx context.Context, deployment *pb.Deployment) (*pb.Deployment, error) {
+func (d *KubernetesDeploymentProvider) Observe(ctx context.Context, deployment *pb.Deployment) (*ObservedStatus, error) {
 	if deployment == nil {
 		return nil, status.Error(codes.InvalidArgument, "deployment is required")
 	}
@@ -223,12 +264,16 @@ func (d *K8sDeploymentDriver) Get(ctx context.Context, deployment *pb.Deployment
 		return nil, err
 	}
 
-	current := cloneDeployment(deployment)
-	k8sDeployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, resourceName, metav1.GetOptions{})
+	kubernetesDeployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, resourceName, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			current.Status = "Deleted"
-			return current, nil
+			return &ObservedStatus{
+				Status:     deploymentstatus.StatusDeleted,
+				Reason:     "NotFound",
+				Message:    "provider deployment resource was not found",
+				Replicas:   deployment.GetReplicas(),
+				ObservedAt: time.Now().Unix(),
+			}, nil
 		}
 		return nil, status.Errorf(codes.Internal, "get deployment %q: %v", resourceName, err)
 	}
@@ -250,24 +295,17 @@ func (d *K8sDeploymentDriver) Get(ctx context.Context, deployment *pb.Deployment
 		}
 	}
 
-	current.Replicas = formatReplicaSpec(k8sDeployment, hpa)
-	current.Status = resolveKubernetesDeploymentStatus(k8sDeployment, serviceFound)
-	return current, nil
+	statusValue, reason, message := resolveKubernetesDeploymentStatus(kubernetesDeployment, serviceFound)
+	return &ObservedStatus{
+		Status:     statusValue,
+		Reason:     reason,
+		Message:    message,
+		Replicas:   formatReplicaSpec(kubernetesDeployment, hpa),
+		ObservedAt: time.Now().Unix(),
+	}, nil
 }
 
-func (d *K8sDeploymentDriver) List(ctx context.Context, deployments []*pb.Deployment) ([]*pb.Deployment, error) {
-	out := make([]*pb.Deployment, 0, len(deployments))
-	for _, deployment := range deployments {
-		current, err := d.Get(ctx, deployment)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, current)
-	}
-	return out, nil
-}
-
-func (d *K8sDeploymentDriver) Update(ctx context.Context, deployment *pb.Deployment) (*pb.Deployment, error) {
+func (d *KubernetesDeploymentProvider) Update(ctx context.Context, deployment *pb.Deployment) (*pb.Deployment, error) {
 	if deployment == nil {
 		return nil, status.Error(codes.InvalidArgument, "deployment is required")
 	}
@@ -286,12 +324,12 @@ func (d *K8sDeploymentDriver) Update(ctx context.Context, deployment *pb.Deploym
 		return nil, status.Errorf(codes.InvalidArgument, "parse replicas %q: %v", deployment.GetReplicas(), err)
 	}
 
-	k8sDeployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, resourceName, metav1.GetOptions{})
+	kubernetesDeployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, resourceName, metav1.GetOptions{})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "get deployment %q: %v", resourceName, err)
 	}
-	k8sDeployment.Spec.Replicas = &minReplicas
-	if _, updateErr := clientset.AppsV1().Deployments(namespace).Update(ctx, k8sDeployment, metav1.UpdateOptions{}); updateErr != nil {
+	kubernetesDeployment.Spec.Replicas = &minReplicas
+	if _, updateErr := clientset.AppsV1().Deployments(namespace).Update(ctx, kubernetesDeployment, metav1.UpdateOptions{}); updateErr != nil {
 		return nil, status.Errorf(codes.Internal, "update deployment %q: %v", resourceName, updateErr)
 	}
 
@@ -321,10 +359,14 @@ func (d *K8sDeploymentDriver) Update(ctx context.Context, deployment *pb.Deploym
 		}
 	}
 
-	return d.Get(ctx, deployment)
+	observed, err := d.Observe(ctx, deployment)
+	if err != nil {
+		return nil, err
+	}
+	return ApplyObservedStatus(deployment, observed), nil
 }
 
-func (d *K8sDeploymentDriver) Delete(ctx context.Context, deployment *pb.Deployment) error {
+func (d *KubernetesDeploymentProvider) Delete(ctx context.Context, deployment *pb.Deployment) error {
 	if deployment == nil {
 		return status.Error(codes.InvalidArgument, "deployment is required")
 	}
@@ -338,23 +380,62 @@ func (d *K8sDeploymentDriver) Delete(ctx context.Context, deployment *pb.Deploym
 		return err
 	}
 
-	deletePolicy := metav1.DeletePropagationBackground
-	if err := clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).Delete(ctx, resourceName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		return status.Errorf(codes.Internal, "delete hpa %q: %v", resourceName, err)
-	}
-	if err := clientset.CoreV1().Services(namespace).Delete(ctx, resourceName+"-svc", metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		return status.Errorf(codes.Internal, "delete service %q: %v", resourceName+"-svc", err)
-	}
-	if err := clientset.AppsV1().Deployments(namespace).Delete(ctx, resourceName, metav1.DeleteOptions{PropagationPolicy: &deletePolicy}); err != nil && !apierrors.IsNotFound(err) {
-		return status.Errorf(codes.Internal, "delete deployment %q: %v", resourceName, err)
+	if err := cleanupCreatedKubernetesResources(ctx, clientset, namespace, resourceName, true, true, true); err != nil {
+		return status.Errorf(codes.Internal, "delete provider resources %q: %v", resourceName, err)
 	}
 	return nil
 }
 
-func (d *K8sDeploymentDriver) clientset() (kubernetes.Interface, string, error) {
+func cleanupCreatedKubernetesResourcesWithTimeout(clientset kubernetes.Interface, namespace, resourceName string, deploymentCreated, serviceCreated, hpaCreated bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), kubernetesCleanupTimeout)
+	defer cancel()
+	return cleanupCreatedKubernetesResources(ctx, clientset, namespace, resourceName, deploymentCreated, serviceCreated, hpaCreated)
+}
+
+func cleanupCreatedKubernetesResources(ctx context.Context, clientset kubernetes.Interface, namespace, resourceName string, deploymentCreated, serviceCreated, hpaCreated bool) error {
+	var cleanupErrs []string
+	deletePolicy := metav1.DeletePropagationBackground
+
+	if hpaCreated {
+		if err := clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).Delete(ctx, resourceName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			cleanupErrs = append(cleanupErrs, fmt.Sprintf("delete hpa %q: %v", resourceName, err))
+		}
+	}
+	if serviceCreated {
+		serviceName := resourceName + "-svc"
+		if err := clientset.CoreV1().Services(namespace).Delete(ctx, serviceName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			cleanupErrs = append(cleanupErrs, fmt.Sprintf("delete service %q: %v", serviceName, err))
+		}
+	}
+	if deploymentCreated {
+		if err := clientset.AppsV1().Deployments(namespace).Delete(ctx, resourceName, metav1.DeleteOptions{PropagationPolicy: &deletePolicy}); err != nil && !apierrors.IsNotFound(err) {
+			cleanupErrs = append(cleanupErrs, fmt.Sprintf("delete deployment %q: %v", resourceName, err))
+		}
+	}
+	if len(cleanupErrs) > 0 {
+		return fmt.Errorf("%s", strings.Join(cleanupErrs, "; "))
+	}
+	return nil
+}
+
+func withRollbackError(primaryErr, cleanupErr error) error {
+	if cleanupErr == nil {
+		return primaryErr
+	}
+	return status.Errorf(codes.Internal, "%v; rollback failed: %v", primaryErr, cleanupErr)
+}
+
+func (d *KubernetesDeploymentProvider) clientset() (kubernetes.Interface, string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.cachedClientset != nil {
+		return d.cachedClientset, d.cachedNamespace, nil
+	}
+
 	namespace := "default"
-	if d.cfg != nil && d.cfg.K8sNamespace != "" {
-		namespace = d.cfg.K8sNamespace
+	if d.cfg != nil && d.cfg.KubernetesProvider.Namespace != "" {
+		namespace = d.cfg.KubernetesProvider.Namespace
 	}
 
 	var restConfig *rest.Config
@@ -362,8 +443,8 @@ func (d *K8sDeploymentDriver) clientset() (kubernetes.Interface, string, error) 
 	kubeconfig := ""
 	currentContext := ""
 	if d.cfg != nil {
-		kubeconfig = d.cfg.K8sKubeconfig
-		currentContext = d.cfg.K8sContext
+		kubeconfig = d.cfg.KubernetesProvider.Kubeconfig
+		currentContext = d.cfg.KubernetesProvider.Context
 	}
 
 	if kubeconfig != "" || currentContext != "" {
@@ -386,7 +467,7 @@ func (d *K8sDeploymentDriver) clientset() (kubernetes.Interface, string, error) 
 	} else {
 		restConfig, err = rest.InClusterConfig()
 		if err != nil {
-			return nil, "", status.Errorf(codes.InvalidArgument, "kubernetes config is not set; configure K8S_KUBECONFIG or run in-cluster: %v", err)
+			return nil, "", status.Errorf(codes.InvalidArgument, "kubernetes config is not set; configure KUBERNETES_KUBECONFIG (or legacy K8S_KUBECONFIG) or run in-cluster: %v", err)
 		}
 	}
 
@@ -394,7 +475,41 @@ func (d *K8sDeploymentDriver) clientset() (kubernetes.Interface, string, error) 
 	if err != nil {
 		return nil, "", status.Errorf(codes.Internal, "create kubernetes client: %v", err)
 	}
+	d.cachedClientset = clientset
+	d.cachedNamespace = namespace
 	return clientset, namespace, nil
+}
+
+func validateDeploymentSizing(spec *pb.ModelDeploymentTemplateSpec, req *pb.CreateDeploymentRequest) error {
+	if req.GetMinReplicas() < 0 {
+		return status.Error(codes.InvalidArgument, "min_replicas must be non-negative")
+	}
+	if req.GetMaxReplicas() < 0 {
+		return status.Error(codes.InvalidArgument, "max_replicas must be non-negative")
+	}
+	if req.GetAcceleratorCount() < 0 {
+		return status.Error(codes.InvalidArgument, "accelerator_count must be non-negative")
+	}
+	if scalingDefaults := spec.GetScalingDefaults(); scalingDefaults != nil {
+		if scalingDefaults.GetMinReplicas() < 0 {
+			return status.Error(codes.InvalidArgument, "template scaling_defaults.min_replicas must be non-negative")
+		}
+		if scalingDefaults.GetMaxReplicas() < 0 {
+			return status.Error(codes.InvalidArgument, "template scaling_defaults.max_replicas must be non-negative")
+		}
+	}
+	if overrides := req.GetOverrides(); overrides != nil {
+		if overrides.GetMinReplicas() < 0 {
+			return status.Error(codes.InvalidArgument, "overrides.min_replicas must be non-negative")
+		}
+		if overrides.GetMaxReplicas() < 0 {
+			return status.Error(codes.InvalidArgument, "overrides.max_replicas must be non-negative")
+		}
+	}
+	if accelerator := spec.GetAccelerator(); accelerator != nil && accelerator.GetCount() < 0 {
+		return status.Error(codes.InvalidArgument, "template accelerator.count must be non-negative")
+	}
+	return nil
 }
 
 func ensureNamespace(ctx context.Context, clientset kubernetes.Interface, namespace string) error {
@@ -417,8 +532,8 @@ func ensureNamespace(ctx context.Context, clientset kubernetes.Interface, namesp
 
 func buildDeployment(name, namespace string, labels map[string]string, cfg *config.Config, spec *pb.ModelDeploymentTemplateSpec, replicas int32) *appsv1.Deployment {
 	containerPort := int32(8000)
-	if cfg != nil && cfg.K8sContainerPort > 0 {
-		containerPort = cfg.K8sContainerPort
+	if cfg != nil && cfg.KubernetesProvider.ContainerPort > 0 {
+		containerPort = cfg.KubernetesProvider.ContainerPort
 	}
 	engine := spec.GetEngine()
 	modelSource := spec.GetModelSource()
@@ -508,13 +623,13 @@ func buildService(name, namespace string, labels map[string]string, cfg *config.
 	containerPort := int32(8000)
 	serviceType := corev1.ServiceTypeClusterIP
 	if cfg != nil {
-		if cfg.K8sServicePort > 0 {
-			servicePort = cfg.K8sServicePort
+		if cfg.KubernetesProvider.ServicePort > 0 {
+			servicePort = cfg.KubernetesProvider.ServicePort
 		}
-		if cfg.K8sContainerPort > 0 {
-			containerPort = cfg.K8sContainerPort
+		if cfg.KubernetesProvider.ContainerPort > 0 {
+			containerPort = cfg.KubernetesProvider.ContainerPort
 		}
-		switch cfg.K8sServiceType {
+		switch cfg.KubernetesProvider.ServiceType {
 		case string(corev1.ServiceTypeNodePort):
 			serviceType = corev1.ServiceTypeNodePort
 		case string(corev1.ServiceTypeLoadBalancer):
@@ -543,8 +658,8 @@ func buildService(name, namespace string, labels map[string]string, cfg *config.
 
 func buildHPA(name, namespace string, cfg *config.Config, minReplicas, maxReplicas int32) *autoscalingv2.HorizontalPodAutoscaler {
 	targetCPU := int32(80)
-	if cfg != nil && cfg.K8sHPATargetCPUUtilization > 0 {
-		targetCPU = cfg.K8sHPATargetCPUUtilization
+	if cfg != nil && cfg.KubernetesProvider.HPATargetCPUUtilization > 0 {
+		targetCPU = cfg.KubernetesProvider.HPATargetCPUUtilization
 	}
 	return &autoscalingv2.HorizontalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
@@ -573,13 +688,13 @@ func buildHPA(name, namespace string, cfg *config.Config, minReplicas, maxReplic
 	}
 }
 
-func resolveKubernetesDeploymentStatus(deployment *appsv1.Deployment, serviceFound bool) string {
+func resolveKubernetesDeploymentStatus(deployment *appsv1.Deployment, serviceFound bool) (string, string, string) {
 	if deployment == nil {
-		return "Failed"
+		return deploymentstatus.StatusFailed, "DeploymentMissing", "provider deployment resource is missing"
 	}
 	for _, condition := range deployment.Status.Conditions {
 		if condition.Type == appsv1.DeploymentProgressing && condition.Reason == "ProgressDeadlineExceeded" {
-			return "Failed"
+			return deploymentstatus.StatusFailed, condition.Reason, condition.Message
 		}
 	}
 
@@ -588,18 +703,18 @@ func resolveKubernetesDeploymentStatus(deployment *appsv1.Deployment, serviceFou
 		desired = *deployment.Spec.Replicas
 	}
 	if deployment.Generation > deployment.Status.ObservedGeneration {
-		return "Deploying"
+		return deploymentstatus.StatusDeploying, "WaitingForObservedGeneration", "deployment controller has not observed the latest generation"
 	}
 	if deployment.Status.AvailableReplicas >= desired && deployment.Status.ReadyReplicas >= desired {
 		if serviceFound {
-			return "Ready"
+			return deploymentstatus.StatusReady, "Available", "deployment has the desired number of ready replicas"
 		}
-		return "Degraded"
+		return deploymentstatus.StatusDegraded, "ServiceMissing", "deployment pods are ready but service is missing"
 	}
 	if deployment.Status.ReadyReplicas > 0 || deployment.Status.AvailableReplicas > 0 || deployment.Status.UpdatedReplicas > 0 {
-		return "Scaling"
+		return deploymentstatus.StatusScaling, "ReplicaProgressing", "deployment has partial replica progress"
 	}
-	return "Deploying"
+	return deploymentstatus.StatusDeploying, "WaitingForReplicas", "deployment is waiting for ready replicas"
 }
 
 func parseReplicaSpec(value string) (minReplicas, maxReplicas int32, autoScaling bool, err error) {
@@ -651,25 +766,39 @@ func formatReplicaSpec(deployment *appsv1.Deployment, hpa *autoscalingv2.Horizon
 	return fmt.Sprintf("%d", desired)
 }
 
+func ApplyObservedStatus(deployment *pb.Deployment, observed *ObservedStatus) *pb.Deployment {
+	current := cloneDeployment(deployment)
+	if current == nil || observed == nil {
+		return current
+	}
+	if observed.Status != "" {
+		current.Status = observed.Status
+	}
+	if observed.Replicas != "" {
+		current.Replicas = observed.Replicas
+	}
+	return current
+}
+
 func cloneDeployment(src *pb.Deployment) *pb.Deployment {
 	if src == nil {
 		return nil
 	}
 	return &pb.Deployment{
-		Id:                 src.GetId(),
-		Name:               src.GetName(),
-		DeploymentId:       src.GetDeploymentId(),
-		BaseModel:          src.GetBaseModel(),
-		BaseModelId:        src.GetBaseModelId(),
-		Replicas:           src.GetReplicas(),
-		GpusPerReplica:     src.GetGpusPerReplica(),
-		GpuType:            src.GetGpuType(),
-		Region:             src.GetRegion(),
-		CreatedBy:          src.GetCreatedBy(),
-		Status:             src.GetStatus(),
-		TemplateId:         src.GetTemplateId(),
-		TemplateVersion:    src.GetTemplateVersion(),
-		ImplementationKind: src.GetImplementationKind(),
+		Id:              src.GetId(),
+		Name:            src.GetName(),
+		DeploymentId:    src.GetDeploymentId(),
+		BaseModel:       src.GetBaseModel(),
+		BaseModelId:     src.GetBaseModelId(),
+		Replicas:        src.GetReplicas(),
+		GpusPerReplica:  src.GetGpusPerReplica(),
+		GpuType:         src.GetGpuType(),
+		Region:          src.GetRegion(),
+		CreatedBy:       src.GetCreatedBy(),
+		Status:          src.GetStatus(),
+		TemplateId:      src.GetTemplateId(),
+		TemplateVersion: src.GetTemplateVersion(),
+		ProviderKind:    src.GetProviderKind(),
 	}
 }
 

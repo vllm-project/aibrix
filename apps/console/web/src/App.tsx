@@ -6,6 +6,7 @@ import {
   useLocation,
   useNavigate,
   useParams,
+  useSearchParams,
 } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
@@ -96,16 +97,22 @@ function PlaygroundRoute() {
 }
 
 function DeploymentsRoute() {
-  const [view, setView] = useState<'list' | 'create' | 'detail'>('list');
-  const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const view = searchParams.get('view');
+  const selectedDeploymentId = searchParams.get('deploymentId');
+
+  const goToList = () => navigate('/deployments');
+  const goToCreate = () => navigate('/deployments?view=create');
+  const goToDetail = (deploymentId: string) =>
+    navigate(`/deployments?view=detail&deploymentId=${encodeURIComponent(deploymentId)}`);
 
   if (view === 'create') {
     return (
       <CreateDeployment
-        onBack={() => setView('list')}
+        onBack={goToList}
         onCreated={(deploymentId) => {
-          setSelectedDeploymentId(deploymentId);
-          setView('detail');
+          goToDetail(deploymentId);
         }}
       />
     );
@@ -115,21 +122,15 @@ function DeploymentsRoute() {
     return (
       <DeploymentDetail
         deploymentId={selectedDeploymentId}
-        onBack={() => {
-          setSelectedDeploymentId(null);
-          setView('list');
-        }}
+        onBack={goToList}
       />
     );
   }
 
   return (
     <Deployments
-      onCreateDeployment={() => setView('create')}
-      onSelectDeployment={(id) => {
-        setSelectedDeploymentId(id);
-        setView('detail');
-      }}
+      onCreateDeployment={goToCreate}
+      onSelectDeployment={goToDetail}
     />
   );
 }

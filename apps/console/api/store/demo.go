@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"time"
 
+	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
+
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 	"gorm.io/gorm/clause"
@@ -112,7 +114,7 @@ func (s *GORMStore) loadDemoDeployments() error {
 			GpuType:        "NVIDIA H100 80GB",
 			Region:         "US Iowa 1",
 			CreatedBy:      "demo@aibrix.ai",
-			Status:         "Ready",
+			Status:         deploymentstatus.StatusReady,
 		},
 	}
 
@@ -298,6 +300,19 @@ func (s *GORMStore) loadDemoModels() error {
 			Tags:          []string{"Test"},
 			ServingName:   "/models/mock",
 		},
+		{
+			// CPU-only mock LLM for local Console deployment testing. The
+			// serving name intentionally matches the template model_source URI.
+			Id: "model-cpu-mock-llm", Name: "CPU Mock LLM",
+			IconBg: "bg-gray-100", IconText: "C", IconTextColor: "text-gray-700",
+			Categories:    []string{"LLM"},
+			ContextLength: "8k Context",
+			Description:   "CPU-backed OpenAI-compatible mock LLM for local deployment testing.",
+			Metadata:      &pb.ModelMetadata{State: "Ready", CreatedOn: "—", ProviderName: "AIBrix"},
+			Specification: &pb.ModelSpecification{Parameters: "mock"},
+			Tags:          []string{"Test"},
+			ServingName:   "/models/cpu-mock",
+		},
 	}
 
 	for _, pbModel := range dmodels {
@@ -315,9 +330,9 @@ func (s *GORMStore) loadDemoModels() error {
 func (s *GORMStore) loadDemoModelDeploymentTemplates() error {
 	now := "2026-04-26T00:00:00Z"
 
-	// Only the mock-vllm template — name + spec mirror the entry registered
-	// in the MDS ConfigMap (aibrix-model-deployment-templates) so a batch
-	// submitted from console resolves end-to-end without bespoke setup.
+	// Mock templates mirror entries that can be registered in the MDS
+	// ConfigMap (aibrix-model-deployment-templates) so Console demos can
+	// resolve end-to-end without bespoke setup.
 	templates := []*pb.ModelDeploymentTemplate{
 		{
 			Id:        "tpl-mock-vllm",
@@ -339,6 +354,29 @@ func (s *GORMStore) loadDemoModelDeploymentTemplates() error {
 				Accelerator:        &pb.AcceleratorSpec{Type: "CPU", Count: 1},
 				Parallelism:        &pb.ParallelismSpec{Tp: 1},
 				SupportedEndpoints: []string{"/v1/chat/completions", "/v1/embeddings"},
+				DeploymentMode:     "dedicated",
+			},
+		},
+		{
+			Id:        "tpl-cpu-mock-llm",
+			Name:      "cpu-mock-llm",
+			Version:   "v0.0.1",
+			Status:    "active",
+			ModelId:   "model-cpu-mock-llm",
+			CreatedAt: now,
+			UpdatedAt: now,
+			Spec: &pb.ModelDeploymentTemplateSpec{
+				Engine: &pb.EngineSpec{
+					Type:           "mock",
+					Version:        "0.1.0",
+					Image:          "aibrix/vllm-mock:nightly",
+					Invocation:     "http_server",
+					HealthEndpoint: "/ready",
+				},
+				ModelSource:        &pb.ModelSourceSpec{Type: "local", Uri: "/models/cpu-mock"},
+				Accelerator:        &pb.AcceleratorSpec{Type: "CPU", Count: 1},
+				Parallelism:        &pb.ParallelismSpec{Tp: 1},
+				SupportedEndpoints: []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings"},
 				DeploymentMode:     "dedicated",
 			},
 		},
