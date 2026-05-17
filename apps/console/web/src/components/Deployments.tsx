@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Search, MoreVertical } from 'lucide-react';
-import { listDeployments } from '../utils/api';
+import { batchRefreshDeploymentStatuses, listDeployments } from '../utils/api';
 import type { Deployment } from '../data/mockData';
 import { DeleteDeploymentModal } from './DeleteDeploymentModal';
+import { deploymentStatusClass, normalizeDeploymentStatus } from '../utils/deploymentStatus';
 
 interface DeploymentsProps {
   onSelectDeployment: (id: string) => void;
@@ -20,7 +21,16 @@ export function Deployments({ onSelectDeployment, onCreateDeployment }: Deployme
   const fetchDeployments = useCallback(() => {
     setLoading(true);
     listDeployments(searchQuery || undefined)
-      .then(d => setDeployments(d))
+      .then((items) => {
+        setDeployments(items);
+        return batchRefreshDeploymentStatuses(items.map((deployment) => deployment.id))
+          .then((refreshed) => {
+            if (refreshed.length > 0) {
+              setDeployments(refreshed);
+            }
+          })
+          .catch((err) => console.error('Failed to refresh deployment statuses:', err));
+      })
       .catch(err => console.error('Failed to fetch deployments:', err))
       .finally(() => setLoading(false));
   }, [searchQuery]);
@@ -143,8 +153,8 @@ export function Deployments({ onSelectDeployment, onCreateDeployment }: Deployme
                   <td className="px-6 py-4 text-sm text-gray-500">{deployment.region}</td>
                   <td className="px-6 py-4 text-sm text-gray-500">{deployment.createdBy}</td>
                   <td className="px-6 py-4">
-                    <span className="inline-flex px-2.5 py-1 text-xs rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                      {deployment.status}
+                    <span className={`inline-flex px-2.5 py-1 text-xs rounded-full ${deploymentStatusClass(deployment.status)}`}>
+                      {normalizeDeploymentStatus(deployment.status)}
                     </span>
                   </td>
                   <td className="px-6 py-4">

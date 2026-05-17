@@ -34,10 +34,12 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DeploymentService_ListDeployments_FullMethodName  = "/console.v1.DeploymentService/ListDeployments"
-	DeploymentService_GetDeployment_FullMethodName    = "/console.v1.DeploymentService/GetDeployment"
-	DeploymentService_CreateDeployment_FullMethodName = "/console.v1.DeploymentService/CreateDeployment"
-	DeploymentService_DeleteDeployment_FullMethodName = "/console.v1.DeploymentService/DeleteDeployment"
+	DeploymentService_ListDeployments_FullMethodName                = "/console.v1.DeploymentService/ListDeployments"
+	DeploymentService_GetDeployment_FullMethodName                  = "/console.v1.DeploymentService/GetDeployment"
+	DeploymentService_RefreshDeploymentStatus_FullMethodName        = "/console.v1.DeploymentService/RefreshDeploymentStatus"
+	DeploymentService_BatchRefreshDeploymentStatuses_FullMethodName = "/console.v1.DeploymentService/BatchRefreshDeploymentStatuses"
+	DeploymentService_CreateDeployment_FullMethodName               = "/console.v1.DeploymentService/CreateDeployment"
+	DeploymentService_DeleteDeployment_FullMethodName               = "/console.v1.DeploymentService/DeleteDeployment"
 )
 
 // DeploymentServiceClient is the client API for DeploymentService service.
@@ -46,6 +48,8 @@ const (
 type DeploymentServiceClient interface {
 	ListDeployments(ctx context.Context, in *ListDeploymentsRequest, opts ...grpc.CallOption) (*ListDeploymentsResponse, error)
 	GetDeployment(ctx context.Context, in *GetDeploymentRequest, opts ...grpc.CallOption) (*Deployment, error)
+	RefreshDeploymentStatus(ctx context.Context, in *RefreshDeploymentStatusRequest, opts ...grpc.CallOption) (*Deployment, error)
+	BatchRefreshDeploymentStatuses(ctx context.Context, in *BatchRefreshDeploymentStatusesRequest, opts ...grpc.CallOption) (*BatchRefreshDeploymentStatusesResponse, error)
 	CreateDeployment(ctx context.Context, in *CreateDeploymentRequest, opts ...grpc.CallOption) (*Deployment, error)
 	DeleteDeployment(ctx context.Context, in *DeleteDeploymentRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
@@ -78,6 +82,26 @@ func (c *deploymentServiceClient) GetDeployment(ctx context.Context, in *GetDepl
 	return out, nil
 }
 
+func (c *deploymentServiceClient) RefreshDeploymentStatus(ctx context.Context, in *RefreshDeploymentStatusRequest, opts ...grpc.CallOption) (*Deployment, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Deployment)
+	err := c.cc.Invoke(ctx, DeploymentService_RefreshDeploymentStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *deploymentServiceClient) BatchRefreshDeploymentStatuses(ctx context.Context, in *BatchRefreshDeploymentStatusesRequest, opts ...grpc.CallOption) (*BatchRefreshDeploymentStatusesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchRefreshDeploymentStatusesResponse)
+	err := c.cc.Invoke(ctx, DeploymentService_BatchRefreshDeploymentStatuses_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *deploymentServiceClient) CreateDeployment(ctx context.Context, in *CreateDeploymentRequest, opts ...grpc.CallOption) (*Deployment, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Deployment)
@@ -104,6 +128,8 @@ func (c *deploymentServiceClient) DeleteDeployment(ctx context.Context, in *Dele
 type DeploymentServiceServer interface {
 	ListDeployments(context.Context, *ListDeploymentsRequest) (*ListDeploymentsResponse, error)
 	GetDeployment(context.Context, *GetDeploymentRequest) (*Deployment, error)
+	RefreshDeploymentStatus(context.Context, *RefreshDeploymentStatusRequest) (*Deployment, error)
+	BatchRefreshDeploymentStatuses(context.Context, *BatchRefreshDeploymentStatusesRequest) (*BatchRefreshDeploymentStatusesResponse, error)
 	CreateDeployment(context.Context, *CreateDeploymentRequest) (*Deployment, error)
 	DeleteDeployment(context.Context, *DeleteDeploymentRequest) (*emptypb.Empty, error)
 	mustEmbedUnimplementedDeploymentServiceServer()
@@ -121,6 +147,12 @@ func (UnimplementedDeploymentServiceServer) ListDeployments(context.Context, *Li
 }
 func (UnimplementedDeploymentServiceServer) GetDeployment(context.Context, *GetDeploymentRequest) (*Deployment, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetDeployment not implemented")
+}
+func (UnimplementedDeploymentServiceServer) RefreshDeploymentStatus(context.Context, *RefreshDeploymentStatusRequest) (*Deployment, error) {
+	return nil, status.Error(codes.Unimplemented, "method RefreshDeploymentStatus not implemented")
+}
+func (UnimplementedDeploymentServiceServer) BatchRefreshDeploymentStatuses(context.Context, *BatchRefreshDeploymentStatusesRequest) (*BatchRefreshDeploymentStatusesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BatchRefreshDeploymentStatuses not implemented")
 }
 func (UnimplementedDeploymentServiceServer) CreateDeployment(context.Context, *CreateDeploymentRequest) (*Deployment, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateDeployment not implemented")
@@ -185,6 +217,42 @@ func _DeploymentService_GetDeployment_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DeploymentService_RefreshDeploymentStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefreshDeploymentStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeploymentServiceServer).RefreshDeploymentStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeploymentService_RefreshDeploymentStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeploymentServiceServer).RefreshDeploymentStatus(ctx, req.(*RefreshDeploymentStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DeploymentService_BatchRefreshDeploymentStatuses_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BatchRefreshDeploymentStatusesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeploymentServiceServer).BatchRefreshDeploymentStatuses(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeploymentService_BatchRefreshDeploymentStatuses_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeploymentServiceServer).BatchRefreshDeploymentStatuses(ctx, req.(*BatchRefreshDeploymentStatusesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DeploymentService_CreateDeployment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CreateDeploymentRequest)
 	if err := dec(in); err != nil {
@@ -235,6 +303,14 @@ var DeploymentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetDeployment",
 			Handler:    _DeploymentService_GetDeployment_Handler,
+		},
+		{
+			MethodName: "RefreshDeploymentStatus",
+			Handler:    _DeploymentService_RefreshDeploymentStatus_Handler,
+		},
+		{
+			MethodName: "BatchRefreshDeploymentStatuses",
+			Handler:    _DeploymentService_BatchRefreshDeploymentStatuses_Handler,
 		},
 		{
 			MethodName: "CreateDeployment",

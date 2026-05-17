@@ -34,7 +34,7 @@ export function CreateDeployment({ onBack, onCreated }: CreateDeploymentProps) {
   const [scaleDown, setScaleDown] = useState('10');
   const [optimizeLongPrompts, setOptimizeLongPrompts] = useState(false);
   const [enableMultiLoRA, setEnableMultiLoRA] = useState(true);
-  const [implementationKind, setImplementationKind] = useState('k8s-deployment');
+  const [providerKind, setProviderKind] = useState('kubernetes');
   const [loadingModels, setLoadingModels] = useState(true);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -177,8 +177,8 @@ export function CreateDeployment({ onBack, onCreated }: CreateDeploymentProps) {
           modelId: selectedModelId,
           templateId: selectedTemplateId,
         },
-        implementation: {
-          kind: implementationKind,
+        provider: {
+          kind: providerKind,
         },
         overrides: {
           region,
@@ -356,15 +356,15 @@ export function CreateDeployment({ onBack, onCreated }: CreateDeploymentProps) {
               </div>
               <div>
                 <label className="flex items-center gap-2 text-sm mb-2">
-                  Implementation
+                  Provider
                   <Info className="w-4 h-4 text-gray-400" />
                 </label>
                 <select
-                  value={implementationKind}
-                  onChange={(e) => setImplementationKind(e.target.value)}
+                  value={providerKind}
+                  onChange={(e) => setProviderKind(e.target.value)}
                   className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500"
                 >
-                  <option value="k8s-deployment">Native K8s Deployment</option>
+                  <option value="kubernetes">Kubernetes</option>
                 </select>
               </div>
             </div>

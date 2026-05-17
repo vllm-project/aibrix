@@ -38,6 +38,20 @@ service DeploymentService {
     };
   }
 
+  rpc RefreshDeploymentStatus(RefreshDeploymentStatusRequest) returns (Deployment) {
+    option (google.api.http) = {
+      post: "/api/v1/deployments/{id}:refreshStatus"
+      body: "*"
+    };
+  }
+
+  rpc BatchRefreshDeploymentStatuses(BatchRefreshDeploymentStatusesRequest) returns (BatchRefreshDeploymentStatusesResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/deployments:batchRefreshStatuses"
+      body: "*"
+    };
+  }
+
   rpc CreateDeployment(CreateDeploymentRequest) returns (Deployment) {
     option (google.api.http) = {
       post: "/api/v1/deployments"
@@ -66,7 +80,7 @@ message Deployment {
   string status = 11; // "Ready", "Deploying", "Failed"
   string template_id = 12;
   string template_version = 13;
-  string implementation_kind = 14; // "k8s-deployment", "stormservice"
+  string provider_kind = 14; // "kubernetes", "stormservice"
 }
 
 message ListDeploymentsRequest {
@@ -81,6 +95,18 @@ message GetDeploymentRequest {
   string id = 1;
 }
 
+message RefreshDeploymentStatusRequest {
+  string id = 1;
+}
+
+message BatchRefreshDeploymentStatusesRequest {
+  repeated string ids = 1;
+}
+
+message BatchRefreshDeploymentStatusesResponse {
+  repeated Deployment deployments = 1;
+}
+
 message CreateDeploymentRequest {
   string name = 1;
   string base_model = 2;
@@ -93,7 +119,7 @@ message CreateDeploymentRequest {
   bool enable_auto_scaling = 9;
   bool enable_multi_lora = 10;
   DeploymentTemplateRef template = 11;
-  DeploymentImplementationRef implementation = 12;
+  DeploymentProviderRef provider = 12;
   DeploymentOverrides overrides = 13;
 }
 
@@ -102,8 +128,8 @@ message DeploymentTemplateRef {
   string template_id = 2;
 }
 
-message DeploymentImplementationRef {
-  string kind = 1; // "k8s-deployment", "stormservice"
+message DeploymentProviderRef {
+  string kind = 1; // "kubernetes", "stormservice"
   string profile = 2;
 }
 
@@ -691,7 +717,7 @@ message DeploymentTopologySpec {
 }
 
 message DeploymentCompatibilitySpec {
-  repeated string implementation_kinds = 1;
+  repeated string provider_kinds = 1;
 }
 
 message DeploymentScalingDefaultsSpec {

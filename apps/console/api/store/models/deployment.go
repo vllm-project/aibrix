@@ -28,33 +28,33 @@ import (
 
 // Deployment maps to deployments table.
 type Deployment struct {
-	RowID              uint64         `gorm:"column:row_id;primaryKey;autoIncrement"`
-	ID                 string         `gorm:"column:id;size:36;not null;uniqueIndex:uniq_deployments_id"`
-	Name               string         `gorm:"column:name;size:255;not null;default:'';index:idx_deployments_name"`
-	DeploymentID       string         `gorm:"column:deployment_id;size:255;not null;default:''"`
-	BaseModel          string         `gorm:"column:base_model;size:255;not null;default:'';index:idx_deployments_base_model"`
-	BaseModelID        string         `gorm:"column:base_model_id;size:255;not null;default:''"`
-	MinReplicas        int32          `gorm:"column:min_replicas;not null;default:1"`
-	MaxReplicas        int32          `gorm:"column:max_replicas;not null;default:1"`
-	GpusPerReplica     int32          `gorm:"column:gpus_per_replica;not null;default:0"`
-	GpuType            string         `gorm:"column:gpu_type;size:255;not null;default:''"`
-	Region             string         `gorm:"column:region;size:255;not null;default:''"`
-	CreatedBy          string         `gorm:"column:created_by;size:255;not null;default:'';index:idx_deployments_created_by"`
-	Status             string         `gorm:"column:status;size:255;not null;default:'Deploying';index:idx_deployments_status"`
-	TemplateID         string         `gorm:"column:template_id;size:36;not null;default:''"`
-	TemplateVersion    string         `gorm:"column:template_version;size:255;not null;default:''"`
-	ImplementationKind string         `gorm:"column:implementation_kind;size:255;not null;default:''"`
-	ModelSource        string         `gorm:"column:model_source;size:255;not null;default:''"`
-	ModelArtifactURL   string         `gorm:"column:model_artifact_url;size:1000;not null;default:''"`
-	Engine             string         `gorm:"column:engine;size:255;not null;default:''"`
-	StartupCommand     string         `gorm:"column:startup_command;type:text"`
-	EnvVars            datatypes.JSON `gorm:"column:env_vars"`
-	ExtraArgs          datatypes.JSON `gorm:"column:extra_args"`
-	Namespace          string         `gorm:"column:namespace;size:255;not null;default:'default'"`
-	K8sResourceName    string         `gorm:"column:k8s_resource_name;size:255;not null;default:''"`
-	Deleted            bool           `gorm:"column:deleted;not null;default:false;index"`
-	CreatedAt          time.Time      `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt          time.Time      `gorm:"column:updated_at;autoUpdateTime"`
+	RowID            uint64         `gorm:"column:row_id;primaryKey;autoIncrement"`
+	ID               string         `gorm:"column:id;size:36;not null;uniqueIndex:uniq_deployments_id"`
+	Name             string         `gorm:"column:name;size:255;not null;default:'';index:idx_deployments_name"`
+	DeploymentID     string         `gorm:"column:deployment_id;size:255;not null;default:''"`
+	BaseModel        string         `gorm:"column:base_model;size:255;not null;default:'';index:idx_deployments_base_model"`
+	BaseModelID      string         `gorm:"column:base_model_id;size:255;not null;default:''"`
+	MinReplicas      int32          `gorm:"column:min_replicas;not null;default:1"`
+	MaxReplicas      int32          `gorm:"column:max_replicas;not null;default:1"`
+	GpusPerReplica   int32          `gorm:"column:gpus_per_replica;not null;default:0"`
+	GpuType          string         `gorm:"column:gpu_type;size:255;not null;default:''"`
+	Region           string         `gorm:"column:region;size:255;not null;default:''"`
+	CreatedBy        string         `gorm:"column:created_by;size:255;not null;default:'';index:idx_deployments_created_by"`
+	Status           string         `gorm:"column:status;size:255;not null;default:'Deploying';index:idx_deployments_status"`
+	TemplateID       string         `gorm:"column:template_id;size:36;not null;default:''"`
+	TemplateVersion  string         `gorm:"column:template_version;size:255;not null;default:''"`
+	ProviderKind     string         `gorm:"column:provider_kind;size:255;not null;default:''"`
+	ModelSource      string         `gorm:"column:model_source;size:255;not null;default:''"`
+	ModelArtifactURL string         `gorm:"column:model_artifact_url;size:1000;not null;default:''"`
+	Engine           string         `gorm:"column:engine;size:255;not null;default:''"`
+	StartupCommand   string         `gorm:"column:startup_command;type:text"`
+	EnvVars          datatypes.JSON `gorm:"column:env_vars"`
+	ExtraArgs        datatypes.JSON `gorm:"column:extra_args"`
+	Namespace        string         `gorm:"column:namespace;size:255;not null;default:'default'"`
+	K8sResourceName  string         `gorm:"column:k8s_resource_name;size:255;not null;default:''"`
+	Deleted          bool           `gorm:"column:deleted;not null;default:false;index"`
+	CreatedAt        time.Time      `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt        time.Time      `gorm:"column:updated_at;autoUpdateTime"`
 }
 
 func (Deployment) TableName() string { return "deployments" }
@@ -90,7 +90,7 @@ func (d *Deployment) FromPB(src *pb.Deployment) error {
 	d.Status = src.Status
 	d.TemplateID = src.TemplateId
 	d.TemplateVersion = src.TemplateVersion
-	d.ImplementationKind = src.ImplementationKind
+	d.ProviderKind = src.ProviderKind
 	return nil
 }
 
@@ -129,19 +129,19 @@ func parseReplicas(replicasStr string) (int32, int32, error) {
 // ToPB converts Deployment to pb.Deployment.
 func (d *Deployment) ToPB() (*pb.Deployment, error) {
 	return &pb.Deployment{
-		Id:                 d.ID,
-		Name:               d.Name,
-		DeploymentId:       d.DeploymentID,
-		BaseModel:          d.BaseModel,
-		BaseModelId:        d.BaseModelID,
-		Replicas:           fmt.Sprintf("%d[%d]", d.MinReplicas, d.MaxReplicas),
-		GpusPerReplica:     d.GpusPerReplica,
-		GpuType:            d.GpuType,
-		Region:             d.Region,
-		CreatedBy:          d.CreatedBy,
-		Status:             d.Status,
-		TemplateId:         d.TemplateID,
-		TemplateVersion:    d.TemplateVersion,
-		ImplementationKind: d.ImplementationKind,
+		Id:              d.ID,
+		Name:            d.Name,
+		DeploymentId:    d.DeploymentID,
+		BaseModel:       d.BaseModel,
+		BaseModelId:     d.BaseModelID,
+		Replicas:        fmt.Sprintf("%d[%d]", d.MinReplicas, d.MaxReplicas),
+		GpusPerReplica:  d.GpusPerReplica,
+		GpuType:         d.GpuType,
+		Region:          d.Region,
+		CreatedBy:       d.CreatedBy,
+		Status:          d.Status,
+		TemplateId:      d.TemplateID,
+		TemplateVersion: d.TemplateVersion,
+		ProviderKind:    d.ProviderKind,
 	}, nil
 }

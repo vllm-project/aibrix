@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
 	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/metrics"
@@ -232,19 +233,19 @@ func (s *GORMStore) CreateDeployment(ctx context.Context, req *pb.CreateDeployme
 	id := uuid.NewString()
 	deploymentID := uuid.NewString()[:8]
 	d := models.Deployment{
-		ID:                 id,
-		Name:               req.Name,
-		DeploymentID:       deploymentID,
-		BaseModel:          req.BaseModel,
-		BaseModelID:        strings.ToLower(strings.ReplaceAll(req.BaseModel, " ", "-")),
-		MinReplicas:        req.MinReplicas,
-		MaxReplicas:        req.MaxReplicas,
-		GpusPerReplica:     req.AcceleratorCount,
-		GpuType:            req.AcceleratorType,
-		Region:             req.Region,
-		Status:             "Deploying",
-		TemplateID:         req.GetTemplate().GetTemplateId(),
-		ImplementationKind: req.GetImplementation().GetKind(),
+		ID:             id,
+		Name:           req.Name,
+		DeploymentID:   deploymentID,
+		BaseModel:      req.BaseModel,
+		BaseModelID:    strings.ToLower(strings.ReplaceAll(req.BaseModel, " ", "-")),
+		MinReplicas:    req.MinReplicas,
+		MaxReplicas:    req.MaxReplicas,
+		GpusPerReplica: req.AcceleratorCount,
+		GpuType:        req.AcceleratorType,
+		Region:         req.Region,
+		Status:         deploymentstatus.StatusDeploying,
+		TemplateID:     req.GetTemplate().GetTemplateId(),
+		ProviderKind:   req.GetProvider().GetKind(),
 	}
 	if err := s.db.WithContext(ctx).Create(&d).Error; err != nil {
 		return nil, status.Errorf(codes.Internal, "create deployment: %v", err)

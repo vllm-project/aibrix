@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"testing"
 
+	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
@@ -91,8 +92,8 @@ func TestMemoryStore(t *testing.T) {
 			if dep.Name != testDeploymentName {
 				t.Errorf("expected name %q, got %q", testDeploymentName, dep.Name)
 			}
-			if dep.Status != "Ready" {
-				t.Errorf("expected status 'Ready', got %q", dep.Status)
+			if dep.Status != deploymentstatus.StatusReady {
+				t.Errorf("expected status %q, got %q", deploymentstatus.StatusReady, dep.Status)
 			}
 		})
 
@@ -127,8 +128,8 @@ func TestMemoryStore(t *testing.T) {
 			if dep.Name != req.Name {
 				t.Errorf("expected name %q, got %q", req.Name, dep.Name)
 			}
-			if dep.Status != "Deploying" {
-				t.Errorf("expected status 'Deploying', got %q", dep.Status)
+			if dep.Status != deploymentstatus.StatusDeploying {
+				t.Errorf("expected status %q, got %q", deploymentstatus.StatusDeploying, dep.Status)
 			}
 
 			// Verify it can be retrieved

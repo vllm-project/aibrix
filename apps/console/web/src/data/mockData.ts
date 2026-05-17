@@ -190,6 +190,8 @@ export interface Job {
   events?: JobEvent[];
 }
 
+export type DeploymentStatus = 'Ready' | 'Deploying' | 'Scaling' | 'Failed' | 'Degraded' | 'Deleted';
+
 export interface Deployment {
   id: string;
   name: string;
@@ -201,7 +203,7 @@ export interface Deployment {
   gpuType: string;
   region: string;
   createdBy: string;
-  status: 'Ready' | 'Deploying' | 'Failed';
+  status: DeploymentStatus;
 }
 
 export type ModelCategory = 'LLM' | 'Audio' | 'Image' | 'Video' | 'Vision' | 'Embedding' | 'Reranks';
