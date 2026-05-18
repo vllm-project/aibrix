@@ -38,6 +38,8 @@ type Store interface {
 	ListJobs(ctx context.Context, ids []string) (map[string]*models.Job, error)
 	DeleteJob(ctx context.Context, id string) error
 
+	ListNonTerminalJobs(ctx context.Context) ([]*models.Job, error)
+
 	// Models
 	ListModels(ctx context.Context, search, category string) ([]*pb.Model, error)
 	GetModel(ctx context.Context, id string) (*pb.Model, error)

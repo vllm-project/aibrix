@@ -65,8 +65,8 @@ type Planner struct {
 type queuedJob struct {
 	req                 *plannerapi.EnqueueRequest
 	status              plannerapi.JobStatus
-	provisionID         string // populated once Provision returns accepted
-	batchID             string // populated after CreateBatch returns
+	provisionID         string
+	batchID             string
 	errMsg              string // populated when status is resource_failed / submit_failed
 	queuedAt            time.Time
 	resourcePreparingAt time.Time
@@ -328,6 +328,88 @@ func (q *Planner) persist(jobID string) {
 	q.mu.RUnlock()
 	if err := q.store.UpsertJob(q.baseCtx, rec); err != nil {
 		klog.Warningf("[planner] persist job_id=%q: %v", jobID, err)
+	}
+}
+
+// Recover replays non-terminal jobs from the store into the Planner's
+// in-memory state. Must be called once at startup, after NewPlanner and
+// before the gRPC server begins accepting requests. Safe to call with a
+// nil store (no-op).
+func (q *Planner) Recover(ctx context.Context) error {
+	if q.store == nil {
+		return nil
+	}
+	rows, err := q.store.ListNonTerminalJobs(ctx)
+	if err != nil {
+		return fmt.Errorf("list non-terminal jobs: %w", err)
+	}
+	var reEnqueue []string
+	q.mu.Lock()
+	for _, rec := range rows {
+		job := modelToJob(rec)
+		q.jobs[rec.ID] = job
+		if rec.BatchID != "" {
+			q.jobByBatch[rec.BatchID] = rec.ID
+		}
+		if isPreSubmitStatus(job.status) {
+			job.status = plannerapi.JobStatusQueued
+			reEnqueue = append(reEnqueue, rec.ID)
+		}
+	}
+	q.mu.Unlock()
+	for _, id := range reEnqueue {
+		if err := q.queue.Push(ctx, id); err != nil {
+			klog.Warningf("[planner] recovery re-enqueue job_id=%q: %v", id, err)
+		}
+	}
+	klog.Infof("[planner] recovered %d non-terminal jobs (%d re-enqueued)", len(rows), len(reEnqueue))
+	return nil
+}
+
+func isPreSubmitStatus(s plannerapi.JobStatus) bool {
+	switch s {
+	case plannerapi.JobStatusQueued,
+		plannerapi.JobStatusResourcePreparing,
+		plannerapi.JobStatusSubmitting:
+		return true
+	}
+	return false
+}
+
+// modelToJob is the inverse of jobToModel: hydrates a queuedJob from a persisted row.
+func modelToJob(rec *models.Job) *queuedJob {
+	req := &plannerapi.EnqueueRequest{
+		JobID: rec.ID,
+		BatchParams: openai.BatchNewParams{
+			InputFileID:      rec.InputDataset,
+			Endpoint:         openai.BatchNewParamsEndpoint(rec.Endpoint),
+			CompletionWindow: openai.BatchNewParamsCompletionWindow(rec.CompletionWindow),
+		},
+	}
+	if rec.ModelTemplateName != "" {
+		req.ModelTemplate = &plannerapi.ModelTemplateRef{
+			Name:    rec.ModelTemplateName,
+			Version: rec.ModelTemplateVersion,
+		}
+	}
+	if len(rec.Metadata) > 0 {
+		var m map[string]string
+		if err := json.Unmarshal(rec.Metadata, &m); err == nil {
+			req.BatchParams.Metadata = m
+		}
+	}
+	return &queuedJob{
+		req:                 req,
+		status:              plannerapi.JobStatus(rec.Status),
+		provisionID:         rec.ProvisionID,
+		batchID:             rec.BatchID,
+		errMsg:              rec.ErrorMessage,
+		queuedAt:            rec.QueuedAt,
+		resourcePreparingAt: rec.ResourcePreparingAt,
+		submittingAt:        rec.SubmittingAt,
+		resourceFailedAt:    rec.ResourceFailedAt,
+		submitFailedAt:      rec.SubmitFailedAt,
+		canceledAt:          rec.CancelledAt,
 	}
 }
 

@@ -36,5 +36,7 @@ type Planner interface {
 	GetJob(ctx context.Context, jobID string) (*Job, error)
 	ListJobs(ctx context.Context, req *ListJobsRequest) (*ListJobsResponse, error)
 	Cancel(ctx context.Context, jobID string) (*Job, error)
+	// Recover replays persisted in-flight state at startup; nil for stateless impls.
+	Recover(ctx context.Context) error
 	Close() error
 }

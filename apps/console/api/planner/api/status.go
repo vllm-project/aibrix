@@ -17,14 +17,6 @@ limitations under the License.
 package plannerapi
 
 // JobStatus is the authoritative user-facing lifecycle status for a Job.
-// 13 values across three segments:
-//   - Pre-submit (Planner-driven): Queued, ResourcePreparing, Submitting.
-//   - Post-submit (mirrors openai.Batch.status 1:1): Validating, InProgress,
-//     Finalizing, Cancelling.
-//   - Terminal: Completed, Failed, Expired, Cancelled, ResourceFailed,
-//     SubmitFailed.
-//
-// See docs/source/designs/batch-job-state-machine.md §5.
 type JobStatus string
 
 const (

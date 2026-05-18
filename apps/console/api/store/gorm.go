@@ -281,6 +281,25 @@ func (s *GORMStore) DeleteJob(ctx context.Context, id string) error {
 	return nil
 }
 
+// terminalJobStatuses lists the JobStatus string values that ListNonTerminalJobs excludes.
+var terminalJobStatuses = []string{
+	"completed", "failed", "expired", "cancelled", "resource_failed", "submit_failed",
+}
+
+func (s *GORMStore) ListNonTerminalJobs(ctx context.Context) ([]*models.Job, error) {
+	var rows []models.Job
+	if err := s.db.WithContext(ctx).
+		Where("status <> '' AND status NOT IN ?", terminalJobStatuses).
+		Find(&rows).Error; err != nil {
+		return nil, status.Errorf(codes.Internal, "list non-terminal jobs: %v", err)
+	}
+	out := make([]*models.Job, len(rows))
+	for i := range rows {
+		out[i] = &rows[i]
+	}
+	return out, nil
+}
+
 func (s *GORMStore) ListModels(ctx context.Context, search, category string) ([]*pb.Model, error) {
 	q := s.db.WithContext(ctx).Model(&models.Model{})
 	if search != "" {
