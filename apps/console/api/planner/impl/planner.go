@@ -199,9 +199,9 @@ func (q *Planner) process(jobID string) {
 		jobID, provResult.ProvisionID, q.prov.Type())
 
 	q.mu.Lock()
-	if q.jobs[jobID].status == plannerapi.JobStatusResourcePreparing {
-		q.jobs[jobID].status = plannerapi.JobStatusSubmitting
-		q.jobs[jobID].submittingAt = time.Now()
+	if job.status == plannerapi.JobStatusResourcePreparing {
+		job.status = plannerapi.JobStatusSubmitting
+		job.submittingAt = time.Now()
 	}
 	q.mu.Unlock()
 	q.persist(jobID)
@@ -298,7 +298,11 @@ func (q *Planner) releaseAfter(jobID, provisionID, reason string) {
 
 func (q *Planner) markFailed(jobID string, status plannerapi.JobStatus, err error) {
 	q.mu.Lock()
-	job := q.jobs[jobID]
+	job, ok := q.jobs[jobID]
+	if !ok {
+		q.mu.Unlock()
+		return
+	}
 	job.status = status
 	job.errMsg = err.Error()
 	now := time.Now()
@@ -409,17 +413,21 @@ func (q *Planner) Recover(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list non-terminal jobs: %w", err)
 	}
+	// Do the heavy JSON unmarshalling outside the lock.
+	recovered := make([]*queuedJob, 0, len(rows))
+	for _, rec := range rows {
+		recovered = append(recovered, modelToJob(rec))
+	}
 	var reEnqueue []string
 	q.mu.Lock()
-	for _, rec := range rows {
-		job := modelToJob(rec)
-		q.jobs[rec.ID] = job
-		if rec.BatchID != "" {
-			q.jobByBatch[rec.BatchID] = rec.ID
+	for _, job := range recovered {
+		q.jobs[job.req.JobID] = job
+		if job.batchID != "" {
+			q.jobByBatch[job.batchID] = job.req.JobID
 		}
 		if isPreSubmitStatus(job.status) {
 			job.status = plannerapi.JobStatusQueued
-			reEnqueue = append(reEnqueue, rec.ID)
+			reEnqueue = append(reEnqueue, job.req.JobID)
 		}
 	}
 	q.mu.Unlock()
@@ -693,6 +701,9 @@ func (q *Planner) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest)
 }
 
 // unsubmittedJobs returns the planner-tracked jobs that have no MDS batch yet
+// TODO: scans the full q.jobs map; terminal jobs are never evicted so this
+// degrades over process lifetime. Address when Phase 2 Reconciler lands by
+// either evicting terminal entries or maintaining a separate active map.
 func (q *Planner) unsubmittedJobs() []*plannerapi.Job {
 	type snap struct {
 		req        *plannerapi.EnqueueRequest
