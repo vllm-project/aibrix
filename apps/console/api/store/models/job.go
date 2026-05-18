@@ -36,14 +36,14 @@ type Job struct {
 	Status               string         `gorm:"column:status;size:64;not null;default:''"`
 	OutputDataset        string         `gorm:"column:output_dataset;size:255;not null;default:''"`
 	ErrorDataset         string         `gorm:"column:error_dataset;size:255;not null;default:''"`
-	InProgressAt         time.Time      `gorm:"column:in_progress_at;not null;default:0"`
-	ExpiresAt            time.Time      `gorm:"column:expires_at;not null;default:0"`
-	FinalizingAt         time.Time      `gorm:"column:finalizing_at;not null;default:0"`
-	CompletedAt          time.Time      `gorm:"column:completed_at;not null;default:0"`
-	FailedAt             time.Time      `gorm:"column:failed_at;not null;default:0"`
-	ExpiredAt            time.Time      `gorm:"column:expired_at;not null;default:0"`
-	CancellingAt         time.Time      `gorm:"column:cancelling_at;not null;default:0"`
-	CancelledAt          time.Time      `gorm:"column:cancelled_at;not null;default:0"`
+	InProgressAt         time.Time      `gorm:"column:in_progress_at"`
+	ExpiresAt            time.Time      `gorm:"column:expires_at"`
+	FinalizingAt         time.Time      `gorm:"column:finalizing_at"`
+	CompletedAt          time.Time      `gorm:"column:completed_at"`
+	FailedAt             time.Time      `gorm:"column:failed_at"`
+	ExpiredAt            time.Time      `gorm:"column:expired_at"`
+	CancellingAt         time.Time      `gorm:"column:cancelling_at"`
+	CancelledAt          time.Time      `gorm:"column:cancelled_at"`
 	RequestCounts        datatypes.JSON `gorm:"column:request_counts"`
 	Usage                datatypes.JSON `gorm:"column:usage"`
 	Metadata             datatypes.JSON `gorm:"column:metadata"`
@@ -53,11 +53,11 @@ type Job struct {
 	ModelTemplateVersion string         `gorm:"column:model_template_version;size:64;not null;default:''"`
 	BatchID              string         `gorm:"column:batch_id;size:64;not null;default:'';index:idx_jobs_batch_id"`
 	ProvisionID          string         `gorm:"column:provision_id;size:64;not null;default:''"`
-	QueuedAt             time.Time      `gorm:"column:queued_at;not null;default:0"`
-	ResourcePreparingAt  time.Time      `gorm:"column:resource_preparing_at;not null;default:0"`
-	SubmittingAt         time.Time      `gorm:"column:submitting_at;not null;default:0"`
-	ResourceFailedAt     time.Time      `gorm:"column:resource_failed_at;not null;default:0"`
-	SubmitFailedAt       time.Time      `gorm:"column:submit_failed_at;not null;default:0"`
+	QueuedAt             time.Time      `gorm:"column:queued_at"`
+	ResourcePreparingAt  time.Time      `gorm:"column:resource_preparing_at"`
+	SubmittingAt         time.Time      `gorm:"column:submitting_at"`
+	ResourceFailedAt     time.Time      `gorm:"column:resource_failed_at"`
+	SubmitFailedAt       time.Time      `gorm:"column:submit_failed_at"`
 	ErrorMessage         string         `gorm:"column:error_message;type:TEXT"`
 	CreatedAt            time.Time      `gorm:"column:created_at;autoCreateTime"`
 	UpdatedAt            time.Time      `gorm:"column:updated_at;autoUpdateTime"`

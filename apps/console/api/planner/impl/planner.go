@@ -313,10 +313,10 @@ func (q *Planner) markFailed(jobID string, status plannerapi.JobStatus, err erro
 	klog.Warningf("[planner] job_id=%q status=%s: %v", jobID, status, err)
 }
 
-// syncFromBatch reconciles the in-memory queuedJob with the freshest MDS
-// batch view fetched by lazy sync. If the mirrored JobStatus differs from
-// what we last persisted, update + persist + (on terminal) fire Release
-// asynchronously. No-op when the job is unknown or its status hasn't moved.
+// syncFromBatch reconciles the in-memory queuedJob and persisted row with
+// the freshest MDS batch view fetched by lazy sync. Always persists (MDS
+// counters/usage may have moved even when status hasn't); fires async
+// Release when the new JobStatus transitions to terminal.
 func (q *Planner) syncFromBatch(jobID string, batch *openai.Batch) {
 	if batch == nil {
 		return
@@ -324,17 +324,59 @@ func (q *Planner) syncFromBatch(jobID string, batch *openai.Batch) {
 	newStatus := plannerapi.JobStatus(batch.Status)
 	q.mu.Lock()
 	job, ok := q.jobs[jobID]
-	if !ok || job.status == newStatus {
+	if !ok {
 		q.mu.Unlock()
 		return
 	}
-	job.status = newStatus
+	statusChanged := job.status != newStatus
+	if statusChanged {
+		job.status = newStatus
+	}
 	provisionID := job.provisionID
+	rec := jobToModel(job)
 	q.mu.Unlock()
-	q.persist(jobID)
-	if newStatus.IsTerminal() && provisionID != "" {
+
+	mergeBatchIntoModel(rec, batch)
+	if q.store != nil {
+		if err := q.store.UpsertJob(q.baseCtx, rec); err != nil {
+			klog.Warningf("[planner] sync persist job_id=%q: %v", jobID, err)
+		}
+	}
+	if statusChanged && newStatus.IsTerminal() && provisionID != "" {
 		go q.releaseAfter(jobID, provisionID, "post-submit terminal")
 	}
+}
+
+// mergeBatchIntoModel overlays MDS-owned batch fields onto rec.
+func mergeBatchIntoModel(rec *models.Job, b *openai.Batch) {
+	rec.Object = string(b.Object)
+	rec.OutputDataset = b.OutputFileID
+	rec.ErrorDataset = b.ErrorFileID
+	rec.InProgressAt = unixToTime(b.InProgressAt)
+	rec.ExpiresAt = unixToTime(b.ExpiresAt)
+	rec.FinalizingAt = unixToTime(b.FinalizingAt)
+	rec.CompletedAt = unixToTime(b.CompletedAt)
+	rec.FailedAt = unixToTime(b.FailedAt)
+	rec.ExpiredAt = unixToTime(b.ExpiredAt)
+	rec.CancellingAt = unixToTime(b.CancellingAt)
+	rec.CancelledAt = unixToTime(b.CancelledAt)
+	if b.JSON.RequestCounts.Valid() {
+		if data, err := json.Marshal(b.RequestCounts); err == nil {
+			rec.RequestCounts = datatypes.JSON(data)
+		}
+	}
+	if b.JSON.Usage.Valid() {
+		if data, err := json.Marshal(b.Usage); err == nil {
+			rec.Usage = datatypes.JSON(data)
+		}
+	}
+}
+
+func unixToTime(sec int64) time.Time {
+	if sec <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, 0)
 }
 
 // persist writes the in-memory queuedJob snapshot for jobID to the store.
@@ -459,10 +501,17 @@ func jobToModel(j *queuedJob) *models.Job {
 		rec.ModelTemplateName = j.req.ModelTemplate.Name
 		rec.ModelTemplateVersion = j.req.ModelTemplate.Version
 	}
-	if len(j.req.BatchParams.Metadata) > 0 {
-		if b, err := json.Marshal(j.req.BatchParams.Metadata); err == nil {
+	if md := j.req.BatchParams.Metadata; len(md) > 0 {
+		if b, err := json.Marshal(md); err == nil {
 			rec.Metadata = datatypes.JSON(b)
 		}
+		// Handler-packed keys under aibrix.console.* (legacy: bare "display_name").
+		if v := md["aibrix.console.display_name"]; v != "" {
+			rec.Name = v
+		} else if v := md["display_name"]; v != "" {
+			rec.Name = v
+		}
+		rec.CreatedBy = md["aibrix.console.created_by"]
 	}
 	return rec
 }
