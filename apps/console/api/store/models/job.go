@@ -51,6 +51,14 @@ type Job struct {
 	CreatedBy            string         `gorm:"column:created_by;size:255;not null;default:''"`
 	ModelTemplateName    string         `gorm:"column:model_template_name;size:255;not null;default:''"`
 	ModelTemplateVersion string         `gorm:"column:model_template_version;size:64;not null;default:''"`
+	BatchID              string         `gorm:"column:batch_id;size:64;not null;default:'';index:idx_jobs_batch_id"`
+	ProvisionID          string         `gorm:"column:provision_id;size:64;not null;default:''"`
+	QueuedAt             time.Time      `gorm:"column:queued_at;not null;default:0"`
+	ResourcePreparingAt  time.Time      `gorm:"column:resource_preparing_at;not null;default:0"`
+	SubmittingAt         time.Time      `gorm:"column:submitting_at;not null;default:0"`
+	ResourceFailedAt     time.Time      `gorm:"column:resource_failed_at;not null;default:0"`
+	SubmitFailedAt       time.Time      `gorm:"column:submit_failed_at;not null;default:0"`
+	ErrorMessage         string         `gorm:"column:error_message;type:TEXT"`
 	CreatedAt            time.Time      `gorm:"column:created_at;autoCreateTime"`
 	UpdatedAt            time.Time      `gorm:"column:updated_at;autoUpdateTime"`
 }

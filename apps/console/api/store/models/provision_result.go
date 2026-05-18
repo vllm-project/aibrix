@@ -26,12 +26,16 @@ import (
 type ProvisionResult struct {
 	IdempotencyKey string         `gorm:"column:idempotency_key;primaryKey;size:255"`
 	ProvisionID    string         `gorm:"column:provision_id;size:255;not null;index:idx_provision_results_provision_id;uniqueIndex:uk_provision_results_provision_id"`
-	Region         string         `gorm:"column:region;size:255;not null;index:idx_provision_results_region"`
-	Status         string         `gorm:"column:status;size:64;not null;index:idx_provision_results_status_deleted,priority:1"`
-	Payload        datatypes.JSON `gorm:"column:payload"`
-	CreatedAt      time.Time      `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt      time.Time      `gorm:"column:updated_at;autoUpdateTime"`
-	Deleted        bool           `gorm:"column:deleted;not null;default:false;index:idx_provision_results_status_deleted,priority:2"`
+	// Provider identifies the provisioner backend ("kubernetes", "aws",
+	// "lambdaCloud", ...). Lets the Reconciler dispatch to the right
+	// Provisioner implementation in multi-provider deployments.
+	Provider  string         `gorm:"column:provider;size:32;not null;default:kubernetes;index:idx_provision_results_provider"`
+	Region    string         `gorm:"column:region;size:255;not null;index:idx_provision_results_region"`
+	Status    string         `gorm:"column:status;size:64;not null;index:idx_provision_results_status_deleted,priority:1"`
+	Payload   datatypes.JSON `gorm:"column:payload"`
+	CreatedAt time.Time      `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt time.Time      `gorm:"column:updated_at;autoUpdateTime"`
+	Deleted   bool           `gorm:"column:deleted;not null;default:false;index:idx_provision_results_status_deleted,priority:2"`
 }
 
 func (ProvisionResult) TableName() string { return "provision_results" }
