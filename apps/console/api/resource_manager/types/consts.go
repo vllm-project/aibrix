@@ -82,10 +82,11 @@ const (
 type ProvisionStatus string
 
 const (
-	ProvisionStatusPending      ProvisionStatus = "pending"      // Provision request received, not yet processed
-	ProvisionStatusProvisioning ProvisionStatus = "provisioning" // Resources are being allocated
-	ProvisionStatusRunning      ProvisionStatus = "running"      // Resources are active and ready
-	ProvisionStatusFailed       ProvisionStatus = "failed"       // Provisioning failed
-	ProvisionStatusReleasing    ProvisionStatus = "releasing"    // Resources are being released
-	ProvisionStatusReleased     ProvisionStatus = "released"     // Resources have been released
+	ProvisionStatusPending       ProvisionStatus = "pending"        // Provision request received, not yet processed
+	ProvisionStatusProvisioning  ProvisionStatus = "provisioning"   // Resources are being allocated
+	ProvisionStatusRunning       ProvisionStatus = "running"        // Resources are active and ready
+	ProvisionStatusFailed        ProvisionStatus = "failed"         // Allocation failed (terminal)
+	ProvisionStatusReleasing     ProvisionStatus = "releasing"      // Release operation in flight (retry hook)
+	ProvisionStatusReleased      ProvisionStatus = "released"       // Resources have been released
+	ProvisionStatusReleaseFailed ProvisionStatus = "release_failed" // Release permanently failed after retries (terminal; may leak resources, manual intervention required)
 )

@@ -465,8 +465,9 @@ type Job struct {
 	Model            string `protobuf:"bytes,4,opt,name=model,proto3" json:"model,omitempty"`
 	InputDataset     string `protobuf:"bytes,5,opt,name=input_dataset,json=inputDataset,proto3" json:"input_dataset,omitempty"`
 	CompletionWindow string `protobuf:"bytes,6,opt,name=completion_window,json=completionWindow,proto3" json:"completion_window,omitempty"`
-	// Console-facing job status: the 8-state OpenAI batch lifecycle plus
-	// two planner statuses: pending and provisioning.
+	// Console-facing job status: one of the 13 plannerapi.JobStatus values.
+	// - pre-submit (queued / resource_preparing / submitting)
+	// - post-submit mirrors of openai.batch.status
 	Status        string `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`
 	OutputDataset string `protobuf:"bytes,8,opt,name=output_dataset,json=outputDataset,proto3" json:"output_dataset,omitempty"`
 	ErrorDataset  string `protobuf:"bytes,9,opt,name=error_dataset,json=errorDataset,proto3" json:"error_dataset,omitempty"`
@@ -491,6 +492,10 @@ type Job struct {
 	// SDK-path jobs that pin templates through extra_body.aibrix instead.
 	ModelTemplateName    string `protobuf:"bytes,102,opt,name=model_template_name,json=modelTemplateName,proto3" json:"model_template_name,omitempty"`
 	ModelTemplateVersion string `protobuf:"bytes,103,opt,name=model_template_version,json=modelTemplateVersion,proto3" json:"model_template_version,omitempty"`
+	ProvisionStatus      string `protobuf:"bytes,104,opt,name=provision_status,json=provisionStatus,proto3" json:"provision_status,omitempty"`
+	ProvisionProvider    string `protobuf:"bytes,105,opt,name=provision_provider,json=provisionProvider,proto3" json:"provision_provider,omitempty"`
+	ProvisionId          string `protobuf:"bytes,106,opt,name=provision_id,json=provisionId,proto3" json:"provision_id,omitempty"`
+	ProvisionReleasedAt  int64  `protobuf:"varint,107,opt,name=provision_released_at,json=provisionReleasedAt,proto3" json:"provision_released_at,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -698,6 +703,34 @@ func (x *Job) GetModelTemplateVersion() string {
 		return x.ModelTemplateVersion
 	}
 	return ""
+}
+
+func (x *Job) GetProvisionStatus() string {
+	if x != nil {
+		return x.ProvisionStatus
+	}
+	return ""
+}
+
+func (x *Job) GetProvisionProvider() string {
+	if x != nil {
+		return x.ProvisionProvider
+	}
+	return ""
+}
+
+func (x *Job) GetProvisionId() string {
+	if x != nil {
+		return x.ProvisionId
+	}
+	return ""
+}
+
+func (x *Job) GetProvisionReleasedAt() int64 {
+	if x != nil {
+		return x.ProvisionReleasedAt
+	}
+	return 0
 }
 
 type JobRequestCounts struct {
@@ -3394,7 +3427,7 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\x11enable_multi_lora\x18\n" +
 	" \x01(\bR\x0fenableMultiLora\")\n" +
 	"\x17DeleteDeploymentRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\xc7\a\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xf8\b\n" +
 	"\x03Job\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06object\x18\x02 \x01(\tR\x06object\x12\x1a\n" +
@@ -3425,7 +3458,11 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\n" +
 	"created_by\x18e \x01(\tR\tcreatedBy\x12.\n" +
 	"\x13model_template_name\x18f \x01(\tR\x11modelTemplateName\x124\n" +
-	"\x16model_template_version\x18g \x01(\tR\x14modelTemplateVersion\x1a;\n" +
+	"\x16model_template_version\x18g \x01(\tR\x14modelTemplateVersion\x12)\n" +
+	"\x10provision_status\x18h \x01(\tR\x0fprovisionStatus\x12-\n" +
+	"\x12provision_provider\x18i \x01(\tR\x11provisionProvider\x12!\n" +
+	"\fprovision_id\x18j \x01(\tR\vprovisionId\x122\n" +
+	"\x15provision_released_at\x18k \x01(\x03R\x13provisionReleasedAt\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"^\n" +
