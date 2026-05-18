@@ -24,6 +24,7 @@ import (
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
+	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -184,8 +185,8 @@ func TestMemoryStore(t *testing.T) {
 
 	t.Run("Jobs", func(t *testing.T) {
 		t.Run("UpsertJob", func(t *testing.T) {
-			job := &pb.Job{
-				Id:        "test-job-1",
+			job := &models.Job{
+				ID:        "test-job-1",
 				Name:      "Test Job",
 				CreatedBy: "test@aibrix.ai",
 			}
@@ -195,7 +196,7 @@ func TestMemoryStore(t *testing.T) {
 			}
 
 			// Verify it can be retrieved
-			retrieved, err := s.GetJob(ctx, job.Id)
+			retrieved, err := s.GetJob(ctx, job.ID)
 			if err != nil {
 				t.Fatalf("GetJob after upsert failed: %v", err)
 			}
@@ -208,8 +209,8 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("UpsertJob_Update", func(t *testing.T) {
-			job := &pb.Job{
-				Id:        "test-job-update",
+			job := &models.Job{
+				ID:        "test-job-update",
 				Name:      "Original Name",
 				CreatedBy: "test@aibrix.ai",
 			}
@@ -225,7 +226,7 @@ func TestMemoryStore(t *testing.T) {
 				t.Fatalf("UpsertJob (update) failed: %v", err)
 			}
 
-			retrieved, err := s.GetJob(ctx, job.Id)
+			retrieved, err := s.GetJob(ctx, job.ID)
 			if err != nil {
 				t.Fatalf("GetJob after update failed: %v", err)
 			}
@@ -260,7 +261,7 @@ func TestMemoryStore(t *testing.T) {
 		t.Run("ListJobs", func(t *testing.T) {
 			// Create test jobs
 			for _, id := range []string{"list-job-1", "list-job-2"} {
-				job := &pb.Job{Id: id, Name: "List Test", CreatedBy: "test@aibrix.ai"}
+				job := &models.Job{ID: id, Name: "List Test", CreatedBy: "test@aibrix.ai"}
 				if err := s.UpsertJob(ctx, job); err != nil {
 					t.Fatalf("UpsertJob failed: %v", err)
 				}
@@ -286,8 +287,8 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("DeleteJob", func(t *testing.T) {
-			job := &pb.Job{
-				Id:        "job-to-delete",
+			job := &models.Job{
+				ID:        "job-to-delete",
 				Name:      "To Delete",
 				CreatedBy: "test@aibrix.ai",
 			}
@@ -296,12 +297,12 @@ func TestMemoryStore(t *testing.T) {
 				t.Fatalf("UpsertJob for delete test failed: %v", err)
 			}
 
-			err = s.DeleteJob(ctx, job.Id)
+			err = s.DeleteJob(ctx, job.ID)
 			if err != nil {
 				t.Fatalf("DeleteJob failed: %v", err)
 			}
 
-			retrieved, err := s.GetJob(ctx, job.Id)
+			retrieved, err := s.GetJob(ctx, job.ID)
 			if err != nil {
 				t.Fatalf("GetJob after delete failed: %v", err)
 			}
@@ -311,7 +312,7 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("UpsertJob_Invalid", func(t *testing.T) {
-			err := s.UpsertJob(ctx, &pb.Job{Id: ""})
+			err := s.UpsertJob(ctx, &models.Job{ID: ""})
 			if err == nil {
 				t.Error("expected error for empty job ID")
 			}

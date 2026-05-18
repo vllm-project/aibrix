@@ -185,7 +185,7 @@ func (b *fakeBatchClient) snapshot() (creates, cancels []string) {
 // across tests.
 func newTestPlanner(t *testing.T, bc plannerclient.BatchClient, prov *fakeProvisioner, workers int) *Planner {
 	t.Helper()
-	q := NewPlanner(bc, prov, workers)
+	q := NewPlanner(bc, prov, nil, workers)
 	t.Cleanup(func() {
 		_ = q.Close()
 	})
@@ -263,7 +263,7 @@ func TestEnqueueValidation(t *testing.T) {
 }
 
 func TestEnqueueWithNilProvisioner(t *testing.T) {
-	q := NewPlanner(&fakeBatchClient{}, nil, 1)
+	q := NewPlanner(&fakeBatchClient{}, nil, nil, 1)
 	t.Cleanup(func() { _ = q.Close() })
 
 	_, err := q.Enqueue(context.Background(), validReq("j1"))
@@ -319,8 +319,8 @@ func TestEnqueueReturnsPendingPlaceholder(t *testing.T) {
 	if job.JobID != "j1" {
 		t.Errorf("JobID = %q, want %q", job.JobID, "j1")
 	}
-	if job.Batch == nil || job.Batch.Status != openai.BatchStatus("pending") {
-		t.Errorf("Batch.Status = %v, want pending", job.Batch)
+	if job.Batch == nil || job.Batch.Status != openai.BatchStatus("queued") {
+		t.Errorf("Batch.Status = %v, want queued", job.Batch)
 	}
 	close(release)
 }
@@ -864,7 +864,7 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 			return nil, ctx.Err()
 		},
 	}
-	q := NewPlanner(&fakeBatchClient{}, prov, workers)
+	q := NewPlanner(&fakeBatchClient{}, prov, nil, workers)
 
 	for i := 0; i < workers; i++ {
 		if _, err := q.Enqueue(context.Background(), validReq(fmt.Sprintf("j%d", i))); err != nil {
@@ -897,7 +897,7 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 }
 
 func TestCloseIsIdempotent(t *testing.T) {
-	q := NewPlanner(&fakeBatchClient{}, &fakeProvisioner{}, 2)
+	q := NewPlanner(&fakeBatchClient{}, &fakeProvisioner{}, nil, 2)
 	if err := q.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
 	}
@@ -919,7 +919,7 @@ func TestCloseIsIdempotent(t *testing.T) {
 // once Close returns, new Enqueue calls must fail immediately instead of
 // slipping into the buffered pending queue.
 func TestEnqueueAfterCloseReturnsClosed(t *testing.T) {
-	q := NewPlanner(&fakeBatchClient{}, &fakeProvisioner{}, 1)
+	q := NewPlanner(&fakeBatchClient{}, &fakeProvisioner{}, nil, 1)
 	if err := q.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -1024,8 +1024,8 @@ func TestListJobsMergesProvisioningAndMDS(t *testing.T) {
 	if resp.Data[0].JobID != "j-provisioning" {
 		t.Errorf("first entry JobID = %q; want j-provisioning", resp.Data[0].JobID)
 	}
-	if resp.Data[0].Batch.Status != openai.BatchStatus("provisioning") {
-		t.Errorf("first entry status = %v; want provisioning", resp.Data[0].Batch.Status)
+	if resp.Data[0].Batch.Status != openai.BatchStatus("resource_preparing") {
+		t.Errorf("first entry status = %v; want resource_preparing", resp.Data[0].Batch.Status)
 	}
 
 	// Subsequent page (After non-empty): MDS-only.

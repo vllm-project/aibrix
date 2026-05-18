@@ -44,3 +44,17 @@ const (
 	JobStatusResourceFailed JobStatus = "resource_failed"
 	JobStatusSubmitFailed   JobStatus = "submit_failed"
 )
+
+// IsTerminal reports whether the job will not transition further.
+func (s JobStatus) IsTerminal() bool {
+	switch s {
+	case JobStatusCompleted,
+		JobStatusFailed,
+		JobStatusExpired,
+		JobStatusCancelled,
+		JobStatusResourceFailed,
+		JobStatusSubmitFailed:
+		return true
+	}
+	return false
+}

@@ -235,18 +235,20 @@ func (s *GORMStore) DeleteDeployment(ctx context.Context, id string) error {
 	return nil
 }
 
-func (s *GORMStore) UpsertJob(ctx context.Context, job *pb.Job) error {
-	if job == nil || job.Id == "" {
+func (s *GORMStore) UpsertJob(ctx context.Context, rec *models.Job) error {
+	if rec == nil || rec.ID == "" {
 		return status.Error(codes.InvalidArgument, "job id is required")
 	}
-	rec := models.Job{ID: job.Id, Name: job.Name, CreatedBy: job.CreatedBy}
-	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoUpdates: clause.AssignmentColumns([]string{"name", "created_by", "updated_at"})}).Create(&rec).Error; err != nil {
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		UpdateAll: true,
+	}).Create(rec).Error; err != nil {
 		return status.Errorf(codes.Internal, "upsert job: %v", err)
 	}
 	return nil
 }
 
-func (s *GORMStore) GetJob(ctx context.Context, id string) (*pb.Job, error) {
+func (s *GORMStore) GetJob(ctx context.Context, id string) (*models.Job, error) {
 	var rec models.Job
 	if err := s.db.WithContext(ctx).First(&rec, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -254,15 +256,11 @@ func (s *GORMStore) GetJob(ctx context.Context, id string) (*pb.Job, error) {
 		}
 		return nil, status.Errorf(codes.Internal, "get job: %v", err)
 	}
-	job, err := rec.ToPB()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "convert job: %v", err)
-	}
-	return job, nil
+	return &rec, nil
 }
 
-func (s *GORMStore) ListJobs(ctx context.Context, ids []string) (map[string]*pb.Job, error) {
-	out := make(map[string]*pb.Job, len(ids))
+func (s *GORMStore) ListJobs(ctx context.Context, ids []string) (map[string]*models.Job, error) {
+	out := make(map[string]*models.Job, len(ids))
 	if len(ids) == 0 {
 		return out, nil
 	}
@@ -271,11 +269,7 @@ func (s *GORMStore) ListJobs(ctx context.Context, ids []string) (map[string]*pb.
 		return nil, status.Errorf(codes.Internal, "list jobs: %v", err)
 	}
 	for i := range rows {
-		job, err := rows[i].ToPB()
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "convert job %s: %v", rows[i].ID, err)
-		}
-		out[rows[i].ID] = job
+		out[rows[i].ID] = &rows[i]
 	}
 	return out, nil
 }
