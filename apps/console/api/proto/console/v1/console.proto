@@ -174,11 +174,6 @@ message Job {
   // SDK-path jobs that pin templates through extra_body.aibrix instead.
   string model_template_name = 102;
   string model_template_version = 103;
-
-  string provision_status      = 104;
-  string provision_provider    = 105;
-  string provision_id          = 106;
-  int64  provision_released_at = 107;
 }
 
 message JobRequestCounts {

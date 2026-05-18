@@ -313,6 +313,30 @@ func (q *Planner) markFailed(jobID string, status plannerapi.JobStatus, err erro
 	klog.Warningf("[planner] job_id=%q status=%s: %v", jobID, status, err)
 }
 
+// syncFromBatch reconciles the in-memory queuedJob with the freshest MDS
+// batch view fetched by lazy sync. If the mirrored JobStatus differs from
+// what we last persisted, update + persist + (on terminal) fire Release
+// asynchronously. No-op when the job is unknown or its status hasn't moved.
+func (q *Planner) syncFromBatch(jobID string, batch *openai.Batch) {
+	if batch == nil {
+		return
+	}
+	newStatus := plannerapi.JobStatus(batch.Status)
+	q.mu.Lock()
+	job, ok := q.jobs[jobID]
+	if !ok || job.status == newStatus {
+		q.mu.Unlock()
+		return
+	}
+	job.status = newStatus
+	provisionID := job.provisionID
+	q.mu.Unlock()
+	q.persist(jobID)
+	if newStatus.IsTerminal() && provisionID != "" {
+		go q.releaseAfter(jobID, provisionID, "post-submit terminal")
+	}
+}
+
 // persist writes the in-memory queuedJob snapshot for jobID to the store.
 func (q *Planner) persist(jobID string) {
 	if q.store == nil {
@@ -522,6 +546,7 @@ func (q *Planner) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, er
 		if err != nil {
 			return nil, err
 		}
+		q.syncFromBatch(jobID, batch)
 		return &plannerapi.Job{JobID: jobID, Batch: batch}, nil
 	}
 	return &plannerapi.Job{
@@ -597,10 +622,24 @@ func (q *Planner) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest)
 		out = append(out, q.unsubmittedJobs()...)
 	}
 	q.mu.RLock()
+	tagged := make([]struct {
+		jobID string
+		batch *openai.Batch
+	}, 0, len(resp.Data))
 	for _, b := range resp.Data {
-		out = append(out, &plannerapi.Job{JobID: q.jobByBatch[b.ID], Batch: b})
+		jobID := q.jobByBatch[b.ID]
+		out = append(out, &plannerapi.Job{JobID: jobID, Batch: b})
+		if jobID != "" {
+			tagged = append(tagged, struct {
+				jobID string
+				batch *openai.Batch
+			}{jobID, b})
+		}
 	}
 	q.mu.RUnlock()
+	for _, t := range tagged {
+		q.syncFromBatch(t.jobID, t.batch)
+	}
 	return &plannerapi.ListJobsResponse{Data: out, HasMore: resp.HasMore}, nil
 }
 
