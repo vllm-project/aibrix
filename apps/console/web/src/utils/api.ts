@@ -68,15 +68,37 @@ export interface ListJobsResponse {
 
 export interface CreateDeploymentRequest {
   name: string;
-  baseModel: string;
-  region: string;
-  acceleratorType: string;
-  acceleratorCount: number;
+  baseModel?: string;
+  region?: string;
+  acceleratorType?: string;
+  acceleratorCount?: number;
   quantization?: string;
-  minReplicas: number;
+  minReplicas?: number;
   maxReplicas?: number;
   enableAutoScaling?: boolean;
   enableMultiLora?: boolean;
+  template?: DeploymentTemplateRef;
+  provider?: DeploymentProviderRef;
+  overrides?: DeploymentOverrides;
+}
+
+export interface DeploymentTemplateRef {
+  modelId: string;
+  templateId: string;
+}
+
+export interface DeploymentProviderRef {
+  kind: string;
+  profile?: string;
+}
+
+export interface DeploymentOverrides {
+  region?: string;
+  minReplicas?: number;
+  maxReplicas?: number;
+  enableAutoScaling?: boolean;
+  enableMultiLora?: boolean;
+  engineArgs?: Record<string, string>;
 }
 
 // --- Model Deployment Templates ---
@@ -139,6 +161,23 @@ export interface ModelDeploymentTemplateSpec {
   quantization?: QuantizationSpec;
   supportedEndpoints?: string[];
   deploymentMode?: string;
+  topology?: DeploymentTopologySpec;
+  compatibility?: DeploymentCompatibilitySpec;
+  scalingDefaults?: DeploymentScalingDefaultsSpec;
+}
+
+export interface DeploymentTopologySpec {
+  kind?: string;
+}
+
+export interface DeploymentCompatibilitySpec {
+  providerKinds?: string[];
+}
+
+export interface DeploymentScalingDefaultsSpec {
+  minReplicas?: number;
+  maxReplicas?: number;
+  enableAutoScaling?: boolean;
 }
 
 export interface ModelDeploymentTemplate {
@@ -320,6 +359,22 @@ export async function listDeployments(search?: string): Promise<Deployment[]> {
 
 export async function getDeployment(id: string): Promise<Deployment> {
   return apiFetch<Deployment>(`/api/v1/deployments/${encodeURIComponent(id)}`);
+}
+
+export async function refreshDeploymentStatus(id: string): Promise<Deployment> {
+  return apiFetch<Deployment>(`/api/v1/deployments/${encodeURIComponent(id)}:refreshStatus`, {
+    method: 'POST',
+    body: '{}',
+  });
+}
+
+export async function batchRefreshDeploymentStatuses(ids: string[]): Promise<Deployment[]> {
+  if (ids.length === 0) return [];
+  const data = await apiFetch<{ deployments: Deployment[] }>('/api/v1/deployments:batchRefreshStatuses', {
+    method: 'POST',
+    body: JSON.stringify(camelToSnake({ ids })),
+  });
+  return data.deployments || [];
 }
 
 export async function createDeployment(req: CreateDeploymentRequest): Promise<Deployment> {

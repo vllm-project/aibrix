@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS deployments (
     region            VARCHAR(255)  NOT NULL DEFAULT '',
     created_by        VARCHAR(255)  NOT NULL DEFAULT '',
     status            VARCHAR(255)  NOT NULL DEFAULT 'Deploying',
+    template_id       VARCHAR(36)   NOT NULL DEFAULT '',
+    template_version  VARCHAR(255)  NOT NULL DEFAULT '',
+    provider_kind     VARCHAR(255)  NOT NULL DEFAULT '',
 
     -- StormService extension fields
     model_source      VARCHAR(255)  NOT NULL DEFAULT '',

@@ -38,20 +38,23 @@ const (
 )
 
 type Deployment struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name           string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	DeploymentId   string                 `protobuf:"bytes,3,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
-	BaseModel      string                 `protobuf:"bytes,4,opt,name=base_model,json=baseModel,proto3" json:"base_model,omitempty"`
-	BaseModelId    string                 `protobuf:"bytes,5,opt,name=base_model_id,json=baseModelId,proto3" json:"base_model_id,omitempty"`
-	Replicas       string                 `protobuf:"bytes,6,opt,name=replicas,proto3" json:"replicas,omitempty"`
-	GpusPerReplica int32                  `protobuf:"varint,7,opt,name=gpus_per_replica,json=gpusPerReplica,proto3" json:"gpus_per_replica,omitempty"`
-	GpuType        string                 `protobuf:"bytes,8,opt,name=gpu_type,json=gpuType,proto3" json:"gpu_type,omitempty"`
-	Region         string                 `protobuf:"bytes,9,opt,name=region,proto3" json:"region,omitempty"`
-	CreatedBy      string                 `protobuf:"bytes,10,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"`
-	Status         string                 `protobuf:"bytes,11,opt,name=status,proto3" json:"status,omitempty"` // "Ready", "Deploying", "Failed"
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Id              string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name            string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	DeploymentId    string                 `protobuf:"bytes,3,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	BaseModel       string                 `protobuf:"bytes,4,opt,name=base_model,json=baseModel,proto3" json:"base_model,omitempty"`
+	BaseModelId     string                 `protobuf:"bytes,5,opt,name=base_model_id,json=baseModelId,proto3" json:"base_model_id,omitempty"`
+	Replicas        string                 `protobuf:"bytes,6,opt,name=replicas,proto3" json:"replicas,omitempty"`
+	GpusPerReplica  int32                  `protobuf:"varint,7,opt,name=gpus_per_replica,json=gpusPerReplica,proto3" json:"gpus_per_replica,omitempty"`
+	GpuType         string                 `protobuf:"bytes,8,opt,name=gpu_type,json=gpuType,proto3" json:"gpu_type,omitempty"`
+	Region          string                 `protobuf:"bytes,9,opt,name=region,proto3" json:"region,omitempty"`
+	CreatedBy       string                 `protobuf:"bytes,10,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"`
+	Status          string                 `protobuf:"bytes,11,opt,name=status,proto3" json:"status,omitempty"` // "Ready", "Deploying", "Failed"
+	TemplateId      string                 `protobuf:"bytes,12,opt,name=template_id,json=templateId,proto3" json:"template_id,omitempty"`
+	TemplateVersion string                 `protobuf:"bytes,13,opt,name=template_version,json=templateVersion,proto3" json:"template_version,omitempty"`
+	ProviderKind    string                 `protobuf:"bytes,14,opt,name=provider_kind,json=providerKind,proto3" json:"provider_kind,omitempty"` // "kubernetes", "stormservice"
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Deployment) Reset() {
@@ -157,6 +160,27 @@ func (x *Deployment) GetCreatedBy() string {
 func (x *Deployment) GetStatus() string {
 	if x != nil {
 		return x.Status
+	}
+	return ""
+}
+
+func (x *Deployment) GetTemplateId() string {
+	if x != nil {
+		return x.TemplateId
+	}
+	return ""
+}
+
+func (x *Deployment) GetTemplateVersion() string {
+	if x != nil {
+		return x.TemplateVersion
+	}
+	return ""
+}
+
+func (x *Deployment) GetProviderKind() string {
+	if x != nil {
+		return x.ProviderKind
 	}
 	return ""
 }
@@ -293,6 +317,138 @@ func (x *GetDeploymentRequest) GetId() string {
 	return ""
 }
 
+type RefreshDeploymentStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RefreshDeploymentStatusRequest) Reset() {
+	*x = RefreshDeploymentStatusRequest{}
+	mi := &file_console_v1_console_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RefreshDeploymentStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RefreshDeploymentStatusRequest) ProtoMessage() {}
+
+func (x *RefreshDeploymentStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_console_v1_console_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RefreshDeploymentStatusRequest.ProtoReflect.Descriptor instead.
+func (*RefreshDeploymentStatusRequest) Descriptor() ([]byte, []int) {
+	return file_console_v1_console_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *RefreshDeploymentStatusRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type BatchRefreshDeploymentStatusesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ids           []string               `protobuf:"bytes,1,rep,name=ids,proto3" json:"ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BatchRefreshDeploymentStatusesRequest) Reset() {
+	*x = BatchRefreshDeploymentStatusesRequest{}
+	mi := &file_console_v1_console_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchRefreshDeploymentStatusesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchRefreshDeploymentStatusesRequest) ProtoMessage() {}
+
+func (x *BatchRefreshDeploymentStatusesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_console_v1_console_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchRefreshDeploymentStatusesRequest.ProtoReflect.Descriptor instead.
+func (*BatchRefreshDeploymentStatusesRequest) Descriptor() ([]byte, []int) {
+	return file_console_v1_console_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *BatchRefreshDeploymentStatusesRequest) GetIds() []string {
+	if x != nil {
+		return x.Ids
+	}
+	return nil
+}
+
+type BatchRefreshDeploymentStatusesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Deployments   []*Deployment          `protobuf:"bytes,1,rep,name=deployments,proto3" json:"deployments,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BatchRefreshDeploymentStatusesResponse) Reset() {
+	*x = BatchRefreshDeploymentStatusesResponse{}
+	mi := &file_console_v1_console_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchRefreshDeploymentStatusesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchRefreshDeploymentStatusesResponse) ProtoMessage() {}
+
+func (x *BatchRefreshDeploymentStatusesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_console_v1_console_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchRefreshDeploymentStatusesResponse.ProtoReflect.Descriptor instead.
+func (*BatchRefreshDeploymentStatusesResponse) Descriptor() ([]byte, []int) {
+	return file_console_v1_console_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *BatchRefreshDeploymentStatusesResponse) GetDeployments() []*Deployment {
+	if x != nil {
+		return x.Deployments
+	}
+	return nil
+}
+
 type CreateDeploymentRequest struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	Name              string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -305,13 +461,16 @@ type CreateDeploymentRequest struct {
 	MaxReplicas       int32                  `protobuf:"varint,8,opt,name=max_replicas,json=maxReplicas,proto3" json:"max_replicas,omitempty"`
 	EnableAutoScaling bool                   `protobuf:"varint,9,opt,name=enable_auto_scaling,json=enableAutoScaling,proto3" json:"enable_auto_scaling,omitempty"`
 	EnableMultiLora   bool                   `protobuf:"varint,10,opt,name=enable_multi_lora,json=enableMultiLora,proto3" json:"enable_multi_lora,omitempty"`
+	Template          *DeploymentTemplateRef `protobuf:"bytes,11,opt,name=template,proto3" json:"template,omitempty"`
+	Provider          *DeploymentProviderRef `protobuf:"bytes,12,opt,name=provider,proto3" json:"provider,omitempty"`
+	Overrides         *DeploymentOverrides   `protobuf:"bytes,13,opt,name=overrides,proto3" json:"overrides,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CreateDeploymentRequest) Reset() {
 	*x = CreateDeploymentRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[4]
+	mi := &file_console_v1_console_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -323,7 +482,7 @@ func (x *CreateDeploymentRequest) String() string {
 func (*CreateDeploymentRequest) ProtoMessage() {}
 
 func (x *CreateDeploymentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[4]
+	mi := &file_console_v1_console_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -336,7 +495,7 @@ func (x *CreateDeploymentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateDeploymentRequest.ProtoReflect.Descriptor instead.
 func (*CreateDeploymentRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{4}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *CreateDeploymentRequest) GetName() string {
@@ -409,6 +568,215 @@ func (x *CreateDeploymentRequest) GetEnableMultiLora() bool {
 	return false
 }
 
+func (x *CreateDeploymentRequest) GetTemplate() *DeploymentTemplateRef {
+	if x != nil {
+		return x.Template
+	}
+	return nil
+}
+
+func (x *CreateDeploymentRequest) GetProvider() *DeploymentProviderRef {
+	if x != nil {
+		return x.Provider
+	}
+	return nil
+}
+
+func (x *CreateDeploymentRequest) GetOverrides() *DeploymentOverrides {
+	if x != nil {
+		return x.Overrides
+	}
+	return nil
+}
+
+type DeploymentTemplateRef struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ModelId       string                 `protobuf:"bytes,1,opt,name=model_id,json=modelId,proto3" json:"model_id,omitempty"`
+	TemplateId    string                 `protobuf:"bytes,2,opt,name=template_id,json=templateId,proto3" json:"template_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeploymentTemplateRef) Reset() {
+	*x = DeploymentTemplateRef{}
+	mi := &file_console_v1_console_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeploymentTemplateRef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeploymentTemplateRef) ProtoMessage() {}
+
+func (x *DeploymentTemplateRef) ProtoReflect() protoreflect.Message {
+	mi := &file_console_v1_console_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeploymentTemplateRef.ProtoReflect.Descriptor instead.
+func (*DeploymentTemplateRef) Descriptor() ([]byte, []int) {
+	return file_console_v1_console_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *DeploymentTemplateRef) GetModelId() string {
+	if x != nil {
+		return x.ModelId
+	}
+	return ""
+}
+
+func (x *DeploymentTemplateRef) GetTemplateId() string {
+	if x != nil {
+		return x.TemplateId
+	}
+	return ""
+}
+
+type DeploymentProviderRef struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"` // "kubernetes", "stormservice"
+	Profile       string                 `protobuf:"bytes,2,opt,name=profile,proto3" json:"profile,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeploymentProviderRef) Reset() {
+	*x = DeploymentProviderRef{}
+	mi := &file_console_v1_console_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeploymentProviderRef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeploymentProviderRef) ProtoMessage() {}
+
+func (x *DeploymentProviderRef) ProtoReflect() protoreflect.Message {
+	mi := &file_console_v1_console_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeploymentProviderRef.ProtoReflect.Descriptor instead.
+func (*DeploymentProviderRef) Descriptor() ([]byte, []int) {
+	return file_console_v1_console_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *DeploymentProviderRef) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *DeploymentProviderRef) GetProfile() string {
+	if x != nil {
+		return x.Profile
+	}
+	return ""
+}
+
+type DeploymentOverrides struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Region            string                 `protobuf:"bytes,1,opt,name=region,proto3" json:"region,omitempty"`
+	MinReplicas       int32                  `protobuf:"varint,2,opt,name=min_replicas,json=minReplicas,proto3" json:"min_replicas,omitempty"`
+	MaxReplicas       int32                  `protobuf:"varint,3,opt,name=max_replicas,json=maxReplicas,proto3" json:"max_replicas,omitempty"`
+	EnableAutoScaling bool                   `protobuf:"varint,4,opt,name=enable_auto_scaling,json=enableAutoScaling,proto3" json:"enable_auto_scaling,omitempty"`
+	EnableMultiLora   bool                   `protobuf:"varint,5,opt,name=enable_multi_lora,json=enableMultiLora,proto3" json:"enable_multi_lora,omitempty"`
+	EngineArgs        map[string]string      `protobuf:"bytes,6,rep,name=engine_args,json=engineArgs,proto3" json:"engine_args,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *DeploymentOverrides) Reset() {
+	*x = DeploymentOverrides{}
+	mi := &file_console_v1_console_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeploymentOverrides) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeploymentOverrides) ProtoMessage() {}
+
+func (x *DeploymentOverrides) ProtoReflect() protoreflect.Message {
+	mi := &file_console_v1_console_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeploymentOverrides.ProtoReflect.Descriptor instead.
+func (*DeploymentOverrides) Descriptor() ([]byte, []int) {
+	return file_console_v1_console_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *DeploymentOverrides) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *DeploymentOverrides) GetMinReplicas() int32 {
+	if x != nil {
+		return x.MinReplicas
+	}
+	return 0
+}
+
+func (x *DeploymentOverrides) GetMaxReplicas() int32 {
+	if x != nil {
+		return x.MaxReplicas
+	}
+	return 0
+}
+
+func (x *DeploymentOverrides) GetEnableAutoScaling() bool {
+	if x != nil {
+		return x.EnableAutoScaling
+	}
+	return false
+}
+
+func (x *DeploymentOverrides) GetEnableMultiLora() bool {
+	if x != nil {
+		return x.EnableMultiLora
+	}
+	return false
+}
+
+func (x *DeploymentOverrides) GetEngineArgs() map[string]string {
+	if x != nil {
+		return x.EngineArgs
+	}
+	return nil
+}
+
 type DeleteDeploymentRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -418,7 +786,7 @@ type DeleteDeploymentRequest struct {
 
 func (x *DeleteDeploymentRequest) Reset() {
 	*x = DeleteDeploymentRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[5]
+	mi := &file_console_v1_console_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -430,7 +798,7 @@ func (x *DeleteDeploymentRequest) String() string {
 func (*DeleteDeploymentRequest) ProtoMessage() {}
 
 func (x *DeleteDeploymentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[5]
+	mi := &file_console_v1_console_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -443,7 +811,7 @@ func (x *DeleteDeploymentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDeploymentRequest.ProtoReflect.Descriptor instead.
 func (*DeleteDeploymentRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{5}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *DeleteDeploymentRequest) GetId() string {
@@ -497,7 +865,7 @@ type Job struct {
 
 func (x *Job) Reset() {
 	*x = Job{}
-	mi := &file_console_v1_console_proto_msgTypes[6]
+	mi := &file_console_v1_console_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -509,7 +877,7 @@ func (x *Job) String() string {
 func (*Job) ProtoMessage() {}
 
 func (x *Job) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[6]
+	mi := &file_console_v1_console_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -522,7 +890,7 @@ func (x *Job) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Job.ProtoReflect.Descriptor instead.
 func (*Job) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{6}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Job) GetId() string {
@@ -711,7 +1079,7 @@ type JobRequestCounts struct {
 
 func (x *JobRequestCounts) Reset() {
 	*x = JobRequestCounts{}
-	mi := &file_console_v1_console_proto_msgTypes[7]
+	mi := &file_console_v1_console_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -723,7 +1091,7 @@ func (x *JobRequestCounts) String() string {
 func (*JobRequestCounts) ProtoMessage() {}
 
 func (x *JobRequestCounts) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[7]
+	mi := &file_console_v1_console_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -736,7 +1104,7 @@ func (x *JobRequestCounts) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobRequestCounts.ProtoReflect.Descriptor instead.
 func (*JobRequestCounts) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{7}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *JobRequestCounts) GetTotal() int32 {
@@ -771,7 +1139,7 @@ type JobUsage struct {
 
 func (x *JobUsage) Reset() {
 	*x = JobUsage{}
-	mi := &file_console_v1_console_proto_msgTypes[8]
+	mi := &file_console_v1_console_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -783,7 +1151,7 @@ func (x *JobUsage) String() string {
 func (*JobUsage) ProtoMessage() {}
 
 func (x *JobUsage) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[8]
+	mi := &file_console_v1_console_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -796,7 +1164,7 @@ func (x *JobUsage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobUsage.ProtoReflect.Descriptor instead.
 func (*JobUsage) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{8}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *JobUsage) GetInputTokens() int64 {
@@ -830,7 +1198,7 @@ type ListJobsRequest struct {
 
 func (x *ListJobsRequest) Reset() {
 	*x = ListJobsRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[9]
+	mi := &file_console_v1_console_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -842,7 +1210,7 @@ func (x *ListJobsRequest) String() string {
 func (*ListJobsRequest) ProtoMessage() {}
 
 func (x *ListJobsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[9]
+	mi := &file_console_v1_console_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -855,7 +1223,7 @@ func (x *ListJobsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListJobsRequest.ProtoReflect.Descriptor instead.
 func (*ListJobsRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{9}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ListJobsRequest) GetAfter() string {
@@ -884,7 +1252,7 @@ type ListJobsResponse struct {
 
 func (x *ListJobsResponse) Reset() {
 	*x = ListJobsResponse{}
-	mi := &file_console_v1_console_proto_msgTypes[10]
+	mi := &file_console_v1_console_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -896,7 +1264,7 @@ func (x *ListJobsResponse) String() string {
 func (*ListJobsResponse) ProtoMessage() {}
 
 func (x *ListJobsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[10]
+	mi := &file_console_v1_console_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -909,7 +1277,7 @@ func (x *ListJobsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListJobsResponse.ProtoReflect.Descriptor instead.
 func (*ListJobsResponse) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{10}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ListJobsResponse) GetJobs() []*Job {
@@ -949,7 +1317,7 @@ type GetJobRequest struct {
 
 func (x *GetJobRequest) Reset() {
 	*x = GetJobRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[11]
+	mi := &file_console_v1_console_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -961,7 +1329,7 @@ func (x *GetJobRequest) String() string {
 func (*GetJobRequest) ProtoMessage() {}
 
 func (x *GetJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[11]
+	mi := &file_console_v1_console_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -974,7 +1342,7 @@ func (x *GetJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetJobRequest.ProtoReflect.Descriptor instead.
 func (*GetJobRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{11}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *GetJobRequest) GetId() string {
@@ -1002,7 +1370,7 @@ type CreateJobRequest struct {
 
 func (x *CreateJobRequest) Reset() {
 	*x = CreateJobRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[12]
+	mi := &file_console_v1_console_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1014,7 +1382,7 @@ func (x *CreateJobRequest) String() string {
 func (*CreateJobRequest) ProtoMessage() {}
 
 func (x *CreateJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[12]
+	mi := &file_console_v1_console_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1027,7 +1395,7 @@ func (x *CreateJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateJobRequest.ProtoReflect.Descriptor instead.
 func (*CreateJobRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{12}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CreateJobRequest) GetInputDataset() string {
@@ -1081,7 +1449,7 @@ type CancelJobRequest struct {
 
 func (x *CancelJobRequest) Reset() {
 	*x = CancelJobRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[13]
+	mi := &file_console_v1_console_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1093,7 +1461,7 @@ func (x *CancelJobRequest) String() string {
 func (*CancelJobRequest) ProtoMessage() {}
 
 func (x *CancelJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[13]
+	mi := &file_console_v1_console_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1106,7 +1474,7 @@ func (x *CancelJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelJobRequest.ProtoReflect.Descriptor instead.
 func (*CancelJobRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{13}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *CancelJobRequest) GetId() string {
@@ -1143,7 +1511,7 @@ type Model struct {
 
 func (x *Model) Reset() {
 	*x = Model{}
-	mi := &file_console_v1_console_proto_msgTypes[14]
+	mi := &file_console_v1_console_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1155,7 +1523,7 @@ func (x *Model) String() string {
 func (*Model) ProtoMessage() {}
 
 func (x *Model) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[14]
+	mi := &file_console_v1_console_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1168,7 +1536,7 @@ func (x *Model) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Model.ProtoReflect.Descriptor instead.
 func (*Model) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{14}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *Model) GetId() string {
@@ -1282,7 +1650,7 @@ type ModelPricing struct {
 
 func (x *ModelPricing) Reset() {
 	*x = ModelPricing{}
-	mi := &file_console_v1_console_proto_msgTypes[15]
+	mi := &file_console_v1_console_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1294,7 +1662,7 @@ func (x *ModelPricing) String() string {
 func (*ModelPricing) ProtoMessage() {}
 
 func (x *ModelPricing) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[15]
+	mi := &file_console_v1_console_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1307,7 +1675,7 @@ func (x *ModelPricing) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelPricing.ProtoReflect.Descriptor instead.
 func (*ModelPricing) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{15}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ModelPricing) GetUncachedInput() string {
@@ -1357,7 +1725,7 @@ type ModelMetadata struct {
 
 func (x *ModelMetadata) Reset() {
 	*x = ModelMetadata{}
-	mi := &file_console_v1_console_proto_msgTypes[16]
+	mi := &file_console_v1_console_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1369,7 +1737,7 @@ func (x *ModelMetadata) String() string {
 func (*ModelMetadata) ProtoMessage() {}
 
 func (x *ModelMetadata) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[16]
+	mi := &file_console_v1_console_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1382,7 +1750,7 @@ func (x *ModelMetadata) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelMetadata.ProtoReflect.Descriptor instead.
 func (*ModelMetadata) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{16}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ModelMetadata) GetState() string {
@@ -1424,7 +1792,7 @@ type ModelSpecification struct {
 
 func (x *ModelSpecification) Reset() {
 	*x = ModelSpecification{}
-	mi := &file_console_v1_console_proto_msgTypes[17]
+	mi := &file_console_v1_console_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1436,7 +1804,7 @@ func (x *ModelSpecification) String() string {
 func (*ModelSpecification) ProtoMessage() {}
 
 func (x *ModelSpecification) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[17]
+	mi := &file_console_v1_console_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1449,7 +1817,7 @@ func (x *ModelSpecification) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelSpecification.ProtoReflect.Descriptor instead.
 func (*ModelSpecification) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{17}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ModelSpecification) GetCalibrated() bool {
@@ -1483,7 +1851,7 @@ type ListModelsRequest struct {
 
 func (x *ListModelsRequest) Reset() {
 	*x = ListModelsRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[18]
+	mi := &file_console_v1_console_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1495,7 +1863,7 @@ func (x *ListModelsRequest) String() string {
 func (*ListModelsRequest) ProtoMessage() {}
 
 func (x *ListModelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[18]
+	mi := &file_console_v1_console_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1508,7 +1876,7 @@ func (x *ListModelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListModelsRequest.ProtoReflect.Descriptor instead.
 func (*ListModelsRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{18}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ListModelsRequest) GetSearch() string {
@@ -1534,7 +1902,7 @@ type ListModelsResponse struct {
 
 func (x *ListModelsResponse) Reset() {
 	*x = ListModelsResponse{}
-	mi := &file_console_v1_console_proto_msgTypes[19]
+	mi := &file_console_v1_console_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1546,7 +1914,7 @@ func (x *ListModelsResponse) String() string {
 func (*ListModelsResponse) ProtoMessage() {}
 
 func (x *ListModelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[19]
+	mi := &file_console_v1_console_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1559,7 +1927,7 @@ func (x *ListModelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListModelsResponse.ProtoReflect.Descriptor instead.
 func (*ListModelsResponse) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{19}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ListModelsResponse) GetModels() []*Model {
@@ -1578,7 +1946,7 @@ type GetModelRequest struct {
 
 func (x *GetModelRequest) Reset() {
 	*x = GetModelRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[20]
+	mi := &file_console_v1_console_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1590,7 +1958,7 @@ func (x *GetModelRequest) String() string {
 func (*GetModelRequest) ProtoMessage() {}
 
 func (x *GetModelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[20]
+	mi := &file_console_v1_console_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1603,7 +1971,7 @@ func (x *GetModelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetModelRequest.ProtoReflect.Descriptor instead.
 func (*GetModelRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{20}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *GetModelRequest) GetId() string {
@@ -1629,7 +1997,7 @@ type ModelDeploymentTemplate struct {
 
 func (x *ModelDeploymentTemplate) Reset() {
 	*x = ModelDeploymentTemplate{}
-	mi := &file_console_v1_console_proto_msgTypes[21]
+	mi := &file_console_v1_console_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1641,7 +2009,7 @@ func (x *ModelDeploymentTemplate) String() string {
 func (*ModelDeploymentTemplate) ProtoMessage() {}
 
 func (x *ModelDeploymentTemplate) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[21]
+	mi := &file_console_v1_console_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1654,7 +2022,7 @@ func (x *ModelDeploymentTemplate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelDeploymentTemplate.ProtoReflect.Descriptor instead.
 func (*ModelDeploymentTemplate) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{21}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ModelDeploymentTemplate) GetId() string {
@@ -1730,17 +2098,20 @@ type ModelDeploymentTemplateSpec struct {
 	// a superset that is meaningless for half of the engines. The console UI
 	// ships a curated list of "known knobs" client-side (autocomplete + typed
 	// inputs) decoupled from the wire format.
-	EngineArgs         map[string]string `protobuf:"bytes,5,rep,name=engine_args,json=engineArgs,proto3" json:"engine_args,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	Quantization       *QuantizationSpec `protobuf:"bytes,6,opt,name=quantization,proto3" json:"quantization,omitempty"`
-	SupportedEndpoints []string          `protobuf:"bytes,8,rep,name=supported_endpoints,json=supportedEndpoints,proto3" json:"supported_endpoints,omitempty"` // OpenAI endpoints, e.g. "/v1/chat/completions"
-	DeploymentMode     string            `protobuf:"bytes,9,opt,name=deployment_mode,json=deploymentMode,proto3" json:"deployment_mode,omitempty"`             // "dedicated" | "shared" | "external"
+	EngineArgs         map[string]string              `protobuf:"bytes,5,rep,name=engine_args,json=engineArgs,proto3" json:"engine_args,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Quantization       *QuantizationSpec              `protobuf:"bytes,6,opt,name=quantization,proto3" json:"quantization,omitempty"`
+	SupportedEndpoints []string                       `protobuf:"bytes,8,rep,name=supported_endpoints,json=supportedEndpoints,proto3" json:"supported_endpoints,omitempty"` // OpenAI endpoints, e.g. "/v1/chat/completions"
+	DeploymentMode     string                         `protobuf:"bytes,9,opt,name=deployment_mode,json=deploymentMode,proto3" json:"deployment_mode,omitempty"`             // "dedicated" | "shared" | "external"
+	Topology           *DeploymentTopologySpec        `protobuf:"bytes,10,opt,name=topology,proto3" json:"topology,omitempty"`
+	Compatibility      *DeploymentCompatibilitySpec   `protobuf:"bytes,11,opt,name=compatibility,proto3" json:"compatibility,omitempty"`
+	ScalingDefaults    *DeploymentScalingDefaultsSpec `protobuf:"bytes,12,opt,name=scaling_defaults,json=scalingDefaults,proto3" json:"scaling_defaults,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ModelDeploymentTemplateSpec) Reset() {
 	*x = ModelDeploymentTemplateSpec{}
-	mi := &file_console_v1_console_proto_msgTypes[22]
+	mi := &file_console_v1_console_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1752,7 +2123,7 @@ func (x *ModelDeploymentTemplateSpec) String() string {
 func (*ModelDeploymentTemplateSpec) ProtoMessage() {}
 
 func (x *ModelDeploymentTemplateSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[22]
+	mi := &file_console_v1_console_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1765,7 +2136,7 @@ func (x *ModelDeploymentTemplateSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelDeploymentTemplateSpec.ProtoReflect.Descriptor instead.
 func (*ModelDeploymentTemplateSpec) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{22}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ModelDeploymentTemplateSpec) GetEngine() *EngineSpec {
@@ -1824,6 +2195,175 @@ func (x *ModelDeploymentTemplateSpec) GetDeploymentMode() string {
 	return ""
 }
 
+func (x *ModelDeploymentTemplateSpec) GetTopology() *DeploymentTopologySpec {
+	if x != nil {
+		return x.Topology
+	}
+	return nil
+}
+
+func (x *ModelDeploymentTemplateSpec) GetCompatibility() *DeploymentCompatibilitySpec {
+	if x != nil {
+		return x.Compatibility
+	}
+	return nil
+}
+
+func (x *ModelDeploymentTemplateSpec) GetScalingDefaults() *DeploymentScalingDefaultsSpec {
+	if x != nil {
+		return x.ScalingDefaults
+	}
+	return nil
+}
+
+type DeploymentTopologySpec struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"` // "standard" | "pd-disaggregated"
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeploymentTopologySpec) Reset() {
+	*x = DeploymentTopologySpec{}
+	mi := &file_console_v1_console_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeploymentTopologySpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeploymentTopologySpec) ProtoMessage() {}
+
+func (x *DeploymentTopologySpec) ProtoReflect() protoreflect.Message {
+	mi := &file_console_v1_console_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeploymentTopologySpec.ProtoReflect.Descriptor instead.
+func (*DeploymentTopologySpec) Descriptor() ([]byte, []int) {
+	return file_console_v1_console_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *DeploymentTopologySpec) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+type DeploymentCompatibilitySpec struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProviderKinds []string               `protobuf:"bytes,1,rep,name=provider_kinds,json=providerKinds,proto3" json:"provider_kinds,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeploymentCompatibilitySpec) Reset() {
+	*x = DeploymentCompatibilitySpec{}
+	mi := &file_console_v1_console_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeploymentCompatibilitySpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeploymentCompatibilitySpec) ProtoMessage() {}
+
+func (x *DeploymentCompatibilitySpec) ProtoReflect() protoreflect.Message {
+	mi := &file_console_v1_console_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeploymentCompatibilitySpec.ProtoReflect.Descriptor instead.
+func (*DeploymentCompatibilitySpec) Descriptor() ([]byte, []int) {
+	return file_console_v1_console_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *DeploymentCompatibilitySpec) GetProviderKinds() []string {
+	if x != nil {
+		return x.ProviderKinds
+	}
+	return nil
+}
+
+type DeploymentScalingDefaultsSpec struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	MinReplicas       int32                  `protobuf:"varint,1,opt,name=min_replicas,json=minReplicas,proto3" json:"min_replicas,omitempty"`
+	MaxReplicas       int32                  `protobuf:"varint,2,opt,name=max_replicas,json=maxReplicas,proto3" json:"max_replicas,omitempty"`
+	EnableAutoScaling bool                   `protobuf:"varint,3,opt,name=enable_auto_scaling,json=enableAutoScaling,proto3" json:"enable_auto_scaling,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *DeploymentScalingDefaultsSpec) Reset() {
+	*x = DeploymentScalingDefaultsSpec{}
+	mi := &file_console_v1_console_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeploymentScalingDefaultsSpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeploymentScalingDefaultsSpec) ProtoMessage() {}
+
+func (x *DeploymentScalingDefaultsSpec) ProtoReflect() protoreflect.Message {
+	mi := &file_console_v1_console_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeploymentScalingDefaultsSpec.ProtoReflect.Descriptor instead.
+func (*DeploymentScalingDefaultsSpec) Descriptor() ([]byte, []int) {
+	return file_console_v1_console_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *DeploymentScalingDefaultsSpec) GetMinReplicas() int32 {
+	if x != nil {
+		return x.MinReplicas
+	}
+	return 0
+}
+
+func (x *DeploymentScalingDefaultsSpec) GetMaxReplicas() int32 {
+	if x != nil {
+		return x.MaxReplicas
+	}
+	return 0
+}
+
+func (x *DeploymentScalingDefaultsSpec) GetEnableAutoScaling() bool {
+	if x != nil {
+		return x.EnableAutoScaling
+	}
+	return false
+}
+
 type EngineSpec struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	Type                string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"` // "vllm" | "sglang" | "trtllm" | "lmdeploy" | "mock"
@@ -1840,7 +2380,7 @@ type EngineSpec struct {
 
 func (x *EngineSpec) Reset() {
 	*x = EngineSpec{}
-	mi := &file_console_v1_console_proto_msgTypes[23]
+	mi := &file_console_v1_console_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1852,7 +2392,7 @@ func (x *EngineSpec) String() string {
 func (*EngineSpec) ProtoMessage() {}
 
 func (x *EngineSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[23]
+	mi := &file_console_v1_console_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1865,7 +2405,7 @@ func (x *EngineSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EngineSpec.ProtoReflect.Descriptor instead.
 func (*EngineSpec) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{23}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *EngineSpec) GetType() string {
@@ -1938,7 +2478,7 @@ type ModelSourceSpec struct {
 
 func (x *ModelSourceSpec) Reset() {
 	*x = ModelSourceSpec{}
-	mi := &file_console_v1_console_proto_msgTypes[24]
+	mi := &file_console_v1_console_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1950,7 +2490,7 @@ func (x *ModelSourceSpec) String() string {
 func (*ModelSourceSpec) ProtoMessage() {}
 
 func (x *ModelSourceSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[24]
+	mi := &file_console_v1_console_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1963,7 +2503,7 @@ func (x *ModelSourceSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelSourceSpec.ProtoReflect.Descriptor instead.
 func (*ModelSourceSpec) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{24}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ModelSourceSpec) GetType() string {
@@ -2021,7 +2561,7 @@ type AcceleratorSpec struct {
 
 func (x *AcceleratorSpec) Reset() {
 	*x = AcceleratorSpec{}
-	mi := &file_console_v1_console_proto_msgTypes[25]
+	mi := &file_console_v1_console_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2033,7 +2573,7 @@ func (x *AcceleratorSpec) String() string {
 func (*AcceleratorSpec) ProtoMessage() {}
 
 func (x *AcceleratorSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[25]
+	mi := &file_console_v1_console_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2046,7 +2586,7 @@ func (x *AcceleratorSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AcceleratorSpec.ProtoReflect.Descriptor instead.
 func (*AcceleratorSpec) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{25}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *AcceleratorSpec) GetType() string {
@@ -2098,7 +2638,7 @@ type ParallelismSpec struct {
 
 func (x *ParallelismSpec) Reset() {
 	*x = ParallelismSpec{}
-	mi := &file_console_v1_console_proto_msgTypes[26]
+	mi := &file_console_v1_console_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2110,7 +2650,7 @@ func (x *ParallelismSpec) String() string {
 func (*ParallelismSpec) ProtoMessage() {}
 
 func (x *ParallelismSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[26]
+	mi := &file_console_v1_console_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2123,7 +2663,7 @@ func (x *ParallelismSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ParallelismSpec.ProtoReflect.Descriptor instead.
 func (*ParallelismSpec) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{26}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ParallelismSpec) GetTp() int32 {
@@ -2179,7 +2719,7 @@ type QuantizationSpec struct {
 
 func (x *QuantizationSpec) Reset() {
 	*x = QuantizationSpec{}
-	mi := &file_console_v1_console_proto_msgTypes[27]
+	mi := &file_console_v1_console_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2191,7 +2731,7 @@ func (x *QuantizationSpec) String() string {
 func (*QuantizationSpec) ProtoMessage() {}
 
 func (x *QuantizationSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[27]
+	mi := &file_console_v1_console_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2204,7 +2744,7 @@ func (x *QuantizationSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuantizationSpec.ProtoReflect.Descriptor instead.
 func (*QuantizationSpec) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{27}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *QuantizationSpec) GetWeight() string {
@@ -2239,7 +2779,7 @@ type ListModelDeploymentTemplatesRequest struct {
 
 func (x *ListModelDeploymentTemplatesRequest) Reset() {
 	*x = ListModelDeploymentTemplatesRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[28]
+	mi := &file_console_v1_console_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2251,7 +2791,7 @@ func (x *ListModelDeploymentTemplatesRequest) String() string {
 func (*ListModelDeploymentTemplatesRequest) ProtoMessage() {}
 
 func (x *ListModelDeploymentTemplatesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[28]
+	mi := &file_console_v1_console_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2264,7 +2804,7 @@ func (x *ListModelDeploymentTemplatesRequest) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use ListModelDeploymentTemplatesRequest.ProtoReflect.Descriptor instead.
 func (*ListModelDeploymentTemplatesRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{28}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ListModelDeploymentTemplatesRequest) GetModelId() string {
@@ -2297,7 +2837,7 @@ type ListModelDeploymentTemplatesResponse struct {
 
 func (x *ListModelDeploymentTemplatesResponse) Reset() {
 	*x = ListModelDeploymentTemplatesResponse{}
-	mi := &file_console_v1_console_proto_msgTypes[29]
+	mi := &file_console_v1_console_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2309,7 +2849,7 @@ func (x *ListModelDeploymentTemplatesResponse) String() string {
 func (*ListModelDeploymentTemplatesResponse) ProtoMessage() {}
 
 func (x *ListModelDeploymentTemplatesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[29]
+	mi := &file_console_v1_console_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2322,7 +2862,7 @@ func (x *ListModelDeploymentTemplatesResponse) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use ListModelDeploymentTemplatesResponse.ProtoReflect.Descriptor instead.
 func (*ListModelDeploymentTemplatesResponse) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{29}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ListModelDeploymentTemplatesResponse) GetTemplates() []*ModelDeploymentTemplate {
@@ -2342,7 +2882,7 @@ type GetModelDeploymentTemplateRequest struct {
 
 func (x *GetModelDeploymentTemplateRequest) Reset() {
 	*x = GetModelDeploymentTemplateRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[30]
+	mi := &file_console_v1_console_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2354,7 +2894,7 @@ func (x *GetModelDeploymentTemplateRequest) String() string {
 func (*GetModelDeploymentTemplateRequest) ProtoMessage() {}
 
 func (x *GetModelDeploymentTemplateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[30]
+	mi := &file_console_v1_console_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2367,7 +2907,7 @@ func (x *GetModelDeploymentTemplateRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use GetModelDeploymentTemplateRequest.ProtoReflect.Descriptor instead.
 func (*GetModelDeploymentTemplateRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{30}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *GetModelDeploymentTemplateRequest) GetModelId() string {
@@ -2397,7 +2937,7 @@ type CreateModelDeploymentTemplateRequest struct {
 
 func (x *CreateModelDeploymentTemplateRequest) Reset() {
 	*x = CreateModelDeploymentTemplateRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[31]
+	mi := &file_console_v1_console_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2409,7 +2949,7 @@ func (x *CreateModelDeploymentTemplateRequest) String() string {
 func (*CreateModelDeploymentTemplateRequest) ProtoMessage() {}
 
 func (x *CreateModelDeploymentTemplateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[31]
+	mi := &file_console_v1_console_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2422,7 +2962,7 @@ func (x *CreateModelDeploymentTemplateRequest) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use CreateModelDeploymentTemplateRequest.ProtoReflect.Descriptor instead.
 func (*CreateModelDeploymentTemplateRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{31}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *CreateModelDeploymentTemplateRequest) GetModelId() string {
@@ -2474,7 +3014,7 @@ type UpdateModelDeploymentTemplateRequest struct {
 
 func (x *UpdateModelDeploymentTemplateRequest) Reset() {
 	*x = UpdateModelDeploymentTemplateRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[32]
+	mi := &file_console_v1_console_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2486,7 +3026,7 @@ func (x *UpdateModelDeploymentTemplateRequest) String() string {
 func (*UpdateModelDeploymentTemplateRequest) ProtoMessage() {}
 
 func (x *UpdateModelDeploymentTemplateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[32]
+	mi := &file_console_v1_console_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2499,7 +3039,7 @@ func (x *UpdateModelDeploymentTemplateRequest) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use UpdateModelDeploymentTemplateRequest.ProtoReflect.Descriptor instead.
 func (*UpdateModelDeploymentTemplateRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{32}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *UpdateModelDeploymentTemplateRequest) GetModelId() string {
@@ -2554,7 +3094,7 @@ type DeleteModelDeploymentTemplateRequest struct {
 
 func (x *DeleteModelDeploymentTemplateRequest) Reset() {
 	*x = DeleteModelDeploymentTemplateRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[33]
+	mi := &file_console_v1_console_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2566,7 +3106,7 @@ func (x *DeleteModelDeploymentTemplateRequest) String() string {
 func (*DeleteModelDeploymentTemplateRequest) ProtoMessage() {}
 
 func (x *DeleteModelDeploymentTemplateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[33]
+	mi := &file_console_v1_console_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2579,7 +3119,7 @@ func (x *DeleteModelDeploymentTemplateRequest) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use DeleteModelDeploymentTemplateRequest.ProtoReflect.Descriptor instead.
 func (*DeleteModelDeploymentTemplateRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{33}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *DeleteModelDeploymentTemplateRequest) GetModelId() string {
@@ -2607,7 +3147,7 @@ type ResolveModelDeploymentTemplateRequest struct {
 
 func (x *ResolveModelDeploymentTemplateRequest) Reset() {
 	*x = ResolveModelDeploymentTemplateRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[34]
+	mi := &file_console_v1_console_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2619,7 +3159,7 @@ func (x *ResolveModelDeploymentTemplateRequest) String() string {
 func (*ResolveModelDeploymentTemplateRequest) ProtoMessage() {}
 
 func (x *ResolveModelDeploymentTemplateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[34]
+	mi := &file_console_v1_console_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2632,7 +3172,7 @@ func (x *ResolveModelDeploymentTemplateRequest) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use ResolveModelDeploymentTemplateRequest.ProtoReflect.Descriptor instead.
 func (*ResolveModelDeploymentTemplateRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{34}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *ResolveModelDeploymentTemplateRequest) GetModelId() string {
@@ -2668,7 +3208,7 @@ type APIKey struct {
 
 func (x *APIKey) Reset() {
 	*x = APIKey{}
-	mi := &file_console_v1_console_proto_msgTypes[35]
+	mi := &file_console_v1_console_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2680,7 +3220,7 @@ func (x *APIKey) String() string {
 func (*APIKey) ProtoMessage() {}
 
 func (x *APIKey) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[35]
+	mi := &file_console_v1_console_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2693,7 +3233,7 @@ func (x *APIKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use APIKey.ProtoReflect.Descriptor instead.
 func (*APIKey) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{35}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *APIKey) GetId() string {
@@ -2732,7 +3272,7 @@ type ListAPIKeysRequest struct {
 
 func (x *ListAPIKeysRequest) Reset() {
 	*x = ListAPIKeysRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[36]
+	mi := &file_console_v1_console_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2744,7 +3284,7 @@ func (x *ListAPIKeysRequest) String() string {
 func (*ListAPIKeysRequest) ProtoMessage() {}
 
 func (x *ListAPIKeysRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[36]
+	mi := &file_console_v1_console_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2757,7 +3297,7 @@ func (x *ListAPIKeysRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAPIKeysRequest.ProtoReflect.Descriptor instead.
 func (*ListAPIKeysRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{36}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{45}
 }
 
 type ListAPIKeysResponse struct {
@@ -2769,7 +3309,7 @@ type ListAPIKeysResponse struct {
 
 func (x *ListAPIKeysResponse) Reset() {
 	*x = ListAPIKeysResponse{}
-	mi := &file_console_v1_console_proto_msgTypes[37]
+	mi := &file_console_v1_console_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2781,7 +3321,7 @@ func (x *ListAPIKeysResponse) String() string {
 func (*ListAPIKeysResponse) ProtoMessage() {}
 
 func (x *ListAPIKeysResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[37]
+	mi := &file_console_v1_console_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2794,7 +3334,7 @@ func (x *ListAPIKeysResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAPIKeysResponse.ProtoReflect.Descriptor instead.
 func (*ListAPIKeysResponse) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{37}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ListAPIKeysResponse) GetApiKeys() []*APIKey {
@@ -2813,7 +3353,7 @@ type CreateAPIKeyRequest struct {
 
 func (x *CreateAPIKeyRequest) Reset() {
 	*x = CreateAPIKeyRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[38]
+	mi := &file_console_v1_console_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2825,7 +3365,7 @@ func (x *CreateAPIKeyRequest) String() string {
 func (*CreateAPIKeyRequest) ProtoMessage() {}
 
 func (x *CreateAPIKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[38]
+	mi := &file_console_v1_console_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2838,7 +3378,7 @@ func (x *CreateAPIKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAPIKeyRequest.ProtoReflect.Descriptor instead.
 func (*CreateAPIKeyRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{38}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *CreateAPIKeyRequest) GetName() string {
@@ -2858,7 +3398,7 @@ type CreateAPIKeyResponse struct {
 
 func (x *CreateAPIKeyResponse) Reset() {
 	*x = CreateAPIKeyResponse{}
-	mi := &file_console_v1_console_proto_msgTypes[39]
+	mi := &file_console_v1_console_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2870,7 +3410,7 @@ func (x *CreateAPIKeyResponse) String() string {
 func (*CreateAPIKeyResponse) ProtoMessage() {}
 
 func (x *CreateAPIKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[39]
+	mi := &file_console_v1_console_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2883,7 +3423,7 @@ func (x *CreateAPIKeyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAPIKeyResponse.ProtoReflect.Descriptor instead.
 func (*CreateAPIKeyResponse) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{39}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *CreateAPIKeyResponse) GetApiKey() *APIKey {
@@ -2909,7 +3449,7 @@ type DeleteAPIKeyRequest struct {
 
 func (x *DeleteAPIKeyRequest) Reset() {
 	*x = DeleteAPIKeyRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[40]
+	mi := &file_console_v1_console_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2921,7 +3461,7 @@ func (x *DeleteAPIKeyRequest) String() string {
 func (*DeleteAPIKeyRequest) ProtoMessage() {}
 
 func (x *DeleteAPIKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[40]
+	mi := &file_console_v1_console_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2934,7 +3474,7 @@ func (x *DeleteAPIKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteAPIKeyRequest.ProtoReflect.Descriptor instead.
 func (*DeleteAPIKeyRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{40}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *DeleteAPIKeyRequest) GetId() string {
@@ -2954,7 +3494,7 @@ type Secret struct {
 
 func (x *Secret) Reset() {
 	*x = Secret{}
-	mi := &file_console_v1_console_proto_msgTypes[41]
+	mi := &file_console_v1_console_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2966,7 +3506,7 @@ func (x *Secret) String() string {
 func (*Secret) ProtoMessage() {}
 
 func (x *Secret) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[41]
+	mi := &file_console_v1_console_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2979,7 +3519,7 @@ func (x *Secret) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Secret.ProtoReflect.Descriptor instead.
 func (*Secret) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{41}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *Secret) GetId() string {
@@ -3005,7 +3545,7 @@ type ListSecretsRequest struct {
 
 func (x *ListSecretsRequest) Reset() {
 	*x = ListSecretsRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[42]
+	mi := &file_console_v1_console_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3017,7 +3557,7 @@ func (x *ListSecretsRequest) String() string {
 func (*ListSecretsRequest) ProtoMessage() {}
 
 func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[42]
+	mi := &file_console_v1_console_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3030,7 +3570,7 @@ func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecretsRequest.ProtoReflect.Descriptor instead.
 func (*ListSecretsRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{42}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *ListSecretsRequest) GetSearch() string {
@@ -3049,7 +3589,7 @@ type ListSecretsResponse struct {
 
 func (x *ListSecretsResponse) Reset() {
 	*x = ListSecretsResponse{}
-	mi := &file_console_v1_console_proto_msgTypes[43]
+	mi := &file_console_v1_console_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3061,7 +3601,7 @@ func (x *ListSecretsResponse) String() string {
 func (*ListSecretsResponse) ProtoMessage() {}
 
 func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[43]
+	mi := &file_console_v1_console_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3074,7 +3614,7 @@ func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecretsResponse.ProtoReflect.Descriptor instead.
 func (*ListSecretsResponse) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{43}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *ListSecretsResponse) GetSecrets() []*Secret {
@@ -3094,7 +3634,7 @@ type CreateSecretRequest struct {
 
 func (x *CreateSecretRequest) Reset() {
 	*x = CreateSecretRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[44]
+	mi := &file_console_v1_console_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3106,7 +3646,7 @@ func (x *CreateSecretRequest) String() string {
 func (*CreateSecretRequest) ProtoMessage() {}
 
 func (x *CreateSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[44]
+	mi := &file_console_v1_console_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3119,7 +3659,7 @@ func (x *CreateSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSecretRequest.ProtoReflect.Descriptor instead.
 func (*CreateSecretRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{44}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *CreateSecretRequest) GetName() string {
@@ -3145,7 +3685,7 @@ type DeleteSecretRequest struct {
 
 func (x *DeleteSecretRequest) Reset() {
 	*x = DeleteSecretRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[45]
+	mi := &file_console_v1_console_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3157,7 +3697,7 @@ func (x *DeleteSecretRequest) String() string {
 func (*DeleteSecretRequest) ProtoMessage() {}
 
 func (x *DeleteSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[45]
+	mi := &file_console_v1_console_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3170,7 +3710,7 @@ func (x *DeleteSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSecretRequest.ProtoReflect.Descriptor instead.
 func (*DeleteSecretRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{45}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *DeleteSecretRequest) GetId() string {
@@ -3194,7 +3734,7 @@ type Quota struct {
 
 func (x *Quota) Reset() {
 	*x = Quota{}
-	mi := &file_console_v1_console_proto_msgTypes[46]
+	mi := &file_console_v1_console_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3206,7 +3746,7 @@ func (x *Quota) String() string {
 func (*Quota) ProtoMessage() {}
 
 func (x *Quota) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[46]
+	mi := &file_console_v1_console_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3219,7 +3759,7 @@ func (x *Quota) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Quota.ProtoReflect.Descriptor instead.
 func (*Quota) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{46}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *Quota) GetId() string {
@@ -3273,7 +3813,7 @@ type ListQuotasRequest struct {
 
 func (x *ListQuotasRequest) Reset() {
 	*x = ListQuotasRequest{}
-	mi := &file_console_v1_console_proto_msgTypes[47]
+	mi := &file_console_v1_console_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3285,7 +3825,7 @@ func (x *ListQuotasRequest) String() string {
 func (*ListQuotasRequest) ProtoMessage() {}
 
 func (x *ListQuotasRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[47]
+	mi := &file_console_v1_console_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3298,7 +3838,7 @@ func (x *ListQuotasRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListQuotasRequest.ProtoReflect.Descriptor instead.
 func (*ListQuotasRequest) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{47}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *ListQuotasRequest) GetSearch() string {
@@ -3317,7 +3857,7 @@ type ListQuotasResponse struct {
 
 func (x *ListQuotasResponse) Reset() {
 	*x = ListQuotasResponse{}
-	mi := &file_console_v1_console_proto_msgTypes[48]
+	mi := &file_console_v1_console_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3329,7 +3869,7 @@ func (x *ListQuotasResponse) String() string {
 func (*ListQuotasResponse) ProtoMessage() {}
 
 func (x *ListQuotasResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_console_v1_console_proto_msgTypes[48]
+	mi := &file_console_v1_console_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3342,7 +3882,7 @@ func (x *ListQuotasResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListQuotasResponse.ProtoReflect.Descriptor instead.
 func (*ListQuotasResponse) Descriptor() ([]byte, []int) {
-	return file_console_v1_console_proto_rawDescGZIP(), []int{48}
+	return file_console_v1_console_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *ListQuotasResponse) GetQuotas() []*Quota {
@@ -3357,7 +3897,7 @@ var File_console_v1_console_proto protoreflect.FileDescriptor
 const file_console_v1_console_proto_rawDesc = "" +
 	"\n" +
 	"\x18console/v1/console.proto\x12\n" +
-	"console.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\"\xc8\x02\n" +
+	"console.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\"\xb9\x03\n" +
 	"\n" +
 	"Deployment\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
@@ -3373,13 +3913,23 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\n" +
 	"created_by\x18\n" +
 	" \x01(\tR\tcreatedBy\x12\x16\n" +
-	"\x06status\x18\v \x01(\tR\x06status\"0\n" +
+	"\x06status\x18\v \x01(\tR\x06status\x12\x1f\n" +
+	"\vtemplate_id\x18\f \x01(\tR\n" +
+	"templateId\x12)\n" +
+	"\x10template_version\x18\r \x01(\tR\x0ftemplateVersion\x12#\n" +
+	"\rprovider_kind\x18\x0e \x01(\tR\fproviderKind\"0\n" +
 	"\x16ListDeploymentsRequest\x12\x16\n" +
 	"\x06search\x18\x01 \x01(\tR\x06search\"S\n" +
 	"\x17ListDeploymentsResponse\x128\n" +
 	"\vdeployments\x18\x01 \x03(\v2\x16.console.v1.DeploymentR\vdeployments\"&\n" +
 	"\x14GetDeploymentRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\x82\x03\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"0\n" +
+	"\x1eRefreshDeploymentStatusRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"9\n" +
+	"%BatchRefreshDeploymentStatusesRequest\x12\x10\n" +
+	"\x03ids\x18\x01 \x03(\tR\x03ids\"b\n" +
+	"&BatchRefreshDeploymentStatusesResponse\x128\n" +
+	"\vdeployments\x18\x01 \x03(\v2\x16.console.v1.DeploymentR\vdeployments\"\xbf\x04\n" +
 	"\x17CreateDeploymentRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
@@ -3392,7 +3942,28 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\fmax_replicas\x18\b \x01(\x05R\vmaxReplicas\x12.\n" +
 	"\x13enable_auto_scaling\x18\t \x01(\bR\x11enableAutoScaling\x12*\n" +
 	"\x11enable_multi_lora\x18\n" +
-	" \x01(\bR\x0fenableMultiLora\")\n" +
+	" \x01(\bR\x0fenableMultiLora\x12=\n" +
+	"\btemplate\x18\v \x01(\v2!.console.v1.DeploymentTemplateRefR\btemplate\x12=\n" +
+	"\bprovider\x18\f \x01(\v2!.console.v1.DeploymentProviderRefR\bprovider\x12=\n" +
+	"\toverrides\x18\r \x01(\v2\x1f.console.v1.DeploymentOverridesR\toverrides\"S\n" +
+	"\x15DeploymentTemplateRef\x12\x19\n" +
+	"\bmodel_id\x18\x01 \x01(\tR\amodelId\x12\x1f\n" +
+	"\vtemplate_id\x18\x02 \x01(\tR\n" +
+	"templateId\"E\n" +
+	"\x15DeploymentProviderRef\x12\x12\n" +
+	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x18\n" +
+	"\aprofile\x18\x02 \x01(\tR\aprofile\"\xe0\x02\n" +
+	"\x13DeploymentOverrides\x12\x16\n" +
+	"\x06region\x18\x01 \x01(\tR\x06region\x12!\n" +
+	"\fmin_replicas\x18\x02 \x01(\x05R\vminReplicas\x12!\n" +
+	"\fmax_replicas\x18\x03 \x01(\x05R\vmaxReplicas\x12.\n" +
+	"\x13enable_auto_scaling\x18\x04 \x01(\bR\x11enableAutoScaling\x12*\n" +
+	"\x11enable_multi_lora\x18\x05 \x01(\bR\x0fenableMultiLora\x12P\n" +
+	"\vengine_args\x18\x06 \x03(\v2/.console.v1.DeploymentOverrides.EngineArgsEntryR\n" +
+	"engineArgs\x1a=\n" +
+	"\x0fEngineArgsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\")\n" +
 	"\x17DeleteDeploymentRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\xc7\a\n" +
 	"\x03Job\x12\x0e\n" +
@@ -3514,7 +4085,7 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\a \x01(\tR\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\b \x01(\tR\tupdatedAt\"\xd7\x04\n" +
+	"updated_at\x18\b \x01(\tR\tupdatedAt\"\xbc\x06\n" +
 	"\x1bModelDeploymentTemplateSpec\x12.\n" +
 	"\x06engine\x18\x01 \x01(\v2\x16.console.v1.EngineSpecR\x06engine\x12>\n" +
 	"\fmodel_source\x18\x02 \x01(\v2\x1b.console.v1.ModelSourceSpecR\vmodelSource\x12=\n" +
@@ -3524,10 +4095,22 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"engineArgs\x12@\n" +
 	"\fquantization\x18\x06 \x01(\v2\x1c.console.v1.QuantizationSpecR\fquantization\x12/\n" +
 	"\x13supported_endpoints\x18\b \x03(\tR\x12supportedEndpoints\x12'\n" +
-	"\x0fdeployment_mode\x18\t \x01(\tR\x0edeploymentMode\x1a=\n" +
+	"\x0fdeployment_mode\x18\t \x01(\tR\x0edeploymentMode\x12>\n" +
+	"\btopology\x18\n" +
+	" \x01(\v2\".console.v1.DeploymentTopologySpecR\btopology\x12M\n" +
+	"\rcompatibility\x18\v \x01(\v2'.console.v1.DeploymentCompatibilitySpecR\rcompatibility\x12T\n" +
+	"\x10scaling_defaults\x18\f \x01(\v2).console.v1.DeploymentScalingDefaultsSpecR\x0fscalingDefaults\x1a=\n" +
 	"\x0fEngineArgsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\a\x10\bR\x0fprovider_config\"\x97\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\a\x10\bR\x0fprovider_config\",\n" +
+	"\x16DeploymentTopologySpec\x12\x12\n" +
+	"\x04kind\x18\x01 \x01(\tR\x04kind\"D\n" +
+	"\x1bDeploymentCompatibilitySpec\x12%\n" +
+	"\x0eprovider_kinds\x18\x01 \x03(\tR\rproviderKinds\"\x95\x01\n" +
+	"\x1dDeploymentScalingDefaultsSpec\x12!\n" +
+	"\fmin_replicas\x18\x01 \x01(\x05R\vminReplicas\x12!\n" +
+	"\fmax_replicas\x18\x02 \x01(\x05R\vmaxReplicas\x12.\n" +
+	"\x13enable_auto_scaling\x18\x03 \x01(\bR\x11enableAutoScaling\"\x97\x02\n" +
 	"\n" +
 	"EngineSpec\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x18\n" +
@@ -3633,10 +4216,12 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\x11ListQuotasRequest\x12\x16\n" +
 	"\x06search\x18\x01 \x01(\tR\x06search\"?\n" +
 	"\x12ListQuotasResponse\x12)\n" +
-	"\x06quotas\x18\x01 \x03(\v2\x11.console.v1.QuotaR\x06quotas2\xdd\x03\n" +
+	"\x06quotas\x18\x01 \x03(\v2\x11.console.v1.QuotaR\x06quotas2\xaf\x06\n" +
 	"\x11DeploymentService\x12w\n" +
 	"\x0fListDeployments\x12\".console.v1.ListDeploymentsRequest\x1a#.console.v1.ListDeploymentsResponse\"\x1b\x82\xd3\xe4\x93\x02\x15\x12\x13/api/v1/deployments\x12k\n" +
-	"\rGetDeployment\x12 .console.v1.GetDeploymentRequest\x1a\x16.console.v1.Deployment\" \x82\xd3\xe4\x93\x02\x1a\x12\x18/api/v1/deployments/{id}\x12o\n" +
+	"\rGetDeployment\x12 .console.v1.GetDeploymentRequest\x1a\x16.console.v1.Deployment\" \x82\xd3\xe4\x93\x02\x1a\x12\x18/api/v1/deployments/{id}\x12\x90\x01\n" +
+	"\x17RefreshDeploymentStatus\x12*.console.v1.RefreshDeploymentStatusRequest\x1a\x16.console.v1.Deployment\"1\x82\xd3\xe4\x93\x02+:\x01*\"&/api/v1/deployments/{id}:refreshStatus\x12\xbc\x01\n" +
+	"\x1eBatchRefreshDeploymentStatuses\x121.console.v1.BatchRefreshDeploymentStatusesRequest\x1a2.console.v1.BatchRefreshDeploymentStatusesResponse\"3\x82\xd3\xe4\x93\x02-:\x01*\"(/api/v1/deployments:batchRefreshStatuses\x12o\n" +
 	"\x10CreateDeployment\x12#.console.v1.CreateDeploymentRequest\x1a\x16.console.v1.Deployment\"\x1e\x82\xd3\xe4\x93\x02\x18:\x01*\"\x13/api/v1/deployments\x12q\n" +
 	"\x10DeleteDeployment\x12#.console.v1.DeleteDeploymentRequest\x1a\x16.google.protobuf.Empty\" \x82\xd3\xe4\x93\x02\x1a*\x18/api/v1/deployments/{id}2\xf0\x02\n" +
 	"\n" +
@@ -3680,136 +4265,158 @@ func file_console_v1_console_proto_rawDescGZIP() []byte {
 	return file_console_v1_console_proto_rawDescData
 }
 
-var file_console_v1_console_proto_msgTypes = make([]protoimpl.MessageInfo, 51)
+var file_console_v1_console_proto_msgTypes = make([]protoimpl.MessageInfo, 61)
 var file_console_v1_console_proto_goTypes = []any{
-	(*Deployment)(nil),                            // 0: console.v1.Deployment
-	(*ListDeploymentsRequest)(nil),                // 1: console.v1.ListDeploymentsRequest
-	(*ListDeploymentsResponse)(nil),               // 2: console.v1.ListDeploymentsResponse
-	(*GetDeploymentRequest)(nil),                  // 3: console.v1.GetDeploymentRequest
-	(*CreateDeploymentRequest)(nil),               // 4: console.v1.CreateDeploymentRequest
-	(*DeleteDeploymentRequest)(nil),               // 5: console.v1.DeleteDeploymentRequest
-	(*Job)(nil),                                   // 6: console.v1.Job
-	(*JobRequestCounts)(nil),                      // 7: console.v1.JobRequestCounts
-	(*JobUsage)(nil),                              // 8: console.v1.JobUsage
-	(*ListJobsRequest)(nil),                       // 9: console.v1.ListJobsRequest
-	(*ListJobsResponse)(nil),                      // 10: console.v1.ListJobsResponse
-	(*GetJobRequest)(nil),                         // 11: console.v1.GetJobRequest
-	(*CreateJobRequest)(nil),                      // 12: console.v1.CreateJobRequest
-	(*CancelJobRequest)(nil),                      // 13: console.v1.CancelJobRequest
-	(*Model)(nil),                                 // 14: console.v1.Model
-	(*ModelPricing)(nil),                          // 15: console.v1.ModelPricing
-	(*ModelMetadata)(nil),                         // 16: console.v1.ModelMetadata
-	(*ModelSpecification)(nil),                    // 17: console.v1.ModelSpecification
-	(*ListModelsRequest)(nil),                     // 18: console.v1.ListModelsRequest
-	(*ListModelsResponse)(nil),                    // 19: console.v1.ListModelsResponse
-	(*GetModelRequest)(nil),                       // 20: console.v1.GetModelRequest
-	(*ModelDeploymentTemplate)(nil),               // 21: console.v1.ModelDeploymentTemplate
-	(*ModelDeploymentTemplateSpec)(nil),           // 22: console.v1.ModelDeploymentTemplateSpec
-	(*EngineSpec)(nil),                            // 23: console.v1.EngineSpec
-	(*ModelSourceSpec)(nil),                       // 24: console.v1.ModelSourceSpec
-	(*AcceleratorSpec)(nil),                       // 25: console.v1.AcceleratorSpec
-	(*ParallelismSpec)(nil),                       // 26: console.v1.ParallelismSpec
-	(*QuantizationSpec)(nil),                      // 27: console.v1.QuantizationSpec
-	(*ListModelDeploymentTemplatesRequest)(nil),   // 28: console.v1.ListModelDeploymentTemplatesRequest
-	(*ListModelDeploymentTemplatesResponse)(nil),  // 29: console.v1.ListModelDeploymentTemplatesResponse
-	(*GetModelDeploymentTemplateRequest)(nil),     // 30: console.v1.GetModelDeploymentTemplateRequest
-	(*CreateModelDeploymentTemplateRequest)(nil),  // 31: console.v1.CreateModelDeploymentTemplateRequest
-	(*UpdateModelDeploymentTemplateRequest)(nil),  // 32: console.v1.UpdateModelDeploymentTemplateRequest
-	(*DeleteModelDeploymentTemplateRequest)(nil),  // 33: console.v1.DeleteModelDeploymentTemplateRequest
-	(*ResolveModelDeploymentTemplateRequest)(nil), // 34: console.v1.ResolveModelDeploymentTemplateRequest
-	(*APIKey)(nil),                                // 35: console.v1.APIKey
-	(*ListAPIKeysRequest)(nil),                    // 36: console.v1.ListAPIKeysRequest
-	(*ListAPIKeysResponse)(nil),                   // 37: console.v1.ListAPIKeysResponse
-	(*CreateAPIKeyRequest)(nil),                   // 38: console.v1.CreateAPIKeyRequest
-	(*CreateAPIKeyResponse)(nil),                  // 39: console.v1.CreateAPIKeyResponse
-	(*DeleteAPIKeyRequest)(nil),                   // 40: console.v1.DeleteAPIKeyRequest
-	(*Secret)(nil),                                // 41: console.v1.Secret
-	(*ListSecretsRequest)(nil),                    // 42: console.v1.ListSecretsRequest
-	(*ListSecretsResponse)(nil),                   // 43: console.v1.ListSecretsResponse
-	(*CreateSecretRequest)(nil),                   // 44: console.v1.CreateSecretRequest
-	(*DeleteSecretRequest)(nil),                   // 45: console.v1.DeleteSecretRequest
-	(*Quota)(nil),                                 // 46: console.v1.Quota
-	(*ListQuotasRequest)(nil),                     // 47: console.v1.ListQuotasRequest
-	(*ListQuotasResponse)(nil),                    // 48: console.v1.ListQuotasResponse
-	nil,                                           // 49: console.v1.Job.MetadataEntry
-	nil,                                           // 50: console.v1.ModelDeploymentTemplateSpec.EngineArgsEntry
-	(*emptypb.Empty)(nil),                         // 51: google.protobuf.Empty
+	(*Deployment)(nil),                             // 0: console.v1.Deployment
+	(*ListDeploymentsRequest)(nil),                 // 1: console.v1.ListDeploymentsRequest
+	(*ListDeploymentsResponse)(nil),                // 2: console.v1.ListDeploymentsResponse
+	(*GetDeploymentRequest)(nil),                   // 3: console.v1.GetDeploymentRequest
+	(*RefreshDeploymentStatusRequest)(nil),         // 4: console.v1.RefreshDeploymentStatusRequest
+	(*BatchRefreshDeploymentStatusesRequest)(nil),  // 5: console.v1.BatchRefreshDeploymentStatusesRequest
+	(*BatchRefreshDeploymentStatusesResponse)(nil), // 6: console.v1.BatchRefreshDeploymentStatusesResponse
+	(*CreateDeploymentRequest)(nil),                // 7: console.v1.CreateDeploymentRequest
+	(*DeploymentTemplateRef)(nil),                  // 8: console.v1.DeploymentTemplateRef
+	(*DeploymentProviderRef)(nil),                  // 9: console.v1.DeploymentProviderRef
+	(*DeploymentOverrides)(nil),                    // 10: console.v1.DeploymentOverrides
+	(*DeleteDeploymentRequest)(nil),                // 11: console.v1.DeleteDeploymentRequest
+	(*Job)(nil),                                    // 12: console.v1.Job
+	(*JobRequestCounts)(nil),                       // 13: console.v1.JobRequestCounts
+	(*JobUsage)(nil),                               // 14: console.v1.JobUsage
+	(*ListJobsRequest)(nil),                        // 15: console.v1.ListJobsRequest
+	(*ListJobsResponse)(nil),                       // 16: console.v1.ListJobsResponse
+	(*GetJobRequest)(nil),                          // 17: console.v1.GetJobRequest
+	(*CreateJobRequest)(nil),                       // 18: console.v1.CreateJobRequest
+	(*CancelJobRequest)(nil),                       // 19: console.v1.CancelJobRequest
+	(*Model)(nil),                                  // 20: console.v1.Model
+	(*ModelPricing)(nil),                           // 21: console.v1.ModelPricing
+	(*ModelMetadata)(nil),                          // 22: console.v1.ModelMetadata
+	(*ModelSpecification)(nil),                     // 23: console.v1.ModelSpecification
+	(*ListModelsRequest)(nil),                      // 24: console.v1.ListModelsRequest
+	(*ListModelsResponse)(nil),                     // 25: console.v1.ListModelsResponse
+	(*GetModelRequest)(nil),                        // 26: console.v1.GetModelRequest
+	(*ModelDeploymentTemplate)(nil),                // 27: console.v1.ModelDeploymentTemplate
+	(*ModelDeploymentTemplateSpec)(nil),            // 28: console.v1.ModelDeploymentTemplateSpec
+	(*DeploymentTopologySpec)(nil),                 // 29: console.v1.DeploymentTopologySpec
+	(*DeploymentCompatibilitySpec)(nil),            // 30: console.v1.DeploymentCompatibilitySpec
+	(*DeploymentScalingDefaultsSpec)(nil),          // 31: console.v1.DeploymentScalingDefaultsSpec
+	(*EngineSpec)(nil),                             // 32: console.v1.EngineSpec
+	(*ModelSourceSpec)(nil),                        // 33: console.v1.ModelSourceSpec
+	(*AcceleratorSpec)(nil),                        // 34: console.v1.AcceleratorSpec
+	(*ParallelismSpec)(nil),                        // 35: console.v1.ParallelismSpec
+	(*QuantizationSpec)(nil),                       // 36: console.v1.QuantizationSpec
+	(*ListModelDeploymentTemplatesRequest)(nil),    // 37: console.v1.ListModelDeploymentTemplatesRequest
+	(*ListModelDeploymentTemplatesResponse)(nil),   // 38: console.v1.ListModelDeploymentTemplatesResponse
+	(*GetModelDeploymentTemplateRequest)(nil),      // 39: console.v1.GetModelDeploymentTemplateRequest
+	(*CreateModelDeploymentTemplateRequest)(nil),   // 40: console.v1.CreateModelDeploymentTemplateRequest
+	(*UpdateModelDeploymentTemplateRequest)(nil),   // 41: console.v1.UpdateModelDeploymentTemplateRequest
+	(*DeleteModelDeploymentTemplateRequest)(nil),   // 42: console.v1.DeleteModelDeploymentTemplateRequest
+	(*ResolveModelDeploymentTemplateRequest)(nil),  // 43: console.v1.ResolveModelDeploymentTemplateRequest
+	(*APIKey)(nil),                                 // 44: console.v1.APIKey
+	(*ListAPIKeysRequest)(nil),                     // 45: console.v1.ListAPIKeysRequest
+	(*ListAPIKeysResponse)(nil),                    // 46: console.v1.ListAPIKeysResponse
+	(*CreateAPIKeyRequest)(nil),                    // 47: console.v1.CreateAPIKeyRequest
+	(*CreateAPIKeyResponse)(nil),                   // 48: console.v1.CreateAPIKeyResponse
+	(*DeleteAPIKeyRequest)(nil),                    // 49: console.v1.DeleteAPIKeyRequest
+	(*Secret)(nil),                                 // 50: console.v1.Secret
+	(*ListSecretsRequest)(nil),                     // 51: console.v1.ListSecretsRequest
+	(*ListSecretsResponse)(nil),                    // 52: console.v1.ListSecretsResponse
+	(*CreateSecretRequest)(nil),                    // 53: console.v1.CreateSecretRequest
+	(*DeleteSecretRequest)(nil),                    // 54: console.v1.DeleteSecretRequest
+	(*Quota)(nil),                                  // 55: console.v1.Quota
+	(*ListQuotasRequest)(nil),                      // 56: console.v1.ListQuotasRequest
+	(*ListQuotasResponse)(nil),                     // 57: console.v1.ListQuotasResponse
+	nil,                                            // 58: console.v1.DeploymentOverrides.EngineArgsEntry
+	nil,                                            // 59: console.v1.Job.MetadataEntry
+	nil,                                            // 60: console.v1.ModelDeploymentTemplateSpec.EngineArgsEntry
+	(*emptypb.Empty)(nil),                          // 61: google.protobuf.Empty
 }
 var file_console_v1_console_proto_depIdxs = []int32{
 	0,  // 0: console.v1.ListDeploymentsResponse.deployments:type_name -> console.v1.Deployment
-	7,  // 1: console.v1.Job.request_counts:type_name -> console.v1.JobRequestCounts
-	8,  // 2: console.v1.Job.usage:type_name -> console.v1.JobUsage
-	49, // 3: console.v1.Job.metadata:type_name -> console.v1.Job.MetadataEntry
-	6,  // 4: console.v1.ListJobsResponse.jobs:type_name -> console.v1.Job
-	15, // 5: console.v1.Model.pricing:type_name -> console.v1.ModelPricing
-	16, // 6: console.v1.Model.metadata:type_name -> console.v1.ModelMetadata
-	17, // 7: console.v1.Model.specification:type_name -> console.v1.ModelSpecification
-	14, // 8: console.v1.ListModelsResponse.models:type_name -> console.v1.Model
-	22, // 9: console.v1.ModelDeploymentTemplate.spec:type_name -> console.v1.ModelDeploymentTemplateSpec
-	23, // 10: console.v1.ModelDeploymentTemplateSpec.engine:type_name -> console.v1.EngineSpec
-	24, // 11: console.v1.ModelDeploymentTemplateSpec.model_source:type_name -> console.v1.ModelSourceSpec
-	25, // 12: console.v1.ModelDeploymentTemplateSpec.accelerator:type_name -> console.v1.AcceleratorSpec
-	26, // 13: console.v1.ModelDeploymentTemplateSpec.parallelism:type_name -> console.v1.ParallelismSpec
-	50, // 14: console.v1.ModelDeploymentTemplateSpec.engine_args:type_name -> console.v1.ModelDeploymentTemplateSpec.EngineArgsEntry
-	27, // 15: console.v1.ModelDeploymentTemplateSpec.quantization:type_name -> console.v1.QuantizationSpec
-	21, // 16: console.v1.ListModelDeploymentTemplatesResponse.templates:type_name -> console.v1.ModelDeploymentTemplate
-	22, // 17: console.v1.CreateModelDeploymentTemplateRequest.spec:type_name -> console.v1.ModelDeploymentTemplateSpec
-	22, // 18: console.v1.UpdateModelDeploymentTemplateRequest.spec:type_name -> console.v1.ModelDeploymentTemplateSpec
-	35, // 19: console.v1.ListAPIKeysResponse.api_keys:type_name -> console.v1.APIKey
-	35, // 20: console.v1.CreateAPIKeyResponse.api_key:type_name -> console.v1.APIKey
-	41, // 21: console.v1.ListSecretsResponse.secrets:type_name -> console.v1.Secret
-	46, // 22: console.v1.ListQuotasResponse.quotas:type_name -> console.v1.Quota
-	1,  // 23: console.v1.DeploymentService.ListDeployments:input_type -> console.v1.ListDeploymentsRequest
-	3,  // 24: console.v1.DeploymentService.GetDeployment:input_type -> console.v1.GetDeploymentRequest
-	4,  // 25: console.v1.DeploymentService.CreateDeployment:input_type -> console.v1.CreateDeploymentRequest
-	5,  // 26: console.v1.DeploymentService.DeleteDeployment:input_type -> console.v1.DeleteDeploymentRequest
-	9,  // 27: console.v1.JobService.ListJobs:input_type -> console.v1.ListJobsRequest
-	11, // 28: console.v1.JobService.GetJob:input_type -> console.v1.GetJobRequest
-	12, // 29: console.v1.JobService.CreateJob:input_type -> console.v1.CreateJobRequest
-	13, // 30: console.v1.JobService.CancelJob:input_type -> console.v1.CancelJobRequest
-	18, // 31: console.v1.ModelService.ListModels:input_type -> console.v1.ListModelsRequest
-	20, // 32: console.v1.ModelService.GetModel:input_type -> console.v1.GetModelRequest
-	28, // 33: console.v1.ModelDeploymentTemplateService.ListModelDeploymentTemplates:input_type -> console.v1.ListModelDeploymentTemplatesRequest
-	30, // 34: console.v1.ModelDeploymentTemplateService.GetModelDeploymentTemplate:input_type -> console.v1.GetModelDeploymentTemplateRequest
-	31, // 35: console.v1.ModelDeploymentTemplateService.CreateModelDeploymentTemplate:input_type -> console.v1.CreateModelDeploymentTemplateRequest
-	32, // 36: console.v1.ModelDeploymentTemplateService.UpdateModelDeploymentTemplate:input_type -> console.v1.UpdateModelDeploymentTemplateRequest
-	33, // 37: console.v1.ModelDeploymentTemplateService.DeleteModelDeploymentTemplate:input_type -> console.v1.DeleteModelDeploymentTemplateRequest
-	34, // 38: console.v1.ModelDeploymentTemplateService.ResolveModelDeploymentTemplate:input_type -> console.v1.ResolveModelDeploymentTemplateRequest
-	36, // 39: console.v1.APIKeyService.ListAPIKeys:input_type -> console.v1.ListAPIKeysRequest
-	38, // 40: console.v1.APIKeyService.CreateAPIKey:input_type -> console.v1.CreateAPIKeyRequest
-	40, // 41: console.v1.APIKeyService.DeleteAPIKey:input_type -> console.v1.DeleteAPIKeyRequest
-	42, // 42: console.v1.SecretService.ListSecrets:input_type -> console.v1.ListSecretsRequest
-	44, // 43: console.v1.SecretService.CreateSecret:input_type -> console.v1.CreateSecretRequest
-	45, // 44: console.v1.SecretService.DeleteSecret:input_type -> console.v1.DeleteSecretRequest
-	47, // 45: console.v1.QuotaService.ListQuotas:input_type -> console.v1.ListQuotasRequest
-	2,  // 46: console.v1.DeploymentService.ListDeployments:output_type -> console.v1.ListDeploymentsResponse
-	0,  // 47: console.v1.DeploymentService.GetDeployment:output_type -> console.v1.Deployment
-	0,  // 48: console.v1.DeploymentService.CreateDeployment:output_type -> console.v1.Deployment
-	51, // 49: console.v1.DeploymentService.DeleteDeployment:output_type -> google.protobuf.Empty
-	10, // 50: console.v1.JobService.ListJobs:output_type -> console.v1.ListJobsResponse
-	6,  // 51: console.v1.JobService.GetJob:output_type -> console.v1.Job
-	6,  // 52: console.v1.JobService.CreateJob:output_type -> console.v1.Job
-	6,  // 53: console.v1.JobService.CancelJob:output_type -> console.v1.Job
-	19, // 54: console.v1.ModelService.ListModels:output_type -> console.v1.ListModelsResponse
-	14, // 55: console.v1.ModelService.GetModel:output_type -> console.v1.Model
-	29, // 56: console.v1.ModelDeploymentTemplateService.ListModelDeploymentTemplates:output_type -> console.v1.ListModelDeploymentTemplatesResponse
-	21, // 57: console.v1.ModelDeploymentTemplateService.GetModelDeploymentTemplate:output_type -> console.v1.ModelDeploymentTemplate
-	21, // 58: console.v1.ModelDeploymentTemplateService.CreateModelDeploymentTemplate:output_type -> console.v1.ModelDeploymentTemplate
-	21, // 59: console.v1.ModelDeploymentTemplateService.UpdateModelDeploymentTemplate:output_type -> console.v1.ModelDeploymentTemplate
-	51, // 60: console.v1.ModelDeploymentTemplateService.DeleteModelDeploymentTemplate:output_type -> google.protobuf.Empty
-	21, // 61: console.v1.ModelDeploymentTemplateService.ResolveModelDeploymentTemplate:output_type -> console.v1.ModelDeploymentTemplate
-	37, // 62: console.v1.APIKeyService.ListAPIKeys:output_type -> console.v1.ListAPIKeysResponse
-	39, // 63: console.v1.APIKeyService.CreateAPIKey:output_type -> console.v1.CreateAPIKeyResponse
-	51, // 64: console.v1.APIKeyService.DeleteAPIKey:output_type -> google.protobuf.Empty
-	43, // 65: console.v1.SecretService.ListSecrets:output_type -> console.v1.ListSecretsResponse
-	41, // 66: console.v1.SecretService.CreateSecret:output_type -> console.v1.Secret
-	51, // 67: console.v1.SecretService.DeleteSecret:output_type -> google.protobuf.Empty
-	48, // 68: console.v1.QuotaService.ListQuotas:output_type -> console.v1.ListQuotasResponse
-	46, // [46:69] is the sub-list for method output_type
-	23, // [23:46] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	0,  // 1: console.v1.BatchRefreshDeploymentStatusesResponse.deployments:type_name -> console.v1.Deployment
+	8,  // 2: console.v1.CreateDeploymentRequest.template:type_name -> console.v1.DeploymentTemplateRef
+	9,  // 3: console.v1.CreateDeploymentRequest.provider:type_name -> console.v1.DeploymentProviderRef
+	10, // 4: console.v1.CreateDeploymentRequest.overrides:type_name -> console.v1.DeploymentOverrides
+	58, // 5: console.v1.DeploymentOverrides.engine_args:type_name -> console.v1.DeploymentOverrides.EngineArgsEntry
+	13, // 6: console.v1.Job.request_counts:type_name -> console.v1.JobRequestCounts
+	14, // 7: console.v1.Job.usage:type_name -> console.v1.JobUsage
+	59, // 8: console.v1.Job.metadata:type_name -> console.v1.Job.MetadataEntry
+	12, // 9: console.v1.ListJobsResponse.jobs:type_name -> console.v1.Job
+	21, // 10: console.v1.Model.pricing:type_name -> console.v1.ModelPricing
+	22, // 11: console.v1.Model.metadata:type_name -> console.v1.ModelMetadata
+	23, // 12: console.v1.Model.specification:type_name -> console.v1.ModelSpecification
+	20, // 13: console.v1.ListModelsResponse.models:type_name -> console.v1.Model
+	28, // 14: console.v1.ModelDeploymentTemplate.spec:type_name -> console.v1.ModelDeploymentTemplateSpec
+	32, // 15: console.v1.ModelDeploymentTemplateSpec.engine:type_name -> console.v1.EngineSpec
+	33, // 16: console.v1.ModelDeploymentTemplateSpec.model_source:type_name -> console.v1.ModelSourceSpec
+	34, // 17: console.v1.ModelDeploymentTemplateSpec.accelerator:type_name -> console.v1.AcceleratorSpec
+	35, // 18: console.v1.ModelDeploymentTemplateSpec.parallelism:type_name -> console.v1.ParallelismSpec
+	60, // 19: console.v1.ModelDeploymentTemplateSpec.engine_args:type_name -> console.v1.ModelDeploymentTemplateSpec.EngineArgsEntry
+	36, // 20: console.v1.ModelDeploymentTemplateSpec.quantization:type_name -> console.v1.QuantizationSpec
+	29, // 21: console.v1.ModelDeploymentTemplateSpec.topology:type_name -> console.v1.DeploymentTopologySpec
+	30, // 22: console.v1.ModelDeploymentTemplateSpec.compatibility:type_name -> console.v1.DeploymentCompatibilitySpec
+	31, // 23: console.v1.ModelDeploymentTemplateSpec.scaling_defaults:type_name -> console.v1.DeploymentScalingDefaultsSpec
+	27, // 24: console.v1.ListModelDeploymentTemplatesResponse.templates:type_name -> console.v1.ModelDeploymentTemplate
+	28, // 25: console.v1.CreateModelDeploymentTemplateRequest.spec:type_name -> console.v1.ModelDeploymentTemplateSpec
+	28, // 26: console.v1.UpdateModelDeploymentTemplateRequest.spec:type_name -> console.v1.ModelDeploymentTemplateSpec
+	44, // 27: console.v1.ListAPIKeysResponse.api_keys:type_name -> console.v1.APIKey
+	44, // 28: console.v1.CreateAPIKeyResponse.api_key:type_name -> console.v1.APIKey
+	50, // 29: console.v1.ListSecretsResponse.secrets:type_name -> console.v1.Secret
+	55, // 30: console.v1.ListQuotasResponse.quotas:type_name -> console.v1.Quota
+	1,  // 31: console.v1.DeploymentService.ListDeployments:input_type -> console.v1.ListDeploymentsRequest
+	3,  // 32: console.v1.DeploymentService.GetDeployment:input_type -> console.v1.GetDeploymentRequest
+	4,  // 33: console.v1.DeploymentService.RefreshDeploymentStatus:input_type -> console.v1.RefreshDeploymentStatusRequest
+	5,  // 34: console.v1.DeploymentService.BatchRefreshDeploymentStatuses:input_type -> console.v1.BatchRefreshDeploymentStatusesRequest
+	7,  // 35: console.v1.DeploymentService.CreateDeployment:input_type -> console.v1.CreateDeploymentRequest
+	11, // 36: console.v1.DeploymentService.DeleteDeployment:input_type -> console.v1.DeleteDeploymentRequest
+	15, // 37: console.v1.JobService.ListJobs:input_type -> console.v1.ListJobsRequest
+	17, // 38: console.v1.JobService.GetJob:input_type -> console.v1.GetJobRequest
+	18, // 39: console.v1.JobService.CreateJob:input_type -> console.v1.CreateJobRequest
+	19, // 40: console.v1.JobService.CancelJob:input_type -> console.v1.CancelJobRequest
+	24, // 41: console.v1.ModelService.ListModels:input_type -> console.v1.ListModelsRequest
+	26, // 42: console.v1.ModelService.GetModel:input_type -> console.v1.GetModelRequest
+	37, // 43: console.v1.ModelDeploymentTemplateService.ListModelDeploymentTemplates:input_type -> console.v1.ListModelDeploymentTemplatesRequest
+	39, // 44: console.v1.ModelDeploymentTemplateService.GetModelDeploymentTemplate:input_type -> console.v1.GetModelDeploymentTemplateRequest
+	40, // 45: console.v1.ModelDeploymentTemplateService.CreateModelDeploymentTemplate:input_type -> console.v1.CreateModelDeploymentTemplateRequest
+	41, // 46: console.v1.ModelDeploymentTemplateService.UpdateModelDeploymentTemplate:input_type -> console.v1.UpdateModelDeploymentTemplateRequest
+	42, // 47: console.v1.ModelDeploymentTemplateService.DeleteModelDeploymentTemplate:input_type -> console.v1.DeleteModelDeploymentTemplateRequest
+	43, // 48: console.v1.ModelDeploymentTemplateService.ResolveModelDeploymentTemplate:input_type -> console.v1.ResolveModelDeploymentTemplateRequest
+	45, // 49: console.v1.APIKeyService.ListAPIKeys:input_type -> console.v1.ListAPIKeysRequest
+	47, // 50: console.v1.APIKeyService.CreateAPIKey:input_type -> console.v1.CreateAPIKeyRequest
+	49, // 51: console.v1.APIKeyService.DeleteAPIKey:input_type -> console.v1.DeleteAPIKeyRequest
+	51, // 52: console.v1.SecretService.ListSecrets:input_type -> console.v1.ListSecretsRequest
+	53, // 53: console.v1.SecretService.CreateSecret:input_type -> console.v1.CreateSecretRequest
+	54, // 54: console.v1.SecretService.DeleteSecret:input_type -> console.v1.DeleteSecretRequest
+	56, // 55: console.v1.QuotaService.ListQuotas:input_type -> console.v1.ListQuotasRequest
+	2,  // 56: console.v1.DeploymentService.ListDeployments:output_type -> console.v1.ListDeploymentsResponse
+	0,  // 57: console.v1.DeploymentService.GetDeployment:output_type -> console.v1.Deployment
+	0,  // 58: console.v1.DeploymentService.RefreshDeploymentStatus:output_type -> console.v1.Deployment
+	6,  // 59: console.v1.DeploymentService.BatchRefreshDeploymentStatuses:output_type -> console.v1.BatchRefreshDeploymentStatusesResponse
+	0,  // 60: console.v1.DeploymentService.CreateDeployment:output_type -> console.v1.Deployment
+	61, // 61: console.v1.DeploymentService.DeleteDeployment:output_type -> google.protobuf.Empty
+	16, // 62: console.v1.JobService.ListJobs:output_type -> console.v1.ListJobsResponse
+	12, // 63: console.v1.JobService.GetJob:output_type -> console.v1.Job
+	12, // 64: console.v1.JobService.CreateJob:output_type -> console.v1.Job
+	12, // 65: console.v1.JobService.CancelJob:output_type -> console.v1.Job
+	25, // 66: console.v1.ModelService.ListModels:output_type -> console.v1.ListModelsResponse
+	20, // 67: console.v1.ModelService.GetModel:output_type -> console.v1.Model
+	38, // 68: console.v1.ModelDeploymentTemplateService.ListModelDeploymentTemplates:output_type -> console.v1.ListModelDeploymentTemplatesResponse
+	27, // 69: console.v1.ModelDeploymentTemplateService.GetModelDeploymentTemplate:output_type -> console.v1.ModelDeploymentTemplate
+	27, // 70: console.v1.ModelDeploymentTemplateService.CreateModelDeploymentTemplate:output_type -> console.v1.ModelDeploymentTemplate
+	27, // 71: console.v1.ModelDeploymentTemplateService.UpdateModelDeploymentTemplate:output_type -> console.v1.ModelDeploymentTemplate
+	61, // 72: console.v1.ModelDeploymentTemplateService.DeleteModelDeploymentTemplate:output_type -> google.protobuf.Empty
+	27, // 73: console.v1.ModelDeploymentTemplateService.ResolveModelDeploymentTemplate:output_type -> console.v1.ModelDeploymentTemplate
+	46, // 74: console.v1.APIKeyService.ListAPIKeys:output_type -> console.v1.ListAPIKeysResponse
+	48, // 75: console.v1.APIKeyService.CreateAPIKey:output_type -> console.v1.CreateAPIKeyResponse
+	61, // 76: console.v1.APIKeyService.DeleteAPIKey:output_type -> google.protobuf.Empty
+	52, // 77: console.v1.SecretService.ListSecrets:output_type -> console.v1.ListSecretsResponse
+	50, // 78: console.v1.SecretService.CreateSecret:output_type -> console.v1.Secret
+	61, // 79: console.v1.SecretService.DeleteSecret:output_type -> google.protobuf.Empty
+	57, // 80: console.v1.QuotaService.ListQuotas:output_type -> console.v1.ListQuotasResponse
+	56, // [56:81] is the sub-list for method output_type
+	31, // [31:56] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_console_v1_console_proto_init() }
@@ -3823,7 +4430,7 @@ func file_console_v1_console_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_console_v1_console_proto_rawDesc), len(file_console_v1_console_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   51,
+			NumMessages:   61,
 			NumExtensions: 0,
 			NumServices:   7,
 		},

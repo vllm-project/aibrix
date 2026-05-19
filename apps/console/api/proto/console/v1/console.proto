@@ -38,6 +38,20 @@ service DeploymentService {
     };
   }
 
+  rpc RefreshDeploymentStatus(RefreshDeploymentStatusRequest) returns (Deployment) {
+    option (google.api.http) = {
+      post: "/api/v1/deployments/{id}:refreshStatus"
+      body: "*"
+    };
+  }
+
+  rpc BatchRefreshDeploymentStatuses(BatchRefreshDeploymentStatusesRequest) returns (BatchRefreshDeploymentStatusesResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/deployments:batchRefreshStatuses"
+      body: "*"
+    };
+  }
+
   rpc CreateDeployment(CreateDeploymentRequest) returns (Deployment) {
     option (google.api.http) = {
       post: "/api/v1/deployments"
@@ -64,6 +78,9 @@ message Deployment {
   string region = 9;
   string created_by = 10;
   string status = 11; // "Ready", "Deploying", "Failed"
+  string template_id = 12;
+  string template_version = 13;
+  string provider_kind = 14; // "kubernetes", "stormservice"
 }
 
 message ListDeploymentsRequest {
@@ -78,6 +95,18 @@ message GetDeploymentRequest {
   string id = 1;
 }
 
+message RefreshDeploymentStatusRequest {
+  string id = 1;
+}
+
+message BatchRefreshDeploymentStatusesRequest {
+  repeated string ids = 1;
+}
+
+message BatchRefreshDeploymentStatusesResponse {
+  repeated Deployment deployments = 1;
+}
+
 message CreateDeploymentRequest {
   string name = 1;
   string base_model = 2;
@@ -89,6 +118,28 @@ message CreateDeploymentRequest {
   int32 max_replicas = 8;
   bool enable_auto_scaling = 9;
   bool enable_multi_lora = 10;
+  DeploymentTemplateRef template = 11;
+  DeploymentProviderRef provider = 12;
+  DeploymentOverrides overrides = 13;
+}
+
+message DeploymentTemplateRef {
+  string model_id = 1;
+  string template_id = 2;
+}
+
+message DeploymentProviderRef {
+  string kind = 1; // "kubernetes", "stormservice"
+  string profile = 2;
+}
+
+message DeploymentOverrides {
+  string region = 1;
+  int32 min_replicas = 2;
+  int32 max_replicas = 3;
+  bool enable_auto_scaling = 4;
+  bool enable_multi_lora = 5;
+  map<string, string> engine_args = 6;
 }
 
 message DeleteDeploymentRequest {
@@ -455,6 +506,23 @@ message ModelDeploymentTemplateSpec {
   reserved "provider_config";
   repeated string supported_endpoints = 8;   // OpenAI endpoints, e.g. "/v1/chat/completions"
   string deployment_mode = 9;                 // "dedicated" | "shared" | "external"
+  DeploymentTopologySpec topology = 10;
+  DeploymentCompatibilitySpec compatibility = 11;
+  DeploymentScalingDefaultsSpec scaling_defaults = 12;
+}
+
+message DeploymentTopologySpec {
+  string kind = 1; // "standard" | "pd-disaggregated"
+}
+
+message DeploymentCompatibilitySpec {
+  repeated string provider_kinds = 1;
+}
+
+message DeploymentScalingDefaultsSpec {
+  int32 min_replicas = 1;
+  int32 max_replicas = 2;
+  bool enable_auto_scaling = 3;
 }
 
 message EngineSpec {

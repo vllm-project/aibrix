@@ -26,6 +26,17 @@ import (
 // AuthModeDev is the development auth mode name.
 const AuthModeDev = "dev"
 
+// KubernetesProviderConfig holds backend settings used when provider = "kubernetes".
+type KubernetesProviderConfig struct {
+	Kubeconfig              string
+	Context                 string
+	Namespace               string
+	ServiceType             string
+	ContainerPort           int32
+	ServicePort             int32
+	HPATargetCPUUtilization int32
+}
+
 // Config holds all configuration for the AIBrix console backend.
 type Config struct {
 	// StoreURI selects the backing store via a URI scheme. Examples:
@@ -120,6 +131,9 @@ type Config struct {
 	// seeding on startup; future dev-only behaviors should hang off the same
 	// flag so a single switch covers the "I'm running this locally" intent.
 	DevMode bool
+
+	// KubernetesProvider configures the backend used when provider = "kubernetes".
+	KubernetesProvider KubernetesProviderConfig
 }
 
 // Load reads configuration from environment variables and applies sensible defaults.
@@ -168,6 +182,15 @@ func Load() (*Config, error) {
 		StaticFilesDir:                      envOrDefault("STATIC_FILES_DIR", ""),
 		AllowedOrigins:                      envOrDefault("ALLOWED_ORIGINS", ""),
 		DevMode:                             envBool("DEV_MODE", false),
+		KubernetesProvider: KubernetesProviderConfig{
+			Kubeconfig:              envOrDefaultCompat("KUBERNETES_KUBECONFIG", "K8S_KUBECONFIG", os.Getenv("KUBECONFIG")),
+			Context:                 envOrDefaultCompat("KUBERNETES_CONTEXT", "K8S_CONTEXT", ""),
+			Namespace:               envOrDefaultCompat("KUBERNETES_NAMESPACE", "K8S_NAMESPACE", "default"),
+			ServiceType:             envOrDefaultCompat("KUBERNETES_SERVICE_TYPE", "K8S_SERVICE_TYPE", "ClusterIP"),
+			ContainerPort:           envInt32Compat("KUBERNETES_CONTAINER_PORT", "K8S_CONTAINER_PORT", 8000),
+			ServicePort:             envInt32Compat("KUBERNETES_SERVICE_PORT", "K8S_SERVICE_PORT", 8000),
+			HPATargetCPUUtilization: envInt32Compat("KUBERNETES_HPA_TARGET_CPU_UTILIZATION", "K8S_HPA_TARGET_CPU_UTILIZATION", 80),
+		},
 	}, nil
 }
 
@@ -189,6 +212,32 @@ func envBool(key string, fallback bool) bool {
 func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envOrDefaultCompat(key, legacyKey, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	if v := os.Getenv(legacyKey); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envInt32Compat(key, legacyKey string, fallback int32) int32 {
+	if v := os.Getenv(key); v != "" {
+		var parsed int
+		if _, err := fmt.Sscanf(v, "%d", &parsed); err == nil {
+			return int32(parsed)
+		}
+	}
+	if v := os.Getenv(legacyKey); v != "" {
+		var parsed int
+		if _, err := fmt.Sscanf(v, "%d", &parsed); err == nil {
+			return int32(parsed)
+		}
 	}
 	return fallback
 }

@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
@@ -213,7 +214,18 @@ func (s *GORMStore) GetDeployment(ctx context.Context, id string) (*pb.Deploymen
 func (s *GORMStore) CreateDeployment(ctx context.Context, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
 	id := uuid.NewString()
 	deploymentID := uuid.NewString()[:8]
-	d := models.Deployment{ID: id, Name: req.Name, DeploymentID: deploymentID, BaseModel: req.BaseModel, BaseModelID: strings.ToLower(strings.ReplaceAll(req.BaseModel, " ", "-")), Replicas: fmt.Sprintf("%d", req.MinReplicas), GpusPerReplica: req.AcceleratorCount, GpuType: req.AcceleratorType, Region: req.Region, Status: "Deploying"}
+	d := models.Deployment{
+		ID:             id,
+		Name:           req.Name,
+		DeploymentID:   deploymentID,
+		BaseModel:      req.BaseModel,
+		BaseModelID:    strings.ToLower(strings.ReplaceAll(req.BaseModel, " ", "-")),
+		Replicas:       fmt.Sprintf("%d", req.MinReplicas),
+		GpusPerReplica: req.AcceleratorCount,
+		GpuType:        req.AcceleratorType,
+		Region:         req.Region,
+		Status:         deploymentstatus.StatusDeploying,
+	}
 	if err := s.db.WithContext(ctx).Create(&d).Error; err != nil {
 		return nil, status.Errorf(codes.Internal, "create deployment: %v", err)
 	}
@@ -222,6 +234,23 @@ func (s *GORMStore) CreateDeployment(ctx context.Context, req *pb.CreateDeployme
 		return nil, status.Errorf(codes.Internal, "convert deployment: %v", err)
 	}
 	return dep, nil
+}
+
+func (s *GORMStore) SaveDeployment(ctx context.Context, deployment *pb.Deployment) (*pb.Deployment, error) {
+	if deployment == nil {
+		return nil, status.Error(codes.InvalidArgument, "deployment is required")
+	}
+	var d models.Deployment
+	if err := d.FromPB(deployment); err != nil {
+		return nil, status.Errorf(codes.Internal, "convert deployment: %v", err)
+	}
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		UpdateAll: true,
+	}).Create(&d).Error; err != nil {
+		return nil, status.Errorf(codes.Internal, "save deployment: %v", err)
+	}
+	return d.ToPB()
 }
 
 func (s *GORMStore) DeleteDeployment(ctx context.Context, id string) error {

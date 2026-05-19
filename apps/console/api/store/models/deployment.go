@@ -36,6 +36,9 @@ type Deployment struct {
 	Region           string         `gorm:"column:region;size:255;not null;default:''"`
 	CreatedBy        string         `gorm:"column:created_by;size:255;not null;default:''"`
 	Status           string         `gorm:"column:status;size:255;not null;default:'Deploying'"`
+	TemplateID       string         `gorm:"column:template_id;size:36;not null;default:''"`
+	TemplateVersion  string         `gorm:"column:template_version;size:255;not null;default:''"`
+	ProviderKind     string         `gorm:"column:provider_kind;size:255;not null;default:''"`
 	ModelSource      string         `gorm:"column:model_source;size:255;not null;default:''"`
 	ModelArtifactURL string         `gorm:"column:model_artifact_url;size:1000;not null;default:''"`
 	Engine           string         `gorm:"column:engine;size:255;not null;default:''"`
@@ -67,22 +70,28 @@ func (d *Deployment) FromPB(src *pb.Deployment) error {
 	d.Region = src.Region
 	d.CreatedBy = src.CreatedBy
 	d.Status = src.Status
+	d.TemplateID = src.TemplateId
+	d.TemplateVersion = src.TemplateVersion
+	d.ProviderKind = src.ProviderKind
 	return nil
 }
 
 // ToPB converts Deployment to pb.Deployment.
 func (d *Deployment) ToPB() (*pb.Deployment, error) {
 	return &pb.Deployment{
-		Id:             d.ID,
-		Name:           d.Name,
-		DeploymentId:   d.DeploymentID,
-		BaseModel:      d.BaseModel,
-		BaseModelId:    d.BaseModelID,
-		Replicas:       d.Replicas,
-		GpusPerReplica: d.GpusPerReplica,
-		GpuType:        d.GpuType,
-		Region:         d.Region,
-		CreatedBy:      d.CreatedBy,
-		Status:         d.Status,
+		Id:              d.ID,
+		Name:            d.Name,
+		DeploymentId:    d.DeploymentID,
+		BaseModel:       d.BaseModel,
+		BaseModelId:     d.BaseModelID,
+		Replicas:        d.Replicas,
+		GpusPerReplica:  d.GpusPerReplica,
+		GpuType:         d.GpuType,
+		Region:          d.Region,
+		CreatedBy:       d.CreatedBy,
+		Status:          d.Status,
+		TemplateId:      d.TemplateID,
+		TemplateVersion: d.TemplateVersion,
+		ProviderKind:    d.ProviderKind,
 	}, nil
 }
