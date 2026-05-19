@@ -31,6 +31,14 @@ class ModelTemplateRef(_Strict):
             "latest active version of the named template."
         ),
     )
+    spec: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Inline template spec pushed by trusted callers (e.g. Console) "
+            "so renderers can skip the local registry lookup. When set, "
+            "consumers should prefer this over registry resolution."
+        ),
+    )
     overrides: Optional[Dict[str, Any]] = Field(
         default=None,
         description=(

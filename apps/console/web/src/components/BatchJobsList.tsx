@@ -10,8 +10,9 @@ interface BatchJobsListProps {
 
 const STATUS_OPTIONS: ('All' | JobStatus)[] = [
   'All',
-  'pending',
-  'provisioning',
+  'queued',
+  'resource_preparing',
+  'submitting',
   'validating',
   'in_progress',
   'finalizing',
@@ -20,7 +21,18 @@ const STATUS_OPTIONS: ('All' | JobStatus)[] = [
   'expired',
   'cancelling',
   'cancelled',
+  'resource_failed',
+  'submit_failed',
 ];
+
+const TERMINAL_STATUSES = new Set<JobStatus>([
+  'completed',
+  'failed',
+  'expired',
+  'cancelled',
+  'resource_failed',
+  'submit_failed',
+]);
 
 function formatDate(unixSec: number): { date: string; time: string } {
   const d = new Date(unixSec * 1000);
@@ -34,10 +46,11 @@ function statusClass(s: JobStatus): string {
   switch (s) {
     case 'completed':
       return 'bg-emerald-50 text-emerald-700 border border-emerald-200';
-    case 'pending':
-    case 'provisioning':
-    case 'in_progress':
+    case 'queued':
+    case 'resource_preparing':
+    case 'submitting':
     case 'validating':
+    case 'in_progress':
     case 'finalizing':
       return 'bg-amber-50 text-amber-700 border border-amber-200';
     case 'cancelling':
@@ -45,6 +58,8 @@ function statusClass(s: JobStatus): string {
     case 'expired':
       return 'bg-gray-50 text-gray-700 border border-gray-200';
     case 'failed':
+    case 'resource_failed':
+    case 'submit_failed':
       return 'bg-red-50 text-red-700 border border-red-200';
   }
 }
@@ -72,8 +87,7 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
           const next = res.jobs ?? [];
           setJobs(next);
           // Poll while any job is in a non-terminal state.
-          const TERMINAL = new Set(['completed', 'failed', 'expired', 'cancelled']);
-          const hasActive = next.some(j => !TERMINAL.has(j.status));
+          const hasActive = next.some(j => !TERMINAL_STATUSES.has(j.status));
           if (hasActive) {
             timer = setTimeout(() => fetchJobs(false), 5000);
           }

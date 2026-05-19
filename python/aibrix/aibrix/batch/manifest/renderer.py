@@ -408,14 +408,24 @@ class JobManifestRenderer(_RendererSupport):
 
         aibrix: AibrixMetadata = spec.aibrix
 
-        if not aibrix.model_template_name:
+        tref = aibrix.model_template
+        if tref is None or not tref.name:
             raise RenderError(
                 "extra_body.aibrix.model_template.name is required: "
                 "the cluster has no built-in template fallback, so every "
                 "batch must reference a registered ModelDeploymentTemplate"
             )
 
-        template = self._resolve_template(aibrix.model_template_name)
+        if tref.spec:
+            data: Dict[str, Any] = {"name": tref.name, "spec": tref.spec}
+            if tref.version:
+                data["version"] = tref.version
+            try:
+                template = ModelDeploymentTemplate.model_validate(data)
+            except Exception as exc:
+                raise RenderError(f"invalid inline model_template.spec: {exc}") from exc
+        else:
+            template = self._resolve_template(tref.name, tref.version)
         profile = self._resolve_profile(aibrix.profile_name)
         return template, profile
 

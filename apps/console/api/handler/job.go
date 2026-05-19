@@ -41,6 +41,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 	"k8s.io/klog/v2"
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
@@ -201,17 +202,34 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	if templateName == "" {
 		templateName = h.defaultModelDeploymentTemplate
 	}
-	var modelTemplate *plannerapi.ModelTemplateRef
+	var (
+		modelTemplate *plannerapi.ModelTemplateRef
+		modelID       string
+	)
 	if templateName != "" {
 		modelTemplate = &plannerapi.ModelTemplateRef{
 			Name:    templateName,
 			Version: req.ModelTemplateVersion,
 		}
+		if tpl := h.resolveTemplate(ctx, templateName, req.ModelTemplateVersion); tpl != nil {
+			modelID = tpl.ModelId
+			if tpl.Spec != nil {
+				// protojson preserves proto3 wire conventions (enums as
+				// strings, snake_case field names) that the Python pydantic
+				// consumer expects; encoding/json would emit Go field names
+				// and int enums.
+				if specBytes, err := protojson.Marshal(tpl.Spec); err == nil {
+					modelTemplate.Spec = specBytes
+				} else {
+					klog.Warningf("marshal template spec %q/%q: %v", templateName, req.ModelTemplateVersion, err)
+				}
+			}
+		}
 	}
 
 	enqueueReq := &plannerapi.EnqueueRequest{
 		JobID:         jobID,
-		Model:         h.resolveTemplateModel(ctx, templateName, req.ModelTemplateVersion),
+		Model:         modelID,
 		ModelTemplate: modelTemplate,
 		BatchParams: openai.BatchNewParams{
 			InputFileID:      req.InputDataset,
@@ -299,11 +317,11 @@ func mapPlannerError(err error, op string) error {
 	return mapSDKError(err, op)
 }
 
-// resolveTemplateModel looks up the ModelDeploymentTemplate by (name, version)
-// and returns its parent ModelID.
-func (h *JobHandler) resolveTemplateModel(ctx context.Context, name, version string) string {
+// resolveTemplate looks up the ModelDeploymentTemplate by (name, version).
+// Returns nil when name is empty, store errors out, or no match.
+func (h *JobHandler) resolveTemplate(ctx context.Context, name, version string) *pb.ModelDeploymentTemplate {
 	if name == "" {
-		return ""
+		return nil
 	}
 	statusFilter := ""
 	if version == "" {
@@ -311,15 +329,15 @@ func (h *JobHandler) resolveTemplateModel(ctx context.Context, name, version str
 	}
 	tpls, err := h.store.ListModelDeploymentTemplates(ctx, "", statusFilter, name)
 	if err != nil {
-		klog.Warningf("resolveTemplateModel(%q,%q): %v", name, version, err)
-		return ""
+		klog.Warningf("resolveTemplate(%q,%q): %v", name, version, err)
+		return nil
 	}
 	for _, t := range tpls {
 		if version == "" || t.Version == version {
-			return t.ModelId
+			return t
 		}
 	}
-	return ""
+	return nil
 }
 
 // mergeJob aggregates the planner's Job with optional Console overlay.
