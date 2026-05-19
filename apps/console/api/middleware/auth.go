@@ -85,6 +85,15 @@ type contextKey string
 // UserContextKey is the context key for storing UserInfo.
 const UserContextKey contextKey = "user"
 
+// gRPC metadata keys used by the gateway to propagate the caller identity
+// from the HTTP request context to gRPC handlers (which receive a fresh
+// context across the gateway dial).
+const (
+	MetadataUserEmail = "x-aibrix-user-email"
+	MetadataUserName  = "x-aibrix-user-name"
+	MetadataUserID    = "x-aibrix-user-id"
+)
+
 // IDTokenContextKey is the context key for storing the raw OIDC ID token
 // associated with the current session, when available. Consumers (e.g. the
 // SSO single-logout handler) can retrieve it via GetIDToken.

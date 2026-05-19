@@ -28,14 +28,14 @@ import (
 // Job stores full batch job records including metadata-service owned fields.
 type Job struct {
 	ID                   string         `gorm:"column:id;primaryKey;size:64"`
-	Object               string         `gorm:"column:object;size:64;not null;default:''"`
 	Endpoint             string         `gorm:"column:endpoint;size:255;not null;default:''"`
-	Model                string         `gorm:"column:model;size:255;not null;default:''"`
+	Model                string         `gorm:"column:model;size:255;not null;default:'';index:idx_jobs_model"`
 	InputDataset         string         `gorm:"column:input_dataset;size:255;not null;default:''"`
 	CompletionWindow     string         `gorm:"column:completion_window;size:64;not null;default:''"`
-	Status               string         `gorm:"column:status;size:64;not null;default:''"`
+	Status               string         `gorm:"column:status;size:64;not null;default:'';index:idx_jobs_status"`
 	OutputDataset        string         `gorm:"column:output_dataset;size:255;not null;default:''"`
 	ErrorDataset         string         `gorm:"column:error_dataset;size:255;not null;default:''"`
+	BatchCreatedAt       time.Time      `gorm:"column:batch_created_at"`
 	InProgressAt         time.Time      `gorm:"column:in_progress_at"`
 	ExpiresAt            time.Time      `gorm:"column:expires_at"`
 	FinalizingAt         time.Time      `gorm:"column:finalizing_at"`
@@ -58,8 +58,9 @@ type Job struct {
 	SubmittingAt         time.Time      `gorm:"column:submitting_at"`
 	ResourceFailedAt     time.Time      `gorm:"column:resource_failed_at"`
 	SubmitFailedAt       time.Time      `gorm:"column:submit_failed_at"`
+	CancelRequestedAt    time.Time      `gorm:"column:cancel_requested_at"`
 	ErrorMessage         string         `gorm:"column:error_message;type:TEXT"`
-	CreatedAt            time.Time      `gorm:"column:created_at;autoCreateTime"`
+	CreatedAt            time.Time      `gorm:"column:created_at;autoCreateTime;index:idx_jobs_created_at"`
 	UpdatedAt            time.Time      `gorm:"column:updated_at;autoUpdateTime"`
 }
 
@@ -72,7 +73,6 @@ func init() {
 // FromPB converts a pb.Job to Job.
 func (j *Job) FromPB(src *pb.Job) error {
 	j.ID = src.Id
-	j.Object = src.Object
 	j.Endpoint = src.Endpoint
 	j.Model = src.Model
 	j.InputDataset = src.InputDataset
@@ -142,7 +142,7 @@ func (j *Job) ToPB() (*pb.Job, error) {
 
 	return &pb.Job{
 		Id:                   j.ID,
-		Object:               j.Object,
+		Object:               "batch",
 		Endpoint:             j.Endpoint,
 		Model:                j.Model,
 		InputDataset:         j.InputDataset,

@@ -28,10 +28,10 @@ import (
 // ModelDeploymentTemplate maps model_deployment_templates table.
 type ModelDeploymentTemplate struct {
 	ID        string         `gorm:"column:id;primaryKey;size:36"`
-	Name      string         `gorm:"column:name;size:255;not null;index:idx_model_tpl_lookup,priority:2;uniqueIndex:uk_model_tpl_name_ver,priority:2"`
-	Version   string         `gorm:"column:version;size:64;not null;index:idx_model_tpl_lookup,priority:3;uniqueIndex:uk_model_tpl_name_ver,priority:3"`
+	Name      string         `gorm:"column:name;size:255;not null;uniqueIndex:uk_model_tpl_name_ver,priority:2"`
+	Version   string         `gorm:"column:version;size:64;not null;uniqueIndex:uk_model_tpl_name_ver,priority:3"`
 	Status    string         `gorm:"column:status;size:64;not null;default:'active';index:idx_model_tpl_status"`
-	ModelID   string         `gorm:"column:model_id;size:36;not null;index:idx_model_tpl_lookup,priority:1;index:idx_model_tpl_status;uniqueIndex:uk_model_tpl_name_ver,priority:1"`
+	ModelID   string         `gorm:"column:model_id;size:36;not null;index:idx_model_tpl_status;uniqueIndex:uk_model_tpl_name_ver,priority:1"`
 	Spec      datatypes.JSON `gorm:"column:spec;not null"`
 	CreatedAt time.Time      `gorm:"column:created_at;autoCreateTime"`
 	UpdatedAt time.Time      `gorm:"column:updated_at;autoUpdateTime"`

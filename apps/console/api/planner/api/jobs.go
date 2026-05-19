@@ -32,6 +32,8 @@ type EnqueueRequest struct {
 	// correlation key — Planner.GetJob and ListJobs surface it back to
 	// Console as pb.Job.Id, distinct from the MDS-side batch ID.
 	JobID string `json:"job_id"`
+	// Model identifies which model the job will run against, UI provided.
+	Model string `json:"model,omitempty"`
 	// ModelTemplate is the authoritative Console-selected
 	// ModelDeploymentTemplate reference. The planner projects it into
 	// extra_body.aibrix.model_template when submitting to MDS.

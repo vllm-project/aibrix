@@ -675,6 +675,15 @@ class JobManifestRenderer(_RendererSupport):
                 spec.aibrix.profile_overrides, sort_keys=True
             )
 
+        # Persist the full aibrix block as a single JSON annotation so the
+        # non-template / profile fields (job_id, planner_decision) survive
+        # the annotation roundtrip. Per-field annotations above remain for
+        # backward compatibility with rows written by older builds.
+        if spec.aibrix is not None:
+            pod_annotations[JobAnnotationKey.AIBRIX.value] = (
+                spec.aibrix.model_dump_json(exclude_none=True)
+            )
+
         # User-supplied metadata / opts.
         if spec.metadata:
             for k, v in spec.metadata.items():
