@@ -17,6 +17,8 @@ limitations under the License.
 package plannerapi
 
 import (
+	"encoding/json"
+
 	"github.com/openai/openai-go/v3"
 )
 
@@ -91,7 +93,10 @@ type ListJobsResponse struct {
 
 // ModelTemplateRef identifies the ModelDeploymentTemplate MDS should use when
 // rendering the batch worker job. Empty Version means "latest active version".
+// Spec is the resolved full template spec inlined for cross-cluster delivery;
+// MDS uses Spec directly when present and skips its local registry lookup.
 type ModelTemplateRef struct {
-	Name    string `json:"name"`
-	Version string `json:"version,omitempty"`
+	Name    string          `json:"name"`
+	Version string          `json:"version,omitempty"`
+	Spec    json.RawMessage `json:"spec,omitempty"`
 }

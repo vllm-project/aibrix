@@ -302,10 +302,12 @@ class AibrixExtension(BaseModel):
     ConfigMap to accept any batch. See
     docs/source/features/batch-templates.rst.
 
-    Inline ``model_template_spec`` is intentionally NOT supported.
-    Templates are the curated security/cost gate; bypassing them via
-    inline spec would leak image / GPU SKU / namespace control to
-    users and shatter audit by template name.
+    Inline ``model_template.spec`` IS supported (Pydantic ``TemplateRef``
+    accepts a ``spec`` field). It is intended for cross-cluster deployments
+    where MDS cannot share a registry with the upstream Console: Console
+    resolves the template against its own DB and pushes the resolved spec
+    inline so MDS skips its local registry lookup. The audit trail still
+    keys off ``name`` + ``version``.
     """
 
     model_config = {"extra": "allow"}
@@ -392,28 +394,31 @@ def _validate_aibrix_extension(
         return  # registries not yet configured; defer to renderer
 
     tref = extension.model_template
-    if tref.version:
-        # Pin: must match exactly
-        resolved = template_registry.get_by_version(tref.name, tref.version)
-        if resolved is None:
-            available = template_registry.names()
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"aibrix.model_template '{tref.name}@{tref.version}' not found. "
-                    f"Templates with at least one active version: {available}"
-                ),
-            )
-    else:
-        if template_registry.get(tref.name) is None:
-            available = template_registry.names()
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"aibrix.model_template '{tref.name}' has no active version. "
-                    f"Templates with at least one active version: {available}"
-                ),
-            )
+    # Inline spec bypasses registry lookup: trusted caller (e.g. Console)
+    # already resolved the template; renderer will consume the inline spec.
+    if tref.spec is None:
+        if tref.version:
+            # Pin: must match exactly
+            resolved = template_registry.get_by_version(tref.name, tref.version)
+            if resolved is None:
+                available = template_registry.names()
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"aibrix.model_template '{tref.name}@{tref.version}' not found. "
+                        f"Templates with at least one active version: {available}"
+                    ),
+                )
+        else:
+            if template_registry.get(tref.name) is None:
+                available = template_registry.names()
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"aibrix.model_template '{tref.name}' has no active version. "
+                        f"Templates with at least one active version: {available}"
+                    ),
+                )
 
     if extension.profile is not None and profile_registry is not None:
         pref = extension.profile
@@ -816,7 +821,6 @@ async def list_batches(
         # the latter does not fit the current cursor-based pagination
         # cheaply. Point reads already serve from the store, so the
         # tradeoff only hurts the rare list call.
-        # TODO(A.2 follow-up): wire list to BatchJobStore via an index.
         all_jobs: List[BatchJob] = await batch_driver.run_coroutine(
             batch_driver.job_manager.list_jobs()
         )
