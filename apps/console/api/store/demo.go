@@ -95,8 +95,15 @@ func (s *GORMStore) ListDemoJobs() []*pb.Job {
 
 // GetDemoJob looks up a single full pb.Job by id. Counterpart of ListDemoJobs.
 func (s *GORMStore) GetDemoJob(id string) (*pb.Job, bool) {
-	job, err := s.GetJob(context.Background(), id)
-	return job, err == nil
+	rec, err := s.GetJob(context.Background(), id)
+	if err != nil || rec == nil {
+		return nil, false
+	}
+	pbJob, err := rec.ToPB()
+	if err != nil {
+		return nil, false
+	}
+	return pbJob, true
 }
 
 func (s *GORMStore) loadDemoDeployments() error {

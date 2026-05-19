@@ -26,6 +26,7 @@ import (
 type ProvisionResult struct {
 	IdempotencyKey string         `gorm:"column:idempotency_key;primaryKey;size:255"`
 	ProvisionID    string         `gorm:"column:provision_id;size:255;not null;index:idx_provision_results_provision_id;uniqueIndex:uk_provision_results_provision_id"`
+	Provider       string         `gorm:"column:provider;size:32;not null;default:kubernetes;index:idx_provision_results_provider"`
 	Region         string         `gorm:"column:region;size:255;not null;index:idx_provision_results_region"`
 	Status         string         `gorm:"column:status;size:64;not null;index:idx_provision_results_status_deleted,priority:1"`
 	Payload        datatypes.JSON `gorm:"column:payload"`

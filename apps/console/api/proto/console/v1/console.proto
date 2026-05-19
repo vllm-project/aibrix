@@ -145,8 +145,9 @@ message Job {
   string model = 4;
   string input_dataset = 5;
   string completion_window = 6;
-  // Console-facing job status: the 8-state OpenAI batch lifecycle plus
-  // two planner statuses: pending and provisioning.
+  // Console-facing job status: one of the 13 plannerapi.JobStatus values.
+  // - pre-submit (queued / resource_preparing / submitting)
+  // - post-submit mirrors of openai.batch.status
   string status = 7;
   string output_dataset = 8;
   string error_dataset = 9;

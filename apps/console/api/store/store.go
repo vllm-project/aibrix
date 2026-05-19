@@ -21,6 +21,7 @@ import (
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
+	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 )
 
 // Store defines the storage interface for all console entities.
@@ -31,16 +32,13 @@ type Store interface {
 	CreateDeployment(ctx context.Context, req *pb.CreateDeploymentRequest) (*pb.Deployment, error)
 	DeleteDeployment(ctx context.Context, id string) error
 
-	// Jobs — store persists only the Console-owned fields of *pb.Job
-	// (id, created_by, future: organization, tags, ...). OpenAI Batch fields
-	// on the passed-in *pb.Job (status, usage, request_counts, timestamps,
-	// etc.) are ignored on write and left at their zero values on read; the
-	// JobHandler aggregates store output with state fetched from the metadata
-	// service /v1/batches API to produce the wire-level *pb.Job.
-	UpsertJob(ctx context.Context, job *pb.Job) error
-	GetJob(ctx context.Context, id string) (*pb.Job, error) // (nil, nil) when not found
-	ListJobs(ctx context.Context, ids []string) (map[string]*pb.Job, error)
+	// Jobs — Planner-owned state-machine snapshot of each job, persisted as models.Job.
+	UpsertJob(ctx context.Context, rec *models.Job) error
+	GetJob(ctx context.Context, id string) (*models.Job, error) // (nil, nil) when not found
+	ListJobs(ctx context.Context, ids []string) (map[string]*models.Job, error)
 	DeleteJob(ctx context.Context, id string) error
+
+	ListNonTerminalJobs(ctx context.Context) ([]*models.Job, error)
 
 	// Models
 	ListModels(ctx context.Context, search, category string) ([]*pb.Model, error)
