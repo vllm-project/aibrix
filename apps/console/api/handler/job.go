@@ -39,6 +39,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/openai/openai-go/v3"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 
@@ -210,6 +211,7 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 
 	enqueueReq := &plannerapi.EnqueueRequest{
 		JobID:         jobID,
+		Model:         h.resolveTemplateModel(ctx, templateName, req.ModelTemplateVersion),
 		ModelTemplate: modelTemplate,
 		BatchParams: openai.BatchNewParams{
 			InputFileID:      req.InputDataset,
@@ -239,10 +241,13 @@ func (h *JobHandler) CancelJob(ctx context.Context, req *pb.CancelJobRequest) (*
 	return mergeJob(job, nil), nil
 }
 
-// currentUserEmail returns the authenticated user's email if available, else
-// empty. The auth middleware sets this on the HTTP request context; once the
-// gateway propagates it to gRPC metadata it will surface here.
+// currentUserEmail returns the authenticated user's email if available.
 func currentUserEmail(ctx context.Context) string {
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if v := md.Get(middleware.MetadataUserEmail); len(v) > 0 && v[0] != "" {
+			return v[0]
+		}
+	}
 	if u := middleware.GetUser(ctx); u != nil {
 		return u.Email
 	}
@@ -294,6 +299,29 @@ func mapPlannerError(err error, op string) error {
 	return mapSDKError(err, op)
 }
 
+// resolveTemplateModel looks up the ModelDeploymentTemplate by (name, version)
+// and returns its parent ModelID.
+func (h *JobHandler) resolveTemplateModel(ctx context.Context, name, version string) string {
+	if name == "" {
+		return ""
+	}
+	statusFilter := ""
+	if version == "" {
+		statusFilter = "active"
+	}
+	tpls, err := h.store.ListModelDeploymentTemplates(ctx, "", statusFilter, name)
+	if err != nil {
+		klog.Warningf("resolveTemplateModel(%q,%q): %v", name, version, err)
+		return ""
+	}
+	for _, t := range tpls {
+		if version == "" || t.Version == version {
+			return t.ModelId
+		}
+	}
+	return ""
+}
+
 // mergeJob aggregates the planner's Job with optional Console overlay.
 // pb.Job.Id is set to the planner's JobID — the MDS batch.ID never reaches
 // this layer. Console-owned fields (display name, created_by, template
@@ -301,11 +329,10 @@ func mapPlannerError(err error, op string) error {
 // namespace; the overlay argument is plumbing for the future store-backed
 // reconcile path and is expected to be nil today.
 func mergeJob(v *plannerapi.Job, overlay *pb.Job) *pb.Job {
-	job := &pb.Job{}
+	job := &pb.Job{Object: "batch"}
 	if v != nil {
 		job.Id = v.JobID
 		if b := v.Batch; b != nil {
-			job.Object = string(b.Object)
 			job.Endpoint = b.Endpoint
 			job.Model = b.Model
 			job.InputDataset = b.InputFileID

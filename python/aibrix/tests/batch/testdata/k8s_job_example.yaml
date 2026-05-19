@@ -24,6 +24,7 @@ spec:
         batch.job.aibrix.ai/model-template-name: mock
         batch.job.aibrix.ai/model-template-version: v1
         batch.job.aibrix.ai/profile-name: example-profile
+        batch.job.aibrix.ai/aibrix: '{"model_template":{"name":"mock"}}'
         batch.job.aibrix.ai/metadata.team: infra
         batch.job.aibrix.ai/metadata.project: p
     spec:

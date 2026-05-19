@@ -28,6 +28,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
 	"k8s.io/klog/v2"
 
@@ -144,7 +145,19 @@ func (s *Server) StartGRPC(addr string) error {
 func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	ctx := context.Background()
 
-	mux := runtime.NewServeMux()
+	// Propagate the AuthMiddleware-injected UserInfo onto outgoing gRPC
+	// metadata so gRPC handlers
+	mux := runtime.NewServeMux(runtime.WithMetadata(func(_ context.Context, r *http.Request) metadata.MD {
+		u := middleware.GetUser(r.Context())
+		if u == nil {
+			return nil
+		}
+		return metadata.Pairs(
+			middleware.MetadataUserEmail, u.Email,
+			middleware.MetadataUserName, u.Name,
+			middleware.MetadataUserID, u.ID,
+		)
+	}))
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
 	// Register all gRPC-gateway handlers

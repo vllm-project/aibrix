@@ -73,6 +73,7 @@ type queuedJob struct {
 	submittingAt        time.Time
 	resourceFailedAt    time.Time
 	submitFailedAt      time.Time
+	cancelRequestedAt   time.Time
 	canceledAt          time.Time
 }
 
@@ -353,7 +354,7 @@ func (q *Planner) syncFromBatch(jobID string, batch *openai.Batch) {
 
 // mergeBatchIntoModel overlays MDS-owned batch fields onto rec.
 func mergeBatchIntoModel(rec *models.Job, b *openai.Batch) {
-	rec.Object = string(b.Object)
+	rec.BatchCreatedAt = unixToTime(b.CreatedAt)
 	rec.OutputDataset = b.OutputFileID
 	rec.ErrorDataset = b.ErrorFileID
 	rec.InProgressAt = unixToTime(b.InProgressAt)
@@ -372,6 +373,11 @@ func mergeBatchIntoModel(rec *models.Job, b *openai.Batch) {
 	if b.JSON.Usage.Valid() {
 		if data, err := json.Marshal(b.Usage); err == nil {
 			rec.Usage = datatypes.JSON(data)
+		}
+	}
+	if b.JSON.Errors.Valid() {
+		if data, err := json.Marshal(b.Errors); err == nil {
+			rec.ErrorMessage = string(data)
 		}
 	}
 }
@@ -454,6 +460,7 @@ func isPreSubmitStatus(s plannerapi.JobStatus) bool {
 func modelToJob(rec *models.Job) *queuedJob {
 	req := &plannerapi.EnqueueRequest{
 		JobID: rec.ID,
+		Model: rec.Model,
 		BatchParams: openai.BatchNewParams{
 			InputFileID:      rec.InputDataset,
 			Endpoint:         openai.BatchNewParamsEndpoint(rec.Endpoint),
@@ -483,6 +490,7 @@ func modelToJob(rec *models.Job) *queuedJob {
 		submittingAt:        rec.SubmittingAt,
 		resourceFailedAt:    rec.ResourceFailedAt,
 		submitFailedAt:      rec.SubmitFailedAt,
+		cancelRequestedAt:   rec.CancelRequestedAt,
 		canceledAt:          rec.CancelledAt,
 	}
 }
@@ -494,6 +502,7 @@ func jobToModel(j *queuedJob) *models.Job {
 		Status:              string(j.status),
 		BatchID:             j.batchID,
 		ProvisionID:         j.provisionID,
+		Model:               j.req.Model,
 		Endpoint:            string(j.req.BatchParams.Endpoint),
 		InputDataset:        j.req.BatchParams.InputFileID,
 		CompletionWindow:    string(j.req.BatchParams.CompletionWindow),
@@ -502,6 +511,7 @@ func jobToModel(j *queuedJob) *models.Job {
 		SubmittingAt:        j.submittingAt,
 		ResourceFailedAt:    j.resourceFailedAt,
 		SubmitFailedAt:      j.submitFailedAt,
+		CancelRequestedAt:   j.cancelRequestedAt,
 		CancelledAt:         j.canceledAt,
 		ErrorMessage:        j.errMsg,
 	}
@@ -631,10 +641,11 @@ func (q *Planner) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, er
 	provisionID := job.provisionID
 	req := job.req
 	queuedAt := job.queuedAt
+	now := time.Now()
+	job.cancelRequestedAt = now
 	preSubmit := batchID == "" && !status.IsTerminal()
 	var terminalAt time.Time
 	if preSubmit {
-		now := time.Now()
 		job.status = plannerapi.JobStatusCancelled
 		job.canceledAt = now
 		terminalAt = now
@@ -654,6 +665,7 @@ func (q *Planner) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, er
 		if err != nil {
 			return nil, err
 		}
+		q.syncFromBatch(jobID, batch)
 		q.releaseAfter(jobID, provisionID, "cancel submitted")
 		return &plannerapi.Job{JobID: jobID, Batch: batch}, nil
 	}
