@@ -24,9 +24,11 @@ import (
 
 // Secret maps secrets table.
 type Secret struct {
-	ID             string    `gorm:"column:id;primaryKey;size:36"`
-	Name           string    `gorm:"column:name;size:255;not null"`
-	EncryptedValue string    `gorm:"column:encrypted_value;type:text;not null"`
+	RowID          uint64    `gorm:"column:row_id;primaryKey;autoIncrement"`
+	ID             string    `gorm:"column:id;size:36;not null;uniqueIndex:uniq_secrets_id"`
+	Name           string    `gorm:"column:name;size:255;not null;default:'';index:idx_secrets_name"`
+	EncryptedValue string    `gorm:"column:encrypted_value;type:text"`
+	Deleted        bool      `gorm:"column:deleted;not null;default:false;index"`
 	CreatedAt      time.Time `gorm:"column:created_at;autoCreateTime"`
 }
 

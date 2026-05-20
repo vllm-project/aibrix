@@ -410,13 +410,13 @@ func (s *GORMStore) loadDemoSecrets() error {
 
 func (s *GORMStore) loadDemoQuotas() error {
 	quotas := []*pb.Quota{
-		{Id: "1", Name: "Deployed Model Count", QuotaId: "deployed-model-count", CurrentUsage: 0, UsagePercentage: 0, Quota: 100},
-		{Id: "2", Name: "Eval Protocol Free Daily Credits", QuotaId: "eval-protocol-free-daily-credits", CurrentUsage: 0, UsagePercentage: 0, Quota: 0},
-		{Id: "3", Name: "GLOBAL - A100 Count", QuotaId: "global--a100-count", CurrentUsage: 0, UsagePercentage: 0, Quota: 16},
-		{Id: "4", Name: "GLOBAL - B200 Count", QuotaId: "global--b200-count", CurrentUsage: 0, UsagePercentage: 0, Quota: 16},
-		{Id: "5", Name: "GLOBAL - H100 Count", QuotaId: "global--h100-count", CurrentUsage: 1, UsagePercentage: 6.25, Quota: 16},
-		{Id: "6", Name: "GLOBAL - H200 Count", QuotaId: "global--h200-count", CurrentUsage: 0, UsagePercentage: 0, Quota: 16},
-		{Id: "7", Name: "Job Submission Count", QuotaId: "job-submission-count", CurrentUsage: 0, UsagePercentage: 0, Quota: 8},
+		{Id: "1", Name: "Deployed Model Count", QuotaId: "deployed-model-count", CurrentUsage: 0, Quota: 100},
+		{Id: "2", Name: "Eval Protocol Free Daily Credits", QuotaId: "eval-protocol-free-daily-credits", CurrentUsage: 0, Quota: 0},
+		{Id: "3", Name: "GLOBAL - A100 Count", QuotaId: "global--a100-count", CurrentUsage: 0, Quota: 16},
+		{Id: "4", Name: "GLOBAL - B200 Count", QuotaId: "global--b200-count", CurrentUsage: 0, Quota: 16},
+		{Id: "5", Name: "GLOBAL - H100 Count", QuotaId: "global--h100-count", CurrentUsage: 1, Quota: 16},
+		{Id: "6", Name: "GLOBAL - H200 Count", QuotaId: "global--h200-count", CurrentUsage: 0, Quota: 16},
+		{Id: "7", Name: "Job Submission Count", QuotaId: "job-submission-count", CurrentUsage: 0, Quota: 8},
 	}
 	for _, pbQuota := range quotas {
 		var quota models.Quota

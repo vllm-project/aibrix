@@ -172,13 +172,10 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("DeleteDeployment_NotFound", func(t *testing.T) {
+			// Delete is idempotent - no error for non-existent deployment
 			err := s.DeleteDeployment(ctx, "non-existent")
-			if err == nil {
-				t.Fatal("expected error for non-existent deployment")
-			}
-			st, ok := status.FromError(err)
-			if !ok || st.Code() != codes.NotFound {
-				t.Errorf("expected NotFound error, got %v", err)
+			if err != nil {
+				t.Fatalf("expected no error for idempotent delete, got %v", err)
 			}
 		})
 	})
@@ -636,13 +633,10 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("DeleteModelDeploymentTemplate_NotFound", func(t *testing.T) {
+			// Delete is idempotent - no error for non-existent template
 			err := s.DeleteModelDeploymentTemplate(ctx, "model-llama-3.3-70b", "non-existent")
-			if err == nil {
-				t.Fatal("expected error for non-existent template")
-			}
-			st, ok := status.FromError(err)
-			if !ok || st.Code() != codes.NotFound {
-				t.Errorf("expected NotFound error, got %v", err)
+			if err != nil {
+				t.Fatalf("expected no error for idempotent delete, got %v", err)
 			}
 		})
 
@@ -745,13 +739,10 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("DeleteAPIKey_NotFound", func(t *testing.T) {
+			// Delete is idempotent - no error for non-existent key
 			err := s.DeleteAPIKey(ctx, "non-existent-key")
-			if err == nil {
-				t.Fatal("expected error for non-existent key")
-			}
-			st, ok := status.FromError(err)
-			if !ok || st.Code() != codes.NotFound {
-				t.Errorf("expected NotFound error, got %v", err)
+			if err != nil {
+				t.Fatalf("expected no error for idempotent delete, got %v", err)
 			}
 		})
 	})
@@ -812,13 +803,10 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("DeleteSecret_NotFound", func(t *testing.T) {
+			// Delete is idempotent - no error for non-existent secret
 			err := s.DeleteSecret(ctx, "non-existent-secret")
-			if err == nil {
-				t.Fatal("expected error for non-existent secret")
-			}
-			st, ok := status.FromError(err)
-			if !ok || st.Code() != codes.NotFound {
-				t.Errorf("expected NotFound error, got %v", err)
+			if err != nil {
+				t.Fatalf("expected no error for idempotent delete, got %v", err)
 			}
 		})
 	})
