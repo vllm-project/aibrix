@@ -14,6 +14,7 @@
 
 """Tests for resumable download logic (sentinel file + atomic writes)."""
 
+import asyncio
 import os
 import sys
 import types
@@ -31,7 +32,6 @@ from aibrix.runtime.artifact_service import (
 from aibrix.runtime.downloaders import (
     GCSArtifactDownloader,
     HTTPArtifactDownloader,
-    PART_SUFFIX,
     S3ArtifactDownloader,
 )
 
@@ -109,16 +109,19 @@ class TestDownloadArtifactSentinel:
         assert calls == []  # downloader never called
 
     @pytest.mark.asyncio
-    async def test_partial_dir_without_marker_triggers_cleanup_and_redownload(
+    async def test_partial_dir_without_marker_resumes_into_existing_dir(
         self, tmp_path, monkeypatch
     ):
-        """Partial directory (no marker) is removed and re-downloaded."""
+        """Partial directory (no marker) is retained so the downloader can
+        resume using existing .part / .etag sidecars."""
         service = _make_service(tmp_path)
         adapter_dir = tmp_path / "my-adapter"
         adapter_dir.mkdir()
-        stale_file = adapter_dir / "partial.bin"
-        stale_file.write_bytes(b"\xff" * 8)
-        # No marker written — simulates interrupted download
+        # Simulate the resume artefacts a real interrupted download would leave
+        part_file = adapter_dir / "adapter.bin.part"
+        part_file.write_bytes(b"\xff" * 8)
+        etag_file = adapter_dir / "adapter.bin.part.etag"
+        etag_file.write_text('"v1"')
 
         calls = []
         monkeypatch.setattr(
@@ -132,16 +135,24 @@ class TestDownloadArtifactSentinel:
         assert result == str(adapter_dir)
         assert len(calls) == 1
         assert (adapter_dir / MARKER).exists()
-        # Stale file should be gone (directory was wiped)
-        assert not stale_file.exists()
+        # Resume artefacts from the prior attempt must NOT have been wiped
+        # before the downloader ran — that would defeat resumable downloads.
+        # (The downloader itself may consume/rename them; the service must not.)
+        assert calls[0] == str(adapter_dir)
 
     @pytest.mark.asyncio
-    async def test_failed_download_removes_partial_dir(self, tmp_path, monkeypatch):
-        """On download failure the partial directory is cleaned up."""
+    async def test_failed_download_preserves_partial_state_for_resume(
+        self, tmp_path, monkeypatch
+    ):
+        """On download failure the partial directory is retained so the next
+        attempt can resume from any .part files left behind."""
 
         class _FailingDownloader:
             async def download(self, source_url, local_path, credentials=None):
                 os.makedirs(local_path, exist_ok=True)
+                # Simulate writing a .part before failing mid-stream
+                with open(os.path.join(local_path, "adapter.bin.part"), "wb") as f:
+                    f.write(b"\x00" * 4)
                 raise RuntimeError("network error")
 
         service = _make_service(tmp_path)
@@ -155,7 +166,89 @@ class TestDownloadArtifactSentinel:
             await service.download_artifact("s3://bucket/model/", "my-adapter")
 
         adapter_dir = tmp_path / "my-adapter"
-        assert not adapter_dir.exists()
+        # Directory and partial file remain so a subsequent attempt can resume
+        assert adapter_dir.exists()
+        assert (adapter_dir / "adapter.bin.part").exists()
+        # Failed attempt must NOT have written the completion marker
+        assert not (adapter_dir / MARKER).exists()
+
+    @pytest.mark.asyncio
+    async def test_empty_directory_download_does_not_write_marker(
+        self, tmp_path, monkeypatch
+    ):
+        """If a downloader returns successfully but produced no real files, the
+        service must refuse to write the completion marker."""
+
+        class _EmptyDownloader:
+            async def download(self, source_url, local_path, credentials=None):
+                # Pretend success without writing any artefact
+                os.makedirs(local_path, exist_ok=True)
+                return local_path
+
+        service = _make_service(tmp_path)
+        monkeypatch.setattr(
+            artifact_service_module,
+            "get_downloader",
+            lambda _url: _EmptyDownloader(),
+        )
+
+        with pytest.raises(FileNotFoundError, match="produced no files"):
+            await service.download_artifact("s3://bucket/missing/", "my-adapter")
+
+        adapter_dir = tmp_path / "my-adapter"
+        assert not (adapter_dir / MARKER).exists()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_downloads_serialise_per_adapter(
+        self, tmp_path, monkeypatch
+    ):
+        """Two concurrent download_artifact calls for the same lora_name must
+        not both invoke the underlying downloader."""
+
+        download_started = asyncio.Event()
+        release_download = asyncio.Event()
+        call_count = 0
+
+        class _SlowDownloader:
+            async def download(self, source_url, local_path, credentials=None):
+                nonlocal call_count
+                call_count += 1
+                os.makedirs(local_path, exist_ok=True)
+                with open(os.path.join(local_path, "adapter.bin"), "wb") as f:
+                    f.write(b"\x00" * 8)
+                download_started.set()
+                await release_download.wait()
+                return local_path
+
+        service = _make_service(tmp_path)
+        monkeypatch.setattr(
+            artifact_service_module,
+            "get_downloader",
+            lambda _url: _SlowDownloader(),
+        )
+
+        first = asyncio.create_task(
+            service.download_artifact("s3://bucket/model/", "my-adapter")
+        )
+        # Wait until the first download has the lock and is mid-flight
+        await download_started.wait()
+
+        second = asyncio.create_task(
+            service.download_artifact("s3://bucket/model/", "my-adapter")
+        )
+        # Give the second task a chance to run; it should be blocked on the lock
+        await asyncio.sleep(0.05)
+        assert not second.done()
+        assert call_count == 1
+
+        # Let the first download finish; second must observe the marker and
+        # short-circuit without calling the downloader again.
+        release_download.set()
+        first_result = await first
+        second_result = await second
+
+        assert first_result == second_result
+        assert call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +320,26 @@ class TestS3AtomicWrites:
         assert downloaded == [expected_part]
         assert (tmp_path / "weights.bin").exists()
         assert not (tmp_path / "weights.bin.part").exists()
+
+    def test_directory_with_zero_objects_raises(self, tmp_path):
+        """A misconfigured S3 prefix that returns no objects must raise so the
+        caller doesn't end up writing a completion marker over an empty dir."""
+
+        class EmptyS3Client:
+            def get_paginator(self, _op):
+                return self
+
+            def paginate(self, Bucket, Prefix):
+                return [{}]
+
+            def download_file(self, *a, **kw):  # pragma: no cover - unused
+                raise AssertionError("should not be called")
+
+        downloader = S3ArtifactDownloader()
+        with pytest.raises(FileNotFoundError, match="No objects found"):
+            downloader._download_s3_directory(
+                EmptyS3Client(), "my-bucket", "missing-prefix/", str(tmp_path)
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +421,42 @@ class TestGCSAtomicWrites:
         assert downloaded == [expected_part]
         assert (tmp_path / "weights.bin").exists()
         assert not (tmp_path / "weights.bin.part").exists()
+
+    def test_directory_with_zero_objects_raises(self, tmp_path, monkeypatch):
+        """A misconfigured GCS prefix that returns no objects must raise."""
+        fake_google = types.ModuleType("google")
+        fake_google_cloud = types.ModuleType("google.cloud")
+        fake_storage_mod = types.ModuleType("google.cloud.storage")
+        fake_oauth2 = types.ModuleType("google.oauth2")
+        fake_sa = types.ModuleType("google.oauth2.service_account")
+        fake_sa.Credentials = MagicMock()
+
+        class EmptyBucket:
+            def list_blobs(self, prefix=""):
+                return []
+
+            def blob(self, _name):  # pragma: no cover - unused
+                raise AssertionError("should not be called")
+
+        class EmptyClient:
+            def __init__(self, **kw):
+                pass
+
+            def bucket(self, _name):
+                return EmptyBucket()
+
+        fake_storage_mod.Client = EmptyClient
+        monkeypatch.setitem(sys.modules, "google", fake_google)
+        monkeypatch.setitem(sys.modules, "google.cloud", fake_google_cloud)
+        monkeypatch.setitem(sys.modules, "google.cloud.storage", fake_storage_mod)
+        monkeypatch.setitem(sys.modules, "google.oauth2", fake_oauth2)
+        monkeypatch.setitem(sys.modules, "google.oauth2.service_account", fake_sa)
+
+        downloader = GCSArtifactDownloader()
+        with pytest.raises(FileNotFoundError, match="No objects found"):
+            downloader._download_sync(
+                "gs://my-bucket/missing-prefix/", str(tmp_path)
+            )
 
 
 # ---------------------------------------------------------------------------
