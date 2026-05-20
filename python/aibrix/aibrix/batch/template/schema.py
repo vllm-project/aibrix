@@ -125,6 +125,7 @@ class ModelSourceType(str, Enum):
     S3 = "s3"
     TOS = "tos"
     LOCAL = "local"
+    HDFS = "hdfs"
 
 
 class ModelSourceSpec(_Strict):

@@ -36,7 +36,20 @@ function bumpVersion(v: string): string {
 }
 
 const ENGINE_TYPES = ['vllm', 'sglang', 'trtllm'];
-const MODEL_SOURCE_TYPES = ['huggingface', 's3', 'local'];
+const MODEL_SOURCE_TYPES = ['huggingface', 's3', 'local', 'hdfs'];
+
+// Per-source URI validation. Returns an error message or '' when valid.
+// Empty URI is accepted here; the form-level required check belongs elsewhere.
+function validateSourceUri(sourceType: string | undefined, uri: string): string {
+  if (!uri) return '';
+  if (sourceType === 'hdfs' && !uri.startsWith('hdfs://')) {
+    return 'HDFS URI must start with hdfs://';
+  }
+  if (sourceType === 's3' && !uri.startsWith('s3://')) {
+    return 'S3 URI must start with s3://';
+  }
+  return '';
+}
 
 interface SourceAuthHint {
   show: boolean;
@@ -218,6 +231,11 @@ export function CreateModelDeploymentTemplate({
       setError('Pick at least one supported endpoint');
       return;
     }
+    const uriErr = validateSourceUri(spec.modelSource?.type, spec.modelSource?.uri ?? '');
+    if (uriErr) {
+      setError(uriErr);
+      return;
+    }
 
     const finalSpec: ModelDeploymentTemplateSpec = { ...spec };
 
@@ -339,13 +357,28 @@ export function CreateModelDeploymentTemplate({
                 </select>
               </Field>
               <Field label="URI" wide>
-                <input
-                  type="text"
-                  value={spec.modelSource?.uri ?? ''}
-                  onChange={(e) => updateSpec('modelSource', { uri: e.target.value })}
-                  placeholder="meta-llama/Llama-3.3-70B-Instruct or s3://bucket/path/"
-                  className={inputCls}
-                />
+                {(() => {
+                  const uri = spec.modelSource?.uri ?? '';
+                  const uriErr = validateSourceUri(sourceType, uri);
+                  const placeholder =
+                    sourceType === 'hdfs'
+                      ? 'hdfs://namenode:8020/models/Llama-3.3-70B-Instruct'
+                      : sourceType === 'local'
+                      ? '/mnt/models/Llama-3.3-70B-Instruct'
+                      : 'meta-llama/Llama-3.3-70B-Instruct or s3://bucket/path/';
+                  return (
+                    <>
+                      <input
+                        type="text"
+                        value={uri}
+                        onChange={(e) => updateSpec('modelSource', { uri: e.target.value })}
+                        placeholder={placeholder}
+                        className={`${inputCls} ${uriErr ? 'border-red-300' : ''}`}
+                      />
+                      {uriErr && <p className="text-xs text-red-500 mt-1">{uriErr}</p>}
+                    </>
+                  );
+                })()}
               </Field>
               {isHF && (
                 <Field label="Revision">
