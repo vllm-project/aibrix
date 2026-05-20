@@ -14,26 +14,26 @@ class FakeRedis:
         self.values = {}
         self.sorted_sets = {}
 
-    def get(self, key):
+    async def get(self, key):
         value = self.values.get(key)
         if value is None:
             return None
         return copy.deepcopy(value)
 
-    def set(self, key, value):
+    async def set(self, key, value):
         self.values[key] = value
         return True
 
-    def delete(self, key):
+    async def delete(self, key):
         self.values.pop(key, None)
         return 1
 
-    def zadd(self, key, mapping):
+    async def zadd(self, key, mapping):
         self.sorted_sets.setdefault(key, {})
         self.sorted_sets[key].update(mapping)
         return 1
 
-    def zrevrange(self, key, start, end):
+    async def zrevrange(self, key, start, end):
         items = sorted(
             self.sorted_sets.get(key, {}).items(),
             key=lambda item: item[1],
@@ -49,7 +49,7 @@ class FakeRedis:
             for member in selected
         ]
 
-    def zrem(self, key, member):
+    async def zrem(self, key, member):
         if key in self.sorted_sets:
             self.sorted_sets[key].pop(member, None)
         return 1

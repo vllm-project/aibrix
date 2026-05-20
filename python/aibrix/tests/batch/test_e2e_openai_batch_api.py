@@ -20,6 +20,7 @@ import uuid
 from typing import Any
 
 import pytest
+import redis.asyncio as redis
 from fastapi.testclient import TestClient
 from kubernetes import client as k8s_client
 
@@ -218,7 +219,7 @@ def redis_deployment_test_app(
     )
     monkeypatch.setattr(
         "aibrix.metadata.cache.redis.RedisJobCache._build_client",
-        lambda self, host, port, db, password: __import__("redis").Redis(
+        lambda self, host, port, db, password: redis.Redis(
             host=host,
             port=port,
             db=db,

@@ -1,4 +1,3 @@
-import inspect
 import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -32,7 +31,7 @@ class RedisJobCache(JobEntityManager):
     async def get_job(self, job_id: str) -> Optional[BatchJob]:
         if job_id in self.active_jobs:
             return self.active_jobs[job_id]
-        payload = self._client.get(self._job_key(job_id))
+        payload = await self._client.get(self._job_key(job_id))
         if payload is None:
             return None
         return self._deserialize_job(payload)
@@ -46,7 +45,7 @@ class RedisJobCache(JobEntityManager):
                 if isinstance(raw_job_id, bytes)
                 else raw_job_id
             )
-            payload = self._client.get(self._job_key(job_id))
+            payload = await self._client.get(self._job_key(job_id))
             if payload is None:
                 continue
             jobs.append(self._deserialize_job(payload))
@@ -84,10 +83,6 @@ class RedisJobCache(JobEntityManager):
         db: int,
         password: Optional[str],
     ) -> redis.Redis:
-        try:
-            import redis
-        except ImportError as exc:
-            raise RuntimeError("redis is required to use RedisJobCache") from exc
         return redis.Redis(
             host=host,
             port=port,
