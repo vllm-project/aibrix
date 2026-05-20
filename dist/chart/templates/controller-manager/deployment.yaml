@@ -30,6 +30,10 @@ spec:
         env:
         - name: AIBRIX_GATEWAY_TIMEOUT_SECONDS
           value: "{{ .Values.controllerManager.gatewayTimeoutSeconds }}"
+{{- range $key, $val := .Values.controllerManager.container.envs }}
+        - name: {{ $key }}
+          value: "{{ $val }}"
+{{- end }}
         image: {{ .Values.controllerManager.container.image.repository }}:{{ .Values.controllerManager.container.image.tag }}
         imagePullPolicy: {{ .Values.controllerManager.container.image.imagePullPolicy }}
         name: manager

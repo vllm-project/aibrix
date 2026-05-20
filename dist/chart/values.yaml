@@ -33,6 +33,8 @@ controllerManager:
           port: 8081
         initialDelaySeconds: 5
         periodSeconds: 10
+    envs:
+      AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"
   gatewayTimeoutSeconds: 120
   serviceAccount:
     create: true
