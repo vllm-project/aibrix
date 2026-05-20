@@ -179,6 +179,8 @@ function camelToSnakeKey(key: string): string {
   return key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
 }
 
+const PRESERVE_VALUE_KEYS = new Set(['engineArgs', 'tags', 'metadata']);
+
 export function snakeToCamel<T>(data: unknown): T {
   if (Array.isArray(data)) {
     return data.map((item) => snakeToCamel(item)) as unknown as T;
@@ -186,7 +188,8 @@ export function snakeToCamel<T>(data: unknown): T {
   if (data !== null && typeof data === 'object') {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
-      result[snakeToCamelKey(key)] = snakeToCamel(value);
+      const ck = snakeToCamelKey(key);
+      result[ck] = PRESERVE_VALUE_KEYS.has(ck) ? value : snakeToCamel(value);
     }
     return result as T;
   }
@@ -200,7 +203,7 @@ export function camelToSnake<T>(data: unknown): T {
   if (data !== null && typeof data === 'object') {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
-      result[camelToSnakeKey(key)] = camelToSnake(value);
+      result[camelToSnakeKey(key)] = PRESERVE_VALUE_KEYS.has(key) ? value : camelToSnake(value);
     }
     return result as T;
   }

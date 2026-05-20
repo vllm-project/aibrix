@@ -101,12 +101,12 @@ func NewSQLiteStore(dsn, encryptionKey string) (*GORMStore, error) {
 		_ = dialector.Close()
 		return nil, fmt.Errorf("failed to access sqlite db: %w", err)
 	}
-	if isSQLiteInMemoryDSN(dsn) {
-		// In-memory SQLite databases are per-connection; multiple connections
-		// would each see a different empty DB. Pin to one connection.
-		sqlDB.SetMaxOpenConns(1)
-		sqlDB.SetMaxIdleConns(1)
-	}
+	// SQLite is single-writer; pin to one connection so concurrent goroutines
+	// queue at the Go layer instead of racing for the write lock (which would
+	// surface as SQLITE_BUSY). In-memory DBs also need this so all queries
+	// see the same per-connection database.
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
 	s, err := newGORMStore(db, encryptionKey)
 	if err != nil {
 		_ = sqlDB.Close()
@@ -334,8 +334,11 @@ func (s *GORMStore) CreateModel(ctx context.Context, m *pb.Model) (*pb.Model, er
 	if m == nil || strings.TrimSpace(m.Name) == "" {
 		return nil, status.Error(codes.InvalidArgument, "name is required")
 	}
+	m.Name = strings.TrimSpace(m.Name)
 	if m.Id == "" {
-		m.Id = "model-" + strings.ToLower(strings.ReplaceAll(strings.TrimSpace(m.Name), " ", "-"))
+		// strings.Fields splits on any whitespace run, so multiple/leading/
+		// trailing spaces collapse instead of producing empty slug segments.
+		m.Id = "model-" + strings.ToLower(strings.Join(strings.Fields(m.Name), "-"))
 	}
 	var rec models.Model
 	if err := rec.FromPB(m); err != nil {
