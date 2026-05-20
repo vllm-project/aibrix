@@ -235,6 +235,83 @@ func TestResolveRejectsVKEDevWithoutFullStack(t *testing.T) {
 	}
 }
 
+func TestResolveAcceptsExplicitNullProvider(t *testing.T) {
+	tempDir, enginePath, benchmarkPath := createScenarioFixture(t)
+	scenarioPath := filepath.Join(tempDir, "scenario.yaml")
+
+	scenarioYAML := []byte(
+		"Scenario: sample\n" +
+			"Tests:\n" +
+			"  - name: baseline\n" +
+			"    provider: null\n" +
+			"    engine:\n" +
+			"      type: vllm\n" +
+			"      manifest: " + enginePath + "\n" +
+			"    benchmark: " + benchmarkPath + "\n",
+	)
+	if err := os.WriteFile(scenarioPath, scenarioYAML, 0644); err != nil {
+		t.Fatalf("failed to write scenario file: %v", err)
+	}
+
+	scenario, err := Resolve(scenarioPath)
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if scenario.Tests[0].Provider != nil {
+		t.Fatalf("expected explicit provider: null to remain nil, got %q", scenario.Tests[0].ProviderName())
+	}
+	if scenario.Tests[0].ProviderName() != "" {
+		t.Fatalf("expected empty provider name for explicit null provider, got %q", scenario.Tests[0].ProviderName())
+	}
+}
+
+func TestResolveRejectsLegacyDeployerField(t *testing.T) {
+	tempDir, enginePath, benchmarkPath := createScenarioFixture(t)
+	scenarioPath := filepath.Join(tempDir, "scenario.yaml")
+
+	scenarioYAML := []byte(
+		"Scenario: sample\n" +
+			"Tests:\n" +
+			"  - name: legacy\n" +
+			"    deployer: aibrix\n" +
+			"    version: v0.6.0\n" +
+			"    engine:\n" +
+			"      type: vllm\n" +
+			"      manifest: " + enginePath + "\n" +
+			"    benchmark: " + benchmarkPath + "\n",
+	)
+	if err := os.WriteFile(scenarioPath, scenarioYAML, 0644); err != nil {
+		t.Fatalf("failed to write scenario file: %v", err)
+	}
+
+	if _, err := Resolve(scenarioPath); err == nil {
+		t.Fatalf("expected Resolve to reject deprecated deployer field")
+	}
+}
+
+func TestResolveRejectsMissingProviderField(t *testing.T) {
+	tempDir, enginePath, benchmarkPath := createScenarioFixture(t)
+	scenarioPath := filepath.Join(tempDir, "scenario.yaml")
+
+	scenarioYAML := []byte(
+		"Scenario: sample\n" +
+			"Tests:\n" +
+			"  - name: missing-provider\n" +
+			"    version: v0.6.0\n" +
+			"    engine:\n" +
+			"      type: vllm\n" +
+			"      manifest: " + enginePath + "\n" +
+			"    benchmark: " + benchmarkPath + "\n",
+	)
+	if err := os.WriteFile(scenarioPath, scenarioYAML, 0644); err != nil {
+		t.Fatalf("failed to write scenario file: %v", err)
+	}
+
+	if _, err := Resolve(scenarioPath); err == nil {
+		t.Fatalf("expected Resolve to reject missing provider field")
+	}
+}
+
 func createScenarioFixture(t *testing.T) (string, string, string) {
 	t.Helper()
 

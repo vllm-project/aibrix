@@ -15,8 +15,8 @@ vllmArgs:
   endpoint: /v1/chat/completions
   backend: openai-chat
   endpoint-type: openai-chat
-  model: qwen3-8b
-  tokenizer: /data01/models/Qwen3-8B
+  model: qwen3-32b
+  tokenizer: /data01/models/Qwen3-32B
   num-prompts: 100
   request-rate: 1
   concurrency: 1

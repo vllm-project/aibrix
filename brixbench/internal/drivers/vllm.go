@@ -92,7 +92,7 @@ func (d *VLLMBenchDriver) Run(ctx context.Context, benchmarkPath string, logDir 
 	fmt.Printf("[vllm-bench] Wrote benchmark pod manifest: %s\n", podManifestPath)
 
 	fmt.Printf("[vllm-bench] Cleaning previous benchmark pod: %s/%s\n", config.Namespace, config.PodName)
-	if err := runBash(ctx, fmt.Sprintf("kubectl delete pod %s -n %s --ignore-not-found", shellWord(config.PodName), shellWord(config.Namespace))); err != nil {
+	if err := runExecCommand(ctx, "kubectl", "delete", "pod", config.PodName, "-n", config.Namespace, "--ignore-not-found"); err != nil {
 		return fmt.Errorf("failed to clean previous benchmark pod: %v", err)
 	}
 	if err := waitForPodDeletion(ctx, config.Namespace, config.PodName, 2*time.Minute); err != nil {
@@ -104,15 +104,15 @@ func (d *VLLMBenchDriver) Run(ctx context.Context, benchmarkPath string, logDir 
 	if err := ensureNamespaceReadyForBenchmark(ctx, config.Namespace); err != nil {
 		return err
 	}
-	if err := runBash(ctx, fmt.Sprintf("kubectl apply -f %q", podManifestPath)); err != nil {
+	if err := runExecCommand(ctx, "kubectl", "apply", "-f", podManifestPath); err != nil {
 		// If we raced with namespace deletion or a previous pod object, wait/cleanup and retry once.
 		if strings.Contains(err.Error(), "because it is being terminated") || strings.Contains(err.Error(), "already exists") {
-			_ = runBash(ctx, fmt.Sprintf("kubectl delete pod %s -n %s --ignore-not-found", shellWord(config.PodName), shellWord(config.Namespace)))
+			_ = runExecCommand(ctx, "kubectl", "delete", "pod", config.PodName, "-n", config.Namespace, "--ignore-not-found")
 			_ = waitForPodDeletion(ctx, config.Namespace, config.PodName, 2*time.Minute)
 			if err2 := ensureNamespaceReadyForBenchmark(ctx, config.Namespace); err2 != nil {
 				return fmt.Errorf("failed to apply benchmark pod manifest: %v", err)
 			}
-			if err2 := runBash(ctx, fmt.Sprintf("kubectl apply -f %q", podManifestPath)); err2 == nil {
+			if err2 := runExecCommand(ctx, "kubectl", "apply", "-f", podManifestPath); err2 == nil {
 				goto applied
 			}
 		}
@@ -120,7 +120,7 @@ func (d *VLLMBenchDriver) Run(ctx context.Context, benchmarkPath string, logDir 
 	}
 applied:
 	fmt.Printf("[vllm-bench] Waiting for benchmark pod to become Ready: %s/%s\n", config.Namespace, config.PodName)
-	if err := runBash(ctx, fmt.Sprintf("kubectl wait --for=condition=Ready --timeout=5m pod/%s -n %s", shellWord(config.PodName), shellWord(config.Namespace))); err != nil {
+	if err := runExecCommand(ctx, "kubectl", "wait", "--for=condition=Ready", "--timeout=5m", "pod/"+config.PodName, "-n", config.Namespace); err != nil {
 		return fmt.Errorf("benchmark pod did not become ready: %v", err)
 	}
 	fmt.Printf("[vllm-bench] Benchmark pod is Ready: %s/%s\n", config.Namespace, config.PodName)
@@ -132,7 +132,7 @@ applied:
 	}
 	defer logFile.Close()
 
-	cmd := exec.CommandContext(ctx, "bash", "-lc", fmt.Sprintf("kubectl logs -f %s -n %s", shellWord(config.PodName), shellWord(config.Namespace)))
+	cmd := exec.CommandContext(ctx, "kubectl", "logs", "-f", config.PodName, "-n", config.Namespace)
 	cmd.Stdout = io.MultiWriter(os.Stdout, logFile)
 	cmd.Stderr = io.MultiWriter(os.Stderr, logFile)
 
@@ -197,7 +197,7 @@ func (d *VLLMBenchDriver) ResultPath() string {
 func waitForBenchmarkPodCompletion(ctx context.Context, namespace string, podName string, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		phase, err := captureBash(ctx, fmt.Sprintf("kubectl get pod %s -n %s -o jsonpath='{.status.phase}'", shellWord(podName), shellWord(namespace)))
+		phase, err := captureExecCommand(ctx, "kubectl", "get", "pod", podName, "-n", namespace, "-o", "jsonpath={.status.phase}")
 		if err != nil {
 			return "", err
 		}
@@ -214,9 +214,9 @@ func waitForBenchmarkPodCompletion(ctx context.Context, namespace string, podNam
 func waitForPodDeletion(ctx context.Context, namespace string, podName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		output, err := captureBash(ctx, fmt.Sprintf("kubectl get pod %s -n %s -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || true", shellWord(podName), shellWord(namespace)))
+		output, err := captureExecCommand(ctx, "kubectl", "get", "pod", podName, "-n", namespace, "--ignore-not-found", "-o", "jsonpath={.metadata.deletionTimestamp}")
 		if err == nil && strings.TrimSpace(strings.Trim(output, "'")) == "" {
-			exists, existsErr := captureBash(ctx, fmt.Sprintf("kubectl get pod %s -n %s --ignore-not-found -o name", shellWord(podName), shellWord(namespace)))
+			exists, existsErr := captureExecCommand(ctx, "kubectl", "get", "pod", podName, "-n", namespace, "--ignore-not-found", "-o", "name")
 			if existsErr == nil && strings.TrimSpace(exists) == "" {
 				return nil
 			}
@@ -466,6 +466,24 @@ func captureBash(ctx context.Context, command string) (string, error) {
 	return string(output), nil
 }
 
+func runExecCommand(ctx context.Context, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v, output: %s", err, string(output))
+	}
+	return nil
+}
+
+func captureExecCommand(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%v, output: %s", err, string(output))
+	}
+	return string(output), nil
+}
+
 func normalizeVLLMBenchFlagKey(key string) string {
 	switch key {
 	case "concurrency":
@@ -544,12 +562,12 @@ func killLocalPortListeners(ctx context.Context, port string) error {
 func ensureNamespaceReadyForBenchmark(ctx context.Context, namespace string) error {
 	// Namespace termination is most reliably detected via deletionTimestamp.
 	// status.phase can be stale or unset while admission already blocks new objects.
-	deletionTS, err := captureBash(ctx, fmt.Sprintf("kubectl get namespace %s -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || true", shellWord(namespace)))
+	deletionTS, err := captureExecCommand(ctx, "kubectl", "get", "namespace", namespace, "--ignore-not-found", "-o", "jsonpath={.metadata.deletionTimestamp}")
 	if err != nil {
 		return fmt.Errorf("failed to inspect namespace %s: %v", namespace, err)
 	}
 	if strings.TrimSpace(strings.Trim(deletionTS, "'")) != "" {
-		if err := runBash(ctx, fmt.Sprintf("kubectl wait --for=delete namespace %s --timeout=10m", shellWord(namespace))); err != nil {
+		if err := runExecCommand(ctx, "kubectl", "wait", "--for=delete", "namespace/"+namespace, "--timeout=10m"); err != nil {
 			return fmt.Errorf("failed waiting for namespace %s deletion: %v", namespace, err)
 		}
 	}

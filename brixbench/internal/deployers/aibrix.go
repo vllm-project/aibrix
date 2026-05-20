@@ -176,12 +176,12 @@ func (d *AIBrixDeployer) cleanupPreviousFullStackInstall(ctx context.Context) er
 }
 
 func (d *AIBrixDeployer) deleteFullStackNamespaces(ctx context.Context) error {
-	commands := []string{
-		"kubectl delete namespace aibrix-system --ignore-not-found=true",
-		"kubectl delete namespace envoy-gateway-system --ignore-not-found=true",
+	namespaces := []string{
+		"aibrix-system",
+		"envoy-gateway-system",
 	}
-	for _, command := range commands {
-		if err := d.runCommand(ctx, command); err != nil {
+	for _, namespace := range namespaces {
+		if err := d.runDirectCommand(ctx, "delete-namespace-"+namespace, "kubectl", "delete", "namespace", namespace, "--ignore-not-found=true"); err != nil {
 			return err
 		}
 	}
@@ -200,8 +200,8 @@ func (d *AIBrixDeployer) deleteFullStackClusterScopedResources(ctx context.Conte
 		{resourceType: "validatingadmissionpolicy", name: "safe-upgrades.gateway.networking.k8s.io"},
 	}
 	for _, resource := range resources {
-		command := fmt.Sprintf("kubectl delete %s %s --ignore-not-found=true", shellQuote(resource.resourceType), shellQuote(resource.name))
-		if err := d.runCommand(ctx, command); err != nil {
+		stage := fmt.Sprintf("delete-%s-%s", resource.resourceType, resource.name)
+		if err := d.runDirectCommand(ctx, stage, "kubectl", "delete", resource.resourceType, resource.name, "--ignore-not-found=true"); err != nil {
 			return fmt.Errorf("failed deleting %s/%s: %w", resource.resourceType, resource.name, err)
 		}
 	}
@@ -224,7 +224,7 @@ func (d *AIBrixDeployer) deleteResourcesByNamePrefix(ctx context.Context, listCo
 		if resourceName == "" || !strings.HasPrefix(resourceName, prefix) {
 			continue
 		}
-		if err := d.runCommand(ctx, fmt.Sprintf("kubectl delete %s --ignore-not-found=true", shellQuote(resourceName))); err != nil {
+		if err := d.runDirectCommand(ctx, "delete-"+sanitizeCommandLogName(resourceName), "kubectl", "delete", resourceName, "--ignore-not-found=true"); err != nil {
 			return fmt.Errorf("failed deleting %s: %w", resourceName, err)
 		}
 	}
@@ -419,17 +419,16 @@ func (d *AIBrixDeployer) deployGatewayOnlyControlPlane(ctx context.Context) erro
 }
 
 func (d *AIBrixDeployer) applyGatewayEnv(ctx context.Context) error {
-	assignments := make([]string, 0, len(d.gatewayEnv))
 	keys := make([]string, 0, len(d.gatewayEnv))
 	for key := range d.gatewayEnv {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	args := []string{"set", "env", "deployment/aibrix-gateway-plugins", "-n", "aibrix-system"}
 	for _, key := range keys {
-		assignments = append(assignments, shellQuote(fmt.Sprintf("%s=%s", key, d.gatewayEnv[key])))
+		args = append(args, fmt.Sprintf("%s=%s", key, d.gatewayEnv[key]))
 	}
-	command := fmt.Sprintf("kubectl set env deployment/aibrix-gateway-plugins -n aibrix-system %s", strings.Join(assignments, " "))
-	if err := d.runCommand(ctx, command); err != nil {
+	if err := d.runDirectCommand(ctx, "set-gateway-env", "kubectl", args...); err != nil {
 		return fmt.Errorf("failed to update gateway environment: %w", err)
 	}
 	return nil
@@ -441,7 +440,7 @@ func (d *AIBrixDeployer) applyGatewayImage(ctx context.Context) (bool, error) {
 	}
 	imageRef := fmt.Sprintf("%s:%s", d.gatewayImageRepo, d.gatewayImageTag)
 	fmt.Printf("Rolling out source-built gateway image: %s\n", imageRef)
-	if err := d.runCommand(ctx, fmt.Sprintf("kubectl set image deployment/%s gateway-plugin=%s -n %s", directGatewayServiceName, shellQuote(imageRef), directGatewayNamespace)); err != nil {
+	if err := d.runDirectCommand(ctx, "set-gateway-image", "kubectl", "set", "image", "deployment/"+directGatewayServiceName, "gateway-plugin="+imageRef, "-n", directGatewayNamespace); err != nil {
 		return false, fmt.Errorf("failed to update gateway image: %w", err)
 	}
 	return true, nil
@@ -452,7 +451,7 @@ func (d *AIBrixDeployer) applyGatewayDevOverlay(ctx context.Context) (bool, erro
 	if !ok {
 		return false, nil
 	}
-	if err := d.runCommand(ctx, fmt.Sprintf("kubectl apply -k %s", shellQuote(overlayPath))); err != nil {
+	if err := d.runDirectCommand(ctx, "apply-gateway-dev-overlay", "kubectl", "apply", "-k", overlayPath); err != nil {
 		return false, fmt.Errorf("failed applying gateway dev overlay %s: %w", overlayPath, err)
 	}
 	return true, nil
@@ -486,8 +485,7 @@ func (d *AIBrixDeployer) DeployEngine(ctx context.Context) error {
 	if err := d.ensureNamespace(ctx, d.namespace); err != nil {
 		return err
 	}
-	cmdStr := fmt.Sprintf("kubectl apply -f %s", d.engineFile)
-	if _, err := d.runLoggedCommand(ctx, "deploy-engine-manifest", cmdStr); err != nil {
+	if _, err := d.runLoggedCommand(ctx, "deploy-engine-manifest", "kubectl", "apply", "-f", d.engineFile); err != nil {
 		return fmt.Errorf("failed to deploy engine %s: %w", d.engineFile, err)
 	}
 	if err := d.applyGatewayResourceFiles(ctx); err != nil {
@@ -521,9 +519,8 @@ func (d *AIBrixDeployer) WaitForReady(ctx context.Context) error {
 }
 
 func (d *AIBrixDeployer) waitForEnginePodsReady(ctx context.Context) error {
-	command := fmt.Sprintf("kubectl wait --for=condition=ready --timeout=30s pods --all -n %s", d.namespace)
 	for i := 0; i < 30; i++ {
-		output, err := d.runLoggedCommand(ctx, "wait-engine-pods-ready", command)
+		output, err := d.runLoggedCommand(ctx, "wait-engine-pods-ready", "kubectl", "wait", "--for=condition=ready", "--timeout=30s", "pods", "--all", "-n", d.namespace)
 		if err == nil {
 			fmt.Printf("Engine namespace pods are ready in %s: %s\n", d.namespace, strings.TrimSpace(output))
 			return nil
@@ -554,14 +551,8 @@ func (d *AIBrixDeployer) waitForStormServiceResources(ctx context.Context) error
 
 func (d *AIBrixDeployer) waitForNamedNamespacedResource(ctx context.Context, resourceType string, resourceName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	command := fmt.Sprintf(
-		"kubectl get %s %s -n %s -o name 2>/dev/null || true",
-		shellQuote(resourceType),
-		shellQuote(resourceName),
-		shellQuote(d.namespace),
-	)
 	for time.Now().Before(deadline) {
-		output, err := d.captureCommand(ctx, command)
+		output, err := d.captureDirectCommand(ctx, "kubectl", "get", resourceType, resourceName, "-n", d.namespace, "--ignore-not-found", "-o", "name")
 		if err != nil {
 			return fmt.Errorf("failed to inspect %s/%s in namespace %s: %w", resourceType, resourceName, d.namespace, err)
 		}
@@ -797,20 +788,18 @@ func (d *AIBrixDeployer) Teardown(ctx context.Context) error {
 
 func (d *AIBrixDeployer) deleteNamespace(ctx context.Context, namespace string) {
 	fmt.Printf("Deleting namespace: %s\n", namespace)
-	nsCmdStr := fmt.Sprintf("kubectl delete namespace %s --ignore-not-found", shellQuote(namespace))
-	if _, err := d.runLoggedCommand(ctx, "delete-namespace-"+namespace, nsCmdStr); err != nil {
+	if _, err := d.runLoggedCommand(ctx, "delete-namespace-"+namespace, "kubectl", "delete", "namespace", namespace, "--ignore-not-found"); err != nil {
 		fmt.Printf("Warning: failed to delete namespace %s: %v\n", namespace, err)
 		return
 	}
-	waitCmdStr := fmt.Sprintf("kubectl wait --for=delete namespace %s --timeout=10m", shellQuote(namespace))
-	if _, err := d.runLoggedCommand(ctx, "wait-delete-namespace-"+namespace, waitCmdStr); err != nil {
+	if _, err := d.runLoggedCommand(ctx, "wait-delete-namespace-"+namespace, "kubectl", "wait", "--for=delete", "namespace/"+namespace, "--timeout=10m"); err != nil {
 		fmt.Printf("Warning: failed waiting for namespace %s deletion: %v\n", namespace, err)
 	}
 }
 
 func (d *AIBrixDeployer) ensureNamespace(ctx context.Context, namespace string) error {
 	// status.phase can be stale; deletionTimestamp is a more reliable termination indicator.
-	deletionTS, err := d.captureCommand(ctx, fmt.Sprintf("kubectl get namespace %s -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || true", shellQuote(namespace)))
+	deletionTS, err := d.captureDirectCommand(ctx, "kubectl", "get", "namespace", namespace, "--ignore-not-found", "-o", "jsonpath={.metadata.deletionTimestamp}")
 	if err != nil {
 		return fmt.Errorf("failed to inspect namespace %s: %w", namespace, err)
 	}
@@ -820,7 +809,7 @@ func (d *AIBrixDeployer) ensureNamespace(ctx context.Context, namespace string) 
 		}
 	}
 	cmdStr := fmt.Sprintf("kubectl create namespace %s --dry-run=client -o yaml | kubectl apply -f -", shellQuote(namespace))
-	if _, err := d.runLoggedCommand(ctx, "ensure-namespace-"+namespace, cmdStr); err != nil {
+	if _, err := d.runLoggedShellCommand(ctx, "ensure-namespace-"+namespace, cmdStr); err != nil {
 		return fmt.Errorf("failed to ensure namespace %s: %w", namespace, err)
 	}
 	if err := d.runCommandWithTimeout(ctx, 3*time.Minute, "wait namespace active "+namespace, fmt.Sprintf("kubectl wait --for=jsonpath='{.status.phase}'=Active namespace/%s --timeout=2m", shellQuote(namespace))); err != nil {
@@ -902,7 +891,7 @@ func (d *AIBrixDeployer) applyGatewayResourceFiles(ctx context.Context) error {
 }
 
 func (d *AIBrixDeployer) requireNamespace(ctx context.Context, namespace string) error {
-	output, err := d.captureCommand(ctx, fmt.Sprintf("kubectl get namespace %s -o name 2>/dev/null || true", shellQuote(namespace)))
+	output, err := d.captureDirectCommand(ctx, "kubectl", "get", "namespace", namespace, "--ignore-not-found", "-o", "name")
 	if err != nil {
 		return fmt.Errorf("failed to inspect namespace %s: %w", namespace, err)
 	}
@@ -913,7 +902,12 @@ func (d *AIBrixDeployer) requireNamespace(ctx context.Context, namespace string)
 }
 
 func (d *AIBrixDeployer) runCommand(ctx context.Context, command string) error {
-	_, err := d.runLoggedCommand(ctx, sanitizeCommandLogName(command), command)
+	_, err := d.runLoggedShellCommand(ctx, sanitizeCommandLogName(command), command)
+	return err
+}
+
+func (d *AIBrixDeployer) runDirectCommand(ctx context.Context, stage string, name string, args ...string) error {
+	_, err := d.runLoggedCommand(ctx, stage, name, args...)
 	return err
 }
 
@@ -948,6 +942,15 @@ func (d *AIBrixDeployer) bestEffortCapture(ctx context.Context, command string) 
 
 func (d *AIBrixDeployer) captureCommand(ctx context.Context, command string) (string, error) {
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%v, output: %s", err, string(output))
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func (d *AIBrixDeployer) captureDirectCommand(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("%v, output: %s", err, string(output))
@@ -1052,7 +1055,7 @@ func (d *AIBrixDeployer) captureNamespaceSnapshot(ctx context.Context, namespace
 }
 
 func (d *AIBrixDeployer) listSnapshotResourceTypes(ctx context.Context) ([]string, error) {
-	output, err := d.captureCommand(ctx, "kubectl api-resources --verbs=list --namespaced -o name")
+	output, err := d.captureDirectCommand(ctx, "kubectl", "api-resources", "--verbs=list", "--namespaced", "-o", "name")
 	if err != nil {
 		return nil, fmt.Errorf("failed to list namespaced api resources for snapshot: %w", err)
 	}
@@ -1135,14 +1138,14 @@ func (d *AIBrixDeployer) resolveConfiguredGatewayServicePort(ctx context.Context
 
 func (d *AIBrixDeployer) renderConfiguredGatewayManifest(ctx context.Context) (string, error) {
 	if overlayPath, ok := d.resolveGatewayDevOverlayPath(); ok {
-		return d.captureCommand(ctx, fmt.Sprintf("kubectl kustomize %s", shellQuote(overlayPath)))
+		return d.captureDirectCommand(ctx, "kubectl", "kustomize", overlayPath)
 	}
 	if d.workspacePath == "" {
 		return "", fmt.Errorf("workspace path is required to resolve configured gateway manifest")
 	}
 	chartPath := filepath.Join(d.workspacePath, "dist", "chart")
 	valuesPath := filepath.Join(chartPath, "vke.yaml")
-	return d.captureCommand(ctx, fmt.Sprintf("helm template aibrix %s -n %s -f %s", shellQuote(chartPath), shellQuote(directGatewayNamespace), shellQuote(valuesPath)))
+	return d.captureDirectCommand(ctx, "helm", "template", "aibrix", chartPath, "-n", directGatewayNamespace, "-f", valuesPath)
 }
 
 func (d *AIBrixDeployer) resolveGatewayHTTPService(ctx context.Context) (string, string, string, error) {
@@ -1150,7 +1153,7 @@ func (d *AIBrixDeployer) resolveGatewayHTTPService(ctx context.Context) (string,
 	if err != nil {
 		return "", "", "", err
 	}
-	output, err := d.captureCommand(ctx, fmt.Sprintf("kubectl get svc -n %s -o json", shellQuote(envoyGatewayNamespace)))
+	output, err := d.captureDirectCommand(ctx, "kubectl", "get", "svc", "-n", envoyGatewayNamespace, "-o", "json")
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to list services in %s: %w", envoyGatewayNamespace, err)
 	}
@@ -1329,8 +1332,7 @@ func (d *AIBrixDeployer) waitForHelmReleaseReady(ctx context.Context, releaseNam
 }
 
 func (d *AIBrixDeployer) helmReleaseStatus(ctx context.Context, releaseName string, namespace string) (string, error) {
-	cmdStr := fmt.Sprintf("helm list -n %s -a -f %s -o json", shellQuote(namespace), shellQuote("^"+releaseName+"$"))
-	output, err := d.captureCommand(ctx, cmdStr)
+	output, err := d.captureDirectCommand(ctx, "helm", "list", "-n", namespace, "-a", "-f", "^"+releaseName+"$", "-o", "json")
 	if err != nil {
 		return "", fmt.Errorf("failed to read helm release status for %s/%s: %w", namespace, releaseName, err)
 	}

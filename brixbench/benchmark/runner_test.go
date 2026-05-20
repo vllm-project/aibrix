@@ -2,10 +2,11 @@ package benchmark
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/vllm-project/aibrix/brixbench/internal/deployers"
 	"github.com/vllm-project/aibrix/brixbench/internal/drivers"
@@ -15,9 +16,43 @@ import (
 
 const (
 	defaultScenarioPath       = "testdata/scenarios/aibrix-hello-world.yaml"
-	defaultGatewayEndpoint    = "http://aibrix-gateway.bytedance.net"
 	defaultBenchmarkNamespace = "brixbench-adhoc"
+	defaultPushgatewayJobName = "benchmark-suite"
 )
+
+func fallbackGatewayEndpoint() (string, bool) {
+	if endpoint := os.Getenv("BENCHMARK_GATEWAY_ENDPOINT"); endpoint != "" {
+		return endpoint, true
+	}
+	return "", false
+}
+
+func resolveGatewayEndpoint(detectedEndpoint string, detectErr error) (string, error) {
+	if detectErr == nil && detectedEndpoint != "" {
+		return detectedEndpoint, nil
+	}
+	if override, ok := fallbackGatewayEndpoint(); ok {
+		return override, nil
+	}
+	if detectErr != nil {
+		return "", fmt.Errorf("failed to determine gateway endpoint automatically: %w; set BENCHMARK_GATEWAY_ENDPOINT to override explicitly", detectErr)
+	}
+	return "", fmt.Errorf("missing gateway endpoint; set BENCHMARK_GATEWAY_ENDPOINT to override explicitly")
+}
+
+func configuredMetricExporter() observability.MetricExporter {
+	pushgatewayURL := os.Getenv("BENCHMARK_PUSHGATEWAY_URL")
+	if pushgatewayURL == "" {
+		return nil
+	}
+
+	jobName := os.Getenv("BENCHMARK_PUSHGATEWAY_JOB")
+	if jobName == "" {
+		jobName = defaultPushgatewayJobName
+	}
+
+	return observability.NewPrometheusPushExporter(pushgatewayURL, jobName)
+}
 
 func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot string, testCase resolver.Test, exporter observability.MetricExporter) (scenarioCaseResult, error) {
 	t.Helper()
@@ -82,6 +117,10 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 	if err != nil {
 		result.Metrics = metrics
 		captureDeploymentArtifacts(t, ctx, deployer)
+		if errors.Is(err, observability.ErrNotImplemented) {
+			result.Error = fmt.Sprintf("Metrics export failed: %v", err)
+			return result, fmt.Errorf("metrics export failed: %w", err)
+		}
 		result.Error = fmt.Sprintf("Benchmark execution failed: %v", err)
 		return result, fmt.Errorf("Benchmark execution failed: %w", err)
 	}
@@ -147,13 +186,12 @@ func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string
 	if err := deployer.WaitForReady(ctx); err != nil {
 		return deployer, "", fmt.Errorf("engine not ready: %w", err)
 	}
-	time.Sleep(20 * time.Second)
 
 	// Get dynamically assigned Gateway IP/URL
-	gatewayUrl, err := deployer.GetGatewayEndpoint(ctx)
+	detectedGatewayURL, endpointErr := deployer.GetGatewayEndpoint(ctx)
+	gatewayUrl, err := resolveGatewayEndpoint(detectedGatewayURL, endpointErr)
 	if err != nil {
-		t.Logf("Warning: failed to get gateway endpoint: %v, using default", err)
-		gatewayUrl = defaultGatewayEndpoint
+		return deployer, "", err
 	}
 	t.Logf("Using Gateway Endpoint: %s", gatewayUrl)
 
@@ -167,6 +205,14 @@ func newBenchmarkDriver(benchmarkKind string) (drivers.Driver, error) {
 	default:
 		return nil, fmt.Errorf("unsupported benchmark kind: %s", benchmarkKind)
 	}
+}
+
+func exportMetricsIfConfigured(ctx context.Context, exporter observability.MetricExporter, metrics map[string]any, labels map[string]string) error {
+	if exporter == nil {
+		fmt.Printf("[benchmark] Metrics export disabled; no exporter configured\n")
+		return nil
+	}
+	return exporter.Export(ctx, metrics, labels)
 }
 
 func runBenchmarkAndExportMetrics(ctx context.Context, testCase *resolver.Test, scenarioName string, suiteLogRoot string, exporter observability.MetricExporter) (map[string]any, string, error) {
@@ -199,7 +245,7 @@ func runBenchmarkAndExportMetrics(ctx context.Context, testCase *resolver.Test, 
 		"testcase": testCase.Name,
 		"version":  testCase.Version,
 	}
-	if err := exporter.Export(ctx, metrics, labels); err != nil {
+	if err := exportMetricsIfConfigured(ctx, exporter, metrics, labels); err != nil {
 		return metrics, driver.ResultPath(), fmt.Errorf("failed to export metrics: %w", err)
 	}
 
@@ -207,8 +253,8 @@ func runBenchmarkAndExportMetrics(ctx context.Context, testCase *resolver.Test, 
 }
 
 func TestAIBrixBenchmarkSuite(t *testing.T) {
-	// 0. Setup Observability Exporter (Example: Prometheus Pushgateway)
-	exporter := observability.NewPrometheusPushExporter("http://prometheus-pushgateway.monitoring:9091", "benchmark-suite")
+	// 0. Setup Observability Exporter only when the Pushgateway endpoint is configured.
+	exporter := configuredMetricExporter()
 
 	// 1. Get Scenario Path (from flag first, then env var, then default)
 	scenarioPath := resolveScenarioPath(t)
@@ -220,7 +266,7 @@ func TestAIBrixBenchmarkSuite(t *testing.T) {
 	}
 
 	progressLog(t, "Running Scenario: %s", scenario.Name)
-	runStartedAt := nowInPacificTime()
+	runStartedAt := nowInUTC()
 	runID := formatScenarioRunID(runStartedAt, scenario.Name)
 	scenarioLogRoot := filepath.Join("testdata/logs", runID)
 	progressLog(t, "Suite log root for %s: %s", scenario.Name, scenarioLogRoot)

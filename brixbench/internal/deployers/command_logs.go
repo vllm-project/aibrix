@@ -7,17 +7,27 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 var commandLogNameSanitizer = regexp.MustCompile(`[^a-z0-9._-]+`)
 
-func (d *AIBrixDeployer) runLoggedCommand(ctx context.Context, stage string, command string) (string, error) {
+func (d *AIBrixDeployer) runLoggedCommand(ctx context.Context, stage string, name string, args ...string) (string, error) {
+	command := formatExecCommand(name, args...)
+	cmd := exec.CommandContext(ctx, name, args...)
+	return d.runAndLogCommand(stage, command, cmd)
+}
+
+func (d *AIBrixDeployer) runLoggedShellCommand(ctx context.Context, stage string, command string) (string, error) {
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	return d.runAndLogCommand(stage, command, cmd)
+}
+
+func (d *AIBrixDeployer) runAndLogCommand(stage string, command string, cmd *exec.Cmd) (string, error) {
 	startedAt := time.Now()
 	fmt.Printf("[cmd] START %s\n", command)
-
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	outputBytes, err := cmd.CombinedOutput()
 	output := string(outputBytes)
 	exitCode := 0
@@ -47,6 +57,21 @@ func (d *AIBrixDeployer) runLoggedCommand(ctx context.Context, stage string, com
 		fmt.Printf("[cmd] LOG %s\n", logPath)
 	}
 	return output, nil
+}
+
+func formatExecCommand(name string, args ...string) string {
+	parts := []string{quoteExecPart(name)}
+	for _, arg := range args {
+		parts = append(parts, quoteExecPart(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func quoteExecPart(value string) string {
+	if value == "" || strings.ContainsAny(value, " \t\n\"'\\") {
+		return strconv.Quote(value)
+	}
+	return value
 }
 
 func (d *AIBrixDeployer) writeCommandLog(stage string, command string, startedAt time.Time, finishedAt time.Time, exitCode int, output string) (string, error) {

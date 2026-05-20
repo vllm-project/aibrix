@@ -12,10 +12,10 @@ import (
 
 func TestFetchArtifactsDownloadsReleaseArtifacts(t *testing.T) {
 	projectRoot := t.TempDir()
-	var requestCount int32
+	var requestCount atomic.Int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requestCount, 1)
+		requestCount.Add(1)
 		switch r.URL.Path {
 		case "/v0.6.0/aibrix-dependency-v0.6.0.yaml":
 			_, _ = w.Write([]byte("kind: dependency\n"))
@@ -54,17 +54,17 @@ func TestFetchArtifactsDownloadsReleaseArtifacts(t *testing.T) {
 			t.Fatalf("expected downloaded artifact at %s: %v", expected, err)
 		}
 	}
-	if requestCount != 2 {
-		t.Fatalf("expected 2 release artifact requests, got %d", requestCount)
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected 2 release artifact requests, got %d", requestCount.Load())
 	}
 }
 
 func TestFetchArtifactsReusesCachedReleaseArtifacts(t *testing.T) {
 	projectRoot := t.TempDir()
-	var requestCount int32
+	var requestCount atomic.Int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requestCount, 1)
+		requestCount.Add(1)
 		_, _ = w.Write([]byte("kind: cached\n"))
 	}))
 	defer server.Close()
@@ -84,8 +84,41 @@ func TestFetchArtifactsReusesCachedReleaseArtifacts(t *testing.T) {
 		t.Fatalf("second FetchArtifacts returned error: %v", err)
 	}
 
-	if requestCount != 2 {
-		t.Fatalf("expected cached artifacts to avoid re-downloading, got %d requests", requestCount)
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected cached artifacts to avoid re-downloading, got %d requests", requestCount.Load())
+	}
+}
+
+func TestFetchArtifactsHandlesTrailingSlashInReleaseBaseURL(t *testing.T) {
+	projectRoot := t.TempDir()
+	var requestCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		switch r.URL.Path {
+		case "/v0.6.0/aibrix-dependency-v0.6.0.yaml":
+			_, _ = w.Write([]byte("kind: dependency\n"))
+		case "/v0.6.0/aibrix-core-v0.6.0.yaml":
+			_, _ = w.Write([]byte("kind: core\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	restoreReleaseDownloadSettings(t, server.URL+"/", server.Client())
+
+	testCase := &Test{
+		Name:     "download-release-trailing-slash",
+		Provider: stringPtr("aibrix"),
+		Version:  "v0.6.0",
+	}
+
+	if err := FetchArtifacts(context.Background(), projectRoot, testCase); err != nil {
+		t.Fatalf("FetchArtifacts returned error: %v", err)
+	}
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected 2 release artifact requests, got %d", requestCount.Load())
 	}
 }
 

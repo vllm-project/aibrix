@@ -48,7 +48,7 @@ func ensureStormServicesCleared(ctx context.Context) error {
 }
 
 func listStormServices(ctx context.Context) ([]stormServiceRef, error) {
-	cmd := exec.CommandContext(ctx, "bash", "-lc", "kubectl get stormservice -A -o json")
+	cmd := exec.CommandContext(ctx, "kubectl", "get", "stormservice", "-A", "-o", "json")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if strings.Contains(string(output), "the server doesn't have a resource type") {

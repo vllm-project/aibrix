@@ -38,7 +38,6 @@ type benchmarkMetadata struct {
 type Test struct {
 	Name                   string   `yaml:"name"`
 	Provider               *string  `yaml:"provider"`
-	Deployer               string   `yaml:"deployer"` // Legacy alias kept for migration.
 	FullStack              bool     `yaml:"fullstack"`
 	VKEDev                 bool     `yaml:"vkeDev"`
 	Version                string   `yaml:"version"` // e.g., v0.6.0
@@ -55,13 +54,43 @@ type Test struct {
 	GatewayImage           string   `yaml:"-"`
 	GatewayImageRepository string   `yaml:"-"`
 	GatewayImageTag        string   `yaml:"-"`
+	providerSpecified      bool     `yaml:"-"`
 }
 
 func (t *Test) ProviderName() string {
 	if t.Provider != nil {
 		return strings.TrimSpace(*t.Provider)
 	}
-	return strings.TrimSpace(t.Deployer)
+	return ""
+}
+
+func (t *Test) UnmarshalYAML(value *yaml.Node) error {
+	type rawTest Test
+	var raw rawTest
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*t = Test(raw)
+
+	if value.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		key := value.Content[i]
+		switch key.Value {
+		case "provider":
+			t.providerSpecified = true
+		case "deployer":
+			testName := strings.TrimSpace(t.Name)
+			if testName == "" {
+				testName = "unnamed"
+			}
+			return fmt.Errorf("test %s uses deprecated field deployer; use provider instead", testName)
+		}
+	}
+
+	return nil
 }
 
 // Resolve reads a YAML file and returns a Scenario object.
@@ -86,6 +115,9 @@ func Resolve(yamlPath string) (*Scenario, error) {
 func validateScenario(scenario *Scenario) error {
 	for i := range scenario.Tests {
 		test := &scenario.Tests[i]
+		if err := normalizeProviderSelection(test); err != nil {
+			return err
+		}
 		if test.VKEDev && !test.FullStack {
 			return fmt.Errorf("vkeDev requires fullstack=true for %s", test.Name)
 		}
@@ -104,6 +136,22 @@ func validateScenario(scenario *Scenario) error {
 	}
 
 	return nil
+}
+
+func normalizeProviderSelection(test *Test) error {
+	switch {
+	case !test.providerSpecified:
+		return fmt.Errorf("missing provider for %s", test.Name)
+	case test.Provider == nil:
+		return nil
+	default:
+		providerName := strings.TrimSpace(*test.Provider)
+		if providerName == "" {
+			return fmt.Errorf("provider cannot be empty for %s", test.Name)
+		}
+		test.Provider = providerStringPtr(providerName)
+		return nil
+	}
 }
 
 func validateSourceSelection(test *Test) error {
@@ -141,4 +189,8 @@ func populateBenchmarkMetadata(test *Test) error {
 		return fmt.Errorf("missing benchmark kind in %s for %s", benchmarkPath, test.Name)
 	}
 	return nil
+}
+
+func providerStringPtr(value string) *string {
+	return &value
 }

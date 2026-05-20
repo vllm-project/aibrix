@@ -14,8 +14,6 @@ import (
 
 var scenarioFlag = flag.String("scenario", "", "Path to the benchmark scenario YAML file")
 
-var pacificLocation = mustLoadPacificLocation()
-
 func sanitizePathComponent(value string) string {
 	value = strings.TrimSpace(strings.ToLower(value))
 	replacer := strings.NewReplacer(" ", "-", "/", "-", "\\", "-", ":", "-", "\t", "-", "\n", "-")
@@ -58,16 +56,8 @@ func benchmarkPodNameForTest(testName string) string {
 	return name
 }
 
-func mustLoadPacificLocation() *time.Location {
-	location, err := time.LoadLocation("America/Los_Angeles")
-	if err != nil {
-		panic(fmt.Sprintf("failed to load Pacific time location: %v", err))
-	}
-	return location
-}
-
-func nowInPacificTime() time.Time {
-	return time.Now().In(pacificLocation)
+func nowInUTC() time.Time {
+	return time.Now().UTC()
 }
 
 func resolveScenarioPath(t *testing.T) string {
@@ -85,7 +75,7 @@ func resolveScenarioPath(t *testing.T) string {
 }
 
 func formatScenarioRunID(now time.Time, scenarioName string) string {
-	return fmt.Sprintf("%s-PT-%s", now.Format("20060102-150405"), sanitizePathComponent(scenarioName))
+	return fmt.Sprintf("%s-UTC-%s", now.UTC().Format("20060102-150405"), sanitizePathComponent(scenarioName))
 }
 
 func caseLogRoot(suiteLogRoot string, testCaseName string) string {

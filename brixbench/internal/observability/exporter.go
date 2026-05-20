@@ -1,6 +1,12 @@
 package observability
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrNotImplemented indicates that the configured exporter has no real sink implementation yet.
+var ErrNotImplemented = errors.New("metrics exporter is not implemented")
 
 // MetricExporter is an interface for sending benchmark results to external observability systems.
 type MetricExporter interface {
@@ -22,13 +28,8 @@ func NewPrometheusPushExporter(url, job string) *PrometheusPushExporter {
 }
 
 func (e *PrometheusPushExporter) Export(ctx context.Context, metrics map[string]interface{}, labels map[string]string) error {
-	// In reality, use prometheus/client_golang/prometheus/push to send metrics.
-	// This would convert the map[string]interface{} into Prometheus Gauge/Counter metrics.
-	// For now, we simulate the export.
-	for k, v := range metrics {
-		// e.g., pushMetric(k, v, labels)
-		_ = k
-		_ = v
-	}
-	return nil
+	_ = ctx
+	_ = metrics
+	_ = labels
+	return ErrNotImplemented
 }

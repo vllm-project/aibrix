@@ -5,10 +5,10 @@ metadata:
   name: vllm-pd-svc
   namespace: brixbench-adhoc
   labels:
-    model.aibrix.ai/name: qwen3-8b
+    model.aibrix.ai/name: qwen3-32b
 spec:
   selector:
-    model.aibrix.ai/name: qwen3-8b
+    model.aibrix.ai/name: qwen3-32b
     model.aibrix.ai/engine: vllm
   ports:
     - name: http
@@ -54,14 +54,14 @@ spec:
         - headers:
             - name: model
               type: Exact
-              value: qwen3-8b
+              value: qwen3-32b
           path:
             type: PathPrefix
             value: /v1/completions
         - headers:
             - name: model
               type: Exact
-              value: qwen3-8b
+              value: qwen3-32b
           path:
             type: PathPrefix
             value: /v1/chat/completions

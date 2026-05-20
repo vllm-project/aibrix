@@ -264,7 +264,7 @@ func buildScenarioSummary(scenarioName string, resultsByCase []scenarioCaseResul
 		return resultsByCase[i].TestCase < resultsByCase[j].TestCase
 	})
 
-	summaryGeneratedAt := nowInPacificTime()
+	summaryGeneratedAt := nowInUTC()
 	summary := scenarioSummary{
 		Scenario:  scenarioName,
 		Generated: summaryGeneratedAt.Format(time.RFC3339),

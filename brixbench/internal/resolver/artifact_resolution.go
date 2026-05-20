@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,20 +78,23 @@ func ensureReleaseArtifact(ctx context.Context, releasesDir string, version stri
 		return dst, nil
 	}
 
-	url := strings.TrimRight(releaseArtifactBaseURL, "/") + "/" + version + "/" + artifact
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	artifactURL, err := url.JoinPath(releaseArtifactBaseURL, version, artifact)
 	if err != nil {
-		return "", fmt.Errorf("failed to create release artifact request for %s: %w", url, err)
+		return "", fmt.Errorf("failed to build release artifact url for %s/%s: %w", version, artifact, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, artifactURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create release artifact request for %s: %w", artifactURL, err)
 	}
 
 	resp, err := releaseArtifactClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to download release artifact %s: %w", url, err)
+		return "", fmt.Errorf("failed to download release artifact %s: %w", artifactURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to download release artifact %s: unexpected status %s", url, resp.Status)
+		return "", fmt.Errorf("failed to download release artifact %s: unexpected status %s", artifactURL, resp.Status)
 	}
 
 	tmpFile, err := os.CreateTemp(releasesDir, artifact+".tmp-*")

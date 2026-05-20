@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: qwen3-8b
+  name: qwen3-32b
   namespace: brixbench-adhoc
   labels:
     deployment: "monolithic"
@@ -10,7 +10,7 @@ spec:
   clusterIP: None
   publishNotReadyAddresses: true
   selector:
-    storm-service-name: qwen3-8b
+    storm-service-name: qwen3-32b
   ports:
     - name: serve
       protocol: TCP
@@ -20,7 +20,7 @@ spec:
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: qwen3-8b
+  name: qwen3-32b
   namespace: brixbench-adhoc
   labels:
     engine: "vllm"
@@ -32,11 +32,11 @@ spec:
   stateful: true
   selector:
     matchLabels:
-      app: qwen3-8b
+      app: qwen3-32b
   template:
     metadata:
       labels:
-        app: qwen3-8b
+        app: qwen3-32b
     spec:
       roles:
         - name: server
@@ -54,7 +54,7 @@ spec:
                     }
                   ]
               labels:
-                model.aibrix.ai/name: qwen3-8b
+                model.aibrix.ai/name: qwen3-32b
                 model.aibrix.ai/port: "8000"
                 model.aibrix.ai/engine: vllm
             spec:
@@ -66,7 +66,7 @@ spec:
                           - key: app
                             operator: In
                             values:
-                              - qwen3-8b
+                              - qwen3-32b
                       topologyKey: kubernetes.io/hostname
               containers:
                 - name: server
@@ -78,12 +78,12 @@ spec:
                         --host "0.0.0.0" \
                         --port "8000" \
                         --uvicorn-log-level warning \
-                        --model /models/Qwen3-8B \
-                        --served-model-name qwen3-8b \
+                        --model /models/Qwen3-32B \
+                        --served-model-name qwen3-32b \
                         --disable-log-requests \
                         --no-enable-chunked-prefill \
                         --max-model-len 40960 \
-                        --tensor-parallel-size=2
+                        --tensor-parallel-size=4
                   env:
                     - name: UCX_TLS
                       value: "^gga"
@@ -135,8 +135,10 @@ spec:
                     failureThreshold: 3
                   resources:
                     limits:
-                      nvidia.com/gpu: 2
+                      nvidia.com/gpu: 4
                       vke.volcengine.com/rdma: "1"
+                    requests:
+                      nvidia.com/gpu: 4
                   securityContext:
                     capabilities:
                       add:
@@ -153,7 +155,7 @@ spec:
 # apiVersion: gateway.networking.k8s.io/v1beta1
 # kind: ReferenceGrant
 # metadata:
-#   name: aibrix-system-to-qwen3-8b
+#   name: aibrix-system-to-qwen3-32b
 #   namespace: brixbench-adhoc
 # spec:
 #   from:
@@ -163,4 +165,4 @@ spec:
 #   to:
 #     - group: ""
 #       kind: Service
-#       name: qwen3-8b
+#       name: qwen3-32b

@@ -4,6 +4,15 @@
 
 AIBrix Benchmark Suite is a CI-friendly benchmark tool for comparing the performance of LLM inference platforms (AIBrix, LLM-d, Dynamo, etc.).
 
+This walkthrough assumes `brixbench/` is checked out inside the main `aibrix/` repository:
+
+```text
+/path/to/aibrix/
+└── brixbench/
+```
+
+Unless noted otherwise, start from the `aibrix/` repository root and then enter `brixbench/`.
+
 ## Requirements
 
 ### Runtime Dependencies
@@ -14,6 +23,29 @@ AIBrix Benchmark Suite is a CI-friendly benchmark tool for comparing the perform
 - A Python virtual environment at `.venv` for optional plotting helpers
 - `matplotlib` installed inside that virtual environment when generating summary charts
 
+### Kubernetes Prerequisites
+
+Before running the benchmark suite, make sure the local shell already has working access to the target Kubernetes cluster.
+
+- `kubectl` must be installed and available on `PATH`.
+- The active kubeconfig context must point to the cluster where you intend to deploy benchmark workloads.
+- The current identity must be allowed to create, update, get, list, watch, and delete resources in the benchmark namespace, which defaults to `brixbench-adhoc`.
+- The current identity must also be able to read shared control-plane resources when running `provider: aibrix` scenarios that reuse an existing installation.
+
+Quick preflight check:
+
+```bash
+cd /path/to/aibrix
+cd brixbench
+
+kubectl config current-context
+kubectl auth can-i create pods -n brixbench-adhoc
+kubectl auth can-i delete namespace brixbench-adhoc
+kubectl get ns
+```
+
+If these checks fail, fix the kubeconfig context or cluster RBAC permissions before running `go test`.
+
 ### Python Environment for Plotting
 
 The project plotting helper is expected to run from the repository-local virtual environment at `.venv`.
@@ -21,6 +53,7 @@ The project plotting helper is expected to run from the repository-local virtual
 Recommended setup flow:
 
 ```bash
+cd /path/to/aibrix
 cd brixbench
 
 # 1) Create the local virtual environment if it does not exist yet
@@ -36,6 +69,7 @@ uv pip install matplotlib
 If `.venv` already exists, you only need:
 
 ```bash
+cd /path/to/aibrix
 cd brixbench
 source .venv/bin/activate
 uv pip install matplotlib
@@ -50,16 +84,17 @@ This is the fastest way to validate the current AIBrix v0.6 Go E2E flow
 routing modes.
 
 ```bash
-cd brixbench/benchmark
+cd /path/to/aibrix
+cd brixbench
 
 export BENCHMARK_SCENARIO=testdata/scenarios/aibrix-batching-comparison.yaml
 
 # Run the full smoke suite (nondisaggregated random + disaggregated PD)
-go test -count=1 -timeout 30m -v ./...
+go test -v -count=1 -timeout 30m ./benchmark/...
 
 # Or run a single case
-go test -count=1 -timeout 30m -run 'TestAIBrixBenchmarkSuite/aibrix-v0.6.0-nondisaggregated$' -v ./...
-go test -count=1 -timeout 30m -run 'TestAIBrixBenchmarkSuite/aibrix-v0.6.0-disaggregated$' -v ./...
+go test -v -count=1 -timeout 30m -run 'TestAIBrixBenchmarkSuite/aibrix-v0.6.0-nondisaggregated$' ./benchmark/...
+go test -v -count=1 -timeout 30m -run 'TestAIBrixBenchmarkSuite/aibrix-v0.6.0-disaggregated$' ./benchmark/...
 ```
 
 Current smoke scenario details:
@@ -79,16 +114,17 @@ You can also compare two AIBrix source commits in the same scenario run.
 - In both cases, the checked-out workspace is used as the source of truth for Helm charts and overlays.
 
 ```bash
-cd brixbench/benchmark
+cd /path/to/aibrix
+cd brixbench
 
 export BENCHMARK_SCENARIO=testdata/scenarios/aibrix-recent-commits.yaml
 
 # Run both recent commits in one suite run
-go test -count=1 -timeout 90m -v ./...
+go test -v -count=1 -timeout 90m ./benchmark/...
 
 # Or run a single commit case
-go test -count=1 -timeout 90m -run 'TestAIBrixBenchmarkSuite/aibrix-main-d41653b-disaggregated$' -v ./...
-go test -count=1 -timeout 90m -run 'TestAIBrixBenchmarkSuite/aibrix-main-d5b6d5b-disaggregated$' -v ./...
+go test -v -count=1 -timeout 90m -run 'TestAIBrixBenchmarkSuite/aibrix-main-d41653b-disaggregated$' ./benchmark/...
+go test -v -count=1 -timeout 90m -run 'TestAIBrixBenchmarkSuite/aibrix-main-d5b6d5b-disaggregated$' ./benchmark/...
 ```
 
 Example scenario:
@@ -212,10 +248,38 @@ Tests:
 ### Step 2: Run Locally
 
 ```bash
-# Set the scenario path via environment variable and run
+cd /path/to/aibrix
+cd brixbench
+
+# Set the scenario path via environment variable and run with verbose output
 export BENCHMARK_SCENARIO=testdata/scenarios/aibrix-batching-comparison.yaml
-go test -count=1 -timeout 30m -v ./benchmark/...
+go test -v -count=1 -timeout 30m ./benchmark/...
+
+# Or run a single scenario directly
+go test -v ./benchmark -run TestAIBrixBenchmarkSuite -scenario testdata/scenarios/aibrix-hello-world.yaml -count=1
 ```
+
+### Metrics Export
+
+Metrics export is disabled by default.
+
+- Without `BENCHMARK_PUSHGATEWAY_URL`, the runner skips external metric export and continues the benchmark run normally.
+- With `BENCHMARK_PUSHGATEWAY_URL`, the runner enables the Prometheus Pushgateway exporter.
+- `BENCHMARK_PUSHGATEWAY_JOB` is optional. If unset, the runner uses the default job name `benchmark-suite`.
+- Metrics export is currently configured only through environment variables, not through scenario YAML or CLI flags.
+
+Example:
+
+```bash
+cd /path/to/aibrix
+cd brixbench
+
+export BENCHMARK_PUSHGATEWAY_URL=http://pushgateway.example:9091
+export BENCHMARK_PUSHGATEWAY_JOB=benchmark-suite
+go test -v ./benchmark -run TestAIBrixBenchmarkSuite -scenario testdata/scenarios/aibrix-hello-world.yaml -count=1
+```
+
+If you set `BENCHMARK_PUSHGATEWAY_URL`, the runner will attempt to use the Pushgateway exporter. The current exporter path is still not implemented, so an explicitly enabled export will fail fast instead of reporting false success.
 
 ### Step 3: Check Results
 
@@ -226,13 +290,13 @@ TTFT (Time to First Token): 120.5
 TPOT (Time Per Output Token): 45.2
 ```
 
-Benchmark artifacts are stored under a top-level run directory: `benchmark/testdata/logs/<timestamp>-PT-<scenario>/`.
+Benchmark artifacts are stored under a top-level run directory inside `brixbench/`: `benchmark/testdata/logs/<timestamp>-UTC-<scenario>/`.
 
 Example layout:
 
 ```text
 benchmark/testdata/logs/
-  20260410-120000-PT-aibrix-version-comparison/
+  20260410-120000-UTC-aibrix-version-comparison/
     metadata.json
     summary.json
     summary.csv
@@ -262,6 +326,7 @@ You can also regenerate them manually:
 The helper script `benchmark/plot_summary_vllm_bench.py` reads a run directory, `summary.json`, or `summary.csv`, then creates a `figures/` directory next to the summary files for `vllm-bench` scenarios.
 
 ```bash
+cd /path/to/aibrix
 cd brixbench
 
 # If needed, export proxy variables for your shell before installing packages
@@ -280,14 +345,14 @@ uv pip install matplotlib
 
 # Use either the scenario directory, summary.json, or summary.csv as input
 python benchmark/plot_summary_vllm_bench.py \
-  benchmark/testdata/logs/20260410-120000-PT-aibrix-version-comparison/summary.csv
+  benchmark/testdata/logs/20260410-120000-UTC-aibrix-version-comparison/summary.csv
 ```
 
 Generated files:
 
-- `benchmark/testdata/logs/<timestamp>-PT-<scenario>/figures/01-throughput-and-mean-latency.png`
-- `benchmark/testdata/logs/<timestamp>-PT-<scenario>/figures/02-ttft-latency.png`
-- `benchmark/testdata/logs/<timestamp>-PT-<scenario>/figures/03-tpot-latency.png`
+- `benchmark/testdata/logs/<timestamp>-UTC-<scenario>/figures/01-throughput-and-mean-latency.png`
+- `benchmark/testdata/logs/<timestamp>-UTC-<scenario>/figures/02-ttft-latency.png`
+- `benchmark/testdata/logs/<timestamp>-UTC-<scenario>/figures/03-tpot-latency.png`
 
 Chart layout:
 
@@ -299,25 +364,21 @@ Chart layout:
 
 ## 📁 Project Structure
 
-```
-brixbench/
-├── scripts/                    # Source-of-truth prototype shell flows
-├── benchmark/                  # Test runner and scenarios
-│   ├── runner_test.go         # Main orchestrator
-│   └── testdata/
-│       ├── scenarios/         # Scenario YAML files
-│       └── deployments/       # Deployment YAML files
-├── internal/
-│   ├── deployers/             # Platform-specific deployment logic
-│   │   ├── deployer.go        # Common interface
-│   │   └── aibrix.go          # AIBrix implementation
-│   ├── drivers/               # Benchmark drivers
-│   │   └── vllm.go            # vllm-bench execution and parsing
-│   └── observability/         # Metrics export
-│       └── exporter.go        # Prometheus Pushgateway
-├── tools/                     # External benchmark scripts
-│   └── vllm-bench/
-└── docs/                      # Documentation
+```text
+/path/to/aibrix/
+└── brixbench/
+    ├── benchmark/              # Test runner and scenarios
+    │   ├── runner_test.go      # Main orchestrator
+    │   └── testdata/
+    │       ├── scenarios/      # Scenario YAML files
+    │       └── deployments/    # Deployment YAML files
+    ├── docs/                   # Benchmark documentation
+    ├── internal/
+    │   ├── deployers/          # Platform-specific deployment logic
+    │   ├── drivers/            # Benchmark drivers
+    │   └── observability/      # Metrics export
+    ├── go.mod
+    └── go.sum
 ```
 
 ***

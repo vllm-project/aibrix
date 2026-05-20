@@ -53,4 +53,4 @@ benchmark/testdata/logs/**/figures/
 
 # Keep only essential Spec-Kit files
 !.trae/rules/project_rules.md
-benchmark/__pycache__/plot_summary_vllm_bench.cpython-311.pyc
+**/__pycache__/
