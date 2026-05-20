@@ -606,12 +606,7 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
 @pytest.mark.asyncio
 async def test_openai_batch_api_metadata_server_workflow_with_redis_cache_and_deployment_driver(
     redis_deployment_test_app,
-    monkeypatch,
 ):
-    monkeypatch.setattr(
-        "aibrix.batch.job_driver.deployment_driver._deployment_job_driver",
-        None,
-    )
     app = redis_deployment_test_app
     assert isinstance(app.state.batch_driver._job_entity_manager, RedisJobCache)
     infrastructure_context = app.state.batch_driver._context

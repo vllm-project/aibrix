@@ -1,7 +1,9 @@
-import asyncio
+import inspect
 import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+import redis.asyncio as redis
 
 from aibrix.batch.job_entity import BatchJob, BatchJobSpec, JobEntityManager
 
@@ -14,7 +16,7 @@ class RedisJobCache(JobEntityManager):
         db: int = 0,
         password: Optional[str] = None,
         key_prefix: str = "batch_jobs",
-        redis_client: Any = None,
+        redis_client: Optional[redis.Redis] = None,
     ) -> None:
         super().__init__()
         self.active_jobs: Dict[str, BatchJob] = {}
@@ -27,7 +29,7 @@ class RedisJobCache(JobEntityManager):
         self._key_prefix = key_prefix
         self._index_key = f"{key_prefix}:index"
 
-    def get_job(self, job_id: str) -> Optional[BatchJob]:
+    async def get_job(self, job_id: str) -> Optional[BatchJob]:
         if job_id in self.active_jobs:
             return self.active_jobs[job_id]
         payload = self._client.get(self._job_key(job_id))
@@ -35,8 +37,8 @@ class RedisJobCache(JobEntityManager):
             return None
         return self._deserialize_job(payload)
 
-    def list_jobs(self) -> List[BatchJob]:
-        job_ids = self._client.zrevrange(self._index_key, 0, -1)
+    async def list_jobs(self) -> List[BatchJob]:
+        job_ids = await self._client.zrevrange(self._index_key, 0, -1)
         jobs: List[BatchJob] = []
         for raw_job_id in job_ids:
             job_id = (
@@ -54,7 +56,7 @@ class RedisJobCache(JobEntityManager):
     async def submit_job(self, session_id: str, job_spec: BatchJobSpec):
         job = BatchJob.new_local(spec=job_spec)
         job.session_id = session_id
-        stored_job = await asyncio.to_thread(self._upsert_job, job, None)
+        stored_job = await self._upsert_job(job, None)
         await self.job_committed(stored_job)
 
     async def update_job_ready(self, job: BatchJob):
@@ -69,9 +71,9 @@ class RedisJobCache(JobEntityManager):
     async def delete_job(self, job: BatchJob):
         if job.job_id is None:
             raise ValueError("job_id is required")
-        existing_job = self.get_job(job.job_id) or job
-        await asyncio.to_thread(self._client.delete, self._job_key(job.job_id))
-        await asyncio.to_thread(self._client.zrem, self._index_key, job.job_id)
+        existing_job = await self.get_job(job.job_id) or job
+        await self._client.delete(self._job_key(job.job_id))
+        await self._client.zrem(self._index_key, job.job_id)
         self.active_jobs.pop(job.job_id, None)
         await self.job_deleted(existing_job)
 
@@ -81,7 +83,7 @@ class RedisJobCache(JobEntityManager):
         port: int,
         db: int,
         password: Optional[str],
-    ) -> Any:
+    ) -> redis.Redis:
         try:
             import redis
         except ImportError as exc:
@@ -97,12 +99,12 @@ class RedisJobCache(JobEntityManager):
     async def _update_existing_job(self, job: BatchJob) -> None:
         if job.job_id is None:
             raise ValueError("job_id is required")
-        old_job = self.get_job(job.job_id)
-        stored_job = await asyncio.to_thread(self._upsert_job, job, old_job)
+        old_job = await self.get_job(job.job_id)
+        stored_job = await self._upsert_job(job, old_job)
         if old_job is not None:
             await self.job_updated(old_job, stored_job)
 
-    def _upsert_job(self, job: BatchJob, old_job: Optional[BatchJob]) -> BatchJob:
+    async def _upsert_job(self, job: BatchJob, old_job: Optional[BatchJob]) -> BatchJob:
         if job.job_id is None:
             raise ValueError("job_id is required")
         stored_job = job.model_copy(deep=True)
@@ -111,8 +113,8 @@ class RedisJobCache(JobEntityManager):
             raise ValueError("job_id is required")
         stored_job.metadata.resource_version = self._next_resource_version(old_job)
         payload = stored_job.model_dump_json(by_alias=True)
-        self._client.set(self._job_key(stored_job_id), payload)
-        self._client.zadd(
+        await self._client.set(self._job_key(stored_job_id), payload)
+        await self._client.zadd(
             self._index_key,
             {stored_job_id: self._created_at_score(stored_job)},
         )

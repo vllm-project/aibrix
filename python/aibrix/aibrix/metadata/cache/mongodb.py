@@ -38,15 +38,15 @@ class MongoJobCache(JobEntityManager):
         )
         self._ensure_indexes()
 
-    def get_job(self, job_id: str) -> Optional[BatchJob]:
+    async def get_job(self, job_id: str) -> Optional[BatchJob]:
         if job_id in self.active_jobs:
             return self.active_jobs[job_id]
-        document = self._collection.find_one({"_id": job_id})
+        document = await asyncio.to_thread(self._collection.find_one, {"_id": job_id})
         if document is None:
             return None
         return self._document_to_batch_job(document)
 
-    def list_jobs(self) -> List[BatchJob]:
+    async def list_jobs(self) -> List[BatchJob]:
         cursor = self._collection.find({})
         if hasattr(cursor, "sort"):
             cursor = cursor.sort("created_at", -1)
@@ -63,7 +63,7 @@ class MongoJobCache(JobEntityManager):
     async def update_job_ready(self, job: BatchJob):
         if job.job_id is None:
             raise ValueError("job_id is required")
-        old_job = self.get_job(job.job_id)
+        old_job = await self.get_job(job.job_id)
         stored_job = await asyncio.to_thread(self._upsert_job, job, old_job)
         if old_job is not None:
             await self.job_updated(old_job, stored_job)
@@ -71,7 +71,7 @@ class MongoJobCache(JobEntityManager):
     async def update_job_status(self, job: BatchJob):
         if job.job_id is None:
             raise ValueError("job_id is required")
-        old_job = self.get_job(job.job_id)
+        old_job = await self.get_job(job.job_id)
         stored_job = await asyncio.to_thread(self._upsert_job, job, old_job)
         if old_job is not None:
             await self.job_updated(old_job, stored_job)
@@ -79,7 +79,7 @@ class MongoJobCache(JobEntityManager):
     async def cancel_job(self, job: BatchJob):
         if job.job_id is None:
             raise ValueError("job_id is required")
-        old_job = self.get_job(job.job_id)
+        old_job = await self.get_job(job.job_id)
         stored_job = await asyncio.to_thread(self._upsert_job, job, old_job)
         if old_job is not None:
             await self.job_updated(old_job, stored_job)
@@ -87,7 +87,7 @@ class MongoJobCache(JobEntityManager):
     async def delete_job(self, job: BatchJob):
         if job.job_id is None:
             raise ValueError("job_id is required")
-        existing_job = self.get_job(job.job_id) or job
+        existing_job = await self.get_job(job.job_id) or job
         await asyncio.to_thread(self._collection.delete_one, {"_id": job.job_id})
         self.active_jobs.pop(job.job_id, None)
         await self.job_deleted(existing_job)
