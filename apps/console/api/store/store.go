@@ -43,6 +43,7 @@ type Store interface {
 	// Models
 	ListModels(ctx context.Context, search, category string) ([]*pb.Model, error)
 	GetModel(ctx context.Context, id string) (*pb.Model, error)
+	CreateModel(ctx context.Context, m *pb.Model) (*pb.Model, error)
 
 	// Model Deployment Templates. modelID is the parent — Get/Update/Delete
 	// validate that the addressed template actually belongs to it, returning

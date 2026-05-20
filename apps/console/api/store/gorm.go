@@ -330,6 +330,26 @@ func (s *GORMStore) ListModels(ctx context.Context, search, category string) ([]
 	return out, nil
 }
 
+func (s *GORMStore) CreateModel(ctx context.Context, m *pb.Model) (*pb.Model, error) {
+	if m == nil || strings.TrimSpace(m.Name) == "" {
+		return nil, status.Error(codes.InvalidArgument, "name is required")
+	}
+	if m.Id == "" {
+		m.Id = "model-" + strings.ToLower(strings.ReplaceAll(strings.TrimSpace(m.Name), " ", "-"))
+	}
+	var rec models.Model
+	if err := rec.FromPB(m); err != nil {
+		return nil, status.Errorf(codes.Internal, "convert model: %v", err)
+	}
+	if err := s.db.WithContext(ctx).Create(&rec).Error; err != nil {
+		if isDuplicatedKeyError(err) {
+			return nil, status.Errorf(codes.AlreadyExists, "model %q already exists", m.Id)
+		}
+		return nil, status.Errorf(codes.Internal, "create model: %v", err)
+	}
+	return s.GetModel(ctx, rec.ID)
+}
+
 func (s *GORMStore) GetModel(ctx context.Context, id string) (*pb.Model, error) {
 	var rec models.Model
 	if err := s.db.WithContext(ctx).Where("deleted = ?", false).First(&rec, "id = ?", id).Error; err != nil {
