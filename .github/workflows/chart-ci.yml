@@ -139,14 +139,16 @@ jobs:
           kubectl create namespace aibrix-system
           # Release name must be "aibrix": controller cert rotation expects
           # aibrix-webhook-service and aibrix-*-webhook-configuration (see pkg/cert/cert.go).
-          ct install --chart-dirs . --charts . --namespace aibrix-system \
-            --release-name aibrix \
-            --helm-extra-args '--timeout 15m0s'
+          helm install aibrix . \
+            --namespace aibrix-system \
+            --timeout 15m0s \
+            --wait
 
       - name: Debug chart install failure
         if: failure()
         run: |
-          kubectl get pods,deployments,events -n aibrix-system --sort-by=.metadata.creationTimestamp
+          kubectl get pods,deployments -n aibrix-system
+          kubectl get events -n aibrix-system --sort-by=.lastTimestamp
           kubectl describe pods -n aibrix-system | tail -200
           kubectl logs -n aibrix-system -l app.kubernetes.io/component=aibrix-controller-manager --tail=80 || true
           kubectl logs -n aibrix-system -l app.kubernetes.io/component=aibrix-gateway-plugin --tail=80 || true
