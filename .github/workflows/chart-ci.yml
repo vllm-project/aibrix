@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'dist/chart/**'
+      - '.github/workflows/chart-ci.yml'
 
 jobs:
   build-images:
@@ -81,6 +82,17 @@ jobs:
           pattern: '*-image'
           merge-multiple: false
 
+      - name: Verify image artifacts
+        run: |
+          set -euo pipefail
+          for image in controller-manager gateway-plugins metadata-service; do
+            if [ ! -f "${image}-image/${image}.tar" ]; then
+              echo "::error::Missing artifact ${image}-image/${image}.tar"
+              exit 1
+            fi
+          done
+          ls -lh *-image/*.tar
+
       - name: Load images into kind
         run: |
           set -euo pipefail
@@ -123,6 +135,18 @@ jobs:
       - name: Chart test
         working-directory: ./dist/chart
         run: |
+          set -euo pipefail
           kubectl create namespace aibrix-system
+          # Release name must be "aibrix": controller cert rotation expects
+          # aibrix-webhook-service and aibrix-*-webhook-configuration (see pkg/cert/cert.go).
           ct install --chart-dirs . --charts . --namespace aibrix-system \
+            --release-name aibrix \
             --helm-extra-args '--timeout 15m0s'
+
+      - name: Debug chart install failure
+        if: failure()
+        run: |
+          kubectl get pods,deployments,events -n aibrix-system --sort-by=.metadata.creationTimestamp
+          kubectl describe pods -n aibrix-system | tail -200
+          kubectl logs -n aibrix-system -l app.kubernetes.io/component=aibrix-controller-manager --tail=80 || true
+          kubectl logs -n aibrix-system -l app.kubernetes.io/component=aibrix-gateway-plugin --tail=80 || true
