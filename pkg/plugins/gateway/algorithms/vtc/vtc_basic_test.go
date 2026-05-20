@@ -609,6 +609,49 @@ func TestVTCBucketSizePatterns(t *testing.T) {
 	t.Log("4. Low values: Consider decreasing min threshold")
 }
 
+func TestVTCBasic_ScoreAll(t *testing.T) {
+	trackerConfig := &VTCConfig{
+		InputTokenWeight:  1.0,
+		OutputTokenWeight: 1.0,
+		Variant:           RouterVTCBasic,
+	}
+	tokenTracker := NewInMemorySlidingWindowTokenTracker(trackerConfig, WithWindowSize(100), WithTimeUnit(Milliseconds))
+	tokenEstimator := NewSimpleTokenEstimator()
+	cache := NewSimpleCache()
+
+	routerConfig := &VTCConfig{
+		InputTokenWeight:  1.0,
+		OutputTokenWeight: 1.0,
+		Variant:           RouterVTCBasic,
+	}
+	router := &BasicVTCRouter{
+		cache:          cache,
+		tokenTracker:   tokenTracker,
+		tokenEstimator: tokenEstimator,
+		config:         routerConfig,
+	}
+
+	pods := createTestPodsForMetrics(2)
+	podList := NewSimplePodList(pods)
+
+	ctx := context.Background()
+	user := "user1"
+	_ = tokenTracker.UpdateTokenCount(ctx, user, 10, 0)
+	routingCtx := types.NewRoutingContext(ctx, "vtc-basic", "model1", "test message", "request1", user)
+
+	scores, scored, err := router.ScoreAll(routingCtx, podList)
+
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(scores))
+	assert.Equal(t, 2, len(scored))
+
+	for _, s := range scored {
+		assert.True(t, s)
+	}
+
+	assert.Equal(t, types.PolarityLeast, router.Polarity())
+}
+
 func createTestPodsForMetrics(count int) []*v1.Pod {
 	pods := make([]*v1.Pod, count)
 	for i := 0; i < count; i++ {

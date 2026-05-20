@@ -31,8 +31,8 @@ import (
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/packages/param"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -111,7 +111,7 @@ func parseChatMessages(requestID string, msgs []struct {
 // nolint:nakedret
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	switch requestPath {
-	case PathChatCompletions:
+	case PathChatCompletions, PathMessages:
 		// Single-pass minimal unmarshal: avoids the openai SDK's reflection-heavy
 		// apijson decoder and gjson parsing, and eliminates the previous redundant
 		// map[string]json.RawMessage unmarshal used only for stream-field detection.
@@ -127,7 +127,9 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		}
 		if req.Stream != nil {
 			stream = *req.Stream
-			if stream && user.Tpm > 0 && !req.StreamOptions.IncludeUsage {
+			// stream_options.include_usage is an OpenAI-specific field; Anthropic-style
+			// clients hitting /v1/messages will not include it, so skip this check for that path.
+			if stream && user.Tpm > 0 && requestPath == PathChatCompletions && !req.StreamOptions.IncludeUsage {
 				klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID)
 				errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "include usage for stream options not set",
 					"", "stream_options", HeaderErrorStreamOptionsIncludeUsage, "include usage for stream options not set")
@@ -297,28 +299,29 @@ func isMultipartRequest(contentType string) bool {
 // It returns the model name, stream flag, and any processing error response.
 // nolint:nakedret
 func parseMultipartFormData(requestID string, contentType string, requestBody []byte) (model string, stream bool, errRes *extProcPb.ProcessingResponse) {
+	const trueStr = "true"
+
 	// Extract boundary from Content-Type
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		klog.ErrorS(err, "failed to parse content-type", "requestID", requestID, "contentType", contentType)
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "invalid content-type header", "", "", HeaderErrorMultipartParsing, "true")
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "invalid content-type header", "", "", HeaderErrorMultipartParsing, trueStr)
 		return
 	}
 
 	if !strings.HasPrefix(mediaType, "multipart/") {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "expected multipart/form-data content-type", "", "", HeaderErrorMultipartParsing, "true")
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "expected multipart/form-data content-type", "", "", HeaderErrorMultipartParsing, trueStr)
 		return
 	}
 
 	boundary := params["boundary"]
 	if boundary == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "missing boundary in content-type", "", "", HeaderErrorMultipartParsing, "true")
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "missing boundary in content-type", "", "", HeaderErrorMultipartParsing, trueStr)
 		return
 	}
 
 	// Parse multipart form
 	reader := multipart.NewReader(bytes.NewReader(requestBody), boundary)
-
 	for {
 		part, err := reader.NextPart()
 		if err == io.EOF {
@@ -326,7 +329,7 @@ func parseMultipartFormData(requestID string, contentType string, requestBody []
 		}
 		if err != nil {
 			klog.ErrorS(err, "failed to read multipart part", "requestID", requestID)
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "failed to parse multipart form", "", "", HeaderErrorMultipartParsing, "true")
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "failed to parse multipart form", "", "", HeaderErrorMultipartParsing, trueStr)
 			return
 		}
 
@@ -337,7 +340,7 @@ func parseMultipartFormData(requestID string, contentType string, requestBody []
 			modelBytes, err := io.ReadAll(part)
 			if err != nil {
 				klog.ErrorS(err, "failed to read model field", "requestID", requestID)
-				errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "failed to read model field", "", "model", HeaderErrorMultipartParsing, "true")
+				errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "failed to read model field", "", "model", HeaderErrorMultipartParsing, trueStr)
 				return
 			}
 			model = strings.TrimSpace(string(modelBytes))
@@ -346,7 +349,7 @@ func parseMultipartFormData(requestID string, contentType string, requestBody []
 			streamBytes, err := io.ReadAll(part)
 			if err == nil {
 				streamVal := strings.TrimSpace(strings.ToLower(string(streamBytes)))
-				stream = streamVal == "true" || streamVal == "1"
+				stream = streamVal == trueStr || streamVal == "1"
 			}
 		}
 
@@ -355,7 +358,7 @@ func parseMultipartFormData(requestID string, contentType string, requestBody []
 
 	// Validate required model field
 	if model == "" {
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorMultipartParsing, "true")
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorMultipartParsing, trueStr)
 		return
 	}
 
@@ -396,8 +399,9 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		return
 	}
 	routingCtx.ConfigProfile = &types.ResolvedConfigProfile{
-		RoutingStrategy: profile.RoutingStrategy,
-		RoutingConfig:   profile.RoutingConfig,
+		RoutingStrategy:   profile.RoutingStrategy,
+		RoutingConfig:     profile.RoutingConfig,
+		RequestsPerSecond: profile.RequestsPerSecond,
 	}
 }
 

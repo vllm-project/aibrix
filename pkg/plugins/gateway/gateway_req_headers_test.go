@@ -56,6 +56,17 @@ func Test_handleRequestHeaders(t *testing.T) {
 		validate       func(*testing.T, *testCase, *extProcPb.ProcessingResponse, utils.User, *types.RoutingContext, int64)
 	}
 
+	// defaultSuccessValidator provides common assertions for successful request header processing.
+	defaultSuccessValidator := func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, user utils.User, routingCtx *types.RoutingContext, rpm int64) {
+		assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
+		assert.Equal(t, tt.expected.headers, resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders())
+		assert.Equal(t, tt.expected.user, user)
+		assert.NotNil(t, routingCtx)
+		assert.Equal(t, tt.expected.routingCtx.ReqPath, routingCtx.ReqPath)
+		assert.Equal(t, tt.expected.routingCtx.ReqHeaders, routingCtx.ReqHeaders)
+		assert.Equal(t, tt.expected.rpm, rpm)
+	}
+
 	// Define test cases for different routing and error scenarios
 	tests := []testCase{
 		{
@@ -77,14 +88,7 @@ func Test_handleRequestHeaders(t *testing.T) {
 				user: utils.User{},
 				rpm:  0,
 			},
-			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, user utils.User, routingCtx *types.RoutingContext, rpm int64) {
-				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
-				assert.Equal(t, tt.expected.headers, resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders())
-				assert.Equal(t, tt.expected.user, user)
-				assert.NotNil(t, routingCtx)
-				assert.Equal(t, tt.expected.routingCtx.ReqHeaders, routingCtx.ReqHeaders)
-				assert.Equal(t, tt.expected.rpm, rpm)
-			},
+			validate: defaultSuccessValidator,
 		},
 		{
 			name: "not found user in redis cache - should return error",
@@ -153,15 +157,35 @@ func Test_handleRequestHeaders(t *testing.T) {
 				user: utils.User{},
 				rpm:  0,
 			},
-			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, user utils.User, routingCtx *types.RoutingContext, rpm int64) {
-				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
-				assert.Equal(t, tt.expected.headers, resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders())
-				assert.Equal(t, tt.expected.user, user)
-				assert.NotNil(t, routingCtx)
-				assert.Equal(t, tt.expected.routingCtx.ReqPath, routingCtx.ReqPath)
-				assert.Equal(t, tt.expected.routingCtx.ReqHeaders, routingCtx.ReqHeaders)
-				assert.Equal(t, tt.expected.rpm, rpm)
+			validate: defaultSuccessValidator,
+		},
+		{
+			name: "extract x-session-id for session affinity routing",
+			requestHeaders: []*configPb.HeaderValue{
+				{
+					Key:      HeaderSessionID,
+					RawValue: []byte("MTI3LjAuMC4xOjg4OTk="),
+				},
+				{
+					Key:      HeaderRoutingStrategy,
+					RawValue: []byte("session-affinity"),
+				},
 			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				headers: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
+				},
+				routingCtx: &types.RoutingContext{
+					ReqHeaders: map[string]string{
+						HeaderSessionID:       "MTI3LjAuMC4xOjg4OTk=",
+						HeaderRoutingStrategy: "session-affinity",
+					},
+				},
+				user: utils.User{},
+				rpm:  0,
+			},
+			validate: defaultSuccessValidator,
 		},
 	}
 

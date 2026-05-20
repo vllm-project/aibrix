@@ -10,3 +10,8 @@ patches:
     kind: Deployment
     name: aibrix-gateway-plugins
     namespace: aibrix-system
+- path: metadata/dry-run-patch.yaml
+  target:
+    kind: Deployment
+    name: aibrix-metadata-service
+    namespace: aibrix-system

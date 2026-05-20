@@ -31,13 +31,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 import aibrix.batch.constant as constant
+from aibrix.batch.job_driver.inference_client import InferenceEngineClient
 from aibrix.batch.job_entity import (
     BatchJobError,
     BatchJobErrorCode,
     BatchJobSpec,
     BatchJobState,
 )
-from aibrix.batch.job_manager import JobManager, JobMetaInfo
+from aibrix.batch.job_manager import JobManager
+from aibrix.context import InfrastructureContext
 
 T = TypeVar("T")
 
@@ -61,7 +63,7 @@ def generate_batch_input_data(num_requests: int = 3) -> str:
     lines = []
     for i in range(num_requests):
         request = base_request.copy()
-        request["custom_id"] = f"request-{i+1}"
+        request["custom_id"] = f"request-{i + 1}"
         lines.append(json.dumps(request))
 
     return "\n".join(lines)
@@ -292,7 +294,7 @@ class FailingJobManager(JobManager):
         fail_after_n_requests: Optional[int] = None,
         expiration: Optional[int] = None,
     ):
-        super().__init__()
+        super().__init__(InfrastructureContext())
         self.fail_validation = fail_validation
         self.fail_during_processing = fail_during_processing
         self.fail_during_finalizing = fail_during_finalizing
@@ -302,7 +304,11 @@ class FailingJobManager(JobManager):
         self.expiration = expiration
         self._processed_requests = 0
 
-    async def validate_job(self, meta_data: JobMetaInfo):
+    async def validate_job(
+        self,
+        job_id: str,
+        inference_client: Optional[InferenceEngineClient] = None,
+    ) -> bool:
         """Override to simulate validation failures during job execution start."""
         if self.stall_validation is not None:
             # Prolong validation duration to allow cancellation during validation
@@ -316,7 +322,7 @@ class FailingJobManager(JobManager):
                 param="authentication",
             )
 
-        return await super().validate_job(meta_data)
+        return await super().validate_job(job_id, inference_client)
 
     async def cancel_job(self, job_id: str) -> bool:
         if self.stall_cancelling is not None:
@@ -330,6 +336,7 @@ class FailingJobManager(JobManager):
         job_spec: BatchJobSpec,
         timeout: float = 30.0,
         initial_state: BatchJobState = BatchJobState.CREATED,
+        request_count: int = 0,
     ) -> str:
         """Override create_job to inject fail_after_n_requests in opts."""
         # Create job spec with opts if needed
@@ -343,7 +350,7 @@ class FailingJobManager(JobManager):
             job_spec.completion_window = self.expiration
 
         return await super().create_job_with_spec(
-            session_id, job_spec, timeout, initial_state
+            session_id, job_spec, timeout, initial_state, request_count
         )
 
 

@@ -31,6 +31,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
@@ -53,7 +54,7 @@ func BenchmarkScorePrefillPods(b *testing.B) {
 			router := &pdRouter{
 				prefillPolicy:         newPrefixCachePrefillPolicy(benchmarkPrefixTable),
 				prefixCacheIndexer:    benchmarkPrefixTable,
-				prefillRequestTracker: NewPrefillRequestTracker(),
+				prefillRequestTracker: pd.NewPrefillRequestTracker(),
 			}
 
 			ctx := types.NewRoutingContext(
@@ -84,7 +85,7 @@ func BenchmarkScorePrefillPods(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				scores, maxScore, matchedHashes := router.scorePrefillPods(ctx, pods)
+				scores, maxScore, matchedHashes := router.scorePrefillPods(ctx, pods, router.prefillPolicy)
 				if len(scores) == 0 {
 					b.Fatal("scorePrefillPods returned no scores")
 				}
@@ -139,7 +140,7 @@ func BenchmarkScoreDecodePods(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				scores, maxScore := router.scoreDecodePods(
+				run := router.scoreDecodePods(
 					ctx,
 					pods,
 					maxRequestCount,
@@ -148,11 +149,12 @@ func BenchmarkScoreDecodePods(b *testing.B) {
 					podRequestCounts,
 					podThroughputs,
 					podFreeGPUUsage,
+					nil,
 				)
-				if len(scores) == 0 {
+				if len(run.PerRoleset) == 0 {
 					b.Fatal("scoreDecodePods returned no scores")
 				}
-				if maxScore <= 0 {
+				if run.MaxScore <= 0 {
 					b.Fatal("scoreDecodePods returned non-positive max score")
 				}
 			}
@@ -169,7 +171,7 @@ func BenchmarkDoPrefillRequest(b *testing.B) {
 			defer server.Close()
 
 			router := &pdRouter{
-				prefillRequestTracker: NewPrefillRequestTracker(),
+				prefillRequestTracker: pd.NewPrefillRequestTracker(),
 				httpClient:            server.Client(),
 			}
 			prefillPod := benchmarkPDPods(engine, "prefill", 1, 1)[0]

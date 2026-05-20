@@ -107,6 +107,14 @@ STORAGE_REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 STORAGE_REDIS_DB = int(os.getenv("REDIS_DB", 0))
 STORAGE_REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
+# Database Redis Envs, other settings simply reuse Storage Redis Envs
+DB_REDIS_PREFIX = os.getenv("DB_REDIS_PREFIX", "")
+
+# Database Mongo Envs
+DB_MONGO_URI = os.getenv("DB_MONGO_URI")
+DB_MONGO_DATABASE = os.getenv("DB_MONGO_DATABASE")
+DB_MONGO_COLLECTION = os.getenv("DB_MONGO_COLLECTION")
+
 # Metric Standardizing Related Config
 # Scrape config
 METRIC_SCRAPE_PATH = os.getenv("METRIC_SCRAPE_PATH", "/metrics")

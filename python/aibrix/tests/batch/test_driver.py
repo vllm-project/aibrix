@@ -22,7 +22,9 @@ import pytest
 
 import aibrix.batch.constant as constant
 from aibrix.batch.driver import BatchDriver
+from aibrix.batch.job_driver import EchoInferenceEngineClient
 from aibrix.batch.job_entity import BatchJobErrorCode, BatchJobState, BatchJobStatus
+from aibrix.context import InfrastructureContext
 from aibrix.storage import StorageType
 
 constant.EXPIRE_INTERVAL = 0.1
@@ -48,7 +50,10 @@ def generate_input_data(num_requests, local_file):
 async def test_batch_driver_job_creation():
     """Test basic BatchDriver operations without async scheduling."""
     driver = BatchDriver(
-        storage_type=StorageType.LOCAL, metastore_type=StorageType.LOCAL
+        context=InfrastructureContext(),
+        storage_type=StorageType.LOCAL,
+        metastore_type=StorageType.LOCAL,
+        inference_client=EchoInferenceEngineClient(),
     )
     await driver.start()
 
@@ -104,7 +109,10 @@ async def test_batch_driver_integration():
     """
     # Initialize driver without job_entity_manager (use local job management)
     driver = BatchDriver(
-        storage_type=StorageType.LOCAL, metastore_type=StorageType.LOCAL
+        context=InfrastructureContext(),
+        storage_type=StorageType.LOCAL,
+        metastore_type=StorageType.LOCAL,
+        inference_client=EchoInferenceEngineClient(),
     )
     await driver.start()
 
@@ -192,7 +200,10 @@ async def test_batch_driver_resuming():
     """
     # Initialize driver without job_entity_manager (use local job management)
     driver = BatchDriver(
-        storage_type=StorageType.LOCAL, metastore_type=StorageType.LOCAL
+        context=InfrastructureContext(),
+        storage_type=StorageType.LOCAL,
+        metastore_type=StorageType.LOCAL,
+        inference_client=EchoInferenceEngineClient(),
     )
     await driver.start()
 
@@ -281,7 +292,10 @@ async def test_batch_driver_validation_failed() -> None:
     """
     # Initialize driver without job_entity_manager (use local job management)
     driver = BatchDriver(
-        storage_type=StorageType.LOCAL, metastore_type=StorageType.LOCAL
+        context=InfrastructureContext(),
+        storage_type=StorageType.LOCAL,
+        metastore_type=StorageType.LOCAL,
+        inference_client=EchoInferenceEngineClient(),
     )
     await driver.start()
 
@@ -331,8 +345,10 @@ async def test_batch_driver_stop_raises_exception_with_fail_after_n_requests():
     """Test that BatchDriver.stop() raises RuntimeError when jobs with fail_after_n_requests exist."""
 
     driver = BatchDriver(
+        context=InfrastructureContext(),
         storage_type=StorageType.LOCAL,
         metastore_type=StorageType.LOCAL,
+        inference_client=EchoInferenceEngineClient(),
         stand_alone=False,
     )
 

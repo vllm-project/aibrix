@@ -21,10 +21,14 @@ from enum import Enum
 from typing import Optional
 
 import aibrix.batch.constant as constant
-from aibrix.batch.job_progress_manager import JobProgressManager
+from aibrix.batch.job_driver import (
+    InferenceEngineClient,
+    JobProgressManager,
+)
+from aibrix.batch.job_entity import JobEntityManager
+from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
 
-from .job_driver import InferenceEngineClient, JobDriver
 from .job_entity import BatchJobError, BatchJobErrorCode
 
 # JobManager will be passed as parameter to avoid circular import
@@ -133,7 +137,9 @@ class BasicCongestionControl(CCInterface):
 class JobScheduler:
     def __init__(
         self,
+        context: InfrastructureContext,
         job_progress_manager: JobProgressManager,
+        job_entity_manager: Optional[JobEntityManager],
         pool_size: int,
         cc_controller=BasicCongestionControl(constant.DEFAULT_JOB_POOL_SIZE),
         policy=SchedulePolicy.FIFO,
@@ -144,7 +150,9 @@ class JobScheduler:
         as expired jobs.
         self._inactive_jobs are jobs that are already invalid.
         """
+        self._context = context
         self._job_progress_manager = job_progress_manager
+        self._job_entity_manager = job_entity_manager
         self.interval = constant.EXPIRE_INTERVAL
         self._jobs_queue: queue.Queue[str] = queue.Queue()
         self._inactive_jobs: set[str] = set()
@@ -191,7 +199,9 @@ class JobScheduler:
             # we check if this job is in active state and we try starting the job.
             while job_id and (
                 job_id in self._inactive_jobs
-                or not await self._job_progress_manager.start_execute_job(job_id)
+                or not await self._job_progress_manager.validate_job(
+                    job_id, self._inference_client
+                )
             ):
                 if self._jobs_queue.empty():
                     job_id = None
@@ -232,24 +242,20 @@ class JobScheduler:
 
     async def start(self, inference_client: Optional[InferenceEngineClient]):
         self._serve_loop = asyncio.get_running_loop()
+        self._inference_client = inference_client
         logger.info("in start")
-        self._jobs_running_task = self._serve_loop.create_task(
-            self.jobs_running_loop(inference_client)
-        )
+        self._jobs_running_task = self._serve_loop.create_task(self.jobs_running_loop())
         logger.info("running loop set up")
         self._jobs_cleanup_task = self._serve_loop.create_task(self.jobs_cleanup_loop())
         logger.info("cleanup loop set up")
 
-    async def jobs_running_loop(
-        self, inference_client: Optional[InferenceEngineClient]
-    ):
+    async def jobs_running_loop(self) -> None:
         """
         This loop is going through all active jobs in scheduler.
         For now, the executing unit is one request. Later if necessary,
         we can support a batch size of request per execution.
         """
         logger.info("Starting scheduling...")
-        job_driver = JobDriver(self._job_progress_manager, inference_client)
         while True:
             one_job: Optional[str] = None
             try:
@@ -262,6 +268,13 @@ class JobScheduler:
 
             if one_job:
                 try:
+                    job = await self._job_progress_manager.get_job(one_job)
+                    if job is None:
+                        logger.warning(f"scheduled job '{one_job}' no longer exists")
+                        continue
+                    job_driver = getattr(job, "job_driver", None)
+                    if job_driver is None:
+                        raise Exception(f"scheduled job '{one_job}' has no job driver")
                     await job_driver.execute_job(one_job)
                 except RuntimeError as re:
                     logger.error(

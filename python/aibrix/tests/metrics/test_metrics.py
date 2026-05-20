@@ -32,9 +32,20 @@ def test_get_metric_standard_rules_ignore_case():
 
 
 def test_get_metric_standard_rules_not_support():
-    # TensorRT-LLM is not supported (SGLang is now supported)
+    # Unsupported engines should raise ValueError
     with pytest.raises(ValueError):
         get_metric_standard_rules("TensorRT-LLM")
+
+
+def test_get_metric_standard_rules_trtllm_support():
+    # trtllm is now supported
+    rules = get_metric_standard_rules("trtllm")
+    assert rules is not None
+    assert len(rules) > 0
+    # Check core metrics
+    assert "e2e_request_latency_seconds" in rules
+    assert "time_to_first_token_seconds" in rules
+    assert "request_success_total" in rules
 
 
 def test_get_metric_standard_rules_sglang_support():

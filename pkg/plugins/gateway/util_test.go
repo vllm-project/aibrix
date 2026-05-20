@@ -23,7 +23,7 @@ import (
 	"github.com/bytedance/sonic"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
-	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -134,6 +134,16 @@ func Test_ValidateRequestBody(t *testing.T) {
 			message:     "/v1/chat/completions valid request body",
 			user:        utils.User{Tpm: 1},
 			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": true}, "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
+			stream:      true,
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/messages valid request body (same as chat completions)",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/messages",
 			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": true}, "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
 			stream:      true,
 			model:       "llama2-7b",

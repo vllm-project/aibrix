@@ -138,16 +138,29 @@ def job_cache(kopf_operator, ensure_job_rbac):
     """
     Function-scoped fixture that provides a JobCache instance.
     The kopf_operator fixture ensures the operator is running.
-    Uses the unittest job template with the correct service account.
+
+    Loads ModelDeploymentTemplate and BatchProfile registries from the
+    multi-document fixture YAML so each test starts from a clean,
+    deterministic configuration.
     """
     from pathlib import Path
 
-    # Always create a new JobCache with the custom template for this test
-    # Don't reuse global cache as it may have different configuration
-    template_patch_path = (
-        Path(__file__).parent / "testdata" / "k8s_job_patch_unittest.yaml"
+    from aibrix.batch.template import (
+        local_profile_registry,
+        local_template_registry,
     )
-    return JobCache(template_patch_path=template_patch_path)
+
+    fixture_path = (
+        Path(__file__).parent / "testdata" / "template_configmaps_unittest.yaml"
+    )
+    template_registry = local_template_registry(fixture_path)
+    profile_registry = local_profile_registry(fixture_path)
+    template_registry.reload()
+    profile_registry.reload()
+    return JobCache(
+        template_registry=template_registry,
+        profile_registry=profile_registry,
+    )
 
 
 @pytest.fixture(scope="session")
@@ -398,14 +411,24 @@ def ensure_job_rbac(job_rbac):
 
 def create_test_app(
     enable_k8s_job: bool = False,
-    k8s_job_patch: Optional[Path] = None,
+    enable_redis_job: bool = False,
+    enable_mongo_job: bool = False,
     storage_type: StorageType = StorageType.LOCAL,
     metastore_type: StorageType = StorageType.LOCAL,
     params: Optional[Dict[str, Any]] = None,
+    dry_run: Optional[bool] = None,
 ):
-    """Create a FastAPI app configured for e2e testing."""
+    """Create a FastAPI app configured for e2e testing.
+
+    The legacy k8s-job-patch parameter was removed when manifests
+    became driven by ConfigMaps. Tests should ensure the
+    template/profile ConfigMaps exist in the cluster (see
+    ``template_configmaps`` fixture).
+    """
     if params is None:
         params = {}
+    if dry_run is None:
+        dry_run = not (enable_k8s_job or enable_redis_job or enable_mongo_job)
 
     # Save old settings
     oldStorage, oldMetaStore = settings.STORAGE_TYPE, settings.METASTORE_TYPE
@@ -418,15 +441,98 @@ def create_test_app(
             port=8090,
             enable_fastapi_docs=False,
             disable_batch_api=False,
+            disable_file_api=False,
+            disable_k8s_support=False,
+            disable_inference_endpoint=True,
             enable_k8s_job=enable_k8s_job,
-            k8s_job_patch=k8s_job_patch,
-            e2e_test=True,
+            enable_mongo_job=enable_mongo_job,
+            enable_redis_job=enable_redis_job,
+            k8s_namespace="default",
+            k8s_job_patch=None,  # accepted by parser but always None in tests
+            registry_provider="configmap",
+            kopf_startup_timeout=30.0,
+            kopf_shutdown_timeout=10.0,
+            dry_run=dry_run,
         ),
         params,
     )
     # RESTORE settings
     settings.STORAGE_TYPE, settings.METASTORE_TYPE = oldStorage, oldMetaStore
     return app
+
+
+@pytest.fixture(scope="session")
+def template_configmaps(
+    k8s_config, test_namespace, s3_credentials_secret, test_s3_bucket
+):
+    """Apply the unittest ModelDeploymentTemplate / BatchProfile ConfigMaps
+    to the test cluster.
+
+    The metadata service registries query the 'aibrix-system' namespace
+    by default. We ensure that namespace exists in the test cluster and
+    apply the fixture there so build_app() loads the test data through
+    the same code path as production.
+    """
+    from aibrix.batch.template.registry import DEFAULT_NAMESPACE
+
+    fixture_path = (
+        Path(__file__).parent / "testdata" / "template_configmaps_unittest.yaml"
+    )
+    core_v1 = client.CoreV1Api()
+
+    # Ensure aibrix-system namespace exists in the test cluster.
+    try:
+        core_v1.read_namespace(name=DEFAULT_NAMESPACE)
+    except client.ApiException as e:
+        if e.status != 404:
+            raise
+        core_v1.create_namespace(
+            body=client.V1Namespace(
+                metadata=client.V1ObjectMeta(name=DEFAULT_NAMESPACE)
+            )
+        )
+        logger.info(f"Created namespace: {DEFAULT_NAMESPACE}")
+
+    applied: list[str] = []
+    with open(fixture_path) as f:
+        for doc in yaml.safe_load_all(f):
+            if not isinstance(doc, dict) or doc.get("kind") != "ConfigMap":
+                continue
+            name = doc["metadata"]["name"]
+            data = doc.get("data", {})
+            if name == "aibrix-batch-profiles" and "profiles.yaml" in data:
+                profiles = yaml.safe_load(data["profiles.yaml"])
+                for item in profiles.get("items", []):
+                    if item.get("name") == "unittest":
+                        item.setdefault("spec", {})["storage"] = {
+                            "backend": "s3",
+                            "bucket": test_s3_bucket,
+                            "credentials_secret_ref": s3_credentials_secret,
+                        }
+                data["profiles.yaml"] = yaml.safe_dump(profiles, sort_keys=False)
+            cm = client.V1ConfigMap(
+                metadata=client.V1ObjectMeta(name=name, namespace=DEFAULT_NAMESPACE),
+                data=data,
+            )
+            try:
+                core_v1.delete_namespaced_config_map(
+                    name=name, namespace=DEFAULT_NAMESPACE
+                )
+            except client.ApiException as e:
+                if e.status != 404:
+                    raise
+            core_v1.create_namespaced_config_map(namespace=DEFAULT_NAMESPACE, body=cm)
+            applied.append(name)
+            logger.info(f"Applied test ConfigMap: {name}")
+
+    yield applied
+
+    for name in applied:
+        try:
+            core_v1.delete_namespaced_config_map(name=name, namespace=DEFAULT_NAMESPACE)
+        except client.ApiException as e:
+            if e.status != 404:
+                raise
 
 
 @pytest.fixture(scope="function")
@@ -436,12 +542,15 @@ def test_app(
     s3_credentials_secret,
     redis_config_available,
     ensure_job_rbac,
+    template_configmaps,
+    monkeypatch,
 ):
-    # Get the path to the unittest job template
-    patch_path = Path(__file__).parent / "testdata" / "k8s_job_patch_unittest.yaml"
+    monkeypatch.setenv(
+        "WORKER_REDIS_HOST", "aibrix-redis-master.aibrix-system.svc.cluster.local"
+    )
+    monkeypatch.setenv("WORKER_REDIS_PORT", os.environ.get("REDIS_PORT", "6379"))
     return create_test_app(
         enable_k8s_job=True,
-        k8s_job_patch=patch_path,
         storage_type=StorageType.S3,
         metastore_type=StorageType.REDIS,
         params={"bucket_name": test_s3_bucket},

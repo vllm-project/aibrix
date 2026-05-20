@@ -490,3 +490,104 @@ func TestSortRolesByUpgradeOrder(t *testing.T) {
 		})
 	}
 }
+
+func TestInjectContainerEnvVars(t *testing.T) {
+	// Setup test data
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-role-set",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+			Annotations: map[string]string{
+				constants.RoleSetIndexAnnotationKey: "1",
+			},
+		},
+	}
+
+	role := &orchestrationv1alpha1.RoleSpec{
+		Name: "test-role",
+	}
+
+	roleIndex := 0
+	templateHash := "test-hash"
+
+	// Create container with:
+	// 1. Some user-defined env vars in reverse alphabetical order
+	// 2. A env var with same name as built-in env var
+	container := &corev1.Container{
+		Name: "test-container",
+		Env: []corev1.EnvVar{
+			{Name: "USER_VAR_Z", Value: "value-z"},                       // Last in alphabetical order
+			{Name: "USER_VAR_M", Value: "value-m"},                       // Middle in alphabetical order
+			{Name: constants.RoleSetNameEnvKey, Value: "override-value"}, // Same name as built-in
+			{Name: "USER_VAR_A", Value: "value-a"},                       // First in alphabetical order
+		},
+	}
+
+	// Call the function under test
+	injectContainerEnvVars(container, roleSet, role, &roleIndex, templateHash)
+
+	// Verify the result
+	// Check that built-in env vars are not overridden
+	builtInEnvNames := []string{
+		constants.StormServiceNameEnvKey,
+		constants.RoleSetNameEnvKey,
+		constants.RoleSetIndexEnvKey,
+		constants.RoleNameEnvKey,
+		constants.RoleTemplateHashEnvKey,
+		constants.RoleReplicaIndexEnvKey,
+	}
+
+	assert.GreaterOrEqual(t, len(container.Env), len(builtInEnvNames), "Should have at least all built-in env vars")
+
+	// Track built-in env vars found
+	foundBuiltInEnvs := make(map[string]bool)
+
+	// Check the order and values
+	// Verify built-in env vars are present at the beginning
+	for i, env := range container.Env {
+		if i < len(builtInEnvNames) {
+			// First N env vars should be built-in
+			assert.Contains(t, builtInEnvNames, env.Name, "Built-in env var should be at the beginning")
+			foundBuiltInEnvs[env.Name] = true
+
+			// Check built-in env var values
+			switch env.Name {
+			case constants.StormServiceNameEnvKey:
+				assert.Equal(t, "test-service", env.Value)
+			case constants.RoleSetNameEnvKey:
+				assert.Equal(t, "test-role-set", env.Value) // Should not be overridden
+			case constants.RoleSetIndexEnvKey:
+				assert.Equal(t, "1", env.Value)
+			case constants.RoleNameEnvKey:
+				assert.Equal(t, "test-role", env.Value)
+			case constants.RoleTemplateHashEnvKey:
+				assert.Equal(t, "test-hash", env.Value)
+			case constants.RoleReplicaIndexEnvKey:
+				assert.Equal(t, "0", env.Value)
+			}
+		} else {
+			// User-defined env vars should come after built-in ones
+			assert.NotContains(t, builtInEnvNames, env.Name, "User-defined env var should not be a built-in name")
+		}
+	}
+
+	// 3. Check that all built-in env vars are present
+	for _, envName := range builtInEnvNames {
+		assert.True(t, foundBuiltInEnvs[envName], "Built-in env var %s should be present", envName)
+	}
+
+	// 4. Check that user-defined env vars maintain their original order
+	// Find the start index of user-defined env vars
+	userEnvStartIndex := len(builtInEnvNames)
+	assert.Less(t, userEnvStartIndex, len(container.Env), "Should have user-defined env vars")
+
+	// Check user-defined env vars order
+	expectedUserEnvOrder := []string{"USER_VAR_Z", "USER_VAR_M", "USER_VAR_A"}
+	for i, expectedName := range expectedUserEnvOrder {
+		actualIndex := userEnvStartIndex + i
+		assert.Less(t, actualIndex, len(container.Env), "Should have enough user-defined env vars")
+		assert.Equal(t, expectedName, container.Env[actualIndex].Name, "User-defined env var should maintain original order")
+	}
+}

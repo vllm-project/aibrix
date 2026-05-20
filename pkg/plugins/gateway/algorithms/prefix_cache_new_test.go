@@ -583,6 +583,39 @@ func (m *mockTokenizerPool) Close() error {
 	return nil
 }
 
+func TestPrefixCachePostRouteUpdateUpdatesKVSyncIndexer(t *testing.T) {
+	syncIndexer := syncindexer.NewSyncPrefixHashTable()
+	router := prefixCacheRouter{
+		kvSyncRouter: &kvSyncPrefixCacheRouter{
+			tokenizerPool: &mockTokenizerPool{tokenizer: &mockRemoteTokenizer{}},
+			syncIndexer:   syncIndexer,
+		},
+	}
+	pod1 := newPod("pod-1", "10.0.0.1", true, map[string]string{
+		constants.ModelLabelName: "test-model",
+		constants.ModelLabelPort: "8000",
+	})
+	pod2 := newPod("pod-2", "10.0.0.2", true, map[string]string{
+		constants.ModelLabelName: "test-model",
+		constants.ModelLabelPort: "8000",
+	})
+	ctx := types.NewRoutingContext(context.Background(), RouterPrefixCache, "test-model", "hello kv sync prefix cache update", "req-kv-post-update", "")
+	podList := wrapper{pods: []*v1.Pod{pod1, pod2}}
+
+	err := router.PostRouteUpdate(ctx, podList, pod2)
+	require.NoError(t, err)
+
+	tokens, err := (&mockRemoteTokenizer{}).TokenizeInputText(ctx.Message)
+	require.NoError(t, err)
+	matchedPods, _ := syncIndexer.MatchPrefix("test-model", -1, tokens, map[string]struct{}{
+		"/pod-1": {},
+		"/pod-2": {},
+	})
+
+	assert.Equal(t, 100, matchedPods["/pod-2"])
+	assert.NotContains(t, matchedPods, "/pod-1")
+}
+
 // TestPrefixCacheRouterWithRemoteTokenizer tests remote tokenizer integration
 func TestPrefixCacheRouterWithRemoteTokenizer(t *testing.T) {
 	// Create test pods

@@ -31,8 +31,12 @@ spec:
                     "profiles": {
                       "pd": {
                         "routingStrategy": "pd",
-                        "promptLenBucketMinLength": 0,
-                        "promptLenBucketMaxLength": 2048
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 0,
+                          "promptLenBucketMaxLength": 2048,
+                          "prefillScorePolicy": "least_request",
+                          "decodeScorePolicy": "least_request"
+                        }
                       }
                     }
                   }
@@ -42,8 +46,6 @@ spec:
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
             spec:
-              nodeSelector:
-                kubernetes.io/hostname: 10.0.151.187
               containers:
                 - name: prefill
                   image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/sglang:v0.5.7-mooncake
@@ -170,8 +172,12 @@ spec:
                     "profiles": {
                       "pd": {
                         "routingStrategy": "pd",
-                        "promptLenBucketMinLength": 0,
-                        "promptLenBucketMaxLength": 2048
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 0,
+                          "promptLenBucketMaxLength": 2048,
+                          "prefillScorePolicy": "least_request",
+                          "decodeScorePolicy": "least_request"
+                        }
                       }
                     }
                   }
@@ -181,8 +187,6 @@ spec:
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
             spec:
-              nodeSelector:
-                kubernetes.io/hostname: 10.0.151.187
               containers:
                 - name: decode
                   image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/sglang:v0.5.7-mooncake
@@ -328,8 +332,12 @@ spec:
                     "profiles": {
                       "pd": {
                         "routingStrategy": "pd",
-                        "promptLenBucketMinLength": 2049,
-                        "promptLenBucketMaxLength": 4096
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 2049,
+                          "promptLenBucketMaxLength": 4096,
+                          "prefillScorePolicy": "prefix_cache",
+                          "decodeScorePolicy": "load_balancing"
+                        }
                       }
                     }
                   }
@@ -339,8 +347,6 @@ spec:
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
             spec:
-              nodeSelector:
-                kubernetes.io/hostname: 10.0.151.187
               containers:
                 - name: prefill
                   image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/sglang:v0.5.7-mooncake
@@ -467,8 +473,12 @@ spec:
                     "profiles": {
                       "pd": {
                         "routingStrategy": "pd",
-                        "promptLenBucketMinLength": 2049,
-                        "promptLenBucketMaxLength": 4096
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 2049,
+                          "promptLenBucketMaxLength": 4096,
+                          "prefillScorePolicy": "prefix_cache",
+                          "decodeScorePolicy": "load_balancing"
+                        }
                       }
                     }
                   }
@@ -478,8 +488,6 @@ spec:
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
             spec:
-              nodeSelector:
-                kubernetes.io/hostname: 10.0.151.187
               containers:
                 - name: decode
                   image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/sglang:v0.5.7-mooncake
@@ -616,7 +624,6 @@ spec:
           template:
             metadata:
               annotations:
-                annotations:
                 prometheus.io/scrape: "true"
                 prometheus.io/port: "30000"
                 prometheus.io/path: "/metrics"
@@ -626,8 +633,10 @@ spec:
                     "profiles": {
                       "pd": {
                         "routingStrategy": "pd",
-                        "promptLenBucketMinLength": 0,
-                        "combined": true
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 0,
+                          "combined": true
+                        }
                       }
                     }
                   }
@@ -637,8 +646,6 @@ spec:
                 model.aibrix.ai/metric-port: "30000"
                 model.aibrix.ai/engine: sglang
             spec:
-              nodeSelector:
-                kubernetes.io/hostname: 10.1.9.155
               containers:
                 - name: combined
                   image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/sglang:v0.5.7-mooncake

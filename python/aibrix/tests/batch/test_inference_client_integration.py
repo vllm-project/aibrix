@@ -14,7 +14,11 @@
 
 import pytest
 
-from aibrix.batch.job_driver import InferenceEngineClient, ProxyInferenceEngineClient
+from aibrix.batch.job_driver import (
+    EchoInferenceEngineClient,
+    InferenceEngineClient,
+    ProxyInferenceEngineClient,
+)
 
 
 class TestInferenceClientIntegration:
@@ -23,7 +27,7 @@ class TestInferenceClientIntegration:
     @pytest.mark.asyncio
     async def test_mock_inference_client(self):
         """Test inference client in mock mode."""
-        client = InferenceEngineClient()  # No base_url = mock mode
+        client = EchoInferenceEngineClient()  # echo client used by --dry-run
 
         request_data = {
             "custom_id": "test-1",

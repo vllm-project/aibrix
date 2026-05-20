@@ -96,7 +96,7 @@ def generate_batch_input_data(
     lines = []
     for i in range(num_requests):
         request: Dict[str, Any] = {
-            "custom_id": f"request-{i+1}",
+            "custom_id": f"request-{i + 1}",
             "method": "POST",
             "url": endpoint,
             "body": copy.deepcopy(sample_body),
@@ -122,11 +122,11 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
             required_fields = ["id", "custom_id", "response"]
             for field in required_fields:
                 if field not in output:
-                    print(f"Missing required field '{field}' in response {i+1}")
+                    print(f"Missing required field '{field}' in response {i + 1}")
                     return False
 
             # Verify custom_id matches expected pattern
-            expected_custom_id = f"request-{i+1}"
+            expected_custom_id = f"request-{i + 1}"
             if output["custom_id"] != expected_custom_id:
                 print(
                     f"Expected custom_id '{expected_custom_id}', got '{output['custom_id']}'"
@@ -138,7 +138,7 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
             for field in required_fields:
                 if field not in response:
                     print(
-                        f"Missing required field 'response.{field}' in response {i+1}"
+                        f"Missing required field 'response.{field}' in response {i + 1}"
                     )
                     return False
 
@@ -152,12 +152,12 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
             for field in required_fields:
                 if field not in body:
                     print(
-                        f"Missing required field 'response.body.{field}' in response {i+1}"
+                        f"Missing required field 'response.body.{field}' in response {i + 1}"
                     )
                     return False
 
         except json.JSONDecodeError as e:
-            print(f"Invalid JSON in output line {i+1}: {e}")
+            print(f"Invalid JSON in output line {i + 1}: {e}")
             return False
 
     return True

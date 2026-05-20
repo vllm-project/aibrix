@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from aibrix.storage import LocalStorage
+from aibrix.storage.factory import create_storage_from_env
 
 
 class TestLocalStorage:
@@ -41,11 +42,11 @@ class TestLocalStorage:
 
     @pytest.mark.asyncio
     async def test_environment_variable_override(self):
-        """Test that LOCAL_STORAGE_PATH environment variable is respected."""
+        """Test that STORAGE_LOCAL_PATH environment variable is respected."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             # Set environment variable
-            original_value = os.environ.get("LOCAL_STORAGE_PATH")
-            os.environ["LOCAL_STORAGE_PATH"] = tmp_dir
+            original_value = os.environ.get("STORAGE_LOCAL_PATH")
+            os.environ["STORAGE_LOCAL_PATH"] = tmp_dir
 
             try:
                 # Create storage without base_path - should use env var
@@ -54,9 +55,18 @@ class TestLocalStorage:
             finally:
                 # Restore original environment
                 if original_value is not None:
-                    os.environ["LOCAL_STORAGE_PATH"] = original_value
+                    os.environ["STORAGE_LOCAL_PATH"] = original_value
                 else:
-                    os.environ.pop("LOCAL_STORAGE_PATH", None)
+                    os.environ.pop("STORAGE_LOCAL_PATH", None)
+
+    @pytest.mark.asyncio
+    async def test_factory_uses_explicit_local_storage_type(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            monkeypatch.setenv("STORAGE_TYPE", "local")
+            monkeypatch.setenv("STORAGE_LOCAL_PATH", tmp_dir)
+            storage = create_storage_from_env()
+            assert isinstance(storage, LocalStorage)
+            assert str(storage.base_path) == tmp_dir
 
     @pytest.mark.asyncio
     async def test_directory_creation(self, local_storage: LocalStorage):

@@ -13,7 +13,11 @@
 # limitations under the License.
 
 from .job import JobCache
+from .mongodb import MongoJobCache
+from .redis import RedisJobCache
 
 __all__ = [
     "JobCache",
+    "MongoJobCache",
+    "RedisJobCache",
 ]
