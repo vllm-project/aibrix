@@ -1,6 +1,7 @@
 name: Test Helm Chart
 
 on:
+  workflow_dispatch:  # Allows manual trigger
   pull_request:
     paths:
       - 'dist/chart/**'
