@@ -22,6 +22,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -43,6 +44,8 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -80,12 +83,22 @@ func NewMySQLStore(dsn, encryptionKey string) (*GORMStore, error) {
 // such DSNs are pinned to a single connection so all queries see the same
 // in-process database.
 func NewSQLiteStore(dsn, encryptionKey string) (*GORMStore, error) {
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	dialector, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite: %w", err)
 	}
+
+	db, err := gorm.Open(sqlite.Dialector{
+		Conn: dialector,
+	}, &gorm.Config{})
+	if err != nil {
+		_ = dialector.Close()
+		return nil, fmt.Errorf("failed to open sqlite: %w", err)
+	}
+
 	sqlDB, err := db.DB()
 	if err != nil {
+		_ = dialector.Close()
 		return nil, fmt.Errorf("failed to access sqlite db: %w", err)
 	}
 	if isSQLiteInMemoryDSN(dsn) {
