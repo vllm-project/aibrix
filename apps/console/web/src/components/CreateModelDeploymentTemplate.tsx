@@ -36,7 +36,20 @@ function bumpVersion(v: string): string {
 }
 
 const ENGINE_TYPES = ['vllm', 'sglang', 'trtllm'];
-const MODEL_SOURCE_TYPES = ['huggingface', 's3', 'local'];
+const MODEL_SOURCE_TYPES = ['huggingface', 's3', 'local', 'hdfs'];
+
+// Per-source URI validation. Returns an error message or '' when valid.
+// Empty URI is accepted here; the form-level required check belongs elsewhere.
+function validateSourceUri(sourceType: string | undefined, uri: string): string {
+  if (!uri) return '';
+  if (sourceType === 'hdfs' && !uri.startsWith('hdfs://')) {
+    return 'HDFS URI must start with hdfs://';
+  }
+  if (sourceType === 's3' && !uri.startsWith('s3://')) {
+    return 'S3 URI must start with s3://';
+  }
+  return '';
+}
 
 interface SourceAuthHint {
   show: boolean;
@@ -100,26 +113,31 @@ const COMMON_ENDPOINTS = [
   '/v1/images/generations',
 ];
 
-// Curated list of well-known engine_args knobs surfaced as labeled inputs.
-// The data model is still a flat string map; this is purely a UI affordance.
-// Inputs not in this list are presented as a free-form key/value editor.
+// Per-engine curated knob lists.
 type KnobKind = 'int' | 'float' | 'bool' | 'string';
 interface KnownKnob {
   key: string;
   label: string;
   kind: KnobKind;
 }
-const KNOWN_ENGINE_ARGS: KnownKnob[] = [
-  { key: 'max_num_batched_tokens', label: 'max_num_batched_tokens', kind: 'int' },
-  { key: 'max_num_seqs', label: 'max_num_seqs', kind: 'int' },
-  { key: 'max_model_len', label: 'max_model_len', kind: 'int' },
-  { key: 'gpu_memory_utilization', label: 'gpu_memory_utilization', kind: 'float' },
-  { key: 'block_size', label: 'block_size', kind: 'int' },
-  { key: 'swap_space', label: 'swap_space (GB)', kind: 'int' },
-  { key: 'enable_prefix_caching', label: 'enable_prefix_caching', kind: 'bool' },
-  { key: 'enable_chunked_prefill', label: 'enable_chunked_prefill', kind: 'bool' },
-];
-const KNOWN_KEYS = new Set(KNOWN_ENGINE_ARGS.map((k) => k.key));
+const KNOWN_ENGINE_ARGS_BY_ENGINE: Record<string, KnownKnob[]> = {
+  vllm: [
+    { key: 'max_num_batched_tokens', label: 'max_num_batched_tokens', kind: 'int' },
+    { key: 'max_num_seqs', label: 'max_num_seqs', kind: 'int' },
+    { key: 'max_model_len', label: 'max_model_len', kind: 'int' },
+    { key: 'gpu_memory_utilization', label: 'gpu_memory_utilization', kind: 'float' },
+    { key: 'block_size', label: 'block_size', kind: 'int' },
+    { key: 'swap_space', label: 'swap_space (GB)', kind: 'int' },
+    { key: 'enable_prefix_caching', label: 'enable_prefix_caching', kind: 'bool' },
+    { key: 'enable_chunked_prefill', label: 'enable_chunked_prefill', kind: 'bool' },
+  ],
+  // sglang / trtllm: pending curation — fall through to custom editor for now.
+  sglang: [],
+  trtllm: [],
+};
+function knownArgsFor(engineType: string | undefined): KnownKnob[] {
+  return KNOWN_ENGINE_ARGS_BY_ENGINE[(engineType ?? '').trim().toLowerCase()] ?? [];
+}
 
 function emptySpec(): ModelDeploymentTemplateSpec {
   return {
@@ -155,6 +173,9 @@ export function CreateModelDeploymentTemplate({
   const [spec, setSpec] = useState<ModelDeploymentTemplateSpec>(emptySpec());
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // EngineArgsSection reports duplicate-key / empty-key issues here so save
+  // can be gated. null means no error.
+  const [engineArgsError, setEngineArgsError] = useState<string | null>(null);
 
   useEffect(() => {
     getModel(modelId).then(setModel).catch(() => setModel(null));
@@ -169,6 +190,9 @@ export function CreateModelDeploymentTemplate({
         setVersion(isClone ? bumpVersion(t.version) : t.version);
         setStatusValue(t.status);
         const s = t.spec ?? emptySpec();
+        const t0 = (s.engine?.type ?? '').trim().toLowerCase();
+        const normalizedType = ENGINE_TYPES.includes(t0) ? t0 : 'vllm';
+        s.engine = { ...(s.engine ?? {}), type: normalizedType };
         setSpec(s);
       })
       .catch(err => setError(`Failed to load template: ${err}`));
@@ -216,6 +240,15 @@ export function CreateModelDeploymentTemplate({
     }
     if (!spec.supportedEndpoints || spec.supportedEndpoints.length === 0) {
       setError('Pick at least one supported endpoint');
+      return;
+    }
+    const uriErr = validateSourceUri(spec.modelSource?.type, spec.modelSource?.uri ?? '');
+    if (uriErr) {
+      setError(uriErr);
+      return;
+    }
+    if (engineArgsError) {
+      setError(engineArgsError);
       return;
     }
 
@@ -339,13 +372,28 @@ export function CreateModelDeploymentTemplate({
                 </select>
               </Field>
               <Field label="URI" wide>
-                <input
-                  type="text"
-                  value={spec.modelSource?.uri ?? ''}
-                  onChange={(e) => updateSpec('modelSource', { uri: e.target.value })}
-                  placeholder="meta-llama/Llama-3.3-70B-Instruct or s3://bucket/path/"
-                  className={inputCls}
-                />
+                {(() => {
+                  const uri = spec.modelSource?.uri ?? '';
+                  const uriErr = validateSourceUri(sourceType, uri);
+                  const placeholder =
+                    sourceType === 'hdfs'
+                      ? 'hdfs://namenode:8020/models/Llama-3.3-70B-Instruct'
+                      : sourceType === 'local'
+                      ? '/mnt/models/Llama-3.3-70B-Instruct'
+                      : 'meta-llama/Llama-3.3-70B-Instruct or s3://bucket/path/';
+                  return (
+                    <>
+                      <input
+                        type="text"
+                        value={uri}
+                        onChange={(e) => updateSpec('modelSource', { uri: e.target.value })}
+                        placeholder={placeholder}
+                        className={uriErr ? inputErrCls : inputCls}
+                      />
+                      {uriErr && <p className="text-xs text-red-500 mt-1">{uriErr}</p>}
+                    </>
+                  );
+                })()}
               </Field>
               {isHF && (
                 <Field label="Revision">
@@ -490,8 +538,10 @@ export function CreateModelDeploymentTemplate({
 
           <EngineArgsSection
             bare
+            engineType={spec.engine?.type}
             args={spec.engineArgs ?? {}}
             onChange={(next) => setSpec((prev) => ({ ...prev, engineArgs: next }))}
+            onValidationChange={setEngineArgsError}
           />
 
           <SubSection title="Parallelism">
@@ -594,8 +644,10 @@ export function CreateModelDeploymentTemplate({
   );
 }
 
-const inputCls =
-  'w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500';
+const inputClsBase =
+  'w-full px-3 py-2 bg-white border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500';
+const inputCls = `${inputClsBase} border-gray-200`;
+const inputErrCls = `${inputClsBase} border-red-300`;
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -652,29 +704,35 @@ function newRowId(): string {
 function EngineArgsSection({
   args,
   onChange,
+  engineType,
+  onValidationChange,
   bare = false,
 }: {
   args: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
+  engineType?: string;
+  onValidationChange?: (err: string | null) => void;
   bare?: boolean;
 }) {
+  const knownKnobs = knownArgsFor(engineType);
+  const knownKeys = new Set(knownKnobs.map((k) => k.key));
+
   // Custom flags live in local array state so editing key/value to empty
-  // doesn't collapse the row (which the prior Record<string,string> design
-  // forced — empty string can't address an entry, and two empty keys can't
-  // coexist). Known-knob values still live in `args` and are synced through
-  // setKey below. We re-derive customRows from props when an external load
-  // happens (template fetch / clone) but skip our own emissions to avoid an
-  // update loop.
+  // doesn't collapse the row. Known-knob values live in `args` and are synced
+  // through setKey below. We re-derive customRows from props on external load
+  // (template fetch / clone) or when knownKeys changes (engine type switch)
+  // but skip our own emissions to avoid an update loop.
   const [customRows, setCustomRows] = useState<CustomRow[]>([]);
   const lastEmittedRef = useRef<Record<string, string> | null>(null);
 
   useEffect(() => {
     if (lastEmittedRef.current === args) return;
     const fromProps = Object.entries(args)
-      .filter(([k]) => !KNOWN_KEYS.has(k))
+      .filter(([k]) => !knownKeys.has(k))
       .map(([k, v]) => ({ id: newRowId(), key: k, value: v }));
     setCustomRows(fromProps);
-  }, [args]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [args, engineType]);
 
   // Compose final Record from current known-knob values plus custom rows
   // (skipping rows whose key is blank — they are placeholders the user is
@@ -682,7 +740,7 @@ function EngineArgsSection({
   const compose = (rows: CustomRow[], knownOverride?: { key: string; value: string | undefined }) => {
     const next: Record<string, string> = {};
     for (const [k, v] of Object.entries(args)) {
-      if (KNOWN_KEYS.has(k)) next[k] = v;
+      if (knownKeys.has(k)) next[k] = v;
     }
     if (knownOverride) {
       const { key, value } = knownOverride;
@@ -723,6 +781,28 @@ function EngineArgsSection({
     emit(next);
   };
 
+  // Detect duplicate / shadowing keys in the custom rows. The first match wins
+  // and is published up to the parent so it can gate the Save button.
+  const validationError = (() => {
+    const seen = new Set<string>();
+    for (const row of customRows) {
+      const k = row.key.trim();
+      if (!k) continue;
+      if (knownKeys.has(k)) {
+        return `engine_args: "${k}" shadows the labeled input above — remove the custom row`;
+      }
+      if (seen.has(k)) {
+        return `engine_args: duplicate flag "${k}"`;
+      }
+      seen.add(k);
+    }
+    return null;
+  })();
+
+  useEffect(() => {
+    onValidationChange?.(validationError);
+  }, [validationError, onValidationChange]);
+
   const wrapperClass = bare
     ? 'py-5 first:pt-0 last:pb-0'
     : 'bg-white rounded-xl shadow-sm border border-gray-100 p-6';
@@ -741,8 +821,9 @@ function EngineArgsSection({
         )}
       </div>
 
+      {knownKnobs.length > 0 && (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-        {KNOWN_ENGINE_ARGS.map((knob) => {
+        {knownKnobs.map((knob) => {
           const raw = args[knob.key];
           if (knob.kind === 'bool') {
             const value = raw === undefined ? '' : raw === 'true' ? 'true' : 'false';
@@ -775,8 +856,9 @@ function EngineArgsSection({
           );
         })}
       </div>
+      )}
 
-      <div className="border-t border-gray-100 pt-4">
+      <div className={knownKnobs.length > 0 ? 'border-t border-gray-100 pt-4' : ''}>
         <div className="flex items-center justify-between mb-2">
           <h4 className="text-xs text-gray-700">Custom flags</h4>
           <button
@@ -791,14 +873,26 @@ function EngineArgsSection({
           <p className="text-xs text-gray-400">No custom flags set.</p>
         ) : (
           <div className="space-y-2">
-            {customRows.map((row) => (
-              <div key={row.id} className="flex items-center gap-2">
+            {customRows.map((row) => {
+              const trimmed = row.key.trim();
+              const dupKnown = trimmed && knownKeys.has(trimmed);
+              const dupCustom =
+                trimmed &&
+                customRows.some((r) => r.id !== row.id && r.key.trim() === trimmed);
+              const rowErr = dupKnown
+                ? `Use the labeled "${trimmed}" input above`
+                : dupCustom
+                ? 'Duplicate flag name'
+                : '';
+              return (
+              <div key={row.id} className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
                 <input
                   type="text"
                   value={row.key}
                   placeholder="flag_name"
                   onChange={(e) => updateRow(row.id, { key: e.target.value })}
-                  className={`${inputCls} flex-1 font-mono`}
+                  className={`${rowErr ? inputErrCls : inputCls} flex-1 font-mono`}
                 />
                 <input
                   type="text"
@@ -816,7 +910,10 @@ function EngineArgsSection({
                   ×
                 </button>
               </div>
-            ))}
+              {rowErr && <p className="text-xs text-red-500">{rowErr}</p>}
+              </div>
+              );
+            })}
           </div>
         )}
       </div>

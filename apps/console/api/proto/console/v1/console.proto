@@ -245,6 +245,13 @@ service ModelService {
       get: "/api/v1/models/{id}"
     };
   }
+
+  rpc CreateModel(CreateModelRequest) returns (Model) {
+    option (google.api.http) = {
+      post: "/api/v1/models"
+      body: "*"
+    };
+  }
 }
 
 message Model {
@@ -301,6 +308,28 @@ message ListModelsResponse {
 
 message GetModelRequest {
   string id = 1;
+}
+
+// CreateModelRequest creates a catalog entry. `id` is optional — when empty
+// the server derives one from `name` (kebab-case, prefixed with "model-").
+// `categories` and `serving_name` should be set if the model is meant to be
+// usable for batch / online inference; otherwise it appears in the catalog
+// but selection paths that filter on category may skip it.
+message CreateModelRequest {
+  string id = 1;                       // optional; server derives from name when empty
+  string name = 2;                     // required, human-readable
+  string icon_bg = 3;
+  string icon_text = 4;
+  string icon_text_color = 5;
+  repeated string categories = 6;      // see Model.categories for valid values
+  bool is_new = 7;
+  ModelPricing pricing = 8;
+  string context_length = 9;
+  string description = 10;
+  ModelMetadata metadata = 11;
+  ModelSpecification specification = 12;
+  repeated string tags = 13;
+  string serving_name = 14;            // required for runnable models
 }
 
 // =============================================================================
