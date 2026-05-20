@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS deployments (
     deployment_id      VARCHAR(255)  NOT NULL DEFAULT '' COMMENT 'Short 8-char ID for K8s resource naming',
     base_model         VARCHAR(255)  NOT NULL DEFAULT '' COMMENT 'Model display name (e.g., llama-2-7b)',
     base_model_id      VARCHAR(255)  NOT NULL DEFAULT '' COMMENT 'Derived model ID for lookups (lowercase, hyphenated)',
-    replicas           INT           NOT NULL DEFAULT 1 COMMENT 'Number of replicas',
+    min_replicas       INT           NOT NULL DEFAULT 1 COMMENT 'Minimum number of replicas',
+    max_replicas       INT           NOT NULL DEFAULT 1 COMMENT 'Maximum number of replicas',
     gpus_per_replica   INT           NOT NULL DEFAULT 0 COMMENT 'GPUs per replica',
     gpu_type           VARCHAR(255)  NOT NULL DEFAULT '' COMMENT 'GPU type',
     region             VARCHAR(255)  NOT NULL DEFAULT '' COMMENT 'Deployment region',
@@ -168,7 +169,6 @@ CREATE TABLE IF NOT EXISTS model_deployment_templates (
     UNIQUE INDEX uniq_model_tpl_id (id),
     UNIQUE INDEX uniq_model_tpl_name_ver (model_id, name, version),
     INDEX idx_model_tpl_status (status, model_id),
-    INDEX idx_model_tpl_model_name (model_id, name),
     INDEX idx_model_tpl_deleted (deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Model deployment template records';
 
@@ -263,6 +263,5 @@ CREATE TABLE IF NOT EXISTS provision_results (
     UNIQUE INDEX uniq_provision_results_provision_id (provision_id),
     INDEX idx_provision_results_region (region),
     INDEX idx_provision_results_provider (provider),
-    INDEX idx_provision_results_status_deleted (status, deleted),
-    INDEX idx_provision_results_provision_deleted (provision_id, deleted)
+    INDEX idx_provision_results_status_deleted (status, deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Provision result records';

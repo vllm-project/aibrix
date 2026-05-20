@@ -29,10 +29,10 @@ import (
 type ModelDeploymentTemplate struct {
 	RowID     uint64         `gorm:"column:row_id;primaryKey;autoIncrement"`
 	ID        string         `gorm:"column:id;size:36;not null;uniqueIndex:uniq_model_tpl_id"`
-	Name      string         `gorm:"column:name;size:255;not null;default:'';index:idx_model_tpl_model_name,priority:2;uniqueIndex:uniq_model_tpl_name_ver,priority:2"`
+	Name      string         `gorm:"column:name;size:255;not null;default:'';uniqueIndex:uniq_model_tpl_name_ver,priority:2"`
 	Version   string         `gorm:"column:version;size:64;not null;default:'';uniqueIndex:uniq_model_tpl_name_ver,priority:3"`
 	Status    string         `gorm:"column:status;size:64;not null;default:'active';index:idx_model_tpl_status"`
-	ModelID   string         `gorm:"column:model_id;size:36;not null;default:'';index:idx_model_tpl_status;index:idx_model_tpl_model_name,priority:1;uniqueIndex:uniq_model_tpl_name_ver,priority:1"`
+	ModelID   string         `gorm:"column:model_id;size:36;not null;default:'';index:idx_model_tpl_status;uniqueIndex:uniq_model_tpl_name_ver,priority:1"`
 	Spec      datatypes.JSON `gorm:"column:spec"`
 	Deleted   bool           `gorm:"column:deleted;not null;default:false;index:idx_model_tpl_deleted"`
 	CreatedAt time.Time      `gorm:"column:created_at;autoCreateTime"`

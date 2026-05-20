@@ -35,6 +35,7 @@ import (
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
+	"github.com/vllm-project/aibrix/apps/console/api/utils"
 )
 
 // Planner is an asynchronous implementation of plannerapi.Planner.
@@ -354,17 +355,17 @@ func (q *Planner) syncFromBatch(jobID string, batch *openai.Batch) {
 
 // mergeBatchIntoModel overlays MDS-owned batch fields onto rec.
 func mergeBatchIntoModel(rec *models.Job, b *openai.Batch) {
-	rec.BatchCreatedAt = unixToTime(b.CreatedAt)
+	rec.BatchCreatedAt = utils.UnixToTimePtr(b.CreatedAt)
 	rec.OutputDataset = b.OutputFileID
 	rec.ErrorDataset = b.ErrorFileID
-	rec.InProgressAt = unixToTime(b.InProgressAt)
-	rec.ExpiresAt = unixToTime(b.ExpiresAt)
-	rec.FinalizingAt = unixToTime(b.FinalizingAt)
-	rec.CompletedAt = unixToTime(b.CompletedAt)
-	rec.FailedAt = unixToTime(b.FailedAt)
-	rec.ExpiredAt = unixToTime(b.ExpiredAt)
-	rec.CancellingAt = unixToTime(b.CancellingAt)
-	rec.CancelledAt = unixToTime(b.CancelledAt)
+	rec.InProgressAt = utils.UnixToTimePtr(b.InProgressAt)
+	rec.ExpiresAt = utils.UnixToTimePtr(b.ExpiresAt)
+	rec.FinalizingAt = utils.UnixToTimePtr(b.FinalizingAt)
+	rec.CompletedAt = utils.UnixToTimePtr(b.CompletedAt)
+	rec.FailedAt = utils.UnixToTimePtr(b.FailedAt)
+	rec.ExpiredAt = utils.UnixToTimePtr(b.ExpiredAt)
+	rec.CancellingAt = utils.UnixToTimePtr(b.CancellingAt)
+	rec.CancelledAt = utils.UnixToTimePtr(b.CancelledAt)
 	if b.JSON.RequestCounts.Valid() {
 		if data, err := json.Marshal(b.RequestCounts); err == nil {
 			rec.RequestCounts = datatypes.JSON(data)
@@ -380,13 +381,6 @@ func mergeBatchIntoModel(rec *models.Job, b *openai.Batch) {
 			rec.ErrorMessage = string(data)
 		}
 	}
-}
-
-func unixToTime(sec int64) time.Time {
-	if sec <= 0 {
-		return time.Time{}
-	}
-	return time.Unix(sec, 0)
 }
 
 // persist writes the in-memory queuedJob snapshot for jobID to the store.
@@ -485,13 +479,13 @@ func modelToJob(rec *models.Job) *queuedJob {
 		provisionID:         rec.ProvisionID,
 		batchID:             rec.BatchID,
 		errMsg:              rec.ErrorMessage,
-		queuedAt:            rec.QueuedAt,
-		resourcePreparingAt: rec.ResourcePreparingAt,
-		submittingAt:        rec.SubmittingAt,
-		resourceFailedAt:    rec.ResourceFailedAt,
-		submitFailedAt:      rec.SubmitFailedAt,
-		cancelRequestedAt:   rec.CancelRequestedAt,
-		canceledAt:          rec.CancelledAt,
+		queuedAt:            utils.TimeOrZero(rec.QueuedAt),
+		resourcePreparingAt: utils.TimeOrZero(rec.ResourcePreparingAt),
+		submittingAt:        utils.TimeOrZero(rec.SubmittingAt),
+		resourceFailedAt:    utils.TimeOrZero(rec.ResourceFailedAt),
+		submitFailedAt:      utils.TimeOrZero(rec.SubmitFailedAt),
+		cancelRequestedAt:   utils.TimeOrZero(rec.CancelRequestedAt),
+		canceledAt:          utils.TimeOrZero(rec.CancelledAt),
 	}
 }
 
@@ -506,13 +500,13 @@ func jobToModel(j *queuedJob) *models.Job {
 		Endpoint:            string(j.req.BatchParams.Endpoint),
 		InputDataset:        j.req.BatchParams.InputFileID,
 		CompletionWindow:    string(j.req.BatchParams.CompletionWindow),
-		QueuedAt:            j.queuedAt,
-		ResourcePreparingAt: j.resourcePreparingAt,
-		SubmittingAt:        j.submittingAt,
-		ResourceFailedAt:    j.resourceFailedAt,
-		SubmitFailedAt:      j.submitFailedAt,
-		CancelRequestedAt:   j.cancelRequestedAt,
-		CancelledAt:         j.canceledAt,
+		QueuedAt:            utils.TimeToPtr(j.queuedAt),
+		ResourcePreparingAt: utils.TimeToPtr(j.resourcePreparingAt),
+		SubmittingAt:        utils.TimeToPtr(j.submittingAt),
+		ResourceFailedAt:    utils.TimeToPtr(j.resourceFailedAt),
+		SubmitFailedAt:      utils.TimeToPtr(j.submitFailedAt),
+		CancelRequestedAt:   utils.TimeToPtr(j.cancelRequestedAt),
+		CancelledAt:         utils.TimeToPtr(j.canceledAt),
 		ErrorMessage:        j.errMsg,
 	}
 	if j.req.ModelTemplate != nil {

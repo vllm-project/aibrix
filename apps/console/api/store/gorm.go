@@ -226,7 +226,7 @@ func (s *GORMStore) GetDeployment(ctx context.Context, id string) (*pb.Deploymen
 func (s *GORMStore) CreateDeployment(ctx context.Context, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
 	id := uuid.NewString()
 	deploymentID := uuid.NewString()[:8]
-	d := models.Deployment{ID: id, Name: req.Name, DeploymentID: deploymentID, BaseModel: req.BaseModel, BaseModelID: strings.ToLower(strings.ReplaceAll(req.BaseModel, " ", "-")), Replicas: req.MinReplicas, GpusPerReplica: req.AcceleratorCount, GpuType: req.AcceleratorType, Region: req.Region, Status: "Deploying"}
+	d := models.Deployment{ID: id, Name: req.Name, DeploymentID: deploymentID, BaseModel: req.BaseModel, BaseModelID: strings.ToLower(strings.ReplaceAll(req.BaseModel, " ", "-")), MinReplicas: req.MinReplicas, MaxReplicas: req.MaxReplicas, GpusPerReplica: req.AcceleratorCount, GpuType: req.AcceleratorType, Region: req.Region, Status: "Deploying"}
 	if err := s.db.WithContext(ctx).Create(&d).Error; err != nil {
 		return nil, status.Errorf(codes.Internal, "create deployment: %v", err)
 	}

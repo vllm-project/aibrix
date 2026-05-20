@@ -17,6 +17,8 @@ limitations under the License.
 package models
 
 import (
+	"fmt"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -32,7 +34,8 @@ type Deployment struct {
 	DeploymentID     string         `gorm:"column:deployment_id;size:255;not null;default:''"`
 	BaseModel        string         `gorm:"column:base_model;size:255;not null;default:'';index:idx_deployments_base_model"`
 	BaseModelID      string         `gorm:"column:base_model_id;size:255;not null;default:''"`
-	Replicas         int32          `gorm:"column:replicas;not null;default:1"`
+	MinReplicas      int32          `gorm:"column:min_replicas;not null;default:1"`
+	MaxReplicas      int32          `gorm:"column:max_replicas;not null;default:1"`
 	GpusPerReplica   int32          `gorm:"column:gpus_per_replica;not null;default:0"`
 	GpuType          string         `gorm:"column:gpu_type;size:255;not null;default:''"`
 	Region           string         `gorm:"column:region;size:255;not null;default:''"`
@@ -64,17 +67,57 @@ func (d *Deployment) FromPB(src *pb.Deployment) error {
 	d.DeploymentID = src.DeploymentId
 	d.BaseModel = src.BaseModel
 	d.BaseModelID = src.BaseModelId
-	val, err := strconv.ParseInt(src.Replicas, 10, 32)
+
+	// src.Replicas is in the format of %d[%d], parse it to MinReplicas and MaxReplicas
+	minReplicas, maxReplicas, err := parseReplicas(src.Replicas)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to parse replicas: %w", err)
 	}
-	d.Replicas = int32(val)
+
+	if maxReplicas < minReplicas {
+		return fmt.Errorf("max_replicas (%d) cannot be less than min_replicas (%d)", maxReplicas, minReplicas)
+	}
+
+	d.MinReplicas = minReplicas
+	d.MaxReplicas = maxReplicas
 	d.GpusPerReplica = src.GpusPerReplica
 	d.GpuType = src.GpuType
 	d.Region = src.Region
 	d.CreatedBy = src.CreatedBy
 	d.Status = src.Status
 	return nil
+}
+
+// replicasRegex matches formats: "1" or "1[01]" or "10[05]"
+var replicasRegex = regexp.MustCompile(`^(\d+)(?:\[(\d+)\])?$`)
+
+func parseReplicas(replicasStr string) (int32, int32, error) {
+	if len(replicasStr) == 0 {
+		return 1, 1, nil
+	}
+
+	// Validate format using regex: must be %d or %d[%d]
+	matches := replicasRegex.FindStringSubmatch(replicasStr)
+	if matches == nil {
+		return 1, 1, fmt.Errorf("invalid replicas format: %s", replicasStr)
+	}
+
+	// Parse min replicas
+	minReplicas, err := strconv.ParseInt(matches[1], 10, 32)
+	if err != nil || minReplicas < 0 {
+		minReplicas = 1
+	}
+
+	// Parse max replicas
+	maxReplicas := minReplicas
+	if len(matches) > 2 && matches[2] != "" {
+		maxVal, err := strconv.ParseInt(matches[2], 10, 32)
+		if err == nil && maxVal >= 0 {
+			maxReplicas = maxVal
+		}
+	}
+
+	return int32(minReplicas), int32(maxReplicas), nil
 }
 
 // ToPB converts Deployment to pb.Deployment.
@@ -85,7 +128,7 @@ func (d *Deployment) ToPB() (*pb.Deployment, error) {
 		DeploymentId:   d.DeploymentID,
 		BaseModel:      d.BaseModel,
 		BaseModelId:    d.BaseModelID,
-		Replicas:       strconv.FormatInt(int64(d.Replicas), 10),
+		Replicas:       fmt.Sprintf("%d[%d]", d.MinReplicas, d.MaxReplicas),
 		GpusPerReplica: d.GpusPerReplica,
 		GpuType:        d.GpuType,
 		Region:         d.Region,
