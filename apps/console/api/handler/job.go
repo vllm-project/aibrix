@@ -214,11 +214,10 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 		if tpl := h.resolveTemplate(ctx, templateName, req.ModelTemplateVersion); tpl != nil {
 			modelID = tpl.ModelId
 			if tpl.Spec != nil {
-				// protojson preserves proto3 wire conventions (enums as
-				// strings, snake_case field names) that the Python pydantic
-				// consumer expects; encoding/json would emit Go field names
-				// and int enums.
-				if specBytes, err := protojson.Marshal(tpl.Spec); err == nil {
+				// UseProtoNames keeps snake_case proto field names (engine_args,
+				// model_source, ...) that the Python pydantic consumer expects;
+				// default protojson uses lowerCamelCase. Enums still serialize as strings.
+				if specBytes, err := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(tpl.Spec); err == nil {
 					modelTemplate.Spec = specBytes
 				} else {
 					klog.Warningf("marshal template spec %q/%q: %v", templateName, req.ModelTemplateVersion, err)
