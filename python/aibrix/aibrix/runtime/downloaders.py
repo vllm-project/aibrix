@@ -157,6 +157,7 @@ class S3ArtifactDownloader(ArtifactDownloader):
     ) -> None:
         """Download all objects under a prefix (directory)."""
         paginator = s3_client.get_paginator("list_objects_v2")
+        downloaded = 0
         for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
             if "Contents" not in page:
                 continue
@@ -178,7 +179,13 @@ class S3ArtifactDownloader(ArtifactDownloader):
                 tmp_file = local_file_path + PART_SUFFIX
                 s3_client.download_file(bucket_name, key, tmp_file)
                 os.replace(tmp_file, local_file_path)
+                downloaded += 1
                 logger.debug(f"Downloaded {key} to {local_file_path}")
+
+        if downloaded == 0:
+            raise FileNotFoundError(
+                f"No objects found under S3 prefix: s3://{bucket_name}/{prefix}"
+            )
 
         logger.info(f"Downloaded S3 directory {prefix} to {local_path}")
 
@@ -251,6 +258,7 @@ class GCSArtifactDownloader(ArtifactDownloader):
             if blob_name.endswith("/"):
                 # Download directory
                 blobs = list(bucket.list_blobs(prefix=blob_name))
+                downloaded = 0
                 for blob in blobs:
                     if blob.name == blob_name:  # Skip directory marker
                         continue
@@ -265,7 +273,14 @@ class GCSArtifactDownloader(ArtifactDownloader):
                     tmp_file = local_file_path + PART_SUFFIX
                     blob.download_to_filename(tmp_file)
                     os.replace(tmp_file, local_file_path)
+                    downloaded += 1
                     logger.debug(f"Downloaded {blob.name} to {local_file_path}")
+
+                if downloaded == 0:
+                    raise FileNotFoundError(
+                        f"No objects found under GCS prefix: "
+                        f"gs://{bucket_name}/{blob_name}"
+                    )
 
                 logger.info(f"Downloaded GCS directory {blob_name} to {local_path}")
             else:
@@ -279,6 +294,10 @@ class GCSArtifactDownloader(ArtifactDownloader):
 
             return local_path
 
+        except (FileNotFoundError, PermissionError):
+            # Preserve precise exception types raised by our own validation
+            # (e.g. zero-object prefix) rather than re-wrapping them.
+            raise
         except Exception as e:
             if "404" in str(e):
                 raise FileNotFoundError(f"GCS object not found: {source_url}")
@@ -389,6 +408,10 @@ class TOSArtifactDownloader(ArtifactDownloader):
 
             return local_path
 
+        except (FileNotFoundError, PermissionError):
+            # Preserve precise exception types raised by our own validation
+            # (e.g. zero-object prefix) rather than re-wrapping them.
+            raise
         except (TosClientError, TosServerError) as e:
             logger.error(f"TOS download error: {e}")
             status_code = getattr(e, "status_code", None)
@@ -405,6 +428,7 @@ class TOSArtifactDownloader(ArtifactDownloader):
         # We currently only fetch the first page. This is OK for small model artifacts, but may miss objects
         # if the prefix contains many keys.
         resp = client.list_objects_type2(bucket_name, prefix=prefix)
+        downloaded = 0
         for obj in getattr(resp, "contents", []) or []:
             key = getattr(obj, "key", None)
             if not key or key == prefix:
@@ -425,6 +449,12 @@ class TOSArtifactDownloader(ArtifactDownloader):
             tmp_file = local_file_path + PART_SUFFIX
             client.download_file(bucket=bucket_name, key=key, file_path=tmp_file)
             os.replace(tmp_file, local_file_path)
+            downloaded += 1
+
+        if downloaded == 0:
+            raise FileNotFoundError(
+                f"No objects found under TOS prefix: tos://{bucket_name}/{prefix}"
+            )
 
         logger.info(f"Downloaded TOS directory {prefix} to {local_path}")
 
