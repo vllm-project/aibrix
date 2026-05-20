@@ -17,6 +17,7 @@ limitations under the License.
 package models
 
 import (
+	"strconv"
 	"time"
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
@@ -25,17 +26,18 @@ import (
 
 // Deployment maps to deployments table.
 type Deployment struct {
-	ID               string         `gorm:"column:id;primaryKey;size:36"`
-	Name             string         `gorm:"column:name;size:255;not null"`
-	DeploymentID     string         `gorm:"column:deployment_id;size:255;not null"`
-	BaseModel        string         `gorm:"column:base_model;size:255;not null;default:''"`
+	RowID            uint64         `gorm:"column:row_id;primaryKey;autoIncrement"`
+	ID               string         `gorm:"column:id;size:36;not null;uniqueIndex:uniq_deployments_id"`
+	Name             string         `gorm:"column:name;size:255;not null;default:'';index:idx_deployments_name"`
+	DeploymentID     string         `gorm:"column:deployment_id;size:255;not null;default:''"`
+	BaseModel        string         `gorm:"column:base_model;size:255;not null;default:'';index:idx_deployments_base_model"`
 	BaseModelID      string         `gorm:"column:base_model_id;size:255;not null;default:''"`
-	Replicas         string         `gorm:"column:replicas;size:255;not null;default:'1'"`
+	Replicas         int32          `gorm:"column:replicas;not null;default:1"`
 	GpusPerReplica   int32          `gorm:"column:gpus_per_replica;not null;default:0"`
 	GpuType          string         `gorm:"column:gpu_type;size:255;not null;default:''"`
 	Region           string         `gorm:"column:region;size:255;not null;default:''"`
-	CreatedBy        string         `gorm:"column:created_by;size:255;not null;default:''"`
-	Status           string         `gorm:"column:status;size:255;not null;default:'Deploying'"`
+	CreatedBy        string         `gorm:"column:created_by;size:255;not null;default:'';index:idx_deployments_created_by"`
+	Status           string         `gorm:"column:status;size:255;not null;default:'Deploying';index:idx_deployments_status"`
 	ModelSource      string         `gorm:"column:model_source;size:255;not null;default:''"`
 	ModelArtifactURL string         `gorm:"column:model_artifact_url;size:1000;not null;default:''"`
 	Engine           string         `gorm:"column:engine;size:255;not null;default:''"`
@@ -44,6 +46,7 @@ type Deployment struct {
 	ExtraArgs        datatypes.JSON `gorm:"column:extra_args"`
 	Namespace        string         `gorm:"column:namespace;size:255;not null;default:'default'"`
 	K8sResourceName  string         `gorm:"column:k8s_resource_name;size:255;not null;default:''"`
+	Deleted          bool           `gorm:"column:deleted;not null;default:false;index"`
 	CreatedAt        time.Time      `gorm:"column:created_at;autoCreateTime"`
 	UpdatedAt        time.Time      `gorm:"column:updated_at;autoUpdateTime"`
 }
@@ -61,7 +64,11 @@ func (d *Deployment) FromPB(src *pb.Deployment) error {
 	d.DeploymentID = src.DeploymentId
 	d.BaseModel = src.BaseModel
 	d.BaseModelID = src.BaseModelId
-	d.Replicas = src.Replicas
+	val, err := strconv.ParseInt(src.Replicas, 10, 32)
+	if err != nil {
+		return err
+	}
+	d.Replicas = int32(val)
 	d.GpusPerReplica = src.GpusPerReplica
 	d.GpuType = src.GpuType
 	d.Region = src.Region
@@ -78,7 +85,7 @@ func (d *Deployment) ToPB() (*pb.Deployment, error) {
 		DeploymentId:   d.DeploymentID,
 		BaseModel:      d.BaseModel,
 		BaseModelId:    d.BaseModelID,
-		Replicas:       d.Replicas,
+		Replicas:       strconv.FormatInt(int64(d.Replicas), 10),
 		GpusPerReplica: d.GpusPerReplica,
 		GpuType:        d.GpuType,
 		Region:         d.Region,

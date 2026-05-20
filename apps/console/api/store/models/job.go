@@ -27,7 +27,8 @@ import (
 
 // Job stores full batch job records including metadata-service owned fields.
 type Job struct {
-	ID                   string         `gorm:"column:id;primaryKey;size:64"`
+	RowID                uint64         `gorm:"column:row_id;primaryKey;autoIncrement"`
+	ID                   string         `gorm:"column:id;size:64;not null;uniqueIndex:uniq_jobs_id"`
 	Endpoint             string         `gorm:"column:endpoint;size:255;not null;default:''"`
 	Model                string         `gorm:"column:model;size:255;not null;default:'';index:idx_jobs_model"`
 	InputDataset         string         `gorm:"column:input_dataset;size:255;not null;default:''"`
@@ -45,21 +46,22 @@ type Job struct {
 	CancellingAt         time.Time      `gorm:"column:cancelling_at"`
 	CancelledAt          time.Time      `gorm:"column:cancelled_at"`
 	RequestCounts        datatypes.JSON `gorm:"column:request_counts"`
-	Usage                datatypes.JSON `gorm:"column:usage"`
+	Usage                datatypes.JSON `gorm:"column:usage_stats"`
 	Metadata             datatypes.JSON `gorm:"column:metadata"`
 	Name                 string         `gorm:"column:name;size:255;not null;default:''"`
 	CreatedBy            string         `gorm:"column:created_by;size:255;not null;default:''"`
 	ModelTemplateName    string         `gorm:"column:model_template_name;size:255;not null;default:''"`
 	ModelTemplateVersion string         `gorm:"column:model_template_version;size:64;not null;default:''"`
 	BatchID              string         `gorm:"column:batch_id;size:64;not null;default:'';index:idx_jobs_batch_id"`
-	ProvisionID          string         `gorm:"column:provision_id;size:64;not null;default:''"`
+	ProvisionID          string         `gorm:"column:provision_id;size:36;not null;default:''"`
 	QueuedAt             time.Time      `gorm:"column:queued_at"`
 	ResourcePreparingAt  time.Time      `gorm:"column:resource_preparing_at"`
 	SubmittingAt         time.Time      `gorm:"column:submitting_at"`
 	ResourceFailedAt     time.Time      `gorm:"column:resource_failed_at"`
 	SubmitFailedAt       time.Time      `gorm:"column:submit_failed_at"`
 	CancelRequestedAt    time.Time      `gorm:"column:cancel_requested_at"`
-	ErrorMessage         string         `gorm:"column:error_message;type:TEXT"`
+	ErrorMessage         string         `gorm:"column:error_msg;type:TEXT"`
+	Deleted              bool           `gorm:"column:deleted;not null;default:false;index:idx_jobs_deleted"`
 	CreatedAt            time.Time      `gorm:"column:created_at;autoCreateTime;index:idx_jobs_created_at"`
 	UpdatedAt            time.Time      `gorm:"column:updated_at;autoUpdateTime"`
 }

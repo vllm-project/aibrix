@@ -24,10 +24,12 @@ import (
 
 // APIKey maps api_keys table.
 type APIKey struct {
-	ID        string    `gorm:"column:id;primaryKey;size:36"`
-	Name      string    `gorm:"column:name;size:255;not null"`
-	KeyHash   string    `gorm:"column:key_hash;size:255;not null"`
+	RowID     uint64    `gorm:"column:row_id;primaryKey;autoIncrement"`
+	ID        string    `gorm:"column:id;size:36;not null;uniqueIndex:uniq_api_keys_id"`
+	Name      string    `gorm:"column:name;size:255;not null;default:'';index:idx_api_keys_name"`
+	KeyHash   string    `gorm:"column:key_hash;size:255;not null;default:''"`
 	KeyPrefix string    `gorm:"column:key_prefix;size:255;not null;default:''"`
+	Deleted   bool      `gorm:"column:deleted;not null;default:false;index"`
 	CreatedAt time.Time `gorm:"column:created_at;autoCreateTime"`
 }
 

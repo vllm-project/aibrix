@@ -175,7 +175,7 @@ func hashAPIKey(fullKey string) string {
 }
 
 func (s *GORMStore) ListDeployments(ctx context.Context, search string) ([]*pb.Deployment, error) {
-	q := s.db.WithContext(ctx).Model(&models.Deployment{})
+	q := s.db.WithContext(ctx).Model(&models.Deployment{}).Where("deleted = ?", false)
 	if search != "" {
 		like := "%" + search + "%"
 		q = q.Where("name LIKE ? OR base_model LIKE ? OR created_by LIKE ?", like, like, like)
@@ -197,7 +197,7 @@ func (s *GORMStore) ListDeployments(ctx context.Context, search string) ([]*pb.D
 
 func (s *GORMStore) GetDeployment(ctx context.Context, id string) (*pb.Deployment, error) {
 	var row models.Deployment
-	if err := s.db.WithContext(ctx).First(&row, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("deleted = ?", false).First(&row, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, status.Errorf(codes.NotFound, "deployment %q not found", id)
 		}
@@ -213,7 +213,7 @@ func (s *GORMStore) GetDeployment(ctx context.Context, id string) (*pb.Deploymen
 func (s *GORMStore) CreateDeployment(ctx context.Context, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
 	id := uuid.NewString()
 	deploymentID := uuid.NewString()[:8]
-	d := models.Deployment{ID: id, Name: req.Name, DeploymentID: deploymentID, BaseModel: req.BaseModel, BaseModelID: strings.ToLower(strings.ReplaceAll(req.BaseModel, " ", "-")), Replicas: fmt.Sprintf("%d", req.MinReplicas), GpusPerReplica: req.AcceleratorCount, GpuType: req.AcceleratorType, Region: req.Region, Status: "Deploying"}
+	d := models.Deployment{ID: id, Name: req.Name, DeploymentID: deploymentID, BaseModel: req.BaseModel, BaseModelID: strings.ToLower(strings.ReplaceAll(req.BaseModel, " ", "-")), Replicas: req.MinReplicas, GpusPerReplica: req.AcceleratorCount, GpuType: req.AcceleratorType, Region: req.Region, Status: "Deploying"}
 	if err := s.db.WithContext(ctx).Create(&d).Error; err != nil {
 		return nil, status.Errorf(codes.Internal, "create deployment: %v", err)
 	}
@@ -225,14 +225,7 @@ func (s *GORMStore) CreateDeployment(ctx context.Context, req *pb.CreateDeployme
 }
 
 func (s *GORMStore) DeleteDeployment(ctx context.Context, id string) error {
-	res := s.db.WithContext(ctx).Delete(&models.Deployment{}, "id = ?", id)
-	if res.Error != nil {
-		return status.Errorf(codes.Internal, "delete deployment: %v", res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return status.Errorf(codes.NotFound, "deployment %q not found", id)
-	}
-	return nil
+	return s.db.WithContext(ctx).Model(&models.Deployment{}).Where("id = ? AND deleted = ?", id, false).Update("deleted", true).Error
 }
 
 func (s *GORMStore) UpsertJob(ctx context.Context, rec *models.Job) error {
@@ -250,7 +243,7 @@ func (s *GORMStore) UpsertJob(ctx context.Context, rec *models.Job) error {
 
 func (s *GORMStore) GetJob(ctx context.Context, id string) (*models.Job, error) {
 	var rec models.Job
-	if err := s.db.WithContext(ctx).First(&rec, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("deleted = ?", false).First(&rec, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -265,7 +258,7 @@ func (s *GORMStore) ListJobs(ctx context.Context, ids []string) (map[string]*mod
 		return out, nil
 	}
 	var rows []models.Job
-	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&rows).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("deleted = ?", false).Where("id IN ?", ids).Find(&rows).Error; err != nil {
 		return nil, status.Errorf(codes.Internal, "list jobs: %v", err)
 	}
 	for i := range rows {
@@ -275,10 +268,7 @@ func (s *GORMStore) ListJobs(ctx context.Context, ids []string) (map[string]*mod
 }
 
 func (s *GORMStore) DeleteJob(ctx context.Context, id string) error {
-	if err := s.db.WithContext(ctx).Delete(&models.Job{}, "id = ?", id).Error; err != nil {
-		return status.Errorf(codes.Internal, "delete job: %v", err)
-	}
-	return nil
+	return s.db.WithContext(ctx).Model(&models.Job{}).Where("id = ? AND deleted = ?", id, false).Update("deleted", true).Error
 }
 
 // terminalJobStatuses lists the JobStatus string values that ListNonTerminalJobs excludes.
@@ -289,6 +279,7 @@ var terminalJobStatuses = []string{
 func (s *GORMStore) ListNonTerminalJobs(ctx context.Context) ([]*models.Job, error) {
 	var rows []models.Job
 	if err := s.db.WithContext(ctx).
+		Where("deleted = ?", false).
 		Where("status <> '' AND status NOT IN ?", terminalJobStatuses).
 		Find(&rows).Error; err != nil {
 		return nil, status.Errorf(codes.Internal, "list non-terminal jobs: %v", err)
@@ -301,7 +292,7 @@ func (s *GORMStore) ListNonTerminalJobs(ctx context.Context) ([]*models.Job, err
 }
 
 func (s *GORMStore) ListModels(ctx context.Context, search, category string) ([]*pb.Model, error) {
-	q := s.db.WithContext(ctx).Model(&models.Model{})
+	q := s.db.WithContext(ctx).Model(&models.Model{}).Where("deleted = ?", false)
 	if search != "" {
 		like := "%" + search + "%"
 		q = q.Where("name LIKE ? OR provider LIKE ?", like, like)
@@ -328,7 +319,7 @@ func (s *GORMStore) ListModels(ctx context.Context, search, category string) ([]
 
 func (s *GORMStore) GetModel(ctx context.Context, id string) (*pb.Model, error) {
 	var rec models.Model
-	if err := s.db.WithContext(ctx).First(&rec, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("deleted = ?", false).First(&rec, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, status.Errorf(codes.NotFound, "model %q not found", id)
 		}
@@ -342,7 +333,7 @@ func (s *GORMStore) GetModel(ctx context.Context, id string) (*pb.Model, error) 
 }
 
 func (s *GORMStore) ListModelDeploymentTemplates(ctx context.Context, modelID, statusFilter, name string) ([]*pb.ModelDeploymentTemplate, error) {
-	q := s.db.WithContext(ctx).Model(&models.ModelDeploymentTemplate{})
+	q := s.db.WithContext(ctx).Model(&models.ModelDeploymentTemplate{}).Where("deleted = ?", false)
 	if modelID != "" {
 		q = q.Where("model_id = ?", modelID)
 	}
@@ -369,7 +360,7 @@ func (s *GORMStore) ListModelDeploymentTemplates(ctx context.Context, modelID, s
 
 func (s *GORMStore) GetModelDeploymentTemplate(ctx context.Context, modelID, id string) (*pb.ModelDeploymentTemplate, error) {
 	var rec models.ModelDeploymentTemplate
-	if err := s.db.WithContext(ctx).First(&rec, "id = ? AND model_id = ?", id, modelID).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("deleted = ?", false).First(&rec, "id = ? AND model_id = ?", id, modelID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, status.Errorf(codes.NotFound, "deployment template %q not found under model %q", id, modelID)
 		}
@@ -418,7 +409,7 @@ func (s *GORMStore) UpdateModelDeploymentTemplate(ctx context.Context, req *pb.U
 		return nil, status.Error(codes.InvalidArgument, "model_id is required")
 	}
 	var rec models.ModelDeploymentTemplate
-	if err := s.db.WithContext(ctx).First(&rec, "id = ? AND model_id = ?", req.GetId(), req.GetModelId()).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("deleted = ?", false).First(&rec, "id = ? AND model_id = ?", req.GetId(), req.GetModelId()).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, status.Errorf(codes.NotFound, "deployment template %q not found under model %q", req.GetId(), req.GetModelId())
 		}
@@ -452,14 +443,7 @@ func (s *GORMStore) UpdateModelDeploymentTemplate(ctx context.Context, req *pb.U
 }
 
 func (s *GORMStore) DeleteModelDeploymentTemplate(ctx context.Context, modelID, id string) error {
-	res := s.db.WithContext(ctx).Delete(&models.ModelDeploymentTemplate{}, "id = ? AND model_id = ?", id, modelID)
-	if res.Error != nil {
-		return status.Errorf(codes.Internal, "delete deployment template: %v", res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return status.Errorf(codes.NotFound, "deployment template %q not found under model %q", id, modelID)
-	}
-	return nil
+	return s.db.WithContext(ctx).Model(&models.ModelDeploymentTemplate{}).Where("id = ? AND model_id = ? AND deleted = ?", id, modelID, false).Update("deleted", true).Error
 }
 
 // isDuplicatedKeyError checks if the error is a duplicate key violation.
@@ -513,7 +497,7 @@ func (s *GORMStore) ResolveModelDeploymentTemplate(ctx context.Context, modelID,
 	}
 	if version != "" {
 		var rec models.ModelDeploymentTemplate
-		if err := s.db.WithContext(ctx).First(&rec, "model_id = ? AND name = ? AND version = ?", modelID, name, version).Error; err != nil {
+		if err := s.db.WithContext(ctx).Where("deleted = ?", false).First(&rec, "model_id = ? AND name = ? AND version = ?", modelID, name, version).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil, status.Errorf(codes.NotFound, "no template %q@%q under model %q", name, version, modelID)
 			}
@@ -522,7 +506,7 @@ func (s *GORMStore) ResolveModelDeploymentTemplate(ctx context.Context, modelID,
 		return s.GetModelDeploymentTemplate(ctx, modelID, rec.ID)
 	}
 	var rows []models.ModelDeploymentTemplate
-	if err := s.db.WithContext(ctx).Where("model_id = ? AND name = ?", modelID, name).Find(&rows).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("deleted = ?", false).Where("model_id = ? AND name = ?", modelID, name).Find(&rows).Error; err != nil {
 		return nil, status.Errorf(codes.Internal, "resolve deployment template: %v", err)
 	}
 	if len(rows) == 0 {
@@ -545,7 +529,7 @@ func (s *GORMStore) ResolveModelDeploymentTemplate(ctx context.Context, modelID,
 
 func (s *GORMStore) ListAPIKeys(ctx context.Context) ([]*pb.APIKey, error) {
 	var rows []models.APIKey
-	if err := s.db.WithContext(ctx).Order("created_at DESC").Find(&rows).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("deleted = ?", false).Order("created_at DESC").Find(&rows).Error; err != nil {
 		return nil, status.Errorf(codes.Internal, "list api keys: %v", err)
 	}
 	out := make([]*pb.APIKey, 0, len(rows))
@@ -577,18 +561,11 @@ func (s *GORMStore) CreateAPIKey(ctx context.Context, name string) (*pb.APIKey, 
 }
 
 func (s *GORMStore) DeleteAPIKey(ctx context.Context, id string) error {
-	res := s.db.WithContext(ctx).Delete(&models.APIKey{}, "id = ?", id)
-	if res.Error != nil {
-		return status.Errorf(codes.Internal, "delete api key: %v", res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return status.Errorf(codes.NotFound, "api key %q not found", id)
-	}
-	return nil
+	return s.db.WithContext(ctx).Model(&models.APIKey{}).Where("id = ? AND deleted = ?", id, false).Update("deleted", true).Error
 }
 
 func (s *GORMStore) ListSecrets(ctx context.Context, search string) ([]*pb.Secret, error) {
-	q := s.db.WithContext(ctx).Model(&models.Secret{})
+	q := s.db.WithContext(ctx).Model(&models.Secret{}).Where("deleted = ?", false)
 	if search != "" {
 		like := "%" + search + "%"
 		q = q.Where("name LIKE ?", like)
@@ -626,18 +603,11 @@ func (s *GORMStore) CreateSecret(ctx context.Context, name, value string) (*pb.S
 }
 
 func (s *GORMStore) DeleteSecret(ctx context.Context, id string) error {
-	res := s.db.WithContext(ctx).Delete(&models.Secret{}, "id = ?", id)
-	if res.Error != nil {
-		return status.Errorf(codes.Internal, "delete secret: %v", res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return status.Errorf(codes.NotFound, "secret %q not found", id)
-	}
-	return nil
+	return s.db.WithContext(ctx).Model(&models.Secret{}).Where("id = ? AND deleted = ?", id, false).Update("deleted", true).Error
 }
 
 func (s *GORMStore) ListQuotas(ctx context.Context, search string) ([]*pb.Quota, error) {
-	q := s.db.WithContext(ctx).Model(&models.Quota{})
+	q := s.db.WithContext(ctx).Model(&models.Quota{}).Where("deleted = ?", false)
 	if search != "" {
 		like := "%" + search + "%"
 		q = q.Where("name LIKE ? OR quota_id LIKE ?", like, like)
