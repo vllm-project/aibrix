@@ -50,6 +50,7 @@ require (
 	k8s.io/kube-openapi v0.0.0-20240620174524-b456828f718b
 	k8s.io/metrics v0.31.8
 	k8s.io/utils v0.0.0-20240711033017-18e509b52bc8
+	modernc.org/sqlite v1.35.0
 	sigs.k8s.io/controller-runtime v0.19.2
 	sigs.k8s.io/gateway-api v1.0.0
 	sigs.k8s.io/scheduler-plugins v0.31.8
@@ -146,7 +147,6 @@ require (
 	modernc.org/libc v1.61.13 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.8.2 // indirect
-	modernc.org/sqlite v1.35.0 // indirect
 	sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd // indirect
 )
 
