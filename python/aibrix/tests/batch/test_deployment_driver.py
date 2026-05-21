@@ -58,10 +58,10 @@ class FakeEntityManager(JobEntityManager):
     async def delete_job(self, job: BatchJob):
         return None
 
-    def get_job(self, job_id: str) -> Optional[BatchJob]:
+    async def get_job(self, job_id: str) -> Optional[BatchJob]:
         return None
 
-    def list_jobs(self) -> list[BatchJob]:
+    async def list_jobs(self) -> list[BatchJob]:
         return []
 
 

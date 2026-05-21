@@ -99,9 +99,9 @@ async def test_mongo_job_cache_submit_and_list_jobs():
     assert committed_jobs[0].metadata.resource_version == "1"
     assert committed_jobs[1].metadata.resource_version == "1"
 
-    listed_jobs = cache.list_jobs()
+    listed_jobs = await cache.list_jobs()
     assert [job.session_id for job in listed_jobs] == ["session-2", "session-1"]
-    assert cache.get_job(committed_jobs[0].job_id).session_id == "session-1"
+    assert (await cache.get_job(committed_jobs[0].job_id)).session_id == "session-1"
 
 
 @pytest.mark.asyncio
@@ -132,7 +132,7 @@ async def test_mongo_job_cache_update_and_delete_callbacks():
     )
     await cache.submit_job("session-1", spec)
 
-    job = cache.list_jobs()[0]
+    job = (await cache.list_jobs())[0]
     ready_job = job.model_copy(deep=True)
     ready_job.status.in_progress_at = ready_job.status.created_at
     ready_job.status.temp_output_file_id = "temp-output"
@@ -140,7 +140,7 @@ async def test_mongo_job_cache_update_and_delete_callbacks():
 
     await cache.update_job_ready(ready_job)
 
-    persisted_ready_job = cache.get_job(job.job_id)
+    persisted_ready_job = await cache.get_job(job.job_id)
     assert persisted_ready_job.status.temp_output_file_id == "temp-output"
     assert persisted_ready_job.metadata.resource_version == "2"
     assert updated_jobs[-1][0].metadata.resource_version == "1"
@@ -150,10 +150,10 @@ async def test_mongo_job_cache_update_and_delete_callbacks():
     finalized_job.status.state = BatchJobState.FINALIZED
     await cache.update_job_status(finalized_job)
 
-    assert cache.get_job(job.job_id).status.state == BatchJobState.FINALIZED
-    assert cache.get_job(job.job_id).metadata.resource_version == "3"
+    assert (await cache.get_job(job.job_id)).status.state == BatchJobState.FINALIZED
+    assert (await cache.get_job(job.job_id)).metadata.resource_version == "3"
 
-    await cache.delete_job(cache.get_job(job.job_id))
+    await cache.delete_job(await cache.get_job(job.job_id))
 
-    assert cache.get_job(job.job_id) is None
+    assert await cache.get_job(job.job_id) is None
     assert deleted_jobs[0].job_id == job.job_id
