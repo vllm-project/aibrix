@@ -454,9 +454,7 @@ class TestGCSAtomicWrites:
 
         downloader = GCSArtifactDownloader()
         with pytest.raises(FileNotFoundError, match="No objects found"):
-            downloader._download_sync(
-                "gs://my-bucket/missing-prefix/", str(tmp_path)
-            )
+            downloader._download_sync("gs://my-bucket/missing-prefix/", str(tmp_path))
 
 
 # ---------------------------------------------------------------------------
