@@ -25,6 +25,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestSessionAffinityRouter(t *testing.T) {
@@ -73,7 +74,7 @@ func TestSessionAffinityRouter(t *testing.T) {
 		{
 			name: "session ID points to non-existent address → fallback",
 			reqHeaders: map[string]string{
-				sessionIDHeader: base64.StdEncoding.EncodeToString([]byte("10.99.99.99:8000")), // 不存在的 IP
+				sessionIDHeader: base64.StdEncoding.EncodeToString([]byte("10.99.99.99:8000")), // non-existent IP
 			},
 			readyPods: []*v1.Pod{
 				newPod("x", "10.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
@@ -116,4 +117,69 @@ func TestSessionAffinityRouter(t *testing.T) {
 			assert.Equal(t, addr, actualSessionAddr, "session ID must encode the same address as returned by Route()")
 		})
 	}
+}
+
+func TestSessionAffinity_ScoreAll(t *testing.T) {
+	podA := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pA", Labels: map[string]string{"model.aibrix.ai/port": "8000"}},
+		Status:     v1.PodStatus{PodIP: "1.1.1.1", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
+	}
+	podB := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pB", Labels: map[string]string{"model.aibrix.ai/port": "8000"}},
+		Status:     v1.PodStatus{PodIP: "2.2.2.2", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
+	}
+
+	podList := newMockPodList([]*v1.Pod{podA, podB}, nil)
+	router, _ := NewSessionAffinityRouter()
+
+	// Need to assert router satisfies types.PodScorer interface
+	scorer, ok := router.(types.PodScorer)
+	assert.True(t, ok)
+
+	// 1. Without session ID
+	ctx1 := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
+	scores, scored, err := scorer.ScoreAll(ctx1, podList)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(scores))
+	assert.Equal(t, 2, len(scored))
+	for _, s := range scores {
+		assert.Equal(t, float64(0), s)
+	}
+
+	// 2. With session ID targeting pA
+	ctx2 := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
+	ctx2.ReqHeaders = make(map[string]string)
+	ctx2.ReqHeaders[sessionIDHeader] = base64.StdEncoding.EncodeToString([]byte("1.1.1.1:8000"))
+
+	scores, _, err = scorer.ScoreAll(ctx2, podList)
+	assert.NoError(t, err)
+	assert.Equal(t, float64(1), scores[0]) // pA score should be 1
+	assert.Equal(t, float64(0), scores[1]) // pB score should be 0
+
+	// Check polarity
+	assert.Equal(t, types.PolarityMost, scorer.Polarity())
+}
+
+func TestSessionAffinityPostRouteUpdateFollowsFinalTargetPod(t *testing.T) {
+	podA := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pA", Labels: map[string]string{"model.aibrix.ai/port": "8000"}},
+		Status:     v1.PodStatus{PodIP: "1.1.1.1", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
+	}
+	podB := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pB", Labels: map[string]string{"model.aibrix.ai/port": "8000"}},
+		Status:     v1.PodStatus{PodIP: "2.2.2.2", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
+	}
+	podList := newMockPodList([]*v1.Pod{podA, podB}, nil)
+	router := &sessionAffinityRouter{}
+	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
+	ctx.ReqHeaders = map[string]string{
+		sessionIDHeader: base64.StdEncoding.EncodeToString([]byte("1.1.1.1:8000")),
+	}
+
+	err := router.PostRouteUpdate(ctx, podList, podB)
+	assert.NoError(t, err)
+
+	sessionBytes, decodeErr := base64.StdEncoding.DecodeString(ctx.RespHeaders[sessionIDHeader])
+	assert.NoError(t, decodeErr)
+	assert.Equal(t, "2.2.2.2:8000", string(sessionBytes))
 }

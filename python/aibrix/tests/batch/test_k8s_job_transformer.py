@@ -495,6 +495,29 @@ def test_k8s_job_in_progress():
     assert batch_job.status.condition is None
 
 
+def test_k8s_job_extracts_aibrix_metadata():
+    k8s_job = _get_job_created_obj()
+    k8s_job["spec"]["template"]["metadata"]["annotations"][
+        "batch.job.aibrix.ai/aibrix"
+    ] = (
+        '{"job_id":"planner-job-1","planner_decision":{"provision_id":"reservation-1",'
+        '"provision_resource_deadline":123,"resource_details":[{"resource_type":"deployment",'
+        '"endpoint_cluster":"cluster-a","gpu_type":"H100","worker_num":4}]},'
+        '"model_template":{"name":"echo-template","version":"v1.0.0"}}'
+    )
+
+    batch_job = k8s_job_to_batch_job(k8s_job)
+
+    assert batch_job.spec.aibrix is not None
+    assert batch_job.spec.aibrix.job_id == "planner-job-1"
+    assert batch_job.spec.aibrix.planner_decision is not None
+    assert batch_job.spec.aibrix.planner_decision.provision_id == "reservation-1"
+    assert batch_job.spec.aibrix.planner_decision.resource_details is not None
+    assert batch_job.spec.aibrix.planner_decision.resource_details[0].worker_num == 4
+    assert batch_job.spec.aibrix.model_template is not None
+    assert batch_job.spec.aibrix.model_template.version == "v1.0.0"
+
+
 def test_k8s_job_success_with_finalizing():
     """Test successful transformation of Kubernetes job to BatchJob."""
     # Create mock Kubernetes job with required annotations
@@ -999,7 +1022,7 @@ def test_k8s_job_s3_integration_case():
                                     "value": "tianium.aibrix",
                                 },
                                 {
-                                    "name": "REDIS_HOST",
+                                    "name": "STORAGE_REDIS_HOST",
                                     "value": "aibrix-redis-master.aibrix-system.svc.cluster.local",
                                 },
                             ],

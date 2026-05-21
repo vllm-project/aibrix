@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -27,12 +28,18 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
 	"k8s.io/klog/v2"
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/handler"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
+	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
+	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
+	plannerimpl "github.com/vllm-project/aibrix/apps/console/api/planner/impl"
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager"
+	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 
 	"github.com/vllm-project/aibrix/apps/console/api/config"
@@ -45,7 +52,7 @@ type Server struct {
 	store      store.Store
 	cfg        *config.Config
 	auth       *middleware.AuthMiddleware
-	mysqlStore *store.MySQLStore // nil if using memory store
+	planner    plannerapi.Planner
 }
 
 // New creates a new console Server from configuration.
@@ -55,16 +62,6 @@ func New(cfg *config.Config) *Server {
 		klog.Fatalf("Failed to construct store: %v", err)
 	}
 	klog.Infof("Using store %s", cfg.StoreURI)
-
-	// MySQL needs migrations and a Close() on shutdown — handle via type
-	// assertion so the Store interface stays focused on data access.
-	var mysqlStore *store.MySQLStore
-	if ms, ok := s.(*store.MySQLStore); ok {
-		if err := ms.RunMigrations(); err != nil {
-			klog.Fatalf("Failed to run MySQL migrations: %v", err)
-		}
-		mysqlStore = ms
-	}
 
 	// Dev-mode conveniences. Seeding is opt-in so production / shared envs
 	// start with an empty store.
@@ -102,10 +99,9 @@ func New(cfg *config.Config) *Server {
 	}
 
 	return &Server{
-		store:      s,
-		cfg:        cfg,
-		auth:       auth,
-		mysqlStore: mysqlStore,
+		store: s,
+		cfg:   cfg,
+		auth:  auth,
 	}
 }
 
@@ -118,9 +114,19 @@ func (s *Server) StartGRPC(addr string) error {
 
 	s.grpcServer = grpc.NewServer()
 
+	batchClient := plannerclient.NewOpenAIBatchClient(s.cfg.MetadataServiceURL)
+	rm, err := resource_manager.NewResourceManager(rmtypes.ResourceProvisionType(s.cfg.Provisioner), s.store)
+	if err != nil {
+		return fmt.Errorf("resource manager init: %w", err)
+	}
+	s.planner = plannerimpl.NewPlanner(batchClient, rm.Provisioner, s.store, plannerimpl.DefaultWorkerCount)
+	if err := s.planner.Recover(context.Background()); err != nil {
+		klog.Warningf("planner recovery failed (continuing without recovered jobs): %v", err)
+	}
+
 	// Register all service handlers
 	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
-	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.cfg.MetadataServiceURL, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode))
+	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.planner, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
 	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))
 	pb.RegisterAPIKeyServiceServer(s.grpcServer, handler.NewAPIKeyHandler(s.store))
@@ -139,7 +145,19 @@ func (s *Server) StartGRPC(addr string) error {
 func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	ctx := context.Background()
 
-	mux := runtime.NewServeMux()
+	// Propagate the AuthMiddleware-injected UserInfo onto outgoing gRPC
+	// metadata so gRPC handlers
+	mux := runtime.NewServeMux(runtime.WithMetadata(func(_ context.Context, r *http.Request) metadata.MD {
+		u := middleware.GetUser(r.Context())
+		if u == nil {
+			return nil
+		}
+		return metadata.Pairs(
+			middleware.MetadataUserEmail, u.Email,
+			middleware.MetadataUserName, u.Name,
+			middleware.MetadataUserID, u.ID,
+		)
+	}))
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
 	// Register all gRPC-gateway handlers
@@ -203,10 +221,19 @@ func (s *Server) Shutdown(ctx context.Context) {
 		s.grpcServer.GracefulStop()
 	}
 	if s.httpServer != nil {
-		_ = s.httpServer.Shutdown(ctx)
+		if err := s.httpServer.Shutdown(ctx); err != nil {
+			klog.Errorf("failed to shutdown http server: %v", err)
+		}
 	}
-	if s.mysqlStore != nil {
-		_ = s.mysqlStore.Close()
+	if s.planner != nil {
+		if err := s.planner.Close(); err != nil {
+			klog.Errorf("failed to close planner: %v", err)
+		}
+	}
+	if s.store != nil {
+		if err := s.store.Close(); err != nil {
+			klog.Errorf("failed to close store: %v", err)
+		}
 	}
 }
 

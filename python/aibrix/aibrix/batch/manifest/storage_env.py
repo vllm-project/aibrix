@@ -24,20 +24,28 @@ Two emitter functions:
 - :func:`build_storage_env` reads from per-batch ``BatchProfile.storage``;
   this is the file backend (S3 / TOS / GCS / etc.) that the worker
   reads input.jsonl from and writes output.jsonl to.
-- :func:`build_metastore_env` reads from the process-global metastore
-  type (``aibrix.batch.storage.batch_metastore.get_metastore_type``);
-  this is the kv store the worker uses for transient request-level
-  state. It keeps the metastore process-global rather than
-  per-profile because its values were hard-coded in the legacy
-  ``k8s_job_redis_patch.yaml``.
+- :func:`build_metastore_env` reads from per-batch
+  ``BatchProfile.metastore`` when present, otherwise falls back to the
+  process-global metastore type
+  (``aibrix.batch.storage.batch_metastore.get_metastore_type``).
+  This is the kv store the worker uses for transient request-level
+  state.
 
 The output structure matches Kubernetes V1EnvVar dict shape so it
 can be appended directly into the container env list.
 """
 
+import os
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
-from aibrix.batch.template import BatchProfile, StorageBackend
+from aibrix import envs
+from aibrix.batch.template import (
+    BatchProfile,
+    MetastoreBackend,
+    MetastoreSpec,
+    StorageBackend,
+)
 from aibrix.storage import StorageType
 
 
@@ -55,17 +63,24 @@ def build_storage_env(profile: BatchProfile) -> List[Dict[str, Any]]:
         List of K8s V1EnvVar-shaped dicts.
     """
     backend = profile.spec.storage.backend
+    env = [{"name": "STORAGE_TYPE", "value": _storage_type_value(backend)}]
     if backend == StorageBackend.S3:
-        return _s3_env(profile)
+        return env + _s3_env(profile)
     if backend == StorageBackend.TOS:
-        return _tos_env(profile)
+        return env + _tos_env(profile)
     if backend == StorageBackend.MINIO:
-        return _minio_env(profile)
+        return env + _minio_env(profile)
     if backend == StorageBackend.GCS:
-        return _gcs_env(profile)
+        return env + _gcs_env(profile)
     if backend == StorageBackend.LOCAL:
-        return _local_env(profile)
-    return []
+        return env + _local_env(profile)
+    return env
+
+
+def _storage_type_value(backend: StorageBackend) -> str:
+    if backend == StorageBackend.MINIO:
+        return StorageBackend.S3.value
+    return backend.value
 
 
 def _s3_env(profile: BatchProfile) -> List[Dict[str, Any]]:
@@ -166,17 +181,23 @@ def _secret_env(name: str, secret_ref: str, key: str) -> Dict[str, Any]:
     }
 
 
-def build_metastore_env() -> List[Dict[str, Any]]:
+def build_metastore_env(profile: BatchProfile) -> List[Dict[str, Any]]:
     """Return env vars for the worker to reach the metastore.
 
-    Reads the process-global metastore type (set via env vars at
-    metadata-service startup) and emits the matching set of worker
-    env vars. Mirrors the legacy ``k8s_job_redis_patch.yaml`` behavior:
-    when the metastore is Redis, emit ``REDIS_HOST``,
-    ``REDIS_PORT``, ``REDIS_DB``. The values are read from the same
-    process env vars as the metadata service uses, so worker pods
-    reach the same Redis instance.
+    Reads the per-profile metastore config when present; otherwise it
+    falls back to the process-global metastore type set at metadata
+    service startup. When the effective metastore is Redis, emit
+    ``REDIS_HOST``, ``REDIS_PORT``, and ``REDIS_DB``. A profile secret
+    may also provide ``REDIS_ENDPOINT`` to override ``REDIS_HOST`` at
+    worker runtime.
     """
+    if profile.spec.metastore is not None:
+        if profile.spec.metastore.backend == MetastoreBackend.LOCAL:
+            return []
+        if profile.spec.metastore.backend == MetastoreBackend.REDIS:
+            return _redis_env(profile.spec.metastore)
+        return []
+
     # Lazy import to avoid module-load-time side effects in tests
     # that don't exercise the metastore.
     import aibrix.batch.storage.batch_metastore as metastore_module
@@ -193,7 +214,7 @@ def build_metastore_env() -> List[Dict[str, Any]]:
     return []
 
 
-def _redis_env() -> List[Dict[str, Any]]:
+def _redis_env(metastore: MetastoreSpec | None = None) -> List[Dict[str, Any]]:
     """Worker env vars for a Redis metastore.
 
     Worker pods may need a different Redis address than the metadata
@@ -210,17 +231,42 @@ def _redis_env() -> List[Dict[str, Any]]:
     metadata process and ``WORKER_REDIS_HOST=<service-dns>`` for
     the workers.
     """
-    import os
+    worker_host = (
+        os.getenv("WORKER_REDIS_HOST")
+        or envs.STORAGE_REDIS_HOST
+        or "aibrix-redis-master.aibrix-system.svc.cluster.local"
+    )
+    worker_port = os.getenv("WORKER_REDIS_PORT") or str(envs.STORAGE_REDIS_PORT)
+    if metastore is not None and metastore.endpoint_url is not None:
+        # Parse endpoint_url to extract host (and optional port), ignoring protocol
+        parsed = urlparse(metastore.endpoint_url)
+        if parsed.hostname:
+            worker_host = parsed.hostname
+        elif parsed.path:
+            host, _, port = parsed.path.partition(":")
+            if host:
+                worker_host = host
+            if port:
+                worker_port = port
+        if parsed.port:
+            worker_port = str(parsed.port) or worker_port
 
-    worker_host = os.environ.get("WORKER_REDIS_HOST") or os.environ.get(
-        "REDIS_HOST",
-        "aibrix-redis-master.aibrix-system.svc.cluster.local",
-    )
-    worker_port = os.environ.get("WORKER_REDIS_PORT") or os.environ.get(
-        "REDIS_PORT", "6379"
-    )
+    # Apply credential secret if provided
+    if metastore is not None and metastore.credentials_secret_ref:
+        pairs = [
+            ("REDIS_HOST", "host"),
+            ("REDIS_PORT", "port"),
+            ("REDIS_DB", "db"),
+            ("REDIS_PASSWORD", "password"),
+        ]
+        return [
+            _secret_env(env_name, metastore.credentials_secret_ref, key)
+            for env_name, key in pairs
+        ]
+
     return [
         {"name": "REDIS_HOST", "value": worker_host},
         {"name": "REDIS_PORT", "value": worker_port},
-        {"name": "REDIS_DB", "value": os.environ.get("REDIS_DB", "0")},
+        {"name": "REDIS_DB", "value": str(envs.STORAGE_REDIS_DB)},
+        # Password can not passed in env, must be set in secret ref
     ]

@@ -249,3 +249,46 @@ func TestLeastLatency(t *testing.T) {
 		})
 	}
 }
+
+func TestLeastLatencyScoreAllHandlesNonHistogramMetrics(t *testing.T) {
+	readyPods := []*v1.Pod{
+		newPod("p1", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("p2", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("p3", "3.3.3.3", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+	}
+	c := cache.NewWithPodsModelMetricsForTest(readyPods, "m1", map[string]map[string]metrics.MetricValue{
+		"p1": {
+			metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+			metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
+			metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
+			metrics.RequestPrefillTimeSeconds: &metrics.SimpleMetricValue{Value: 10},
+			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 10, Count: 1},
+		},
+		"p2": {
+			metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+			metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
+			metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
+			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 10, Count: 1},
+			metrics.RequestDecodeTimeSeconds:  &metrics.SimpleMetricValue{Value: 10},
+		},
+		"p3": {
+			metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+			metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
+			metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
+			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 10, Count: 1},
+			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 10, Count: 1},
+		},
+	})
+
+	router := leastExpectedLatencyRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "message", "request", "user")
+	scores, scored, err := router.ScoreAll(ctx, wrapper{pods: readyPods})
+
+	assert.NoError(t, err)
+	assert.Len(t, scores, 3)
+	assert.Len(t, scored, 3)
+	assert.False(t, scored[0])
+	assert.False(t, scored[1])
+	assert.True(t, scored[2])
+	assert.Greater(t, scores[2], 0.0)
+}

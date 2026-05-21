@@ -20,6 +20,8 @@ import (
 	"context"
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
+	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 )
 
 // Store defines the storage interface for all console entities.
@@ -30,20 +32,18 @@ type Store interface {
 	CreateDeployment(ctx context.Context, req *pb.CreateDeploymentRequest) (*pb.Deployment, error)
 	DeleteDeployment(ctx context.Context, id string) error
 
-	// Jobs — store persists only the Console-owned fields of *pb.Job
-	// (id, created_by, future: organization, tags, ...). OpenAI Batch fields
-	// on the passed-in *pb.Job (status, usage, request_counts, timestamps,
-	// etc.) are ignored on write and left at their zero values on read; the
-	// JobHandler aggregates store output with state fetched from the metadata
-	// service /v1/batches API to produce the wire-level *pb.Job.
-	UpsertJob(ctx context.Context, job *pb.Job) error
-	GetJob(ctx context.Context, id string) (*pb.Job, error) // (nil, nil) when not found
-	ListJobs(ctx context.Context, ids []string) (map[string]*pb.Job, error)
+	// Jobs — Planner-owned state-machine snapshot of each job, persisted as models.Job.
+	UpsertJob(ctx context.Context, rec *models.Job) error
+	GetJob(ctx context.Context, id string) (*models.Job, error) // (nil, nil) when not found
+	ListJobs(ctx context.Context, ids []string) (map[string]*models.Job, error)
 	DeleteJob(ctx context.Context, id string) error
+
+	ListNonTerminalJobs(ctx context.Context) ([]*models.Job, error)
 
 	// Models
 	ListModels(ctx context.Context, search, category string) ([]*pb.Model, error)
 	GetModel(ctx context.Context, id string) (*pb.Model, error)
+	CreateModel(ctx context.Context, m *pb.Model) (*pb.Model, error)
 
 	// Model Deployment Templates. modelID is the parent — Get/Update/Delete
 	// validate that the addressed template actually belongs to it, returning
@@ -72,4 +72,31 @@ type Store interface {
 
 	// Quotas
 	ListQuotas(ctx context.Context, search string) ([]*pb.Quota, error)
+
+	// Provision
+	// GetProvision retrieves a stored provision result by provision ID.
+	// Returns nil and a NotFound error if the key doesn't exist.
+	GetProvision(ctx context.Context, provisionId string) (*types.ProvisionResult, error)
+
+	// GetProvisionByIdempotencyKey retrieves a stored provision result by idempotency key.
+	// Returns nil and a NotFound error if the key doesn't exist.
+	GetProvisionByIdempotencyKey(ctx context.Context, idempotencyKey string) (*types.ProvisionResult, error)
+
+	// UpsertProvision inserts/updates a provision result with the given idempotency key.
+	UpsertProvision(ctx context.Context, result *types.ProvisionResult) error
+
+	// UpdateProvisionStatus updates the status of a provision result.
+	UpdateProvisionStatus(ctx context.Context, provisionId string, status types.ProvisionStatus) error
+
+	// DeleteProvision marks a stored provision result by provision ID as deleted.
+	DeleteProvision(ctx context.Context, provisionId string) error
+
+	// ExistsProvision checks if a provision exists for the given provision ID.
+	ExistsProvision(ctx context.Context, provisionId string) (bool, error)
+
+	// ListProvisions lists stored provision results.
+	ListProvisions(ctx context.Context, options *types.ListOptions) ([]*types.ProvisionResult, error)
+
+	// Close closes the store.
+	Close() error
 }

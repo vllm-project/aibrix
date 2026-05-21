@@ -54,6 +54,26 @@ type ResolvedConfigProfile struct {
 // RoutingAlgorithm defines the routing algorithms
 type RoutingAlgorithm string
 
+// Polarity indicates whether a higher or lower score is better for a routing strategy
+type Polarity int
+
+const (
+	PolarityLeast Polarity = iota // Lower score is better
+	PolarityMost                  // Higher score is better
+)
+
+// PodScorer defines the interface for strategies that support batch soft-scoring
+type PodScorer interface {
+	ScoreAll(ctx *RoutingContext, readyPodList PodList) (scores []float64, scored []bool, err error)
+	Polarity() Polarity
+}
+
+// PostRouteUpdater defines the interface for strategies that need to update
+// internal state after a target pod has been selected.
+type PostRouteUpdater interface {
+	PostRouteUpdate(ctx *RoutingContext, readyPodList PodList, targetPod *v1.Pod) error
+}
+
 // RoutingContext encapsulates the context information required for routing.
 // It can be extended with more fields as needed in the future.
 type RoutingContext struct {
@@ -338,6 +358,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ConfigProfile = nil
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
+	r.targetPort.Store(0)
 	r.lastError.Store(nil)
 	// debugDelay will be reset by tests.
 	r.tokens = nil

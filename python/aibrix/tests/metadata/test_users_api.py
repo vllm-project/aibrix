@@ -121,6 +121,7 @@ class TestUsersAPI:
             disable_batch_api=True,
             disable_file_api=True,
             enable_k8s_job=False,
+            disable_inference_endpoint=True,
         )
         app = build_app(args)
         app.state.metadata_store = mock_store

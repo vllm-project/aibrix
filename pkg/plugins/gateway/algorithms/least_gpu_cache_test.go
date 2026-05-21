@@ -26,6 +26,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestLeastGpuCache(t *testing.T) {
@@ -142,4 +143,50 @@ func TestLeastGpuCache(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLeastGpuCache_ScoreAll(t *testing.T) {
+	podA := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pA", Labels: map[string]string{"model.aibrix.ai/port": "8000"}},
+		Status:     v1.PodStatus{PodIP: "1.1.1.1", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
+	}
+	podB := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pB", Labels: map[string]string{"model.aibrix.ai/port": "8000"}},
+		Status:     v1.PodStatus{PodIP: "2.2.2.2", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
+	}
+
+	c := cache.NewWithPodsModelMetricsForTest(
+		[]*v1.Pod{podA, podB},
+		"m1",
+		map[string]map[string]metrics.MetricValue{
+			"pA": {metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1}},
+			"pB": {metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.8}},
+		})
+
+	r := leastGpuCacheRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "", "req", "")
+
+	podList := podsFromCache(c)
+	scores, scored, err := r.ScoreAll(ctx, podList)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(scores))
+	assert.Equal(t, 2, len(scored))
+
+	pods := podList.All()
+	// Create a map to verify results independently of slice ordering
+	podScores := make(map[string]float64)
+	podScored := make(map[string]bool)
+	for i, p := range pods {
+		podScores[p.Name] = scores[i]
+		podScored[p.Name] = scored[i]
+	}
+
+	assert.True(t, podScored["pA"])
+	assert.InDelta(t, 0.1, podScores["pA"], 0.001)
+
+	assert.True(t, podScored["pB"])
+	assert.InDelta(t, 0.8, podScores["pB"], 0.001)
+
+	// Check polarity
+	assert.Equal(t, types.PolarityLeast, r.Polarity())
 }

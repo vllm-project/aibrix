@@ -119,6 +119,11 @@ type Store struct {
 
 	// List of registered request trackers
 	requestTrackers []RequestTracker
+
+	// gatewaySnapshotCache holds a periodically refreshed snapshot of all gateway pod entries
+	// from Redis, grouped by pod key (namespace/name) → []fields. Swapped atomically by
+	// initGatewaySnapshotSync. Readers call Load() to get map[string][]map[string]string.
+	gatewaySnapshotCache atomic.Value
 }
 
 // Get retrieves the cache instance
@@ -358,6 +363,12 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		// Initialize trace cache if enabled and Redis is available
 		if store.enableTracing && opts.RedisClient != nil {
 			initTraceCache(opts.RedisClient, stopCh)
+		}
+
+		// Initialize gateway snapshot sync if Redis is available
+		if opts.RedisClient != nil {
+			klog.Info("Initializing gateway snapshot sync")
+			initGatewaySnapshotSync(store, stopCh)
 		}
 
 		// Initialize KV event sync if enabled

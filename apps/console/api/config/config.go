@@ -29,8 +29,11 @@ const AuthModeDev = "dev"
 // Config holds all configuration for the AIBrix console backend.
 type Config struct {
 	// StoreURI selects the backing store via a URI scheme. Examples:
-	//   memory://
-	//   mysql://user:pass@host:3306/aibrix
+	//   sqlite:/tmp/aibrix-console.db                   (file-backed, dev default)
+	//   sqlite:/var/lib/aibrix/console.db               (file-backed, absolute)
+	//   sqlite::memory:                                 (in-memory SQLite)
+	//   memory://                                       (alias for in-memory SQLite)
+	//   mysql://user:pass@host:3306/aibrix              (production)
 	// Future: postgres://, redis://, mongodb:// — add a case in store.NewFromURI.
 	StoreURI string
 
@@ -42,6 +45,11 @@ type Config struct {
 	// on CreateJob requests when the caller does not provide one. Temporary
 	// stop-gap until the Model entity carries a per-model batch_template.
 	DefaultBatchModelDeploymentTemplate string
+	// Provisioner selects which RM provisioner backend the planner should
+	// use at runtime. Forwarded to resource_manager.NewResourceManager
+	// which validates against the supported set defined in
+	// resource_manager/types.ResourceProvisionType*
+	Provisioner string
 
 	// GRPCAddr is the listen address for the gRPC server.
 	GRPCAddr string
@@ -139,10 +147,11 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		StoreURI:                            envOrDefault("STORE_URI", "memory://"),
+		StoreURI:                            envOrDefault("STORE_URI", "sqlite:/tmp/aibrix-console.db"),
 		GatewayEndpoint:                     envOrDefault("GATEWAY_ENDPOINT", "http://localhost:8888"),
 		MetadataServiceURL:                  envOrDefault("METADATA_SERVICE_URL", "http://localhost:8090"),
 		DefaultBatchModelDeploymentTemplate: envOrDefault("DEFAULT_BATCH_MODEL_DEPLOYMENT_TEMPLATE", ""),
+		Provisioner:                         envOrDefault("PROVISIONER", "kubernetes"),
 		GRPCAddr:                            envOrDefault("GRPC_ADDR", ":50060"),
 		HTTPAddr:                            envOrDefault("HTTP_ADDR", ":8080"),
 		AuthMode:                            authMode,

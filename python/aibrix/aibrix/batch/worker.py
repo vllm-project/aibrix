@@ -31,6 +31,7 @@ from aibrix.batch.job_entity import (
     BatchJobState,
     BatchJobStatus,
 )
+from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -216,7 +217,26 @@ class BatchWorker:
         logger.info("Job committed to manager", job_id=job_id)  # type: ignore[call-arg]
 
         # Wait until job reaches FINALIZING state
-        await self.wait_for_finalizing(job_id)
+        logger.debug("Worker entering wait_for_finalizing", job_id=job_id)  # type: ignore[call-arg]
+        final_job = await self.wait_for_finalizing(job_id)
+        logger.debug(  # type: ignore[call-arg]
+            "Worker observed final job state",
+            job_id=job_id,
+            state=(
+                final_job.status.state.value
+                if getattr(final_job.status, "state", None) is not None
+                else None
+            ),
+            failed=final_job.status.failed,
+            condition=(
+                final_job.status.condition.value if final_job.status.condition else None
+            ),
+        )
+        if final_job.status.failed:
+            condition = final_job.status.condition
+            raise RuntimeError(
+                f"Batch job failed in worker: {condition.value if condition else 'unknown'}"
+            )
 
         return job_id
 
@@ -253,23 +273,36 @@ class BatchWorker:
         # Unlikely, should raise ReadTimeoutError
         return job
 
-    async def wait_for_finalizing(self, job_id: str, max_wait: int = 600):
+    async def wait_for_finalizing(self, job_id: str, max_wait: int = 600) -> BatchJob:
         """Wait for job to reach FINALIZING state."""
         assert (
             self.driver is not None
         ), "Driver must be initialized before waiting for jobs"
 
         start_time = time.time()
+        attempt = 0
 
         while time.time() - start_time < max_wait:
+            attempt += 1
             job = await self.driver.job_manager.get_job(job_id)
+            logger.info(  # type: ignore[call-arg]
+                "Worker polled job while waiting final state",
+                job_id=job_id,
+                attempt=attempt,
+                job_exists=job is not None,
+                state=job.status.state.value if job else None,
+                failed=job.status.failed if job else None,
+                condition=job.status.condition.value
+                if job and job.status.condition
+                else None,
+            )
             if job and job.status.finished:
                 logger.info(
                     "Job reached final state",
                     job_id=job_id,
                     state=job.status.state.value,
                 )  # type: ignore[call-arg]
-                return
+                return job
 
             await asyncio.sleep(1)
 
@@ -308,7 +341,10 @@ class BatchWorker:
                 return 1
 
             # Step 3: Initialize BatchDriver
-            self.driver = BatchDriver(llm_engine_endpoint=self.llm_engine_base_url)
+            self.driver = BatchDriver(
+                context=InfrastructureContext(),
+                llm_engine_endpoint=self.llm_engine_base_url,
+            )
             await self.driver.start()
             logger.info("BatchDriver initialized successfully")
 

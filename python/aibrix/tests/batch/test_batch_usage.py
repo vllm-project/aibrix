@@ -22,13 +22,15 @@ Covers four layers:
 """
 
 from datetime import datetime, timezone
+from typing import Optional
 from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
 
-from aibrix.batch.job_driver import EchoInferenceEngineClient, JobDriver
+from aibrix.batch.job_driver import EchoInferenceEngineClient, JobDriver, LocalJobDriver
 from aibrix.batch.job_entity import (
+    AibrixMetadata,
     BatchJob,
     BatchJobSpec,
     BatchJobState,
@@ -39,6 +41,7 @@ from aibrix.batch.job_entity import (
     ConditionStatus,
     ConditionType,
     InputTokensDetails,
+    ModelTemplateRef,
     ObjectMeta,
     OutputTokensDetails,
     TypeMeta,
@@ -97,7 +100,7 @@ class TestBatchUsageSchema:
 
 @pytest.fixture
 def driver() -> JobDriver:
-    return JobDriver(
+    return LocalJobDriver(
         progress_manager=MagicMock(),
         inference_client=EchoInferenceEngineClient(),
     )
@@ -276,11 +279,16 @@ class TestUsageAnnotationRoundtrip:
 def _make_batch_job(
     state, condition_type=None, model_name="llama3-70b-prod", usage=None
 ) -> BatchJob:
+    aibrixMetadata: Optional[AibrixMetadata] = None
+    if model_name is not None:
+        aibrixMetadata = AibrixMetadata(
+            model_template=ModelTemplateRef(name=model_name)
+        )
     spec = BatchJobSpec(
         input_file_id="f1",
         endpoint="/v1/chat/completions",
         completion_window=86400,
-        model_template_name=model_name,
+        aibrix=aibrixMetadata,
     )
     status_data = {
         "jobID": "job-1",

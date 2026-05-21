@@ -14,6 +14,8 @@
 
 """K8s Job manifest rendering from ConfigMap-loaded templates and profiles."""
 
+from .deployment_renderer import DeploymentManifestRenderer
+from .downloader_env import build_downloader_env
 from .engine_adapter import UnsupportedEngineError, build_engine_args
 from .renderer import (
     EndpointNotSupported,
@@ -28,6 +30,7 @@ from .storage_env import build_metastore_env, build_storage_env
 
 __all__ = [
     "JobManifestRenderer",
+    "DeploymentManifestRenderer",
     "RenderError",
     "TemplateNotFound",
     "ProfileNotFound",
@@ -36,6 +39,7 @@ __all__ = [
     "EndpointNotSupported",
     "ForbiddenOverride",
     "build_engine_args",
+    "build_downloader_env",
     "build_metastore_env",
     "build_storage_env",
 ]

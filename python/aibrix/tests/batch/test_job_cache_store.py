@@ -22,6 +22,7 @@ kubernetes client mock. The higher-level flow tests for
 below in this file.
 """
 
+import asyncio
 import os
 import uuid
 from datetime import datetime, timezone
@@ -33,6 +34,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
 import pytest
 
+from aibrix.batch.job_entity import AibrixMetadata, BatchProfileRef, ModelTemplateRef
 from aibrix.batch.job_entity.batch_job import (
     BatchJob,
     BatchJobEndpoint,
@@ -86,6 +88,50 @@ def _make_cache() -> JobCache:
         template_registry=template_registry,
         profile_registry=profile_registry,
     )
+
+
+@pytest.mark.asyncio
+async def test_submit_job_creates_suspended_k8s_job():
+    cache = _make_cache()
+    captured: dict[str, object] = {}
+
+    class _AsyncResult:
+        def get(self):
+            class _Meta:
+                name = "batch-test"
+                uid = str(uuid.uuid4())
+
+            class _Job:
+                metadata = _Meta()
+
+            return _Job()
+
+    class _BatchApi:
+        def create_namespaced_job(self, namespace, body, async_req):
+            captured["namespace"] = namespace
+            captured["body"] = body
+            captured["async_req"] = async_req
+            return _AsyncResult()
+
+    cache.batch_v1_api = _BatchApi()
+
+    spec = BatchJobSpec(
+        input_file_id="file-input",
+        endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+        completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        aibrix=AibrixMetadata(
+            model_template=ModelTemplateRef(name="mock-vllm"),
+            profile=BatchProfileRef(name="unittest"),
+        ),
+    )
+
+    await cache.submit_job("session-1", spec, job_name="batch-test")
+    await asyncio.sleep(0)
+
+    assert captured["namespace"] == "default"
+    assert captured["async_req"] is True
+    assert captured["body"]["metadata"]["name"] == "batch-test"
+    assert captured["body"]["spec"]["suspend"] is True
 
 
 class _FakeMetastore:

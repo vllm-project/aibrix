@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from aibrix import envs
 from aibrix.batch.job_entity import (
     BatchJobSpec,
     BatchJobTransformer,
@@ -45,10 +46,16 @@ from aibrix.batch.template import (
 # Fixtures
 # ─────────────────────────────────────────────────────────────────────────────
 
+_TESTDATA_DIR = Path(__file__).parent / "testdata"
+
 
 def _write_yaml(path: Path, obj) -> Path:
     path.write_text(yaml.safe_dump(obj))
     return path
+
+
+def _load_testdata_yaml(name: str):
+    return yaml.safe_load((_TESTDATA_DIR / name).read_text())
 
 
 def _vllm_template(name="vllm-prod", count=4, **engine_args):
@@ -92,16 +99,19 @@ def _mock_template(name="mock"):
     }
 
 
-def _profile(name="default-profile", backend="s3", bucket="b"):
+def _profile(name="default-profile", backend="s3", bucket="b", metastore=None):
+    spec = {
+        "storage": {
+            "backend": backend,
+            "bucket": bucket,
+            "credentials_secret_ref": "creds",
+        },
+    }
+    if metastore is not None:
+        spec["metastore"] = metastore
     return {
         "name": name,
-        "spec": {
-            "storage": {
-                "backend": backend,
-                "bucket": bucket,
-                "credentials_secret_ref": "creds",
-            },
-        },
+        "spec": spec,
     }
 
 
@@ -148,6 +158,33 @@ def _worker_container(manifest):
         for c in manifest["spec"]["template"]["spec"]["containers"]
         if c["name"] == "batch-worker"
     )
+
+
+class TestRenderJobExample:
+    def test_k8s_job_example_matches_yaml(self, renderer_factory):
+        template = _mock_template()
+        template["spec"]["engine"]["health_endpoint"] = "/ready"
+        r = renderer_factory(
+            templates=[template],
+            profiles=[
+                _profile(
+                    name="example-profile",
+                    backend="local",
+                    bucket="/tmp/aibrix-storage",
+                )
+            ],
+            default_profile="example-profile",
+        )
+        spec = _spec(model_template="mock")
+        spec.metadata = {"team": "infra", "project": "p"}
+
+        rendered = r.render(
+            session_id="example-session",
+            spec=spec,
+            job_name="batch-job-template",
+        )
+
+        assert rendered == _load_testdata_yaml("k8s_job_example.yaml")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -199,8 +236,20 @@ class TestRendererHappyPath:
         m = r.render(session_id="s1", spec=_spec())
         worker = _worker_container(m)
         env_names = {e["name"] for e in worker["env"]}
+        assert "STORAGE_TYPE" in env_names
         assert "STORAGE_AWS_ACCESS_KEY_ID" in env_names
         assert "STORAGE_AWS_BUCKET" in env_names
+
+    def test_local_storage_env_injected(self, renderer_factory):
+        r = renderer_factory(
+            templates=[_vllm_template(count=1)],
+            profiles=[_profile(backend="local", bucket="/tmp/aibrix-storage")],
+        )
+        m = r.render(session_id="s1", spec=_spec())
+        worker = _worker_container(m)
+        env = {e["name"]: e.get("value") for e in worker["env"]}
+        assert env["STORAGE_TYPE"] == "local"
+        assert env["STORAGE_LOCAL_PATH"] == "/tmp/aibrix-storage"
 
     def test_default_profile_used_when_omitted(self, renderer_factory):
         r = renderer_factory(
@@ -218,8 +267,7 @@ class TestRendererHappyPath:
             templates=[_vllm_template(count=1)],
             profiles=[_profile("default-profile"), _profile("alt", bucket="alt-b")],
         )
-        spec = _spec()
-        spec.profile_name = "alt"
+        spec = _spec(profile_name="alt")
         m = r.render(session_id="s1", spec=spec)
         ann = m["spec"]["template"]["metadata"]["annotations"]
         assert ann["batch.job.aibrix.ai/profile-name"] == "alt"
@@ -265,8 +313,7 @@ class TestRendererOverrides:
             templates=[_vllm_template(count=1, max_num_seqs=256)],
             profiles=[_profile()],
         )
-        spec = _spec()
-        spec.template_overrides = {"engine_args": {"max_num_seqs": 1024}}
+        spec = _spec(template_overrides={"engine_args": {"max_num_seqs": 1024}})
         m = r.render(session_id="s1", spec=spec)
         engine = _engine_container(m)
         idx = engine["args"].index("--max-num-seqs")
@@ -277,8 +324,7 @@ class TestRendererOverrides:
             templates=[_vllm_template(count=1)],
             profiles=[_profile()],
         )
-        spec = _spec()
-        spec.template_overrides = {"accelerator": {"count": 8}}
+        spec = _spec(template_overrides={"accelerator": {"count": 8}})
         with pytest.raises(ForbiddenOverride):
             r.render(session_id="s1", spec=spec)
 
@@ -289,8 +335,9 @@ class TestRendererOverrides:
             templates=[_vllm_template(count=1)],
             profiles=[_profile()],
         )
-        spec = _spec()
-        spec.template_overrides = {"engine_args": {"gpu_memory_utilization": 2.0}}
+        spec = _spec(
+            template_overrides={"engine_args": {"gpu_memory_utilization": 2.0}}
+        )
         # Renderer's merge step re-validates via EngineArgsSpec
         with pytest.raises(ValidationError):
             r.render(session_id="s1", spec=spec)
@@ -304,8 +351,9 @@ class TestRendererOverrides:
 class TestRendererValidation:
     def test_missing_template_name_raises(self, renderer_factory):
         r = renderer_factory(templates=[_vllm_template(count=1)], profiles=[_profile()])
-        spec = _spec()
-        spec.model_template_name = None
+        spec = _spec(model_template=None, job_id="job-123")
+        assert spec.aibrix is not None
+        assert spec.aibrix.job_id == "job-123"
         with pytest.raises(RenderError, match="model_template.name"):
             r.render(session_id="s1", spec=spec)
 
@@ -319,8 +367,7 @@ class TestRendererValidation:
             templates=[_vllm_template(count=1)],
             profiles=[_profile()],
         )
-        spec = _spec()
-        spec.profile_name = "missing-profile"
+        spec = _spec(profile_name="missing-profile")
         with pytest.raises(ProfileNotFound):
             r.render(session_id="s1", spec=spec)
 
@@ -366,12 +413,14 @@ class TestRendererRoundtrip:
     def test_annotations_extract_back_to_spec(self, renderer_factory):
         r = renderer_factory(
             templates=[_vllm_template(count=1)],
-            profiles=[_profile()],
+            profiles=[_profile(name="vllm-profile")],
         )
-        spec = _spec()
+        spec = _spec(
+            template_overrides={"engine_args": {"max_num_seqs": 512}},
+            profile_name="vllm-profile",
+            profile_overrides={"scheduling": {"max_concurrency": 16}},
+        )
         spec.metadata = {"team": "x"}
-        spec.template_overrides = {"engine_args": {"max_num_seqs": 512}}
-        spec.profile_overrides = {"scheduling": {"max_concurrency": 16}}
         m = r.render(session_id="s1", spec=spec)
         extracted = BatchJobTransformer._extract_batch_job_spec(
             m["spec"]["template"]["metadata"]["annotations"], m["spec"]
@@ -382,7 +431,7 @@ class TestRendererRoundtrip:
         # The renderer roundtrips the resolved version even when the spec
         # didn't pin one (the _vllm_template fixture defaults to "v1").
         assert extracted.model_template_version == "v1"
-        assert extracted.profile_name == "default-profile"
+        assert extracted.profile_name == "vllm-profile"
         assert extracted.metadata == {"team": "x"}
         assert extracted.template_overrides == {"engine_args": {"max_num_seqs": 512}}
         assert extracted.profile_overrides == {"scheduling": {"max_concurrency": 16}}
@@ -473,8 +522,8 @@ class TestMetastoreEnv:
         )
         monkeypatch.delenv("WORKER_REDIS_HOST", raising=False)
         monkeypatch.delenv("WORKER_REDIS_PORT", raising=False)
-        monkeypatch.setenv("REDIS_HOST", "redis-shared.aibrix.svc")
-        monkeypatch.setenv("REDIS_PORT", "16379")
+        monkeypatch.setattr(envs, "STORAGE_REDIS_HOST", "redis-shared.aibrix.svc")
+        monkeypatch.setattr(envs, "STORAGE_REDIS_PORT", "16379")
 
         r = renderer_factory(
             templates=[_vllm_template(count=1)],
@@ -487,6 +536,77 @@ class TestMetastoreEnv:
         assert env["REDIS_HOST"] == "redis-shared.aibrix.svc"
         assert env["REDIS_PORT"] == "16379"
 
+    def test_profile_metastore_endpoint_url_overrides_process_host(
+        self, renderer_factory, monkeypatch
+    ):
+        from aibrix.batch.storage import batch_metastore
+        from aibrix.storage import StorageType
+
+        monkeypatch.setattr(
+            batch_metastore, "get_metastore_type", lambda: StorageType.REDIS
+        )
+        monkeypatch.setattr(envs, "STORAGE_REDIS_HOST", "redis-shared.aibrix.svc")
+        monkeypatch.setattr(envs, "STORAGE_REDIS_PORT", "16379")
+
+        r = renderer_factory(
+            templates=[_vllm_template(count=1)],
+            profiles=[
+                _profile(
+                    metastore={
+                        "backend": "redis",
+                        "endpoint_url": "redis-profile.aibrix.svc",
+                    }
+                )
+            ],
+        )
+        m = r.render(session_id="s1", spec=_spec())
+        env = {e["name"]: e for e in _worker_container(m)["env"]}
+        assert env["REDIS_HOST"]["value"] == "redis-profile.aibrix.svc"
+        assert env["REDIS_PORT"]["value"] == "16379"
+
+    def test_profile_metastore_secret_endpoint_has_fallback_host(
+        self, renderer_factory, monkeypatch
+    ):
+        from aibrix.batch.storage import batch_metastore
+        from aibrix.storage import StorageType
+
+        monkeypatch.setattr(
+            batch_metastore, "get_metastore_type", lambda: StorageType.REDIS
+        )
+        monkeypatch.delenv("WORKER_REDIS_HOST", raising=False)
+        monkeypatch.delenv("WORKER_REDIS_PORT", raising=False)
+
+        r = renderer_factory(
+            templates=[_vllm_template(count=1)],
+            profiles=[
+                _profile(
+                    metastore={
+                        "backend": "redis",
+                        "credentials_secret_ref": "redis-creds",
+                        "endpoint_url": "redis-profile.aibrix.svc",
+                    }
+                )
+            ],
+        )
+        m = r.render(session_id="s1", spec=_spec())
+        env = {e["name"]: e for e in _worker_container(m)["env"]}
+        assert env["REDIS_HOST"]["valueFrom"]["secretKeyRef"] == {
+            "name": "redis-creds",
+            "key": "host",
+        }
+        assert env["REDIS_PORT"]["valueFrom"]["secretKeyRef"] == {
+            "name": "redis-creds",
+            "key": "port",
+        }
+        assert env["REDIS_DB"]["valueFrom"]["secretKeyRef"] == {
+            "name": "redis-creds",
+            "key": "db",
+        }
+        assert env["REDIS_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+            "name": "redis-creds",
+            "key": "password",
+        }
+
 
 class TestMockEngineOverrideNoop:
     def test_mock_template_ignores_engine_args_override(self, renderer_factory, caplog):
@@ -494,8 +614,10 @@ class TestMockEngineOverrideNoop:
             templates=[_mock_template()],
             profiles=[_profile()],
         )
-        spec = _spec(model_template="mock")
-        spec.template_overrides = {"engine_args": {"max_num_seqs": 256}}
+        spec = _spec(
+            model_template="mock",
+            template_overrides={"engine_args": {"max_num_seqs": 256}},
+        )
         m = r.render(session_id="s1", spec=spec)
         engine = _engine_container(m)
         # Mock engine args derived from serve_args / fallback only;

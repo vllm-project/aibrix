@@ -411,9 +411,12 @@ def ensure_job_rbac(job_rbac):
 
 def create_test_app(
     enable_k8s_job: bool = False,
+    enable_redis_job: bool = False,
+    enable_mongo_job: bool = False,
     storage_type: StorageType = StorageType.LOCAL,
     metastore_type: StorageType = StorageType.LOCAL,
     params: Optional[Dict[str, Any]] = None,
+    dry_run: Optional[bool] = None,
 ):
     """Create a FastAPI app configured for e2e testing.
 
@@ -424,6 +427,8 @@ def create_test_app(
     """
     if params is None:
         params = {}
+    if dry_run is None:
+        dry_run = not (enable_k8s_job or enable_redis_job or enable_mongo_job)
 
     # Save old settings
     oldStorage, oldMetaStore = settings.STORAGE_TYPE, settings.METASTORE_TYPE
@@ -436,9 +441,18 @@ def create_test_app(
             port=8090,
             enable_fastapi_docs=False,
             disable_batch_api=False,
+            disable_file_api=False,
+            disable_k8s_support=False,
+            disable_inference_endpoint=True,
             enable_k8s_job=enable_k8s_job,
+            enable_mongo_job=enable_mongo_job,
+            enable_redis_job=enable_redis_job,
+            k8s_namespace="default",
             k8s_job_patch=None,  # accepted by parser but always None in tests
-            dry_run=not enable_k8s_job,
+            registry_provider="configmap",
+            kopf_startup_timeout=30.0,
+            kopf_shutdown_timeout=10.0,
+            dry_run=dry_run,
         ),
         params,
     )
@@ -448,7 +462,9 @@ def create_test_app(
 
 
 @pytest.fixture(scope="session")
-def template_configmaps(k8s_config, test_namespace):
+def template_configmaps(
+    k8s_config, test_namespace, s3_credentials_secret, test_s3_bucket
+):
     """Apply the unittest ModelDeploymentTemplate / BatchProfile ConfigMaps
     to the test cluster.
 
@@ -483,9 +499,20 @@ def template_configmaps(k8s_config, test_namespace):
             if not isinstance(doc, dict) or doc.get("kind") != "ConfigMap":
                 continue
             name = doc["metadata"]["name"]
+            data = doc.get("data", {})
+            if name == "aibrix-batch-profiles" and "profiles.yaml" in data:
+                profiles = yaml.safe_load(data["profiles.yaml"])
+                for item in profiles.get("items", []):
+                    if item.get("name") == "unittest":
+                        item.setdefault("spec", {})["storage"] = {
+                            "backend": "s3",
+                            "bucket": test_s3_bucket,
+                            "credentials_secret_ref": s3_credentials_secret,
+                        }
+                data["profiles.yaml"] = yaml.safe_dump(profiles, sort_keys=False)
             cm = client.V1ConfigMap(
                 metadata=client.V1ObjectMeta(name=name, namespace=DEFAULT_NAMESPACE),
-                data=doc.get("data", {}),
+                data=data,
             )
             try:
                 core_v1.delete_namespaced_config_map(
@@ -516,7 +543,12 @@ def test_app(
     redis_config_available,
     ensure_job_rbac,
     template_configmaps,
+    monkeypatch,
 ):
+    monkeypatch.setenv(
+        "WORKER_REDIS_HOST", "aibrix-redis-master.aibrix-system.svc.cluster.local"
+    )
+    monkeypatch.setenv("WORKER_REDIS_PORT", os.environ.get("REDIS_PORT", "6379"))
     return create_test_app(
         enable_k8s_job=True,
         storage_type=StorageType.S3,

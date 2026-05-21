@@ -29,9 +29,23 @@ class JobEntityManager(ABC):
     Any storage implementation are transparent to external components.
     """
 
+    def __init__(self):
+        self._job_committed_handler: Optional[
+            Callable[[BatchJob], Coroutine[Any, Any, bool]]
+        ] = None
+        self._job_committed_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._job_updated_handler: Optional[
+            Callable[[BatchJob, BatchJob], Coroutine[Any, Any, bool]]
+        ] = None
+        self._job_updated_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._job_deleted_handler: Optional[
+            Callable[[BatchJob], Coroutine[Any, Any, bool]]
+        ] = None
+        self._job_deleted_loop: Optional[asyncio.AbstractEventLoop] = None
+
     def on_job_committed(
         self, handler: Callable[[BatchJob], Coroutine[Any, Any, bool]]
-    ):
+    ) -> Optional[Callable[[BatchJob], Coroutine[Any, Any, bool]]]:
         """Register a job committed callback.
 
         Args:
@@ -39,18 +53,23 @@ class JobEntityManager(ABC):
                 The callback function. It should accept a single `BatchJob` object
                 representing the committed job and return `None`.
         """
-        self._job_committed_loop = asyncio.get_running_loop()
+        # Keeps the loop reference to the first registration.
+        # Otherwise, it will be overwritten by the next registration.
+        if self._job_committed_loop is None:
+            self._job_committed_loop = asyncio.get_running_loop()
         logger.debug(
             "job committed handler registered",
             loop=getattr(self._job_committed_loop, "name", "unknown"),
         )  # type: ignore[call-arg]
-        self._job_committed_handler: Optional[
-            Callable[[BatchJob], Coroutine[Any, Any, bool]]
-        ] = handler
+        old_handler = self._job_committed_handler
+        self._job_committed_handler = handler
+        return old_handler
 
     async def job_committed(self, committed: BatchJob) -> bool:
         if self._job_committed_handler is None:
             return True
+        if self._job_committed_loop is None:
+            raise RuntimeError("job committed handler loop is not initialized")
 
         return await asyncio.wrap_future(
             asyncio.run_coroutine_threadsafe(
@@ -60,7 +79,7 @@ class JobEntityManager(ABC):
 
     def on_job_updated(
         self, handler: Callable[[BatchJob, BatchJob], Coroutine[Any, Any, bool]]
-    ):
+    ) -> Optional[Callable[[BatchJob, BatchJob], Coroutine[Any, Any, bool]]]:
         """Register a job updated callback.
 
         Args:
@@ -69,18 +88,23 @@ class JobEntityManager(ABC):
                 representing the old job and new job and return `None`.
                 Example: `lambda old_job, new_job: logger.info("Job updated", old_id=old_job.id, new_id=new_job.id)`
         """
-        self._job_updated_loop = asyncio.get_running_loop()
+        # Keeps the loop reference to the first registration.
+        # Otherwise, it will be overwritten by the next registration.
+        if self._job_updated_loop is None:
+            self._job_updated_loop = asyncio.get_running_loop()
         logger.debug(
             "job updated handler registered",
             loop=getattr(self._job_updated_loop, "name", "unknown"),
         )  # type: ignore[call-arg]
-        self._job_updated_handler: Optional[
-            Callable[[BatchJob, BatchJob], Coroutine[Any, Any, bool]]
-        ] = handler
+        old_handler = self._job_updated_handler
+        self._job_updated_handler = handler
+        return old_handler
 
     async def job_updated(self, old: BatchJob, new: BatchJob) -> bool:
         if self._job_updated_handler is None:
             return True
+        if self._job_updated_loop is None:
+            raise RuntimeError("job updated handler loop is not initialized")
 
         return await asyncio.wrap_future(
             asyncio.run_coroutine_threadsafe(
@@ -88,7 +112,9 @@ class JobEntityManager(ABC):
             )
         )
 
-    def on_job_deleted(self, handler: Callable[[BatchJob], Coroutine[Any, Any, bool]]):
+    def on_job_deleted(
+        self, handler: Callable[[BatchJob], Coroutine[Any, Any, bool]]
+    ) -> Optional[Callable[[BatchJob], Coroutine[Any, Any, bool]]]:
         """Register a job deleted callback.
 
         Args:
@@ -97,18 +123,23 @@ class JobEntityManager(ABC):
                 representing the deleted job and return `None`.
                 Example: `lambda deleted_job: logger.info("Job deleted", job_id=deleted_job.id)`
         """
-        self._job_deleted_loop = asyncio.get_running_loop()
+        # Keeps the loop reference to the first registration.
+        # Otherwise, it will be overwritten by the next registration.
+        if self._job_deleted_loop is None:
+            self._job_deleted_loop = asyncio.get_running_loop()
         logger.debug(
             "job deleted handler registered",
             loop=getattr(self._job_deleted_loop, "name", "unknown"),
         )  # type: ignore[call-arg]
-        self._job_deleted_handler: Optional[
-            Callable[[BatchJob], Coroutine[Any, Any, bool]]
-        ] = handler
+        old_handler = self._job_deleted_handler
+        self._job_deleted_handler = handler
+        return old_handler
 
     async def job_deleted(self, deleted: BatchJob) -> bool:
         if self._job_deleted_handler is None:
             return True
+        if self._job_deleted_loop is None:
+            raise RuntimeError("job deleted handler loop is not initialized")
 
         return await asyncio.wrap_future(
             asyncio.run_coroutine_threadsafe(
@@ -121,12 +152,12 @@ class JobEntityManager(ABC):
         return False
 
     @abstractmethod
-    async def submit_job(self, session_id: str, job: BatchJobSpec):
+    async def submit_job(self, session_id: str, job_spec: BatchJobSpec):
         """Submit job by submiting job to the persist store.
 
         Args:
             session_id (str): id identifiy the job submission sesstion
-            job (BatchJob): Job to add.
+            job_spec (BatchJobSpec): Job to add.
         """
         pass
 
@@ -171,7 +202,7 @@ class JobEntityManager(ABC):
         pass
 
     @abstractmethod
-    def get_job(self, job_id: str) -> Optional[BatchJob]:
+    async def get_job(self, job_id: str) -> Optional[BatchJob]:
         """Get cached job detail by batch id.
 
         Args:
@@ -183,7 +214,7 @@ class JobEntityManager(ABC):
         pass
 
     @abstractmethod
-    def list_jobs(self) -> list[BatchJob]:
+    async def list_jobs(self) -> list[BatchJob]:
         """List unarchived jobs that cached locally.
 
         Returns:

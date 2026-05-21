@@ -71,10 +71,12 @@ type AuthConfig struct {
 
 // UserInfo represents an authenticated user.
 type UserInfo struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
-	Role  string `json:"role"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Role     string `json:"role"`
+	Username string `json:"username"`
+	Picture  string `json:"picture"`
 }
 
 // contextKey is an unexported type for context keys in this package.
@@ -82,6 +84,15 @@ type contextKey string
 
 // UserContextKey is the context key for storing UserInfo.
 const UserContextKey contextKey = "user"
+
+// gRPC metadata keys used by the gateway to propagate the caller identity
+// from the HTTP request context to gRPC handlers (which receive a fresh
+// context across the gateway dial).
+const (
+	MetadataUserEmail = "x-aibrix-user-email"
+	MetadataUserName  = "x-aibrix-user-name"
+	MetadataUserID    = "x-aibrix-user-id"
+)
 
 // IDTokenContextKey is the context key for storing the raw OIDC ID token
 // associated with the current session, when available. Consumers (e.g. the
@@ -465,10 +476,12 @@ func (a *AuthMiddleware) handleOIDCCallback(w http.ResponseWriter, r *http.Reque
 	// we can pull out the (configurable) groups claim without having to
 	// re-declare the struct per provider.
 	var claims struct {
-		Sub   string `json:"sub"`
-		Email string `json:"email"`
-		Name  string `json:"name"`
-		Nonce string `json:"nonce"`
+		Sub      string `json:"sub"`
+		Email    string `json:"email"`
+		Name     string `json:"name"`
+		Nonce    string `json:"nonce"`
+		Username string `json:"username"`
+		Picture  string `json:"picture"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		http.Error(w, `{"error":"failed to parse id_token claims"}`, http.StatusBadGateway)
@@ -487,10 +500,12 @@ func (a *AuthMiddleware) handleOIDCCallback(w http.ResponseWriter, r *http.Reque
 	}
 
 	user := &UserInfo{
-		ID:    claims.Sub,
-		Name:  claims.Name,
-		Email: claims.Email,
-		Role:  a.resolveRole(claims.Email, rawClaims),
+		ID:       claims.Sub,
+		Name:     claims.Name,
+		Email:    claims.Email,
+		Role:     a.resolveRole(claims.Email, rawClaims),
+		Username: claims.Username,
+		Picture:  claims.Picture,
 	}
 
 	if err := a.setSessionCookie(w, r, user, rawIDToken); err != nil {

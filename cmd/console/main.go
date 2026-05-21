@@ -72,6 +72,20 @@ func main() {
 		}
 	})
 
+	// In dev mode, default klog verbosity to 2 so request/response payloads
+	// to MDS are visible. User can still override with `-v=N`.
+	if cfg.DevMode {
+		vSet := false
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name == "v" {
+				vSet = true
+			}
+		})
+		if !vSet {
+			_ = flag.CommandLine.Set("v", "2")
+		}
+	}
+
 	srv := server.New(cfg)
 
 	// Start gRPC server

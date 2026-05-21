@@ -1,15 +1,20 @@
-// JobStatus mirrors the OpenAI Batch 8-state enum returned by the metadata
-// service. Console renders these as-is; product-side groupings (active /
-// terminal etc.) live in component logic.
+// JobStatus is the console-facing job lifecycle. It includes the planner's
+// pre-submit statuses plus the downstream MDS/OpenAI batch statuses.
+// Matches plannerapi.JobStatus on the backend (13 values).
 export type JobStatus =
+  | 'queued'
+  | 'resource_preparing'
+  | 'submitting'
   | 'validating'
   | 'in_progress'
   | 'finalizing'
+  | 'cancelling'
   | 'completed'
   | 'failed'
   | 'expired'
-  | 'cancelling'
-  | 'cancelled';
+  | 'cancelled'
+  | 'resource_failed'
+  | 'submit_failed';
 
 export interface JobUsage {
   inputTokens: number;
