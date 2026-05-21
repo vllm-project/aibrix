@@ -134,6 +134,16 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		if err := s.processOnce(srv, st); err != nil {
 			return err
 		}
+		// Proactively break the loop if the response is fully processed.
+		// This allows Envoy to gracefully close the stream and send 0\r\n\r\n.
+		if st.completed {
+			klog.V(4).InfoS("request actively finished, breaking ext_proc stream", "requestID", st.requestID)
+			if st.model != "" {
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
+			}
+			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			return nil
+		}
 	}
 }
 
