@@ -289,7 +289,6 @@ func (c *vllmBenchConfig) applyDefaults() {
 	defaults := map[string]interface{}{
 		"endpoint":                "/v1/chat/completions",
 		"backend":                 "openai-chat",
-		"endpoint-type":           "openai-chat",
 		"num-prompts":             1000,
 		"request-rate":            8,
 		"concurrency":             16,
@@ -352,9 +351,11 @@ func buildPodManifest(config *vllmBenchConfig) ([]byte, error) {
 		}
 	}
 
-	// Append fixed arguments that the framework depends on
+	// Append fixed arguments that the framework depends on.
+	if _, ok := config.VLLMArgs["dataset-name"]; !ok {
+		argsLines = append(argsLines, "  --dataset-name random \\")
+	}
 	argsLines = append(argsLines,
-		"  --dataset-name random \\",
 		"  --seed 1 \\",
 		"  --save-result \\",
 		fmt.Sprintf("  --result-filename %s \\", shellWord(config.Artifacts.ResultFilename)),

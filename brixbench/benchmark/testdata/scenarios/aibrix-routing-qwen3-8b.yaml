@@ -1,0 +1,374 @@
+Scenario: aibrix-routing-qwen3-8b
+Tests:
+  - name: tc-rt-01-default-conf-rt-01-4p8d-r4
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/unset-routing-algorithm.yaml
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-01-default-4p8d-r4.yaml
+  - name: tc-rt-01-default-conf-rt-01-4p8d-r8
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/unset-routing-algorithm.yaml
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-01-default-4p8d-r8.yaml
+  - name: tc-rt-01-default-conf-rt-01-4p8d-r16
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/unset-routing-algorithm.yaml
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-01-default-4p8d-r16.yaml
+  - name: tc-rt-01-default-conf-rt-01-4p8d-r32
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/unset-routing-algorithm.yaml
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-01-default-4p8d-r32.yaml
+  - name: tc-rt-01-default-conf-rt-02-8p4d-r4
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/unset-routing-algorithm.yaml
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p4d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-01-default-8p4d-r4.yaml
+  - name: tc-rt-01-default-conf-rt-02-8p4d-r8
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/unset-routing-algorithm.yaml
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p4d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-01-default-8p4d-r8.yaml
+  - name: tc-rt-01-default-conf-rt-02-8p4d-r16
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/unset-routing-algorithm.yaml
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p4d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-01-default-8p4d-r16.yaml
+  - name: tc-rt-01-default-conf-rt-02-8p4d-r32
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/unset-routing-algorithm.yaml
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p4d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-01-default-8p4d-r32.yaml
+  - name: tc-rt-01-default-conf-rt-03-8p8d-r4
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/unset-routing-algorithm.yaml
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-01-default-8p8d-r4.yaml
+  - name: tc-rt-01-default-conf-rt-03-8p8d-r8
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/unset-routing-algorithm.yaml
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-01-default-8p8d-r8.yaml
+  - name: tc-rt-01-default-conf-rt-03-8p8d-r16
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/unset-routing-algorithm.yaml
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-01-default-8p8d-r16.yaml
+  - name: tc-rt-01-default-conf-rt-03-8p8d-r32
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/unset-routing-algorithm.yaml
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-01-default-8p8d-r32.yaml
+  - name: tc-rt-02-pd-conf-rt-01-4p8d-r4
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p8d-r4.yaml
+  - name: tc-rt-02-pd-conf-rt-01-4p8d-r8
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p8d-r8.yaml
+  - name: tc-rt-02-pd-conf-rt-01-4p8d-r16
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p8d-r16.yaml
+  - name: tc-rt-02-pd-conf-rt-01-4p8d-r32
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p8d-r32.yaml
+  - name: tc-rt-02-pd-conf-rt-02-8p4d-r4
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p4d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p4d-r4.yaml
+  - name: tc-rt-02-pd-conf-rt-02-8p4d-r8
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p4d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p4d-r8.yaml
+  - name: tc-rt-02-pd-conf-rt-02-8p4d-r16
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p4d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p4d-r16.yaml
+  - name: tc-rt-02-pd-conf-rt-02-8p4d-r32
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p4d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p4d-r32.yaml
+  - name: tc-rt-02-pd-conf-rt-03-8p8d-r4
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p8d-r4.yaml
+  - name: tc-rt-02-pd-conf-rt-03-8p8d-r8
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p8d-r8.yaml
+  - name: tc-rt-02-pd-conf-rt-03-8p8d-r16
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p8d-r16.yaml
+  - name: tc-rt-02-pd-conf-rt-03-8p8d-r32
+    provider: aibrix
+    fullstack: false
+    commit: origin/main
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p8d.yaml
+    benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p8d-r32.yaml
