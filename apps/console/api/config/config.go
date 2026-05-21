@@ -45,6 +45,11 @@ type Config struct {
 	// on CreateJob requests when the caller does not provide one. Temporary
 	// stop-gap until the Model entity carries a per-model batch_template.
 	DefaultBatchModelDeploymentTemplate string
+	// Provisioner selects which RM provisioner backend the planner should
+	// use at runtime. Forwarded to resource_manager.NewResourceManager
+	// which validates against the supported set defined in
+	// resource_manager/types.ResourceProvisionType*
+	Provisioner string
 
 	// GRPCAddr is the listen address for the gRPC server.
 	GRPCAddr string
@@ -146,6 +151,7 @@ func Load() (*Config, error) {
 		GatewayEndpoint:                     envOrDefault("GATEWAY_ENDPOINT", "http://localhost:8888"),
 		MetadataServiceURL:                  envOrDefault("METADATA_SERVICE_URL", "http://localhost:8090"),
 		DefaultBatchModelDeploymentTemplate: envOrDefault("DEFAULT_BATCH_MODEL_DEPLOYMENT_TEMPLATE", ""),
+		Provisioner:                         envOrDefault("PROVISIONER", "kubernetes"),
 		GRPCAddr:                            envOrDefault("GRPC_ADDR", ":50060"),
 		HTTPAddr:                            envOrDefault("HTTP_ADDR", ":8080"),
 		AuthMode:                            authMode,

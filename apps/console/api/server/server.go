@@ -115,7 +115,7 @@ func (s *Server) StartGRPC(addr string) error {
 	s.grpcServer = grpc.NewServer()
 
 	batchClient := plannerclient.NewOpenAIBatchClient(s.cfg.MetadataServiceURL)
-	rm, err := resource_manager.NewResourceManager(rmtypes.ResourceProvisionTypeKubernetes, s.store)
+	rm, err := resource_manager.NewResourceManager(rmtypes.ResourceProvisionType(s.cfg.Provisioner), s.store)
 	if err != nil {
 		return fmt.Errorf("resource manager init: %w", err)
 	}
