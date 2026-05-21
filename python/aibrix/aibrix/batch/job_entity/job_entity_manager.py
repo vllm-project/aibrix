@@ -152,12 +152,12 @@ class JobEntityManager(ABC):
         return False
 
     @abstractmethod
-    async def submit_job(self, session_id: str, job: BatchJobSpec):
+    async def submit_job(self, session_id: str, job_spec: BatchJobSpec):
         """Submit job by submiting job to the persist store.
 
         Args:
             session_id (str): id identifiy the job submission sesstion
-            job (BatchJob): Job to add.
+            job_spec (BatchJobSpec): Job to add.
         """
         pass
 
@@ -202,7 +202,7 @@ class JobEntityManager(ABC):
         pass
 
     @abstractmethod
-    def get_job(self, job_id: str) -> Optional[BatchJob]:
+    async def get_job(self, job_id: str) -> Optional[BatchJob]:
         """Get cached job detail by batch id.
 
         Args:
@@ -214,7 +214,7 @@ class JobEntityManager(ABC):
         pass
 
     @abstractmethod
-    def list_jobs(self) -> list[BatchJob]:
+    async def list_jobs(self) -> list[BatchJob]:
         """List unarchived jobs that cached locally.
 
         Returns:

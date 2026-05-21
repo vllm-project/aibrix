@@ -283,7 +283,7 @@ class MockJobEntityManager(JobEntityManager):
         # Call the committed handler
         await self.job_committed(batch_job)
 
-    def get_job(self, job_id: str) -> Optional[BatchJob]:
+    async def get_job(self, job_id: str) -> Optional[BatchJob]:
         """Mock get_job implementation."""
         return None
 
@@ -295,7 +295,7 @@ class MockJobEntityManager(JobEntityManager):
         """Mock update_job_status implementation."""
         pass
 
-    def list_jobs(self) -> List[BatchJob]:
+    async def list_jobs(self) -> List[BatchJob]:
         """Mock list_jobs implementation."""
         return []
 
