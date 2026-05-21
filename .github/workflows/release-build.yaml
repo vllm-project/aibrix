@@ -199,6 +199,7 @@ jobs:
       - name: Build Kustomize
         run: |
           kustomize build config/dependency > aibrix-dependency-${{ github.ref_name }}.yaml
+          kustomize build config/crd        > aibrix-core-crds-${{ github.ref_name }}.yaml
           kustomize build config/overlays/release > aibrix-core-${{ github.ref_name }}.yaml
 
       # Upload the Kustomize YAML as a release artifact
@@ -207,6 +208,12 @@ jobs:
         with:
           name: aibrix-dependency-${{ github.ref_name }}.yaml
           path: aibrix-dependency-${{ github.ref_name }}.yaml
+
+      - name: Upload Kustomize YAML
+        uses: actions/upload-artifact@v4
+        with:
+          name: aibrix-core-crds-${{ github.ref_name }}.yaml
+          path: aibrix-core-crds-${{ github.ref_name }}.yaml
 
       - name: Upload Kustomize YAML
         uses: actions/upload-artifact@v4
@@ -228,6 +235,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: aibrix-dependency-${{ github.ref_name }}.yaml
+
+      - name: Download Kustomize YAML
+        uses: actions/download-artifact@v4
+        with:
+          name: aibrix-core-crds-${{ github.ref_name }}.yaml
 
       - name: Download Kustomize YAML
         uses: actions/download-artifact@v4
@@ -260,4 +272,5 @@ jobs:
           prerelease: ${{ env.prerelease }}
           files: |
             aibrix-dependency-${{ github.ref_name }}.yaml
+            aibrix-core-crds-${{ github.ref_name }}.yaml
             aibrix-core-${{ github.ref_name }}.yaml
