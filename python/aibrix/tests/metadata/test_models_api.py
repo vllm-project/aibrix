@@ -33,6 +33,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 # Try importing, skip tests if dependencies missing
 try:
     from aibrix.metadata.api.v1.models import K8sModelDiscovery
+    from aibrix.metadata.app import build_app
     from tests.metadata.conftest import create_test_app
 
     DEPENDENCIES_AVAILABLE = True
@@ -336,6 +337,10 @@ class TestModelsAPI:
             disable_batch_api=True,
             disable_file_api=True,
             enable_k8s_job=False,
+            enable_mongo_job=False,
+            enable_redis_job=False,
+            registry_provider=None,
+            disable_k8s_support=False,
             disable_inference_endpoint=True,
         )
         app = build_app(args)

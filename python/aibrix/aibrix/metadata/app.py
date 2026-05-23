@@ -50,7 +50,11 @@ router = APIRouter()
 
 _REGISTRY_PROVIDER_CONFIGMAP = "configmap"
 _MAX_LOGGED_BODY_BYTES = 8192
-_LOG_HTTP_BODIES = os.getenv("AIBRIX_MDS_HTTP_BODY_LOG", "").lower() in ("1", "true", "yes")
+_LOG_HTTP_BODIES = os.getenv("AIBRIX_MDS_HTTP_BODY_LOG", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 def _require_setting(name: str, value: Any) -> Any:

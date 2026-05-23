@@ -44,7 +44,9 @@ class FakeEntityManager(JobEntityManager):
     def __init__(self):
         super().__init__()
 
-    async def submit_job(self, session_id: str, job: BatchJobSpec):
+    async def submit_job(
+        self, session_id: str, job: BatchJobSpec, request_count: int = 0
+    ):
         return None
 
     async def update_job_ready(self, job: BatchJob):

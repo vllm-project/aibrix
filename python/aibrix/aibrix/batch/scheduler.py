@@ -295,7 +295,7 @@ class JobScheduler:
                         e
                         if isinstance(e, BatchJobError)
                         else BatchJobError(
-                            code=BatchJobErrorCode.INTERNAL_ERROR, message=str(e)
+                            code=BatchJobErrorCode.UNKNOWN_ERROR, message=str(e)
                         )
                     )
                     # Guard mark_job_failed: if it raises (e.g. the job is no
