@@ -89,7 +89,7 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
           // Poll while any job is in a non-terminal state.
           const hasActive = next.some(j => !TERMINAL_STATUSES.has(j.status));
           if (hasActive) {
-            timer = setTimeout(() => fetchJobs(false), 5000);
+            timer = setTimeout(() => fetchJobs(false), 120000);
           }
         })
         .catch(err => {
