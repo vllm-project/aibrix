@@ -210,18 +210,19 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
                   <td colSpan={7} className="px-6 py-12 text-center text-sm text-gray-500">No jobs found.</td>
                 </tr>
               ) : (
-                filtered.map((job) => {
+                filtered.map((job, idx) => {
                   const created = formatDate(job.createdAt);
                   const counts = job.requestCounts;
+                  const clickable = !!job.id;
                   return (
                     <tr
-                      key={job.id}
-                      className="hover:bg-gray-50/50 cursor-pointer transition-colors"
-                      onClick={() => onSelectJob(job.id)}
+                      key={job.id || `row-${idx}`}
+                      className={`transition-colors ${clickable ? 'hover:bg-gray-50/50 cursor-pointer' : 'opacity-60'}`}
+                      onClick={clickable ? () => onSelectJob(job.id) : undefined}
                     >
                       <td className="px-6 py-4">
                         <div className="text-sm text-gray-900">{job.name || job.id}</div>
-                        <div className="text-xs text-gray-400">ID: {job.id}</div>
+                        <div className="text-xs text-gray-400">ID: {job.id || '—'}</div>
                       </td>
                       <td className="px-6 py-4">
                         <div className="text-sm text-gray-900">{job.model || '—'}</div>

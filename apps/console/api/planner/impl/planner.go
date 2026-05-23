@@ -590,7 +590,7 @@ func (q *Planner) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, er
 	job, ok := q.jobs[jobID]
 	if !ok {
 		q.mu.RUnlock()
-		return nil, fmt.Errorf("%w: job_id %q", plannerapi.ErrJobNotFound, jobID)
+		return q.getJobFromStore(ctx, jobID)
 	}
 	status := job.status
 	batchID := job.batchID
@@ -613,6 +613,34 @@ func (q *Planner) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, er
 	return &plannerapi.Job{
 		JobID: jobID,
 		Batch: placeholderBatch(req, statusFor(status), queuedAt, terminalAt),
+	}, nil
+}
+
+// getJobFromStore resolves a job that is no longer in the in-memory map
+// (terminal/evicted jobs after a Planner restart) from the durable store.
+func (q *Planner) getJobFromStore(ctx context.Context, jobID string) (*plannerapi.Job, error) {
+	if q.store == nil {
+		return nil, fmt.Errorf("%w: job_id %q", plannerapi.ErrJobNotFound, jobID)
+	}
+	rec, err := q.store.GetJob(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	if rec == nil {
+		return nil, fmt.Errorf("%w: job_id %q", plannerapi.ErrJobNotFound, jobID)
+	}
+	j := modelToJob(rec)
+	if j.batchID != "" {
+		klog.Infof("[planner] get_job (store) job_id=%q batch_id=%q", jobID, j.batchID)
+		batch, err := q.bc.GetBatch(ctx, j.batchID)
+		if err != nil {
+			return nil, err
+		}
+		return &plannerapi.Job{JobID: jobID, Batch: batch}, nil
+	}
+	return &plannerapi.Job{
+		JobID: jobID,
+		Batch: placeholderBatch(j.req, statusFor(j.status), j.queuedAt, terminalTime(j)),
 	}, nil
 }
 
@@ -700,17 +728,39 @@ func (q *Planner) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest)
 		jobID string
 		batch *openai.Batch
 	}, 0, len(resp.Data))
+	var missingBatchIDs []string
+	missingEntries := make(map[string]*plannerapi.Job)
 	for _, b := range resp.Data {
 		jobID := q.jobByBatch[b.ID]
-		out = append(out, &plannerapi.Job{JobID: jobID, Batch: b})
+		entry := &plannerapi.Job{JobID: jobID, Batch: b}
+		out = append(out, entry)
 		if jobID != "" {
 			tagged = append(tagged, struct {
 				jobID string
 				batch *openai.Batch
 			}{jobID, b})
+		} else if b.ID != "" {
+			missingBatchIDs = append(missingBatchIDs, b.ID)
+			missingEntries[b.ID] = entry
 		}
 	}
 	q.mu.RUnlock()
+
+	// Recover JobIDs for batches not in the in-memory map (terminal/evicted
+	// jobs after a Planner restart) from the durable store.
+	if q.store != nil && len(missingBatchIDs) > 0 {
+		recs, err := q.store.ListJobsByBatchIDs(ctx, missingBatchIDs)
+		if err != nil {
+			klog.Warningf("[planner] list jobs by batch ids: %v", err)
+		} else {
+			for batchID, entry := range missingEntries {
+				if rec, ok := recs[batchID]; ok && rec.ID != "" {
+					entry.JobID = rec.ID
+				}
+			}
+		}
+	}
+
 	for _, t := range tagged {
 		q.syncFromBatch(t.jobID, t.batch)
 	}
