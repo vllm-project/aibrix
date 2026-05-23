@@ -1338,3 +1338,79 @@ func TestProcess_RecvEOF_DuringShutdown(t *testing.T) {
 	srv.AssertExpectations(t)
 	mc.AssertExpectations(t)
 }
+
+// TestProcess_CompletedExitsLoop verifies that if a request completes successfully
+// (which sets st.completed = true), the loop exits gracefully returning nil,
+// even if the client context is cancelled concurrently.
+func TestProcess_CompletedExitsLoop(t *testing.T) {
+	mc := &MockCache{}
+	// mock all funcs we need
+	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mc.On("AddRequestCount", mock.Anything, mock.Anything, mock.Anything).Return(int64(0))
+	mc.On("DoneRequestTrace", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mc.On("HasModel", mock.Anything).Return(true)
+	pods := &utils.PodArray{Pods: []*v1.Pod{
+		{
+			Status: v1.PodStatus{
+				PodIP:      "1.2.3.4",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+	}}
+	mc.On("ListPodsByModel", mock.Anything).Return(pods, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv := &mockProcessServer{ctx: ctx}
+
+	req := &extProcPb.ProcessingRequest{}
+	recvCount := 0
+	// we need to fully test s.Process, so we mock a full stream request with header body and resp
+	srv.On("Recv").Return(req, nil).Run(func(args mock.Arguments) {
+		switch recvCount {
+		case 0:
+			// mock on RequestHeaders
+			req.Request = &extProcPb.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extProcPb.HttpHeaders{
+					Headers: &configPb.HeaderMap{
+						Headers: []*configPb.HeaderValue{
+							{Key: ":routing-strategy", Value: "random", RawValue: []byte("random")},
+							{Key: ":path", Value: "/v1/chat/completions", RawValue: []byte("/v1/chat/completions")},
+						},
+					},
+				},
+			}
+		case 1:
+			// mock on RequestBody，contains stream=true
+			req.Request = &extProcPb.ProcessingRequest_RequestBody{
+				RequestBody: &extProcPb.HttpBody{
+					Body: []byte(`{"model": "test", "messages": [{"role": "user", "content": "hello"}], "stream": true}`),
+				},
+			}
+		case 2:
+			// mock on ResponseBody，with [DONE]
+			req.Request = &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        []byte("data: [DONE]\n\n"),
+					EndOfStream: true, // if we get [Done], completed == True
+				},
+			}
+			cancel()
+		}
+		recvCount++
+	})
+
+	srv.On("Send", mock.Anything).Return(nil).Run(nil)
+
+	s := newProcessTestServer(openShutdownCh(), mc)
+
+	err := s.Process(srv)
+
+	// Core assertion: Since st.completed has already been set to true,
+	// even if ctx has been canceled, Process should exit gracefully (return nil) instead of throwing a context.Canceled error.
+	assert.NoError(t, err)
+
+	srv.AssertExpectations(t)
+	mc.AssertExpectations(t)
+}
