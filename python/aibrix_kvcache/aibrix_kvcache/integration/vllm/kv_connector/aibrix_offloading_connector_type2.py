@@ -136,6 +136,7 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         self,
         metadata: AIBrixOffloadingConnectorMetadata,
     ) -> dict[str, int]:
+        self._release_acquired_kvcache_handles()
         self._update_meta_cache(metadata)
 
         stats = {}
@@ -302,6 +303,8 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         for seq_request_id in self._acquired_kvcache_handles:
             if self._acquired_kvcache_handles[seq_request_id] is None:
                 continue
+            if seq_request_id not in metadata:
+                continue
             handle = self._acquired_kvcache_handles[seq_request_id]
             seq_cached_meta = self._meta_cache[seq_request_id]
             seq_context_len = metadata[seq_request_id].context_len
@@ -372,6 +375,8 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
             for seq_req_id in self._send_lengths:
                 seq_context_len, seq_query_len = self._send_lengths[seq_req_id]
                 if seq_query_len == 0:
+                    continue
+                if seq_req_id not in metadata:
                     continue
                 # allocate staging buffers that can hold kvcache for all layers
                 seq_request_meta = metadata[seq_req_id]
@@ -495,6 +500,8 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
                 seq_request_id not in self._allocated_kvcache_handles
                 or self._allocated_kvcache_handles[seq_request_id] is None
             ):
+                continue
+            if seq_request_id not in metadata:
                 continue
             seq_request_meta = metadata[seq_request_id]
             self._send_kv_impl(seq_request_meta)
