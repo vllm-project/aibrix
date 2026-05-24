@@ -178,7 +178,7 @@ class JobCache(JobEntityManager):
             )
 
     # Implementation of JobEntityManager abstract methods
-    def get_job(self, job_id: str) -> Optional[BatchJob]:
+    async def get_job(self, job_id: str) -> Optional[BatchJob]:
         """Get cached job detail by batch id.
 
         Args:
@@ -194,7 +194,7 @@ class JobCache(JobEntityManager):
             return None
         return self.active_jobs[job_id]
 
-    def list_jobs(self) -> List[BatchJob]:
+    async def list_jobs(self) -> List[BatchJob]:
         """List unarchived jobs that cached locally.
 
         Returns:

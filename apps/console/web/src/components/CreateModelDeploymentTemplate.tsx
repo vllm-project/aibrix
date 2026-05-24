@@ -85,18 +85,20 @@ interface GpuSku {
   interconnect: 'nvlink' | 'pcie' | 'ib' | '';
 }
 const GPU_CATALOG: GpuSku[] = [
-  { type: 'H200-SXM', label: 'NVIDIA H200 SXM (141 GB, NVLink)', vramGb: 141, interconnect: 'nvlink' },
-  { type: 'H100-SXM', label: 'NVIDIA H100 SXM (80 GB, NVLink)', vramGb: 80, interconnect: 'nvlink' },
-  { type: 'H100-NVL', label: 'NVIDIA H100 NVL (94 GB, NVLink)', vramGb: 94, interconnect: 'nvlink' },
-  { type: 'H100-PCIe', label: 'NVIDIA H100 PCIe (80 GB, PCIe)', vramGb: 80, interconnect: 'pcie' },
-  { type: 'B200', label: 'NVIDIA B200 (192 GB, NVLink)', vramGb: 192, interconnect: 'nvlink' },
-  { type: 'A100-SXM-80', label: 'NVIDIA A100 SXM (80 GB, NVLink)', vramGb: 80, interconnect: 'nvlink' },
-  { type: 'A100-SXM-40', label: 'NVIDIA A100 SXM (40 GB, NVLink)', vramGb: 40, interconnect: 'nvlink' },
-  { type: 'A100-PCIe', label: 'NVIDIA A100 PCIe (40 GB, PCIe)', vramGb: 40, interconnect: 'pcie' },
-  { type: 'L40S', label: 'NVIDIA L40S (48 GB, PCIe)', vramGb: 48, interconnect: 'pcie' },
-  { type: 'L4', label: 'NVIDIA L4 (24 GB, PCIe)', vramGb: 24, interconnect: 'pcie' },
-  { type: 'T4', label: 'NVIDIA T4 (16 GB, PCIe)', vramGb: 16, interconnect: 'pcie' },
-  { type: 'MI300X', label: 'AMD MI300X (192 GB, IF)', vramGb: 192, interconnect: 'ib' },
+  { type: 'Tesla-P4', label: 'NVIDIA Tesla P4 (8 GB, PCIe)', vramGb: 8, interconnect: 'pcie' },
+  { type: 'Tesla-T4', label: 'NVIDIA Tesla T4 (16 GB, PCIe)', vramGb: 16, interconnect: 'pcie' },
+  { type: 'Tesla-V100-SXM2-16GB', label: 'NVIDIA Tesla V100 SXM2 (16 GB, NVLink)', vramGb: 16, interconnect: 'nvlink' },
+  { type: 'NVIDIA-A10', label: 'NVIDIA A10 (24 GB, PCIe)', vramGb: 24, interconnect: 'pcie' },
+  { type: 'NVIDIA-A30', label: 'NVIDIA A30 (24 GB, PCIe)', vramGb: 24, interconnect: 'pcie' },
+  { type: 'NVIDIA-A100-SXM4-80GB', label: 'NVIDIA A100 SXM4 (80 GB, NVLink)', vramGb: 80, interconnect: 'nvlink' },
+  { type: 'A100-SXM-80GB', label: 'NVIDIA A100 SXM (80 GB, NVLink)', vramGb: 80, interconnect: 'nvlink' },
+  { type: 'NVIDIA-A800-SXM4-80GB', label: 'NVIDIA A800 SXM4 (80 GB, NVLink)', vramGb: 80, interconnect: 'nvlink' },
+  { type: 'NVIDIA-L4', label: 'NVIDIA L4 (24 GB, PCIe)', vramGb: 24, interconnect: 'pcie' },
+  { type: 'NVIDIA-L20', label: 'NVIDIA L20 (48 GB, PCIe)', vramGb: 48, interconnect: 'pcie' },
+  { type: 'NVIDIA-L40', label: 'NVIDIA L40 (48 GB, PCIe)', vramGb: 48, interconnect: 'pcie' },
+  { type: 'NVIDIA-L40S', label: 'NVIDIA L40S (48 GB, PCIe)', vramGb: 48, interconnect: 'pcie' },
+  { type: 'NVIDIA-H20', label: 'NVIDIA H20 (96 GB, NVLink)', vramGb: 96, interconnect: 'nvlink' },
+  { type: 'NVIDIA-H30', label: 'NVIDIA H30 (96 GB, NVLink)', vramGb: 96, interconnect: 'nvlink' },
   { type: 'CPU', label: 'CPU (no GPU)', vramGb: 0, interconnect: '' },
 ];
 const WEIGHT_QUANT_OPTIONS = ['', 'fp8', 'awq', 'gptq', 'int8', 'bf16', 'fp16'];

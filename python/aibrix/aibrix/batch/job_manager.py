@@ -728,6 +728,9 @@ class JobManager(JobProgressManager):
         elif job_id in self._done_jobs:
             return self._done_jobs[job_id]
 
+        if self._job_entity_manager:
+            return await self._job_entity_manager.get_job(job_id)
+
         return None
 
     async def get_job_status(self, job_id: str) -> Optional[BatchJobStatus]:
@@ -740,7 +743,7 @@ class JobManager(JobProgressManager):
         # [TODO][NEXT Load all jobs from persistent store
         all_jobs: Optional[List[BatchJob]] = None
         if self._job_entity_manager:
-            all_jobs = self._job_entity_manager.list_jobs()
+            all_jobs = await self._job_entity_manager.list_jobs()
         else:
             # Collect jobs from all states
             all_jobs = []
