@@ -63,6 +63,7 @@ class BatchJobErrorCode(str, Enum):
     INVALID_COMPLETION_WINDOW = "invalid_completion_window"
     INVALID_METADATA = "invalid_metadata"
     AUTHENTICATION_ERROR = "authentication_error"
+    VALIDATION_ERROR = "validation_error"
     INFERENCE_FAILED = "inference_failed"
     PREPARE_OUTPUT_ERROR = "prepare_output_failed"
     FINALIZING_ERROR = "finalizing_failed"

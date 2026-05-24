@@ -50,7 +50,9 @@ from aibrix.batch.job_entity import (
     AibrixMetadata,
     BatchJob,
     BatchJobSpec,
+    BatchProfileRef,
     JobAnnotationKey,
+    ModelTemplateRef,
 )
 from aibrix.batch.template import (
     BatchProfile,
@@ -60,6 +62,7 @@ from aibrix.batch.template import (
     ModelDeploymentTemplate,
     ModelSourceType,
     ProfileRegistry,
+    SchedulingSpec,
     TemplateRegistry,
 )
 from aibrix.logger import init_logger
@@ -125,7 +128,12 @@ class ForbiddenOverride(RenderError):
 # if the worker contract changes.
 _DEFAULT_NAMESPACE = "default"
 _DEFAULT_SERVICE_ACCOUNT = "job-reader-sa"
-_DEFAULT_ENGINE_PORT = 8000
+
+_ENGINE_PORT_DEFAULTS: Dict[str, int] = {
+    EngineType.SGLANG.value: 30000,
+    EngineType.LMDEPLOY.value: 23333,
+}
+_FALLBACK_ENGINE_PORT = 8000
 
 # Per-engine health endpoint defaults. Used when the template leaves
 # engine.health_endpoint empty so the console UI can hide this field —
@@ -196,58 +204,192 @@ _PROFILE_OVERRIDE_ALLOWLIST = {"scheduling"}
 class _RendererSupport:
     def __init__(
         self,
-        template_registry: TemplateRegistry,
+        template_registry: Optional[TemplateRegistry] = None,
         profile_registry: Optional[ProfileRegistry] = None,
     ) -> None:
         self._templates = template_registry
         self._profiles = profile_registry
 
     def _validate_template(
-        self, template: ModelDeploymentTemplate, endpoint: Optional[str] = None
+        self,
+        template: ModelDeploymentTemplate,
+        endpoint: Optional[str] = None,
+        skip_deployment_check: bool = True,
     ) -> None:
-        if template.spec.deployment_mode != DeploymentMode.DEDICATED:
-            raise UnsupportedDeploymentMode(template.spec.deployment_mode)
-        # The endpoint setting overlap with per job spec.aibrix.planner_decision.resource_details[].resource_type
+        # The endpoint setting overlap with per job spec.aibrix.planner_decision.resource_details[0].provider
         # Currently, endpoint can be None for platform independent template, and check will be waived.
-        # TODO: Align the endpoint setting with per job spec.aibrix.planner_decision.resource_details[].resource_type
+        # TODO: Align the endpoint setting with per job spec.aibrix.planner_decision.resource_details[0].provider
         if endpoint is None:
             return
         supported = [e.value for e in template.spec.supported_endpoints]
         if endpoint not in supported:
             raise EndpointNotSupported(endpoint, supported)
+        if (
+            not skip_deployment_check
+            and template.spec.deployment_mode != DeploymentMode.DEDICATED
+        ):
+            raise UnsupportedDeploymentMode(template.spec.deployment_mode)
+
+    def _resolve(
+        self, spec: BatchJobSpec, profile_required: bool = False
+    ) -> tuple[ModelDeploymentTemplate, Optional[BatchProfile]]:
+        if spec.aibrix is None:
+            raise RenderError("aibrix is required to generate job specification")
+
+        aibrix: AibrixMetadata = spec.aibrix
+
+        if not aibrix.model_template:
+            raise RenderError(
+                "aibrix.model_template is required: "
+                "the cluster has no built-in template fallback, so every "
+                "batch must reference a registered ModelDeploymentTemplate"
+            )
+
+        template = self._resolve_template(aibrix.model_template)
+        profile: Optional[BatchProfile] = None
+        if profile_required:
+            profile = self._resolve_profile(aibrix.profile)
+        return template, profile
 
     def _resolve_template(
         self,
-        template_name: str,
-        template_version: Optional[str] = None,
+        ref: ModelTemplateRef,
     ) -> ModelDeploymentTemplate:
-        if template_version:
-            template = self._templates.get_by_version(template_name, template_version)
-            if template is None:
-                raise TemplateNotFound(f"{template_name}@{template_version}")
-            return template
+        if ref.spec is not None:
+            payload = {"name": ref.name, "spec": ref.spec}
+            if ref.version is not None:
+                payload["version"] = ref.version
+            template = ModelDeploymentTemplate.model_validate(payload)
+        elif ref.version:
+            if self._templates is None:
+                raise RenderError("template registry is not configured")
+            resolved_template = self._templates.get_by_version(ref.name, ref.version)
+            if resolved_template is None:
+                raise TemplateNotFound(f"{ref.name}@{ref.version}")
+            template = resolved_template
+        else:
+            if self._templates is None:
+                raise RenderError("template registry is not configured")
+            resolved_template = self._templates.get(ref.name)
+            if resolved_template is None:
+                raise TemplateNotFound(ref.name)
+            template = resolved_template
 
-        template = self._templates.get(template_name)
-        if template is None:
-            raise TemplateNotFound(template_name)
+        # Apply template overrides
+        # Template allowlist: 'engine_args' only.
+        #
+        # Unknown keys on either side raise ForbiddenOverride. Validation
+        # of engine_args values is delegated to EngineArgsSpec; invalid
+        # values bubble up as ValidationError.
+        if ref.overrides:
+            for key in ref.overrides:
+                if key not in _TEMPLATE_OVERRIDE_ALLOWLIST:
+                    raise ForbiddenOverride(
+                        f"model_template.overrides.{key}",
+                        _TEMPLATE_OVERRIDE_ALLOWLIST,
+                    )
+
+            ea_override = ref.overrides.get("engine_args")
+            if ea_override:
+                template = self._apply_template_engine_args_override(
+                    template, ea_override
+                )
+
         return template
 
-    def _resolve_profile(self, profile_name: Optional[str]) -> BatchProfile:
-        if self._profiles is None:
-            raise RenderError("profile registry is not configured")
-        resolved_profile_name = profile_name or self._profiles.default_name()
-        if not resolved_profile_name:
-            raise RenderError(
-                "no profile specified and registry has no default profile"
+    def _apply_template_engine_args_override(
+        self,
+        template: ModelDeploymentTemplate,
+        ea_override: Dict[str, Any],
+    ) -> ModelDeploymentTemplate:
+        # Mock engines ignore engine_args entirely (they only look at
+        # serve_args); rather than silently no-op the user's override
+        # we warn and skip the rebuild to keep the existing shell command
+        # untouched.
+        if template.spec.engine.type == EngineType.MOCK:
+            logger.warning(
+                "engine_args override ignored for mock engine",
+                template=template.name,
+            )  # type: ignore[call-arg]
+            return template
+
+        # Merge override into template's engine_args + rebuild engine args.
+        merged_dump = {
+            **template.spec.engine_args.model_dump(exclude_none=True),
+            **ea_override,
+        }
+        # Validate the merged result via EngineArgsSpec (raises ValidationError
+        # on bad values like negative ints).
+        template.spec.engine_args = EngineArgsSpec.model_validate(merged_dump)
+
+        return template
+
+    def _resolve_profile(self, ref: Optional[BatchProfileRef]) -> BatchProfile:
+        if ref is not None and ref.spec is not None:
+            profile = BatchProfile.model_validate({"name": ref.name, "spec": ref.spec})
+        else:
+            if self._profiles is None:
+                raise RenderError("profile registry is not configured")
+
+            resolved_profile_name = (
+                ref.name
+                if ref is not None and ref.name
+                else self._profiles.default_name()
             )
-        profile = self._profiles.get(resolved_profile_name)
-        if profile is None:
-            raise ProfileNotFound(resolved_profile_name)
+            if not resolved_profile_name:
+                raise RenderError(
+                    "no profile specified and registry has no default profile"
+                )
+
+            resolved_profile = self._profiles.get(resolved_profile_name)
+            if resolved_profile is None:
+                raise ProfileNotFound(resolved_profile_name)
+            profile = resolved_profile
+
+        # Apply profile overrides
+        # Profile allowlist:  'scheduling' only.
+
+        # Profile.scheduling is currently accepted (and roundtripped via
+        # annotations) but has no on-manifest effect — the deadline-aware
+        # scheduler that consumes it has not landed yet. We still validate
+        # the allowlist so unsupported keys cannot reach the worker.
+        if ref and ref.overrides:
+            for key in ref.overrides:
+                if key not in _PROFILE_OVERRIDE_ALLOWLIST:
+                    raise ForbiddenOverride(
+                        f"profile.overrides.{key}",
+                        _PROFILE_OVERRIDE_ALLOWLIST,
+                    )
+
+                s_override = ref.overrides.get("scheduling")
+                if s_override:
+                    profile = self._apply_profile_scheduling_override(
+                        profile, s_override
+                    )
+
+        return profile
+
+    def _apply_profile_scheduling_override(
+        self,
+        profile: BatchProfile,
+        override: Dict[str, Any],
+    ) -> BatchProfile:
+        # Merge override into profile's scheduling + rebuild scheduling.
+        merged_dump = {
+            **profile.spec.scheduling.model_dump(exclude_none=True),
+            **override,
+        }
+        # Validate the merged result via SchedulingSpec (raises ValidationError
+        # on bad values like negative ints).
+        profile.spec.scheduling = SchedulingSpec.model_validate(merged_dump)
+
         return profile
 
     @staticmethod
     def _resolve_engine_port(template: ModelDeploymentTemplate) -> int:
-        port = _DEFAULT_ENGINE_PORT
+        port = _ENGINE_PORT_DEFAULTS.get(
+            template.spec.engine.type, _FALLBACK_ENGINE_PORT
+        )
         serve_args = template.spec.engine.serve_args
         for i, arg in enumerate(serve_args):
             raw_port: Optional[str] = None
@@ -264,7 +406,7 @@ class _RendererSupport:
                     "Ignoring non-integer port in serve_args; using default",
                     template_name=template.name,
                     raw_port=raw_port,
-                    fallback_port=_DEFAULT_ENGINE_PORT,
+                    fallback_port=port,
                 )  # type: ignore[call-arg]
         return port
 
@@ -368,22 +510,18 @@ class JobManifestRenderer(_RendererSupport):
         Returns:
             Dict ready for kubernetes.client.BatchV1Api.create_namespaced_job(body=...).
         """
-        template, profile = self._resolve(spec)
+        # overrides applied
+        template, profile = self._resolve(spec, True)
+        assert profile is not None
 
         # Validate the supportable value space up-front so downstream
         # layers can assume they're working with k8s + dedicated + supported endpoint.
-        self._validate_template(template, spec.endpoint)
+        self._validate_template(template, spec.endpoint, False)
 
         # Layered composition.
         manifest = self._system_base()
         manifest = self._apply_template(manifest, template)
         manifest = self._apply_profile(manifest, profile)
-        manifest = self._apply_overrides(
-            manifest,
-            template,
-            template_overrides=spec.template_overrides,
-            profile_overrides=spec.profile_overrides,
-        )
         manifest = self._apply_per_batch(
             manifest,
             session_id=session_id,
@@ -395,39 +533,6 @@ class JobManifestRenderer(_RendererSupport):
             job_name=job_name,
         )
         return manifest
-
-    # ── Resolution ─────────────────────────────────────────────────────────
-
-    def _resolve(
-        self, spec: BatchJobSpec
-    ) -> tuple[ModelDeploymentTemplate, BatchProfile]:
-        if spec.aibrix is None:
-            raise RenderError(
-                "extra_body.aibrix is required to generate job specification"
-            )
-
-        aibrix: AibrixMetadata = spec.aibrix
-
-        tref = aibrix.model_template
-        if tref is None or not tref.name:
-            raise RenderError(
-                "extra_body.aibrix.model_template.name is required: "
-                "the cluster has no built-in template fallback, so every "
-                "batch must reference a registered ModelDeploymentTemplate"
-            )
-
-        if tref.spec:
-            data: Dict[str, Any] = {"name": tref.name, "spec": tref.spec}
-            if tref.version:
-                data["version"] = tref.version
-            try:
-                template = ModelDeploymentTemplate.model_validate(data)
-            except Exception as exc:
-                raise RenderError(f"invalid inline model_template.spec: {exc}") from exc
-        else:
-            template = self._resolve_template(tref.name, tref.version)
-        profile = self._resolve_profile(aibrix.profile_name)
-        return template, profile
 
     # ── Layer 1: system base ────────────────────────────────────────────────
 
@@ -536,88 +641,7 @@ class JobManifestRenderer(_RendererSupport):
 
         return manifest
 
-    # ── Layer 4: overrides ─────────────────────────────────────────────────
-
-    def _apply_overrides(
-        self,
-        manifest: Dict[str, Any],
-        template: ModelDeploymentTemplate,
-        template_overrides: Optional[Dict[str, Any]],
-        profile_overrides: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """Apply allowlisted user overrides.
-
-        Template allowlist: 'engine_args' only.
-        Profile allowlist:  'scheduling' only.
-
-        Unknown keys on either side raise ForbiddenOverride. Validation
-        of engine_args values is delegated to EngineArgsSpec; invalid
-        values bubble up as ValidationError.
-
-        Profile.scheduling is currently accepted (and roundtripped via
-        annotations) but has no on-manifest effect — the deadline-aware
-        scheduler that consumes it has not landed yet. We still validate
-        the allowlist so unsupported keys cannot reach the worker.
-        """
-        if template_overrides:
-            for key in template_overrides:
-                if key not in _TEMPLATE_OVERRIDE_ALLOWLIST:
-                    raise ForbiddenOverride(
-                        f"model_template.overrides.{key}",
-                        _TEMPLATE_OVERRIDE_ALLOWLIST,
-                    )
-
-            ea_override = template_overrides.get("engine_args")
-            if ea_override:
-                manifest = self._apply_engine_args_override(
-                    manifest, template, ea_override
-                )
-
-        if profile_overrides:
-            for key in profile_overrides:
-                if key not in _PROFILE_OVERRIDE_ALLOWLIST:
-                    raise ForbiddenOverride(
-                        f"profile.overrides.{key}",
-                        _PROFILE_OVERRIDE_ALLOWLIST,
-                    )
-            # scheduling override is roundtripped via annotations in
-            # _apply_per_batch; nothing to mutate on the manifest itself.
-
-        return manifest
-
-    def _apply_engine_args_override(
-        self,
-        manifest: Dict[str, Any],
-        template: ModelDeploymentTemplate,
-        ea_override: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        # Mock engines ignore engine_args entirely (they only look at
-        # serve_args); rather than silently no-op the user's override
-        # we warn and skip the rebuild to keep the existing shell command
-        # untouched.
-        if template.spec.engine.type == EngineType.MOCK:
-            logger.warning(
-                "engine_args override ignored for mock engine",
-                template=template.name,
-            )  # type: ignore[call-arg]
-            return manifest
-
-        # Merge override into template's engine_args + rebuild engine args.
-        merged_dump = {
-            **template.spec.engine_args.model_dump(exclude_none=True),
-            **ea_override,
-        }
-        # Validate the merged result via EngineArgsSpec (raises ValidationError
-        # on bad values like negative ints).
-        merged = EngineArgsSpec.model_validate(merged_dump)
-
-        # Reconstruct a synthetic spec with merged engine_args, regenerate args.
-        synthetic_spec = template.spec.model_copy(update={"engine_args": merged})
-        engine = self._find_container(manifest, _ENGINE_CONTAINER_NAME)
-        engine["args"] = build_engine_args(synthetic_spec)
-        return manifest
-
-    # ── Layer 5: per-batch (final, immutable) ──────────────────────────────
+    # ── Layer 4: per-batch (final, immutable) ──────────────────────────────
 
     def _apply_per_batch(
         self,

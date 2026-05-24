@@ -50,7 +50,7 @@ def create_job_driver(
     if resource_details:
         resource = resource_details[0]
         if (
-            resource.resource_type == constant.BATCH_RESOURCE_TYPE_DEPLOYMENT
+            resource.provider == constant.BATCH_PROVIDER_DEPLOYMENT
             and entity_manager is not None
             and job.spec.model_template_name is not None
         ):

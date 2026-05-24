@@ -14,7 +14,7 @@
 
 import argparse
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
 from aibrix.metadata.app import build_app
+from aibrix.metadata.cache.redis import RedisJobCache
 from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
 
@@ -37,7 +38,7 @@ def _args(**overrides):
         "enable_k8s_job": False,
         "enable_mongo_job": False,
         "enable_redis_job": False,
-        "registry_provider": "configmap",
+        "registry_provider": None,
         "dry_run": False,
         "k8s_namespace": "default",
         "k8s_job_patch": None,
@@ -63,7 +64,12 @@ def _local_storage_settings():
 
 def test_build_app_without_k8s_job():
     """Test building app without K8s job support."""
-    args = _args()
+    args = _args(
+        disable_batch_api=True,
+        disable_file_api=True,
+        enable_k8s_job=False,
+        disable_inference_endpoint=True,
+    )
 
     app = build_app(args)
 
@@ -104,6 +110,81 @@ def test_build_app_with_k8s_job():
     assert kopf_wrapper.namespace == "test-namespace"
     assert kopf_wrapper.startup_timeout == 5.0
     assert kopf_wrapper.shutdown_timeout == 2.0
+
+
+def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset():
+    args = _args(
+        disable_k8s_support=False,
+        registry_provider=None,
+        dry_run=False,
+        disable_batch_api=False,
+        enable_redis_job=True,
+        disable_inference_endpoint=True,
+    )
+
+    with (
+        patch("aibrix.metadata.app.config.load_incluster_config"),
+        patch("aibrix.metadata.app.config.load_kube_config"),
+        patch("aibrix.metadata.app.k8s_client.CoreV1Api") as core_api,
+        patch("aibrix.metadata.app.k8s_client.AppsV1Api") as apps_api,
+        patch("aibrix.metadata.app.k8s_template_registry") as template_registry,
+        patch("aibrix.metadata.app.k8s_profile_registry") as profile_registry,
+    ):
+        app = build_app(args)
+
+    core_api.assert_called_once_with()  # in _load_batch_k8s_context
+    apps_api.assert_called_once_with()  # in _load_batch_k8s_context
+    template_registry.assert_not_called()
+    profile_registry.assert_not_called()
+    assert args.disable_k8s_support is False
+    assert app.state.template_registry is None
+    assert app.state.profile_registry is None
+    assert isinstance(app.state.batch_driver._job_entity_manager, RedisJobCache)
+
+
+def test_load_batch_k8s_context_registry_loading_overrides_k8s_disabled():
+    args = _args(
+        disable_k8s_support=True,
+        registry_provider="configmap",
+        dry_run=False,
+        disable_batch_api=False,
+        enable_k8s_job=True,
+        disable_inference_endpoint=True,
+        k8s_namespace="test-namespace",
+    )
+    template_registry = MagicMock()
+    profile_registry = MagicMock()
+
+    with (
+        patch("aibrix.metadata.app.config.load_incluster_config"),
+        patch("aibrix.metadata.app.config.load_kube_config"),
+        patch("aibrix.metadata.app.k8s_client.CoreV1Api") as core_api,
+        patch("aibrix.metadata.app.k8s_client.AppsV1Api") as apps_api,
+        patch(
+            "aibrix.metadata.app.k8s_template_registry",
+            return_value=template_registry,
+        ) as template_registry_factory,
+        patch(
+            "aibrix.metadata.app.k8s_profile_registry",
+            return_value=profile_registry,
+        ) as profile_registry_factory,
+        patch("aibrix.metadata.app.JobCache"),
+    ):
+        app = build_app(args)
+
+    core_api.assert_called_once_with()
+    apps_api.assert_called_once_with()
+    template_registry_factory.assert_called_once_with(
+        core_api.return_value, namespace="test-namespace"
+    )
+    profile_registry_factory.assert_called_once_with(
+        core_api.return_value, namespace="test-namespace"
+    )
+    template_registry.reload.assert_called_once_with()
+    profile_registry.reload.assert_called_once_with()
+    assert args.disable_k8s_support is False
+    assert app.state.template_registry is template_registry
+    assert app.state.profile_registry is profile_registry
 
 
 def test_build_app_with_redis_job(monkeypatch):
@@ -190,7 +271,12 @@ def test_build_app_with_mongo_job_missing_env(monkeypatch):
 
 def test_status_endpoint_without_k8s():
     """Test /status endpoint without K8s support."""
-    args = _args()
+    args = _args(
+        disable_batch_api=True,
+        disable_file_api=True,
+        enable_k8s_job=False,
+        disable_inference_endpoint=True,
+    )
 
     app = build_app(args)
     client = TestClient(app)
@@ -252,7 +338,12 @@ def test_status_endpoint_with_k8s():
 
 def test_healthz_endpoint():
     """Test /healthz endpoint."""
-    args = _args()
+    args = _args(
+        disable_batch_api=True,
+        disable_file_api=True,
+        enable_k8s_job=False,
+        disable_inference_endpoint=True,
+    )
 
     app = build_app(args)
     client = TestClient(app)
@@ -266,7 +357,12 @@ def test_healthz_endpoint():
 
 def test_ready_endpoint():
     """Test /readyz endpoint."""
-    args = _args()
+    args = _args(
+        disable_batch_api=True,
+        disable_file_api=True,
+        enable_k8s_job=False,
+        disable_inference_endpoint=True,
+    )
 
     app = build_app(args)
     client = TestClient(app)

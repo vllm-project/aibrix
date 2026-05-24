@@ -250,10 +250,10 @@ def test_batch_spec_accepts_aibrix_metadata():
                     "provision_resource_deadline": 123,
                     "resource_details": [
                         {
-                            "resource_type": "openai",
+                            "provider": "deployment",
                             "endpoint_cluster": "cluster-a",
                             "gpu_type": "H100",
-                            "worker_num": 4,
+                            "replica": 4,
                         }
                     ],
                 },
@@ -288,10 +288,10 @@ def test_batch_spec_accepts_aibrix_metadata():
     assert len(batch_job_spec.aibrix.planner_decision.resource_details or []) == 1
     resource = batch_job_spec.aibrix.planner_decision.resource_details[0]
     assert resource is not None
-    assert resource.resource_type == "openai"
+    assert resource.provider == "deployment"
     assert resource.endpoint_cluster == "cluster-a"
     assert resource.gpu_type == "H100"
-    assert resource.worker_num == 4
+    assert resource.replica == 4
     assert batch_job_spec.aibrix.model_template is not None
     assert batch_job_spec.aibrix.model_template.name == "echo-template"
     assert batch_job_spec.aibrix.model_template.overrides == {
@@ -302,6 +302,59 @@ def test_batch_spec_accepts_aibrix_metadata():
     assert batch_job_spec.aibrix.profile.overrides == {
         "scheduling": {"max_concurrency": 4}
     }
+
+
+def test_batch_spec_accepts_full_template_and_profile_objects():
+    spec = BatchSpec.model_validate(
+        {
+            "input_file_id": "file-123",
+            "endpoint": "/v1/chat/completions",
+            "completion_window": "24h",
+            "aibrix": {
+                "model_template": {
+                    "name": "echo-template",
+                    "version": "v1.0.0",
+                    "status": "active",
+                    "spec": {
+                        "engine": {
+                            "type": "mock",
+                            "version": "0.1.0",
+                            "image": "aibrix/mock:latest",
+                        },
+                        "model_source": {
+                            "type": "local",
+                            "uri": "/models/echo",
+                        },
+                        "accelerator": {"type": "cpu", "count": 1},
+                        "parallelism": {"tp": 1},
+                        "supported_endpoints": ["/v1/chat/completions"],
+                    },
+                },
+                "profile": {
+                    "name": "inline-profile",
+                    "spec": {
+                        "storage": {
+                            "backend": "local",
+                            "bucket": "/tmp/aibrix-storage",
+                        }
+                    },
+                },
+            },
+        }
+    )
+
+    batch_job_spec = BatchSpec.newBatchJobSpec(spec)
+
+    assert batch_job_spec.aibrix is not None
+    assert batch_job_spec.aibrix.model_template is not None
+    assert batch_job_spec.aibrix.model_template.name == "echo-template"
+    assert batch_job_spec.aibrix.model_template.version == "v1.0.0"
+    assert batch_job_spec.aibrix.model_template.spec is not None
+    assert batch_job_spec.aibrix.model_template.spec["engine"]["type"] == "mock"
+    assert batch_job_spec.aibrix.profile is not None
+    assert batch_job_spec.aibrix.profile.name == "inline-profile"
+    assert batch_job_spec.aibrix.profile.spec is not None
+    assert batch_job_spec.aibrix.profile.spec["storage"]["backend"] == "local"
 
 
 def test_batch_response_includes_input_aibrix_metadata():
@@ -320,10 +373,10 @@ def test_batch_response_includes_input_aibrix_metadata():
                     provision_resource_deadline=123,
                     resource_details=[
                         ResourceDetail(
-                            resource_type="openai",
+                            provider="deployment",
                             endpoint_cluster="cluster-a",
                             gpu_type="H100",
-                            worker_num=4,
+                            replica=4,
                         )
                     ],
                 ),

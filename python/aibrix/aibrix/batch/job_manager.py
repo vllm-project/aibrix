@@ -807,9 +807,12 @@ class JobManager(JobProgressManager):
             if meta_data.status.state == BatchJobState.VALIDATING:
                 meta_data.status.in_progress_at = datetime.now(timezone.utc)
                 meta_data.status.state = BatchJobState.IN_PROGRESS
-        except BatchJobError as e:
-            logger.error("Job validation failed", job_id=job_id, error=str(e))  # type: ignore[call-arg]
-            await self.mark_job_failed(job_id, e)
+        except Exception as e:
+            logger.error("Job validation failed", job_id=job_id, exc_info=True)  # type: ignore[call-arg]
+            await self.mark_job_failed(
+                job_id,
+                BatchJobError(code=BatchJobErrorCode.VALIDATION_ERROR, message=str(e)),
+            )
             return False
 
         return True

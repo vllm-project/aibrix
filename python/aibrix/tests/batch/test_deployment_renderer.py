@@ -2,15 +2,37 @@ from pathlib import Path
 
 import yaml
 
+from aibrix.batch.job_entity import BatchJobEndpoint, BatchJobSpec
 from aibrix.batch.manifest import DeploymentManifestRenderer, build_downloader_env
 from aibrix.batch.template import local_profile_registry, local_template_registry
-
-_TESTDATA_DIR = Path(__file__).parent / "testdata"
 
 
 def _write_yaml(path: Path, obj) -> Path:
     path.write_text(yaml.safe_dump(obj, sort_keys=False))
     return path
+
+
+def _spec(template_name: str, replica: int = 1, profile_name: str | None = None):
+    aibrix = {
+        "model_template": {"name": template_name},
+        "planner_decision": {
+            "resource_details": [
+                {
+                    "provider": "deployment",
+                    "gpu_type": "NVIDIA-L20",
+                    "replica": replica,
+                }
+            ]
+        },
+    }
+    if profile_name is not None:
+        aibrix["profile"] = {"name": profile_name}
+    return BatchJobSpec.from_strings(
+        input_file_id="input-file-1",
+        endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+        completion_window="24h",
+        aibrix=aibrix,
+    )
 
 
 def test_deployment_manifest_renderer_matches_example_with_local_model(tmp_path):
@@ -54,21 +76,24 @@ def test_deployment_manifest_renderer_matches_example_with_local_model(tmp_path)
     profile_registry.reload()
 
     renderer = DeploymentManifestRenderer(template_registry, profile_registry)
+    spec = _spec("deepseek-coder-7b", replica=4)
     rendered = renderer.render(
-        template_name="deepseek-coder-7b",
-        deployment_name="deepseek-coder-7b-l20",
-        replicas=4,
-        gpu_type="NVIDIA-L20",
-    )
-    expected_deployment = yaml.safe_load(
-        (_TESTDATA_DIR / "deployment_example.yaml").read_text()
-    )
-    expected_service = yaml.safe_load(
-        (_TESTDATA_DIR / "deployment_service_example.yaml").read_text()
+        "job-123456789abc",
+        spec,
+        spec.aibrix.planner_decision.resource_details[0],
     )
 
-    assert rendered["deployment"] == expected_deployment
-    assert rendered["service"] == expected_service
+    assert (
+        rendered["deployment"]["metadata"]["name"] == "batch-deepseek-coder-7b-job-1234"
+    )
+    assert rendered["deployment"]["metadata"]["labels"]["model.aibrix.ai/name"] == (
+        "batch-deepseek-coder-7b-job-1234"
+    )
+    assert rendered["deployment"]["spec"]["replicas"] == 4
+    assert rendered["service"]["metadata"]["name"] == "batch-deepseek-coder-7b-job-1234"
+    assert rendered["service"]["spec"]["selector"] == {
+        "model.aibrix.ai/name": "batch-deepseek-coder-7b-job-1234"
+    }
 
 
 def test_build_downloader_env_and_remote_init_container(tmp_path):
@@ -177,9 +202,11 @@ def test_build_downloader_env_and_remote_init_container(tmp_path):
     ]
 
     renderer = DeploymentManifestRenderer(template_registry, profile_registry)
+    spec = _spec("deepseek-coder-7b-tos", profile_name="tos-profile")
     rendered = renderer.render(
-        template_name="deepseek-coder-7b-tos",
-        deployment_name="deepseek-coder-7b-tos",
+        "job-remote1234",
+        spec,
+        spec.aibrix.planner_decision.resource_details[0],
     )
 
     deployment = rendered["deployment"]

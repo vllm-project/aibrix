@@ -89,6 +89,7 @@ def _load_batch_k8s_context(
         context.core_v1_api = k8s_client.CoreV1Api()
         context.apps_v1_api = k8s_client.AppsV1Api()
 
+    # Set configmap as registry_provider will enable k8s support automatically
     if args.registry_provider == _REGISTRY_PROVIDER_CONFIGMAP:
         registry_ns = getattr(args, "k8s_namespace", "default")
         # Build ConfigMap-driven registries. Both ConfigMaps must exist in
@@ -263,6 +264,18 @@ def build_app(args: argparse.Namespace, params={}):
             redirect_slashes=False,
         )
 
+    if (
+        args.enable_k8s_job
+        or args.registry_provider == "configmap"
+        or not args.disable_k8s_support  # This condition required to load kube config.
+    ):
+        args.disable_k8s_support = False
+        try:
+            config.load_incluster_config()
+        except Exception:
+            # Local debug
+            config.load_kube_config()
+
     app.state.httpx_client_wrapper = HTTPXClientWrapper()
 
     # Normalize HTTPException responses to OpenAI's top-level
@@ -383,10 +396,6 @@ def build_app(args: argparse.Namespace, params={}):
         if not args.dry_run:
             if infrastructure_context is None:
                 raise RuntimeError("Kubernetes batch context is required")
-            if infrastructure_context.template_registry is None:
-                raise RuntimeError("template_registry is required")
-            if infrastructure_context.profile_registry is None:
-                raise RuntimeError("profile_registry is required")
 
         if args.enable_k8s_job:
             # BatchJob documents are persisted to the batch metastore
@@ -398,9 +407,6 @@ def build_app(args: argparse.Namespace, params={}):
                 "BatchJob metastore persistence enabled",
                 metastore_type=settings.METASTORE_TYPE.value,
             )
-            # To pass lint check
-            assert infrastructure_context.template_registry is not None
-            assert infrastructure_context.profile_registry is not None
             job_entity_manager = JobCache(
                 template_registry=infrastructure_context.template_registry,
                 profile_registry=infrastructure_context.profile_registry,
@@ -515,8 +521,8 @@ def main():
     parser.add_argument(
         "--registry-provider",
         type=str,
-        default=_REGISTRY_PROVIDER_CONFIGMAP,
-        help=f"Registry provider for model templates and profiles (default: {_REGISTRY_PROVIDER_CONFIGMAP})",
+        default=None,
+        help=f"Registry provider for model templates and profiles (default: None, options: {_REGISTRY_PROVIDER_CONFIGMAP})",
     )
     parser.add_argument(
         "--dry-run",
@@ -611,18 +617,6 @@ def main():
     global logger
     logging_basic_config(settings)
     logger = init_logger(__name__)  # Reset logger
-
-    if (
-        args.enable_k8s_job
-        or args.registry_provider == "configmap"
-        or not args.disable_k8s_support
-    ):
-        args.disable_k8s_support = False
-        try:
-            config.load_incluster_config()
-        except Exception:
-            # Local debug
-            config.load_kube_config()
 
     logger.info(f"Using {args} to startup app", project=settings.PROJECT_NAME)  # type: ignore[call-arg]
     app = build_app(args=args)

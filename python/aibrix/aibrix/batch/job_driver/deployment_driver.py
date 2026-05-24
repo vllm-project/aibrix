@@ -226,8 +226,6 @@ class DeploymentJobDriver(LocalJobDriver):
 
     @staticmethod
     def _build_renderer(context: InfrastructureContext) -> DeploymentManifestRenderer:
-        if context.template_registry is None:
-            raise ValueError("DeploymentJobDriver requires template registry")
         return DeploymentManifestRenderer(
             context.template_registry, context.profile_registry
         )
@@ -248,29 +246,29 @@ class DeploymentJobDriver(LocalJobDriver):
             raise ValueError("job_id is required")
         if job.spec.aibrix is None or job.spec.model_template_name is None:
             raise ValueError("DeploymentJobDriver requires spec.aibrix.model_template")
+        planner_decision = job.spec.aibrix.planner_decision
+        if (
+            planner_decision is None
+            or planner_decision.resource_details is None
+            or len(planner_decision.resource_details) == 0
+        ):
+            raise ValueError(
+                "DeploymentJobDriver requires spec.aibrix.planner_decision.resource_details"
+            )
 
-        deployment_name = self._deployment_name(job.job_id)
-        service_name = self._service_name(job.job_id)
-        model_name = service_name
         rendered = self._renderer.render(
-            template_name=job.spec.model_template_name,
-            profile_name=job.spec.aibrix.profile_name if job.spec.aibrix else None,
-            template_version=job.spec.aibrix.model_template.version
-            if job.spec.aibrix.model_template
-            else None,
-            deployment_name=deployment_name,
+            job.job_id,
+            job.spec,
+            planner_decision.resource_details[0],
         )
         deployment = rendered["deployment"]
         service = rendered["service"]
-        namespace = deployment["metadata"].get("namespace", "default")
-
-        self._apply_job_identity(
-            deployment,
-            service,
-            job.job_id,
-            service_name,
-            model_name,
+        model_name = (
+            deployment.get("metadata", {})
+            .get("labels", {})
+            .get("model.aibrix.ai/name", service["metadata"]["name"])
         )
+        namespace = deployment["metadata"].get("namespace", "default")
 
         await self._apply_deployment(namespace, deployment)
         try:
@@ -300,41 +298,6 @@ class DeploymentJobDriver(LocalJobDriver):
             model_name=model_name,
             base_url=self._service_base_url(namespace, service),
             service_port=int(service["spec"]["ports"][0]["port"]),
-        )
-
-    @staticmethod
-    def _deployment_name(job_id: str) -> str:
-        return f"batch-{job_id[:12]}-engine"
-
-    @staticmethod
-    def _service_name(job_id: str) -> str:
-        return f"batch-{job_id[:12]}-svc"
-
-    @staticmethod
-    def _apply_job_identity(
-        deployment: dict,
-        service: dict,
-        job_id: str,
-        service_name: str,
-        model_name: str,
-    ) -> None:
-        job_label = {"batch.job.aibrix.ai/job-id": job_id}
-        model_label = {
-            "model.aibrix.ai/name": model_name,
-            "model.aibrix.ai/port": str(service["spec"]["ports"][0]["port"]),
-        }
-        deployment.setdefault("metadata", {}).setdefault("labels", {}).update(job_label)
-        deployment["metadata"]["labels"].update(model_label)
-        deployment["spec"]["selector"]["matchLabels"].update(job_label)
-        deployment["spec"]["selector"]["matchLabels"].update(model_label)
-        deployment["spec"]["template"]["metadata"].setdefault("labels", {}).update(
-            job_label
-        )
-        deployment["spec"]["template"]["metadata"]["labels"].update(model_label)
-        service["metadata"]["name"] = service_name
-        service.setdefault("metadata", {}).setdefault("labels", {}).update(model_label)
-        service["spec"]["selector"] = dict(
-            deployment["spec"]["selector"]["matchLabels"]
         )
 
     @staticmethod

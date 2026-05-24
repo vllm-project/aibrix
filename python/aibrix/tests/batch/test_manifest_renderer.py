@@ -25,8 +25,12 @@ import yaml
 
 from aibrix import envs
 from aibrix.batch.job_entity import (
+    AibrixMetadata,
     BatchJobSpec,
     BatchJobTransformer,
+    BatchProfileRef,
+    CompletionWindow,
+    ModelTemplateRef,
 )
 from aibrix.batch.manifest import (
     EndpointNotSupported,
@@ -272,6 +276,44 @@ class TestRendererHappyPath:
         ann = m["spec"]["template"]["metadata"]["annotations"]
         assert ann["batch.job.aibrix.ai/profile-name"] == "alt"
 
+    def test_inline_template_and_profile_bypass_registry_lookup(self, renderer_factory):
+        r = renderer_factory(
+            templates=[_vllm_template(name="registry-template", count=1)],
+            profiles=[_profile(name="registry-profile")],
+        )
+        inline_template = _mock_template(name="inline-template")
+        inline_profile = _profile(
+            name="inline-profile",
+            backend="local",
+            bucket="/tmp/inline-storage",
+        )
+        spec = BatchJobSpec(
+            input_file_id="file-1",
+            endpoint="/v1/chat/completions",
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+            aibrix=AibrixMetadata(
+                model_template=ModelTemplateRef(
+                    name=inline_template["name"],
+                    version=inline_template["version"],
+                    spec=inline_template["spec"],
+                ),
+                profile=BatchProfileRef(
+                    name=inline_profile["name"],
+                    spec=inline_profile["spec"],
+                ),
+            ),
+        )
+
+        m = r.render(session_id="s1", spec=spec)
+
+        ann = m["spec"]["template"]["metadata"]["annotations"]
+        assert ann["batch.job.aibrix.ai/model-template-name"] == "inline-template"
+        assert ann["batch.job.aibrix.ai/profile-name"] == "inline-profile"
+        worker = _worker_container(m)
+        env = {e["name"]: e.get("value") for e in worker["env"]}
+        assert env["STORAGE_TYPE"] == "local"
+        assert env["STORAGE_LOCAL_PATH"] == "/tmp/inline-storage"
+
     def test_per_batch_metadata_persisted(self, renderer_factory):
         r = renderer_factory(
             templates=[_vllm_template(count=1)],
@@ -349,12 +391,12 @@ class TestRendererOverrides:
 
 
 class TestRendererValidation:
-    def test_missing_template_name_raises(self, renderer_factory):
+    def test_missing_template_raises(self, renderer_factory):
         r = renderer_factory(templates=[_vllm_template(count=1)], profiles=[_profile()])
         spec = _spec(model_template=None, job_id="job-123")
         assert spec.aibrix is not None
         assert spec.aibrix.job_id == "job-123"
-        with pytest.raises(RenderError, match="model_template.name"):
+        with pytest.raises(RenderError, match="aibrix.model_template"):
             r.render(session_id="s1", spec=spec)
 
     def test_template_not_found(self, renderer_factory):

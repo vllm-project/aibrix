@@ -94,7 +94,7 @@ class BatchDriver:
             # No client configured. Acceptable now. The error throwing is delayed
             # on a per BatchJob level. Here list the acceptable cases:
             # 1. The job_entity_manager comes with scheduler feature (is_scheduler_enabled(), e.g., JobCache)
-            # 2. The BatchJob.spec.aibrix.planner_decision.resource_details[].resource_type is specified.
+            # 2. The BatchJob.spec.aibrix.planner_decision.resource_details[].provider is specified.
             self._inference_client = None
 
         # Track jobs with fail_after_n_requests for stop() validation
