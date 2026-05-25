@@ -632,7 +632,6 @@ func (q *Planner) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, er
 	}
 	status := job.status
 	batchID := job.batchID
-	provisionID := job.provisionID
 	req := job.req
 	queuedAt := job.queuedAt
 	now := time.Now()
@@ -659,8 +658,20 @@ func (q *Planner) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, er
 		if err != nil {
 			return nil, err
 		}
+		var toRelease string
+		q.mu.Lock()
+		if job, ok := q.jobs[jobID]; ok {
+			toRelease = job.provisionID
+			job.status = plannerapi.JobStatusCancelled
+			job.canceledAt = now
+			job.provisionID = ""
+		}
+		q.mu.Unlock()
+
+		if toRelease != "" {
+			q.releaseAfter(jobID, toRelease, "cancel submitted")
+		}
 		q.syncFromBatch(jobID, batch)
-		q.releaseAfter(jobID, provisionID, "cancel submitted")
 		return &plannerapi.Job{JobID: jobID, Batch: batch}, nil
 	}
 	// Already terminal — return current view, no double-cancel side effects.
