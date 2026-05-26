@@ -1,5 +1,9 @@
 apiVersion: apps/v1
 kind: Deployment
+{{- $values := fromYaml (toYaml .Values) -}}
+{{- $redisHost := default (printf "%s-redis-master" (include "aibrix.fullname" .)) (dig "gpuOptimizer" "dependencies" "redis" "host" "" $values) }}
+{{- $redisPort := dig "gpuOptimizer" "dependencies" "redis" "port" 6379 $values }}
+{{- $redisEnablePassword := dig "metadata" "redis" "enablePassword" false $values }}
 metadata:
   name: {{ include "aibrix.fullname" . }}-gpu-optimizer
   labels:
@@ -30,10 +34,10 @@ spec:
           # TODO: add liveness and readiness probes
           env:
             - name: REDIS_HOST
-              value: {{ default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.gpuOptimizer.dependencies.redis.host }}
+              value: {{ $redisHost }}
             - name: REDIS_PORT
-              value: "{{ .Values.gpuOptimizer.dependencies.redis.port }}"
-           {{- if .Values.metadata.redis.enablePassword }}
+              value: "{{ $redisPort }}"
+           {{- if $redisEnablePassword }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:

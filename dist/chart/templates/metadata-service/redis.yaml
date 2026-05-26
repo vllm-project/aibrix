@@ -1,7 +1,16 @@
 # https://www.callicoder.com/deploy-multi-container-go-redis-app-kubernetes/
-{{- include "aibrix.validateValues" . -}}
+{{ include "aibrix.validateValues" . }}
+{{- $values := fromYaml (toYaml .Values) -}}
+{{- $redisEnabled := dig "metadata" "redis" "enabled" true $values -}}
+{{- $redisReplicas := dig "metadata" "redis" "replicas" 1 $values -}}
+{{- $redisImagePullSecrets := dig "metadata" "redis" "imagePullSecrets" (list) $values -}}
+{{- $redisImageRepository := dig "metadata" "redis" "container" "image" "repository" "redis" $values -}}
+{{- $redisImageTag := dig "metadata" "redis" "container" "image" "tag" "7.4" $values -}}
+{{- $redisResources := dig "metadata" "redis" "container" "resources" (dict) $values -}}
+{{- $redisEnablePassword := dig "metadata" "redis" "enablePassword" false $values -}}
+{{- $redisPassword := dig "metadata" "redis" "password" "" $values -}}
 ---
-{{- if .Values.metadata.redis.enabled }}
+{{- if $redisEnabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,7 +19,7 @@ metadata:
     {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-metadata-redis
 spec:
-  replicas: {{ .Values.metadata.redis.replicas }}
+  replicas: {{ $redisReplicas }}
   selector:
     matchLabels:
       {{- include "aibrix.selectorLabels" . | nindent 6 }}
@@ -21,14 +30,14 @@ spec:
         {{- include "aibrix.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-metadata-redis
     spec:
-      {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" .Values.metadata.redis.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
+      {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" $redisImagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
       containers:
         - name: master
-          image: {{ .Values.metadata.redis.container.image.repository }}:{{ .Values.metadata.redis.container.image.tag }}
+          image: {{ $redisImageRepository }}:{{ $redisImageTag }}
           ports:
             - containerPort: 6379
-          resources: {{ toYaml .Values.metadata.redis.container.resources | nindent 12 }}
-          {{- if .Values.metadata.redis.enablePassword }}
+          resources: {{ toYaml $redisResources | nindent 12 }}
+          {{- if $redisEnablePassword }}
           env:
             - name: REDIS_PASSWORD
               valueFrom:
@@ -51,9 +60,7 @@ spec:
   selector:
     {{- include "aibrix.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-metadata-redis
-{{- end }}
-
-{{- if .Values.metadata.redis.enablePassword }}
+{{- if $redisEnablePassword }}
 ---
 apiVersion: v1
 kind: Secret
@@ -61,5 +68,6 @@ metadata:
   name: {{ include "aibrix.fullname" . }}-redis
 type: Opaque
 data:
-  redis-password: {{ .Values.metadata.redis.password | b64enc }}
+  redis-password: {{ $redisPassword | b64enc }}
+{{- end }}
 {{- end }}

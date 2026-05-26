@@ -127,18 +127,20 @@ Create the name of the metadata service service account
 {{- end -}}
 
 {{- define "aibrix.validateValues" -}}
+{{- $values := fromYaml (toYaml .Values) -}}
 {{- if and .Values.gateway.enable .Values.gateway.envoyAsSideCar -}}
 {{- fail "gateway.enable and gateway.envoyAsSideCar are mutually exclusive and cannot both be true." -}}
 {{- end -}}
-{{- if not .Values.metadata.redis.enabled -}}
+{{- $redisEnabled := dig "metadata" "redis" "enabled" true $values -}}
+{{- if not $redisEnabled -}}
 {{- $missingHosts := list -}}
-{{- if empty (trim .Values.metadata.service.redis.host) -}}
+{{- if empty (trim (dig "metadata" "service" "redis" "host" "" $values)) -}}
 {{- $missingHosts = append $missingHosts "metadata.service.redis.host" -}}
 {{- end -}}
-{{- if empty (trim .Values.gatewayPlugin.dependencies.redis.host) -}}
+{{- if empty (trim (dig "gatewayPlugin" "dependencies" "redis" "host" "" $values)) -}}
 {{- $missingHosts = append $missingHosts "gatewayPlugin.dependencies.redis.host" -}}
 {{- end -}}
-{{- if empty (trim .Values.gpuOptimizer.dependencies.redis.host) -}}
+{{- if empty (trim (dig "gpuOptimizer" "dependencies" "redis" "host" "" $values)) -}}
 {{- $missingHosts = append $missingHosts "gpuOptimizer.dependencies.redis.host" -}}
 {{- end -}}
 {{- if gt (len $missingHosts) 0 -}}

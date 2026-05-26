@@ -1,4 +1,7 @@
-{{- $redisHost := default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.metadata.service.redis.host }}
+{{- $values := fromYaml (toYaml .Values) -}}
+{{- $redisHost := default (printf "%s-redis-master" (include "aibrix.fullname" .)) (dig "metadata" "service" "redis" "host" "" $values) }}
+{{- $redisPort := dig "metadata" "service" "redis" "port" 6379 $values }}
+{{- $redisEnablePassword := dig "metadata" "redis" "enablePassword" false $values }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -24,16 +27,16 @@ spec:
       initContainers:
         - name: init-redis
           image: {{ .Values.metadata.service.initContainer.image.repository }}:{{ .Values.metadata.service.initContainer.image.tag }}
-          {{- if .Values.metadata.redis.enablePassword }}
+          {{- if $redisEnablePassword }}
           env:
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "aibrix.fullname" . }}-redis
                   key: redis-password
-          command: ['sh', '-c', 'until printf ''AUTH %s\nping\n'' "$REDIS_PASSWORD" | nc {{ $redisHost }} {{ .Values.metadata.service.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
+          command: ['sh', '-c', 'until printf ''AUTH %s\nping\n'' "$REDIS_PASSWORD" | nc {{ $redisHost }} {{ $redisPort }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
           {{- else }}
-          command: ['sh', '-c', 'until echo "ping" | nc {{ $redisHost }} {{ .Values.metadata.service.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
+          command: ['sh', '-c', 'until echo "ping" | nc {{ $redisHost }} {{ $redisPort }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
           {{- end }}
       containers:
         - name: metadata-service
@@ -66,8 +69,8 @@ spec:
             - name: REDIS_HOST
               value: {{ $redisHost }}
             - name: REDIS_PORT
-              value: "{{ .Values.metadata.service.redis.port }}"
-            {{- if .Values.metadata.redis.enablePassword }}
+              value: "{{ $redisPort }}"
+            {{- if $redisEnablePassword }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:

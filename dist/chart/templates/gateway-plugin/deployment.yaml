@@ -1,5 +1,8 @@
 {{- if or .Values.gateway.enable .Values.gateway.envoyAsSideCar }}
-{{- $redisHost := default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.gatewayPlugin.dependencies.redis.host }}
+{{- $values := fromYaml (toYaml .Values) -}}
+{{- $redisHost := default (printf "%s-redis-master" (include "aibrix.fullname" .)) (dig "gatewayPlugin" "dependencies" "redis" "host" "" $values) }}
+{{- $redisPort := dig "gatewayPlugin" "dependencies" "redis" "port" 6379 $values }}
+{{- $redisEnablePassword := dig "metadata" "redis" "enablePassword" false $values }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -58,16 +61,16 @@ spec:
       initContainers:
         - name: init-c
           image: {{ .Values.gatewayPlugin.initContainer.image.repository }}:{{ .Values.gatewayPlugin.initContainer.image.tag }}
-          {{- if .Values.metadata.redis.enablePassword }}
+          {{- if $redisEnablePassword }}
           env:
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "aibrix.fullname" . }}-redis
                   key: redis-password
-          command: ['sh', '-c', 'until printf ''AUTH %s\nping\n'' "$REDIS_PASSWORD" | nc {{ $redisHost }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
+          command: ['sh', '-c', 'until printf ''AUTH %s\nping\n'' "$REDIS_PASSWORD" | nc {{ $redisHost }} {{ $redisPort }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
           {{- else }}
-          command: ['sh', '-c', 'until echo "ping" | nc {{ $redisHost }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
+          command: ['sh', '-c', 'until echo "ping" | nc {{ $redisHost }} {{ $redisPort }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
           {{- end }}
       containers:
         - name: gateway-plugin
@@ -84,8 +87,8 @@ spec:
             - name: REDIS_HOST
               value: {{ $redisHost }}
             - name: REDIS_PORT
-              value: "{{ .Values.gatewayPlugin.dependencies.redis.port }}"
-            {{- if .Values.metadata.redis.enablePassword }}
+              value: "{{ $redisPort }}"
+            {{- if $redisEnablePassword }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
