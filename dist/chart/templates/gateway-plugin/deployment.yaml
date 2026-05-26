@@ -58,13 +58,13 @@ spec:
       initContainers:
         - name: init-c
           image: {{ .Values.gatewayPlugin.initContainer.image.repository }}:{{ .Values.gatewayPlugin.initContainer.image.tag }}
-          {{- if .Values.metadata.redis.enablePassword }}
+          {{- if include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "gatewayPlugin") }}
           env:
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "aibrix.fullname" . }}-redis
-                  key: redis-password
+                  key: {{ include "aibrix.redis.connectionPasswordKey" (dict "component" "gatewayPlugin") }}
           command: ['sh', '-c', 'until printf ''AUTH %s\nping\n'' "$REDIS_PASSWORD" | nc {{ $redisHost }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
           {{- else }}
           command: ['sh', '-c', 'until echo "ping" | nc {{ $redisHost }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
@@ -85,12 +85,12 @@ spec:
               value: {{ $redisHost }}
             - name: REDIS_PORT
               value: "{{ .Values.gatewayPlugin.dependencies.redis.port }}"
-            {{- if .Values.metadata.redis.enablePassword }}
+            {{- if include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "gatewayPlugin") }}
             - name: REDIS_PASSWORD
-              valueFrom:
+              valueFrom: 
                 secretKeyRef:
                   name: {{ include "aibrix.fullname" . }}-redis
-                  key: redis-password
+                  key: {{ include "aibrix.redis.connectionPasswordKey" (dict "component" "gatewayPlugin") }}
             {{- end }}
             - name: POD_NAME
               valueFrom:
