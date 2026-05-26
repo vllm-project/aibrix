@@ -134,6 +134,16 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		if err := s.processOnce(srv, st); err != nil {
 			return err
 		}
+		// Proactively break the loop if the response is fully processed.
+		// This allows Envoy to gracefully close the stream and send 0\r\n\r\n.
+		if st.completed {
+			klog.V(4).InfoS("request actively finished, breaking ext_proc stream", "requestID", st.requestID)
+			if st.model != "" {
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
+			}
+			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			return nil
+		}
 	}
 }
 
@@ -192,7 +202,7 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 		default:
 		}
 
-		// EOF at completion is normal
+		// Fallback: if proactive exit in Process was skipped (should not happen normally)
 		if st.completed {
 			if st.model != "" {
 				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
@@ -318,6 +328,8 @@ func (s *Server) sendProcessingResponse(srv extProcPb.ExternalProcessor_ProcessS
 		klog.ErrorS(err, "gateway fail to send response to envoy-proxy", "requestID", st.requestID)
 		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "send_envoy_proxy", "499")
 		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		// Manually delete routerCtx on error paths;
+		// HandleResponseBody() and HandleResponseHeaders() will handle it on the happy path.
 		if st.routerCtx != nil {
 			st.routerCtx.Delete()
 		}
