@@ -125,11 +125,6 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		ctx:       srv.Context(),
 		requestID: uuid.New().String(),
 	}
-	defer func() {
-		if st.routerCtx != nil {
-			st.routerCtx.Delete()
-		}
-	}()
 
 	klog.InfoS("processing request", "requestID", st.requestID)
 	labels := map[string]string{"pod_name": podName}
@@ -333,6 +328,11 @@ func (s *Server) sendProcessingResponse(srv extProcPb.ExternalProcessor_ProcessS
 		klog.ErrorS(err, "gateway fail to send response to envoy-proxy", "requestID", st.requestID)
 		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "send_envoy_proxy", "499")
 		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		// Manually delete routerCtx on error paths;
+		// HandleResponseBody() and HandleResponseHeaders() will handle it on the happy path.
+		if st.routerCtx != nil {
+			st.routerCtx.Delete()
+		}
 
 		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "EOF") {
 			klog.Warning("Stream already closed by client", "requestID", st.requestID)
