@@ -130,4 +130,19 @@ Create the name of the metadata service service account
 {{- if and .Values.gateway.enable .Values.gateway.envoyAsSideCar -}}
 {{- fail "gateway.enable and gateway.envoyAsSideCar are mutually exclusive and cannot both be true." -}}
 {{- end -}}
+{{- if not .Values.metadata.redis.enabled -}}
+{{- $missingHosts := list -}}
+{{- if empty (trim .Values.metadata.service.redis.host) -}}
+{{- $missingHosts = append $missingHosts "metadata.service.redis.host" -}}
+{{- end -}}
+{{- if empty (trim .Values.gatewayPlugin.dependencies.redis.host) -}}
+{{- $missingHosts = append $missingHosts "gatewayPlugin.dependencies.redis.host" -}}
+{{- end -}}
+{{- if empty (trim .Values.gpuOptimizer.dependencies.redis.host) -}}
+{{- $missingHosts = append $missingHosts "gpuOptimizer.dependencies.redis.host" -}}
+{{- end -}}
+{{- if gt (len $missingHosts) 0 -}}
+{{- fail (printf "metadata.redis.enabled=false requires non-empty values for %s." (join ", " $missingHosts)) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}

@@ -1,4 +1,7 @@
 # https://www.callicoder.com/deploy-multi-container-go-redis-app-kubernetes/
+{{- include "aibrix.validateValues" . -}}
+---
+{{- if .Values.metadata.redis.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -48,10 +51,10 @@ spec:
   selector:
     {{- include "aibrix.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-metadata-redis
-
----
+{{- end }}
 
 {{- if .Values.metadata.redis.enablePassword }}
+---
 apiVersion: v1
 kind: Secret
 metadata:

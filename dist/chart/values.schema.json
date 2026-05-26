@@ -241,6 +241,10 @@
         "redis": {
           "type": "object",
           "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether to create the in-chart Redis deployment and service. If set to false, metadata.service.redis.host, gatewayPlugin.dependencies.redis.host, and gpuOptimizer.dependencies.redis.host must all be non-empty."
+            },
             "replicas": {
               "type": "integer",
               "minimum": 1
@@ -436,7 +440,7 @@
       "properties": {
         "host": {
           "type": "string",
-          "description": "Redis host"
+          "description": "Redis host. Required when metadata.redis.enabled=false because the in-chart Redis service is not created."
         },
         "port": {
           "type": "integer",

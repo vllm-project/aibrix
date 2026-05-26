@@ -85,7 +85,7 @@ gatewayPlugin:
       AIBRIX_REDISSYNC_ENABLED: "false"
   dependencies:
     redis:
-      host: "" # aibrix-redis-master
+      host: "" # aibrix-redis-master; required when metadata.redis.enabled=false
       port: 6379
   service:
     type: ClusterIP
@@ -126,7 +126,7 @@ gpuOptimizer:
         memory: 64Mi
   dependencies:
     redis:
-      host: ""  # aibrix-redis-master
+      host: ""  # aibrix-redis-master; required when metadata.redis.enabled=false
       port: 6379
   tolerations: []
   serviceAccount:
@@ -252,9 +252,14 @@ metadata:
     tolerations: []
     affinity: {}
     redis:
-      host: "" # aibrix-redis-master
+      host: "" # aibrix-redis-master; required when metadata.redis.enabled=false
       port: 6379
   redis:
+    # Set to false to disable the in-chart Redis Deployment/Service.
+    # When disabled, you must set all three external Redis hosts:
+    # metadata.service.redis.host, gatewayPlugin.dependencies.redis.host,
+    # and gpuOptimizer.dependencies.redis.host.
+    enabled: true
     replicas: 1
     imagePullSecrets: []
     container:
