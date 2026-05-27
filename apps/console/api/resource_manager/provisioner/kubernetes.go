@@ -18,7 +18,6 @@ package provisioner
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -84,21 +83,18 @@ func (p *K8sProvisioner) Provision(ctx context.Context, req *types.ResourceProvi
 
 	provisionID := uuid.New().String()
 
-	var regionSpec types.RegionSpec
+	regionStr := ""
 	if primary := k8sClientset.Primary(); primary != nil {
-		regionSpec = primary.Region
-	}
-	regionBytes, err := json.Marshal(regionSpec)
-	if err != nil {
-		return nil, fmt.Errorf("marshal region spec: %w", err)
+		regionStr = primary.Region.String()
 	}
 
 	now := time.Now()
 	result := &types.ProvisionResult{
 		ProvisionID:    provisionID,
 		IdempotencyKey: req.IdempotencyKey,
+		Provider:       string(p.Type()),
 		Status:         types.ProvisionStatusRunning,
-		Region:         string(regionBytes),
+		Region:         regionStr,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 		Kubernetes:     &types.KubernetesProvisionDetail{},

@@ -728,6 +728,7 @@ func (s *GORMStore) UpsertProvision(ctx context.Context, result *types.Provision
 	rec := models.ProvisionResult{
 		IdempotencyKey: result.IdempotencyKey,
 		ProvisionID:    record.ProvisionID,
+		Provider:       record.Provider,
 		Region:         record.Region,
 		Status:         record.Status,
 		Payload:        datatypes.JSON(record.Payload),
@@ -737,7 +738,7 @@ func (s *GORMStore) UpsertProvision(ctx context.Context, result *types.Provision
 	}
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "idempotency_key"}},
-		DoUpdates: clause.AssignmentColumns([]string{"provision_id", "region", "status", "payload", "updated_at", "deleted"}),
+		DoUpdates: clause.AssignmentColumns([]string{"provision_id", "provider", "region", "status", "payload", "updated_at", "deleted"}),
 	}).Create(&rec).Error; err != nil {
 		return fmt.Errorf("failed to upsert provision result: %w", err)
 	}
@@ -778,11 +779,7 @@ func (s *GORMStore) ListProvisions(ctx context.Context, options *types.ListOptio
 		if options.Regions != nil && len(*options.Regions) > 0 {
 			regionStrs := make([]string, 0, len(*options.Regions))
 			for _, region := range *options.Regions {
-				regionBytes, err := json.Marshal(region)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal region: %w", err)
-				}
-				regionStrs = append(regionStrs, string(regionBytes))
+				regionStrs = append(regionStrs, region.String())
 			}
 			q = q.Where("region IN ?", regionStrs)
 		}

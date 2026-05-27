@@ -16,6 +16,20 @@ limitations under the License.
 
 package types
 
+import "fmt"
+
+// orNone returns "none" if s is empty, otherwise returns s.
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
+}
+
+type Region interface {
+	String() string
+}
+
 // RegionSpec represents a region identifier with provider-specific fields.
 // Different providers use different fields:
 //   - AWS: Region (e.g., "us-east-1"), optionally Zone (e.g., "us-east-1a")
@@ -44,6 +58,14 @@ type RegionSpec struct {
 	Kubernetes *KubernetesRegion `json:"kubernetes,omitempty"`
 }
 
+func (r *RegionSpec) String() string {
+	region := r.GetRegion()
+	if region == nil {
+		return RegionUnknown
+	}
+	return region.String()
+}
+
 // AWSRegion contains AWS-specific region information.
 type AWSRegion struct {
 	// Region is the AWS region (e.g., "us-east-1", "us-west-2").
@@ -53,10 +75,18 @@ type AWSRegion struct {
 	Zone string `json:"zone,omitempty"`
 }
 
+func (r *AWSRegion) String() string {
+	return fmt.Sprintf("%s/%s", orNone(r.Region), orNone(r.Zone))
+}
+
 // LambdaCloudRegion contains Lambda Cloud-specific region information.
 type LambdaCloudRegion struct {
 	// Region is the Lambda Cloud region (e.g., "us-west-2").
 	Region string `json:"region"`
+}
+
+func (r *LambdaCloudRegion) String() string {
+	return orNone(r.Region)
 }
 
 // KubernetesRegion contains Kubernetes-specific region information.
@@ -69,6 +99,10 @@ type KubernetesRegion struct {
 
 	// Namespace is the Kubernetes namespace.
 	Namespace string `json:"namespace,omitempty"`
+}
+
+func (r *KubernetesRegion) String() string {
+	return fmt.Sprintf("%s/%s/%s", orNone(r.Context), orNone(r.Cluster), orNone(r.Namespace))
 }
 
 // RegionAffinity contains constraint sets expressed as required/preferred/forbidden arrays
@@ -102,7 +136,7 @@ type KubernetesRegionAffinity struct {
 	Namespace *RegionAffinity `json:"namespace,omitempty"`
 }
 
-func (r *RegionSpec) GetRegion() interface{} {
+func (r *RegionSpec) GetRegion() Region {
 	if r == nil {
 		return nil
 	}
