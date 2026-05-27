@@ -1,4 +1,5 @@
 # https://www.callicoder.com/deploy-multi-container-go-redis-app-kubernetes/
+{{- if .Values.metadata.redis.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,13 +26,13 @@ spec:
           ports:
             - containerPort: 6379
           resources: {{ toYaml .Values.metadata.redis.container.resources | nindent 12 }}
-          {{- if .Values.metadata.redis.enablePassword }}
+          {{- if include "aibrix.redis.sharedHasPassword" . }}
           env:
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "aibrix.fullname" . }}-redis
-                  key: redis-password
+                  key: {{ include "aibrix.redis.connectionPasswordKey" (dict "component" "redis") }}
           {{- end }}
 ---
 apiVersion: v1
@@ -49,14 +50,33 @@ spec:
     {{- include "aibrix.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-metadata-redis
 
----
+{{- end }}
 
-{{- if .Values.metadata.redis.enablePassword }}
+{{- $sharedPassword := .Values.metadata.redis.password -}}
+{{- if include "aibrix.redis.anyPasswordsConfigured" . }}
+---
 apiVersion: v1
 kind: Secret
 metadata:
   name: {{ include "aibrix.fullname" . }}-redis
 type: Opaque
 data:
-  redis-password: {{ .Values.metadata.redis.password | b64enc }}
+  {{- if $sharedPassword }}
+  redis-password: {{ $sharedPassword | b64enc }}
+  {{- end }}
+  {{- if .Values.gatewayPlugin.dependencies.redis.password }}
+  gateway-plugin-redis-password: {{ .Values.gatewayPlugin.dependencies.redis.password | b64enc }}
+  {{- else if $sharedPassword }}
+  gateway-plugin-redis-password: {{ $sharedPassword | b64enc }}
+  {{- end }}
+  {{- if .Values.gpuOptimizer.dependencies.redis.password }}
+  gpu-optimizer-redis-password: {{ .Values.gpuOptimizer.dependencies.redis.password | b64enc }}
+  {{- else if $sharedPassword }}
+  gpu-optimizer-redis-password: {{ $sharedPassword | b64enc }}
+  {{- end }}
+  {{- if .Values.metadata.service.redis.password }}
+  metadata-service-redis-password: {{ .Values.metadata.service.redis.password | b64enc }}
+  {{- else if $sharedPassword }}
+  metadata-service-redis-password: {{ $sharedPassword | b64enc }}
+  {{- end }}
 {{- end }}
