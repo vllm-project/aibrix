@@ -32,7 +32,7 @@ spec:
           value: "{{ .Values.controllerManager.gatewayTimeoutSeconds }}"
 {{- range $key, $val := .Values.controllerManager.container.envs }}
         - name: {{ $key }}
-          value: "{{ $val }}"
+          value: "{{ $val | quote }}"
 {{- end }}
         image: {{ .Values.controllerManager.container.image.repository }}:{{ .Values.controllerManager.container.image.tag }}
         imagePullPolicy: {{ .Values.controllerManager.container.image.imagePullPolicy }}
