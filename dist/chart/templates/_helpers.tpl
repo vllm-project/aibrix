@@ -144,6 +144,11 @@ Create the name of the metadata service service account
 {{- if hasKey $metadataRedis "enabled" -}}
 {{- $builtInRedisEnabled = get $metadataRedis "enabled" -}}
 {{- end -}}
+{{- $sharedEnablePassword := get $metadataRedis "enablePassword" | default false -}}
+{{- $sharedPassword := get $metadataRedis "password" | default "" -}}
+{{- if and $sharedEnablePassword (empty (trim $sharedPassword)) -}}
+{{- fail "metadata.redis.enablePassword=true requires a non-empty metadata.redis.password." -}}
+{{- end -}}
 {{- if not $builtInRedisEnabled -}}
 {{- $missingHosts := list -}}
 {{- if empty (trim (get $metadataServiceRedis "host" | default "")) -}}
@@ -225,5 +230,7 @@ Return the Redis password Secret key name for a component.
 {{- else if eq .component "gatewayPlugin" -}}gateway-plugin-redis-password
 {{- else if eq .component "gpuOptimizer" -}}gpu-optimizer-redis-password
 {{- else if eq .component "redis" -}}redis-password
+{{- else -}}
+{{- fail (printf "aibrix.redis.connectionPasswordKey: unknown component %q" .component) -}}
 {{- end -}}
 {{- end -}}

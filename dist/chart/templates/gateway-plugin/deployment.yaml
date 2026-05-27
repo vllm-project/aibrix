@@ -87,7 +87,7 @@ spec:
               value: "{{ .Values.gatewayPlugin.dependencies.redis.port }}"
             {{- if include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "gatewayPlugin") }}
             - name: REDIS_PASSWORD
-              valueFrom: 
+              valueFrom:
                 secretKeyRef:
                   name: {{ include "aibrix.fullname" . }}-redis
                   key: {{ include "aibrix.redis.connectionPasswordKey" (dict "component" "gatewayPlugin") }}
