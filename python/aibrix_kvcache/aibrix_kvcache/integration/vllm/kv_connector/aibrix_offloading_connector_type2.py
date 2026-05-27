@@ -85,13 +85,22 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         # recvs
         self._send_stream = torch.cuda.Stream()
         self._recv_stream = torch.cuda.Stream()
+        # Size slot-mapping buffers to the block-aligned worst case:
+        # vLLM's scheduler caps raw tokens at max_num_batched_tokens, but each
+        # request's contribution is rounded up to cache_block_ntokens, so the
+        # cumulative block-aligned count can exceed max_num_batched_tokens by
+        # up to max_num_seqs * cache_block_ntokens.
+        _slot_mapping_size = (
+            config.scheduler_config.max_num_batched_tokens
+            + config.scheduler_config.max_num_seqs * self.cache_block_ntokens
+        )
         self._send_slot_mapping = torch.empty(
-            config.scheduler_config.max_num_batched_tokens,
+            _slot_mapping_size,
             dtype=torch.long,
             device="cuda",
         )
         self._recv_slot_mapping = torch.empty(
-            config.scheduler_config.max_num_batched_tokens,
+            _slot_mapping_size,
             dtype=torch.long,
             device="cuda",
         )
@@ -299,7 +308,6 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         lid = self.layer_name_idx_mapping[layer_name]
         layer_tensors: list[torch.Tensor] = []
         slot_mapping_offset = 0
-        recv_budget = len(self._recv_slot_mapping)
 
         for seq_request_id in self._acquired_kvcache_handles:
             if self._acquired_kvcache_handles[seq_request_id] is None:
@@ -318,24 +326,6 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
 
             offset = aligned_context_len
             length = num_fetched_tokens
-
-            if slot_mapping_offset + length > recv_budget:
-                # _recv_slot_mapping is sized to max_num_batched_tokens; if a
-                # heavy batch's total fetched tokens overshoots the buffer,
-                # skip the rest to avoid a tensor size mismatch crash. The
-                # corresponding cache will be re-fetched on a later step.
-                log_every_n_seconds(
-                    logger,
-                    logging.WARNING,
-                    "_start_load_kv: _recv_slot_mapping budget exhausted "
-                    "(used=%d, need=%d, budget=%d), skipping %s",
-                    10,
-                    slot_mapping_offset,
-                    length,
-                    recv_budget,
-                    seq_request_id,
-                )
-                continue
 
             self._recv_slot_mapping[
                 slot_mapping_offset : slot_mapping_offset + length
@@ -391,8 +381,6 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         slot_mapping_offset = 0
 
         if is_first_layer:
-            slot_budget = len(self._send_slot_mapping)
-            slot_used = 0
             for seq_req_id in self._send_lengths:
                 seq_context_len, seq_query_len = self._send_lengths[seq_req_id]
                 if seq_query_len == 0:
@@ -404,28 +392,6 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
                 handle = self._allocate_for_request(seq_request_meta)
                 if handle is None:
                     continue
-                handle_tokens = (
-                    len(handle.to_tensors()) * self.cache_block_ntokens
-                )
-                if slot_used + handle_tokens > slot_budget:
-                    # _send_slot_mapping is sized to max_num_batched_tokens
-                    # but per-request offload tokens (block-aligned) can sum
-                    # past it on heavy batches; skip the request and release
-                    # the handle so we never overflow the staging buffer.
-                    handle.release()
-                    log_every_n_seconds(
-                        logger,
-                        logging.WARNING,
-                        "save_kv_layer: _send_slot_mapping budget exhausted "
-                        "(used=%d, need=%d, budget=%d), skipping %s",
-                        10,
-                        slot_used,
-                        handle_tokens,
-                        slot_budget,
-                        seq_req_id,
-                    )
-                    continue
-                slot_used += handle_tokens
                 self._allocated_kvcache_handles[seq_req_id] = handle
 
         for seq_req_id, _ in self._allocated_kvcache_handles.items():
