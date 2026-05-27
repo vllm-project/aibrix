@@ -25,6 +25,13 @@ import (
 	"k8s.io/klog/v2"
 )
 
+const (
+	// routeTriggerChanSize is the buffer size for chRouteTrigger so concurrent Route() callers can send without blocking.
+	routeTriggerChanSize = 64
+	// maxWaitWhenQueued is the max time serve() blocks on the trigger channel when the queue has items but no new request arrived.
+	maxWaitWhenQueued = 10 * time.Millisecond
+)
+
 // queueRouter implements a request routing algorithm that uses a queue-based approach.
 // It accepts a backend stateless Router and a RouterQueue as inputs.
 // It manages incoming requests by:
@@ -49,6 +56,8 @@ type queueRouter struct {
 	queue          types.RouterQueue[*types.RoutingContext]
 	cache          cache.Cache
 	chRouteTrigger chan types.PodList
+	// maxWaitWhenQueued is the max time to block when the queue has items but no new request arrived.
+	maxWaitWhenQueued time.Duration
 }
 
 func NewQueueRouter(backend types.Router, queue types.RouterQueue[*types.RoutingContext]) (types.QueueRouter, error) {
@@ -58,10 +67,11 @@ func NewQueueRouter(backend types.Router, queue types.RouterQueue[*types.Routing
 	}
 
 	router := &queueRouter{
-		router:         backend,
-		queue:          queue,
-		cache:          c,
-		chRouteTrigger: make(chan types.PodList, 1), // One buffer is needed for thread safety.
+		router:            backend,
+		queue:             queue,
+		cache:             c,
+		chRouteTrigger:    make(chan types.PodList, routeTriggerChanSize),
+		maxWaitWhenQueued: maxWaitWhenQueued,
 	}
 
 	go router.serve()
@@ -109,8 +119,20 @@ func (r *queueRouter) tryRoute(pods types.PodList) {
 }
 
 func (r *queueRouter) serve() {
+	var lastPods types.PodList
 	for {
-		pods := <-r.chRouteTrigger
+		var pods types.PodList
+		if r.queue.Len() > 0 && lastPods != nil {
+			select {
+			case pods = <-r.chRouteTrigger:
+				lastPods = pods
+			case <-time.After(r.maxWaitWhenQueued):
+				pods = lastPods
+			}
+		} else {
+			pods = <-r.chRouteTrigger
+			lastPods = pods
+		}
 
 		for {
 			ctx, err := r.queue.Peek(time.Now(), pods)
