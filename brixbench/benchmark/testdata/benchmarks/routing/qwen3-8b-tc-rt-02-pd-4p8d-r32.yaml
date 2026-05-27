@@ -14,14 +14,13 @@ vllmArgs:
   backend: openai-chat
   model: qwen3-8b
   tokenizer: /data01/models/Qwen3-8B
-  num-prompts: 1000
+  num-prompts: 200
   request-rate: 32
   concurrency: 32
   metric-percentiles: 50,90,95,99
   percentile-metrics: ttft,tpot,itl,e2el
   goodput: tpot:250
   ready-check-timeout-sec: 30
-  routing-strategy: pd
   dataset-name: prefix_repetition
   prefix-repetition-num-prefixes: 20
   prefix-repetition-prefix-len: 6000
