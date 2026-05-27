@@ -33,8 +33,12 @@ controllerManager:
           port: 8081
         initialDelaySeconds: 5
         periodSeconds: 10
-    envs:
-      AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"
+    envs: {}
+      # AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"  # Uncomment to tune for high-latency or low-traffic environments
+  # Sets the AIBRIX_GATEWAY_TIMEOUT_SECONDS environment variable.
+  # NOTE: This is managed exclusively via this field. Do NOT add
+  # AIBRIX_GATEWAY_TIMEOUT_SECONDS to the 'envs' map below,
+  # as it will result in duplicate environment variables in the manifest.
   gatewayTimeoutSeconds: 120
   serviceAccount:
     create: true
