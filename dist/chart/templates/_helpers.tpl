@@ -130,55 +130,50 @@ Create the name of the metadata service service account
 {{- if and .Values.gateway.enable .Values.gateway.envoyAsSideCar -}}
 {{- fail "gateway.enable and gateway.envoyAsSideCar are mutually exclusive and cannot both be true." -}}
 {{- end -}}
-{{- $metadata := get .Values "metadata" | default dict -}}
-{{- $metadataRedis := get $metadata "redis" | default dict -}}
-{{- $metadataService := get $metadata "service" | default dict -}}
-{{- $metadataServiceRedis := get $metadataService "redis" | default dict -}}
-{{- $gatewayPlugin := get .Values "gatewayPlugin" | default dict -}}
-{{- $gatewayDependencies := get $gatewayPlugin "dependencies" | default dict -}}
-{{- $gatewayRedis := get $gatewayDependencies "redis" | default dict -}}
-{{- $gpuOptimizer := get .Values "gpuOptimizer" | default dict -}}
-{{- $gpuDependencies := get $gpuOptimizer "dependencies" | default dict -}}
-{{- $gpuRedis := get $gpuDependencies "redis" | default dict -}}
-{{- $builtInRedisEnabled := true -}}
-{{- if hasKey $metadataRedis "enabled" -}}
-{{- $builtInRedisEnabled = get $metadataRedis "enabled" -}}
-{{- end -}}
-{{- $sharedEnablePassword := get $metadataRedis "enablePassword" | default false -}}
-{{- $sharedPassword := get $metadataRedis "password" | default "" -}}
+
+{{- /* get value by dig */ -}}
+{{- $builtInRedisEnabled := dig "redis" "enabled" true .Values.metadata -}}
+{{- $sharedEnablePassword := dig "redis" "enablePassword" false .Values.metadata -}}
+{{- $sharedPassword := dig "redis" "password" "" .Values.metadata -}}
+
+{{- /* passwd cannot be empty when sharedEnablePassword */ -}}
 {{- if and $sharedEnablePassword (empty (trim $sharedPassword)) -}}
 {{- fail "metadata.redis.enablePassword=true requires a non-empty metadata.redis.password." -}}
 {{- end -}}
+
+{{- /* is not use builtInRedis，must set external host */ -}}
 {{- if not $builtInRedisEnabled -}}
 {{- $missingHosts := list -}}
-{{- if empty (trim (get $metadataServiceRedis "host" | default "")) -}}
-{{- $missingHosts = append $missingHosts "metadata.service.redis.host" -}}
+{{- if empty (trim (dig "service" "redis" "host" "" .Values.metadata)) -}}
+  {{- $missingHosts = append $missingHosts "metadata.service.redis.host" -}}
 {{- end -}}
-{{- if empty (trim (get $gatewayRedis "host" | default "")) -}}
-{{- $missingHosts = append $missingHosts "gatewayPlugin.dependencies.redis.host" -}}
+{{- if empty (trim (dig "dependencies" "redis" "host" "" .Values.gatewayPlugin)) -}}
+  {{- $missingHosts = append $missingHosts "gatewayPlugin.dependencies.redis.host" -}}
 {{- end -}}
-{{- if empty (trim (get $gpuRedis "host" | default "")) -}}
-{{- $missingHosts = append $missingHosts "gpuOptimizer.dependencies.redis.host" -}}
+{{- if empty (trim (dig "dependencies" "redis" "host" "" .Values.gpuOptimizer)) -}}
+  {{- $missingHosts = append $missingHosts "gpuOptimizer.dependencies.redis.host" -}}
 {{- end -}}
+
 {{- if gt (len $missingHosts) 0 -}}
 {{- fail (printf "metadata.redis.enabled=false requires non-empty values for %s." (join ", " $missingHosts)) -}}
 {{- end -}}
 {{- end -}}
+
+{{- /* cannot use component-passwd when using builtInRedis */ -}}
 {{- if and $builtInRedisEnabled (or
-  (get $metadataServiceRedis "password" | default "")
-  (get $gatewayRedis "password" | default "")
-  (get $gpuRedis "password" | default "")) -}}
+  (dig "service" "redis" "password" "" .Values.metadata)
+  (dig "dependencies" "redis" "password" "" .Values.gatewayPlugin)
+  (dig "dependencies" "redis" "password" "" .Values.gpuOptimizer)) -}}
 {{- fail "built-in Redis does not support component-specific passwords; use metadata.redis.enablePassword/password for shared built-in Redis auth or disable built-in Redis for external Redis passwords." -}}
 {{- end -}}
+
 {{- end -}}
 
 {{/*
 Return whether the shared Redis password config is enabled.
 */}}
 {{- define "aibrix.redis.sharedHasPassword" -}}
-{{- $metadata := get .Values "metadata" | default dict -}}
-{{- $redis := get $metadata "redis" | default dict -}}
-{{- if or (get $redis "enablePassword" | default false) (get $redis "password" | default "") -}}true{{- end -}}
+{{- if or (dig "redis" "enablePassword" false .Values.metadata) (dig "redis" "password" "" .Values.metadata) -}}true{{- end -}}
 {{- end -}}
 
 {{/*
@@ -186,28 +181,18 @@ Return whether a component Redis connection should use password auth.
 Supported components: metadataService, gatewayPlugin, gpuOptimizer.
 */}}
 {{- define "aibrix.redis.connectionHasPassword" -}}
-{{- $values := .Values -}}
-{{- $component := .component -}}
-{{- $metadata := get $values "metadata" | default dict -}}
-{{- $metadataRedis := get $metadata "redis" | default dict -}}
-{{- $sharedEnabled := get $metadataRedis "enablePassword" | default false -}}
-{{- $sharedPassword := get $metadataRedis "password" | default "" -}}
+{{- $sharedEnabled := dig "redis" "enablePassword" false .Values.metadata -}}
+{{- $sharedPassword := dig "redis" "password" "" .Values.metadata -}}
+
 {{- $componentPassword := "" -}}
-{{- if eq $component "metadataService" -}}
-  {{- $metadataService := get $metadata "service" | default dict -}}
-  {{- $metadataServiceRedis := get $metadataService "redis" | default dict -}}
-  {{- $componentPassword = get $metadataServiceRedis "password" | default "" -}}
-{{- else if eq $component "gatewayPlugin" -}}
-  {{- $gatewayPlugin := get $values "gatewayPlugin" | default dict -}}
-  {{- $dependencies := get $gatewayPlugin "dependencies" | default dict -}}
-  {{- $redis := get $dependencies "redis" | default dict -}}
-  {{- $componentPassword = get $redis "password" | default "" -}}
-{{- else if eq $component "gpuOptimizer" -}}
-  {{- $gpuOptimizer := get $values "gpuOptimizer" | default dict -}}
-  {{- $dependencies := get $gpuOptimizer "dependencies" | default dict -}}
-  {{- $redis := get $dependencies "redis" | default dict -}}
-  {{- $componentPassword = get $redis "password" | default "" -}}
+{{- if eq .component "metadataService" -}}
+  {{- $componentPassword = dig "service" "redis" "password" "" .Values.metadata -}}
+{{- else if eq .component "gatewayPlugin" -}}
+  {{- $componentPassword = dig "dependencies" "redis" "password" "" .Values.gatewayPlugin -}}
+{{- else if eq .component "gpuOptimizer" -}}
+  {{- $componentPassword = dig "dependencies" "redis" "password" "" .Values.gpuOptimizer -}}
 {{- end -}}
+
 {{- if or $sharedEnabled $sharedPassword $componentPassword -}}true{{- end -}}
 {{- end -}}
 
