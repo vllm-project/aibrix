@@ -1,0 +1,14 @@
+Scenario: aibrix-hello-world
+Tests:
+  - name: aibrix-main-d41653b
+    provider: aibrix
+    fullstack: false
+    commit: d41653b26cf1257157e34ff35ee5f028644473a8
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke.yaml

@@ -1,0 +1,51 @@
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: aibrix-system-to-qwen3-8b
+  namespace: brixbench-adhoc
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: aibrix-system
+  to:
+    - group: ""
+      kind: Service
+      name: qwen3-8b
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: qwen3-8b-router
+  namespace: aibrix-system
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: aibrix-eg
+      namespace: aibrix-system
+  rules:
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: qwen3-8b
+          namespace: brixbench-adhoc
+          port: 8000
+          weight: 1
+      matches:
+        - headers:
+            - name: model
+              type: Exact
+              value: qwen3-8b
+          path:
+            type: PathPrefix
+            value: /v1/completions
+        - headers:
+            - name: model
+              type: Exact
+              value: qwen3-8b
+          path:
+            type: PathPrefix
+            value: /v1/chat/completions
+      timeouts:
+        request: 120s
