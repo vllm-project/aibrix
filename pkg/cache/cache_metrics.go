@@ -288,6 +288,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 		}
 
 		for metricName, metricValue := range result.ModelMetrics {
+			sanitizeMetricValueLabels(pod, metricValue)
 			parts := strings.SplitN(metricName, "/", 2)
 			if len(parts) != 2 {
 				continue
@@ -296,7 +297,6 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			metric := parts[1]
 
 			model = resolveMetricModelName(pod, model)
-			sanitizeMetricValueLabels(pod, metricValue)
 
 			if shouldSkipMetric(pod.Name, metric) {
 				continue
@@ -526,11 +526,14 @@ func (c *Store) updateRealtimeRunningRequestsDrainRate1m(pod *Pod) {
 	}
 }
 
-// updatePodMetricsFromTypedResult processes the typed metrics result and updates pod storage
+// updatePodMetricsFromTypedResult processes the typed metrics result and updates pod storage.
+// Precondition: labels in result must already be sanitized via sanitizeMetricValueLabels.
+// The production caller worker() sanitizes every MetricValue in result before invoking this
+// function, so labels stored in pod.Metrics / pod.ModelMetrics carry resolved model_name /
+// engine_type values rather than the "undefined" sentinel emitted by some engines (e.g. trtllm).
 func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.EngineMetricsResult) {
 	// Process pod-scoped metrics
 	for metricName, metricValue := range result.Metrics {
-		sanitizeMetricValueLabels(pod, metricValue)
 		if metricDef, exists := metrics.Metrics[metricName]; exists {
 			err := c.updatePodRecord(pod, "", metricName, metricDef.MetricScope, metricValue)
 			if err != nil {
@@ -546,7 +549,6 @@ func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.Engine
 		modelName, metricName := parseModelMetricKey(modelMetricKey)
 
 		modelName = resolveMetricModelName(pod, modelName)
-		sanitizeMetricValueLabels(pod, metricValue)
 
 		if metricDef, exists := metrics.Metrics[metricName]; exists {
 			err := c.updatePodRecord(pod, modelName, metricName, metricDef.MetricScope, metricValue)
@@ -614,16 +616,26 @@ func sanitizeMetricLabels(pod *Pod, labelValues map[string]string) map[string]st
 		return labelValues
 	}
 
+	// Key-existence check is required: isUndefinedMetricLabelValue("") is true, so a missing
+	// key would otherwise falsely trigger the alloc path even though we never add it back.
+	modelVal, hasModel := labelValues["model_name"]
+	engineVal, hasEngine := labelValues["engine_type"]
+	modelNeedsFix := hasModel && isUndefinedMetricLabelValue(modelVal)
+	engineNeedsFix := hasEngine && isUndefinedMetricLabelValue(engineVal)
+
+	if !modelNeedsFix && !engineNeedsFix {
+		return labelValues
+	}
+
 	sanitized := make(map[string]string, len(labelValues))
 	for key, value := range labelValues {
 		sanitized[key] = value
 	}
-
-	if modelName, ok := sanitized["model_name"]; ok {
-		sanitized["model_name"] = resolveMetricModelName(pod, modelName)
+	if modelNeedsFix {
+		sanitized["model_name"] = resolveMetricModelName(pod, modelVal)
 	}
-	if engineType, ok := sanitized["engine_type"]; ok {
-		sanitized["engine_type"] = resolveMetricEngineType(pod, engineType)
+	if engineNeedsFix {
+		sanitized["engine_type"] = resolveMetricEngineType(pod, engineVal)
 	}
 
 	return sanitized
