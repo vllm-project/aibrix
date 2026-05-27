@@ -52,7 +52,6 @@ spec:
 
 {{- end }}
 
-{{- $sharedPassword := .Values.metadata.redis.password -}}
 {{- if include "aibrix.redis.anyPasswordsConfigured" . }}
 ---
 apiVersion: v1
