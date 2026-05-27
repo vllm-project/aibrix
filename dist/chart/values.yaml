@@ -89,6 +89,7 @@ gatewayPlugin:
     redis:
       host: "" # aibrix-redis-master
       port: 6379
+      password: ""
   service:
     type: ClusterIP
   messageTimeout: "60s"
@@ -130,6 +131,7 @@ gpuOptimizer:
     redis:
       host: ""  # aibrix-redis-master
       port: 6379
+      password: ""
   tolerations: []
   serviceAccount:
     create: true
@@ -256,7 +258,9 @@ metadata:
     redis:
       host: "" # aibrix-redis-master
       port: 6379
+      password: ""
   redis:
+    enabled: true
     replicas: 1
     imagePullSecrets: []
     container:
