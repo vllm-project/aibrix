@@ -34,6 +34,8 @@ from aibrix.runtime.downloaders import get_downloader
 
 logger = init_logger(__name__)
 
+DOWNLOAD_COMPLETE_MARKER = ".aibrix_download_complete"
+
 
 class ArtifactDelegationService:
     """
@@ -60,6 +62,9 @@ class ArtifactDelegationService:
         """
         self.local_dir = local_dir
         self.credentials_mount = credentials_mount
+        # Per-adapter lock prevents two concurrent loads of the same lora_name
+        # from racing on the same .part files / completion marker.
+        self._download_locks: Dict[str, asyncio.Lock] = {}
 
         # Ensure local directory exists
         Path(local_dir).mkdir(parents=True, exist_ok=True)
@@ -122,6 +127,13 @@ class ArtifactDelegationService:
         """Get local path for storing adapter artifacts."""
         return os.path.join(self.local_dir, lora_name)
 
+    def _get_download_lock(self, lora_name: str) -> asyncio.Lock:
+        lock = self._download_locks.get(lora_name)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._download_locks[lora_name] = lock
+        return lock
+
     async def download_artifact(
         self,
         artifact_url: str,
@@ -143,40 +155,80 @@ class ArtifactDelegationService:
             Exception: If download fails
         """
         local_path = self._get_local_path_for_adapter(lora_name)
+        marker = os.path.join(local_path, DOWNLOAD_COMPLETE_MARKER)
 
-        # Check if already downloaded
-        if os.path.exists(local_path) and os.listdir(local_path):
+        # Fast path: a complete download already exists.
+        if os.path.exists(marker):
             logger.info(
-                f"Artifact already exists locally for {lora_name} at {local_path}"
+                f"Complete download already exists for {lora_name} at {local_path}"
             )
             return local_path
 
-        logger.info(
-            f"Downloading artifact for {lora_name} from {artifact_url} to {local_path}"
-        )
+        async with self._get_download_lock(lora_name):
+            # Re-check inside the lock: a concurrent caller may have finished
+            # the download while we were waiting.
+            if os.path.exists(marker):
+                logger.info(
+                    f"Complete download already exists for {lora_name} at {local_path}"
+                )
+                return local_path
 
-        try:
+            if os.path.exists(local_path):
+                # Leave the directory intact so the downloader's .part files
+                # and ETag sidecars can be reused for resume.
+                logger.info(
+                    f"Partial download detected for {lora_name}, resuming into {local_path}"
+                )
+
+            logger.info(
+                f"Downloading artifact for {lora_name} from {artifact_url} to {local_path}"
+            )
+
             # Get appropriate downloader based on URL scheme
             downloader = get_downloader(artifact_url)
 
-            # Download artifact
+            # Download artifact. We deliberately do not rmtree on failure —
+            # leaving any .part files and ETag sidecars lets the next attempt
+            # resume rather than restart from scratch.
             credentials_copy = dict(credentials) if credentials else None
-            downloaded_path = await downloader.download(
-                artifact_url, local_path, credentials_copy
-            )
+            try:
+                downloaded_path = await downloader.download(
+                    artifact_url, local_path, credentials_copy
+                )
+            except Exception as e:
+                logger.error(f"Failed to download artifact for {lora_name}: {e}")
+                raise
+
+            # Verify the downloader actually materialised something before
+            # claiming completion. A misconfigured prefix can otherwise leave
+            # us with an empty directory that future retries trust as complete.
+            if not self._has_artifact_content(local_path):
+                raise FileNotFoundError(
+                    f"Download for {lora_name} from {artifact_url} produced no files"
+                )
+
+            # Mark download as complete
+            Path(marker).touch()
 
             logger.info(
                 f"Successfully downloaded artifact for {lora_name} to {downloaded_path}"
             )
             return downloaded_path
 
-        except Exception as e:
-            # Clean up partial downloads
-            if os.path.exists(local_path):
-                shutil.rmtree(local_path, ignore_errors=True)
-
-            logger.error(f"Failed to download artifact for {lora_name}: {e}")
-            raise
+    @staticmethod
+    def _has_artifact_content(local_path: str) -> bool:
+        """Return True if local_path contains at least one file other than the
+        completion marker and downloader temp/etag sidecars."""
+        if not os.path.isdir(local_path):
+            return False
+        for dirpath, _dirnames, filenames in os.walk(local_path):
+            for name in filenames:
+                if name == DOWNLOAD_COMPLETE_MARKER:
+                    continue
+                if name.endswith(".part") or name.endswith(".part.etag"):
+                    continue
+                return True
+        return False
 
     async def load_adapter_with_delegation(
         self,
