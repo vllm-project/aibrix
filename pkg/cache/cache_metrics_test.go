@@ -153,6 +153,42 @@ func TestSanitizeMetricLabelsFallback(t *testing.T) {
 	require.Equal(t, "pod:8000", sanitized["instance"])
 }
 
+func TestSanitizeMetricLabels_ReturnsSameMapWhenClean(t *testing.T) {
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "default"}}}
+
+	in := map[string]string{
+		"model_name":  "raw-model",
+		"engine_type": "vllm",
+		"instance":    "pod:8000",
+	}
+	out := sanitizeMetricLabels(pod, in)
+
+	// Mutating in must show up in out — proves early-return returned the same underlying map
+	// (i.e. no alloc + copy happened).
+	in["__canary"] = "x"
+	require.Equal(t, "x", out["__canary"], "expected early-return to return same map when labels are clean")
+}
+
+func TestSanitizeMetricLabels_NoFalsePositiveWhenKeyMissing(t *testing.T) {
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "default"}}}
+
+	in := map[string]string{"instance": "pod:8000"}
+	out := sanitizeMetricLabels(pod, in)
+
+	in["__canary"] = "x"
+	require.Equal(t, "x", out["__canary"], "missing model_name / engine_type keys must not trigger alloc path")
+}
+
+func TestSanitizeMetricLabels_EmptyMap(t *testing.T) {
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "default"}}}
+
+	in := map[string]string{}
+	out := sanitizeMetricLabels(pod, in)
+
+	in["__canary"] = "x"
+	require.Equal(t, "x", out["__canary"], "empty map must short-circuit to same map")
+}
+
 func TestMetricRoleFilters(t *testing.T) {
 	require.True(t, isPrefillOnlyMetric(metrics.TimeToFirstTokenSeconds))
 	require.False(t, isPrefillOnlyMetric(metrics.GenerationTokenTotal))

@@ -42,6 +42,27 @@ resolve the issue and retry until you get:
 1 chart(s) linted, 0 chart(s) failed
 ```
 
+### helm unittest
+
+test cases in dist/chart/tests
+```
+helm plugin install https://github.com/helm-unittest/helm-unittest.git
+
+helm unittest dist/chart
+### Chart [ aibrix ] dist/chart
+
+ PASS  Test Redis Configuration Logic   dist/chart/tests/redis_config_test.yaml
+ PASS  Test Redis Dependency Passwd Logic       dist/chart/tests/redis_config_test.yaml
+ PASS  Test Redis Shared Passwd Conflict        dist/chart/tests/redis_config_test.yaml
+ PASS  Test Redis Shared Passwd dist/chart/tests/redis_config_test.yaml
+
+Charts:      1 passed, 1 total
+Test Suites: 4 passed, 4 total
+Tests:       4 passed, 4 total
+Snapshot:    0 passed, 0 total
+Time:        14.85875ms
+```
+
 ### Render yaml files
 
 Render all manifests using:

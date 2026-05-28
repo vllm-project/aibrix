@@ -1,0 +1,90 @@
+suite: Test Redis Configuration Logic
+templates:
+  - gateway-plugin/deployment.yaml
+  - metadata-service/deployment.yaml
+  - gpu-optimizer/deployment.yaml
+tests:
+  - it: should configure external redis when builtIn is disabled
+    set:
+      metadata.redis.enabled: false
+      gatewayPlugin.dependencies.redis.host: "external-redis.cluster.local"
+      gatewayPlugin.dependencies.redis.port: 3796
+      metadata.service.redis.host: "external-redis.cluster.local"
+      metadata.service.redis.port: 3796
+      gpuOptimizer.dependencies.redis.host: "external-redis.cluster.local"
+      gpuOptimizer.dependencies.redis.port: 3796
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_HOST
+            value: "external-redis.cluster.local"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_PORT
+            value: "3796"
+---
+suite: Test Redis Dependency Passwd Logic
+templates:
+  - metadata-service/redis.yaml
+tests:
+  - it: should set external redis passwd when builtIn is disabled
+    set:
+      metadata.redis.enabled: false
+      gatewayPlugin.dependencies.redis.password: "abcd"
+      metadata.service.redis.password: "abdc"
+      gpuOptimizer.dependencies.redis.password: "acbd"
+    asserts:
+      - notExists:
+          path: data.redis-password
+      - equal:
+          path: data.gateway-plugin-redis-password
+          value: "YWJjZA=="
+      - equal:
+          path: data.gpu-optimizer-redis-password
+          value: "YWNiZA=="
+      - equal:
+          path: data.metadata-service-redis-password
+          value: "YWJkYw=="
+---
+suite: Test Redis Shared Passwd Conflict
+templates:
+tests:
+  - it: should conflict
+    set:
+      metadata.redis.enabled: true
+      gatewayPlugin.dependencies.redis.password: "abcd"
+      metadata.service.redis.password: "abdc"
+      gpuOptimizer.dependencies.redis.password: "acbd"
+    asserts:
+      - failedTemplate:
+          errorMessage: "built-in Redis does not support component-specific passwords; use metadata.redis.enablePassword/password for shared built-in Redis auth or disable built-in Redis for external Redis passwords."
+---
+suite: Test Redis Shared Passwd
+templates:
+  - metadata-service/redis.yaml
+tests:
+  - it: should configure shared redis passwd
+    set:
+      metadata.redis.enabled: true
+      metadata.redis.enablePassword: false
+      metadata.redis.password: "dddd"
+    asserts:
+      - equal:
+          path: data.redis-password
+          value: "ZGRkZA=="
+        documentIndex: 2
+      - equal:
+          path: data.gateway-plugin-redis-password
+          value: "ZGRkZA=="
+        documentIndex: 2
+      - equal:
+          path: data.gpu-optimizer-redis-password
+          value: "ZGRkZA=="
+        documentIndex: 2
+      - equal:
+          path: data.metadata-service-redis-password
+          value: "ZGRkZA=="
+        documentIndex: 2
+

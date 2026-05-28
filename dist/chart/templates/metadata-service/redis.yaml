@@ -1,4 +1,5 @@
 # https://www.callicoder.com/deploy-multi-container-go-redis-app-kubernetes/
+{{- if .Values.metadata.redis.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,13 +26,13 @@ spec:
           ports:
             - containerPort: 6379
           resources: {{ toYaml .Values.metadata.redis.container.resources | nindent 12 }}
-          {{- if .Values.metadata.redis.enablePassword }}
+          {{- if include "aibrix.redis.sharedHasPassword" . }}
           env:
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "aibrix.fullname" . }}-redis
-                  key: redis-password
+                  key: {{ include "aibrix.redis.connectionPasswordKey" (dict "component" "redis") }}
           {{- end }}
 ---
 apiVersion: v1
@@ -49,14 +50,32 @@ spec:
     {{- include "aibrix.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-metadata-redis
 
----
+{{- end }}
 
-{{- if .Values.metadata.redis.enablePassword }}
+{{- if include "aibrix.redis.anyPasswordsConfigured" . }}
+---
 apiVersion: v1
 kind: Secret
 metadata:
   name: {{ include "aibrix.fullname" . }}-redis
 type: Opaque
 data:
-  redis-password: {{ .Values.metadata.redis.password | b64enc }}
+  {{- $sharedPass := dig "redis" "password" "" .Values.metadata -}}
+  {{- $gatewayPass := dig "dependencies" "redis" "password" "" .Values.gatewayPlugin -}}
+  {{- $gpuPass := dig "dependencies" "redis" "password" "" .Values.gpuOptimizer -}}
+  {{- $metaPass := dig "service" "redis" "password" "" .Values.metadata -}}
+
+  {{- if $sharedPass }}
+  redis-password: {{ $sharedPass | b64enc }}
+  {{- end }}
+
+  {{- if or $gatewayPass $sharedPass }}
+  gateway-plugin-redis-password: {{ default $sharedPass $gatewayPass | b64enc }}
+  {{- end }}
+  {{- if or $gpuPass $sharedPass }}
+  gpu-optimizer-redis-password: {{ default $sharedPass $gpuPass | b64enc }}
+  {{- end }}
+  {{- if or $metaPass $sharedPass }}
+  metadata-service-redis-password: {{ default $sharedPass $metaPass | b64enc }}
+  {{- end }}
 {{- end }}
