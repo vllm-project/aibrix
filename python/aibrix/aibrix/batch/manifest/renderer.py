@@ -282,6 +282,7 @@ class _RendererSupport:
         # of engine_args values is delegated to EngineArgsSpec; invalid
         # values bubble up as ValidationError.
         if ref.overrides:
+            template = template.model_copy(deep=True)
             for key in ref.overrides:
                 if key not in _TEMPLATE_OVERRIDE_ALLOWLIST:
                     raise ForbiddenOverride(
@@ -354,6 +355,7 @@ class _RendererSupport:
         # scheduler that consumes it has not landed yet. We still validate
         # the allowlist so unsupported keys cannot reach the worker.
         if ref and ref.overrides:
+            profile = profile.model_copy(deep=True)
             for key in ref.overrides:
                 if key not in _PROFILE_OVERRIDE_ALLOWLIST:
                     raise ForbiddenOverride(

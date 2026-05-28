@@ -268,7 +268,7 @@ class DeploymentJobDriver(LocalJobDriver):
             .get("labels", {})
             .get("model.aibrix.ai/name", service["metadata"]["name"])
         )
-        namespace = deployment["metadata"].get("namespace", "default")
+        namespace = deployment.get("metadata", {}).get("namespace", "default")
 
         await self._apply_deployment(namespace, deployment)
         try:

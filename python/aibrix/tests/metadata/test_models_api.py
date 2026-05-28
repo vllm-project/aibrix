@@ -33,7 +33,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 # Try importing, skip tests if dependencies missing
 try:
     from aibrix.metadata.api.v1.models import K8sModelDiscovery
-    from aibrix.metadata.app import build_app
+    from tests.metadata.conftest import create_test_app
 
     DEPENDENCIES_AVAILABLE = True
 except ModuleNotFoundError as e:
@@ -218,8 +218,6 @@ class TestModelsAPI:
         mock_kube_config,
     ):
         """Test /v1/models/ endpoint returns model list."""
-        from argparse import Namespace
-
         from kubernetes import config as k8s_config
 
         # Mock config loading to avoid real K8s config
@@ -254,15 +252,7 @@ class TestModelsAPI:
             mock_adapters
         )
 
-        # Build app without K8s job support for simpler testing
-        args = Namespace(
-            enable_fastapi_docs=False,
-            disable_batch_api=True,
-            disable_file_api=True,
-            enable_k8s_job=False,
-            disable_inference_endpoint=True,
-        )
-        app = build_app(args)
+        app = create_test_app(disable_batch_api=True, disable_file_api=True)
         client = TestClient(app)
 
         # Test endpoint (note: API_V1_STR = "/v1" so endpoint is /v1/models/)

@@ -46,7 +46,7 @@ class DeploymentManifestRenderer(_RendererSupport):
         self,
         job_id: str,
         spec: BatchJobSpec,
-        prividerSpec: ResourceDetail,
+        provider_spec: ResourceDetail,
         namespace: str = _DEFAULT_NAMESPACE,
     ) -> Dict[str, Dict[str, Any]]:
         # only require profile if model download is neeeded
@@ -64,7 +64,7 @@ class DeploymentManifestRenderer(_RendererSupport):
         deployment = self._system_base(
             template,
             deployment_name,
-            prividerSpec.replica or 1,
+            provider_spec.replica or 1,
             port,
             profile,
         )
