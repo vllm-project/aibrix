@@ -62,23 +62,49 @@ def _local_storage_settings():
         settings.METASTORE_TYPE = old_metastore
 
 
-def test_build_app_without_k8s_job():
+@pytest.fixture
+def _mock_k8s_config_loading():
+    with (
+        patch("aibrix.metadata.app.config.load_incluster_config") as load_incluster,
+        patch("aibrix.metadata.app.config.load_kube_config") as load_kube,
+    ):
+        yield load_incluster, load_kube
+
+
+@pytest.fixture
+def _mock_k8s_runtime():
+    with (
+        patch("aibrix.metadata.app.k8s_client.CoreV1Api") as core_api,
+        patch("aibrix.metadata.app.k8s_client.AppsV1Api") as apps_api,
+        patch("aibrix.metadata.app.k8s_template_registry") as template_registry,
+        patch("aibrix.metadata.app.k8s_profile_registry") as profile_registry,
+    ):
+        yield core_api, apps_api, template_registry, profile_registry
+
+
+def test_build_app_without_k8s_job(_mock_k8s_config_loading):
     """Test building app without K8s job support."""
     args = _args(
         disable_batch_api=True,
         disable_file_api=True,
         enable_k8s_job=False,
+        disable_k8s_support=True,
         disable_inference_endpoint=True,
     )
+    load_incluster, load_kube = _mock_k8s_config_loading
 
     app = build_app(args)
+
+    # App should not load k8s config
+    load_incluster.assert_not_called()
+    load_kube.assert_not_called()
 
     # App should not have kopf operator wrapper
     assert not hasattr(app.state, "kopf_operator_wrapper")
     assert hasattr(app.state, "httpx_client_wrapper")
 
 
-def test_build_app_with_k8s_job():
+def test_build_app_with_k8s_job(_mock_k8s_config_loading, _mock_k8s_runtime):
     """Test building app with K8s job support."""
     args = _args(
         disable_batch_api=False,
@@ -91,19 +117,16 @@ def test_build_app_with_k8s_job():
     # build_app constructs ConfigMap-backed template / profile registries
     # and calls reload() on each, which would hit the K8s API. Stub
     # them out here since this test only exercises wiring.
-    with (
-        patch("aibrix.metadata.app.JobCache"),
-        patch("aibrix.metadata.app.k8s_client.CoreV1Api"),
-        patch("aibrix.metadata.app.k8s_client.AppsV1Api"),
-        patch("aibrix.metadata.app.k8s_template_registry"),
-        patch("aibrix.metadata.app.k8s_profile_registry"),
-    ):
+    load_incluster, load_kube = _mock_k8s_config_loading
+    with patch("aibrix.metadata.app.JobCache"):
         app = build_app(args)
 
     # App should have kopf operator wrapper
     assert hasattr(app.state, "kopf_operator_wrapper")
     assert hasattr(app.state, "httpx_client_wrapper")
     assert hasattr(app.state, "batch_driver")
+    load_incluster.assert_called_once_with()
+    load_kube.assert_not_called()
 
     # Check kopf operator wrapper configuration
     kopf_wrapper = app.state.kopf_operator_wrapper
@@ -112,9 +135,10 @@ def test_build_app_with_k8s_job():
     assert kopf_wrapper.shutdown_timeout == 2.0
 
 
-def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset():
+def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset(
+    _mock_k8s_runtime,
+):
     args = _args(
-        disable_k8s_support=False,
         registry_provider=None,
         dry_run=False,
         disable_batch_api=False,
@@ -123,8 +147,8 @@ def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset():
     )
 
     with (
-        patch("aibrix.metadata.app.config.load_incluster_config"),
-        patch("aibrix.metadata.app.config.load_kube_config"),
+        patch("aibrix.metadata.app.config.load_incluster_config") as load_incluster,
+        patch("aibrix.metadata.app.config.load_kube_config") as load_kube,
         patch("aibrix.metadata.app.k8s_client.CoreV1Api") as core_api,
         patch("aibrix.metadata.app.k8s_client.AppsV1Api") as apps_api,
         patch("aibrix.metadata.app.k8s_template_registry") as template_registry,
@@ -132,6 +156,8 @@ def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset():
     ):
         app = build_app(args)
 
+    load_incluster.assert_called_once_with()
+    load_kube.assert_not_called()
     core_api.assert_called_once_with()  # in _load_batch_k8s_context
     apps_api.assert_called_once_with()  # in _load_batch_k8s_context
     template_registry.assert_not_called()
@@ -142,7 +168,9 @@ def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset():
     assert isinstance(app.state.batch_driver._job_entity_manager, RedisJobCache)
 
 
-def test_load_batch_k8s_context_registry_loading_overrides_k8s_disabled():
+def test_load_batch_k8s_context_registry_loading_overrides_k8s_disabled(
+    _mock_k8s_runtime,
+):
     args = _args(
         disable_k8s_support=True,
         registry_provider="configmap",
@@ -154,12 +182,9 @@ def test_load_batch_k8s_context_registry_loading_overrides_k8s_disabled():
     )
     template_registry = MagicMock()
     profile_registry = MagicMock()
+    core_api, apps_api, _, _ = _mock_k8s_runtime
 
     with (
-        patch("aibrix.metadata.app.config.load_incluster_config"),
-        patch("aibrix.metadata.app.config.load_kube_config"),
-        patch("aibrix.metadata.app.k8s_client.CoreV1Api") as core_api,
-        patch("aibrix.metadata.app.k8s_client.AppsV1Api") as apps_api,
         patch(
             "aibrix.metadata.app.k8s_template_registry",
             return_value=template_registry,
@@ -189,6 +214,7 @@ def test_load_batch_k8s_context_registry_loading_overrides_k8s_disabled():
 
 def test_build_app_with_redis_job(monkeypatch):
     args = _args(
+        disable_k8s_support=True,
         disable_batch_api=False,
         enable_redis_job=True,
         dry_run=True,
@@ -214,6 +240,7 @@ def test_build_app_with_redis_job(monkeypatch):
 
 def test_build_app_with_mongo_job(monkeypatch):
     args = _args(
+        disable_k8s_support=True,
         disable_batch_api=False,
         enable_mongo_job=True,
         dry_run=True,
@@ -237,6 +264,7 @@ def test_build_app_with_mongo_job(monkeypatch):
 
 def test_build_app_with_redis_job_missing_env(monkeypatch):
     args = _args(
+        disable_k8s_support=True,
         disable_batch_api=False,
         enable_redis_job=True,
         dry_run=True,
@@ -255,6 +283,7 @@ def test_build_app_with_redis_job_missing_env(monkeypatch):
 
 def test_build_app_with_mongo_job_missing_env(monkeypatch):
     args = _args(
+        disable_k8s_support=True,
         disable_batch_api=False,
         enable_mongo_job=True,
         dry_run=True,
@@ -269,16 +298,23 @@ def test_build_app_with_mongo_job_missing_env(monkeypatch):
         build_app(args)
 
 
-def test_status_endpoint_without_k8s():
+def test_status_endpoint_without_k8s(_mock_k8s_config_loading):
     """Test /status endpoint without K8s support."""
     args = _args(
+        disable_k8s_support=True,
         disable_batch_api=True,
         disable_file_api=True,
         enable_k8s_job=False,
         disable_inference_endpoint=True,
     )
+    load_incluster, load_kube = _mock_k8s_config_loading
 
     app = build_app(args)
+
+    # App should not load k8s config
+    load_incluster.assert_not_called()
+    load_kube.assert_not_called()
+
     client = TestClient(app)
 
     response = client.get("/status")
@@ -294,7 +330,7 @@ def test_status_endpoint_without_k8s():
     assert data["batch_driver"]["available"] is False
 
 
-def test_status_endpoint_with_k8s():
+def test_status_endpoint_with_k8s(_mock_k8s_config_loading, _mock_k8s_runtime):
     """Test /status endpoint with K8s support."""
     args = _args(
         disable_batch_api=False,
@@ -304,14 +340,13 @@ def test_status_endpoint_with_k8s():
         kopf_shutdown_timeout=2.0,
     )
 
-    with (
-        patch("aibrix.metadata.app.JobCache"),
-        patch("aibrix.metadata.app.k8s_client.CoreV1Api"),
-        patch("aibrix.metadata.app.k8s_client.AppsV1Api"),
-        patch("aibrix.metadata.app.k8s_template_registry"),
-        patch("aibrix.metadata.app.k8s_profile_registry"),
-    ):
+    load_incluster, load_kube = _mock_k8s_config_loading
+    with patch("aibrix.metadata.app.JobCache"):
         app = build_app(args)
+
+    # App should load k8s config
+    load_incluster.assert_called_once_with()
+    load_kube.assert_not_called()
 
     client = TestClient(app)
 
@@ -339,6 +374,7 @@ def test_status_endpoint_with_k8s():
 def test_healthz_endpoint():
     """Test /healthz endpoint."""
     args = _args(
+        disable_k8s_support=True,
         disable_batch_api=True,
         disable_file_api=True,
         enable_k8s_job=False,
@@ -358,6 +394,7 @@ def test_healthz_endpoint():
 def test_ready_endpoint():
     """Test /readyz endpoint."""
     args = _args(
+        disable_k8s_support=True,
         disable_batch_api=True,
         disable_file_api=True,
         enable_k8s_job=False,

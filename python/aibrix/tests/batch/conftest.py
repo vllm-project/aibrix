@@ -449,7 +449,7 @@ def create_test_app(
             enable_redis_job=enable_redis_job,
             k8s_namespace="default",
             k8s_job_patch=None,  # accepted by parser but always None in tests
-            registry_provider="configmap",
+            registry_provider=None,
             kopf_startup_timeout=30.0,
             kopf_shutdown_timeout=10.0,
             dry_run=dry_run,
