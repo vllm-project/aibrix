@@ -131,17 +131,16 @@ Create the name of the metadata service service account
 {{- fail "gateway.enable and gateway.envoyAsSideCar are mutually exclusive and cannot both be true." -}}
 {{- end -}}
 
-{{- /* get value by dig */ -}}
 {{- $builtInRedisEnabled := dig "redis" "enabled" true .Values.metadata -}}
 {{- $sharedEnablePassword := dig "redis" "enablePassword" false .Values.metadata -}}
 {{- $sharedPassword := dig "redis" "password" "" .Values.metadata -}}
 
-{{- /* passwd cannot be empty when sharedEnablePassword */ -}}
+{{- /* Shared Redis password must be non-empty when enablePassword is true */ -}}
 {{- if and $sharedEnablePassword (empty (trim $sharedPassword)) -}}
 {{- fail "metadata.redis.enablePassword=true requires a non-empty metadata.redis.password." -}}
 {{- end -}}
 
-{{- /* is not use builtInRedis，must set external host */ -}}
+{{- /* When builtIn Redis is disabled, all components must declare an external Redis host */ -}}
 {{- if not $builtInRedisEnabled -}}
 {{- $missingHosts := list -}}
 {{- if empty (trim (dig "service" "redis" "host" "" .Values.metadata)) -}}
@@ -159,7 +158,10 @@ Create the name of the metadata service service account
 {{- end -}}
 {{- end -}}
 
-{{- /* cannot use component-passwd when using builtInRedis */ -}}
+{{- /*
+  Prevent the use of component-specific Redis passwords when the shared builtIn Redis is enabled.
+  This OR block checks whether any custom password is set across the three components.
+*/ -}}
 {{- if and $builtInRedisEnabled (or
   (dig "service" "redis" "password" "" .Values.metadata)
   (dig "dependencies" "redis" "password" "" .Values.gatewayPlugin)
