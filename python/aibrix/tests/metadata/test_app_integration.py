@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from kubernetes import client, config
 
 # Set required environment variable before importing
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
@@ -82,6 +83,36 @@ def _mock_k8s_runtime():
         yield core_api, apps_api, template_registry, profile_registry
 
 
+@pytest.fixture(scope="session")
+def k8s_config():
+    """Initialize Kubernetes client and test connectivity."""
+    try:
+        # Try to load in-cluster config first, then fallback to local config
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            try:
+                config.load_kube_config()
+            except config.ConfigException as e:
+                pytest.skip(f"Kubernetes configuration not available: {e}")
+
+        # Test API server accessibility with client-side request timeout.
+        try:
+            v1 = client.CoreV1Api()
+            api_host = v1.api_client.configuration.host
+            if not api_host:
+                pytest.skip(
+                    "Kubernetes configuration is invalid: no API server host found"
+                )
+            v1.list_namespace(limit=1, _request_timeout=(1, 2))
+
+        except Exception as e:
+            pytest.skip(f"Failed to create Kubernetes API client: {e}")
+
+    except Exception as e:
+        pytest.skip(f"Failed to initialize Kubernetes client: {e}")
+
+
 def test_build_app_without_k8s_job(_mock_k8s_config_loading):
     """Test building app without K8s job support."""
     args = _args(
@@ -104,7 +135,7 @@ def test_build_app_without_k8s_job(_mock_k8s_config_loading):
     assert hasattr(app.state, "httpx_client_wrapper")
 
 
-def test_build_app_with_k8s_job(_mock_k8s_config_loading, _mock_k8s_runtime):
+def test_build_app_with_k8s_job(_mock_k8s_config_loading):
     """Test building app with K8s job support."""
     args = _args(
         disable_batch_api=False,
@@ -136,7 +167,7 @@ def test_build_app_with_k8s_job(_mock_k8s_config_loading, _mock_k8s_runtime):
 
 
 def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset(
-    _mock_k8s_runtime,
+    k8s_config,
 ):
     args = _args(
         registry_provider=None,
@@ -170,6 +201,7 @@ def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset(
 
 def test_load_batch_k8s_context_registry_loading_overrides_k8s_disabled(
     _mock_k8s_runtime,
+    k8s_config,
 ):
     args = _args(
         disable_k8s_support=True,
@@ -330,7 +362,9 @@ def test_status_endpoint_without_k8s(_mock_k8s_config_loading):
     assert data["batch_driver"]["available"] is False
 
 
-def test_status_endpoint_with_k8s(_mock_k8s_config_loading, _mock_k8s_runtime):
+def test_status_endpoint_with_k8s(
+    _mock_k8s_config_loading, _mock_k8s_runtime, k8s_config
+):
     """Test /status endpoint with K8s support."""
     args = _args(
         disable_batch_api=False,
