@@ -211,6 +211,7 @@ jobs:
       - name: Deploy controller with the built image
         run: |
           kubectl apply -k config/dependency --server-side
+          kubectl apply -k config/crd --server-side
           cd config/default
           kustomize edit set image controller=aibrix/controller-manager:${{ github.sha }}
           kustomize edit set image gateway-plugins=aibrix/gateway-plugins:${{ github.sha }}
