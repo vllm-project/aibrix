@@ -381,6 +381,12 @@ def build_app(args: argparse.Namespace, params={}):
 
     # Resolve the inference client up front so misconfigurations fail
     # at startup instead of later when a request hits the scheduler.
+    #
+    # The inference client is only consumed by the batch API's BatchDriver
+    # (constructed below, inside the ``not args.disable_batch_api`` block), so
+    # only resolve and require an endpoint when the batch API is enabled.
+    # Requiring it unconditionally crashes plain installs that disable the
+    # batch API but do not wire an inference engine (regression from #2185).
     inference_client: Optional[InferenceEngineClient] = None
     dry_run = getattr(args, "dry_run", False)
     if dry_run:
@@ -389,10 +395,13 @@ def build_app(args: argparse.Namespace, params={}):
             "DRY RUN MODE — outputs are echoed inputs, not real model "
             "completions. Refuses to write to non-local storage."
         )
-    elif not args.disable_inference_endpoint:
+    elif not args.disable_batch_api and not args.disable_inference_endpoint:
         if endpoint_url := os.environ.get("INFERENCE_ENGINE_ENDPOINT"):
             inference_client = ProxyInferenceEngineClient(endpoint_url)
-        else:
+        elif not args.enable_k8s_job:
+            # In k8s-job mode the worker pods bring their own engine endpoint,
+            # so a missing INFERENCE_ENGINE_ENDPOINT here is fine. Otherwise a
+            # standalone batch run has no engine to call — fail fast.
             sys.stderr.write(
                 "ERROR: no inference backend configured. Pass --dry-run "
                 "for echo, set INFERENCE_ENGINE_ENDPOINT for an external "
