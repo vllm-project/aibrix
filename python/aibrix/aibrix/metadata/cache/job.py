@@ -70,16 +70,16 @@ class JobCache(JobEntityManager):
 
     def __init__(
         self,
-        template_registry: TemplateRegistry,
-        profile_registry: ProfileRegistry,
+        template_registry: Optional[TemplateRegistry] = None,
+        profile_registry: Optional[ProfileRegistry] = None,
     ) -> None:
         """Initialize the job cache.
 
         Args:
-            template_registry: Loaded ModelDeploymentTemplate registry.
-                Caller must have invoked reload() at least once.
-            profile_registry: Loaded BatchProfile registry. Caller must
-                have invoked reload() at least once.
+            template_registry: Optional loaded ModelDeploymentTemplate registry.
+                Caller must have invoked reload() at least once if set.
+            profile_registry: Optional loaded BatchProfile registry.
+                Caller must have invoked reload() at least once if set.
 
         Every status mutation is written via
         ``batch_metastore.put_batch_job`` and the metadata API serves
@@ -110,17 +110,25 @@ class JobCache(JobEntityManager):
             Callable[[BatchJob], Coroutine[Any, Any, bool]]
         ] = None
 
-        # Both registries are required; pass empty registries explicitly if
-        # operating in a degraded / test mode.
         self._template_registry = template_registry
         self._profile_registry = profile_registry
         self._renderer = JobManifestRenderer(template_registry, profile_registry)
-        logger.info(
-            "JobCache initialized with ConfigMap-driven renderer",
-            active_templates=len(template_registry.all_active()),
-            profiles=len(profile_registry.all()),
-            default_profile=profile_registry.default_name(),
-        )  # type: ignore[call-arg]
+        logger.info(  # type: ignore[call-arg]
+            "JobCache initialized",
+            active_templates=(
+                len(template_registry.all_active())
+                if template_registry is not None
+                else 0
+            ),
+            profiles=(
+                len(profile_registry.all()) if profile_registry is not None else 0
+            ),
+            default_profile=(
+                profile_registry.default_name()
+                if profile_registry is not None
+                else None
+            ),
+        )
 
         self.batch_v1_api = client.BatchV1Api()
         self.core_v1_api = client.CoreV1Api()

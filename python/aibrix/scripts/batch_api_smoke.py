@@ -230,11 +230,11 @@ def parse_args() -> argparse.Namespace:
         help="Total seconds to wait for a terminal state. Default: %(default)s",
     )
     p.add_argument(
-        "--resource-type",
+        "--provider",
         default=None,
         help=(
             "Deployment type specified to run the job via "
-            "extra_body.aibrix.planner_decisions.resource_details[].resource_type. "
+            "extra_body.aibrix.planner_decisions.resource_details[].provider. "
             "Required if --disable-inference-engine and not --enable-k8s-job "
             "mode (no built-in fallback); ignored by standalone --dry-run."
         ),
@@ -368,9 +368,9 @@ def main() -> None:
         "completion_window": args.completion_window,
     }
     aibrix_block: dict = {}
-    if args.resource_type:
+    if args.provider:
         aibrix_block["planner_decision"] = {
-            "resource_details": [{"resource_type": args.resource_type}]
+            "resource_details": [{"provider": args.provider}]
         }
     if args.aibrix_template:
         aibrix_block["model_template"] = {"name": args.aibrix_template}

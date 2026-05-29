@@ -6,10 +6,10 @@ from .base import _Lenient, _Strict
 
 
 class ResourceDetail(_Lenient):
-    resource_type: str
+    provider: str
     endpoint_cluster: Optional[str] = None
     gpu_type: Optional[str] = None
-    worker_num: Optional[int] = None
+    replica: Optional[int] = None
 
 
 class PlannerDecision(_Lenient):
@@ -53,6 +53,14 @@ class BatchProfileRef(_Strict):
 
     name: str = Field(
         description="Name of BatchProfile registered via ConfigMap; None means use system default.",
+    )
+    spec: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Inline profile spec pushed by trusted callers so renderers can "
+            "skip the local registry lookup. When set, consumers should "
+            "prefer this over registry resolution."
+        ),
     )
     overrides: Optional[Dict[str, Any]] = Field(
         default=None,

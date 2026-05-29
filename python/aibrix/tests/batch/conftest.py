@@ -15,8 +15,6 @@
 import argparse
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -65,7 +63,7 @@ def k8s_config():
             except config.ConfigException as e:
                 pytest.skip(f"Kubernetes configuration not available: {e}")
 
-        # Test API server accessibility with reliable timeout
+        # Test API server accessibility with client-side request timeout.
         try:
             v1 = client.CoreV1Api()
             api_host = v1.api_client.configuration.host
@@ -75,25 +73,8 @@ def k8s_config():
                 )
 
             logger.info(f"Testing Kubernetes API accessibility: {api_host}")
-
-            def test_api_call():
-                """Make a simple API call to test connectivity."""
-                # Use a simple API call that exists on CoreV1Api
-                return v1.list_namespace(limit=1)
-
-            # Use ThreadPoolExecutor with timeout to prevent hanging
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(test_api_call)
-                try:
-                    # Wait maximum 10 seconds for the API call
-                    future.result(timeout=10)
-                    logger.info("Kubernetes API server accessibility verified")
-                except FutureTimeoutError:
-                    pytest.skip(
-                        f"Kubernetes API server timeout after 10 seconds: {api_host}"
-                    )
-                except Exception as e:
-                    pytest.skip(f"Kubernetes API server not accessible: {e}")
+            v1.list_namespace(limit=1, _request_timeout=(1, 2))
+            logger.info("Kubernetes API server accessibility verified")
 
         except Exception as e:
             pytest.skip(f"Failed to create Kubernetes API client: {e}")
@@ -204,8 +185,7 @@ def redis_config_available():
 
     import redis
 
-    def test_connection():
-        # Try to connect to Redis with a short timeout
+    try:
         client = redis.Redis(
             host=os.environ.get("REDIS_HOST", "localhost"),
             port=int(os.environ.get("REDIS_PORT", "6379")),
@@ -215,16 +195,9 @@ def redis_config_available():
             socket_timeout=2,
             decode_responses=True,
         )
-        # Test with a simple ping
-        return client.ping()
-
-    # Use ThreadPoolExecutor to enforce timeout
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(test_connection)
-        try:
-            future.result(timeout=5)  # 5 second timeout
-        except Exception as e:
-            pytest.skip(f"Redis access not available: {e}")
+        client.ping()
+    except Exception as e:
+        pytest.skip(f"Redis access not available: {e}")
 
 
 @pytest.fixture(scope="session")
@@ -413,6 +386,7 @@ def create_test_app(
     enable_k8s_job: bool = False,
     enable_redis_job: bool = False,
     enable_mongo_job: bool = False,
+    disable_k8s_support: bool = False,
     storage_type: StorageType = StorageType.LOCAL,
     metastore_type: StorageType = StorageType.LOCAL,
     params: Optional[Dict[str, Any]] = None,
@@ -442,14 +416,14 @@ def create_test_app(
             enable_fastapi_docs=False,
             disable_batch_api=False,
             disable_file_api=False,
-            disable_k8s_support=False,
+            disable_k8s_support=disable_k8s_support,
             disable_inference_endpoint=True,
             enable_k8s_job=enable_k8s_job,
             enable_mongo_job=enable_mongo_job,
             enable_redis_job=enable_redis_job,
             k8s_namespace="default",
             k8s_job_patch=None,  # accepted by parser but always None in tests
-            registry_provider="configmap",
+            registry_provider=None,
             kopf_startup_timeout=30.0,
             kopf_shutdown_timeout=10.0,
             dry_run=dry_run,

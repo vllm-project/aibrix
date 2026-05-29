@@ -19,6 +19,19 @@ class InferenceEngineClient:
             "EchoInferenceEngineClient (--dry-run) instead."
         )
 
+    async def get_worker_capacity(self) -> tuple[int, int]:
+        """Get worker capacity and version number of LLM engine worker."""
+        return 1, 0
+
+    async def wait_for_worker_capacity_change(
+        self,
+        previous_max_workers: int,
+        previous_version: int | None = None,
+    ) -> tuple[int, int]:
+        """Wait for worker capacity change. If previous_version is not None, wait for version to change."""
+        await asyncio.Future()
+        raise AssertionError("unreachable")
+
 
 class EchoInferenceEngineClient(InferenceEngineClient):
     """Returns the request body verbatim. Only valid under --dry-run."""

@@ -107,7 +107,7 @@ def build_batch_request(
     *,
     aibrix_template: str | None = None,
     aibrix_profile: str | None = None,
-    resource_type: str | None = None,
+    provider: str | None = None,
 ) -> dict[str, Any]:
     request: dict[str, Any] = {
         "input_file_id": input_file_id,
@@ -119,16 +119,16 @@ def build_batch_request(
         aibrix["model_template"] = {"name": aibrix_template}
     if aibrix_profile:
         aibrix["profile"] = {"name": aibrix_profile}
-    if resource_type:
+    if provider:
         aibrix["planner_decision"] = {
             "provision_id": "reservation-1",
             "provision_resource_deadline": 3600,
             "resource_details": [
                 {
-                    "resource_type": resource_type,
+                    "provider": provider,
                     "endpoint_cluster": "cluster-a",
                     "gpu_type": "H100",
-                    "worker_num": 1,
+                    "replica": 1,
                 }
             ],
         }
@@ -246,7 +246,7 @@ async def test_openai_batch_api_e2e():
     3. Poll job status until completion
     4. Download and verify output via Files API
     """
-    app = create_test_app()
+    app = create_test_app(disable_k8s_support=True)
 
     with TestClient(app) as client:
         # Step 1: Upload sample input file via Files API
@@ -634,14 +634,14 @@ async def test_openai_batch_api_metadata_server_workflow_with_redis_cache_and_de
             "/v1/chat/completions",
             aibrix_template="mock-vllm",
             aibrix_profile="unittest",
-            resource_type="deployment",
+            provider="deployment",
         )
         create_response = client.post("/v1/batches", json=batch_request)
         assert create_response.status_code == 200
         batch_id = create_response.json()["id"]
-        deployment_name = f"batch-{batch_id[:12]}-engine"
-        service_name = f"batch-{batch_id[:12]}-svc"
-        model_name = service_name
+        deployment_name = f"batch-mock-vllm-{batch_id[:8]}"
+        service_name = deployment_name
+        model_name = deployment_name
         saw_deployment = False
         saw_ready_deployment = False
         saw_service = False
@@ -738,7 +738,7 @@ async def test_openai_batch_api_multi_endpoint(endpoint: str):
     - /v1/embeddings
     - /v1/rerank
     """
-    app = create_test_app()
+    app = create_test_app(disable_k8s_support=True)
     num_requests = 3
 
     with TestClient(app) as client:
@@ -820,7 +820,7 @@ async def test_openai_batch_api_multi_endpoint(endpoint: str):
 @pytest.mark.asyncio
 async def test_batch_api_error_handling():
     """Test error handling in batch API."""
-    app = create_test_app()
+    app = create_test_app(disable_k8s_support=True)
 
     with TestClient(app) as client:
         # Test creating batch with non-existent file ID

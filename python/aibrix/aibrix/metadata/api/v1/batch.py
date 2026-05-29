@@ -17,10 +17,10 @@ import json
 import traceback
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from aibrix.batch import BatchDriver
 from aibrix.batch.job_entity import (
@@ -40,6 +40,8 @@ from aibrix.batch.job_entity import (
 from aibrix.batch.manifest import RenderError
 from aibrix.batch.storage.batch_metastore import get_batch_job
 from aibrix.batch.template import (
+    BatchProfile,
+    ModelDeploymentTemplate,
     ProfileRegistry,
     TemplateRegistry,
 )
@@ -236,10 +238,10 @@ class Decision(PlannerDecision):
             "provision_resource_deadline": 1422443902,  # optional; 0 / null = will not expire
             "resource_details": [
                 {
-                    "resource_type": "xxxxxxxx",
+                    "provider": "xxxxxxxx",
                     "endpoint_cluster": 1422443902,  # optional; 0 / null = will not expire
                     "gpu_type": "A100-SM-80G",  # optional
-                    "worker_num": 2,  # optional; 1 / null = 1
+                    "replica": 2,  # optional; 1 / null = 1
                 }
             ],
         }
@@ -322,6 +324,23 @@ class AibrixExtension(BaseModel):
         default=None,
         description="BatchProfile reference; falls back to registry default if omitted",
     )
+
+    @field_validator("model_template", mode="before")
+    @classmethod
+    def normalize_model_template(cls, value: Any) -> Any:
+        if isinstance(value, ModelDeploymentTemplate):
+            value = value.model_dump(exclude_none=True)
+        if isinstance(value, dict) and "status" in value:
+            value = dict(value)
+            value.pop("status")
+        return value
+
+    @field_validator("profile", mode="before")
+    @classmethod
+    def normalize_profile(cls, value: Any) -> Any:
+        if isinstance(value, BatchProfile):
+            return value.model_dump(exclude_none=True)
+        return value
 
 
 class BatchSpec(BaseModel):
@@ -422,7 +441,7 @@ def _validate_aibrix_extension(
 
     if extension.profile is not None and profile_registry is not None:
         pref = extension.profile
-        if profile_registry.get(pref.name) is None:
+        if pref.spec is None and profile_registry.get(pref.name) is None:
             available = profile_registry.names()
             raise HTTPException(
                 status_code=400,

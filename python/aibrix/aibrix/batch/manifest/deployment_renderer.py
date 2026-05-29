@@ -14,16 +14,17 @@
 
 from __future__ import annotations
 
-import uuid
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
+from aibrix.batch.job_entity import BatchJobSpec, ResourceDetail
 from aibrix.batch.template import BatchProfile, ModelDeploymentTemplate
 from aibrix.downloader.utils import infer_model_name
 
 from .downloader_env import build_downloader_env
 from .renderer import _RendererSupport
 
+_DEFAULT_NAMESPACE = "default"
 _AIBRIX_MODEL_NAME_KEY = "model.aibrix.ai/name"
 _RUNTIME_CONTAINER_NAME = "aibrix-runtime"
 _RUNTIME_IMAGE = "aibrix/runtime:nightly"
@@ -43,34 +44,31 @@ _MODEL_MOUNT_PATH = "/models"
 class DeploymentManifestRenderer(_RendererSupport):
     def render(
         self,
-        template_name: str,
-        profile_name: Optional[str] = None,
-        deployment_name: Optional[str] = None,
-        template_version: Optional[str] = None,
-        replicas: Optional[int] = None,
-        gpu_type: Optional[str] = None,
+        job_id: str,
+        spec: BatchJobSpec,
+        provider_spec: ResourceDetail,
+        namespace: str = _DEFAULT_NAMESPACE,
     ) -> Dict[str, Dict[str, Any]]:
-        template = self._resolve_template(template_name, template_version)
-        self._validate_template(template)
         # only require profile if model download is neeeded
-        profile = (
-            self._resolve_profile(profile_name)
-            if self._needs_model_download(template)
-            else None
-        )
+        template, profile = self._resolve(spec)
+        if self._needs_model_download(template):
+            template, profile = self._resolve(spec, profile_required=True)
+        assert not self._needs_model_download(template) or profile is not None
+
+        self._validate_template(template)
 
         # deployment_name use template.name + random 8hex
-        deployment_name = deployment_name or f"{template.name}-{uuid.uuid4().hex[:8]}"
-        replica_count = int(replicas or 1)
+        deployment_name = f"batch-{template.name}-{job_id[:8]}"
         port = self._resolve_engine_port(template)
 
         deployment = self._system_base(
             template,
             deployment_name,
-            replica_count,
+            provider_spec.replica or 1,
             port,
             profile,
         )
+        deployment["metadata"]["namespace"] = namespace
         self._apply_template(deployment, template)
         service = self._build_service(deployment, template)
         return {"deployment": deployment, "service": service}

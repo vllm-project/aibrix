@@ -35,6 +35,7 @@ from aibrix.batch.job_entity import (
     TypeMeta,
 )
 from aibrix.batch.job_manager import JobManager
+from aibrix.batch.manifest.renderer import RenderError
 from aibrix.batch.scheduler import JobScheduler
 from aibrix.context import InfrastructureContext
 
@@ -117,23 +118,36 @@ class FakeCoreV1Api:
 class FakeRenderer:
     def render(
         self,
-        template_name: str,
-        profile_name=None,
-        template_version=None,
-        deployment_name=None,
-        gpu_type=None,
+        job_id: str,
+        spec: BatchJobSpec,
+        provider_spec,
     ):
-        assert template_name == "mock-template"
+        assert job_id is not None
+        assert spec.model_template_name == "mock-template"
         return {
             "deployment": {
                 "apiVersion": "apps/v1",
                 "kind": "Deployment",
-                "metadata": {"name": deployment_name, "namespace": "default"},
+                "metadata": {
+                    "name": "rendered-deployment",
+                    "namespace": "default",
+                    "labels": {"model.aibrix.ai/name": "rendered-model"},
+                },
                 "spec": {
                     "replicas": 1,
-                    "selector": {"matchLabels": {"app": deployment_name}},
+                    "selector": {
+                        "matchLabels": {
+                            "app": "rendered-app",
+                            "model.aibrix.ai/name": "rendered-model",
+                        }
+                    },
                     "template": {
-                        "metadata": {"labels": {"app": deployment_name}},
+                        "metadata": {
+                            "labels": {
+                                "app": "rendered-app",
+                                "model.aibrix.ai/name": "rendered-model",
+                            }
+                        },
                         "spec": {"containers": [{"name": "llm-engine"}]},
                     },
                 },
@@ -141,9 +155,12 @@ class FakeRenderer:
             "service": {
                 "apiVersion": "v1",
                 "kind": "Service",
-                "metadata": {"name": "template-service", "namespace": "default"},
+                "metadata": {"name": "rendered-service", "namespace": "default"},
                 "spec": {
-                    "selector": {"app": deployment_name},
+                    "selector": {
+                        "app": "rendered-app",
+                        "model.aibrix.ai/name": "rendered-model",
+                    },
                     "ports": [{"port": 8000, "targetPort": 8000}],
                     "type": "ClusterIP",
                 },
@@ -293,10 +310,10 @@ def _make_job(job_id: str = "job-123456789abc") -> BatchJob:
                 "provision_resource_deadline": 3600,
                 "resource_details": [
                     {
-                        "resource_type": "deployment",
+                        "provider": "deployment",
                         "endpoint_cluster": "cluster-a",
                         "gpu_type": "H100",
-                        "worker_num": 1,
+                        "replica": 1,
                     }
                 ],
             },
@@ -338,6 +355,29 @@ def reset_deployment_driver_singleton():
 
 
 @pytest.mark.asyncio
+async def test_deployment_driver_allows_missing_template_registry_at_construction():
+    driver = DeploymentJobDriver(
+        _make_infrastructure_context(),
+        progress_manager=FakeProgressManager(_make_job()),
+        entity_manager=FakeEntityManager(),
+    )
+
+    assert driver._renderer is not None
+
+
+@pytest.mark.asyncio
+async def test_deployment_driver_reports_missing_template_registry_at_render_time():
+    driver = DeploymentJobDriver(
+        _make_infrastructure_context(),
+        progress_manager=FakeProgressManager(_make_job()),
+        entity_manager=FakeEntityManager(),
+    )
+
+    with pytest.raises(RenderError, match="template registry is not configured"):
+        await driver._create_runtime(_make_job())
+
+
+@pytest.mark.asyncio
 async def test_deployment_driver_creates_runtime_and_finalizes_with_temp_files():
     job = _make_job()
     job.status.temp_output_file_id = "temp-out"
@@ -353,7 +393,7 @@ async def test_deployment_driver_creates_runtime_and_finalizes_with_temp_files()
         renderer=FakeRenderer(),
     )
 
-    called = {"prepare": 0, "finalize": 0, "base_url": None}
+    called = {"prepare": 0, "finalize": 0, "base_url": None, "model_name": None}
 
     async def _prepare_job(_job):
         called["prepare"] += 1
@@ -361,6 +401,7 @@ async def test_deployment_driver_creates_runtime_and_finalizes_with_temp_files()
 
     async def _execute_worker(job_id):
         called["base_url"] = driver._inference_client.base_url
+        called["model_name"] = driver._inference_client._model_name
         progress_manager.job.status.state = BatchJobState.FINALIZING
         return progress_manager.job
 
@@ -379,44 +420,26 @@ async def test_deployment_driver_creates_runtime_and_finalizes_with_temp_files()
     assert called["prepare"] == 0
     assert called["finalize"] == 1
     assert (
-        called["base_url"]
-        == "http://batch-job-12345678-svc.default.svc.cluster.local:8000"
+        called["base_url"] == "http://rendered-service.default.svc.cluster.local:8000"
     )
+    assert called["model_name"] == "rendered-model"
     assert len(apps_api.created) == 1
     assert len(core_api.created) == 1
     created_deployment = apps_api.created[0][1]
     created_service = core_api.created[0][1]
     assert (
-        created_deployment["metadata"]["labels"]["batch.job.aibrix.ai/job-id"]
-        == job.job_id
-    )
-    assert (
-        created_deployment["spec"]["selector"]["matchLabels"][
-            "batch.job.aibrix.ai/job-id"
-        ]
-        == job.job_id
-    )
-    assert (
-        created_service["spec"]["selector"]["batch.job.aibrix.ai/job-id"] == job.job_id
-    )
-    assert (
         created_deployment["metadata"]["labels"]["model.aibrix.ai/name"]
-        == "batch-job-12345678-svc"
+        == "rendered-model"
     )
     assert (
         created_deployment["spec"]["selector"]["matchLabels"]["model.aibrix.ai/name"]
-        == "batch-job-12345678-svc"
+        == "rendered-model"
     )
     assert (
-        created_service["metadata"]["labels"]["model.aibrix.ai/name"]
-        == "batch-job-12345678-svc"
+        created_service["spec"]["selector"]["model.aibrix.ai/name"] == "rendered-model"
     )
-    assert (
-        created_service["spec"]["selector"]["model.aibrix.ai/name"]
-        == "batch-job-12345678-svc"
-    )
-    assert core_api.deleted == [("default", "batch-job-12345678-svc")]
-    assert apps_api.deleted == [("default", "batch-job-12345678-engine")]
+    assert core_api.deleted == [("default", "rendered-service")]
+    assert apps_api.deleted == [("default", "rendered-deployment")]
 
 
 @pytest.mark.asyncio
@@ -458,12 +481,12 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
     assert deleted is True
     await task
 
-    assert core_api.deleted == [("default", "batch-job-delete-1-svc")]
-    assert apps_api.deleted == [("default", "batch-job-delete-1-engine")]
+    assert core_api.deleted == [("default", "rendered-service")]
+    assert apps_api.deleted == [("default", "rendered-deployment")]
 
 
 def test_create_job_driver_uses_deployment_driver_for_scheduler_jobs(monkeypatch):
-    """Protect driver selection for resource_type=deployment.
+    """Protect driver selection for provider=deployment.
 
     If the factory regresses and falls back to the local/simple path,
     metadata-server jobs that request deployment execution will silently
