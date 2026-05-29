@@ -174,7 +174,8 @@ class K8sModelDiscovery:
 k8s_discovery = K8sModelDiscovery()
 
 
-@router.get("/")
+@router.get("", include_in_schema=True)
+@router.get("/", include_in_schema=False)
 async def list_models(request: Request) -> ModelListResponse:
     """List all models from Kubernetes.
 
