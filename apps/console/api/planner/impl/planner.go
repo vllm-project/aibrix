@@ -47,6 +47,8 @@ type Planner struct {
 	prov  provisioner.Provisioner
 	store store.Store
 
+	backend plannerBackend // per-provisioner decision-making
+
 	queue pendingQueue
 
 	baseCtx    context.Context
@@ -116,6 +118,7 @@ func NewPlanner(bc plannerclient.BatchClient, prov provisioner.Provisioner, st s
 		bc:               bc,
 		prov:             prov,
 		store:            st,
+		backend:          newPlannerBackend(prov),
 		queue:            newFIFOPendingQueue(queueCapacity),
 		baseCtx:          ctx,
 		baseCancel:       cancel,
@@ -174,28 +177,58 @@ func (q *Planner) process(jobID string) {
 	q.mu.Unlock()
 	q.persist(jobID)
 
-	provReq := &rmtypes.ResourceProvision{
-		Spec: rmtypes.ResourceProvisionSpec{
-			Credential: rmtypes.ResourceCredential{Provider: q.prov.Type()},
-		},
-		IdempotencyKey: req.JobID,
-	}
-	provResult, err := q.prov.Provision(q.baseCtx, provReq)
+	// Backend.Schedule decides what to provision (RM-spec shaping today;
+	// future scheduling decisions live here too).
+	spec, gpuType, gpusPerReplica, err := q.backend.Schedule(q.baseCtx, req)
 	if err != nil {
-		q.markFailed(jobID, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInsufficientResources, err))
+		q.markFailed(jobID, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInvalidJob, err))
 		return
 	}
-	q.mu.Lock()
-	q.jobs[jobID].provisionID = provResult.ProvisionID
-	q.mu.Unlock()
+
+	// Optional backend override can bypass real RM provisioning.
+	var provResult *rmtypes.ProvisionResult
+	overrode := false
+	if override, ok := q.backend.(provisionOverride); ok {
+		if prov, used := override.TryProvisionOverride(req); used && prov != nil {
+			provResult = prov
+			overrode = true
+			klog.Infof("[planner] backend override: skipping RM provisioning job_id=%q provision_id=%q",
+				jobID, provResult.ProvisionID)
+			q.mu.Lock()
+			q.jobs[jobID].provisionID = provResult.ProvisionID
+			q.mu.Unlock()
+		}
+	}
+	if provResult == nil {
+		provReq := &rmtypes.ResourceProvision{
+			Spec:           spec,
+			IdempotencyKey: req.JobID,
+		}
+		provResult, err = q.prov.Provision(q.baseCtx, provReq)
+		if err != nil {
+			q.markFailed(jobID, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInsufficientResources, err))
+			return
+		}
+		q.mu.Lock()
+		q.jobs[jobID].provisionID = provResult.ProvisionID
+		q.mu.Unlock()
+		if logger, ok := q.backend.(provisionResponseLogger); ok {
+			logger.LogProvisionResponse(req.JobID, provResult, spec)
+		}
+	}
 
 	// Provision returns when the request is accepted, not when the resource
 	// is ready. Wait for Running before submitting to MDS, which rejects
-	// batches that point to not-yet-ready provisions.
-	if err := q.waitForProvisionReady(provResult.ProvisionID); err != nil {
-		q.releaseAfter(jobID, provResult.ProvisionID, "wait failure")
-		q.markFailed(jobID, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInsufficientResources, err))
-		return
+	// batches that point to not-yet-ready provisions. A backend override
+	// supplies an already-ready result, so the wait is skipped for it.
+	readyResult := provResult
+	if !overrode {
+		readyResult, err = q.waitForProvisionReady(provResult.ProvisionID)
+		if err != nil {
+			q.releaseAfter(jobID, provResult.ProvisionID, "wait failure")
+			q.markFailed(jobID, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInsufficientResources, err))
+			return
+		}
 	}
 	klog.Infof("[planner] provision ready job_id=%q provision_id=%q provider=%q",
 		jobID, provResult.ProvisionID, q.prov.Type())
@@ -209,15 +242,18 @@ func (q *Planner) process(jobID string) {
 	q.persist(jobID)
 
 	aibrix := plannerclient.AIBrixExtraBody{
-		JobID: req.JobID,
-		PlannerDecision: &plannerclient.PlannerDecision{
-			ProvisionID: provResult.ProvisionID,
-		},
-		ModelTemplate: req.ModelTemplate,
+		JobID:           req.JobID,
+		PlannerDecision: q.backend.BuildDecision(spec, readyResult, gpuType, gpusPerReplica),
+		ModelTemplate:   req.ModelTemplate,
 	}
 
-	klog.Infof("[planner] submit job_id=%q provision_id=%q model_template=%v",
-		req.JobID, provResult.ProvisionID, req.ModelTemplate)
+	if mt := req.ModelTemplate; mt != nil {
+		klog.Infof("[planner] submit job_id=%q provision_id=%q model_template=%s@%s spec=%s",
+			req.JobID, provResult.ProvisionID, mt.Name, mt.Version, mt.Spec)
+	} else {
+		klog.Infof("[planner] submit job_id=%q provision_id=%q model_template=<none>",
+			req.JobID, provResult.ProvisionID)
+	}
 
 	batch, err := q.bc.CreateBatch(q.baseCtx, req.BatchParams, aibrix)
 	if err != nil {
@@ -258,7 +294,7 @@ func (q *Planner) process(jobID string) {
 // or Failed, the timeout elapses, or the scheduler is shutting down.
 // Provisioner.Provision returns when the request is accepted, not when the
 // resource is ready; Planner must wait for Running before invoking CreateBatch.
-func (q *Planner) waitForProvisionReady(provisionID string) error {
+func (q *Planner) waitForProvisionReady(provisionID string) (*rmtypes.ProvisionResult, error) {
 	filter := &rmtypes.ListOptions{ProvisionIDs: &[]string{provisionID}}
 	deadline := time.Now().Add(provReadyTimeout)
 	for {
@@ -267,21 +303,21 @@ func (q *Planner) waitForProvisionReady(provisionID string) error {
 		case err != nil:
 			klog.Warningf("[planner] poll provision_id=%q: %v", provisionID, err)
 		case len(results) == 0:
-			return fmt.Errorf("provision %q not found", provisionID)
+			return nil, fmt.Errorf("provision %q not found", provisionID)
 		default:
 			switch results[0].Status {
 			case rmtypes.ProvisionStatusRunning:
-				return nil
+				return results[0], nil
 			case rmtypes.ProvisionStatusFailed:
-				return fmt.Errorf("provision failed: %s", results[0].ErrorMessage)
+				return nil, fmt.Errorf("provision failed: %s", results[0].ErrorMessage)
 			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("provision %q did not reach Running within %v", provisionID, provReadyTimeout)
+			return nil, fmt.Errorf("provision %q did not reach Running within %v", provisionID, provReadyTimeout)
 		}
 		select {
 		case <-q.baseCtx.Done():
-			return q.baseCtx.Err()
+			return nil, q.baseCtx.Err()
 		case <-time.After(q.provPollInterval):
 		}
 	}
@@ -545,6 +581,10 @@ func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (
 	}
 	if q.prov == nil {
 		return nil, fmt.Errorf("%w: missing provisioner", plannerapi.ErrInsufficientResources)
+	}
+	// Backend may impose additional pre-flight checks. Default is a no-op.
+	if err := q.backend.ValidateRequest(req); err != nil {
+		return nil, err
 	}
 	if err := q.baseCtx.Err(); err != nil {
 		return nil, fmt.Errorf("planner closed: %w", err)
