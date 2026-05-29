@@ -21,13 +21,25 @@ import (
 )
 
 // PlannerDecision is the backend-agnostic planner allocation decision
-// carried on AIBrixExtraBody.PlannerDecision. ResourceDetails is an
-// untyped payload so each backend can attach its own shape.
-type PlannerDecision struct {
-	ProvisionID               string `json:"provision_id,omitempty"`
-	ProvisionResourceDeadline int64  `json:"provision_resource_deadline,omitempty"`
-	ResourceDetails           any    `json:"resource_details,omitempty"`
+// carried on AIBrixExtraBody.PlannerDecision. Each backend defines its
+// own concrete type implementing this interface.
+//
+// isPlannerDecision is an unexported, no-op marker method (empty body,
+// never called at runtime) that exists purely to seal the interface:
+// because it is unexported, only types declared in this package can
+// satisfy PlannerDecision, preventing arbitrary structs from accidentally
+// satisfying it.
+type PlannerDecision interface {
+	isPlannerDecision()
 }
+
+// DefaultDecision is the shape used by backends that only need to carry
+// the provision ID (kubernetes / aws / lambdaCloud today).
+type DefaultDecision struct {
+	ProvisionID string `json:"provision_id,omitempty"`
+}
+
+func (*DefaultDecision) isPlannerDecision() {}
 
 // AIBrixExtraBody is the AIBrix-specific extension the BatchClient
 // serializes onto POST /v1/batches via the openai-go SDK's extra_body
@@ -35,6 +47,6 @@ type PlannerDecision struct {
 // directly.
 type AIBrixExtraBody struct {
 	JobID           string                       `json:"job_id,omitempty"`
-	PlannerDecision *PlannerDecision             `json:"planner_decision,omitempty"`
+	PlannerDecision PlannerDecision              `json:"planner_decision,omitempty"`
 	ModelTemplate   *plannerapi.ModelTemplateRef `json:"model_template,omitempty"`
 }

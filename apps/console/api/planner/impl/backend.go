@@ -42,7 +42,7 @@ import (
 type plannerBackend interface {
 	ValidateRequest(req *plannerapi.EnqueueRequest) error
 	Schedule(ctx context.Context, req *plannerapi.EnqueueRequest) (spec rmtypes.ResourceProvisionSpec, gpuType string, gpusPerReplica int, err error)
-	BuildDecision(spec rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult, gpuType string, gpusPerReplica int) *plannerclient.PlannerDecision
+	BuildDecision(spec rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult, gpuType string, gpusPerReplica int) plannerclient.PlannerDecision
 }
 
 // provisionResponseLogger is an optional capability to log provider-specific
@@ -141,7 +141,7 @@ func (b *defaultPlannerBackend) Schedule(_ context.Context, req *plannerapi.Enqu
 	return spec, gpuType, gpusPerReplica, nil
 }
 
-func (b *defaultPlannerBackend) BuildDecision(_ rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult, _ string, _ int) *plannerclient.PlannerDecision {
+func (b *defaultPlannerBackend) BuildDecision(_ rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult, _ string, _ int) plannerclient.PlannerDecision {
 	// Default decision shape; accelerator scalars are ignored here.
-	return &plannerclient.PlannerDecision{ProvisionID: prov.ProvisionID}
+	return &plannerclient.DefaultDecision{ProvisionID: prov.ProvisionID}
 }
