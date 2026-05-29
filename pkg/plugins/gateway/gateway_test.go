@@ -565,10 +565,10 @@ func Test_selectTargetPod(t *testing.T) {
 			routing.Init()
 
 			server := &Server{}
-			ctx := types.NewRoutingContext(context.Background(), routingAlgo, "test-model", "test-message", "test-request", "test-user")
+			routeCtx := types.NewRoutingContext(context.Background(), routingAlgo, "test-model", "test-message", "test-request", "test-user")
 
 			// Call selectTargetPod and check the result
-			podIP, err := server.selectTargetPod(ctx, tt.pods, tt.externalFilter)
+			podIP, err := server.selectTargetPod(context.Background(), routeCtx, tt.pods, tt.externalFilter)
 
 			if tt.expectedError {
 				assert.Error(subtest, err)
@@ -765,7 +765,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 		mockHTTP.On("Get", mock.Anything, "m-router", mock.Anything).Return((*gatewayv1.HTTPRoute)(nil), errors.New("httproute boom"))
 
 		s := &Server{gatewayClient: mockGW}
-		out := s.responseErrorProcessing(context.Background(), baseResp, 401, "m", "rid", "Incorrect API key provided")
+		out := s.responseErrorProcessing(context.Background(), nil, baseResp, 401, "m", "rid", "Incorrect API key provided")
 		ir := out.GetImmediateResponse()
 		if assert.NotNil(t, ir) {
 			assert.Equal(t, envoyTypePb.StatusCode(401), ir.GetStatus().GetCode())
@@ -786,7 +786,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 
 	t.Run("503 maps to service_unavailable", func(t *testing.T) {
 		s := &Server{gatewayClient: nil}
-		out := s.responseErrorProcessing(context.Background(), baseResp, 503, "m", "rid", "server shutdown")
+		out := s.responseErrorProcessing(context.Background(), nil, baseResp, 503, "m", "rid", "server shutdown")
 		ir := out.GetImmediateResponse()
 		if assert.NotNil(t, ir) {
 			assert.Equal(t, envoyTypePb.StatusCode(503), ir.GetStatus().GetCode())
@@ -800,7 +800,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 
 	t.Run("500 keeps code null", func(t *testing.T) {
 		s := &Server{gatewayClient: nil}
-		out := s.responseErrorProcessing(context.Background(), baseResp, 500, "m", "rid", "internal error")
+		out := s.responseErrorProcessing(context.Background(), nil, baseResp, 500, "m", "rid", "internal error")
 		ir := out.GetImmediateResponse()
 		if assert.NotNil(t, ir) {
 			assert.Equal(t, envoyTypePb.StatusCode(500), ir.GetStatus().GetCode())
@@ -872,7 +872,7 @@ func TestHandleProcessingRequest_RequestHeaders_SetsRoutingContext(t *testing.T)
 	assert.NotNil(t, resp)
 	assert.Equal(t, "gateway_req_headers", st.metricLabel)
 	if assert.NotNil(t, st.routerCtx) {
-		assert.Equal(t, st.routerCtx, st.ctx)
+		assert.NotEqual(t, st.routerCtx, st.ctx)
 	}
 	assert.Equal(t, "", st.model)
 }
@@ -962,7 +962,8 @@ func TestHandleProcessingRequest_ResponseBody_SuccessMarksCompletionAndEmitsSucc
 	routerCtx.RequestTime = time.Now()
 
 	st := &processState{
-		ctx:       routerCtx,
+		ctx:       context.Background(),
+		routerCtx: routerCtx,
 		requestID: requestID,
 		model:     "test-model",
 		stream:    false,
@@ -1000,7 +1001,8 @@ func TestHandleProcessingRequest_RequestBody_ModelNotFound(t *testing.T) {
 	routerCtx.ReqPath = PathChatCompletions
 
 	st := &processState{
-		ctx:       routerCtx,
+		ctx:       context.Background(),
+		routerCtx: routerCtx,
 		requestID: "req-rb-1",
 		model:     "",
 	}
@@ -1115,7 +1117,8 @@ func TestHandleProcessingRequest_ResponseBody_NotYetCompleted(t *testing.T) {
 	routerCtx.RequestTime = time.Now()
 
 	st := &processState{
-		ctx:       routerCtx,
+		ctx:       context.Background(),
+		routerCtx: routerCtx,
 		requestID: "req-rb-partial",
 		model:     "test-model",
 		stream:    false,

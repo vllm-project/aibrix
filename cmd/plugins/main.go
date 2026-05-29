@@ -26,6 +26,7 @@ import (
 	"sync"
 	"syscall"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	_ "go.uber.org/automaxprocs"
 	"google.golang.org/grpc"
 	"k8s.io/client-go/kubernetes"
@@ -181,6 +182,23 @@ func main() {
 	klog.Infof("Started HTTP server on %s", httpAddr)
 
 	s := grpc.NewServer()
+
+	otelEnabled := utils.OTELEnabled()
+	var telApp *utils.Telemetry
+	if otelEnabled {
+		otlpProtocol := utils.LoadEnv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+		if otlpProtocol == "http/protobuf" {
+			otlpProtocol = "http"
+		}
+		telApp, err = utils.InitOpenTelemetry("aibrix-gateway-plugin", otlpProtocol)
+		if err != nil || telApp == nil {
+			klog.Fatalf("Failed to initialize OpenTelemetry: %v", err)
+		}
+		s = grpc.NewServer(
+			grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		)
+	}
+
 	extProcPb.RegisterExternalProcessorServer(s, gatewayServer)
 
 	healthCheck := health.NewServer()
@@ -207,6 +225,9 @@ func main() {
 		}
 		gatewayServer.Shutdown()
 		s.GracefulStop()
+		if otelEnabled {
+			telApp.Shutdown()
+		}
 		// Close stopCh so that cache ticker goroutines and other consumers tied
 		// to this signal exit promptly; os.Exit below bypasses deferred calls.
 		stopFn()

@@ -66,6 +66,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	complete := hasCompleted
 	routerCtx, _ := ctx.(*types.RoutingContext)
 
+	// Omitted tracer.Start(ctx, "HandleResponseBody") here to avoid excessive CPU and gRPC overhead.
+	// Creating a span for each individual token in the stream is too resource-intensive.
+
 	defer func() {
 		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
 		if !hasCompleted && complete {

@@ -26,9 +26,11 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
-func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, model string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, bool, int) {
+func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.RoutingContext, requestID string, model string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, bool, int) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseHeaders)
-	routerCtx, _ := ctx.(*types.RoutingContext)
+
+	_, span := tracer.Start(ctx, "HandleResponseHeaders")
+	defer span.End()
 
 	var isProcessingError bool
 	var processingErrorCode int
