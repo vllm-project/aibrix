@@ -124,11 +124,25 @@ func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb
 	}, nil
 }
 
-// GetJob proxies to GET /v1/batches/{id}. Console-owned fields ride on
-// batch.metadata; the store overlay path is parked (see CreateJob).
+// GetJob proxies to GET /v1/batches/{id}. Terminal jobs are served from
+// the store to avoid the planner placeholder path dropping MDS-owned
+// fields.
 func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job, error) {
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if h.store != nil {
+		rec, err := h.store.GetJob(ctx, req.Id)
+		if err != nil {
+			klog.Warningf("GetJob store lookup id=%s: %v", req.Id, err)
+		} else if rec != nil && plannerapi.JobStatus(rec.Status).IsTerminal() {
+			pbJob, perr := rec.ToPB()
+			if perr != nil {
+				klog.Warningf("GetJob terminal store->pb id=%s: %v", req.Id, perr)
+			} else {
+				return pbJob, nil
+			}
+		}
 	}
 	job, err := h.planner.GetJob(ctx, req.Id)
 	if err != nil {
