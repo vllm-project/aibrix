@@ -338,6 +338,9 @@ type ProvisionResult struct {
 	// Set by the provisioner.
 	ProvisionID string `json:"provisionId"`
 
+	// Provider is the provisioner type.
+	Provider string `json:"provider"`
+
 	// IdempotencyKey is the idempotency key from the original request.
 	// Used to prevent duplicate provisions and enable request deduplication.
 	// Set by the planner.
@@ -382,6 +385,7 @@ func (pr *ProvisionResult) ToProvisionRecord() (*ProvisionRecord, error) {
 	}
 	return &ProvisionRecord{
 		ProvisionID: pr.ProvisionID,
+		Provider:    pr.Provider,
 		Status:      string(pr.Status),
 		Region:      pr.Region,
 		Payload:     payload,
@@ -510,6 +514,7 @@ type InstanceTypeSpec struct {
 // ProvisionRecord represents the result of a provision result stored in the store.
 type ProvisionRecord struct {
 	ProvisionID string    `json:"provisionId"`
+	Provider    string    `json:"provider"`
 	Status      string    `json:"status"`
 	Region      string    `json:"region,omitempty"`
 	Payload     []byte    `json:"payload,omitempty"` // JSON-serialized result

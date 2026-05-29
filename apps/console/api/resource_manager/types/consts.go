@@ -90,3 +90,7 @@ const (
 	ProvisionStatusReleased      ProvisionStatus = "released"       // Resources have been released
 	ProvisionStatusReleaseFailed ProvisionStatus = "release_failed" // Release permanently failed after retries (terminal; may leak resources, manual intervention required)
 )
+
+const (
+	RegionUnknown = "unknown"
+)
