@@ -45,8 +45,11 @@ spec:
             - "0.0.0.0"
             - --port
             - "8090"
-            # Keep install-time startup independent from external inference engine wiring.
-            - --disable-batch-api
+            # Run the batch API in native Kubernetes job mode. Worker pods bring
+            # their own inference engine endpoint, so the metadata service does
+            # not need INFERENCE_ENGINE_ENDPOINT. Requires the jobs/leases/CRD
+            # RBAC granted in rbac.yaml.
+            - --enable-k8s-job
           ports:
             - containerPort: 8090
           resources: {{ toYaml .Values.metadata.service.container.resources | nindent 12 }}
