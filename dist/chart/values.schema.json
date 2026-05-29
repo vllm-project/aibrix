@@ -23,6 +23,15 @@
             },
             "probes": {
               "$ref": "#/$defs/probeConfiguration"
+            },
+            "envs": {
+              "type": "object",
+              "patternProperties": {
+                "^[A-Z_][A-Z0-9_]*$": {
+                  "type": "string"
+                },
+              "additionalProperties": false
+              }
             }
           }
         },
@@ -69,7 +78,8 @@
                 "^[A-Z_][A-Z0-9_]*$": {
                   "type": "string"
                 }
-              }
+              },
+              "additionalProperties": false
             }
           }
         },
