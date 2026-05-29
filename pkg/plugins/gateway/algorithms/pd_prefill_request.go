@@ -39,6 +39,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -241,7 +242,8 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 	// remote_block_ids are populated by updateRoutingContextWithKVTransferParams
 	// after the prefill response arrives. NIXL mode omits this field entirely
 	// because the backend manages KV transfer through its own mechanism.
-	if llmEngine == VLLMEngine && aibrixKVConnectorType == KVConnectorTypeSHFS {
+	kvConnectorType := selectKvConnectorType(pod.Labels[KVConnectorTypeIdentifier])
+	if llmEngine == VLLMEngine && kvConnectorType == KVConnectorTypeSHFS {
 		completionRequest["kv_transfer_params"] = map[string]any{
 			"do_remote_decode":  true,
 			"do_remote_prefill": false,
@@ -359,7 +361,8 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 		return fmt.Errorf("failed to unmarshal original request body: %w", err)
 	}
 
-	if aibrixKVConnectorType == KVConnectorTypeNIXL {
+	kvConnectorType := selectKvConnectorType(prefillPod.Labels[KVConnectorTypeIdentifier])
+	if kvConnectorType == KVConnectorTypeNIXL {
 		originalRequest["disagg_prefill_resp"] = responseData
 
 		updatedReqBody, err := sonic.Marshal(originalRequest)
@@ -373,7 +376,7 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 			"request_id", routingCtx.RequestID,
 			"prefill_pod", prefillPod.Name,
 			"prefill_host", prefillPod.Status.PodIP,
-			"kv_connector_type", aibrixKVConnectorType)
+			"kv_connector_type", kvConnectorType)
 	} else {
 		kvTransferParams, exists := responseData["kv_transfer_params"]
 		if !exists {
@@ -400,7 +403,7 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 			"request_id", routingCtx.RequestID,
 			"prefill_pod", prefillPod.Name,
 			"prefill_host", prefillPod.Status.PodIP,
-			"kv_connector_type", aibrixKVConnectorType)
+			"kv_connector_type", kvConnectorType)
 	}
 
 	return nil
@@ -475,4 +478,19 @@ func (r *pdRouter) updateRoutingContextWithTRTDisaggParams(routingCtx *types.Rou
 		"prefill_host", prefillPod.Status.PodIP)
 
 	return nil
+}
+
+// selectKvConnectorType resolves the KV connector type from the pod label,
+// allowing per-pod overrides for mixed PD deployments and falling back to
+// the global configuration when the label is empty or invalid.
+func selectKvConnectorType(value string) string {
+	switch strings.ToLower(value) {
+	case KVConnectorTypeNIXL, KVConnectorTypeSHFS:
+		return strings.ToLower(value)
+	default:
+		if value != "" {
+			klog.Warningf("unrecognized kv-connector-type label %q, falling back to global config", value)
+		}
+		return aibrixKVConnectorType
+	}
 }
