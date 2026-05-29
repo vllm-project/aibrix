@@ -54,8 +54,10 @@ class MongoJobCache(JobEntityManager):
         self.active_jobs = {job.job_id: job for job in jobs if job.job_id is not None}
         return jobs
 
-    async def submit_job(self, session_id: str, job_spec: BatchJobSpec):
-        job = BatchJob.new_local(spec=job_spec)
+    async def submit_job(
+        self, session_id: str, job_spec: BatchJobSpec, request_count: int = 0
+    ):
+        job = BatchJob.new_local(spec=job_spec, request_count=request_count)
         job.session_id = session_id
         stored_job = await asyncio.to_thread(self._upsert_job, job, None)
         await self.job_committed(stored_job)

@@ -118,15 +118,17 @@ def _build_vllm_args(spec: ModelDeploymentTemplateSpec) -> List[str]:
     # Engine-specific extras (lenient model_config='allow' captures these)
     extras = _engine_args_extras(ea.model_dump(exclude_none=True))
     for key, value in sorted(extras.items()):
-        flag = "--" + key.replace("_", "-")
+        flag = "--" + key.strip().lstrip("-").replace("_", "-")
         if isinstance(value, bool):
             if value:
                 args.append(flag)
         elif isinstance(value, list):
             for v in value:
                 args.extend([flag, str(v)])
+        elif value is None or str(value).strip() == "":
+            args.append(flag)
         else:
-            args.extend([flag, str(value)])
+            args.extend([flag, str(value).strip()])
 
     # 4. Quantization
     q = spec.quantization

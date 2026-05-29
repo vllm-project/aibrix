@@ -50,6 +50,11 @@ router = APIRouter()
 
 _REGISTRY_PROVIDER_CONFIGMAP = "configmap"
 _MAX_LOGGED_BODY_BYTES = 8192
+_LOG_HTTP_BODIES = os.getenv("AIBRIX_MDS_HTTP_BODY_LOG", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 def _require_setting(name: str, value: Any) -> Any:
@@ -136,6 +141,9 @@ def _emit_traffic(
     Multi-line by design — bypasses structlog so the JSON bodies render with
     indentation. Off the structured-log path so production filters can ignore.
     """
+    if not _LOG_HTTP_BODIES:
+        print(f"[MDS HTTP] {method} {path} -> {status}", file=sys.stderr, flush=True)
+        return
     parts = [f"\n[MDS HTTP] {method} {path} -> {status}"]
     if req_body:
         parts.append("--- request ---")
@@ -311,6 +319,16 @@ def build_app(args: argparse.Namespace, params={}):
     async def _log_http_traffic(request: Request, call_next):
         method = request.method
         path = request.url.path
+
+        if not _LOG_HTTP_BODIES:
+            response = await call_next(request)
+            print(
+                f"[MDS HTTP] {method} {path} -> {response.status_code}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return response
+
         req_ct = request.headers.get("content-type", "")
         req_body: bytes = b""
         if req_ct.startswith("application/json"):

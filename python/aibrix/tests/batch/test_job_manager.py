@@ -246,7 +246,9 @@ class MockJobEntityManager(JobEntityManager):
         self.submitted_jobs: List[tuple] = []  # Track submitted jobs
         self.should_fail = False  # Flag to simulate failures
 
-    async def submit_job(self, session_id: str, job: BatchJobSpec):
+    async def submit_job(
+        self, session_id: str, job: BatchJobSpec, request_count: int = 0
+    ):
         """Mock job submission with async callback."""
         print(f"start time: {datetime.now()}")
         if self.should_fail:

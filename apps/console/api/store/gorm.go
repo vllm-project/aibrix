@@ -280,6 +280,23 @@ func (s *GORMStore) ListJobs(ctx context.Context, ids []string) (map[string]*mod
 	return out, nil
 }
 
+func (s *GORMStore) ListJobsByBatchIDs(ctx context.Context, batchIDs []string) (map[string]*models.Job, error) {
+	out := make(map[string]*models.Job, len(batchIDs))
+	if len(batchIDs) == 0 {
+		return out, nil
+	}
+	var rows []models.Job
+	if err := s.db.WithContext(ctx).Where("deleted = ?", false).Where("batch_id IN ?", batchIDs).Find(&rows).Error; err != nil {
+		return nil, status.Errorf(codes.Internal, "list jobs by batch ids: %v", err)
+	}
+	for i := range rows {
+		if rows[i].BatchID != "" {
+			out[rows[i].BatchID] = &rows[i]
+		}
+	}
+	return out, nil
+}
+
 func (s *GORMStore) DeleteJob(ctx context.Context, id string) error {
 	return s.db.WithContext(ctx).Model(&models.Job{}).Where("id = ? AND deleted = ?", id, false).Update("deleted", true).Error
 }

@@ -335,7 +335,9 @@ class JobManager(JobProgressManager):
             try:
                 # Submit job creation task
                 submit_task = asyncio.create_task(
-                    self._job_entity_manager.submit_job(session_id, job_spec)
+                    self._job_entity_manager.submit_job(
+                        session_id, job_spec, request_count=request_count
+                    )
                 )
 
                 # If the submit task fails before the future is resolved

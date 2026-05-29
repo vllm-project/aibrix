@@ -341,8 +341,10 @@ async def test_batch_driver_validation_failed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_batch_driver_stop_raises_exception_with_fail_after_n_requests():
-    """Test that BatchDriver.stop() raises RuntimeError when jobs with fail_after_n_requests exist."""
+async def test_batch_driver_survives_job_failure_with_fail_after_n_requests():
+    """A single job failure (fail_after_n_requests) must finalize the job as
+    failed without tearing down the scheduler loop, so BatchDriver.stop()
+    completes cleanly."""
 
     driver = BatchDriver(
         context=InfrastructureContext(),
@@ -375,7 +377,7 @@ async def test_batch_driver_stop_raises_exception_with_fail_after_n_requests():
             metadata={"test": "metadata"},
             opts={
                 constant.BATCH_OPTS_FAIL_AFTER_N_REQUESTS: "2"
-            },  # This should trigger the stop() exception
+            },  # This triggers an artificial job failure
         )
 
         job_id = await driver.job_manager.create_job_with_spec(
@@ -408,16 +410,14 @@ async def test_batch_driver_stop_raises_exception_with_fail_after_n_requests():
         assert job.status.output_file_id is not None
         assert job.status.error_file_id is not None
 
-        # wait for exception reach driver.
+        # wait for the swallowed failure to settle in the scheduler loop.
         await asyncio.sleep(3.0)
 
-        # 5. Attempt to stop the driver - this should raise RuntimeError
-        with pytest.raises(RuntimeError, match="Artificial failure.*"):
-            await driver.stop()
+        # 5. Stop the driver - the single job failure was swallowed by the
+        # scheduler loop, so stop() must complete cleanly without raising.
+        await driver.stop()
 
-        print(
-            "✅ BatchDriver.stop() correctly raised RuntimeError for job with fail_after_n_requests"
-        )
+        print("✅ BatchDriver.stop() completed cleanly after a single job failure")
 
         # 6. Clean up the job to allow proper shutdown
         await driver.clear_job(job_id)

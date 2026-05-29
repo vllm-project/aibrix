@@ -214,6 +214,7 @@ class JobCache(JobEntityManager):
         self,
         session_id: str,
         job_spec: BatchJobSpec,
+        request_count: int = 0,
         job_name: Optional[str] = None,
         parallelism: Optional[int] = None,
         prepared_job: Optional[BatchJob] = None,
