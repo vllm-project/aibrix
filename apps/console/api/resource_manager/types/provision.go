@@ -376,6 +376,10 @@ type ProvisionResult struct {
 	// Set when provider is "lambdaCloud".
 	LambdaCloud *LambdaCloudProvisionDetail `json:"lambdaCloud,omitempty"`
 
+	// RunPod contains RunPod-specific provision details.
+	// Set when provider is "runpod".
+	RunPod *RunPodProvisionDetail `json:"runpod,omitempty"`
+
 	ExtensionProvisionResultDetails
 }
 
@@ -505,6 +509,33 @@ type LambdaCloudInstanceDetail struct {
 
 	// PublicIp is the public IP address.
 	PublicIp *string `json:"publicIp,omitempty"`
+}
+
+// RunPodProvisionDetail contains RunPod-specific provision result details.
+type RunPodProvisionDetail struct {
+	// Pods contains details of provisioned RunPod pods.
+	Pods []RunPodPodDetail `json:"pods,omitempty"`
+
+	// Region is the RunPod data center backing the provision.
+	Region string `json:"region,omitempty"`
+}
+
+// RunPodPodDetail contains details about a single RunPod pod.
+type RunPodPodDetail struct {
+	// PodId is the RunPod pod ID.
+	PodId string `json:"podId"`
+
+	// GpuTypeId is the RunPod GPU type the pod was launched with.
+	GpuTypeId string `json:"gpuTypeId,omitempty"`
+
+	// DesiredStatus is the pod's desired status (RUNNING/EXITED/TERMINATED).
+	DesiredStatus string `json:"desiredStatus,omitempty"`
+
+	// PublicIp is the pod's public IP address.
+	PublicIp *string `json:"publicIp,omitempty"`
+
+	// DataCenterId is the RunPod data center the pod runs in.
+	DataCenterId string `json:"dataCenterId,omitempty"`
 }
 
 type InstanceTypeSpec struct {

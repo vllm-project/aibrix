@@ -1,5 +1,5 @@
 /*
-Copyright 2025 The Aibrix Team.
+Copyright 2026 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,12 +16,12 @@ limitations under the License.
 
 package resource_manager
 
-import (
-	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
-)
-
-// Custom providers can override getResourceManagerExtensionArgs to pass provider-specific arguments.
-// Do not modify this method.
-func getResourceManagerExtensionArgs(provider types.ResourceProvisionType) ([]interface{}, error) {
-	return []interface{}{}, nil
-}
+// This file is the downstream overlay point for registering closed-source
+// providers. Downstream replaces it with blank imports of provider
+// packages whose init() self-registers them into the provisioner/catalog
+// registries, e.g.:
+//
+//	import _ "github.com/vllm-project/aibrix/apps/console/api/resource_manager/provider/internal"
+//
+// Upstream it intentionally does nothing; built-in providers are linked from
+// resource_manager.go.

@@ -31,6 +31,7 @@ const (
 	ResourceProvisionTypeKubernetes  ResourceProvisionType = "kubernetes"
 	ResourceProvisionTypeLambdaCloud ResourceProvisionType = "lambdaCloud"
 	ResourceProvisionTypeAWS         ResourceProvisionType = "aws"
+	ResourceProvisionTypeRunPod      ResourceProvisionType = "runpod"
 )
 
 // AcceleratorPreferencePrecisionType defines precision type.
