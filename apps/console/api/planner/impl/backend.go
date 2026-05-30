@@ -51,12 +51,6 @@ type provisionResponseLogger interface {
 	LogProvisionResponse(jobID string, prov *rmtypes.ProvisionResult, spec rmtypes.ResourceProvisionSpec)
 }
 
-// provisionOverride is an optional capability to bypass the real RM call
-// and supply a ProvisionResult directly.
-type provisionOverride interface {
-	TryProvisionOverride(req *plannerapi.EnqueueRequest) (*rmtypes.ProvisionResult, bool)
-}
-
 // backendFactory constructs a plannerBackend for a provisioner type.
 type backendFactory func(prov provisioner.Provisioner) plannerBackend
 
@@ -126,19 +120,17 @@ func (b *defaultPlannerBackend) ValidateRequest(*plannerapi.EnqueueRequest) erro
 	return nil
 }
 
-func (b *defaultPlannerBackend) Schedule(_ context.Context, req *plannerapi.EnqueueRequest) (rmtypes.ResourceProvisionSpec, string, int, error) {
-	spec := rmtypes.ResourceProvisionSpec{
-		Credential: rmtypes.ResourceCredential{Provider: b.provider},
-	}
+func (b *defaultPlannerBackend) Schedule(_ context.Context, req *plannerapi.EnqueueRequest) (spec rmtypes.ResourceProvisionSpec, gpuType string, gpusPerReplica int, err error) {
+	spec.Credential = rmtypes.ResourceCredential{Provider: b.provider}
 	if req == nil || req.ModelTemplate == nil {
-		return spec, "", 0, nil
+		return
 	}
-	gpuType, gpusPerReplica, err := decodeAcceleratorFromTemplate(req.ModelTemplate)
+	gpuType, gpusPerReplica, err = decodeAcceleratorFromTemplate(req.ModelTemplate)
 	if err != nil {
-		return rmtypes.ResourceProvisionSpec{}, "", 0, err
+		return
 	}
 	spec.Groups = &[]rmtypes.ResourceGroupSpec{buildProvisionGroupPlan(gpuType, gpusPerReplica)}
-	return spec, gpuType, gpusPerReplica, nil
+	return
 }
 
 func (b *defaultPlannerBackend) BuildDecision(_ rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult, _ string, _ int) plannerclient.PlannerDecision {

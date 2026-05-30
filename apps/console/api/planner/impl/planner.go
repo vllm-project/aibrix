@@ -185,50 +185,30 @@ func (q *Planner) process(jobID string) {
 		return
 	}
 
-	// Optional backend override can bypass real RM provisioning.
-	var provResult *rmtypes.ProvisionResult
-	overrode := false
-	if override, ok := q.backend.(provisionOverride); ok {
-		if prov, used := override.TryProvisionOverride(req); used && prov != nil {
-			provResult = prov
-			overrode = true
-			klog.Infof("[planner] backend override: skipping RM provisioning job_id=%q provision_id=%q",
-				jobID, provResult.ProvisionID)
-			q.mu.Lock()
-			q.jobs[jobID].provisionID = provResult.ProvisionID
-			q.mu.Unlock()
-		}
+	provReq := &rmtypes.ResourceProvision{
+		Spec:           spec,
+		IdempotencyKey: req.JobID,
 	}
-	if provResult == nil {
-		provReq := &rmtypes.ResourceProvision{
-			Spec:           spec,
-			IdempotencyKey: req.JobID,
-		}
-		provResult, err = q.prov.Provision(q.baseCtx, provReq)
-		if err != nil {
-			q.markFailed(jobID, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInsufficientResources, err))
-			return
-		}
-		q.mu.Lock()
-		q.jobs[jobID].provisionID = provResult.ProvisionID
-		q.mu.Unlock()
-		if logger, ok := q.backend.(provisionResponseLogger); ok {
-			logger.LogProvisionResponse(req.JobID, provResult, spec)
-		}
+	provResult, err := q.prov.Provision(q.baseCtx, provReq)
+	if err != nil {
+		q.markFailed(jobID, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInsufficientResources, err))
+		return
+	}
+	q.mu.Lock()
+	q.jobs[jobID].provisionID = provResult.ProvisionID
+	q.mu.Unlock()
+	if logger, ok := q.backend.(provisionResponseLogger); ok {
+		logger.LogProvisionResponse(req.JobID, provResult, spec)
 	}
 
 	// Provision returns when the request is accepted, not when the resource
 	// is ready. Wait for Running before submitting to MDS, which rejects
-	// batches that point to not-yet-ready provisions. A backend override
-	// supplies an already-ready result, so the wait is skipped for it.
-	readyResult := provResult
-	if !overrode {
-		readyResult, err = q.waitForProvisionReady(provResult.ProvisionID)
-		if err != nil {
-			q.releaseAfter(jobID, provResult.ProvisionID, "wait failure")
-			q.markFailed(jobID, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInsufficientResources, err))
-			return
-		}
+	// batches that point to not-yet-ready provisions.
+	readyResult, err := q.waitForProvisionReady(provResult.ProvisionID)
+	if err != nil {
+		q.releaseAfter(jobID, provResult.ProvisionID, "wait failure")
+		q.markFailed(jobID, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInsufficientResources, err))
+		return
 	}
 	klog.Infof("[planner] provision ready job_id=%q provision_id=%q provider=%q",
 		jobID, provResult.ProvisionID, q.prov.Type())
