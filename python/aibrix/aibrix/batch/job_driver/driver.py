@@ -29,6 +29,7 @@ class JobDriver(Protocol):
     async def execute_job(self, job_id: str) -> None:
         """Execute the job.
         Raises:
-            RuntimeError: If something prevent the job from executing.
+            RuntimeError: If something prevent all jobs from executing.
+            BatchJobError: If something prevents one job from executing.
         """
         pass

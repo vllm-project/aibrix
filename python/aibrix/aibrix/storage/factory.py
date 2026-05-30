@@ -43,8 +43,9 @@ def create_storage(
         ValueError: If storage type is not supported or required parameters are missing
     """
     if isinstance(storage_type, str):
+        normalized_storage_type = storage_type.lower()
         try:
-            storage_type = StorageType(storage_type.lower())
+            storage_type = StorageType(normalized_storage_type)
         except ValueError:
             raise ValueError(f"Unsupported storage type: {storage_type}")
 
