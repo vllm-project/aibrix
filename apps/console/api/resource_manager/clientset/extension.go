@@ -14,17 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package catalog
+package clientset
 
 import (
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 )
 
-func NewCatalog(provider types.ResourceProvisionType, args ...interface{}) (Catalog, error) {
-	switch provider {
-	case types.ResourceProvisionTypeKubernetes:
-		return NewK8sCatalog()
-	default:
-		return NewCatalogExtension(provider, args...)
-	}
+// NewClientsetExtension creates a new clientset for custom providers.
+// Do not modify this method.
+func NewClientsetExtension(credential *types.ResourceCredential) (types.ExtensionResourceClientsets, error) {
+	return types.ExtensionResourceClientsets{}, types.ErrUnsupportedProvisioner
 }

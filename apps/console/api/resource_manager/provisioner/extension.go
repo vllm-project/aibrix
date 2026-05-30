@@ -14,17 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package catalog
+package provisioner
 
 import (
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
+	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
 
-func NewCatalog(provider types.ResourceProvisionType, args ...interface{}) (Catalog, error) {
-	switch provider {
-	case types.ResourceProvisionTypeKubernetes:
-		return NewK8sCatalog()
-	default:
-		return NewCatalogExtension(provider, args...)
-	}
+// NewProvisionerExtension creates a new provisioner for custom providers.
+// Do not modify this method.
+func NewProvisionerExtension(provider types.ResourceProvisionType, s store.Store, args ...interface{}) (Provisioner, error) {
+	return nil, types.ErrUnsupportedProvisioner
 }

@@ -124,6 +124,8 @@ type ResourceGroupSpec struct {
 
 	// LambdaCloud contains LambdaCloud Cloud-specific options.
 	LambdaCloud *LambdaCloudGroupOptions `json:"lambdaCloud,omitempty"`
+
+	ExtensionResourceGroupOptions
 }
 
 type GroupSpecNetwork struct {
@@ -217,16 +219,13 @@ type AcceleratorPreferencePrecisionSupport struct {
 //
 // ```
 type TimeWindow struct {
-	// StartTime is the start time when the task/service can be scheduled (ISO 8601 format).
+	// StartTime is the start time (UTC) when the task/service can be scheduled (ISO 8601 format).
 	// For periodic tasks, this is the first scheduling start point.
 	StartTime time.Time `json:"startTime"`
 
-	// EndTime is the end time when the task/service can be scheduled (ISO 8601 format).
+	// EndTime is the end time (UTC) when the task/service can be scheduled (ISO 8601 format).
 	// For long-running services, this can be omitted, meaning "until actively released".
 	EndTime *time.Time `json:"endTime,omitempty"`
-
-	// Timezone optionally overrides workload.timezone for this timeWindow (IANA/Olson format).
-	Timezone *string `json:"timezone,omitempty"`
 
 	// MaxDuration is the maximum continuous duration (hours), indicating the longest continuous period needed.
 	// Used to limit the maximum resource allocation duration.
@@ -376,6 +375,8 @@ type ProvisionResult struct {
 	// LambdaCloud contains Lambda Cloud-specific provision details.
 	// Set when provider is "lambdaCloud".
 	LambdaCloud *LambdaCloudProvisionDetail `json:"lambdaCloud,omitempty"`
+
+	ExtensionProvisionResultDetails
 }
 
 func (pr *ProvisionResult) ToProvisionRecord() (*ProvisionRecord, error) {
