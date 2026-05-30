@@ -25,6 +25,8 @@ type ResourceClientset struct {
 	AWS         *AWSClientset         `json:"aws,omitempty"`
 	LambdaCloud *LambdaCloudClientset `json:"lambdaCloud,omitempty"`
 	Kubernetes  *KubernetesClientset  `json:"kubernetes,omitempty"`
+
+	ExtensionResourceClientsets
 }
 
 type AWSClientset struct{}

@@ -20,11 +20,8 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 )
 
-func NewCatalog(provider types.ResourceProvisionType, args ...interface{}) (Catalog, error) {
-	switch provider {
-	case types.ResourceProvisionTypeKubernetes:
-		return NewK8sCatalog()
-	default:
-		return NewCatalogExtension(provider, args...)
-	}
+// NewCatalogExtension creates a new catalog for custom providers.
+// Do not modify this method.
+func NewCatalogExtension(provider types.ResourceProvisionType, args ...interface{}) (Catalog, error) {
+	return nil, types.ErrUnsupportedCatalog
 }

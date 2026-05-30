@@ -56,6 +56,8 @@ type RegionSpec struct {
 
 	// Kubernetes contains Kubernetes-specific region information.
 	Kubernetes *KubernetesRegion `json:"kubernetes,omitempty"`
+
+	ExtensionRegionSpecs
 }
 
 func (r *RegionSpec) String() string {
@@ -149,7 +151,7 @@ func (r *RegionSpec) GetRegion() Region {
 	if r.Kubernetes != nil {
 		return r.Kubernetes
 	}
-	return nil
+	return r.ExtensionRegionSpecs.GetRegion()
 }
 
 // NewAWSRegion creates a RegionSpec for AWS.

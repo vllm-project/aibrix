@@ -14,17 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package catalog
+package resource_manager
 
 import (
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 )
 
-func NewCatalog(provider types.ResourceProvisionType, args ...interface{}) (Catalog, error) {
-	switch provider {
-	case types.ResourceProvisionTypeKubernetes:
-		return NewK8sCatalog()
-	default:
-		return NewCatalogExtension(provider, args...)
-	}
+// Custom providers can override getResourceManagerExtensionArgs to pass provider-specific arguments.
+// Do not modify this method.
+func getResourceManagerExtensionArgs(provider types.ResourceProvisionType) ([]interface{}, error) {
+	return []interface{}{}, nil
 }

@@ -42,7 +42,11 @@ func NewClientset(credential *types.ResourceCredential) (*types.ResourceClientse
 		}
 		clientset.Kubernetes = k8s
 	default:
-		return nil, types.ErrUnsupportedProvisioner
+		extension, err := NewClientsetExtension(credential)
+		if err != nil {
+			return nil, err
+		}
+		clientset.ExtensionResourceClientsets = extension
 	}
 
 	return clientset, nil

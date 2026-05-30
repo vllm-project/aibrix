@@ -30,13 +30,22 @@ type ResourceManager struct {
 	Store       store.Store
 }
 
+func getResourceManagerArgs(provider types.ResourceProvisionType) ([]interface{}, error) {
+	return getResourceManagerExtensionArgs(provider)
+}
+
 func NewResourceManager(provider types.ResourceProvisionType, store store.Store) (*ResourceManager, error) {
-	provisioner, err := provisioner.NewProvisioner(provider, store)
+	args, err := getResourceManagerArgs(provider)
 	if err != nil {
 		return nil, err
 	}
 
-	catalog, err := catalog.NewCatalog(provider)
+	provisioner, err := provisioner.NewProvisioner(provider, store, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	catalog, err := catalog.NewCatalog(provider, args...)
 	if err != nil {
 		return nil, err
 	}

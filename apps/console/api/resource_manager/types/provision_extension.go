@@ -14,17 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package catalog
+package types
 
-import (
-	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
-)
+// Only used for extending the custom resource group options.
+// This SHOULD be left empty; all group options should be placed in
+// ResourceGroupSpec directly.
+type ExtensionResourceGroupOptions struct {
+}
 
-func NewCatalog(provider types.ResourceProvisionType, args ...interface{}) (Catalog, error) {
-	switch provider {
-	case types.ResourceProvisionTypeKubernetes:
-		return NewK8sCatalog()
-	default:
-		return NewCatalogExtension(provider, args...)
-	}
+// Only used for extending the custom provision result details.
+// This SHOULD be left empty; all provision result details should be placed in
+// ProvisionResult directly.
+type ExtensionProvisionResultDetails struct {
 }

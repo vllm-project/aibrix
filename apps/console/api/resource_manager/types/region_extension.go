@@ -14,17 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package catalog
+package types
 
-import (
-	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
-)
+// Only used for extending the custom region specs.
+// This SHOULD be left empty; all region specs should be placed in
+// RegionSpec directly.
+type ExtensionRegionSpecs struct {
+}
 
-func NewCatalog(provider types.ResourceProvisionType, args ...interface{}) (Catalog, error) {
-	switch provider {
-	case types.ResourceProvisionTypeKubernetes:
-		return NewK8sCatalog()
-	default:
-		return NewCatalogExtension(provider, args...)
-	}
+// Do not modify this method.
+func (r *ExtensionRegionSpecs) GetRegion() Region {
+	return nil
 }

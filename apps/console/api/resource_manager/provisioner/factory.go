@@ -21,11 +21,11 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
 
-func NewProvisioner(provider types.ResourceProvisionType, s store.Store) (Provisioner, error) {
+func NewProvisioner(provider types.ResourceProvisionType, s store.Store, args ...interface{}) (Provisioner, error) {
 	switch provider {
 	case types.ResourceProvisionTypeKubernetes:
 		return NewK8sProvisioner(s)
 	default:
-		return nil, types.ErrUnsupportedProvisioner
+		return NewProvisionerExtension(provider, s, args...)
 	}
 }

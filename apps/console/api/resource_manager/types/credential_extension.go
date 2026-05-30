@@ -14,17 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package catalog
+package types
 
-import (
-	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
-)
-
-func NewCatalog(provider types.ResourceProvisionType, args ...interface{}) (Catalog, error) {
-	switch provider {
-	case types.ResourceProvisionTypeKubernetes:
-		return NewK8sCatalog()
-	default:
-		return NewCatalogExtension(provider, args...)
-	}
+// Only used for extending the custom resource credentials.
+// This SHOULD be left empty; all credentials should be placed in
+// ResourceCredential directly.
+type ExtensionResourceCredentials struct {
 }
