@@ -69,6 +69,24 @@ class LocalJobDriver(JobDriver):
         self._usage_by_job: Dict[str, BatchUsage] = {}
         self._usage_counted_ids: Dict[str, Set[str]] = {}
 
+    @staticmethod
+    def _ensure_batch_job_error(
+        error: Exception,
+        default_code: BatchJobErrorCode = BatchJobErrorCode.INTERNAL_ERROR,
+    ) -> BatchJobError:
+        if isinstance(error, BatchJobError):
+            return error
+        return BatchJobError(code=default_code, message=str(error))
+
+    @staticmethod
+    def _error_code_from_reason(reason: Optional[str]) -> BatchJobErrorCode:
+        if reason is None:
+            return BatchJobErrorCode.INTERNAL_ERROR
+        try:
+            return BatchJobErrorCode(reason)
+        except ValueError:
+            return BatchJobErrorCode.INTERNAL_ERROR
+
     def _accumulate_usage(
         self, job_id: str, custom_id: Optional[str], raw_usage: Optional[dict]
     ) -> None:

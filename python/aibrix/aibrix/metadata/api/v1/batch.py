@@ -315,7 +315,7 @@ class AibrixExtension(BaseModel):
     model_config = {"extra": "allow"}
 
     job_id: Optional[str] = None
-    planner_decision: Optional[PlannerDecision] = None
+    planner_decision: Optional[Decision] = None
     model_template: Optional[TemplateRef] = Field(
         default=None,
         description="ModelDeploymentTemplate reference (name + optional version + overrides)",

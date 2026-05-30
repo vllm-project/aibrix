@@ -67,6 +67,12 @@ class BatchJobErrorCode(str, Enum):
     INFERENCE_FAILED = "inference_failed"
     PREPARE_OUTPUT_ERROR = "prepare_output_failed"
     FINALIZING_ERROR = "finalizing_failed"
+    INTERNAL_ERROR = "internal_error"
+    METASTORE_ERROR = "metastore_error"
+    DRIVER_CONFIGURATION_ERROR = "driver_configuration_error"
+    CONNECTION_ERROR = "connection_error"
+    RESOURCE_CREATION_ERROR = "resource_creation_failed"
+    RESOURCE_DELETION_ERROR = "resource_deletion_failed"
     INVALID_DRIVER = "invalid_driver"
     UNKNOWN_ERROR = "unknown_error"
 

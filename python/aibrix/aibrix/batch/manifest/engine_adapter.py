@@ -41,7 +41,9 @@ class UnsupportedEngineError(ValueError):
     has not been implemented yet."""
 
 
-def build_engine_args(spec: ModelDeploymentTemplateSpec) -> List[str]:
+def build_engine_args(
+    spec: ModelDeploymentTemplateSpec, ignore_model: bool = False
+) -> List[str]:
     """Dispatch to the engine-specific argument builder.
 
     Args:
@@ -56,7 +58,7 @@ def build_engine_args(spec: ModelDeploymentTemplateSpec) -> List[str]:
     """
     engine_type = spec.engine.type
     if engine_type == EngineType.VLLM:
-        return _build_vllm_args(spec)
+        return _build_vllm_args(spec, ignore_model)
     if engine_type == EngineType.MOCK:
         return _build_mock_args(spec)
     raise UnsupportedEngineError(
@@ -64,7 +66,9 @@ def build_engine_args(spec: ModelDeploymentTemplateSpec) -> List[str]:
     )
 
 
-def _build_vllm_args(spec: ModelDeploymentTemplateSpec) -> List[str]:
+def _build_vllm_args(
+    spec: ModelDeploymentTemplateSpec, ignore_model: bool = False
+) -> List[str]:
     """Render vLLM `vllm serve` (or `python -m vllm.entrypoints.openai.api_server`) arguments.
 
     Order of fields follows vLLM's CLI convention: model first, then
@@ -74,7 +78,8 @@ def _build_vllm_args(spec: ModelDeploymentTemplateSpec) -> List[str]:
     args: List[str] = []
 
     # 1. Model
-    args.extend(["--model", spec.model_source.uri])
+    if not ignore_model:
+        args.extend(["--model", spec.model_source.uri])
     if spec.model_source.revision:
         args.extend(["--revision", spec.model_source.revision])
     if spec.model_source.tokenizer_path:
