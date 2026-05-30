@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Search, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
-import { listJobs } from '../utils/api';
+import { listJobs, getUserInfo } from '../utils/api';
 import { Job, JobStatus } from '../data/mockData';
 
 interface BatchJobsListProps {
@@ -74,6 +74,10 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
   const [statusFilter, setStatusFilter] = useState<'' | JobStatus>('');
   const [showStatusDropdown, setShowStatusDropdown] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [mineOnly, setMineOnly] = useState(false);
+  // Current user's identity used to match job ownership. The BFF stamps
+  // job.createdBy from the user's email, so we compare against that.
+  const [currentUser, setCurrentUser] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -117,10 +121,25 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    getUserInfo()
+      .then(u => {
+        if (!cancelled && u) setCurrentUser((u.email || u.username || u.id || '').toLowerCase());
+      })
+      .catch(() => {
+        // Not authenticated or fetch failed; the "Only my jobs" filter stays disabled.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const filtered = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return jobs.filter(j => {
       if (statusFilter && j.status !== statusFilter) return false;
+      if (mineOnly && (j.createdBy || '').toLowerCase() !== currentUser) return false;
       if (!q) return true;
       return (
         j.id.toLowerCase().includes(q) ||
@@ -129,14 +148,14 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
         (j.createdBy || '').toLowerCase().includes(q)
       );
     });
-  }, [jobs, searchQuery, statusFilter]);
+  }, [jobs, searchQuery, statusFilter, mineOnly, currentUser]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
 
   // Reset to the first page whenever the result set changes.
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, statusFilter]);
+  }, [searchQuery, statusFilter, mineOnly]);
 
   // Keep the current page in range if the result set shrinks (e.g. after polling).
   useEffect(() => {
@@ -202,6 +221,22 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
             </div>
           )}
         </div>
+
+        <label
+          title={currentUser ? undefined : 'Sign in to filter your jobs'}
+          className={`flex items-center gap-2 px-4 py-2 border border-gray-200 rounded-lg text-sm bg-white select-none ${
+            currentUser ? 'cursor-pointer hover:bg-gray-50' : 'opacity-50 cursor-not-allowed'
+          }`}
+        >
+          <input
+            type="checkbox"
+            checked={mineOnly}
+            disabled={!currentUser}
+            onChange={(e) => setMineOnly(e.target.checked)}
+            className="w-4 h-4 accent-teal-600"
+          />
+          Only my jobs
+        </label>
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
