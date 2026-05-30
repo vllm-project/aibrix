@@ -20,36 +20,33 @@ import (
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 )
 
-// PlannerDecision is the planner's allocation decision projected into
-// AIBrixExtraBody. ResourceDetails stays as a nested anonymous struct
-// because its shape will evolve as the RM populates per-group allocation
-// details (currently always nil — RM doesn't return them yet).
-type PlannerDecision struct {
-	// ProvisionID mirrors rmtypes.ProvisionResult.ProvisionID returned
-	// by Provisioner.Provision.
-	ProvisionID string `json:"provision_id,omitempty"`
-	// ProvisionResourceDeadline is the unix-seconds deadline.
-	ProvisionResourceDeadline int64 `json:"provision_resource_deadline,omitempty"`
-	ResourceDetails           []struct {
-		// ResourceType maps to rmtypes.ResourceProvisionType
-		// (kubernetes / aws / lambdaCloud); may grow finer-grained.
-		ResourceType string `json:"resource_type"`
-		// EndpointCluster identifies the cluster serving this group;
-		EndpointCluster string `json:"endpoint_cluster,omitempty"`
-		// GPUType identifies the GPU model of the provisioned nodes.
-		// The GPU count is not defined here; it comes from the ModelTemplate.
-		GPUType string `json:"gpu_type,omitempty"`
-		// WorkerNum identifies the number of replicas to provision
-		WorkerNum int `json:"worker_num,omitempty"`
-	} `json:"resource_details,omitempty"`
+// PlannerDecision is the backend-agnostic planner allocation decision
+// carried on AIBrixExtraBody.PlannerDecision. Each backend defines its
+// own concrete type implementing this interface.
+//
+// isPlannerDecision is an unexported, no-op marker method (empty body,
+// never called at runtime) that exists purely to seal the interface:
+// because it is unexported, only types declared in this package can
+// satisfy PlannerDecision, preventing arbitrary structs from accidentally
+// satisfying it.
+type PlannerDecision interface {
+	isPlannerDecision()
 }
+
+// DefaultDecision is the shape used by backends that only need to carry
+// the provision ID (kubernetes / aws / lambdaCloud today).
+type DefaultDecision struct {
+	ProvisionID string `json:"provision_id,omitempty"`
+}
+
+func (*DefaultDecision) isPlannerDecision() {}
 
 // AIBrixExtraBody is the AIBrix-specific extension the BatchClient
 // serializes onto POST /v1/batches via the openai-go SDK's extra_body
 // channel. Everything else on the submission rides on openai.BatchNewParams
-// directly — this struct is the only piece of the contract we own.
+// directly.
 type AIBrixExtraBody struct {
 	JobID           string                       `json:"job_id,omitempty"`
-	PlannerDecision *PlannerDecision             `json:"planner_decision,omitempty"`
+	PlannerDecision PlannerDecision              `json:"planner_decision,omitempty"`
 	ModelTemplate   *plannerapi.ModelTemplateRef `json:"model_template,omitempty"`
 }
