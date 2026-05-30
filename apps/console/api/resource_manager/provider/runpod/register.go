@@ -1,5 +1,5 @@
 /*
-Copyright 2025 The Aibrix Team.
+Copyright 2026 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,14 +14,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package catalog
+package runpod
 
 import (
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/catalog"
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
+	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
 
-// NewCatalogExtension creates a new catalog for custom providers.
-// Do not modify this method.
-func NewCatalogExtension(provider types.ResourceProvisionType, args ...interface{}) (Catalog, error) {
-	return nil, types.ErrUnsupportedCatalog
+func init() {
+	provisioner.Register(types.ResourceProvisionTypeRunPod, func(s store.Store) (provisioner.Provisioner, error) {
+		return newProvisioner(s, ConfigFromEnv())
+	})
+	catalog.Register(types.ResourceProvisionTypeRunPod, func() (catalog.Catalog, error) {
+		return newCatalog()
+	})
 }

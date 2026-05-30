@@ -21,6 +21,12 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
+
+	// Link in the built-in cloud providers so their init() registrations run.
+	// To add a provider, implement it under provider/<name> and add a blank
+	// import here.
+	_ "github.com/vllm-project/aibrix/apps/console/api/resource_manager/provider/lambdacloud"
+	_ "github.com/vllm-project/aibrix/apps/console/api/resource_manager/provider/runpod"
 )
 
 type ResourceManager struct {
@@ -30,22 +36,13 @@ type ResourceManager struct {
 	Store       store.Store
 }
 
-func getResourceManagerArgs(provider types.ResourceProvisionType) ([]interface{}, error) {
-	return getResourceManagerExtensionArgs(provider)
-}
-
 func NewResourceManager(provider types.ResourceProvisionType, store store.Store) (*ResourceManager, error) {
-	args, err := getResourceManagerArgs(provider)
+	provisioner, err := provisioner.NewProvisioner(provider, store)
 	if err != nil {
 		return nil, err
 	}
 
-	provisioner, err := provisioner.NewProvisioner(provider, store, args...)
-	if err != nil {
-		return nil, err
-	}
-
-	catalog, err := catalog.NewCatalog(provider, args...)
+	catalog, err := catalog.NewCatalog(provider)
 	if err != nil {
 		return nil, err
 	}

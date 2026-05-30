@@ -20,11 +20,12 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 )
 
-func NewCatalog(provider types.ResourceProvisionType, args ...interface{}) (Catalog, error) {
-	switch provider {
-	case types.ResourceProvisionTypeKubernetes:
+func NewCatalog(provider types.ResourceProvisionType) (Catalog, error) {
+	if provider == types.ResourceProvisionTypeKubernetes {
 		return NewK8sCatalog()
-	default:
-		return NewCatalogExtension(provider, args...)
 	}
+	if f, ok := lookup(provider); ok {
+		return f()
+	}
+	return nil, types.ErrUnsupportedCatalog
 }
