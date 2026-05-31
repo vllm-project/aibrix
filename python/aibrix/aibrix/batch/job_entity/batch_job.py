@@ -21,8 +21,8 @@ from typing import Any, Dict, List, Optional
 from pydantic import Field
 from pydantic_core import core_schema
 
-from .aibrix_metadata import AibrixMetadata
-from .base import _Strict
+from aibrix.batch.job_entity.aibrix_metadata import AibrixMetadata
+from aibrix.batch.job_entity.base import _Strict
 
 
 class BatchJobEndpoint(str, Enum):
@@ -156,6 +156,10 @@ class BatchJobSpec(_Strict):
         default=None,
         description="AIBrix-specific metadata attached to the batch job",
     )
+
+    @property
+    def compute_provider(self) -> Optional[str]:
+        return self.aibrix.compute_provider if self.aibrix else None
 
     @property
     def model_template_name(self) -> Optional[str]:

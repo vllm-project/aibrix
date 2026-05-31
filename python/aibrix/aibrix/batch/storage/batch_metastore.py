@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from typing import Optional, Tuple
 
 from aibrix import envs
@@ -19,6 +20,7 @@ from aibrix.batch.job_entity.batch_job import BatchJob
 from aibrix.logger import init_logger
 from aibrix.storage import BaseStorage, StorageType, create_storage
 from aibrix.storage.base import PutObjectOptionsBuilder
+from aibrix.storage.local import LOCAL_STORAGE_PATH_VAR
 
 logger = init_logger(__name__)
 
@@ -41,12 +43,19 @@ def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
     if storage_type == StorageType.AUTO and envs.STORAGE_REDIS_HOST:
         storage_type = StorageType.REDIS
 
+    # The LOCAL metastore lives under the configured storage root, so a dev/test
+    # run that isolates STORAGE_LOCAL_PATH isolates the metastore too (rather
+    # than sharing one cwd-relative ``.metastore``). Other substrates (redis /
+    # s3 / tos) ignore base_path.
+    local_root = os.environ.get(LOCAL_STORAGE_PATH_VAR)
+    base_path = os.path.join(local_root, ".metastore") if local_root else ".metastore"
+
     # Create new storage instance and wrap with adapter
     try:
         logger.info(
             "Initializing batch metastore", storage_type=storage_type, params=params
         )  # type: ignore[call-arg]
-        p_metastore = create_storage(storage_type, base_path=".metastore", **params)
+        p_metastore = create_storage(storage_type, base_path=base_path, **params)
     except Exception as e:
         logger.error("Failed to initialize metastore", error=str(e))  # type: ignore[call-arg]
         raise

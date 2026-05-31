@@ -1,81 +1,89 @@
 import asyncio
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from aibrix.batch.job_entity import BatchJobState
-from aibrix.batch.worker import BatchWorker, worker_main
+from aibrix.batch.job_entity import (
+    BatchJob,
+    BatchJobError,
+    BatchJobErrorCode,
+    BatchJobSpec,
+    BatchJobState,
+    BatchJobStatus,
+    ObjectMeta,
+    TypeMeta,
+)
+from aibrix.batch.worker import BatchWorker, SingleJobRunner, worker_main
+
+
+def _make_job(state: BatchJobState) -> BatchJob:
+    return BatchJob(
+        typeMeta=TypeMeta(apiVersion="v1", kind="BatchJob"),
+        metadata=ObjectMeta(
+            resourceVersion="1",
+            creationTimestamp=datetime.now(),
+            deletionTimestamp=None,
+        ),
+        spec=BatchJobSpec(
+            input_file_id="input-1",
+            endpoint="/v1/chat/completions",
+            completion_window=86400,
+        ),
+        status=BatchJobStatus(jobID="job-1", state=state, createdAt=datetime.now()),
+    )
 
 
 @pytest.mark.asyncio
-async def test_execute_batch_job_raises_when_final_state_failed():
-    worker = BatchWorker()
-    worker.driver = SimpleNamespace(
-        job_manager=SimpleNamespace(job_committed_handler=AsyncMock())
+async def test_single_job_runner_marks_failed_and_done():
+    # IN_PROGRESS -> FINALIZING on failure, recording the error.
+    runner = SingleJobRunner(_make_job(BatchJobState.IN_PROGRESS))
+    failed = await runner.mark_job_failed(
+        "job-1", BatchJobError(code=BatchJobErrorCode.UNKNOWN_ERROR, message="boom")
     )
+    assert failed.status.state == BatchJobState.FINALIZING
+    assert failed.status.errors and failed.status.errors[0].message == "boom"
 
-    batch_job = SimpleNamespace(
-        job_id="job-1",
-        spec=SimpleNamespace(
-            input_file_id="input-1",
-            endpoint="/v1/chat/completions",
-        ),
-    )
-    final_job = SimpleNamespace(
-        status=SimpleNamespace(
-            failed=True,
-            condition=SimpleNamespace(value="failed"),
-        )
-    )
+    # FINALIZING -> FINALIZED on done.
+    runner2 = SingleJobRunner(_make_job(BatchJobState.FINALIZING))
+    done = await runner2.mark_job_done("job-1")
+    assert done.status.state == BatchJobState.FINALIZED
 
-    async def _wait_for_finalizing(job_id: str, max_wait: int = 600):
-        return final_job
-
-    worker.wait_for_finalizing = _wait_for_finalizing
-
-    with pytest.raises(RuntimeError, match="Batch job failed in worker: failed"):
-        await worker.execute_batch_job(batch_job)
-
-    worker.driver.job_manager.job_committed_handler.assert_awaited_once_with(batch_job)
+    # get_job resolves by id only.
+    assert (await runner2.get_job("job-1")) is not None
+    assert (await runner2.get_job("missing")) is None
 
 
 @pytest.mark.asyncio
-async def test_run_returns_failure_when_execute_batch_job_fails(monkeypatch):
+async def test_run_returns_failure_when_execution_fails(monkeypatch):
     worker = BatchWorker()
-    batch_job = SimpleNamespace(
-        status=SimpleNamespace(state=BatchJobState.IN_PROGRESS),
-        spec=SimpleNamespace(
-            input_file_id="input-1",
-            endpoint="/v1/chat/completions",
-        ),
-    )
+    worker.llm_engine_base_url = "http://localhost:8000"
+    batch_job = _make_job(BatchJobState.IN_PROGRESS)
 
     monkeypatch.setattr(worker, "load_job_from_env", lambda: batch_job)
     monkeypatch.setattr(
         worker, "wait_for_in_progress", AsyncMock(return_value=batch_job)
     )
     worker.health_checker = SimpleNamespace(wait_for_ready=AsyncMock(return_value=True))
-    monkeypatch.setattr(
-        worker,
-        "execute_batch_job",
-        AsyncMock(side_effect=RuntimeError("Batch job failed in worker: failed")),
-    )
-
-    fake_driver = SimpleNamespace(
-        start=AsyncMock(),
-        stop=AsyncMock(),
-    )
 
     from aibrix.batch import worker as worker_module
 
-    monkeypatch.setattr(worker_module, "BatchDriver", lambda **kwargs: fake_driver)
+    # The single-job execution raises; run() must swallow it and return 1.
+    failing_driver = SimpleNamespace(
+        execute=AsyncMock(side_effect=RuntimeError("boom"))
+    )
+    monkeypatch.setattr(worker_module, "SingleJobRunner", lambda job: object())
+    monkeypatch.setattr(worker_module, "GatewayEndpointSource", lambda url: object())
+    monkeypatch.setattr(worker_module, "ExternalRuntime", lambda src: object())
+    monkeypatch.setattr(
+        worker_module, "BaseJobDriver", lambda runner, runtime: failing_driver
+    )
 
     result = await worker.run()
 
     assert result == 1
-    fake_driver.start.assert_awaited_once()
-    assert fake_driver.stop.await_count >= 1
+    failing_driver.execute.assert_awaited_once()
 
 
 @pytest.mark.asyncio

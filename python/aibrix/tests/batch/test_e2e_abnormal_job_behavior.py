@@ -31,14 +31,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 import aibrix.batch.constant as constant
-from aibrix.batch.job_driver.inference_client import InferenceEngineClient
+from aibrix.batch.batch_manager import BatchManager
+from aibrix.batch.job_driver import JobDriver
 from aibrix.batch.job_entity import (
     BatchJobError,
     BatchJobErrorCode,
     BatchJobSpec,
     BatchJobState,
 )
-from aibrix.batch.job_manager import JobManager
 from aibrix.context import InfrastructureContext
 
 T = TypeVar("T")
@@ -281,8 +281,8 @@ def validate_batch_response(
             assert err_code in errors
 
 
-class FailingJobManager(JobManager):
-    """JobManager that can be configured to fail at specific stages."""
+class FailingJobManager(BatchManager):
+    """BatchManager that can be configured to fail at specific stages."""
 
     def __init__(
         self,
@@ -304,11 +304,7 @@ class FailingJobManager(JobManager):
         self.expiration = expiration
         self._processed_requests = 0
 
-    async def validate_job(
-        self,
-        job_id: str,
-        inference_client: Optional[InferenceEngineClient] = None,
-    ) -> bool:
+    async def admit(self, job_id: str) -> Optional[JobDriver]:
         """Override to simulate validation failures during job execution start."""
         if self.stall_validation is not None:
             # Prolong validation duration to allow cancellation during validation
@@ -322,7 +318,7 @@ class FailingJobManager(JobManager):
                 param="authentication",
             )
 
-        return await super().validate_job(job_id, inference_client)
+        return await super().admit(job_id)
 
     async def cancel_job(self, job_id: str) -> bool:
         if self.stall_cancelling is not None:

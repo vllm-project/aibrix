@@ -21,13 +21,16 @@ from pathlib import Path
 import pytest
 
 import aibrix.batch.constant as constant
+from aibrix.batch.client import NoopEndpointSource
 from aibrix.batch.driver import BatchDriver
-from aibrix.batch.job_driver import EchoInferenceEngineClient
 from aibrix.batch.job_entity import BatchJobErrorCode, BatchJobState, BatchJobStatus
 from aibrix.context import InfrastructureContext
 from aibrix.storage import StorageType
 
 constant.EXPIRE_INTERVAL = 0.1
+# Idle poll is now a separate knob from the expiry cadence; speed it up too so
+# the scheduler picks jobs up promptly in these timing-sensitive tests.
+constant.SCHEDULE_IDLE_INTERVAL = 0.1
 
 
 def generate_input_data(num_requests, local_file):
@@ -53,7 +56,7 @@ async def test_batch_driver_job_creation():
         context=InfrastructureContext(),
         storage_type=StorageType.LOCAL,
         metastore_type=StorageType.LOCAL,
-        inference_client=EchoInferenceEngineClient(),
+        endpoint_source=NoopEndpointSource(delay=constant.EXPIRE_INTERVAL),
     )
     await driver.start()
 
@@ -112,7 +115,7 @@ async def test_batch_driver_integration():
         context=InfrastructureContext(),
         storage_type=StorageType.LOCAL,
         metastore_type=StorageType.LOCAL,
-        inference_client=EchoInferenceEngineClient(),
+        endpoint_source=NoopEndpointSource(delay=constant.EXPIRE_INTERVAL),
     )
     await driver.start()
 
@@ -203,7 +206,7 @@ async def test_batch_driver_resuming():
         context=InfrastructureContext(),
         storage_type=StorageType.LOCAL,
         metastore_type=StorageType.LOCAL,
-        inference_client=EchoInferenceEngineClient(),
+        endpoint_source=NoopEndpointSource(delay=constant.EXPIRE_INTERVAL),
     )
     await driver.start()
 
@@ -295,7 +298,7 @@ async def test_batch_driver_validation_failed() -> None:
         context=InfrastructureContext(),
         storage_type=StorageType.LOCAL,
         metastore_type=StorageType.LOCAL,
-        inference_client=EchoInferenceEngineClient(),
+        endpoint_source=NoopEndpointSource(delay=constant.EXPIRE_INTERVAL),
     )
     await driver.start()
 
@@ -350,8 +353,7 @@ async def test_batch_driver_survives_job_failure_with_fail_after_n_requests():
         context=InfrastructureContext(),
         storage_type=StorageType.LOCAL,
         metastore_type=StorageType.LOCAL,
-        inference_client=EchoInferenceEngineClient(),
-        stand_alone=False,
+        endpoint_source=NoopEndpointSource(delay=constant.EXPIRE_INTERVAL),
     )
 
     # Create a temporary file for job input

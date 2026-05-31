@@ -17,7 +17,7 @@
 Exercises ``aibrix.metadata.api.v1.batch._resolve_batch_job`` directly
 with stubbed app state, so the test does not need a running FastAPI
 TestClient or a real ``BatchDriver``. The point is to pin down the
-metastore-first-with-JobManager-fallback contract that closes the
+metastore-first-with-BatchManager-fallback contract that closes the
 submit -> kopf ADDED window.
 """
 
@@ -83,18 +83,17 @@ class _StubJobManager:
 
 
 class _StubBatchDriver:
-    """Mimics enough of BatchDriver for the helper's fallback path.
+    """Mimics the BatchDriver facade used by the helper's fallback path.
 
-    ``run_coroutine`` on the real driver schedules the coroutine on a
-    dedicated event loop; for a unit test the same coroutine can be
-    awaited inline.
+    The real ``get_job`` marshals onto the driver's event loop; for a unit
+    test the stub manager can be queried inline.
     """
 
     def __init__(self, jobs: dict):
-        self.job_manager = _StubJobManager(jobs)
+        self._job_manager = _StubJobManager(jobs)
 
-    async def run_coroutine(self, coro):
-        return await coro
+    async def get_job(self, batch_id: str):
+        return await self._job_manager.get_job(batch_id)
 
 
 def _make_request(*, manager_jobs: Optional[dict] = None):
@@ -108,7 +107,7 @@ def _make_request(*, manager_jobs: Optional[dict] = None):
 async def test_metastore_hit_returns_metastore_document():
     job = _make_job("batch-store-hit")
 
-    # JobManager has nothing — proves we did not fall through.
+    # BatchManager has nothing — proves we did not fall through.
     request = _make_request(manager_jobs={})
 
     async def fake_get(batch_id: str) -> Optional[BatchJob]:
@@ -124,7 +123,7 @@ async def test_metastore_hit_returns_metastore_document():
 async def test_metastore_miss_falls_back_to_job_manager():
     """Covers the K8s submit -> kopf ADDED gap where the metastore has
     not yet observed the new job but the metadata service already
-    seeded its JobManager pool synchronously on POST."""
+    seeded its BatchManager pool synchronously on POST."""
     job = _make_job("batch-gap")
     request = _make_request(manager_jobs={"batch-gap": job})
 
@@ -151,7 +150,7 @@ async def test_both_miss_returns_none():
 
 @pytest.mark.asyncio
 async def test_metastore_takes_precedence_over_job_manager():
-    """If the metastore has an updated copy and JobManager has stale
+    """If the metastore has an updated copy and BatchManager has stale
     state, the read returns the metastore's view — that is the whole
     point of the read flip."""
     fresh = _make_job("batch-fresh")

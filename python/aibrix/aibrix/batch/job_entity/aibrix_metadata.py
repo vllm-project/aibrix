@@ -1,12 +1,43 @@
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from pydantic import Field
 
-from .base import _Lenient, _Strict
+from aibrix.batch.job_entity.base import _Lenient, _Strict
+
+
+class ComputeProvider(str, Enum):
+    """Where a batch job's compute comes from — the selector the user (or
+    Console / planner) sets under ``extra_body.aibrix.compute.provider``.
+
+    Each value maps to a registered ``Runtime`` (see ``register_runtime``).
+    ``ComputeSpec.provider`` is typed as ``str`` rather than this enum so a
+    downstream-registered backend stays wire-valid without editing this
+    upstream enum; these are the known values.
+    """
+
+    #: Kubernetes Deployment + Service per job (the default k8s path).
+    KUBERNETES = "Kubernetes"
+    #: Kubernetes Job, fire-and-wait (the worker self-hosts and dispatches).
+    KUBERNETES_JOB = "KubernetesJob"
+    #: Lambda Cloud leased VM, SSH-launched engine.
+    LAMBDA_CLOUD = "LambdaCloud"
+    #: RunPod pod, SSH/API-launched engine.
+    RUNPOD = "RunPod"
+    #: No provisioning: the endpoint already exists (a pre-launched process or
+    #: an OpenAI-style external API). The control plane just dispatches to it.
+    EXTERNAL = "External"
+
+
+class ComputeSpec(_Lenient):
+    """Selects the Runtime a batch job runs on. Kept separate from
+    ``model_template`` (engine startup) and from ``planner_decision``
+    (resource reservation): this is purely *which provider*."""
+
+    provider: str  # one of ComputeProvider; str keeps downstream providers valid
 
 
 class ResourceDetail(_Lenient):
-    provider: str
     endpoint_cluster: Optional[str] = None
     gpu_type: Optional[str] = None
     replica: Optional[int] = None
@@ -81,6 +112,7 @@ class ResolvedModelTemplate(_Strict):
 class AibrixMetadata(_Strict):
     job_id: Optional[str] = None
     planner_decision: Optional[PlannerDecision] = None
+    compute: Optional[ComputeSpec] = None
     model_template: Optional[ModelTemplateRef] = None
     profile: Optional[BatchProfileRef] = None
 
@@ -96,6 +128,7 @@ class AibrixMetadata(_Strict):
         profile_name: Optional[str] = None,
         template_overrides: Optional[Dict[str, Any]] = None,
         profile_overrides: Optional[Dict[str, Any]] = None,
+        compute_provider: Optional[str] = None,
     ) -> Optional["AibrixMetadata"]:
         model_template = None
         if model_template_name:
@@ -112,11 +145,19 @@ class AibrixMetadata(_Strict):
                 overrides=profile_overrides,
             )
 
-        if job_id is None and model_template is None and profile is None:
+        compute = ComputeSpec(provider=compute_provider) if compute_provider else None
+
+        if (
+            job_id is None
+            and model_template is None
+            and profile is None
+            and compute is None
+        ):
             return None
 
         return cls(
             job_id=job_id,
+            compute=compute,
             model_template=model_template,
             profile=profile,
         )
@@ -134,7 +175,14 @@ class AibrixMetadata(_Strict):
                 self.model_template.overrides if self.model_template else None
             ),
             "profile_overrides": self.profile.overrides if self.profile else None,
+            "compute_provider": self.compute.provider if self.compute else None,
         }
+
+    @property
+    def compute_provider(self) -> Optional[str]:
+        """The Runtime selector (one of ComputeProvider); None routes to the
+        default/endpoint-source path."""
+        return self.compute.provider if self.compute else None
 
     @property
     def model_template_name(self) -> Optional[str]:

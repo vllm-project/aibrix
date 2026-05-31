@@ -23,8 +23,8 @@ from kubernetes import client, config
 # Set required environment variable before importing
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
+from aibrix.batch.state import JobStore
 from aibrix.metadata.app import build_app
-from aibrix.metadata.cache.redis import RedisJobCache
 from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
 
@@ -36,15 +36,10 @@ def _args(**overrides):
         "disable_batch_api": True,
         "disable_file_api": True,
         "disable_inference_endpoint": True,
-        "enable_k8s_job": False,
-        "enable_mongo_job": False,
-        "enable_redis_job": False,
         "registry_provider": None,
         "dry_run": False,
         "k8s_namespace": "default",
         "k8s_job_patch": None,
-        "kopf_startup_timeout": 30.0,
-        "kopf_shutdown_timeout": 10.0,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -113,12 +108,11 @@ def k8s_config():
         pytest.skip(f"Failed to initialize Kubernetes client: {e}")
 
 
-def test_build_app_without_k8s_job(_mock_k8s_config_loading):
-    """Test building app without K8s job support."""
+def test_build_app_without_batch(_mock_k8s_config_loading):
+    """Building the app with batch + k8s disabled wires only the HTTP layer."""
     args = _args(
         disable_batch_api=True,
         disable_file_api=True,
-        enable_k8s_job=False,
         disable_k8s_support=True,
         disable_inference_endpoint=True,
     )
@@ -130,9 +124,8 @@ def test_build_app_without_k8s_job(_mock_k8s_config_loading):
     load_incluster.assert_not_called()
     load_kube.assert_not_called()
 
-    # App should not have kopf operator wrapper
-    assert not hasattr(app.state, "kopf_operator_wrapper")
     assert hasattr(app.state, "httpx_client_wrapper")
+    assert not hasattr(app.state, "batch_driver")
 
 
 def test_build_app_disabled_batch_api_without_inference_endpoint(
@@ -155,81 +148,52 @@ def test_build_app_disabled_batch_api_without_inference_endpoint(
     assert hasattr(app.state, "httpx_client_wrapper")
 
 
-def test_build_app_k8s_job_without_inference_endpoint(
-    _mock_k8s_config_loading, monkeypatch
+def test_build_app_batch_without_global_inference_endpoint(
+    _mock_k8s_runtime, _mock_k8s_config_loading, monkeypatch
 ):
-    """Regression for #2185: in k8s-job mode the worker pods bring their own
-    engine endpoint, so build_app must not require INFERENCE_ENGINE_ENDPOINT
-    even when --disable-inference-endpoint is not set. This is the default
-    deployment mode for the Helm chart and kustomize manifests."""
+    """With the batch API enabled but no global INFERENCE_ENGINE_ENDPOINT,
+    build_app must succeed when --disable-inference-endpoint is set: jobs carry
+    their own planner_decision provider (per-job k8s / deployment execution),
+    so no global engine is required. The default entity manager is the
+    metastore-backed JobStore."""
     monkeypatch.delenv("INFERENCE_ENGINE_ENDPOINT", raising=False)
     args = _args(
         disable_batch_api=False,
-        enable_k8s_job=True,
+        disable_inference_endpoint=True,
+    )
+
+    app = build_app(args)
+
+    assert hasattr(app.state, "batch_driver")
+    assert isinstance(app.state.batch_driver.job_manager._job_entity_manager, JobStore)
+
+
+def test_build_app_batch_without_inference_endpoint_fails_fast(
+    _mock_k8s_runtime, _mock_k8s_config_loading, monkeypatch
+):
+    """With the batch API enabled, no global INFERENCE_ENGINE_ENDPOINT, and the
+    inference endpoint NOT disabled, build_app fails fast (a standalone batch
+    run has no engine to call)."""
+    monkeypatch.delenv("INFERENCE_ENGINE_ENDPOINT", raising=False)
+    args = _args(
+        disable_batch_api=False,
         disable_inference_endpoint=False,
     )
 
-    with (
-        patch("aibrix.metadata.app.JobCache"),
-        patch("aibrix.metadata.app.k8s_client.CoreV1Api"),
-        patch("aibrix.metadata.app.k8s_client.AppsV1Api"),
-        patch("aibrix.metadata.app.k8s_template_registry"),
-        patch("aibrix.metadata.app.k8s_profile_registry"),
-    ):
-        app = build_app(args)
-
-    assert hasattr(app.state, "batch_driver")
-    assert hasattr(app.state, "kopf_operator_wrapper")
-
-
-def test_build_app_with_k8s_job(_mock_k8s_config_loading):
-    """Test building app with K8s job support."""
-    args = _args(
-        disable_batch_api=False,
-        enable_k8s_job=True,
-        k8s_namespace="test-namespace",
-        kopf_startup_timeout=5.0,
-        kopf_shutdown_timeout=2.0,
-    )
-
-    # build_app constructs ConfigMap-backed template / profile registries
-    # and calls reload() on each, which would hit the K8s API. Stub
-    # them out here since this test only exercises wiring.
-    load_incluster, load_kube = _mock_k8s_config_loading
-    with patch("aibrix.metadata.app.JobCache"):
-        app = build_app(args)
-
-    # App should have kopf operator wrapper
-    assert hasattr(app.state, "kopf_operator_wrapper")
-    assert hasattr(app.state, "httpx_client_wrapper")
-    assert hasattr(app.state, "batch_driver")
-    load_incluster.assert_called_once_with()
-    load_kube.assert_not_called()
-
-    # Check kopf operator wrapper configuration
-    kopf_wrapper = app.state.kopf_operator_wrapper
-    assert kopf_wrapper.namespace == "test-namespace"
-    assert kopf_wrapper.startup_timeout == 5.0
-    assert kopf_wrapper.shutdown_timeout == 2.0
+    with pytest.raises(SystemExit):
+        build_app(args)
 
 
 def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset(
     k8s_config,
-    monkeypatch,
 ):
-    # Provide redis connection settings so the test does not depend on a
-    # REDIS_HOST being present in the ambient environment. RedisJobCache only
-    # constructs a client here (no connection), so the isinstance check below
-    # still exercises the real type.
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_HOST", "redis-service")
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PORT", 6379)
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_DB", 0)
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PASSWORD", None)
+    # The default entity manager is the metastore-backed JobStore ("db"); the
+    # metastore is constructed lazily, so the isinstance check below exercises
+    # the real type without needing a live backend.
     args = _args(
         registry_provider=None,
         dry_run=False,
         disable_batch_api=False,
-        enable_redis_job=True,
         disable_inference_endpoint=True,
     )
 
@@ -252,7 +216,7 @@ def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset(
     assert args.disable_k8s_support is False
     assert app.state.template_registry is None
     assert app.state.profile_registry is None
-    assert isinstance(app.state.batch_driver._job_entity_manager, RedisJobCache)
+    assert isinstance(app.state.batch_driver.job_manager._job_entity_manager, JobStore)
 
 
 def test_load_batch_k8s_context_registry_loading_overrides_k8s_disabled(
@@ -264,7 +228,6 @@ def test_load_batch_k8s_context_registry_loading_overrides_k8s_disabled(
         registry_provider="configmap",
         dry_run=False,
         disable_batch_api=False,
-        enable_k8s_job=True,
         disable_inference_endpoint=True,
         k8s_namespace="test-namespace",
     )
@@ -281,7 +244,6 @@ def test_load_batch_k8s_context_registry_loading_overrides_k8s_disabled(
             "aibrix.metadata.app.k8s_profile_registry",
             return_value=profile_registry,
         ) as profile_registry_factory,
-        patch("aibrix.metadata.app.JobCache"),
     ):
         app = build_app(args)
 
@@ -300,165 +262,33 @@ def test_load_batch_k8s_context_registry_loading_overrides_k8s_disabled(
     assert app.state.profile_registry is profile_registry
 
 
-def test_build_app_with_redis_job(monkeypatch):
-    args = _args(
-        disable_k8s_support=True,
-        disable_batch_api=False,
-        enable_redis_job=True,
-        dry_run=True,
-    )
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_HOST", "redis-service")
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PORT", 6380)
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_DB", 2)
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PASSWORD", "secret")
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_REDIS_PREFIX", "batch_jobs_test:")
-
-    with patch("aibrix.metadata.app.RedisJobCache") as redis_job_cache:
-        app = build_app(args)
-
-    assert hasattr(app.state, "batch_driver")
-    redis_job_cache.assert_called_once_with(
-        host="redis-service",
-        port=6380,
-        db=2,
-        password="secret",
-        key_prefix="batch_jobs_test:batch_jobs",
-    )
-
-
-def test_build_app_with_mongo_job(monkeypatch):
-    args = _args(
-        disable_k8s_support=True,
-        disable_batch_api=False,
-        enable_mongo_job=True,
-        dry_run=True,
-    )
-    monkeypatch.setattr(
-        "aibrix.metadata.app.envs.DB_MONGO_URI", "mongodb://mongo:27017"
-    )
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_DATABASE", "aibrix")
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_COLLECTION", "batch_jobs")
-
-    with patch("aibrix.metadata.app.MongoJobCache") as mongo_job_cache:
-        app = build_app(args)
-
-    assert hasattr(app.state, "batch_driver")
-    mongo_job_cache.assert_called_once_with(
-        uri="mongodb://mongo:27017",
-        database="aibrix",
-        collection="batch_jobs",
-    )
-
-
-def test_build_app_with_redis_job_missing_env(monkeypatch):
-    args = _args(
-        disable_k8s_support=True,
-        disable_batch_api=False,
-        enable_redis_job=True,
-        dry_run=True,
-    )
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_HOST", None)
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PORT", None)
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_DB", None)
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PASSWORD", None)
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_REDIS_PREFIX", None)
-
-    with pytest.raises(
-        RuntimeError, match="REDIS_HOST environment variable is required"
-    ):
-        build_app(args)
-
-
-def test_build_app_with_mongo_job_missing_env(monkeypatch):
-    args = _args(
-        disable_k8s_support=True,
-        disable_batch_api=False,
-        enable_mongo_job=True,
-        dry_run=True,
-    )
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_URI", None)
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_DATABASE", None)
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_COLLECTION", None)
-
-    with pytest.raises(
-        RuntimeError, match="DB_MONGO_URI environment variable is required"
-    ):
-        build_app(args)
-
-
-def test_status_endpoint_without_k8s(_mock_k8s_config_loading):
-    """Test /status endpoint without K8s support."""
+def test_status_endpoint(_mock_k8s_config_loading):
+    """The /status endpoint reports the HTTP client and batch driver (no kopf)."""
     args = _args(
         disable_k8s_support=True,
         disable_batch_api=True,
         disable_file_api=True,
-        enable_k8s_job=False,
         disable_inference_endpoint=True,
     )
     load_incluster, load_kube = _mock_k8s_config_loading
 
     app = build_app(args)
 
-    # App should not load k8s config
     load_incluster.assert_not_called()
     load_kube.assert_not_called()
 
-    client = TestClient(app)
+    test_client = TestClient(app)
 
-    response = client.get("/status")
+    response = test_client.get("/status")
     assert response.status_code == 200
 
     data = response.json()
     assert "httpx_client" in data
-    assert "kopf_operator" in data
     assert "batch_driver" in data
+    assert "kopf_operator" not in data
 
     assert data["httpx_client"]["available"] is True
-    assert data["kopf_operator"]["available"] is False
     assert data["batch_driver"]["available"] is False
-
-
-def test_status_endpoint_with_k8s(
-    _mock_k8s_config_loading, _mock_k8s_runtime, k8s_config
-):
-    """Test /status endpoint with K8s support."""
-    args = _args(
-        disable_batch_api=False,
-        enable_k8s_job=True,
-        k8s_namespace="test-namespace",
-        kopf_startup_timeout=5.0,
-        kopf_shutdown_timeout=2.0,
-    )
-
-    load_incluster, load_kube = _mock_k8s_config_loading
-    with patch("aibrix.metadata.app.JobCache"):
-        app = build_app(args)
-
-    # App should load k8s config
-    load_incluster.assert_called_once_with()
-    load_kube.assert_not_called()
-
-    client = TestClient(app)
-
-    response = client.get("/status")
-    assert response.status_code == 200
-
-    data = response.json()
-    assert "httpx_client" in data
-    assert "kopf_operator" in data
-    assert "batch_driver" in data
-
-    assert data["httpx_client"]["available"] is True
-    assert data["kopf_operator"]["available"] is True
-    assert data["batch_driver"]["available"] is True
-
-    # Check kopf operator status details
-    kopf_status = data["kopf_operator"]
-    assert "is_running" in kopf_status
-    assert "namespace" in kopf_status
-    assert kopf_status["namespace"] == "test-namespace"
-    assert kopf_status["startup_timeout"] == 5.0
-    assert kopf_status["shutdown_timeout"] == 2.0
 
 
 def test_healthz_endpoint():
@@ -467,14 +297,13 @@ def test_healthz_endpoint():
         disable_k8s_support=True,
         disable_batch_api=True,
         disable_file_api=True,
-        enable_k8s_job=False,
         disable_inference_endpoint=True,
     )
 
     app = build_app(args)
-    client = TestClient(app)
+    test_client = TestClient(app)
 
-    response = client.get("/healthz")
+    response = test_client.get("/healthz")
     assert response.status_code == 200
 
     data = response.json()
@@ -487,14 +316,13 @@ def test_ready_endpoint():
         disable_k8s_support=True,
         disable_batch_api=True,
         disable_file_api=True,
-        enable_k8s_job=False,
         disable_inference_endpoint=True,
     )
 
     app = build_app(args)
-    client = TestClient(app)
+    test_client = TestClient(app)
 
-    response = client.get("/readyz")
+    response = test_client.get("/readyz")
     assert response.status_code == 200
 
     data = response.json()
