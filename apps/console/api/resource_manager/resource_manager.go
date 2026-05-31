@@ -25,6 +25,7 @@ import (
 	// Link in the built-in cloud providers so their init() registrations run.
 	// To add a provider, implement it under provider/<name> and add a blank
 	// import here.
+	_ "github.com/vllm-project/aibrix/apps/console/api/resource_manager/provider/kubernetes"
 	_ "github.com/vllm-project/aibrix/apps/console/api/resource_manager/provider/lambdacloud"
 	_ "github.com/vllm-project/aibrix/apps/console/api/resource_manager/provider/runpod"
 )

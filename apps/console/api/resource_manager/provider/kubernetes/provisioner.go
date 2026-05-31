@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package provisioner
+package kubernetes
 
 import (
 	"context"
@@ -27,36 +27,36 @@ import (
 	"google.golang.org/grpc/status"
 	"k8s.io/utils/lru"
 
-	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/clientset"
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
 
 const defaultK8sClientsetCacheSize = 128
 
-// K8sProvisioner implements provisioner.Provisioner for Kubernetes.
+// k8sProvisioner implements provisioner.Provisioner for Kubernetes.
 // It creates provision results without actually creating pods.
-type K8sProvisioner struct {
+type k8sProvisioner struct {
 	clientsetCache *lru.Cache
 	store          store.Store
 	mu             sync.RWMutex
 }
 
-// NewK8sProvisioner creates a new Kubernetes provisioner.
-func NewK8sProvisioner(s store.Store) (Provisioner, error) {
-	return &K8sProvisioner{
+// newProvisioner creates a new Kubernetes provisioner.
+func newProvisioner(s store.Store) (provisioner.Provisioner, error) {
+	return &k8sProvisioner{
 		clientsetCache: lru.New(defaultK8sClientsetCacheSize),
 		store:          s,
 	}, nil
 }
 
 // Type returns the provisioner type.
-func (p *K8sProvisioner) Type() types.ResourceProvisionType {
+func (p *k8sProvisioner) Type() types.ResourceProvisionType {
 	return types.ResourceProvisionTypeKubernetes
 }
 
 // Provision creates a provision result without actually creating pods.
-func (p *K8sProvisioner) Provision(ctx context.Context, req *types.ResourceProvision) (*types.ProvisionResult, error) {
+func (p *k8sProvisioner) Provision(ctx context.Context, req *types.ResourceProvision) (*types.ProvisionResult, error) {
 	if req == nil {
 		return nil, types.ErrInvalidArgs
 	}
@@ -107,7 +107,7 @@ func (p *K8sProvisioner) Provision(ctx context.Context, req *types.ResourceProvi
 	return result, nil
 }
 
-func (p *K8sProvisioner) getOrCreateClientset(credential *types.ResourceCredential) (*types.KubernetesClientset, error) {
+func (p *k8sProvisioner) getOrCreateClientset(credential *types.ResourceCredential) (*types.KubernetesClientset, error) {
 	cacheKey, normalizedCredential := normalizeK8sCredentialForCache(credential)
 
 	p.mu.RLock()
@@ -119,12 +119,9 @@ func (p *K8sProvisioner) getOrCreateClientset(credential *types.ResourceCredenti
 		}
 	}
 
-	resourceClientset, err := clientset.NewClientset(normalizedCredential)
+	k8sClientset, err := NewK8sClientset(normalizedCredential.Kubernetes)
 	if err != nil {
 		return nil, err
-	}
-	if resourceClientset.Kubernetes == nil {
-		return nil, types.ErrInvalidCredential
 	}
 
 	p.mu.Lock()
@@ -134,10 +131,10 @@ func (p *K8sProvisioner) getOrCreateClientset(credential *types.ResourceCredenti
 			return clientset, nil
 		}
 	}
-	p.clientsetCache.Add(cacheKey, resourceClientset.Kubernetes)
+	p.clientsetCache.Add(cacheKey, k8sClientset)
 	p.mu.Unlock()
 
-	return resourceClientset.Kubernetes, nil
+	return k8sClientset, nil
 }
 
 func normalizeK8sCredentialForCache(credential *types.ResourceCredential) (string, *types.ResourceCredential) {
@@ -173,7 +170,7 @@ func normalizeK8sCredentialForCache(credential *types.ResourceCredential) (strin
 }
 
 // Release marks the provision as released.
-func (p *K8sProvisioner) Release(ctx context.Context, provisionID string) error {
+func (p *k8sProvisioner) Release(ctx context.Context, provisionID string) error {
 	exists, err := p.store.ExistsProvision(ctx, provisionID)
 	if err != nil {
 		return fmt.Errorf("check provision exists: %w", err)
@@ -186,7 +183,7 @@ func (p *K8sProvisioner) Release(ctx context.Context, provisionID string) error 
 }
 
 // List retrieves provisions matching the given criteria.
-func (p *K8sProvisioner) List(ctx context.Context, opts *types.ListOptions) ([]*types.ProvisionResult, error) {
+func (p *k8sProvisioner) List(ctx context.Context, opts *types.ListOptions) ([]*types.ProvisionResult, error) {
 	if opts == nil {
 		opts = &types.ListOptions{}
 	}
