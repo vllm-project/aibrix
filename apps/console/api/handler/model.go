@@ -19,6 +19,9 @@ package handler
 import (
 	"context"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
@@ -42,4 +45,26 @@ func (h *ModelHandler) ListModels(ctx context.Context, req *pb.ListModelsRequest
 
 func (h *ModelHandler) GetModel(ctx context.Context, req *pb.GetModelRequest) (*pb.Model, error) {
 	return h.store.GetModel(ctx, req.Id)
+}
+
+func (h *ModelHandler) CreateModel(ctx context.Context, req *pb.CreateModelRequest) (*pb.Model, error) {
+	if req == nil || req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "name is required")
+	}
+	return h.store.CreateModel(ctx, &pb.Model{
+		Id:            req.Id,
+		Name:          req.Name,
+		IconBg:        req.IconBg,
+		IconText:      req.IconText,
+		IconTextColor: req.IconTextColor,
+		Categories:    req.Categories,
+		IsNew:         req.IsNew,
+		Pricing:       req.Pricing,
+		ContextLength: req.ContextLength,
+		Description:   req.Description,
+		Metadata:      req.Metadata,
+		Specification: req.Specification,
+		Tags:          req.Tags,
+		ServingName:   req.ServingName,
+	})
 }

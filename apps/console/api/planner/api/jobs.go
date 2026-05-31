@@ -17,6 +17,8 @@ limitations under the License.
 package plannerapi
 
 import (
+	"encoding/json"
+
 	"github.com/openai/openai-go/v3"
 )
 
@@ -32,6 +34,8 @@ type EnqueueRequest struct {
 	// correlation key — Planner.GetJob and ListJobs surface it back to
 	// Console as pb.Job.Id, distinct from the MDS-side batch ID.
 	JobID string `json:"job_id"`
+	// Model identifies which model the job will run against, UI provided.
+	Model string `json:"model,omitempty"`
 	// ModelTemplate is the authoritative Console-selected
 	// ModelDeploymentTemplate reference. The planner projects it into
 	// extra_body.aibrix.model_template when submitting to MDS.
@@ -54,7 +58,7 @@ type EnqueueRequest struct {
 // for rendering MDS-native fields, never for lookups.
 //
 // Batch is the MDS-side openai.Batch when the planner has submitted
-// to MDS. Future queued planners that defer the MDS submit may
+// to MDS. Future asynchronous planners that defer the MDS submit may
 // return Batch == nil on Enqueue and rely on the caller polling
 // GetJob.
 type Job struct {
@@ -89,7 +93,10 @@ type ListJobsResponse struct {
 
 // ModelTemplateRef identifies the ModelDeploymentTemplate MDS should use when
 // rendering the batch worker job. Empty Version means "latest active version".
+// Spec is the resolved full template spec inlined for cross-cluster delivery;
+// MDS uses Spec directly when present and skips its local registry lookup.
 type ModelTemplateRef struct {
-	Name    string `json:"name"`
-	Version string `json:"version,omitempty"`
+	Name    string          `json:"name"`
+	Version string          `json:"version,omitempty"`
+	Spec    json.RawMessage `json:"spec,omitempty"`
 }

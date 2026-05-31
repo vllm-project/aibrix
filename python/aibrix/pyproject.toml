@@ -67,6 +67,7 @@ hf-transfer = "^0.1.8"
 types-redis = "^4.6.0.20241004"
 redis = "^5.2.0"
 kubernetes = "^31.0.0"
+pymongo = "^4.10.1"
 # Required by kopf at import time (type stubs); without it kopf crashes with
 # TypeError: unsupported operand type(s) for |: 'NoneType' and 'NoneType'
 kubernetes-asyncio = "^31.0.0"
@@ -74,7 +75,7 @@ aiohttp = "^3.11.7"
 filelock = "^3.16.1"
 structlog = "^24.4.0"
 pydantic-settings = "^2.6.1"
-kopf = {extras = ["uvloop"], version = "^1.37.2"}
+kopf = {extras = ["uvloop"], version = "^1.44.5"}
 PyYAML = "^6.0.1"
 types-PyYAML = "^6.0.12.20240917"
 python-multipart = "^0.0.20"

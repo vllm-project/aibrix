@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { ChevronLeft, Copy, Trash2, CheckCircle, XCircle, Download } from 'lucide-react';
-import { getJob } from '../utils/api';
+import { getJob, getUserInfo } from '../utils/api';
 import { Job, JobStatus } from '../data/mockData';
 
 interface JobDetailProps {
@@ -19,8 +19,11 @@ function statusClass(s: JobStatus): string {
   switch (s) {
     case 'completed':
       return 'bg-emerald-50 text-emerald-700 border border-emerald-200';
-    case 'in_progress':
+    case 'queued':
+    case 'resource_preparing':
+    case 'submitting':
     case 'validating':
+    case 'in_progress':
     case 'finalizing':
       return 'bg-amber-50 text-amber-700 border border-amber-200';
     case 'cancelling':
@@ -28,6 +31,8 @@ function statusClass(s: JobStatus): string {
     case 'expired':
       return 'bg-gray-50 text-gray-700 border border-gray-200';
     case 'failed':
+    case 'resource_failed':
+    case 'submit_failed':
       return 'bg-red-50 text-red-700 border border-red-200';
   }
 }
@@ -36,6 +41,22 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Current viewer; datasets are downloadable only by the job owner.
+  const [currentUser, setCurrentUser] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    getUserInfo()
+      .then(u => {
+        if (!cancelled && u) setCurrentUser((u.email || u.username || u.id || '').toLowerCase());
+      })
+      .catch(() => {
+        // Not authenticated or fetch failed; downloads stay disabled.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!jobId) return;
@@ -111,6 +132,9 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
   const successPct = counts && counts.total > 0
     ? ((counts.completed / counts.total) * 100).toFixed(2)
     : '0.00';
+  // Only the owner may download datasets (input/output/error); other users are
+  // view-only. This is a UX guard and must also be enforced server-side.
+  const isOwner = !!currentUser && (job.createdBy || '').toLowerCase() === currentUser;
 
   return (
     <div className="p-8">
@@ -286,9 +310,12 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                   </code>
                 </div>
               )}
-              {job.inputDataset && <FileRow label="Input Dataset" fileId={job.inputDataset} />}
-              {job.outputDataset && <FileRow label="Output Dataset" fileId={job.outputDataset} />}
-              {job.errorDataset && <FileRow label="Error Dataset" fileId={job.errorDataset} />}
+              {!isOwner && (job.inputDataset || job.outputDataset || job.errorDataset) && (
+                <p className="text-xs text-gray-400">View only — only the job owner can download datasets.</p>
+              )}
+              {job.inputDataset && <FileRow label="Input Dataset" fileId={job.inputDataset} canDownload={isOwner} />}
+              {job.outputDataset && <FileRow label="Output Dataset" fileId={job.outputDataset} canDownload={isOwner} />}
+              {job.errorDataset && <FileRow label="Error Dataset" fileId={job.errorDataset} canDownload={isOwner} />}
             </div>
           </div>
         </div>
@@ -297,21 +324,32 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
   );
 }
 
-function FileRow({ label, fileId }: { label: string; fileId: string }) {
+function FileRow({ label, fileId, canDownload }: { label: string; fileId: string; canDownload: boolean }) {
   return (
     <div>
       <div className="text-gray-500 mb-1">{label}</div>
       <div className="flex items-center gap-2">
         <code className="text-sm bg-gray-100 px-2 py-1 rounded-md">{fileId}</code>
-        <a
-          href={`/api/v1/files/${encodeURIComponent(fileId)}/content`}
-          download
-          className="inline-flex items-center gap-1 px-2 py-1 text-xs text-teal-600 hover:text-teal-700 hover:bg-teal-50 rounded-md transition-colors"
-          title="Download file content"
-        >
-          <Download className="w-3.5 h-3.5" />
-          Download
-        </a>
+        {canDownload ? (
+          <a
+            href={`/api/v1/files/${encodeURIComponent(fileId)}/content`}
+            download
+            className="inline-flex items-center gap-1 px-2 py-1 text-xs text-teal-600 hover:text-teal-700 hover:bg-teal-50 rounded-md transition-colors"
+            title="Download file content"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Download
+          </a>
+        ) : (
+          <span
+            aria-disabled="true"
+            className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-300 rounded-md cursor-not-allowed select-none"
+            title="Only the job owner can download files"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Download
+          </span>
+        )}
       </div>
     </div>
   );

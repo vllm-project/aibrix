@@ -70,16 +70,16 @@ class JobCache(JobEntityManager):
 
     def __init__(
         self,
-        template_registry: TemplateRegistry,
-        profile_registry: ProfileRegistry,
+        template_registry: Optional[TemplateRegistry] = None,
+        profile_registry: Optional[ProfileRegistry] = None,
     ) -> None:
         """Initialize the job cache.
 
         Args:
-            template_registry: Loaded ModelDeploymentTemplate registry.
-                Caller must have invoked reload() at least once.
-            profile_registry: Loaded BatchProfile registry. Caller must
-                have invoked reload() at least once.
+            template_registry: Optional loaded ModelDeploymentTemplate registry.
+                Caller must have invoked reload() at least once if set.
+            profile_registry: Optional loaded BatchProfile registry.
+                Caller must have invoked reload() at least once if set.
 
         Every status mutation is written via
         ``batch_metastore.put_batch_job`` and the metadata API serves
@@ -91,6 +91,8 @@ class JobCache(JobEntityManager):
         The kopf ADDED seed write keeps the default swallow because
         the next event re-emits the document.
         """
+        super().__init__()
+
         # Cache of BatchJob objects keyed by batch ID (K8s UID)
         self.active_jobs: Dict[str, BatchJob] = {}
 
@@ -108,17 +110,25 @@ class JobCache(JobEntityManager):
             Callable[[BatchJob], Coroutine[Any, Any, bool]]
         ] = None
 
-        # Both registries are required; pass empty registries explicitly if
-        # operating in a degraded / test mode.
         self._template_registry = template_registry
         self._profile_registry = profile_registry
         self._renderer = JobManifestRenderer(template_registry, profile_registry)
-        logger.info(
-            "JobCache initialized with ConfigMap-driven renderer",
-            active_templates=len(template_registry.all_active()),
-            profiles=len(profile_registry.all()),
-            default_profile=profile_registry.default_name(),
-        )  # type: ignore[call-arg]
+        logger.info(  # type: ignore[call-arg]
+            "JobCache initialized",
+            active_templates=(
+                len(template_registry.all_active())
+                if template_registry is not None
+                else 0
+            ),
+            profiles=(
+                len(profile_registry.all()) if profile_registry is not None else 0
+            ),
+            default_profile=(
+                profile_registry.default_name()
+                if profile_registry is not None
+                else None
+            ),
+        )
 
         self.batch_v1_api = client.BatchV1Api()
         self.core_v1_api = client.CoreV1Api()
@@ -176,7 +186,7 @@ class JobCache(JobEntityManager):
             )
 
     # Implementation of JobEntityManager abstract methods
-    def get_job(self, job_id: str) -> Optional[BatchJob]:
+    async def get_job(self, job_id: str) -> Optional[BatchJob]:
         """Get cached job detail by batch id.
 
         Args:
@@ -192,7 +202,7 @@ class JobCache(JobEntityManager):
             return None
         return self.active_jobs[job_id]
 
-    def list_jobs(self) -> List[BatchJob]:
+    async def list_jobs(self) -> List[BatchJob]:
         """List unarchived jobs that cached locally.
 
         Returns:
@@ -204,6 +214,7 @@ class JobCache(JobEntityManager):
         self,
         session_id: str,
         job_spec: BatchJobSpec,
+        request_count: int = 0,
         job_name: Optional[str] = None,
         parallelism: Optional[int] = None,
         prepared_job: Optional[BatchJob] = None,
@@ -333,12 +344,26 @@ class JobCache(JobEntityManager):
                 patch=patch_body,
             )  # type: ignore[call-arg]
 
-            await asyncio.to_thread(
-                self.batch_v1_api.patch_namespaced_job,
-                name=job.metadata.name,
-                namespace=namespace,
-                body=patch_body,
-            )
+            for attempt in range(5):
+                try:
+                    await asyncio.to_thread(
+                        self.batch_v1_api.patch_namespaced_job,
+                        name=job.metadata.name,
+                        namespace=namespace,
+                        body=patch_body,
+                    )
+                    break
+                except ApiException as e:
+                    if e.status == 404 and attempt < 4:
+                        logger.warning(  # type: ignore[call-arg]
+                            "Job not visible yet while setting ready; retrying",
+                            job_name=job.metadata.name,
+                            namespace=namespace,
+                            attempt=attempt + 1,
+                        )
+                        await asyncio.sleep(0.5)
+                        continue
+                    raise
 
             await self._put_to_store(job, op="update_job_ready", propagate=True)
 
@@ -704,7 +729,8 @@ async def job_created_handler(body: Any, **kwargs: Any) -> None:
 
         # Invoke callback if registered
         try:
-            if await job_cache.job_committed(batch_job):
+            committed_ok = await job_cache.job_committed(batch_job)
+            if committed_ok:
                 # Store in cache
                 job_cache.active_jobs[job_id] = batch_job
                 # Seed the initial document. The K8s ADDED event is

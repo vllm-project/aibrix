@@ -47,9 +47,12 @@ import uuid
 from typing import Any, Dict, Iterable, List, Optional
 
 from aibrix.batch.job_entity import (
+    AibrixMetadata,
     BatchJob,
     BatchJobSpec,
+    BatchProfileRef,
     JobAnnotationKey,
+    ModelTemplateRef,
 )
 from aibrix.batch.template import (
     BatchProfile,
@@ -59,6 +62,7 @@ from aibrix.batch.template import (
     ModelDeploymentTemplate,
     ModelSourceType,
     ProfileRegistry,
+    SchedulingSpec,
     TemplateRegistry,
 )
 from aibrix.logger import init_logger
@@ -68,14 +72,13 @@ from .storage_env import build_metastore_env, build_storage_env
 
 logger = init_logger(__name__)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Errors
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class RenderError(Exception):
-    """Base class for all renderer failures."""
+    pass
 
 
 class TemplateNotFound(RenderError):
@@ -125,7 +128,12 @@ class ForbiddenOverride(RenderError):
 # if the worker contract changes.
 _DEFAULT_NAMESPACE = "default"
 _DEFAULT_SERVICE_ACCOUNT = "job-reader-sa"
-_DEFAULT_ENGINE_PORT = 8000
+
+_ENGINE_PORT_DEFAULTS: Dict[str, int] = {
+    EngineType.SGLANG.value: 30000,
+    EngineType.LMDEPLOY.value: 23333,
+}
+_FALLBACK_ENGINE_PORT = 8000
 
 # Per-engine health endpoint defaults. Used when the template leaves
 # engine.health_endpoint empty so the console UI can hide this field —
@@ -176,11 +184,11 @@ def _build_source_auth_env(source_type: str, secret_name: str) -> List[Dict[str,
 _DEFAULT_BACKOFF_LIMIT = 2
 _DEFAULT_ACTIVE_DEADLINE = 86400  # 24h fallback when spec.completion_window absent
 _DEFAULT_LABEL_APP = "aibrix-batch"
+_MANAGED_BY_ANNOTATION = "batch.job.aibrix.ai/managed-by"
 _WORKER_CONTAINER_NAME = "batch-worker"
 _ENGINE_CONTAINER_NAME = "llm-engine"
 _WORKER_IMAGE = "aibrix/runtime:nightly"
 _WORKER_ENTRYPOINT = "aibrix_batch_worker"
-
 # Override allowlists. Keys are top-level fields of TemplateOverridesSpec
 # / ProfileOverridesSpec that users may provide under
 # extra_body.aibrix.{model_template,profile}.overrides.
@@ -193,20 +201,286 @@ _PROFILE_OVERRIDE_ALLOWLIST = {"scheduling"}
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class JobManifestRenderer:
+class _RendererSupport:
+    def __init__(
+        self,
+        template_registry: Optional[TemplateRegistry] = None,
+        profile_registry: Optional[ProfileRegistry] = None,
+    ) -> None:
+        self._templates = template_registry
+        self._profiles = profile_registry
+
+    def _validate_template(
+        self,
+        template: ModelDeploymentTemplate,
+        endpoint: Optional[str] = None,
+        skip_deployment_check: bool = True,
+    ) -> None:
+        # The endpoint setting overlap with per job spec.aibrix.planner_decision.resource_details[0].provider
+        # Currently, endpoint can be None for platform independent template, and check will be waived.
+        # TODO: Align the endpoint setting with per job spec.aibrix.planner_decision.resource_details[0].provider
+        if endpoint is None:
+            return
+        supported = [e.value for e in template.spec.supported_endpoints]
+        if endpoint not in supported:
+            raise EndpointNotSupported(endpoint, supported)
+        if (
+            not skip_deployment_check
+            and template.spec.deployment_mode != DeploymentMode.DEDICATED
+        ):
+            raise UnsupportedDeploymentMode(template.spec.deployment_mode)
+
+    def _resolve(
+        self, spec: BatchJobSpec, profile_required: bool = False
+    ) -> tuple[ModelDeploymentTemplate, Optional[BatchProfile]]:
+        if spec.aibrix is None:
+            raise RenderError("aibrix is required to generate job specification")
+
+        aibrix: AibrixMetadata = spec.aibrix
+
+        if not aibrix.model_template:
+            raise RenderError(
+                "aibrix.model_template is required: "
+                "the cluster has no built-in template fallback, so every "
+                "batch must reference a registered ModelDeploymentTemplate"
+            )
+
+        template = self._resolve_template(aibrix.model_template)
+        profile: Optional[BatchProfile] = None
+        if profile_required:
+            profile = self._resolve_profile(aibrix.profile)
+        return template, profile
+
+    def _resolve_template(
+        self,
+        ref: ModelTemplateRef,
+    ) -> ModelDeploymentTemplate:
+        if ref.spec is not None:
+            payload = {"name": ref.name, "spec": ref.spec}
+            if ref.version is not None:
+                payload["version"] = ref.version
+            template = ModelDeploymentTemplate.model_validate(payload)
+        elif ref.version:
+            if self._templates is None:
+                raise RenderError("template registry is not configured")
+            resolved_template = self._templates.get_by_version(ref.name, ref.version)
+            if resolved_template is None:
+                raise TemplateNotFound(f"{ref.name}@{ref.version}")
+            template = resolved_template
+        else:
+            if self._templates is None:
+                raise RenderError("template registry is not configured")
+            resolved_template = self._templates.get(ref.name)
+            if resolved_template is None:
+                raise TemplateNotFound(ref.name)
+            template = resolved_template
+
+        # Apply template overrides
+        # Template allowlist: 'engine_args' only.
+        #
+        # Unknown keys on either side raise ForbiddenOverride. Validation
+        # of engine_args values is delegated to EngineArgsSpec; invalid
+        # values bubble up as ValidationError.
+        if ref.overrides:
+            template = template.model_copy(deep=True)
+            for key in ref.overrides:
+                if key not in _TEMPLATE_OVERRIDE_ALLOWLIST:
+                    raise ForbiddenOverride(
+                        f"model_template.overrides.{key}",
+                        _TEMPLATE_OVERRIDE_ALLOWLIST,
+                    )
+
+            ea_override = ref.overrides.get("engine_args")
+            if ea_override:
+                template = self._apply_template_engine_args_override(
+                    template, ea_override
+                )
+
+        return template
+
+    def _apply_template_engine_args_override(
+        self,
+        template: ModelDeploymentTemplate,
+        ea_override: Dict[str, Any],
+    ) -> ModelDeploymentTemplate:
+        # Mock engines ignore engine_args entirely (they only look at
+        # serve_args); rather than silently no-op the user's override
+        # we warn and skip the rebuild to keep the existing shell command
+        # untouched.
+        if template.spec.engine.type == EngineType.MOCK:
+            logger.warning(
+                "engine_args override ignored for mock engine",
+                template=template.name,
+            )  # type: ignore[call-arg]
+            return template
+
+        # Merge override into template's engine_args + rebuild engine args.
+        merged_dump = {
+            **template.spec.engine_args.model_dump(exclude_none=True),
+            **ea_override,
+        }
+        # Validate the merged result via EngineArgsSpec (raises ValidationError
+        # on bad values like negative ints).
+        template.spec.engine_args = EngineArgsSpec.model_validate(merged_dump)
+
+        return template
+
+    def _resolve_profile(self, ref: Optional[BatchProfileRef]) -> BatchProfile:
+        if ref is not None and ref.spec is not None:
+            profile = BatchProfile.model_validate({"name": ref.name, "spec": ref.spec})
+        else:
+            if self._profiles is None:
+                raise RenderError("profile registry is not configured")
+
+            resolved_profile_name = (
+                ref.name
+                if ref is not None and ref.name
+                else self._profiles.default_name()
+            )
+            if not resolved_profile_name:
+                raise RenderError(
+                    "no profile specified and registry has no default profile"
+                )
+
+            resolved_profile = self._profiles.get(resolved_profile_name)
+            if resolved_profile is None:
+                raise ProfileNotFound(resolved_profile_name)
+            profile = resolved_profile
+
+        # Apply profile overrides
+        # Profile allowlist:  'scheduling' only.
+
+        # Profile.scheduling is currently accepted (and roundtripped via
+        # annotations) but has no on-manifest effect — the deadline-aware
+        # scheduler that consumes it has not landed yet. We still validate
+        # the allowlist so unsupported keys cannot reach the worker.
+        if ref and ref.overrides:
+            profile = profile.model_copy(deep=True)
+            for key in ref.overrides:
+                if key not in _PROFILE_OVERRIDE_ALLOWLIST:
+                    raise ForbiddenOverride(
+                        f"profile.overrides.{key}",
+                        _PROFILE_OVERRIDE_ALLOWLIST,
+                    )
+
+                s_override = ref.overrides.get("scheduling")
+                if s_override:
+                    profile = self._apply_profile_scheduling_override(
+                        profile, s_override
+                    )
+
+        return profile
+
+    def _apply_profile_scheduling_override(
+        self,
+        profile: BatchProfile,
+        override: Dict[str, Any],
+    ) -> BatchProfile:
+        # Merge override into profile's scheduling + rebuild scheduling.
+        merged_dump = {
+            **profile.spec.scheduling.model_dump(exclude_none=True),
+            **override,
+        }
+        # Validate the merged result via SchedulingSpec (raises ValidationError
+        # on bad values like negative ints).
+        profile.spec.scheduling = SchedulingSpec.model_validate(merged_dump)
+
+        return profile
+
+    @staticmethod
+    def _resolve_engine_port(template: ModelDeploymentTemplate) -> int:
+        port = _ENGINE_PORT_DEFAULTS.get(
+            template.spec.engine.type, _FALLBACK_ENGINE_PORT
+        )
+        serve_args = template.spec.engine.serve_args
+        for i, arg in enumerate(serve_args):
+            raw_port: Optional[str] = None
+            if arg in ("--port", "-p") and i + 1 < len(serve_args):
+                raw_port = serve_args[i + 1]
+            elif arg.startswith("--port="):
+                raw_port = arg.split("=", 1)[1]
+            if raw_port is None:
+                continue
+            try:
+                port = int(raw_port)
+            except ValueError:
+                logger.warning(
+                    "Ignoring non-integer port in serve_args; using default",
+                    template_name=template.name,
+                    raw_port=raw_port,
+                    fallback_port=port,
+                )  # type: ignore[call-arg]
+        return port
+
+    def _build_engine_container(
+        self, template: ModelDeploymentTemplate, port: int
+    ) -> Dict[str, Any]:
+        spec = template.spec
+        container: Dict[str, Any] = {
+            "name": _ENGINE_CONTAINER_NAME,
+            "image": spec.engine.image,
+            "ports": [{"containerPort": port}],
+            "readinessProbe": {
+                "httpGet": {
+                    "path": _resolve_health_endpoint(
+                        spec.engine.type, spec.engine.health_endpoint
+                    ),
+                    "port": port,
+                },
+                "periodSeconds": 5,
+                "successThreshold": 1,
+                "timeoutSeconds": 1,
+                "failureThreshold": 3,
+            },
+        }
+
+        engine_args = build_engine_args(spec)
+        if needs_shell_wrapper(spec.engine):
+            container["command"] = ["/bin/sh", "-c"]
+            container["args"] = engine_args
+        else:
+            container["args"] = engine_args
+
+        resources = self._build_resources(template)
+        if resources:
+            container["resources"] = resources
+
+        env = _build_source_auth_env(
+            spec.model_source.type,
+            spec.model_source.auth_secret_ref or "",
+        )
+        if env:
+            container["env"] = env
+
+        return container
+
+    @staticmethod
+    def _build_resources(template: ModelDeploymentTemplate) -> Optional[Dict[str, Any]]:
+        acc = template.spec.accelerator
+        if acc.type.lower() == "cpu":
+            return None
+        return {
+            "limits": {"nvidia.com/gpu": str(acc.count)},
+            "requests": {"nvidia.com/gpu": str(acc.count)},
+        }
+
+    @staticmethod
+    def _find_container(manifest: Dict[str, Any], name: str) -> Dict[str, Any]:
+        for container in manifest["spec"]["template"]["spec"]["containers"]:
+            if container.get("name") == name:
+                return container
+        raise RenderError(f"container '{name}' not present in manifest")
+
+    def _needs_model_download(self, template: ModelDeploymentTemplate) -> bool:
+        return template.spec.model_source.type.value != "local"
+
+
+class JobManifestRenderer(_RendererSupport):
     """Renders K8s Job manifests from BatchJobSpec + ConfigMap-loaded resources.
 
     Stateless once registries are bound. Multiple concurrent calls
     are safe; render() does not mutate registry state.
     """
-
-    def __init__(
-        self,
-        template_registry: TemplateRegistry,
-        profile_registry: ProfileRegistry,
-    ) -> None:
-        self._templates = template_registry
-        self._profiles = profile_registry
 
     # ── Entry point ────────────────────────────────────────────────────────
 
@@ -238,26 +512,18 @@ class JobManifestRenderer:
         Returns:
             Dict ready for kubernetes.client.BatchV1Api.create_namespaced_job(body=...).
         """
-        template, profile = self._resolve(spec)
+        # overrides applied
+        template, profile = self._resolve(spec, True)
+        assert profile is not None
 
         # Validate the supportable value space up-front so downstream
         # layers can assume they're working with k8s + dedicated + supported endpoint.
-        if template.spec.deployment_mode != DeploymentMode.DEDICATED:
-            raise UnsupportedDeploymentMode(template.spec.deployment_mode)
-        supported = [e.value for e in template.spec.supported_endpoints]
-        if spec.endpoint not in supported:
-            raise EndpointNotSupported(spec.endpoint, supported)
+        self._validate_template(template, spec.endpoint, False)
 
         # Layered composition.
         manifest = self._system_base()
         manifest = self._apply_template(manifest, template)
         manifest = self._apply_profile(manifest, profile)
-        manifest = self._apply_overrides(
-            manifest,
-            template,
-            template_overrides=spec.template_overrides,
-            profile_overrides=spec.profile_overrides,
-        )
         manifest = self._apply_per_batch(
             manifest,
             session_id=session_id,
@@ -269,41 +535,6 @@ class JobManifestRenderer:
             job_name=job_name,
         )
         return manifest
-
-    # ── Resolution ─────────────────────────────────────────────────────────
-
-    def _resolve(
-        self, spec: BatchJobSpec
-    ) -> tuple[ModelDeploymentTemplate, BatchProfile]:
-        if not spec.model_template_name:
-            raise RenderError(
-                "extra_body.aibrix.model_template.name is required: "
-                "the cluster has no built-in template fallback, so every "
-                "batch must reference a registered ModelDeploymentTemplate"
-            )
-        # Pinned version => exact match; empty version => latest active.
-        if spec.model_template_version:
-            template = self._templates.get_by_version(
-                spec.model_template_name, spec.model_template_version
-            )
-            if template is None:
-                raise TemplateNotFound(
-                    f"{spec.model_template_name}@{spec.model_template_version}"
-                )
-        else:
-            template = self._templates.get(spec.model_template_name)
-            if template is None:
-                raise TemplateNotFound(spec.model_template_name)
-
-        profile_name = spec.profile_name or self._profiles.default_name()
-        if not profile_name:
-            raise RenderError(
-                "no profile specified and registry has no default profile"
-            )
-        profile = self._profiles.get(profile_name)
-        if profile is None:
-            raise ProfileNotFound(profile_name)
-        return template, profile
 
     # ── Layer 1: system base ────────────────────────────────────────────────
 
@@ -319,7 +550,6 @@ class JobManifestRenderer:
             "apiVersion": "batch/v1",
             "kind": "Job",
             "metadata": {
-                "name": "",  # set in apply_per_batch
                 "namespace": _DEFAULT_NAMESPACE,
                 "labels": {"app": _DEFAULT_LABEL_APP},
             },
@@ -330,7 +560,9 @@ class JobManifestRenderer:
                 "backoffLimit": _DEFAULT_BACKOFF_LIMIT,
                 "activeDeadlineSeconds": _DEFAULT_ACTIVE_DEADLINE,
                 "template": {
-                    "metadata": {"labels": {"app": _DEFAULT_LABEL_APP}},
+                    "metadata": {
+                        "labels": {"app": _DEFAULT_LABEL_APP},
+                    },
                     "spec": {
                         "serviceAccountName": _DEFAULT_SERVICE_ACCOUNT,
                         "automountServiceAccountToken": True,
@@ -385,104 +617,6 @@ class JobManifestRenderer:
 
         return manifest
 
-    @staticmethod
-    def _resolve_engine_port(template: ModelDeploymentTemplate) -> int:
-        """Resolve the engine listening port from serve_args.
-
-        Honors ``--port N`` / ``-p N`` / ``--port=N`` in
-        ``engine.serve_args``. Bad input (non-integer port) logs a
-        warning and falls back to the default rather than crashing
-        the render — readiness probe will simply target the default
-        and likely fail at runtime, surfacing the misconfiguration.
-        """
-        port = _DEFAULT_ENGINE_PORT
-        serve_args = template.spec.engine.serve_args
-        for i, arg in enumerate(serve_args):
-            raw_port: Optional[str] = None
-            if arg in ("--port", "-p") and i + 1 < len(serve_args):
-                raw_port = serve_args[i + 1]
-            elif arg.startswith("--port="):
-                raw_port = arg.split("=", 1)[1]
-            if raw_port is None:
-                continue
-            try:
-                port = int(raw_port)
-            except ValueError:
-                logger.warning(
-                    "Ignoring non-integer port in serve_args; using default",
-                    template_name=template.name,
-                    raw_port=raw_port,
-                    fallback_port=_DEFAULT_ENGINE_PORT,
-                )  # type: ignore[call-arg]
-        return port
-
-    def _build_engine_container(
-        self, template: ModelDeploymentTemplate, port: int
-    ) -> Dict[str, Any]:
-        """Construct the engine (llm-engine) container spec."""
-        spec = template.spec
-        container: Dict[str, Any] = {
-            "name": _ENGINE_CONTAINER_NAME,
-            "image": spec.engine.image,
-            "ports": [{"containerPort": port}],
-            "readinessProbe": {
-                "httpGet": {
-                    "path": _resolve_health_endpoint(
-                        spec.engine.type, spec.engine.health_endpoint
-                    ),
-                    "port": port,
-                },
-                "periodSeconds": 5,
-                "successThreshold": 1,
-                "timeoutSeconds": 1,
-                "failureThreshold": 3,
-            },
-        }
-
-        engine_args = build_engine_args(spec)
-        if needs_shell_wrapper(spec.engine):
-            # Mock and other shell-mode engines: wrap with /bin/sh -c
-            container["command"] = ["/bin/sh", "-c"]
-            container["args"] = engine_args
-        else:
-            # vLLM: rely on entrypoint, args are flags
-            container["args"] = engine_args
-
-        # GPU / CPU resource limits.
-        resources = self._build_resources(template)
-        if resources:
-            container["resources"] = resources
-
-        # Source auth credentials (Phase 1: HuggingFace only).
-        env = _build_source_auth_env(
-            spec.model_source.type,
-            spec.model_source.auth_secret_ref or "",
-        )
-        if env:
-            container["env"] = env
-
-        return container
-
-    def _build_resources(
-        self, template: ModelDeploymentTemplate
-    ) -> Optional[Dict[str, Any]]:
-        """Translate AcceleratorSpec into K8s resource limits.
-
-        accelerator.type='cpu' produces no resources (mock / CI use).
-        Otherwise produces nvidia.com/gpu limits matching count.
-
-        For non-NVIDIA accelerators (MI300X for AMD, etc.) the resource
-        key would differ; today we assume NVIDIA. AMD / Intel GPU
-        translation lands when those providers are tested.
-        """
-        acc = template.spec.accelerator
-        if acc.type.lower() == "cpu":
-            return None
-        return {
-            "limits": {"nvidia.com/gpu": str(acc.count)},
-            "requests": {"nvidia.com/gpu": str(acc.count)},
-        }
-
     # ── Layer 3: profile ───────────────────────────────────────────────────
 
     def _apply_profile(
@@ -491,14 +625,13 @@ class JobManifestRenderer:
         """Inject storage and metastore env vars into batch-worker container.
 
         Storage env comes from the per-batch profile (where files live).
-        Metastore env comes from the process-global metastore type
-        (where transient state is cached); see build_metastore_env() for
-        the rationale on keeping it process-global.
+        Metastore env comes from per-profile metastore settings when
+        configured, otherwise from the process-global metastore type.
         """
         worker = self._find_container(manifest, _WORKER_CONTAINER_NAME)
-        existing_names = {e["name"] for e in worker["env"]}
+        existing_names = {entry["name"] for entry in worker["env"]}
 
-        for entry in build_storage_env(profile) + build_metastore_env():
+        for entry in build_storage_env(profile) + build_metastore_env(profile):
             if entry["name"] not in existing_names:
                 worker["env"].append(entry)
                 existing_names.add(entry["name"])
@@ -510,87 +643,7 @@ class JobManifestRenderer:
 
         return manifest
 
-    # ── Layer 4: overrides ─────────────────────────────────────────────────
-
-    def _apply_overrides(
-        self,
-        manifest: Dict[str, Any],
-        template: ModelDeploymentTemplate,
-        template_overrides: Optional[Dict[str, Any]],
-        profile_overrides: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """Apply allowlisted user overrides.
-
-        Template allowlist: 'engine_args' only.
-        Profile allowlist:  'scheduling' only.
-
-        Unknown keys on either side raise ForbiddenOverride. Validation
-        of engine_args values is delegated to EngineArgsSpec; invalid
-        values bubble up as ValidationError.
-
-        Profile.scheduling is currently accepted (and roundtripped via
-        annotations) but has no on-manifest effect — the deadline-aware
-        scheduler that consumes it has not landed yet. We still validate
-        the allowlist so unsupported keys cannot reach the worker.
-        """
-        if template_overrides:
-            for key in template_overrides:
-                if key not in _TEMPLATE_OVERRIDE_ALLOWLIST:
-                    raise ForbiddenOverride(
-                        f"model_template.overrides.{key}",
-                        _TEMPLATE_OVERRIDE_ALLOWLIST,
-                    )
-            ea_override = template_overrides.get("engine_args")
-            if ea_override:
-                manifest = self._apply_engine_args_override(
-                    manifest, template, ea_override
-                )
-
-        if profile_overrides:
-            for key in profile_overrides:
-                if key not in _PROFILE_OVERRIDE_ALLOWLIST:
-                    raise ForbiddenOverride(
-                        f"profile.overrides.{key}",
-                        _PROFILE_OVERRIDE_ALLOWLIST,
-                    )
-            # scheduling override is roundtripped via annotations in
-            # _apply_per_batch; nothing to mutate on the manifest itself.
-
-        return manifest
-
-    def _apply_engine_args_override(
-        self,
-        manifest: Dict[str, Any],
-        template: ModelDeploymentTemplate,
-        ea_override: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        # Mock engines ignore engine_args entirely (they only look at
-        # serve_args); rather than silently no-op the user's override
-        # we warn and skip the rebuild to keep the existing shell command
-        # untouched.
-        if template.spec.engine.type == EngineType.MOCK:
-            logger.warning(
-                "engine_args override ignored for mock engine",
-                template=template.name,
-            )  # type: ignore[call-arg]
-            return manifest
-
-        # Merge override into template's engine_args + rebuild engine args.
-        merged_dump = {
-            **template.spec.engine_args.model_dump(exclude_none=True),
-            **ea_override,
-        }
-        # Validate the merged result via EngineArgsSpec (raises ValidationError
-        # on bad values like negative ints).
-        merged = EngineArgsSpec.model_validate(merged_dump)
-
-        # Reconstruct a synthetic spec with merged engine_args, regenerate args.
-        synthetic_spec = template.spec.model_copy(update={"engine_args": merged})
-        engine = self._find_container(manifest, _ENGINE_CONTAINER_NAME)
-        engine["args"] = build_engine_args(synthetic_spec)
-        return manifest
-
-    # ── Layer 5: per-batch (final, immutable) ──────────────────────────────
+    # ── Layer 4: per-batch (final, immutable) ──────────────────────────────
 
     def _apply_per_batch(
         self,
@@ -608,9 +661,9 @@ class JobManifestRenderer:
         if job_name is None:
             job_name = f"batch-{uuid.uuid4().hex[:8]}"
         manifest["metadata"]["name"] = job_name
-        manifest["metadata"].setdefault("annotations", {})[
-            "batch.job.aibrix.ai/managed-by"
-        ] = "aibrix"
+        manifest["metadata"].setdefault("annotations", {})[_MANAGED_BY_ANNOTATION] = (
+            "aibrix"
+        )
 
         # Pod annotations: spec fields + template/profile/overrides + file IDs.
         pod_annotations: Dict[str, str] = {
@@ -618,36 +671,53 @@ class JobManifestRenderer:
             JobAnnotationKey.INPUT_FILE_ID.value: spec.input_file_id,
             JobAnnotationKey.ENDPOINT.value: spec.endpoint,
         }
+
         # Template / profile / overrides persistence (annotation roundtrip
         # is exercised by k8s_transformer._extract_batch_job_spec).
-        if spec.model_template_name:
+        if spec.aibrix and spec.aibrix.model_template_name:
             pod_annotations[JobAnnotationKey.MODEL_TEMPLATE_NAME.value] = (
-                spec.model_template_name
+                spec.aibrix.model_template_name
             )
         # Persist the resolved version (the actual concrete one used) so a
         # reload sees the same template even if the registry's "latest
         # active" pointer moves later. Falls back to the spec's pinned value
         # when the resolver was bypassed.
-        resolved_version = template.version or spec.model_template_version
+        resolved_version = template.version or (
+            spec.aibrix.model_template_version if spec.aibrix else None
+        )
         if resolved_version:
             pod_annotations[JobAnnotationKey.MODEL_TEMPLATE_VERSION.value] = (
                 resolved_version
             )
-        if spec.profile_name:
-            pod_annotations[JobAnnotationKey.PROFILE_NAME.value] = spec.profile_name
-        elif self._profiles.default_name():
-            # Persist the resolved profile so reload from K8s state is
-            # deterministic even when the default later changes.
+        if spec.aibrix and spec.aibrix.profile_name:
             pod_annotations[JobAnnotationKey.PROFILE_NAME.value] = (
-                self._profiles.default_name() or ""
+                spec.aibrix.profile_name
             )
-        if spec.template_overrides:
+        elif self._profiles is not None:
+            default_profile_name = self._profiles.default_name()
+            if default_profile_name:
+                # Persist the resolved profile so reload from K8s state is
+                # deterministic even when the default later changes.
+                pod_annotations[JobAnnotationKey.PROFILE_NAME.value] = (
+                    default_profile_name
+                )
+
+        if spec.aibrix and spec.aibrix.template_overrides:
             pod_annotations[JobAnnotationKey.TEMPLATE_OVERRIDES.value] = json.dumps(
-                spec.template_overrides, sort_keys=True
+                spec.aibrix.template_overrides, sort_keys=True
             )
-        if spec.profile_overrides:
+        if spec.aibrix and spec.aibrix.profile_overrides:
             pod_annotations[JobAnnotationKey.PROFILE_OVERRIDES.value] = json.dumps(
-                spec.profile_overrides, sort_keys=True
+                spec.aibrix.profile_overrides, sort_keys=True
+            )
+
+        # Persist the full aibrix block as a single JSON annotation so the
+        # non-template / profile fields (job_id, planner_decision) survive
+        # the annotation roundtrip. Per-field annotations above remain for
+        # backward compatibility with rows written by older builds.
+        if spec.aibrix is not None:
+            pod_annotations[JobAnnotationKey.AIBRIX.value] = (
+                spec.aibrix.model_dump_json(exclude_none=True)
             )
 
         # User-supplied metadata / opts.
@@ -664,7 +734,7 @@ class JobManifestRenderer:
         # keep the Job suspended so an external reconciler can patch in the
         # missing IDs (and flip suspend=False) once preparation completes.
         suspend = True
-        if prepared_job and prepared_job.status:
+        if prepared_job is not None:
             status = prepared_job.status
             file_ids = (
                 (JobAnnotationKey.OUTPUT_FILE_ID, status.output_file_id),
@@ -695,25 +765,6 @@ class JobManifestRenderer:
             manifest["spec"]["completions"] = parallelism
 
         return manifest
-
-    # ── Helpers ────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _find_container(manifest: Dict[str, Any], name: str) -> Dict[str, Any]:
-        for c in manifest["spec"]["template"]["spec"]["containers"]:
-            if c.get("name") == name:
-                return c
-        raise RenderError(f"container '{name}' not present in manifest")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Worker container env vars (mirror legacy yaml exactly; not user-editable)
-#
-# These read per-batch values from K8s pod annotations via fieldRef so the
-# worker behaves identically regardless of which template/profile produced
-# the manifest. If the worker contract changes, update both here and the
-# worker entrypoint.
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 def _ann_field_ref(annotation_key: str) -> Dict[str, Any]:

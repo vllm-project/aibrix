@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package catalog
+package kubernetes
 
 import (
 	"context"
@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/clientset"
+	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/catalog"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 )
 
@@ -38,23 +38,23 @@ const (
 	K8sResourceGPU           = "gpu"
 )
 
-// K8sCatalog implements catalog.Catalog for Kubernetes.
-type K8sCatalog struct {
+// k8sCatalog implements catalog.Catalog for Kubernetes.
+type k8sCatalog struct {
 	mu        sync.Mutex
-	clientset *types.KubernetesClientset
+	clientset *kubernetesClientset
 }
 
-// NewK8sCatalog creates a new Kubernetes catalog.
-func NewK8sCatalog() (Catalog, error) {
-	return &K8sCatalog{}, nil
+// newCatalog creates a new Kubernetes catalog.
+func newCatalog() (catalog.Catalog, error) {
+	return &k8sCatalog{}, nil
 }
 
 // Provider returns the provider type.
-func (c *K8sCatalog) Provider() types.ResourceProvisionType {
+func (c *k8sCatalog) Provider() types.ResourceProvisionType {
 	return types.ResourceProvisionTypeKubernetes
 }
 
-func (c *K8sCatalog) defaultClientset() (*types.KubernetesClientset, error) {
+func (c *k8sCatalog) defaultClientset() (*kubernetesClientset, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -62,37 +62,31 @@ func (c *K8sCatalog) defaultClientset() (*types.KubernetesClientset, error) {
 		return c.clientset, nil
 	}
 
-	resourceClientset, err := clientset.NewClientset(&types.ResourceCredential{
-		Provider:   types.ResourceProvisionTypeKubernetes,
-		Kubernetes: &types.KubernetesCredential{},
-	})
+	resourceClientset, err := newK8sClientset(&types.KubernetesCredential{})
 	if err != nil {
 		return nil, err
 	}
-	if resourceClientset.Kubernetes == nil {
-		return nil, types.ErrInvalidCredential
-	}
-	c.clientset = resourceClientset.Kubernetes
+	c.clientset = resourceClientset
 	return c.clientset, nil
 }
 
 // ListRegions lists available regions for the catalog.
-func (c *K8sCatalog) ListRegions(ctx context.Context) ([]types.RegionSpec, error) {
+func (c *k8sCatalog) ListRegions(ctx context.Context) ([]types.RegionSpec, error) {
 	k8sClientset, err := c.defaultClientset()
 	if err != nil {
 		return nil, err
 	}
-	return k8sClientset.ListRegions(), nil
+	return k8sClientset.listRegions(), nil
 }
 
 // ListInstanceTypes lists available instance types for the catalog.
-func (c *K8sCatalog) ListInstanceTypes(ctx context.Context, region *types.RegionSpec) ([]types.InstanceTypeSpec, error) {
+func (c *k8sCatalog) ListInstanceTypes(ctx context.Context, region *types.RegionSpec) ([]types.InstanceTypeSpec, error) {
 	k8sClientset, err := c.defaultClientset()
 	if err != nil {
 		return nil, err
 	}
 
-	regionClients := k8sClientset.Resolve(region)
+	regionClients := k8sClientset.resolve(region)
 	if len(regionClients) == 0 {
 		return []types.InstanceTypeSpec{}, nil
 	}
@@ -128,7 +122,7 @@ func (c *K8sCatalog) ListInstanceTypes(ctx context.Context, region *types.Region
 }
 
 // ListResources lists available resources matching the options.
-func (c *K8sCatalog) ListResources(ctx context.Context, opts *ResourceListOptions) ([]Resource, error) {
+func (c *k8sCatalog) ListResources(ctx context.Context, opts *catalog.ResourceListOptions) ([]catalog.Resource, error) {
 	k8sClientset, err := c.defaultClientset()
 	if err != nil {
 		return nil, err
@@ -139,12 +133,12 @@ func (c *K8sCatalog) ListResources(ctx context.Context, opts *ResourceListOption
 		regionFilter = &opts.Region
 	}
 
-	regionClients := k8sClientset.Resolve(regionFilter)
+	regionClients := k8sClientset.resolve(regionFilter)
 	if len(regionClients) == 0 {
-		return []Resource{}, nil
+		return []catalog.Resource{}, nil
 	}
 
-	resources := make([]Resource, 0, len(regionClients))
+	resources := make([]catalog.Resource, 0, len(regionClients))
 	for _, regionClient := range regionClients {
 		nodes, err := regionClient.Clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 		if err != nil {
@@ -157,17 +151,17 @@ func (c *K8sCatalog) ListResources(ctx context.Context, opts *ResourceListOption
 }
 
 // ListResourcePredictions lists resource predictions for the options.
-func (c *K8sCatalog) ListResourcePredictions(ctx context.Context, opts *ResourceListOptions) (map[string]Resource, error) {
+func (c *k8sCatalog) ListResourcePredictions(ctx context.Context, opts *catalog.ResourceListOptions) (map[string]catalog.Resource, error) {
 	return nil, types.ErrNotImplemented
 }
 
-// computeNodeResources aggregates all node resources into a Resource.
-// ResourceItem format is resource type -> resource name -> quantity.
+// computeNodeResources aggregates all node resources into a catalog.Resource.
+// catalog.ResourceItem format is resource type -> resource name -> quantity.
 // For CPU/Memory, resource name equals type (cpu->cpu in millicores, memory->memory in bytes).
 // For hugepages, resource type is hugepage with resource name like hugepages-1Gi.
 // For GPU, resource type is gpu with resource name from vendor key or product label (e.g. NVIDIA H20).
-func (c *K8sCatalog) computeNodeResources(nodes *corev1.NodeList, region types.RegionSpec) Resource {
-	overview := make([]RegionResourceItem, 0, len(nodes.Items))
+func (c *k8sCatalog) computeNodeResources(nodes *corev1.NodeList, region types.RegionSpec) catalog.Resource {
+	overview := make([]catalog.RegionResourceItem, 0, len(nodes.Items))
 
 	for _, node := range nodes.Items {
 		if !isNodeReady(node) {
@@ -175,9 +169,9 @@ func (c *K8sCatalog) computeNodeResources(nodes *corev1.NodeList, region types.R
 		}
 
 		nodeName := node.Name
-		nodeAllocatable := make(ResourceItem)
-		nodeSupply := make(ResourceItem)
-		nodeAllocated := make(ResourceItem)
+		nodeAllocatable := make(catalog.ResourceItem)
+		nodeSupply := make(catalog.ResourceItem)
+		nodeAllocated := make(catalog.ResourceItem)
 
 		for resourceName, capacity := range node.Status.Capacity {
 			resourceType, normalizedName := normalizeResource(resourceName, node.Labels)
@@ -196,11 +190,11 @@ func (c *K8sCatalog) computeNodeResources(nodes *corev1.NodeList, region types.R
 			setResourceQuantity(nodeAllocated, resourceType, normalizedName, capacityQty-allocatableQty)
 		}
 
-		overview = append(overview, RegionResourceItem{
+		overview = append(overview, catalog.RegionResourceItem{
 			Key:   "node",
 			Value: nodeName,
-			Stat: ResourceStat{
-				OnDemand: &ResourceStatItem{
+			Stat: catalog.ResourceStat{
+				OnDemand: &catalog.ResourceStatItem{
 					Allocated:   nodeAllocated,
 					Supply:      nodeSupply,
 					Allocatable: nodeAllocatable,
@@ -209,16 +203,16 @@ func (c *K8sCatalog) computeNodeResources(nodes *corev1.NodeList, region types.R
 		})
 	}
 
-	return Resource{
+	return catalog.Resource{
 		Provider: types.ResourceProvisionTypeKubernetes,
-		RegionResource: RegionResource{
+		RegionResource: catalog.RegionResource{
 			Region:   &region,
 			Overview: overview,
 		},
 	}
 }
 
-func setResourceQuantity(item ResourceItem, resourceType, resourceName string, quantity int64) {
+func setResourceQuantity(item catalog.ResourceItem, resourceType, resourceName string, quantity int64) {
 	if _, ok := item[resourceType]; !ok {
 		item[resourceType] = make(map[string]string)
 	}
@@ -295,7 +289,7 @@ const (
 )
 
 // ListPricing returns pricing information for instance types.
-func (c *K8sCatalog) ListPricing(ctx context.Context, opts *ResourceListOptions) ([]ResourcePricing, error) {
+func (c *k8sCatalog) ListPricing(ctx context.Context, opts *catalog.ResourceListOptions) ([]catalog.ResourcePricing, error) {
 	region := types.RegionSpec{}
 	if opts != nil {
 		region = opts.Region
@@ -306,9 +300,9 @@ func (c *K8sCatalog) ListPricing(ctx context.Context, opts *ResourceListOptions)
 	memoryPrice := fixedMemoryPricePerGB
 	nodePrice := fixedNodePricePerHour
 
-	pricing := ResourcePricing{
+	pricing := catalog.ResourcePricing{
 		Region: region,
-		Items: map[string]ResourcePricingItem{
+		Items: map[string]catalog.ResourcePricingItem{
 			"cpu": {
 				OnDemandPrice: &cpuPrice,
 			},
@@ -321,10 +315,10 @@ func (c *K8sCatalog) ListPricing(ctx context.Context, opts *ResourceListOptions)
 		},
 	}
 
-	return []ResourcePricing{pricing}, nil
+	return []catalog.ResourcePricing{pricing}, nil
 }
 
 // ListPricingPredictions lists pricing predictions for the options.
-func (c *K8sCatalog) ListPricingPredictions(ctx context.Context, opts *ResourceListOptions) (map[string]ResourcePricing, error) {
+func (c *k8sCatalog) ListPricingPredictions(ctx context.Context, opts *catalog.ResourceListOptions) (map[string]catalog.ResourcePricing, error) {
 	return nil, types.ErrNotImplemented
 }

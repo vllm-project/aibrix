@@ -33,6 +33,12 @@ controllerManager:
           port: 8081
         initialDelaySeconds: 5
         periodSeconds: 10
+    envs: {}
+      # AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"  # Uncomment to tune for high-latency or low-traffic environments
+  # Sets the AIBRIX_GATEWAY_TIMEOUT_SECONDS environment variable.
+  # NOTE: This is managed exclusively via this field. Do NOT add
+  # AIBRIX_GATEWAY_TIMEOUT_SECONDS to the 'envs' map below,
+  # as it will result in duplicate environment variables in the manifest.
   gatewayTimeoutSeconds: 120
   serviceAccount:
     create: true
@@ -82,10 +88,12 @@ gatewayPlugin:
       AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT: "16"
       AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: "2"
       AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
+      AIBRIX_REDISSYNC_ENABLED: "false"
   dependencies:
     redis:
       host: "" # aibrix-redis-master
       port: 6379
+      password: ""
   service:
     type: ClusterIP
   messageTimeout: "60s"
@@ -127,6 +135,7 @@ gpuOptimizer:
     redis:
       host: ""  # aibrix-redis-master
       port: 6379
+      password: ""
   tolerations: []
   serviceAccount:
     create: true
@@ -253,7 +262,9 @@ metadata:
     redis:
       host: "" # aibrix-redis-master
       port: 6379
+      password: ""
   redis:
+    enabled: true
     replicas: 1
     imagePullSecrets: []
     container:

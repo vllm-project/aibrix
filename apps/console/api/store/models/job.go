@@ -22,36 +22,48 @@ import (
 	"time"
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	"github.com/vllm-project/aibrix/apps/console/api/utils"
 	"gorm.io/datatypes"
 )
 
 // Job stores full batch job records including metadata-service owned fields.
 type Job struct {
-	ID                   string         `gorm:"column:id;primaryKey;size:64"`
-	Object               string         `gorm:"column:object;size:64;not null;default:''"`
+	RowID                uint64         `gorm:"column:row_id;primaryKey;autoIncrement"`
+	ID                   string         `gorm:"column:id;size:64;not null;uniqueIndex:uniq_jobs_id"`
 	Endpoint             string         `gorm:"column:endpoint;size:255;not null;default:''"`
-	Model                string         `gorm:"column:model;size:255;not null;default:''"`
+	Model                string         `gorm:"column:model;size:255;not null;default:'';index:idx_jobs_model"`
 	InputDataset         string         `gorm:"column:input_dataset;size:255;not null;default:''"`
 	CompletionWindow     string         `gorm:"column:completion_window;size:64;not null;default:''"`
-	Status               string         `gorm:"column:status;size:64;not null;default:''"`
+	Status               string         `gorm:"column:status;size:64;not null;default:'';index:idx_jobs_status"`
 	OutputDataset        string         `gorm:"column:output_dataset;size:255;not null;default:''"`
 	ErrorDataset         string         `gorm:"column:error_dataset;size:255;not null;default:''"`
-	InProgressAt         time.Time      `gorm:"column:in_progress_at;not null;default:0"`
-	ExpiresAt            time.Time      `gorm:"column:expires_at;not null;default:0"`
-	FinalizingAt         time.Time      `gorm:"column:finalizing_at;not null;default:0"`
-	CompletedAt          time.Time      `gorm:"column:completed_at;not null;default:0"`
-	FailedAt             time.Time      `gorm:"column:failed_at;not null;default:0"`
-	ExpiredAt            time.Time      `gorm:"column:expired_at;not null;default:0"`
-	CancellingAt         time.Time      `gorm:"column:cancelling_at;not null;default:0"`
-	CancelledAt          time.Time      `gorm:"column:cancelled_at;not null;default:0"`
+	BatchCreatedAt       *time.Time     `gorm:"column:batch_created_at"`
+	InProgressAt         *time.Time     `gorm:"column:in_progress_at"`
+	ExpiresAt            *time.Time     `gorm:"column:expires_at"`
+	FinalizingAt         *time.Time     `gorm:"column:finalizing_at"`
+	CompletedAt          *time.Time     `gorm:"column:completed_at"`
+	FailedAt             *time.Time     `gorm:"column:failed_at"`
+	ExpiredAt            *time.Time     `gorm:"column:expired_at"`
+	CancellingAt         *time.Time     `gorm:"column:cancelling_at"`
+	CancelledAt          *time.Time     `gorm:"column:cancelled_at"`
 	RequestCounts        datatypes.JSON `gorm:"column:request_counts"`
-	Usage                datatypes.JSON `gorm:"column:usage"`
+	Usage                datatypes.JSON `gorm:"column:usage_stats"`
 	Metadata             datatypes.JSON `gorm:"column:metadata"`
 	Name                 string         `gorm:"column:name;size:255;not null;default:''"`
 	CreatedBy            string         `gorm:"column:created_by;size:255;not null;default:''"`
 	ModelTemplateName    string         `gorm:"column:model_template_name;size:255;not null;default:''"`
 	ModelTemplateVersion string         `gorm:"column:model_template_version;size:64;not null;default:''"`
-	CreatedAt            time.Time      `gorm:"column:created_at;autoCreateTime"`
+	BatchID              string         `gorm:"column:batch_id;size:64;not null;default:'';index:idx_jobs_batch_id"`
+	ProvisionID          string         `gorm:"column:provision_id;size:36;not null;default:''"`
+	QueuedAt             *time.Time     `gorm:"column:queued_at"`
+	ResourcePreparingAt  *time.Time     `gorm:"column:resource_preparing_at"`
+	SubmittingAt         *time.Time     `gorm:"column:submitting_at"`
+	ResourceFailedAt     *time.Time     `gorm:"column:resource_failed_at"`
+	SubmitFailedAt       *time.Time     `gorm:"column:submit_failed_at"`
+	CancelRequestedAt    *time.Time     `gorm:"column:cancel_requested_at"`
+	ErrorMessage         string         `gorm:"column:error_msg;type:TEXT"`
+	Deleted              bool           `gorm:"column:deleted;not null;default:false;index:idx_jobs_deleted"`
+	CreatedAt            time.Time      `gorm:"column:created_at;autoCreateTime;index:idx_jobs_created_at"`
 	UpdatedAt            time.Time      `gorm:"column:updated_at;autoUpdateTime"`
 }
 
@@ -64,7 +76,6 @@ func init() {
 // FromPB converts a pb.Job to Job.
 func (j *Job) FromPB(src *pb.Job) error {
 	j.ID = src.Id
-	j.Object = src.Object
 	j.Endpoint = src.Endpoint
 	j.Model = src.Model
 	j.InputDataset = src.InputDataset
@@ -72,15 +83,17 @@ func (j *Job) FromPB(src *pb.Job) error {
 	j.Status = src.Status
 	j.OutputDataset = src.OutputDataset
 	j.ErrorDataset = src.ErrorDataset
-	j.CreatedAt = time.Unix(src.CreatedAt, 0)
-	j.InProgressAt = time.Unix(src.InProgressAt, 0)
-	j.ExpiresAt = time.Unix(src.ExpiresAt, 0)
-	j.FinalizingAt = time.Unix(src.FinalizingAt, 0)
-	j.CompletedAt = time.Unix(src.CompletedAt, 0)
-	j.FailedAt = time.Unix(src.FailedAt, 0)
-	j.ExpiredAt = time.Unix(src.ExpiredAt, 0)
-	j.CancellingAt = time.Unix(src.CancellingAt, 0)
-	j.CancelledAt = time.Unix(src.CancelledAt, 0)
+
+	// Convert protobuf timestamps (int64 unix seconds) to nullable *time.Time.
+	j.BatchCreatedAt = utils.UnixToTimePtr(src.CreatedAt)
+	j.InProgressAt = utils.UnixToTimePtr(src.InProgressAt)
+	j.ExpiresAt = utils.UnixToTimePtr(src.ExpiresAt)
+	j.FinalizingAt = utils.UnixToTimePtr(src.FinalizingAt)
+	j.CompletedAt = utils.UnixToTimePtr(src.CompletedAt)
+	j.FailedAt = utils.UnixToTimePtr(src.FailedAt)
+	j.ExpiredAt = utils.UnixToTimePtr(src.ExpiredAt)
+	j.CancellingAt = utils.UnixToTimePtr(src.CancellingAt)
+	j.CancelledAt = utils.UnixToTimePtr(src.CancelledAt)
 
 	requestCounts, err := jsonMarshalToDatatype(src.RequestCounts)
 	if err != nil {
@@ -134,7 +147,7 @@ func (j *Job) ToPB() (*pb.Job, error) {
 
 	return &pb.Job{
 		Id:                   j.ID,
-		Object:               j.Object,
+		Object:               "batch",
 		Endpoint:             j.Endpoint,
 		Model:                j.Model,
 		InputDataset:         j.InputDataset,
@@ -142,15 +155,15 @@ func (j *Job) ToPB() (*pb.Job, error) {
 		Status:               j.Status,
 		OutputDataset:        j.OutputDataset,
 		ErrorDataset:         j.ErrorDataset,
-		CreatedAt:            j.CreatedAt.Unix(),
-		InProgressAt:         j.InProgressAt.Unix(),
-		ExpiresAt:            j.ExpiresAt.Unix(),
-		FinalizingAt:         j.FinalizingAt.Unix(),
-		CompletedAt:          j.CompletedAt.Unix(),
-		FailedAt:             j.FailedAt.Unix(),
-		ExpiredAt:            j.ExpiredAt.Unix(),
-		CancellingAt:         j.CancellingAt.Unix(),
-		CancelledAt:          j.CancelledAt.Unix(),
+		CreatedAt:            utils.TimeToUnix(j.BatchCreatedAt),
+		InProgressAt:         utils.TimeToUnix(j.InProgressAt),
+		ExpiresAt:            utils.TimeToUnix(j.ExpiresAt),
+		FinalizingAt:         utils.TimeToUnix(j.FinalizingAt),
+		CompletedAt:          utils.TimeToUnix(j.CompletedAt),
+		FailedAt:             utils.TimeToUnix(j.FailedAt),
+		ExpiredAt:            utils.TimeToUnix(j.ExpiredAt),
+		CancellingAt:         utils.TimeToUnix(j.CancellingAt),
+		CancelledAt:          utils.TimeToUnix(j.CancelledAt),
 		RequestCounts:        requestCounts,
 		Usage:                usage,
 		Metadata:             metadata,

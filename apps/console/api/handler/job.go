@@ -39,7 +39,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/openai/openai-go/v3"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 	"k8s.io/klog/v2"
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
@@ -122,11 +124,25 @@ func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb
 	}, nil
 }
 
-// GetJob proxies to GET /v1/batches/{id}. Console-owned fields ride on
-// batch.metadata; the store overlay path is parked (see CreateJob).
+// GetJob proxies to GET /v1/batches/{id}. Terminal jobs are served from
+// the store to avoid the planner placeholder path dropping MDS-owned
+// fields.
 func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job, error) {
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if h.store != nil {
+		rec, err := h.store.GetJob(ctx, req.Id)
+		if err != nil {
+			klog.Warningf("GetJob store lookup id=%s: %v", req.Id, err)
+		} else if rec != nil && plannerapi.JobStatus(rec.Status).IsTerminal() {
+			pbJob, perr := rec.ToPB()
+			if perr != nil {
+				klog.Warningf("GetJob terminal store->pb id=%s: %v", req.Id, perr)
+			} else {
+				return pbJob, nil
+			}
+		}
 	}
 	job, err := h.planner.GetJob(ctx, req.Id)
 	if err != nil {
@@ -169,7 +185,7 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 		completionWindow = string(openai.BatchNewParamsCompletionWindow24h)
 	}
 
-	// Console-generated JobID. The queued planner will own a durable
+	// Console-generated JobID. The async Scheduler will own a durable
 	// JobID -> BatchID map; until then the planner keeps it in-memory.
 	jobID := "job_" + uuid.NewString()
 
@@ -200,16 +216,33 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	if templateName == "" {
 		templateName = h.defaultModelDeploymentTemplate
 	}
-	var modelTemplate *plannerapi.ModelTemplateRef
+	var (
+		modelTemplate *plannerapi.ModelTemplateRef
+		modelID       string
+	)
 	if templateName != "" {
 		modelTemplate = &plannerapi.ModelTemplateRef{
 			Name:    templateName,
 			Version: req.ModelTemplateVersion,
 		}
+		if tpl := h.resolveTemplate(ctx, templateName, req.ModelTemplateVersion); tpl != nil {
+			modelID = tpl.ModelId
+			if tpl.Spec != nil {
+				// UseProtoNames keeps snake_case proto field names (engine_args,
+				// model_source, ...) that the Python pydantic consumer expects;
+				// default protojson uses lowerCamelCase. Enums still serialize as strings.
+				if specBytes, err := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(tpl.Spec); err == nil {
+					modelTemplate.Spec = specBytes
+				} else {
+					klog.Warningf("marshal template spec %q/%q: %v", templateName, req.ModelTemplateVersion, err)
+				}
+			}
+		}
 	}
 
 	enqueueReq := &plannerapi.EnqueueRequest{
 		JobID:         jobID,
+		Model:         modelID,
 		ModelTemplate: modelTemplate,
 		BatchParams: openai.BatchNewParams{
 			InputFileID:      req.InputDataset,
@@ -239,10 +272,13 @@ func (h *JobHandler) CancelJob(ctx context.Context, req *pb.CancelJobRequest) (*
 	return mergeJob(job, nil), nil
 }
 
-// currentUserEmail returns the authenticated user's email if available, else
-// empty. The auth middleware sets this on the HTTP request context; once the
-// gateway propagates it to gRPC metadata it will surface here.
+// currentUserEmail returns the authenticated user's email if available.
 func currentUserEmail(ctx context.Context) string {
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if v := md.Get(middleware.MetadataUserEmail); len(v) > 0 && v[0] != "" {
+			return v[0]
+		}
+	}
 	if u := middleware.GetUser(ctx); u != nil {
 		return u.Email
 	}
@@ -294,6 +330,29 @@ func mapPlannerError(err error, op string) error {
 	return mapSDKError(err, op)
 }
 
+// resolveTemplate looks up the ModelDeploymentTemplate by (name, version).
+// Returns nil when name is empty, store errors out, or no match.
+func (h *JobHandler) resolveTemplate(ctx context.Context, name, version string) *pb.ModelDeploymentTemplate {
+	if name == "" {
+		return nil
+	}
+	statusFilter := ""
+	if version == "" {
+		statusFilter = "active"
+	}
+	tpls, err := h.store.ListModelDeploymentTemplates(ctx, "", statusFilter, name)
+	if err != nil {
+		klog.Warningf("resolveTemplate(%q,%q): %v", name, version, err)
+		return nil
+	}
+	for _, t := range tpls {
+		if version == "" || t.Version == version {
+			return t
+		}
+	}
+	return nil
+}
+
 // mergeJob aggregates the planner's Job with optional Console overlay.
 // pb.Job.Id is set to the planner's JobID — the MDS batch.ID never reaches
 // this layer. Console-owned fields (display name, created_by, template
@@ -301,11 +360,10 @@ func mapPlannerError(err error, op string) error {
 // namespace; the overlay argument is plumbing for the future store-backed
 // reconcile path and is expected to be nil today.
 func mergeJob(v *plannerapi.Job, overlay *pb.Job) *pb.Job {
-	job := &pb.Job{}
+	job := &pb.Job{Object: "batch"}
 	if v != nil {
 		job.Id = v.JobID
 		if b := v.Batch; b != nil {
-			job.Object = string(b.Object)
 			job.Endpoint = b.Endpoint
 			job.Model = b.Model
 			job.InputDataset = b.InputFileID

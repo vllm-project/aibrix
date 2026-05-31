@@ -123,7 +123,9 @@ class ModelSourceType(str, Enum):
 
     HUGGINGFACE = "huggingface"
     S3 = "s3"
+    TOS = "tos"
     LOCAL = "local"
+    HDFS = "hdfs"
 
 
 class ModelSourceSpec(_Strict):
@@ -287,6 +289,10 @@ class ModelDeploymentTemplateSpec(_Strict):
         min_length=1,
         description="OpenAI endpoints this deployment can serve",
     )
+    service_id: Optional[str] = Field(
+        default=None,
+        description="Optional service identifier (e.g. discovery key) propagated to provider workload labels and discovery",
+    )
     deployment_mode: DeploymentMode = Field(
         default=DeploymentMode.DEDICATED,
         description="Only 'dedicated' is honored at runtime today.",
@@ -379,6 +385,23 @@ class StorageSpec(_Strict):
     )
 
 
+class MetastoreBackend(str, Enum):
+    REDIS = "redis"
+    LOCAL = "local"
+
+
+class MetastoreSpec(_Strict):
+    backend: MetastoreBackend = Field(default=MetastoreBackend.REDIS)
+    credentials_secret_ref: Optional[str] = Field(
+        default=None,
+        description="Name of K8s Secret with metastore connection settings",
+    )
+    endpoint_url: Optional[str] = Field(
+        default=None,
+        description="Override metastore endpoint when secret does not provide one",
+    )
+
+
 class CompletionWindowOption(str, Enum):
     """SLO tier for batch completion.
 
@@ -460,6 +483,7 @@ class BatchProfileSpec(_Strict):
     """
 
     storage: StorageSpec
+    metastore: Optional[MetastoreSpec] = None
     scheduling: SchedulingSpec = Field(default_factory=SchedulingSpec)
     quota: QuotaSpec = Field(default_factory=QuotaSpec)
 

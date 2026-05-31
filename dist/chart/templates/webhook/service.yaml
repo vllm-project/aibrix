@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "aibrix.fullname" . }}-webhook-service
+  name: aibrix-webhook-service
   labels:
     {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-controller-manager

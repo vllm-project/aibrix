@@ -42,6 +42,27 @@ resolve the issue and retry until you get:
 1 chart(s) linted, 0 chart(s) failed
 ```
 
+### helm unittest
+
+test cases in dist/chart/tests
+```
+helm plugin install https://github.com/helm-unittest/helm-unittest.git
+
+helm unittest dist/chart
+### Chart [ aibrix ] dist/chart
+
+ PASS  Test Redis Configuration Logic   dist/chart/tests/redis_config_test.yaml
+ PASS  Test Redis Dependency Passwd Logic       dist/chart/tests/redis_config_test.yaml
+ PASS  Test Redis Shared Passwd Conflict        dist/chart/tests/redis_config_test.yaml
+ PASS  Test Redis Shared Passwd dist/chart/tests/redis_config_test.yaml
+
+Charts:      1 passed, 1 total
+Test Suites: 4 passed, 4 total
+Tests:       4 passed, 4 total
+Snapshot:    0 passed, 0 total
+Time:        14.85875ms
+```
+
 ### Render yaml files
 
 Render all manifests using:
@@ -135,3 +156,14 @@ Remove the release:
 ```
 helm uninstall aibrix -n aibrix-system
 ```
+
+> **Note:** `helm uninstall` does **not** delete the AIBrix CRDs in `dist/chart/crds/`.
+> This is intentional — deleting CRDs cascade-deletes all user CRs (StormService,
+> RoleSet, PodAutoscaler, ModelAdapter, etc.). See
+> [#2062](https://github.com/vllm-project/aibrix/issues/2062).
+>
+> Only run the following if you really want to wipe AIBrix CRDs and every CR
+> instance depending on them:
+> ```
+> kubectl delete -f dist/chart/crds/
+> ```

@@ -32,8 +32,8 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 # Try importing, skip tests if dependencies missing
 try:
     from aibrix.metadata.api.v1.users import User
-    from aibrix.metadata.app import build_app
     from aibrix.metadata.store import MetadataStore
+    from tests.metadata.conftest import create_test_app
 
     DEPENDENCIES_AVAILABLE = True
 except ModuleNotFoundError as e:
@@ -114,15 +114,7 @@ class TestUsersAPI:
     @pytest.fixture
     def app_with_store(self, mock_store):
         """Build app with mocked MetadataStore."""
-        from argparse import Namespace
-
-        args = Namespace(
-            enable_fastapi_docs=False,
-            disable_batch_api=True,
-            disable_file_api=True,
-            enable_k8s_job=False,
-        )
-        app = build_app(args)
+        app = create_test_app(disable_batch_api=True, disable_file_api=True)
         app.state.metadata_store = mock_store
         # Also set redis_client for backward compatibility (via .client if needed)
         app.state.redis_client = None

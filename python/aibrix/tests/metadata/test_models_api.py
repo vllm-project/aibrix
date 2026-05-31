@@ -34,6 +34,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 try:
     from aibrix.metadata.api.v1.models import K8sModelDiscovery
     from aibrix.metadata.app import build_app
+    from tests.metadata.conftest import create_test_app
 
     DEPENDENCIES_AVAILABLE = True
 except ModuleNotFoundError as e:
@@ -206,6 +207,24 @@ class TestK8sModelDiscovery:
 class TestModelsAPI:
     """Integration tests for /v1/models API."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_k8s_discovery_singleton(self):
+        """Reset the module-level k8s_discovery singleton around each test.
+
+        models.k8s_discovery caches its CoreV1Api/CustomObjectsApi the first
+        time it is used (init_k8s_clients only initializes when core_api is
+        None). Without this reset, the first API test's mocked clients leak
+        into later tests, making this module order-dependent (e.g. under
+        pytest-randomly).
+        """
+        from aibrix.metadata.api.v1 import models as models_module
+
+        models_module.k8s_discovery.core_api = None
+        models_module.k8s_discovery.custom_api = None
+        yield
+        models_module.k8s_discovery.core_api = None
+        models_module.k8s_discovery.custom_api = None
+
     @patch("kubernetes.config.load_kube_config")
     @patch("kubernetes.config.load_incluster_config")
     @patch("kubernetes.client.CustomObjectsApi")
@@ -218,8 +237,6 @@ class TestModelsAPI:
         mock_kube_config,
     ):
         """Test /v1/models/ endpoint returns model list."""
-        from argparse import Namespace
-
         from kubernetes import config as k8s_config
 
         # Mock config loading to avoid real K8s config
@@ -254,14 +271,7 @@ class TestModelsAPI:
             mock_adapters
         )
 
-        # Build app without K8s job support for simpler testing
-        args = Namespace(
-            enable_fastapi_docs=False,
-            disable_batch_api=True,
-            disable_file_api=True,
-            enable_k8s_job=False,
-        )
-        app = build_app(args)
+        app = create_test_app(disable_batch_api=True, disable_file_api=True)
         client = TestClient(app)
 
         # Test endpoint (note: API_V1_STR = "/v1" so endpoint is /v1/models/)
@@ -284,3 +294,63 @@ class TestModelsAPI:
             assert "created" in model
             assert "owned_by" in model
             assert model["owned_by"] == "aibrix"
+
+    @patch("kubernetes.config.load_kube_config")
+    @patch("kubernetes.config.load_incluster_config")
+    @patch("kubernetes.client.CustomObjectsApi")
+    @patch("kubernetes.client.CoreV1Api")
+    def test_list_models_trailing_slash_optional(
+        self,
+        mock_core_v1,
+        mock_custom_objects,
+        mock_incluster_config,
+        mock_kube_config,
+    ):
+        """Both /v1/models and /v1/models/ must return 200 (regression for #1740).
+
+        build_app sets redirect_slashes=False, so the router has to register the
+        no-trailing-slash path explicitly (mirroring files.py / batch.py); a bare
+        /v1/models otherwise 404s instead of getting a 307 redirect.
+        """
+        from argparse import Namespace
+
+        from kubernetes import config as k8s_config
+
+        mock_incluster_config.side_effect = k8s_config.ConfigException("Not in cluster")
+
+        mock_pod = V1Pod(
+            metadata=V1ObjectMeta(
+                name="llama-3-8b-pod",
+                labels={"model.aibrix.ai/name": "llama-3-8b"},
+            ),
+            status=V1PodStatus(phase="Running"),
+        )
+        mock_core_v1.return_value.list_pod_for_all_namespaces.return_value.items = [
+            mock_pod,
+        ]
+        mock_custom_objects.return_value.list_cluster_custom_object.return_value = {
+            "items": []
+        }
+
+        args = Namespace(
+            enable_fastapi_docs=False,
+            disable_batch_api=True,
+            disable_file_api=True,
+            enable_k8s_job=False,
+            enable_mongo_job=False,
+            enable_redis_job=False,
+            registry_provider=None,
+            disable_k8s_support=False,
+            disable_inference_endpoint=True,
+        )
+        app = build_app(args)
+        client = TestClient(app)
+
+        # No trailing slash: the path that used to 404 (#1740).
+        resp_no_slash = client.get("/v1/models")
+        assert resp_no_slash.status_code == 200
+
+        # Trailing slash keeps working, and both forms hit the same handler.
+        resp_slash = client.get("/v1/models/")
+        assert resp_slash.status_code == 200
+        assert resp_no_slash.json() == resp_slash.json()

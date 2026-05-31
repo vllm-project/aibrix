@@ -29,7 +29,7 @@ from aibrix.storage.base import (
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata, _sanitize_key, generate_filename
 
-LOCAL_STORAGE_PATH_VAR = "LOCAL_STORAGE_PATH"
+LOCAL_STORAGE_PATH_VAR = "STORAGE_LOCAL_PATH"
 
 
 class LocalStorage(BaseStorage):

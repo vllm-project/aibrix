@@ -1,0 +1,26 @@
+# Service name currently mirrors DeploymentManifestRenderer.render(deployment_name=...).
+# Namespace is a renderer default.
+apiVersion: v1
+kind: Service
+metadata:
+  name: deepseek-coder-7b-l20
+  namespace: default
+  labels:
+    # Prometheus discovery label is a renderer default; not configurable yet.
+    prometheus-discovery: "true"
+  annotations:
+    # Prometheus annotations are renderer defaults derived from the resolved engine port.
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8000"
+    prometheus.io/scrape: "true"
+spec:
+  # Service selector targets the deployment label model.aibrix.ai/name.
+  selector:
+    model.aibrix.ai/name: deepseek-coder-7b-l20
+  # NodePort is not supported to be configured yet.
+  ports:
+    - name: metrics
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+  type: ClusterIP

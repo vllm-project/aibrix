@@ -22,10 +22,8 @@ import (
 )
 
 func NewProvisioner(provider types.ResourceProvisionType, s store.Store) (Provisioner, error) {
-	switch provider {
-	case types.ResourceProvisionTypeKubernetes:
-		return NewK8sProvisioner(s)
-	default:
-		return nil, types.ErrUnsupportedProvisioner
+	if f, ok := lookup(provider); ok {
+		return f(s)
 	}
+	return nil, types.ErrUnsupportedProvisioner
 }

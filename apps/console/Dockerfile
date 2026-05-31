@@ -20,8 +20,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 # nozmq: console doesn't need ZeroMQ (gateway-plugins-only feature).
-# CGO_ENABLED=1: required by the SQLite driver used for the dev/file store.
-RUN CGO_ENABLED=1 go build -tags nozmq -o /out/console ./cmd/console
+RUN CGO_ENABLED=0 go build -tags nozmq -o /out/console ./cmd/console
 
 # Stage 2: minimal runtime.
 FROM debian:bookworm-slim

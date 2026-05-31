@@ -21,10 +21,8 @@ import (
 )
 
 func NewCatalog(provider types.ResourceProvisionType) (Catalog, error) {
-	switch provider {
-	case types.ResourceProvisionTypeKubernetes:
-		return NewK8sCatalog()
-	default:
-		return nil, types.ErrUnsupportedCatalog
+	if f, ok := lookup(provider); ok {
+		return f()
 	}
+	return nil, types.ErrUnsupportedCatalog
 }

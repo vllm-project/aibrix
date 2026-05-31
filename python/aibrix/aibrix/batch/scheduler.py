@@ -21,10 +21,14 @@ from enum import Enum
 from typing import Optional
 
 import aibrix.batch.constant as constant
-from aibrix.batch.job_progress_manager import JobProgressManager
+from aibrix.batch.job_driver import (
+    InferenceEngineClient,
+    JobProgressManager,
+)
+from aibrix.batch.job_entity import JobEntityManager
+from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
 
-from .job_driver import InferenceEngineClient, JobDriver
 from .job_entity import BatchJobError, BatchJobErrorCode
 
 # JobManager will be passed as parameter to avoid circular import
@@ -133,7 +137,9 @@ class BasicCongestionControl(CCInterface):
 class JobScheduler:
     def __init__(
         self,
+        context: InfrastructureContext,
         job_progress_manager: JobProgressManager,
+        job_entity_manager: Optional[JobEntityManager],
         pool_size: int,
         cc_controller=BasicCongestionControl(constant.DEFAULT_JOB_POOL_SIZE),
         policy=SchedulePolicy.FIFO,
@@ -144,11 +150,14 @@ class JobScheduler:
         as expired jobs.
         self._inactive_jobs are jobs that are already invalid.
         """
+        self._context = context
         self._job_progress_manager = job_progress_manager
+        self._job_entity_manager = job_entity_manager
         self.interval = constant.EXPIRE_INTERVAL
         self._jobs_queue: queue.Queue[str] = queue.Queue()
         self._inactive_jobs: set[str] = set()
         self._due_jobs_list: list[tuple[str, float]] = []
+        self._queued_running_jobs: set[str] = set()
 
         self._CC_controller = cc_controller
         self._current_pool_size = self._CC_controller._job_pool_size
@@ -191,7 +200,9 @@ class JobScheduler:
             # we check if this job is in active state and we try starting the job.
             while job_id and (
                 job_id in self._inactive_jobs
-                or not await self._job_progress_manager.start_execute_job(job_id)
+                or not await self._job_progress_manager.validate_job(
+                    job_id, self._inference_client
+                )
             ):
                 if self._jobs_queue.empty():
                     job_id = None
@@ -232,24 +243,20 @@ class JobScheduler:
 
     async def start(self, inference_client: Optional[InferenceEngineClient]):
         self._serve_loop = asyncio.get_running_loop()
+        self._inference_client = inference_client
         logger.info("in start")
-        self._jobs_running_task = self._serve_loop.create_task(
-            self.jobs_running_loop(inference_client)
-        )
+        self._jobs_running_task = self._serve_loop.create_task(self.jobs_running_loop())
         logger.info("running loop set up")
         self._jobs_cleanup_task = self._serve_loop.create_task(self.jobs_cleanup_loop())
         logger.info("cleanup loop set up")
 
-    async def jobs_running_loop(
-        self, inference_client: Optional[InferenceEngineClient]
-    ):
+    async def jobs_running_loop(self) -> None:
         """
         This loop is going through all active jobs in scheduler.
         For now, the executing unit is one request. Later if necessary,
         we can support a batch size of request per execution.
         """
         logger.info("Starting scheduling...")
-        job_driver = JobDriver(self._job_progress_manager, inference_client)
         while True:
             one_job: Optional[str] = None
             try:
@@ -262,28 +269,56 @@ class JobScheduler:
 
             if one_job:
                 try:
+                    job = await self._job_progress_manager.get_job(one_job)
+                    if job is None:
+                        logger.warning(f"scheduled job '{one_job}' no longer exists")
+                        continue
+                    job_driver = getattr(job, "job_driver", None)
+                    if job_driver is None:
+                        raise Exception(f"scheduled job '{one_job}' has no job driver")
                     await job_driver.execute_job(one_job)
                 except RuntimeError as re:
+                    # A single job's failure must not kill the scheduler loop;
+                    # the driver already marked the job terminal before raising.
                     logger.error(
                         "Runtime err",
                         job_id=one_job,
                         error=str(re),
                     )  # type: ignore[call-arg]
-                    raise
                 except Exception as e:
-                    job = await self._job_progress_manager.mark_job_failed(
-                        one_job,
-                        BatchJobError(
-                            code=BatchJobErrorCode.INFERENCE_FAILED, message=str(e)
-                        ),
+                    # Preserve the original error code when the driver already
+                    # classified it (e.g. RESOURCE_CREATION_ERROR from workload
+                    # provisioning). Only fall back to a generic code for raw,
+                    # unclassified exceptions so failures aren't mislabeled as
+                    # inference failures.
+                    err = (
+                        e
+                        if isinstance(e, BatchJobError)
+                        else BatchJobError(
+                            code=BatchJobErrorCode.UNKNOWN_ERROR, message=str(e)
+                        )
                     )
+                    # Guard mark_job_failed: if it raises (e.g. the job is no
+                    # longer in_progress) the exception must not escape and tear
+                    # down the loop, stranding all future jobs.
+                    try:
+                        job = await self._job_progress_manager.mark_job_failed(
+                            one_job, err
+                        )
+                        state = job.status.state.value
+                    except Exception as me:
+                        state = "unknown"
+                        logger.error(
+                            "Failed to mark job failed",
+                            job_id=one_job,
+                            error=str(me),
+                        )  # type: ignore[call-arg]
                     logger.error(
                         "Failed to execute job",
                         job_id=one_job,
-                        status=job.status.state.value,
+                        status=state,
                         error=str(e),
                     )  # type: ignore[call-arg]
-                    raise
             # yield loop
             await asyncio.sleep(0)
 
@@ -317,31 +352,33 @@ class JobScheduler:
 
     async def round_robin_get_job(self):
         # Step 1
-        # Before scheduling any new jobs, we need to check the status of previous
-        # jobs and update it accordingly.
+        # Refresh the running-job pool by removing finished jobs so the pool
+        # reflects the jobs that still own scheduler capacity.
         for i in range(len(self._CC_controller._running_job_pool)):
             if not self._CC_controller._running_job_pool[i]:
                 continue
             job_id = self._CC_controller._running_job_pool[i]
-            # Do not schedule new job in since we need to adjust capacity
-            # based on new pool size representing how much underlying resource.
             job = await self._job_progress_manager.get_job_status(job_id)
             if not job or job.finished:
                 self._CC_controller._running_job_pool[i] = None
+                self._queued_running_jobs.discard(job_id)
 
-        # Step 2, after the jobs' status are updated,
-        # we need to iterate over all slots for next job.
-        # By default these jobs' priority is higher than new jobs.
+        # Step 2
+        # Existing jobs in the pool do not need repeated scheduling to make
+        # progress because their job drivers run them to completion. We still
+        # scan the pool first so jobs that were admitted in step 4 but not
+        # returned yet are chosen before scheduling brand-new jobs.
         next_job_id = None
         for i in range(len(self._CC_controller._running_job_pool)):
             temp_idx = self._CC_controller._running_job_idx + 1
             temp_idx = temp_idx % len(self._CC_controller._running_job_pool)
             self._CC_controller._running_job_idx = temp_idx
             job_id = self._CC_controller._running_job_pool[temp_idx]
-            if not job_id:
+            if not job_id or job_id not in self._queued_running_jobs:
                 continue
             else:
                 next_job_id = job_id
+                self._queued_running_jobs.discard(job_id)
                 break
         if not next_job_id:
             self._CC_controller._running_job_idx = 0
@@ -349,22 +386,23 @@ class JobScheduler:
         # Step 3, update job pool size with controller.
         self._CC_controller.update_job_pool_size(self._current_pool_size)
 
-        # Step 4, if there is available slot, schedule new job in from queue.
-        start_offset = len(self._CC_controller._running_job_pool)
+        # Step 4
+        # Fill currently empty slots from the queue without advancing through
+        # occupied slots, otherwise we can overwrite running jobs.
         for i in range(len(self._CC_controller._running_job_pool)):
-            if not self._CC_controller._running_job_pool[i]:
-                start_offset = i
-                break
+            if self._CC_controller._running_job_pool[i]:
+                continue
 
-        while start_offset < len(self._CC_controller._running_job_pool):
             new_job_id = await self.schedule_next_job()
             if not new_job_id:
                 break
 
+            self._queued_running_jobs.add(new_job_id)
             if not next_job_id:
                 next_job_id = new_job_id
-            self._CC_controller._running_job_pool[start_offset] = new_job_id
-            start_offset += 1
+                self._CC_controller._running_job_idx = i
+                self._queued_running_jobs.discard(new_job_id)
+            self._CC_controller._running_job_pool[i] = new_job_id
 
         if not next_job_id:
             logger.debug("No job is found for scheduling")

@@ -15,8 +15,6 @@
 import argparse
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -65,7 +63,7 @@ def k8s_config():
             except config.ConfigException as e:
                 pytest.skip(f"Kubernetes configuration not available: {e}")
 
-        # Test API server accessibility with reliable timeout
+        # Test API server accessibility with client-side request timeout.
         try:
             v1 = client.CoreV1Api()
             api_host = v1.api_client.configuration.host
@@ -75,25 +73,8 @@ def k8s_config():
                 )
 
             logger.info(f"Testing Kubernetes API accessibility: {api_host}")
-
-            def test_api_call():
-                """Make a simple API call to test connectivity."""
-                # Use a simple API call that exists on CoreV1Api
-                return v1.list_namespace(limit=1)
-
-            # Use ThreadPoolExecutor with timeout to prevent hanging
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(test_api_call)
-                try:
-                    # Wait maximum 10 seconds for the API call
-                    future.result(timeout=10)
-                    logger.info("Kubernetes API server accessibility verified")
-                except FutureTimeoutError:
-                    pytest.skip(
-                        f"Kubernetes API server timeout after 10 seconds: {api_host}"
-                    )
-                except Exception as e:
-                    pytest.skip(f"Kubernetes API server not accessible: {e}")
+            v1.list_namespace(limit=1, _request_timeout=(1, 2))
+            logger.info("Kubernetes API server accessibility verified")
 
         except Exception as e:
             pytest.skip(f"Failed to create Kubernetes API client: {e}")
@@ -204,8 +185,7 @@ def redis_config_available():
 
     import redis
 
-    def test_connection():
-        # Try to connect to Redis with a short timeout
+    try:
         client = redis.Redis(
             host=os.environ.get("REDIS_HOST", "localhost"),
             port=int(os.environ.get("REDIS_PORT", "6379")),
@@ -215,16 +195,9 @@ def redis_config_available():
             socket_timeout=2,
             decode_responses=True,
         )
-        # Test with a simple ping
-        return client.ping()
-
-    # Use ThreadPoolExecutor to enforce timeout
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(test_connection)
-        try:
-            future.result(timeout=5)  # 5 second timeout
-        except Exception as e:
-            pytest.skip(f"Redis access not available: {e}")
+        client.ping()
+    except Exception as e:
+        pytest.skip(f"Redis access not available: {e}")
 
 
 @pytest.fixture(scope="session")
@@ -411,9 +384,13 @@ def ensure_job_rbac(job_rbac):
 
 def create_test_app(
     enable_k8s_job: bool = False,
+    enable_redis_job: bool = False,
+    enable_mongo_job: bool = False,
+    disable_k8s_support: bool = False,
     storage_type: StorageType = StorageType.LOCAL,
     metastore_type: StorageType = StorageType.LOCAL,
     params: Optional[Dict[str, Any]] = None,
+    dry_run: Optional[bool] = None,
 ):
     """Create a FastAPI app configured for e2e testing.
 
@@ -424,6 +401,8 @@ def create_test_app(
     """
     if params is None:
         params = {}
+    if dry_run is None:
+        dry_run = not (enable_k8s_job or enable_redis_job or enable_mongo_job)
 
     # Save old settings
     oldStorage, oldMetaStore = settings.STORAGE_TYPE, settings.METASTORE_TYPE
@@ -436,9 +415,18 @@ def create_test_app(
             port=8090,
             enable_fastapi_docs=False,
             disable_batch_api=False,
+            disable_file_api=False,
+            disable_k8s_support=disable_k8s_support,
+            disable_inference_endpoint=True,
             enable_k8s_job=enable_k8s_job,
+            enable_mongo_job=enable_mongo_job,
+            enable_redis_job=enable_redis_job,
+            k8s_namespace="default",
             k8s_job_patch=None,  # accepted by parser but always None in tests
-            dry_run=not enable_k8s_job,
+            registry_provider=None,
+            kopf_startup_timeout=30.0,
+            kopf_shutdown_timeout=10.0,
+            dry_run=dry_run,
         ),
         params,
     )
@@ -448,7 +436,9 @@ def create_test_app(
 
 
 @pytest.fixture(scope="session")
-def template_configmaps(k8s_config, test_namespace):
+def template_configmaps(
+    k8s_config, test_namespace, s3_credentials_secret, test_s3_bucket
+):
     """Apply the unittest ModelDeploymentTemplate / BatchProfile ConfigMaps
     to the test cluster.
 
@@ -483,9 +473,20 @@ def template_configmaps(k8s_config, test_namespace):
             if not isinstance(doc, dict) or doc.get("kind") != "ConfigMap":
                 continue
             name = doc["metadata"]["name"]
+            data = doc.get("data", {})
+            if name == "aibrix-batch-profiles" and "profiles.yaml" in data:
+                profiles = yaml.safe_load(data["profiles.yaml"])
+                for item in profiles.get("items", []):
+                    if item.get("name") == "unittest":
+                        item.setdefault("spec", {})["storage"] = {
+                            "backend": "s3",
+                            "bucket": test_s3_bucket,
+                            "credentials_secret_ref": s3_credentials_secret,
+                        }
+                data["profiles.yaml"] = yaml.safe_dump(profiles, sort_keys=False)
             cm = client.V1ConfigMap(
                 metadata=client.V1ObjectMeta(name=name, namespace=DEFAULT_NAMESPACE),
-                data=doc.get("data", {}),
+                data=data,
             )
             try:
                 core_v1.delete_namespaced_config_map(
@@ -516,7 +517,12 @@ def test_app(
     redis_config_available,
     ensure_job_rbac,
     template_configmaps,
+    monkeypatch,
 ):
+    monkeypatch.setenv(
+        "WORKER_REDIS_HOST", "aibrix-redis-master.aibrix-system.svc.cluster.local"
+    )
+    monkeypatch.setenv("WORKER_REDIS_PORT", os.environ.get("REDIS_PORT", "6379"))
     return create_test_app(
         enable_k8s_job=True,
         storage_type=StorageType.S3,

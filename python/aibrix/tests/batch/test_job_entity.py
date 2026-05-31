@@ -1,16 +1,52 @@
 """Unit tests for BatchJobError and related job entity classes"""
 
+import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
 from aibrix.batch.job_entity import (
+    AibrixMetadata,
     BatchJobEndpoint,
     BatchJobError,
     BatchJobErrorCode,
     BatchJobSpec,
+    BatchProfileRef,
     CompletionWindow,
+    JobAnnotationKey,
+    ModelTemplateRef,
+    PlannerDecision,
+    ResourceDetail,
 )
+from aibrix.batch.manifest.renderer import RenderError
+from aibrix.batch.template import local_profile_registry, local_template_registry
+from aibrix.metadata.cache.job import JobCache
+
+_FIXTURE = Path(__file__).parent / "testdata" / "template_configmaps_unittest.yaml"
+
+
+class _AsyncResult:
+    def get(self):
+        class _Meta:
+            name = "batch-test"
+            uid = "uid-123"
+
+        class _Job:
+            metadata = _Meta()
+
+        return _Job()
+
+
+class _BatchApi:
+    def __init__(self, captured):
+        self._captured = captured
+
+    def create_namespaced_job(self, namespace, body, async_req):
+        self._captured["namespace"] = namespace
+        self._captured["body"] = body
+        self._captured["async_req"] = async_req
+        return _AsyncResult()
 
 
 class TestBatchJobError:
@@ -136,6 +172,72 @@ class TestBatchJobEntityCreation:
         assert spec.completion_window == 86400
         assert spec.metadata == {"priority": "high"}
 
+    def test_batch_job_spec_creation_with_aibrix_metadata(self):
+        spec = BatchJobSpec(
+            input_file_id="test-input-123",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+            aibrix=AibrixMetadata(
+                job_id="job-123",
+                planner_decision=PlannerDecision(
+                    provision_id="reservation-1",
+                    provision_resource_deadline=3600,
+                    resource_details=[
+                        ResourceDetail(
+                            provider="deployment",
+                            endpoint_cluster="cluster-a",
+                            gpu_type="H100",
+                            replica=2,
+                        )
+                    ],
+                ),
+                model_template=ModelTemplateRef(
+                    name="mock-vllm",
+                    version="v0.0.1",
+                    overrides={"engine_args": {"max_num_seqs": 128}},
+                ),
+                profile=BatchProfileRef(
+                    name="unittest",
+                    overrides={"scheduling": {"max_concurrency": 4}},
+                ),
+            ),
+        )
+
+        assert spec.aibrix is not None
+        assert spec.aibrix.job_id == "job-123"
+        assert spec.aibrix.planner_decision is not None
+        assert spec.aibrix.planner_decision.provision_id == "reservation-1"
+        assert spec.aibrix.planner_decision.resource_details is not None
+        assert spec.aibrix.planner_decision.resource_details[0].gpu_type == "H100"
+        assert spec.aibrix.model_template is not None
+        assert spec.aibrix.model_template.name == "mock-vllm"
+        assert spec.aibrix.profile is not None
+        assert spec.aibrix.profile.name == "unittest"
+
+    def test_planner_decision_allows_extra_fields(self):
+        decision = PlannerDecision.model_validate(
+            {
+                "provision_id": "reservation-1",
+                "future_field": {"phase": "queued"},
+            }
+        )
+
+        assert decision.provision_id == "reservation-1"
+        assert getattr(decision, "future_field") == {"phase": "queued"}
+
+    def test_resource_detail_allows_extra_fields(self):
+        detail = ResourceDetail.model_validate(
+            {
+                "provider": "deployment",
+                "gpu_type": "H100",
+                "future_field": ["zone-a", "zone-b"],
+            }
+        )
+
+        assert detail.provider == "deployment"
+        assert detail.gpu_type == "H100"
+        assert getattr(detail, "future_field") == ["zone-a", "zone-b"]
+
     def test_batch_job_error_codes_coverage(self):
         """Test that all BatchJobErrorCode values work with exceptions."""
         test_exception = Exception("Test exception message")
@@ -161,6 +263,144 @@ class TestBatchJobEntityCreation:
             assert error.message == "Test exception message"
             assert isinstance(error, Exception)
             assert isinstance(error, BatchJobError)
+
+    @pytest.mark.asyncio
+    async def test_job_cache_submit_job_with_template_and_profile(self):
+        template_registry = local_template_registry(_FIXTURE)
+        profile_registry = local_profile_registry(_FIXTURE)
+        template_registry.reload()
+        profile_registry.reload()
+
+        cache = JobCache(
+            template_registry=template_registry,
+            profile_registry=profile_registry,
+        )
+        captured = {}
+        cache.batch_v1_api = _BatchApi(captured)
+
+        spec = BatchJobSpec(
+            input_file_id="test-input-123",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+            aibrix=AibrixMetadata(
+                model_template=ModelTemplateRef(name="mock-vllm"),
+                profile=BatchProfileRef(name="unittest"),
+            ),
+        )
+
+        await cache.submit_job("session-1", spec, job_name="batch-test")
+        await asyncio.sleep(0)
+
+        pod_annotations = captured["body"]["spec"]["template"]["metadata"][
+            "annotations"
+        ]
+        assert captured["namespace"] == "default"
+        assert captured["async_req"] is True
+        assert captured["body"]["metadata"]["name"] == "batch-test"
+        assert (
+            pod_annotations[JobAnnotationKey.MODEL_TEMPLATE_NAME.value] == "mock-vllm"
+        )
+        assert pod_annotations[JobAnnotationKey.PROFILE_NAME.value] == "unittest"
+        assert captured["body"]["spec"]["suspend"] is True
+        assert (
+            captured["body"]["spec"]["template"]["spec"]["containers"][1]["image"]
+            == "aibrix/vllm-mock:nightly"
+        )
+
+    @pytest.mark.asyncio
+    async def test_job_cache_submit_job_with_inline_template_and_profile_without_registries(
+        self,
+    ):
+        # Prepare template and profile from fixture, so inline spec is available.
+        template_registry = local_template_registry(_FIXTURE)
+        profile_registry = local_profile_registry(_FIXTURE)
+        template_registry.reload()
+        profile_registry.reload()
+        template = template_registry.get("mock-vllm")
+        profile = profile_registry.get("unittest")
+        assert template is not None
+        assert profile is not None
+
+        # Initialize JobCache without registries.
+        cache = JobCache()
+        captured = {}
+        cache.batch_v1_api = _BatchApi(captured)
+
+        spec = BatchJobSpec(
+            input_file_id="test-input-123",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+            aibrix=AibrixMetadata(
+                model_template=ModelTemplateRef(
+                    name=template.name,
+                    version=template.version,
+                    spec=template.spec.model_dump(exclude_none=True),
+                ),
+                profile=BatchProfileRef(
+                    name=profile.name,
+                    spec=profile.spec.model_dump(exclude_none=True),
+                ),
+            ),
+        )
+
+        await cache.submit_job("session-1", spec, job_name="batch-test")
+        await asyncio.sleep(0)
+
+        pod_annotations = captured["body"]["spec"]["template"]["metadata"][
+            "annotations"
+        ]
+        assert (
+            pod_annotations[JobAnnotationKey.MODEL_TEMPLATE_NAME.value] == template.name
+        )
+        assert pod_annotations[JobAnnotationKey.PROFILE_NAME.value] == profile.name
+
+    @pytest.mark.asyncio
+    async def test_job_cache_submit_job_without_template_registry_reports_render_error(
+        self,
+    ):
+        # Initialize JobCache without registries.
+        cache = JobCache()
+        cache.batch_v1_api = _BatchApi({})
+
+        spec = BatchJobSpec(
+            input_file_id="test-input-123",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+            aibrix=AibrixMetadata(model_template=ModelTemplateRef(name="mock-vllm")),
+        )
+
+        with pytest.raises(RenderError, match="template registry is not configured"):
+            await cache.submit_job("session-1", spec, job_name="batch-test")
+
+    @pytest.mark.asyncio
+    async def test_job_cache_submit_job_without_profile_registry_reports_render_error(
+        self,
+    ):
+        # Prepare template only from fixture, so inline spec is available.
+        template_registry = local_template_registry(_FIXTURE)
+        template_registry.reload()
+        template = template_registry.get("mock-vllm")
+        assert template is not None
+
+        cache = JobCache()
+        cache.batch_v1_api = _BatchApi({})
+
+        spec = BatchJobSpec(
+            input_file_id="test-input-123",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+            aibrix=AibrixMetadata(
+                model_template=ModelTemplateRef(
+                    name=template.name,
+                    version=template.version,
+                    spec=template.spec.model_dump(exclude_none=True),
+                ),
+                profile=BatchProfileRef(name="unittest"),
+            ),
+        )
+
+        with pytest.raises(RenderError, match="profile registry is not configured"):
+            await cache.submit_job("session-1", spec, job_name="batch-test")
 
 
 class TestExceptionMessageConversion:

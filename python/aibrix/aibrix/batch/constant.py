@@ -32,3 +32,6 @@ if not (1 <= DEFAULT_JOB_POOL_SIZE <= 100):
 
 # Job opts are for testing purpose.
 BATCH_OPTS_FAIL_AFTER_N_REQUESTS = "fail_after_n_requests"
+
+BATCH_PROVIDER_LOCAL = "local"
+BATCH_PROVIDER_DEPLOYMENT = "deployment"

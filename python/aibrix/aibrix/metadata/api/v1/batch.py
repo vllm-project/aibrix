@@ -17,28 +17,32 @@ import json
 import traceback
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from aibrix.batch import BatchDriver
 from aibrix.batch.job_entity import (
+    AibrixMetadata,
     BatchJob,
     BatchJobEndpoint,
     BatchJobError,
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    BatchProfileRef,
     BatchUsage,
     CompletionWindow,
+    ModelTemplateRef,
+    PlannerDecision,
 )
 from aibrix.batch.manifest import RenderError
 from aibrix.batch.storage.batch_metastore import get_batch_job
 from aibrix.batch.template import (
-    ProfileOverridesSpec,
+    BatchProfile,
+    ModelDeploymentTemplate,
     ProfileRegistry,
-    TemplateOverridesSpec,
     TemplateRegistry,
 )
 from aibrix.logger import init_logger
@@ -224,9 +228,27 @@ async def _validate_batch_input_file(
 
 
 # OpenAI Batch API request/response models
+class Decision(PlannerDecision):
+    """Decision from planner
+
+    Wire shape (under ``extra_body.aibrix.planner_decision``)::
+
+        {
+            "provision_id": "xxxxxxxx",
+            "provision_resource_deadline": 1422443902,  # optional; 0 / null = will not expire
+            "resource_details": [
+                {
+                    "provider": "xxxxxxxx",
+                    "endpoint_cluster": 1422443902,  # optional; 0 / null = will not expire
+                    "gpu_type": "A100-SM-80G",  # optional
+                    "replica": 2,  # optional; 1 / null = 1
+                }
+            ],
+        }
+    """
 
 
-class TemplateRef(BaseModel):
+class TemplateRef(ModelTemplateRef):
     """Reference to a ModelDeploymentTemplate registered via ConfigMap.
 
     Wire shape (under ``extra_body.aibrix.model_template``)::
@@ -240,28 +262,8 @@ class TemplateRef(BaseModel):
         }
     """
 
-    model_config = {"extra": "forbid"}  # reject unknown keys, no silent drops
 
-    name: str = Field(
-        description="ModelDeploymentTemplate name registered via ConfigMap",
-    )
-    version: Optional[str] = Field(
-        default=None,
-        description=(
-            "Optional template version pin. Empty / null resolves to the "
-            "latest active version of the named template."
-        ),
-    )
-    overrides: Optional[TemplateOverridesSpec] = Field(
-        default=None,
-        description=(
-            "Allowlisted overrides applied on top of the resolved template "
-            "spec at render time."
-        ),
-    )
-
-
-class ProfileRef(BaseModel):
+class ProfileRef(BatchProfileRef):
     """Reference to a BatchProfile registered via ConfigMap.
 
     Wire shape (under ``extra_body.aibrix.profile``)::
@@ -273,17 +275,6 @@ class ProfileRef(BaseModel):
             },
         }
     """
-
-    model_config = {"extra": "forbid"}
-
-    name: str = Field(description="BatchProfile name registered via ConfigMap")
-    overrides: Optional[ProfileOverridesSpec] = Field(
-        default=None,
-        description=(
-            "Allowlisted overrides applied on top of the resolved profile "
-            "spec at render time."
-        ),
-    )
 
 
 class AibrixExtension(BaseModel):
@@ -313,14 +304,18 @@ class AibrixExtension(BaseModel):
     ConfigMap to accept any batch. See
     docs/source/features/batch-templates.rst.
 
-    Inline ``model_template_spec`` is intentionally NOT supported.
-    Templates are the curated security/cost gate; bypassing them via
-    inline spec would leak image / GPU SKU / namespace control to
-    users and shatter audit by template name.
+    Inline ``model_template.spec`` IS supported (Pydantic ``TemplateRef``
+    accepts a ``spec`` field). It is intended for cross-cluster deployments
+    where MDS cannot share a registry with the upstream Console: Console
+    resolves the template against its own DB and pushes the resolved spec
+    inline so MDS skips its local registry lookup. The audit trail still
+    keys off ``name`` + ``version``.
     """
 
     model_config = {"extra": "allow"}
 
+    job_id: Optional[str] = None
+    planner_decision: Optional[Decision] = None
     model_template: Optional[TemplateRef] = Field(
         default=None,
         description="ModelDeploymentTemplate reference (name + optional version + overrides)",
@@ -329,6 +324,23 @@ class AibrixExtension(BaseModel):
         default=None,
         description="BatchProfile reference; falls back to registry default if omitted",
     )
+
+    @field_validator("model_template", mode="before")
+    @classmethod
+    def normalize_model_template(cls, value: Any) -> Any:
+        if isinstance(value, ModelDeploymentTemplate):
+            value = value.model_dump(exclude_none=True)
+        if isinstance(value, dict) and "status" in value:
+            value = dict(value)
+            value.pop("status")
+        return value
+
+    @field_validator("profile", mode="before")
+    @classmethod
+    def normalize_profile(cls, value: Any) -> Any:
+        if isinstance(value, BatchProfile):
+            return value.model_dump(exclude_none=True)
+        return value
 
 
 class BatchSpec(BaseModel):
@@ -360,33 +372,20 @@ class BatchSpec(BaseModel):
 
     @classmethod
     def newBatchJobSpec(cls, spec: "BatchSpec") -> BatchJobSpec:
-        ext = spec.aibrix
-        tref = ext.model_template if ext else None
-        pref = ext.profile if ext else None
+        aibrix: Optional[AibrixMetadata] = None
+        if spec.aibrix is not None:
+            aibrix = AibrixMetadata(
+                job_id=spec.aibrix.job_id,
+                planner_decision=spec.aibrix.planner_decision,
+                model_template=spec.aibrix.model_template,
+                profile=spec.aibrix.profile,
+            )
         return BatchJobSpec(
             input_file_id=spec.input_file_id,
             endpoint=spec.endpoint.value,
             completion_window=spec.completion_window.expires_at(),
             metadata=spec.metadata,
-            model_template_name=(tref.name if tref else None),
-            model_template_version=(tref.version if tref else None),
-            profile_name=(pref.name if pref else None),
-            # Overrides are carried as plain dicts on BatchJobSpec to keep
-            # that model decoupled from the template package (avoids a
-            # circular import). They are re-validated by the renderer.
-            template_overrides=(
-                tref.overrides.model_dump(exclude_none=True)
-                if (tref and tref.overrides)
-                else None
-            ),
-            # exclude_unset preserves the "partial override" contract: we
-            # only forward fields the caller actually set, so the renderer
-            # doesn't silently overwrite profile defaults.
-            profile_overrides=(
-                pref.overrides.model_dump(exclude_unset=True)
-                if (pref and pref.overrides)
-                else None
-            ),
+            aibrix=aibrix,
         )
 
 
@@ -414,32 +413,35 @@ def _validate_aibrix_extension(
         return  # registries not yet configured; defer to renderer
 
     tref = extension.model_template
-    if tref.version:
-        # Pin: must match exactly
-        resolved = template_registry.get_by_version(tref.name, tref.version)
-        if resolved is None:
-            available = template_registry.names()
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"aibrix.model_template '{tref.name}@{tref.version}' not found. "
-                    f"Templates with at least one active version: {available}"
-                ),
-            )
-    else:
-        if template_registry.get(tref.name) is None:
-            available = template_registry.names()
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"aibrix.model_template '{tref.name}' has no active version. "
-                    f"Templates with at least one active version: {available}"
-                ),
-            )
+    # Inline spec bypasses registry lookup: trusted caller (e.g. Console)
+    # already resolved the template; renderer will consume the inline spec.
+    if tref.spec is None:
+        if tref.version:
+            # Pin: must match exactly
+            resolved = template_registry.get_by_version(tref.name, tref.version)
+            if resolved is None:
+                available = template_registry.names()
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"aibrix.model_template '{tref.name}@{tref.version}' not found. "
+                        f"Templates with at least one active version: {available}"
+                    ),
+                )
+        else:
+            if template_registry.get(tref.name) is None:
+                available = template_registry.names()
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"aibrix.model_template '{tref.name}' has no active version. "
+                        f"Templates with at least one active version: {available}"
+                    ),
+                )
 
     if extension.profile is not None and profile_registry is not None:
         pref = extension.profile
-        if profile_registry.get(pref.name) is None:
+        if pref.spec is None and profile_registry.get(pref.name) is None:
             available = profile_registry.names()
             raise HTTPException(
                 status_code=400,
@@ -535,6 +537,10 @@ class BatchResponse(BaseModel):
     metadata: Optional[Dict[str, str]] = Field(
         default=None, description="Batch metadata"
     )
+    aibrix: Optional[AibrixMetadata] = Field(
+        default=None,
+        description="AIBrix-specific batch metadata",
+    )
 
 
 class BatchListResponse(BaseModel):
@@ -621,6 +627,7 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
         request_counts=request_counts,
         usage=status.usage,
         metadata=spec.metadata,
+        aibrix=spec.aibrix,
     )
 
 
@@ -833,7 +840,6 @@ async def list_batches(
         # the latter does not fit the current cursor-based pagination
         # cheaply. Point reads already serve from the store, so the
         # tradeoff only hurts the rare list call.
-        # TODO(A.2 follow-up): wire list to BatchJobStore via an index.
         all_jobs: List[BatchJob] = await batch_driver.run_coroutine(
             batch_driver.job_manager.list_jobs()
         )

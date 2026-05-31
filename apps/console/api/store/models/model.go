@@ -27,9 +27,10 @@ import (
 
 // Model maps model catalog table.
 type Model struct {
-	ID            string         `gorm:"column:id;primaryKey;size:36"`
-	Name          string         `gorm:"column:name;size:255;not null"`
-	Provider      string         `gorm:"column:provider;size:255;not null;default:''"`
+	RowID         uint64         `gorm:"column:row_id;primaryKey;autoIncrement"`
+	ID            string         `gorm:"column:id;size:36;not null;uniqueIndex:uniq_models_id"`
+	Name          string         `gorm:"column:name;size:255;not null;default:'';index:idx_models_name"`
+	Provider      string         `gorm:"column:provider;size:255;not null;default:'';index:idx_models_provider"`
 	IconBg        string         `gorm:"column:icon_bg;size:255;not null;default:''"`
 	IconText      string         `gorm:"column:icon_text;size:255;not null;default:''"`
 	IconTextColor string         `gorm:"column:icon_text_color;size:255;not null;default:''"`
@@ -42,6 +43,7 @@ type Model struct {
 	Specification datatypes.JSON `gorm:"column:specification"`
 	Tags          datatypes.JSON `gorm:"column:tags"`
 	ServingName   string         `gorm:"column:serving_name;size:255;not null;default:''"`
+	Deleted       bool           `gorm:"column:deleted;not null;default:false;index"`
 	CreatedAt     time.Time      `gorm:"column:created_at;autoCreateTime"`
 	UpdatedAt     time.Time      `gorm:"column:updated_at;autoUpdateTime"`
 }

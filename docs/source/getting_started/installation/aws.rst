@@ -108,7 +108,13 @@ Steps
 
 
 2. Clone AIBrix code repo ``git clone https://github.com/vllm-project/aibrix.git``.
-3. Install AIBrix ``kubectl apply -k config/dependency --server-side`` and ``kubectl apply -k config/default``.
+3. Install AIBrix dependencies, CRDs, and core components:
+
+   .. code-block:: bash
+
+       kubectl apply -k config/dependency --server-side
+       kubectl apply -k config/crd --server-side
+       kubectl apply -k config/default
 4. Wait for components to complete running.
 5. Deploy a model by following the instructions in :doc:`../quickstart`.
 6. Once the model is ready and running, you can test it by running:

@@ -18,12 +18,12 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"testing"
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
+	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -171,21 +171,18 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("DeleteDeployment_NotFound", func(t *testing.T) {
+			// Delete is idempotent - no error for non-existent deployment
 			err := s.DeleteDeployment(ctx, "non-existent")
-			if err == nil {
-				t.Fatal("expected error for non-existent deployment")
-			}
-			st, ok := status.FromError(err)
-			if !ok || st.Code() != codes.NotFound {
-				t.Errorf("expected NotFound error, got %v", err)
+			if err != nil {
+				t.Fatalf("expected no error for idempotent delete, got %v", err)
 			}
 		})
 	})
 
 	t.Run("Jobs", func(t *testing.T) {
 		t.Run("UpsertJob", func(t *testing.T) {
-			job := &pb.Job{
-				Id:        "test-job-1",
+			job := &models.Job{
+				ID:        "test-job-1",
 				Name:      "Test Job",
 				CreatedBy: "test@aibrix.ai",
 			}
@@ -195,7 +192,7 @@ func TestMemoryStore(t *testing.T) {
 			}
 
 			// Verify it can be retrieved
-			retrieved, err := s.GetJob(ctx, job.Id)
+			retrieved, err := s.GetJob(ctx, job.ID)
 			if err != nil {
 				t.Fatalf("GetJob after upsert failed: %v", err)
 			}
@@ -208,8 +205,8 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("UpsertJob_Update", func(t *testing.T) {
-			job := &pb.Job{
-				Id:        "test-job-update",
+			job := &models.Job{
+				ID:        "test-job-update",
 				Name:      "Original Name",
 				CreatedBy: "test@aibrix.ai",
 			}
@@ -225,7 +222,7 @@ func TestMemoryStore(t *testing.T) {
 				t.Fatalf("UpsertJob (update) failed: %v", err)
 			}
 
-			retrieved, err := s.GetJob(ctx, job.Id)
+			retrieved, err := s.GetJob(ctx, job.ID)
 			if err != nil {
 				t.Fatalf("GetJob after update failed: %v", err)
 			}
@@ -260,7 +257,7 @@ func TestMemoryStore(t *testing.T) {
 		t.Run("ListJobs", func(t *testing.T) {
 			// Create test jobs
 			for _, id := range []string{"list-job-1", "list-job-2"} {
-				job := &pb.Job{Id: id, Name: "List Test", CreatedBy: "test@aibrix.ai"}
+				job := &models.Job{ID: id, Name: "List Test", CreatedBy: "test@aibrix.ai"}
 				if err := s.UpsertJob(ctx, job); err != nil {
 					t.Fatalf("UpsertJob failed: %v", err)
 				}
@@ -286,8 +283,8 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("DeleteJob", func(t *testing.T) {
-			job := &pb.Job{
-				Id:        "job-to-delete",
+			job := &models.Job{
+				ID:        "job-to-delete",
 				Name:      "To Delete",
 				CreatedBy: "test@aibrix.ai",
 			}
@@ -296,12 +293,12 @@ func TestMemoryStore(t *testing.T) {
 				t.Fatalf("UpsertJob for delete test failed: %v", err)
 			}
 
-			err = s.DeleteJob(ctx, job.Id)
+			err = s.DeleteJob(ctx, job.ID)
 			if err != nil {
 				t.Fatalf("DeleteJob failed: %v", err)
 			}
 
-			retrieved, err := s.GetJob(ctx, job.Id)
+			retrieved, err := s.GetJob(ctx, job.ID)
 			if err != nil {
 				t.Fatalf("GetJob after delete failed: %v", err)
 			}
@@ -311,7 +308,7 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("UpsertJob_Invalid", func(t *testing.T) {
-			err := s.UpsertJob(ctx, &pb.Job{Id: ""})
+			err := s.UpsertJob(ctx, &models.Job{ID: ""})
 			if err == nil {
 				t.Error("expected error for empty job ID")
 			}
@@ -635,13 +632,10 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("DeleteModelDeploymentTemplate_NotFound", func(t *testing.T) {
+			// Delete is idempotent - no error for non-existent template
 			err := s.DeleteModelDeploymentTemplate(ctx, "model-llama-3.3-70b", "non-existent")
-			if err == nil {
-				t.Fatal("expected error for non-existent template")
-			}
-			st, ok := status.FromError(err)
-			if !ok || st.Code() != codes.NotFound {
-				t.Errorf("expected NotFound error, got %v", err)
+			if err != nil {
+				t.Fatalf("expected no error for idempotent delete, got %v", err)
 			}
 		})
 
@@ -744,13 +738,10 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("DeleteAPIKey_NotFound", func(t *testing.T) {
+			// Delete is idempotent - no error for non-existent key
 			err := s.DeleteAPIKey(ctx, "non-existent-key")
-			if err == nil {
-				t.Fatal("expected error for non-existent key")
-			}
-			st, ok := status.FromError(err)
-			if !ok || st.Code() != codes.NotFound {
-				t.Errorf("expected NotFound error, got %v", err)
+			if err != nil {
+				t.Fatalf("expected no error for idempotent delete, got %v", err)
 			}
 		})
 	})
@@ -811,13 +802,10 @@ func TestMemoryStore(t *testing.T) {
 		})
 
 		t.Run("DeleteSecret_NotFound", func(t *testing.T) {
+			// Delete is idempotent - no error for non-existent secret
 			err := s.DeleteSecret(ctx, "non-existent-secret")
-			if err == nil {
-				t.Fatal("expected error for non-existent secret")
-			}
-			st, ok := status.FromError(err)
-			if !ok || st.Code() != codes.NotFound {
-				t.Errorf("expected NotFound error, got %v", err)
+			if err != nil {
+				t.Fatalf("expected no error for idempotent delete, got %v", err)
 			}
 		})
 	})
@@ -1063,20 +1051,11 @@ func TestMemoryStore(t *testing.T) {
 			regionA := types.RegionSpec{Kubernetes: &types.KubernetesRegion{Context: "ctx-a", Namespace: "ns-a"}}
 			regionB := types.RegionSpec{Kubernetes: &types.KubernetesRegion{Context: "ctx-b", Namespace: "ns-b"}}
 
-			regionABytes, err := json.Marshal(regionA)
-			if err != nil {
-				t.Fatalf("marshal regionA failed: %v", err)
-			}
-			regionBBytes, err := json.Marshal(regionB)
-			if err != nil {
-				t.Fatalf("marshal regionB failed: %v", err)
-			}
-
 			resultA := &types.ProvisionResult{
 				IdempotencyKey: "idem-key-region-a",
 				ProvisionID:    "prov-region-a",
 				Status:         types.ProvisionStatusPending,
-				Region:         string(regionABytes),
+				Region:         regionA.String(),
 			}
 			if err := s.UpsertProvision(ctx, resultA); err != nil {
 				t.Fatalf("UpsertProvision regionA failed: %v", err)
@@ -1086,7 +1065,7 @@ func TestMemoryStore(t *testing.T) {
 				IdempotencyKey: "idem-key-region-b",
 				ProvisionID:    "prov-region-b",
 				Status:         types.ProvisionStatusPending,
-				Region:         string(regionBBytes),
+				Region:         regionB.String(),
 			}
 			if err := s.UpsertProvision(ctx, resultB); err != nil {
 				t.Fatalf("UpsertProvision regionB failed: %v", err)
