@@ -32,9 +32,74 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 )
 
-// NewK8sClientset creates a Kubernetes clientset from a KubernetesCredential.
+type kubernetesClientset struct {
+	RegionClients []kubernetesRegionClient `json:"-"`
+}
+
+type kubernetesRegionClient struct {
+	Region    types.RegionSpec     `json:"region"`
+	Clientset kubernetes.Interface `json:"-"`
+}
+
+func (k *kubernetesClientset) listRegions() []types.RegionSpec {
+	if k == nil || len(k.RegionClients) == 0 {
+		return nil
+	}
+
+	regions := make([]types.RegionSpec, 0, len(k.RegionClients))
+	for _, regionClient := range k.RegionClients {
+		regions = append(regions, regionClient.Region)
+	}
+	return regions
+}
+
+func (k *kubernetesClientset) resolve(filter *types.RegionSpec) []kubernetesRegionClient {
+	if k == nil || len(k.RegionClients) == 0 {
+		return nil
+	}
+	if filter == nil || filter.Kubernetes == nil {
+		return k.RegionClients
+	}
+
+	matched := make([]kubernetesRegionClient, 0, len(k.RegionClients))
+	for _, regionClient := range k.RegionClients {
+		if !matchesKubernetesRegion(regionClient.Region.Kubernetes, filter.Kubernetes) {
+			continue
+		}
+		matched = append(matched, regionClient)
+	}
+	return matched
+}
+
+func (k *kubernetesClientset) primary() *kubernetesRegionClient {
+	if k == nil || len(k.RegionClients) == 0 {
+		return nil
+	}
+	return &k.RegionClients[0]
+}
+
+func matchesKubernetesRegion(candidate, filter *types.KubernetesRegion) bool {
+	if filter == nil {
+		return true
+	}
+	if candidate == nil {
+		return false
+	}
+	if filter.Context != "" && candidate.Context != filter.Context {
+		return false
+	}
+	if filter.Cluster != "" && candidate.Cluster != filter.Cluster {
+		return false
+	}
+	if filter.Namespace != "" && candidate.Namespace != filter.Namespace {
+		return false
+	}
+	return true
+}
+
+// newK8sClientset creates a Kubernetes clientset from a KubernetesCredential.
 // This is the main entry point for creating a clientset.
-func NewK8sClientset(credential *types.KubernetesCredential) (*types.KubernetesClientset, error) {
+func newK8sClientset(credential *types.KubernetesCredential) (*kubernetesClientset, error) {
 	if credential == nil {
 		return nil, types.ErrCredentialIsNil
 	}
@@ -143,7 +208,7 @@ func validateCredential(credential *types.KubernetesCredential) (*clientcmdapi.C
 
 // newClientsetFromKubeconfig creates clientsets using kubeconfig file.
 // Assumes validateCredential has already been called.
-func newClientsetFromKubeconfig(credential *types.KubernetesCredential, rawConfig *clientcmdapi.Config) (*types.KubernetesClientset, error) {
+func newClientsetFromKubeconfig(credential *types.KubernetesCredential, rawConfig *clientcmdapi.Config) (*kubernetesClientset, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	loadingRules.ExplicitPath = *credential.Kubeconfig
 
@@ -152,7 +217,7 @@ func newClientsetFromKubeconfig(credential *types.KubernetesCredential, rawConfi
 		return nil, types.ErrInvalidCredential
 	}
 
-	regionClients := make([]types.KubernetesRegionClient, 0, len(regions))
+	regionClients := make([]kubernetesRegionClient, 0, len(regions))
 	for _, region := range regions {
 		if region.Kubernetes == nil {
 			continue
@@ -183,7 +248,7 @@ func newClientsetFromKubeconfig(credential *types.KubernetesCredential, rawConfi
 			return nil, types.ErrInvalidCredential
 		}
 
-		regionClients = append(regionClients, types.KubernetesRegionClient{
+		regionClients = append(regionClients, kubernetesRegionClient{
 			Region:    regionCopy,
 			Clientset: clientset,
 		})
@@ -193,13 +258,13 @@ func newClientsetFromKubeconfig(credential *types.KubernetesCredential, rawConfi
 		return nil, types.ErrInvalidCredential
 	}
 
-	return &types.KubernetesClientset{
+	return &kubernetesClientset{
 		RegionClients: regionClients,
 	}, nil
 }
 
 // newInClusterClientset creates a clientset using in-cluster config.
-func newInClusterClientset(credential *types.KubernetesCredential) (*types.KubernetesClientset, error) {
+func newInClusterClientset(credential *types.KubernetesCredential) (*kubernetesClientset, error) {
 	restConfig, err := rest.InClusterConfig()
 	if err != nil {
 		klog.Errorf("get in-cluster config failed: %s", err.Error())
@@ -217,8 +282,8 @@ func newInClusterClientset(credential *types.KubernetesCredential) (*types.Kuber
 		namespace = "default"
 	}
 
-	return &types.KubernetesClientset{
-		RegionClients: []types.KubernetesRegionClient{
+	return &kubernetesClientset{
+		RegionClients: []kubernetesRegionClient{
 			{
 				Region: types.RegionSpec{
 					Kubernetes: &types.KubernetesRegion{

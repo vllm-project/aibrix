@@ -84,7 +84,7 @@ func (p *k8sProvisioner) Provision(ctx context.Context, req *types.ResourceProvi
 	provisionID := uuid.New().String()
 
 	regionStr := ""
-	if primary := k8sClientset.Primary(); primary != nil {
+	if primary := k8sClientset.primary(); primary != nil {
 		regionStr = primary.Region.String()
 	}
 
@@ -107,26 +107,26 @@ func (p *k8sProvisioner) Provision(ctx context.Context, req *types.ResourceProvi
 	return result, nil
 }
 
-func (p *k8sProvisioner) getOrCreateClientset(credential *types.ResourceCredential) (*types.KubernetesClientset, error) {
+func (p *k8sProvisioner) getOrCreateClientset(credential *types.ResourceCredential) (*kubernetesClientset, error) {
 	cacheKey, normalizedCredential := normalizeK8sCredentialForCache(credential)
 
 	p.mu.RLock()
 	cached, ok := p.clientsetCache.Get(cacheKey)
 	p.mu.RUnlock()
 	if ok && cached != nil {
-		if clientset, ok := cached.(*types.KubernetesClientset); ok && clientset != nil {
+		if clientset, ok := cached.(*kubernetesClientset); ok && clientset != nil {
 			return clientset, nil
 		}
 	}
 
-	k8sClientset, err := NewK8sClientset(normalizedCredential.Kubernetes)
+	k8sClientset, err := newK8sClientset(normalizedCredential.Kubernetes)
 	if err != nil {
 		return nil, err
 	}
 
 	p.mu.Lock()
 	if existing, ok := p.clientsetCache.Get(cacheKey); ok && existing != nil {
-		if clientset, ok := existing.(*types.KubernetesClientset); ok && clientset != nil {
+		if clientset, ok := existing.(*kubernetesClientset); ok && clientset != nil {
 			p.mu.Unlock()
 			return clientset, nil
 		}

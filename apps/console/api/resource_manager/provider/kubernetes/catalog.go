@@ -41,7 +41,7 @@ const (
 // k8sCatalog implements catalog.Catalog for Kubernetes.
 type k8sCatalog struct {
 	mu        sync.Mutex
-	clientset *types.KubernetesClientset
+	clientset *kubernetesClientset
 }
 
 // newCatalog creates a new Kubernetes catalog.
@@ -54,7 +54,7 @@ func (c *k8sCatalog) Provider() types.ResourceProvisionType {
 	return types.ResourceProvisionTypeKubernetes
 }
 
-func (c *k8sCatalog) defaultClientset() (*types.KubernetesClientset, error) {
+func (c *k8sCatalog) defaultClientset() (*kubernetesClientset, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -62,7 +62,7 @@ func (c *k8sCatalog) defaultClientset() (*types.KubernetesClientset, error) {
 		return c.clientset, nil
 	}
 
-	resourceClientset, err := NewK8sClientset(&types.KubernetesCredential{})
+	resourceClientset, err := newK8sClientset(&types.KubernetesCredential{})
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +76,7 @@ func (c *k8sCatalog) ListRegions(ctx context.Context) ([]types.RegionSpec, error
 	if err != nil {
 		return nil, err
 	}
-	return k8sClientset.ListRegions(), nil
+	return k8sClientset.listRegions(), nil
 }
 
 // ListInstanceTypes lists available instance types for the catalog.
@@ -86,7 +86,7 @@ func (c *k8sCatalog) ListInstanceTypes(ctx context.Context, region *types.Region
 		return nil, err
 	}
 
-	regionClients := k8sClientset.Resolve(region)
+	regionClients := k8sClientset.resolve(region)
 	if len(regionClients) == 0 {
 		return []types.InstanceTypeSpec{}, nil
 	}
@@ -133,7 +133,7 @@ func (c *k8sCatalog) ListResources(ctx context.Context, opts *catalog.ResourceLi
 		regionFilter = &opts.Region
 	}
 
-	regionClients := k8sClientset.Resolve(regionFilter)
+	regionClients := k8sClientset.resolve(regionFilter)
 	if len(regionClients) == 0 {
 		return []catalog.Resource{}, nil
 	}
