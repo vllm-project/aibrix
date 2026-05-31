@@ -22,9 +22,6 @@ import (
 )
 
 func NewProvisioner(provider types.ResourceProvisionType, s store.Store) (Provisioner, error) {
-	if provider == types.ResourceProvisionTypeKubernetes {
-		return NewK8sProvisioner(s)
-	}
 	if f, ok := lookup(provider); ok {
 		return f(s)
 	}

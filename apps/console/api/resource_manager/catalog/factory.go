@@ -21,9 +21,6 @@ import (
 )
 
 func NewCatalog(provider types.ResourceProvisionType) (Catalog, error) {
-	if provider == types.ResourceProvisionTypeKubernetes {
-		return NewK8sCatalog()
-	}
 	if f, ok := lookup(provider); ok {
 		return f()
 	}
