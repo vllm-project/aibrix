@@ -289,6 +289,10 @@ class ModelDeploymentTemplateSpec(_Strict):
         min_length=1,
         description="OpenAI endpoints this deployment can serve",
     )
+    service_id: Optional[str] = Field(
+        default=None,
+        description="Optional service identifier (e.g. discovery key) propagated to provider workload labels and discovery",
+    )
     deployment_mode: DeploymentMode = Field(
         default=DeploymentMode.DEDICATED,
         description="Only 'dedicated' is honored at runtime today.",

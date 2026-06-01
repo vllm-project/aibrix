@@ -124,6 +124,8 @@ type ResourceGroupSpec struct {
 
 	// LambdaCloud contains LambdaCloud Cloud-specific options.
 	LambdaCloud *LambdaCloudGroupOptions `json:"lambdaCloud,omitempty"`
+
+	ExtensionResourceGroupOptions
 }
 
 type GroupSpecNetwork struct {
@@ -217,16 +219,13 @@ type AcceleratorPreferencePrecisionSupport struct {
 //
 // ```
 type TimeWindow struct {
-	// StartTime is the start time when the task/service can be scheduled (ISO 8601 format).
+	// StartTime is the start time (UTC) when the task/service can be scheduled (ISO 8601 format).
 	// For periodic tasks, this is the first scheduling start point.
 	StartTime time.Time `json:"startTime"`
 
-	// EndTime is the end time when the task/service can be scheduled (ISO 8601 format).
+	// EndTime is the end time (UTC) when the task/service can be scheduled (ISO 8601 format).
 	// For long-running services, this can be omitted, meaning "until actively released".
 	EndTime *time.Time `json:"endTime,omitempty"`
-
-	// Timezone optionally overrides workload.timezone for this timeWindow (IANA/Olson format).
-	Timezone *string `json:"timezone,omitempty"`
 
 	// MaxDuration is the maximum continuous duration (hours), indicating the longest continuous period needed.
 	// Used to limit the maximum resource allocation duration.
@@ -338,6 +337,9 @@ type ProvisionResult struct {
 	// Set by the provisioner.
 	ProvisionID string `json:"provisionId"`
 
+	// Provider is the provisioner type.
+	Provider string `json:"provider"`
+
 	// IdempotencyKey is the idempotency key from the original request.
 	// Used to prevent duplicate provisions and enable request deduplication.
 	// Set by the planner.
@@ -373,6 +375,12 @@ type ProvisionResult struct {
 	// LambdaCloud contains Lambda Cloud-specific provision details.
 	// Set when provider is "lambdaCloud".
 	LambdaCloud *LambdaCloudProvisionDetail `json:"lambdaCloud,omitempty"`
+
+	// RunPod contains RunPod-specific provision details.
+	// Set when provider is "runpod".
+	RunPod *RunPodProvisionDetail `json:"runpod,omitempty"`
+
+	ExtensionProvisionResultDetails
 }
 
 func (pr *ProvisionResult) ToProvisionRecord() (*ProvisionRecord, error) {
@@ -382,6 +390,7 @@ func (pr *ProvisionResult) ToProvisionRecord() (*ProvisionRecord, error) {
 	}
 	return &ProvisionRecord{
 		ProvisionID: pr.ProvisionID,
+		Provider:    pr.Provider,
 		Status:      string(pr.Status),
 		Region:      pr.Region,
 		Payload:     payload,
@@ -502,6 +511,33 @@ type LambdaCloudInstanceDetail struct {
 	PublicIp *string `json:"publicIp,omitempty"`
 }
 
+// RunPodProvisionDetail contains RunPod-specific provision result details.
+type RunPodProvisionDetail struct {
+	// Pods contains details of provisioned RunPod pods.
+	Pods []RunPodPodDetail `json:"pods,omitempty"`
+
+	// Region is the RunPod data center backing the provision.
+	Region string `json:"region,omitempty"`
+}
+
+// RunPodPodDetail contains details about a single RunPod pod.
+type RunPodPodDetail struct {
+	// PodId is the RunPod pod ID.
+	PodId string `json:"podId"`
+
+	// GpuTypeId is the RunPod GPU type the pod was launched with.
+	GpuTypeId string `json:"gpuTypeId,omitempty"`
+
+	// DesiredStatus is the pod's desired status (RUNNING/EXITED/TERMINATED).
+	DesiredStatus string `json:"desiredStatus,omitempty"`
+
+	// PublicIp is the pod's public IP address.
+	PublicIp *string `json:"publicIp,omitempty"`
+
+	// DataCenterId is the RunPod data center the pod runs in.
+	DataCenterId string `json:"dataCenterId,omitempty"`
+}
+
 type InstanceTypeSpec struct {
 	InstanceType string `json:"instanceType"`
 	// TODO: Add more instance type fields as needed.
@@ -510,6 +546,7 @@ type InstanceTypeSpec struct {
 // ProvisionRecord represents the result of a provision result stored in the store.
 type ProvisionRecord struct {
 	ProvisionID string    `json:"provisionId"`
+	Provider    string    `json:"provider"`
 	Status      string    `json:"status"`
 	Region      string    `json:"region,omitempty"`
 	Payload     []byte    `json:"payload,omitempty"` // JSON-serialized result

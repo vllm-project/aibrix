@@ -36,6 +36,7 @@ type Store interface {
 	UpsertJob(ctx context.Context, rec *models.Job) error
 	GetJob(ctx context.Context, id string) (*models.Job, error) // (nil, nil) when not found
 	ListJobs(ctx context.Context, ids []string) (map[string]*models.Job, error)
+	ListJobsByBatchIDs(ctx context.Context, batchIDs []string) (map[string]*models.Job, error)
 	DeleteJob(ctx context.Context, id string) error
 
 	ListNonTerminalJobs(ctx context.Context) ([]*models.Job, error)

@@ -25,7 +25,13 @@ import httpx
 from kubernetes import client as k8s_client
 from kubernetes.client import ApiException
 
-from aibrix.batch.job_entity import BatchJob, BatchJobState, JobEntityManager
+from aibrix.batch.job_entity import (
+    BatchJob,
+    BatchJobError,
+    BatchJobErrorCode,
+    BatchJobState,
+    JobEntityManager,
+)
 from aibrix.batch.manifest import DeploymentManifestRenderer
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
@@ -186,8 +192,11 @@ class KubernetesServiceInferenceClient:
         while time.time() < deadline:
             if process.poll() is not None:
                 output = process.stdout.read() if process.stdout is not None else ""
-                raise RuntimeError(
-                    f"port-forward exited early for {self._service_name}: {output}"
+                raise BatchJobError(
+                    code=BatchJobErrorCode.CONNECTION_ERROR,
+                    message=(
+                        f"port-forward exited early for {self._service_name}: {output}"
+                    ),
                 )
             line = process.stdout.readline() if process.stdout is not None else ""
             if match := self._PORT_FORWARD_URL_RE.search(line):
@@ -433,7 +442,10 @@ class DeploymentJobDriver(LocalJobDriver):
                 exception=str(ex),
                 exc_info=True,
             )  # type: ignore[call-arg]
-            job = await self._progress_manager.mark_job_failed(job_id, str(ex))
+            job = await self._progress_manager.mark_job_failed(
+                job_id,
+                self._ensure_batch_job_error(ex),
+            )
             await self._snapshot_usage_to_status(job_id)
             self._drop_usage_state(job_id)
 

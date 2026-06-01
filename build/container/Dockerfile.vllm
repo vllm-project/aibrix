@@ -40,6 +40,20 @@ COPY --from=builder /tmp/aibrix /tmp/aibrix
 RUN ${PYTHON_BIN} -m pip uninstall -y aibrix_kvcache && \
     ${PYTHON_BIN} -m pip install /tmp/aibrix/python/aibrix_kvcache/dist/*.whl
 
+ARG VLLM_OMNI_VERSION=""
+RUN if [ -n "${VLLM_OMNI_VERSION}" ]; then \
+      ${PYTHON_BIN} -m pip install --no-cache-dir vllm-omni==${VLLM_OMNI_VERSION}; \
+    fi
+
+# apply patch to vLLM (only if patch file exists for this version)
+RUN PATCH_FILE="/tmp/aibrix/python/aibrix_kvcache/integration/vllm/patches/vllm_${VLLM_VERSION}-aibrix-kvcache.patch" && \
+    if [ -f "$PATCH_FILE" ]; then \
+      DIST_DIR=$(${PYTHON_BIN} -m pip show vllm | grep "Location:" | awk '{print $2}') && \
+      cd $DIST_DIR && \
+      patch -p 1 -l -i $PATCH_FILE; \
+    else \
+      echo "No patch file for vLLM ${VLLM_VERSION} — using monkey-patch mode (PR #2060)"; \
+    fi
 # apply patch to vLLM
 RUN DIST_DIR=$(${PYTHON_BIN} -m pip show vllm | grep "Location:" | awk '{print $2}') && \
     cd $DIST_DIR && \

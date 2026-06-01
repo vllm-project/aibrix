@@ -278,26 +278,47 @@ class JobScheduler:
                         raise Exception(f"scheduled job '{one_job}' has no job driver")
                     await job_driver.execute_job(one_job)
                 except RuntimeError as re:
+                    # A single job's failure must not kill the scheduler loop;
+                    # the driver already marked the job terminal before raising.
                     logger.error(
                         "Runtime err",
                         job_id=one_job,
                         error=str(re),
                     )  # type: ignore[call-arg]
-                    raise
                 except Exception as e:
-                    job = await self._job_progress_manager.mark_job_failed(
-                        one_job,
-                        BatchJobError(
-                            code=BatchJobErrorCode.INFERENCE_FAILED, message=str(e)
-                        ),
+                    # Preserve the original error code when the driver already
+                    # classified it (e.g. RESOURCE_CREATION_ERROR from workload
+                    # provisioning). Only fall back to a generic code for raw,
+                    # unclassified exceptions so failures aren't mislabeled as
+                    # inference failures.
+                    err = (
+                        e
+                        if isinstance(e, BatchJobError)
+                        else BatchJobError(
+                            code=BatchJobErrorCode.UNKNOWN_ERROR, message=str(e)
+                        )
                     )
+                    # Guard mark_job_failed: if it raises (e.g. the job is no
+                    # longer in_progress) the exception must not escape and tear
+                    # down the loop, stranding all future jobs.
+                    try:
+                        job = await self._job_progress_manager.mark_job_failed(
+                            one_job, err
+                        )
+                        state = job.status.state.value
+                    except Exception as me:
+                        state = "unknown"
+                        logger.error(
+                            "Failed to mark job failed",
+                            job_id=one_job,
+                            error=str(me),
+                        )  # type: ignore[call-arg]
                     logger.error(
                         "Failed to execute job",
                         job_id=one_job,
-                        status=job.status.state.value,
+                        status=state,
                         error=str(e),
                     )  # type: ignore[call-arg]
-                    raise
             # yield loop
             await asyncio.sleep(0)
 

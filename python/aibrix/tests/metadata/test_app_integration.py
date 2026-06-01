@@ -135,6 +135,53 @@ def test_build_app_without_k8s_job(_mock_k8s_config_loading):
     assert hasattr(app.state, "httpx_client_wrapper")
 
 
+def test_build_app_disabled_batch_api_without_inference_endpoint(
+    _mock_k8s_config_loading, monkeypatch
+):
+    """Regression for #2185: disabling the batch API must not require an
+    inference endpoint. The inference client is only consumed by the batch
+    API, so build_app should succeed (not sys.exit) when batch is off and no
+    INFERENCE_ENGINE_ENDPOINT is configured."""
+    monkeypatch.delenv("INFERENCE_ENGINE_ENDPOINT", raising=False)
+    args = _args(
+        disable_batch_api=True,
+        disable_inference_endpoint=False,
+        disable_k8s_support=True,
+    )
+
+    app = build_app(args)
+
+    assert not hasattr(app.state, "batch_driver")
+    assert hasattr(app.state, "httpx_client_wrapper")
+
+
+def test_build_app_k8s_job_without_inference_endpoint(
+    _mock_k8s_config_loading, monkeypatch
+):
+    """Regression for #2185: in k8s-job mode the worker pods bring their own
+    engine endpoint, so build_app must not require INFERENCE_ENGINE_ENDPOINT
+    even when --disable-inference-endpoint is not set. This is the default
+    deployment mode for the Helm chart and kustomize manifests."""
+    monkeypatch.delenv("INFERENCE_ENGINE_ENDPOINT", raising=False)
+    args = _args(
+        disable_batch_api=False,
+        enable_k8s_job=True,
+        disable_inference_endpoint=False,
+    )
+
+    with (
+        patch("aibrix.metadata.app.JobCache"),
+        patch("aibrix.metadata.app.k8s_client.CoreV1Api"),
+        patch("aibrix.metadata.app.k8s_client.AppsV1Api"),
+        patch("aibrix.metadata.app.k8s_template_registry"),
+        patch("aibrix.metadata.app.k8s_profile_registry"),
+    ):
+        app = build_app(args)
+
+    assert hasattr(app.state, "batch_driver")
+    assert hasattr(app.state, "kopf_operator_wrapper")
+
+
 def test_build_app_with_k8s_job(_mock_k8s_config_loading):
     """Test building app with K8s job support."""
     args = _args(
@@ -168,7 +215,16 @@ def test_build_app_with_k8s_job(_mock_k8s_config_loading):
 
 def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset(
     k8s_config,
+    monkeypatch,
 ):
+    # Provide redis connection settings so the test does not depend on a
+    # REDIS_HOST being present in the ambient environment. RedisJobCache only
+    # constructs a client here (no connection), so the isinstance check below
+    # still exercises the real type.
+    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_HOST", "redis-service")
+    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PORT", 6379)
+    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_DB", 0)
+    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PASSWORD", None)
     args = _args(
         registry_provider=None,
         dry_run=False,

@@ -18,7 +18,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -1052,20 +1051,11 @@ func TestMemoryStore(t *testing.T) {
 			regionA := types.RegionSpec{Kubernetes: &types.KubernetesRegion{Context: "ctx-a", Namespace: "ns-a"}}
 			regionB := types.RegionSpec{Kubernetes: &types.KubernetesRegion{Context: "ctx-b", Namespace: "ns-b"}}
 
-			regionABytes, err := json.Marshal(regionA)
-			if err != nil {
-				t.Fatalf("marshal regionA failed: %v", err)
-			}
-			regionBBytes, err := json.Marshal(regionB)
-			if err != nil {
-				t.Fatalf("marshal regionB failed: %v", err)
-			}
-
 			resultA := &types.ProvisionResult{
 				IdempotencyKey: "idem-key-region-a",
 				ProvisionID:    "prov-region-a",
 				Status:         types.ProvisionStatusPending,
-				Region:         string(regionABytes),
+				Region:         regionA.String(),
 			}
 			if err := s.UpsertProvision(ctx, resultA); err != nil {
 				t.Fatalf("UpsertProvision regionA failed: %v", err)
@@ -1075,7 +1065,7 @@ func TestMemoryStore(t *testing.T) {
 				IdempotencyKey: "idem-key-region-b",
 				ProvisionID:    "prov-region-b",
 				Status:         types.ProvisionStatusPending,
-				Region:         string(regionBBytes),
+				Region:         regionB.String(),
 			}
 			if err := s.UpsertProvision(ctx, resultB); err != nil {
 				t.Fatalf("UpsertProvision regionB failed: %v", err)

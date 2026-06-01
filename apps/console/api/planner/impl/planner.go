@@ -47,6 +47,8 @@ type Planner struct {
 	prov  provisioner.Provisioner
 	store store.Store
 
+	backend plannerBackend // per-provisioner decision-making
+
 	queue pendingQueue
 
 	baseCtx    context.Context
@@ -116,6 +118,7 @@ func NewPlanner(bc plannerclient.BatchClient, prov provisioner.Provisioner, st s
 		bc:               bc,
 		prov:             prov,
 		store:            st,
+		backend:          newPlannerBackend(prov),
 		queue:            newFIFOPendingQueue(queueCapacity),
 		baseCtx:          ctx,
 		baseCancel:       cancel,
@@ -174,10 +177,16 @@ func (q *Planner) process(jobID string) {
 	q.mu.Unlock()
 	q.persist(jobID)
 
+	// Backend.Schedule decides what to provision (RM-spec shaping today;
+	// future scheduling decisions live here too).
+	spec, gpuType, gpusPerReplica, err := q.backend.Schedule(q.baseCtx, req)
+	if err != nil {
+		q.markFailed(jobID, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInvalidJob, err))
+		return
+	}
+
 	provReq := &rmtypes.ResourceProvision{
-		Spec: rmtypes.ResourceProvisionSpec{
-			Credential: rmtypes.ResourceCredential{Provider: q.prov.Type()},
-		},
+		Spec:           spec,
 		IdempotencyKey: req.JobID,
 	}
 	provResult, err := q.prov.Provision(q.baseCtx, provReq)
@@ -188,11 +197,15 @@ func (q *Planner) process(jobID string) {
 	q.mu.Lock()
 	q.jobs[jobID].provisionID = provResult.ProvisionID
 	q.mu.Unlock()
+	if logger, ok := q.backend.(provisionResponseLogger); ok {
+		logger.LogProvisionResponse(req.JobID, provResult, spec)
+	}
 
 	// Provision returns when the request is accepted, not when the resource
 	// is ready. Wait for Running before submitting to MDS, which rejects
 	// batches that point to not-yet-ready provisions.
-	if err := q.waitForProvisionReady(provResult.ProvisionID); err != nil {
+	readyResult, err := q.waitForProvisionReady(provResult.ProvisionID)
+	if err != nil {
 		q.releaseAfter(jobID, provResult.ProvisionID, "wait failure")
 		q.markFailed(jobID, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInsufficientResources, err))
 		return
@@ -209,15 +222,18 @@ func (q *Planner) process(jobID string) {
 	q.persist(jobID)
 
 	aibrix := plannerclient.AIBrixExtraBody{
-		JobID: req.JobID,
-		PlannerDecision: &plannerclient.PlannerDecision{
-			ProvisionID: provResult.ProvisionID,
-		},
-		ModelTemplate: req.ModelTemplate,
+		JobID:           req.JobID,
+		PlannerDecision: q.backend.BuildDecision(spec, readyResult, gpuType, gpusPerReplica),
+		ModelTemplate:   req.ModelTemplate,
 	}
 
-	klog.Infof("[planner] submit job_id=%q provision_id=%q model_template=%v",
-		req.JobID, provResult.ProvisionID, req.ModelTemplate)
+	if mt := req.ModelTemplate; mt != nil {
+		klog.Infof("[planner] submit job_id=%q provision_id=%q model_template=%s@%s spec=%s",
+			req.JobID, provResult.ProvisionID, mt.Name, mt.Version, mt.Spec)
+	} else {
+		klog.Infof("[planner] submit job_id=%q provision_id=%q model_template=<none>",
+			req.JobID, provResult.ProvisionID)
+	}
 
 	batch, err := q.bc.CreateBatch(q.baseCtx, req.BatchParams, aibrix)
 	if err != nil {
@@ -258,7 +274,7 @@ func (q *Planner) process(jobID string) {
 // or Failed, the timeout elapses, or the scheduler is shutting down.
 // Provisioner.Provision returns when the request is accepted, not when the
 // resource is ready; Planner must wait for Running before invoking CreateBatch.
-func (q *Planner) waitForProvisionReady(provisionID string) error {
+func (q *Planner) waitForProvisionReady(provisionID string) (*rmtypes.ProvisionResult, error) {
 	filter := &rmtypes.ListOptions{ProvisionIDs: &[]string{provisionID}}
 	deadline := time.Now().Add(provReadyTimeout)
 	for {
@@ -267,21 +283,21 @@ func (q *Planner) waitForProvisionReady(provisionID string) error {
 		case err != nil:
 			klog.Warningf("[planner] poll provision_id=%q: %v", provisionID, err)
 		case len(results) == 0:
-			return fmt.Errorf("provision %q not found", provisionID)
+			return nil, fmt.Errorf("provision %q not found", provisionID)
 		default:
 			switch results[0].Status {
 			case rmtypes.ProvisionStatusRunning:
-				return nil
+				return results[0], nil
 			case rmtypes.ProvisionStatusFailed:
-				return fmt.Errorf("provision failed: %s", results[0].ErrorMessage)
+				return nil, fmt.Errorf("provision failed: %s", results[0].ErrorMessage)
 			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("provision %q did not reach Running within %v", provisionID, provReadyTimeout)
+			return nil, fmt.Errorf("provision %q did not reach Running within %v", provisionID, provReadyTimeout)
 		}
 		select {
 		case <-q.baseCtx.Done():
-			return q.baseCtx.Err()
+			return nil, q.baseCtx.Err()
 		case <-time.After(q.provPollInterval):
 		}
 	}
@@ -546,6 +562,10 @@ func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (
 	if q.prov == nil {
 		return nil, fmt.Errorf("%w: missing provisioner", plannerapi.ErrInsufficientResources)
 	}
+	// Backend may impose additional pre-flight checks. Default is a no-op.
+	if err := q.backend.ValidateRequest(req); err != nil {
+		return nil, err
+	}
 	if err := q.baseCtx.Err(); err != nil {
 		return nil, fmt.Errorf("planner closed: %w", err)
 	}
@@ -590,7 +610,7 @@ func (q *Planner) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, er
 	job, ok := q.jobs[jobID]
 	if !ok {
 		q.mu.RUnlock()
-		return nil, fmt.Errorf("%w: job_id %q", plannerapi.ErrJobNotFound, jobID)
+		return q.getJobFromStore(ctx, jobID)
 	}
 	status := job.status
 	batchID := job.batchID
@@ -613,6 +633,34 @@ func (q *Planner) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, er
 	return &plannerapi.Job{
 		JobID: jobID,
 		Batch: placeholderBatch(req, statusFor(status), queuedAt, terminalAt),
+	}, nil
+}
+
+// getJobFromStore resolves a job that is no longer in the in-memory map
+// (terminal/evicted jobs after a Planner restart) from the durable store.
+func (q *Planner) getJobFromStore(ctx context.Context, jobID string) (*plannerapi.Job, error) {
+	if q.store == nil {
+		return nil, fmt.Errorf("%w: job_id %q", plannerapi.ErrJobNotFound, jobID)
+	}
+	rec, err := q.store.GetJob(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	if rec == nil {
+		return nil, fmt.Errorf("%w: job_id %q", plannerapi.ErrJobNotFound, jobID)
+	}
+	j := modelToJob(rec)
+	if j.batchID != "" {
+		klog.Infof("[planner] get_job (store) job_id=%q batch_id=%q", jobID, j.batchID)
+		batch, err := q.bc.GetBatch(ctx, j.batchID)
+		if err != nil {
+			return nil, err
+		}
+		return &plannerapi.Job{JobID: jobID, Batch: batch}, nil
+	}
+	return &plannerapi.Job{
+		JobID: jobID,
+		Batch: placeholderBatch(j.req, statusFor(j.status), j.queuedAt, terminalTime(j)),
 	}, nil
 }
 
@@ -700,17 +748,39 @@ func (q *Planner) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest)
 		jobID string
 		batch *openai.Batch
 	}, 0, len(resp.Data))
+	var missingBatchIDs []string
+	missingEntries := make(map[string]*plannerapi.Job)
 	for _, b := range resp.Data {
 		jobID := q.jobByBatch[b.ID]
-		out = append(out, &plannerapi.Job{JobID: jobID, Batch: b})
+		entry := &plannerapi.Job{JobID: jobID, Batch: b}
+		out = append(out, entry)
 		if jobID != "" {
 			tagged = append(tagged, struct {
 				jobID string
 				batch *openai.Batch
 			}{jobID, b})
+		} else if b.ID != "" {
+			missingBatchIDs = append(missingBatchIDs, b.ID)
+			missingEntries[b.ID] = entry
 		}
 	}
 	q.mu.RUnlock()
+
+	// Recover JobIDs for batches not in the in-memory map (terminal/evicted
+	// jobs after a Planner restart) from the durable store.
+	if q.store != nil && len(missingBatchIDs) > 0 {
+		recs, err := q.store.ListJobsByBatchIDs(ctx, missingBatchIDs)
+		if err != nil {
+			klog.Warningf("[planner] list jobs by batch ids: %v", err)
+		} else {
+			for batchID, entry := range missingEntries {
+				if rec, ok := recs[batchID]; ok && rec.ID != "" {
+					entry.JobID = rec.ID
+				}
+			}
+		}
+	}
+
 	for _, t := range tagged {
 		q.syncFromBatch(t.jobID, t.batch)
 	}

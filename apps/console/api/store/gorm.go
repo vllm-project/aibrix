@@ -280,6 +280,23 @@ func (s *GORMStore) ListJobs(ctx context.Context, ids []string) (map[string]*mod
 	return out, nil
 }
 
+func (s *GORMStore) ListJobsByBatchIDs(ctx context.Context, batchIDs []string) (map[string]*models.Job, error) {
+	out := make(map[string]*models.Job, len(batchIDs))
+	if len(batchIDs) == 0 {
+		return out, nil
+	}
+	var rows []models.Job
+	if err := s.db.WithContext(ctx).Where("deleted = ?", false).Where("batch_id IN ?", batchIDs).Find(&rows).Error; err != nil {
+		return nil, status.Errorf(codes.Internal, "list jobs by batch ids: %v", err)
+	}
+	for i := range rows {
+		if rows[i].BatchID != "" {
+			out[rows[i].BatchID] = &rows[i]
+		}
+	}
+	return out, nil
+}
+
 func (s *GORMStore) DeleteJob(ctx context.Context, id string) error {
 	return s.db.WithContext(ctx).Model(&models.Job{}).Where("id = ? AND deleted = ?", id, false).Update("deleted", true).Error
 }
@@ -711,6 +728,7 @@ func (s *GORMStore) UpsertProvision(ctx context.Context, result *types.Provision
 	rec := models.ProvisionResult{
 		IdempotencyKey: result.IdempotencyKey,
 		ProvisionID:    record.ProvisionID,
+		Provider:       record.Provider,
 		Region:         record.Region,
 		Status:         record.Status,
 		Payload:        datatypes.JSON(record.Payload),
@@ -720,7 +738,7 @@ func (s *GORMStore) UpsertProvision(ctx context.Context, result *types.Provision
 	}
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "idempotency_key"}},
-		DoUpdates: clause.AssignmentColumns([]string{"provision_id", "region", "status", "payload", "updated_at", "deleted"}),
+		DoUpdates: clause.AssignmentColumns([]string{"provision_id", "provider", "region", "status", "payload", "updated_at", "deleted"}),
 	}).Create(&rec).Error; err != nil {
 		return fmt.Errorf("failed to upsert provision result: %w", err)
 	}
@@ -761,11 +779,7 @@ func (s *GORMStore) ListProvisions(ctx context.Context, options *types.ListOptio
 		if options.Regions != nil && len(*options.Regions) > 0 {
 			regionStrs := make([]string, 0, len(*options.Regions))
 			for _, region := range *options.Regions {
-				regionBytes, err := json.Marshal(region)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal region: %w", err)
-				}
-				regionStrs = append(regionStrs, string(regionBytes))
+				regionStrs = append(regionStrs, region.String())
 			}
 			q = q.Where("region IN ?", regionStrs)
 		}

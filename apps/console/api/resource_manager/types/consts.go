@@ -31,6 +31,7 @@ const (
 	ResourceProvisionTypeKubernetes  ResourceProvisionType = "kubernetes"
 	ResourceProvisionTypeLambdaCloud ResourceProvisionType = "lambdaCloud"
 	ResourceProvisionTypeAWS         ResourceProvisionType = "aws"
+	ResourceProvisionTypeRunPod      ResourceProvisionType = "runpod"
 )
 
 // AcceleratorPreferencePrecisionType defines precision type.
@@ -89,4 +90,8 @@ const (
 	ProvisionStatusReleasing     ProvisionStatus = "releasing"      // Release operation in flight (retry hook)
 	ProvisionStatusReleased      ProvisionStatus = "released"       // Resources have been released
 	ProvisionStatusReleaseFailed ProvisionStatus = "release_failed" // Release permanently failed after retries (terminal; may leak resources, manual intervention required)
+)
+
+const (
+	RegionUnknown = "unknown"
 )

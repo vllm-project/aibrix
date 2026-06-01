@@ -152,12 +152,16 @@ class JobEntityManager(ABC):
         return False
 
     @abstractmethod
-    async def submit_job(self, session_id: str, job_spec: BatchJobSpec):
+    async def submit_job(
+        self, session_id: str, job: BatchJobSpec, request_count: int = 0
+    ):
         """Submit job by submiting job to the persist store.
 
         Args:
             session_id (str): id identifiy the job submission sesstion
-            job_spec (BatchJobSpec): Job to add.
+            job (BatchJob): Job to add.
+            request_count (int): validated input line count; pre-seeds
+                request_counts.total so it is fixed at creation.
         """
         pass
 
