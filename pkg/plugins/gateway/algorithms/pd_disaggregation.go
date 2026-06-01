@@ -77,6 +77,8 @@ const (
 )
 
 const (
+	// KVConnectorTypeIdentifier specifies the KV transfer backend for a PD pod. Supported values include "shfs" and "nixl".
+	KVConnectorTypeIdentifier = "model.aibrix.ai/kv-connector-type"
 	// KV connector types for different backends
 	KVConnectorTypeSHFS = "shfs" // Default - AIBrix SHFS/KVCacheManager (GPU)
 	KVConnectorTypeNIXL = "nixl" // NIXL for Neuron (uses disagg_prefill_resp wrapper)

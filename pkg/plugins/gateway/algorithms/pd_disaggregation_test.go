@@ -2653,3 +2653,50 @@ func TestValidateTRTMachineIDValue(t *testing.T) {
 		})
 	}
 }
+
+func TestSelectKvConnectorType(t *testing.T) {
+	old := aibrixKVConnectorType
+	aibrixKVConnectorType = KVConnectorTypeSHFS
+	defer func() {
+		aibrixKVConnectorType = old
+	}()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "empty label falls back to global config",
+			input:    "",
+			expected: KVConnectorTypeSHFS,
+		},
+		{
+			name:     "pod label overrides to nixl",
+			input:    KVConnectorTypeNIXL,
+			expected: KVConnectorTypeNIXL,
+		},
+		{
+			name:     "pod label overrides to shfs",
+			input:    KVConnectorTypeSHFS,
+			expected: KVConnectorTypeSHFS,
+		},
+		{
+			name:     "connector type is case insensitive",
+			input:    "ShFs",
+			expected: KVConnectorTypeSHFS,
+		},
+		{
+			name:     "invalid label falls back to global config",
+			input:    "invalid",
+			expected: KVConnectorTypeSHFS,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := selectKvConnectorType(tt.input)
+			assert.Equal(t, tt.expected, actual)
+		})
+	}
+}
