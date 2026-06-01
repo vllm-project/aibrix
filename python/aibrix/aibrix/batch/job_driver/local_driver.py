@@ -403,7 +403,7 @@ class LocalJobDriver(JobDriver):
                             f"(fail_after_n_requests={fail_after_n_requests})"
                         )
                 job, line_no = await self._sync_job_status_and_get_next_request(
-                    job_id, last_line_no
+                    job_id, last_line_no, failed=last_error is not None
                 )
                 # Reflect any usage counted during this request onto the
                 # live BatchJob immediately, so downstream persistence
@@ -558,7 +558,9 @@ class LocalJobDriver(JobDriver):
 
         return response
 
-    async def _sync_job_status(self, job_id, reqeust_id=-1, total=0) -> BatchJob:
+    async def _sync_job_status(
+        self, job_id, reqeust_id=-1, total=0, failed: bool = False
+    ) -> BatchJob:
         """
         Update job's status back to job manager.
         """
@@ -568,7 +570,7 @@ class LocalJobDriver(JobDriver):
             return await self._progress_manager.mark_job_done(job_id)
         else:
             return await self._progress_manager.mark_jobs_progresses(
-                job_id, [reqeust_id]
+                job_id, [reqeust_id], failed=failed
             )
 
     async def _get_next_request(self, job_id: str) -> tuple[BatchJob, int]:
@@ -578,11 +580,11 @@ class LocalJobDriver(JobDriver):
         return await self._progress_manager.get_job_next_request(job_id)
 
     async def _sync_job_status_and_get_next_request(
-        self, job_id: str, request_id: int
+        self, job_id: str, request_id: int, failed: bool = False
     ) -> tuple[BatchJob, int]:
         """
         Sync job status and get next request, with None checking.
         """
         return await self._progress_manager.mark_job_progress_and_get_next_request(
-            job_id, request_id
+            job_id, request_id, failed=failed
         )

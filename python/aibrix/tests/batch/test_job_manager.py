@@ -33,9 +33,10 @@ from aibrix.batch.job_entity import (
     CompletionWindow,
     JobEntityManager,
     ObjectMeta,
+    RequestCountStats,
     TypeMeta,
 )
-from aibrix.batch.job_manager import JobManager
+from aibrix.batch.job_manager import JobManager, JobMetaInfo
 from aibrix.context import InfrastructureContext
 
 
@@ -465,3 +466,63 @@ async def test_multiple_concurrent_job_creation():
 
     # Verify all jobs were submitted to entity manager
     assert len(mock_entity_manager.submitted_jobs) == 3
+
+
+def _make_in_progress_job(job_id: str, total: int) -> BatchJob:
+    return BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
+        metadata=ObjectMeta(
+            name="test-job",
+            namespace="default",
+            uid="test-uid",
+            creationTimestamp=datetime.now(),
+            resourceVersion=None,
+            deletionTimestamp=None,
+        ),
+        spec=BatchJobSpec(
+            input_file_id="test-file",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        ),
+        status=BatchJobStatus(
+            jobID=job_id,
+            state=BatchJobState.IN_PROGRESS,
+            createdAt=datetime.now(),
+            requestCounts=RequestCountStats(total=total),
+        ),
+    )
+
+
+def test_complete_one_request_increments_failed_count():
+    meta = JobMetaInfo(_make_in_progress_job("job-failed-count", total=2))
+    meta.complete_one_request(0, failed=True)
+    assert meta.status.request_counts.failed == 1
+    assert meta.status.request_counts.completed == 0
+
+    meta.complete_one_request(1, failed=False)
+    assert meta.status.request_counts.failed == 1
+    assert meta.status.request_counts.completed == 1
+
+
+@pytest.mark.asyncio
+async def test_mark_job_progress_and_get_next_request_failed():
+    job_manager = _job_manager()
+    job_id = "job-progress-failed"
+    job_manager._in_progress_jobs[job_id] = JobMetaInfo(
+        _make_in_progress_job(job_id, total=2)
+    )
+
+    job, next_id = await job_manager.mark_job_progress_and_get_next_request(
+        job_id, 0, failed=True
+    )
+    assert job.status.request_counts.failed == 1
+    assert job.status.request_counts.completed == 0
+    assert next_id == 1
+
+    job, next_id = await job_manager.mark_job_progress_and_get_next_request(
+        job_id, 1, failed=False
+    )
+    assert job.status.request_counts.failed == 1
+    assert job.status.request_counts.completed == 1
+    assert next_id == -1
+    assert job.status.state == BatchJobState.FINALIZING
