@@ -836,7 +836,9 @@ class JobManager(JobProgressManager):
             return ""
         return str(job.spec.endpoint)
 
-    async def mark_job_progress(self, job_id: str, req_id: int) -> Tuple[BatchJob, int]:
+    async def mark_job_progress(
+        self, job_id: str, req_id: int, failed: bool = False
+    ) -> Tuple[BatchJob, int]:
         """
         This is used to sync job's progress, called by job driver.
         It is guaranteed that each request is executed at least once.
@@ -849,11 +851,11 @@ class JobManager(JobProgressManager):
         if req_id < 0 or req_id > meta_data.status.request_counts.total:
             raise ValueError(f"invalide request_id: {req_id}")
 
-        meta_data.complete_one_request(req_id)
+        meta_data.complete_one_request(req_id, failed=failed)
         return meta_data, meta_data.next_request_id()
 
     async def mark_jobs_progresses(
-        self, job_id: str, executed_requests: List[int]
+        self, job_id: str, executed_requests: List[int], failed: bool = False
     ) -> BatchJob:
         """
         This is the batch operation to sync jobs' progresses, called by job driver.
@@ -874,7 +876,7 @@ class JobManager(JobProgressManager):
                     total=request_len,
                 )
                 continue
-            meta_data.complete_one_request(req_id)
+            meta_data.complete_one_request(req_id, failed=failed)
 
         return meta_data
 
@@ -892,7 +894,7 @@ class JobManager(JobProgressManager):
         return meta_data, meta_data.next_request_id()
 
     async def mark_job_progress_and_get_next_request(
-        self, job_id: str, req_id: int
+        self, job_id: str, req_id: int, failed: bool = False
     ) -> Tuple[BatchJob, int]:
         """
         This is used to sync job's progress, called by execution proxy.
@@ -906,7 +908,7 @@ class JobManager(JobProgressManager):
         """
         meta_data = await self._meta_from_in_progress_job(job_id)
 
-        meta_data.complete_one_request(req_id)
+        meta_data.complete_one_request(req_id, failed=failed)
         return meta_data, meta_data.next_request_id()
 
     async def mark_job_total(self, job_id: str, total_requests: int) -> BatchJob:

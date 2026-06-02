@@ -93,13 +93,14 @@ class JobProgressManager(Protocol):
         ...
 
     async def mark_jobs_progresses(
-        self, job_id: str, executed_requests: List[int]
+        self, job_id: str, executed_requests: List[int], failed: bool = False
     ) -> BatchJob:
         """Mark multiple requests as completed.
 
         Args:
             job_id: Job identifier
             executed_requests: List of request IDs that have been completed
+            failed: When True, count requests as failed instead of completed
 
         Returns:
             Updated BatchJob
@@ -124,13 +125,14 @@ class JobProgressManager(Protocol):
         ...
 
     async def mark_job_progress_and_get_next_request(
-        self, job_id: str, req_id: int
+        self, job_id: str, req_id: int, failed: bool = False
     ) -> Tuple[BatchJob, int]:
         """Mark a request as completed and get the next request ID.
 
         Args:
             job_id: Job identifier
             req_id: Request ID that was completed
+            failed: When True, count the request as failed instead of completed
 
         Returns:
             Tuple of (BatchJob, next_request_id) or (BatchJob, -1) if job is done
