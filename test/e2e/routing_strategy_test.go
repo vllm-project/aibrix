@@ -30,7 +30,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const prefixCacheWarmUpDelay = 3 * time.Second
+const prefixCacheWarmUpDelay = 10 * time.Second
 
 func TestStrategyRequiresCache(t *testing.T) {
 	req := "this is test message"

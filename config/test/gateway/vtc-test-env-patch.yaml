@@ -24,3 +24,5 @@ spec:
           value: "1s"
         - name: AIBRIX_PREFIX_CACHE_BLOCK_SIZE
           value: "4"
+        - name: AIBRIX_PREFIX_CACHE_HASH_SEED
+          value: "0"

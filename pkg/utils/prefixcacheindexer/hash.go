@@ -34,6 +34,7 @@ const (
 	defaultPrefixCacheBlockSize              = 4
 	defaultPrefixCacheEvictionInternalInSec  = 1  // 1 second
 	defaultPrefixCacheEvictionDurationInMins = 20 // 20 minutes
+	envPrefixCacheHashSeed                   = "AIBRIX_PREFIX_CACHE_HASH_SEED"
 )
 
 var (
@@ -66,10 +67,23 @@ type Block struct {
 	modelToPods map[string]map[string]time.Time // model_name: map[pod_name]pod_last_access_time
 }
 
+func prefixCacheHashSeed() uint64 {
+	seedStr, ok := utils.LookupEnv(envPrefixCacheHashSeed)
+	if !ok || seedStr == "" {
+		return rand.New(rand.NewSource(time.Now().UnixNano())).Uint64()
+	}
+	seed, err := strconv.ParseUint(seedStr, 10, 64)
+	if err != nil {
+		klog.Warningf("invalid %s=%q, using random seed: %v", envPrefixCacheHashSeed, seedStr, err)
+		return rand.New(rand.NewSource(time.Now().UnixNano())).Uint64()
+	}
+	return seed
+}
+
 func NewPrefixHashTable() *PrefixHashTable {
-	r := rand.New(rand.NewSource(time.Now().Unix()))
-	seed := r.Uint64()
+	seed := prefixCacheHashSeed()
 	klog.InfoS("prefix_cache_hash_table_configurations",
+		"prefix_cache_hash_seed", seed,
 		"prefix_cache_block_number", prefixCacheBlockNumber,
 		"prefix_cache_block_size", prefixCacheBlockSize,
 		"prefix_cache_block_eviction_interval_seconds", prefixCacheEvictionInterval,
