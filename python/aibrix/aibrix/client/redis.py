@@ -16,8 +16,11 @@ from datetime import datetime, timedelta
 from typing import AbstractSet, Any, Callable, Mapping, Optional, Protocol, cast
 
 from aibrix import envs
+from aibrix.logger import init_logger
 
 from .utils import _require_setting
+
+logger = init_logger(__name__)
 
 
 class RedisPipeline(Protocol):
@@ -152,6 +155,18 @@ class AsyncRedis(Protocol):
         *values: bytes | bytearray | memoryview | str | int | float,
     ) -> Any: ...
 
+    async def sadd(
+        self,
+        name: bytes | str | memoryview,
+        *values: bytes | bytearray | memoryview | str | int | float,
+    ) -> Any: ...
+
+    async def srem(
+        self,
+        name: bytes | str | memoryview,
+        *values: bytes | bytearray | memoryview | str | int | float,
+    ) -> Any: ...
+
     async def smembers(self, name: bytes | str | memoryview) -> AbstractSet[Any]: ...
 
     async def strlen(self, key: bytes | str | memoryview) -> int: ...
@@ -174,12 +189,37 @@ async def run_pipeline(
 def get_redis_client(require_check: bool = False, **kwargs) -> AsyncRedis:
     import redis.asyncio as redis
 
+    resolved_host = _require_setting(
+        "REDIS_HOST",
+        kwargs.get("host")
+        or envs.STORAGE_REDIS_HOST
+        or (None if require_check else "localhost"),
+    )
+    resolved_port = kwargs.get("port") or envs.STORAGE_REDIS_PORT
+    resolved_db = kwargs.get("db", 0) or envs.STORAGE_REDIS_DB
+    resolved_password = kwargs.get("password") or envs.STORAGE_REDIS_PASSWORD
+    logger.info(  # type: ignore[call-arg]
+        "Creating Redis client",
+        host=resolved_host,
+        port=resolved_port,
+        db=resolved_db,
+        password_configured=resolved_password is not None,
+        require_check=require_check,
+        extra_kwargs=sorted(
+            key for key in kwargs if key not in {"host", "port", "db", "password"}
+        ),
+    )
     return cast(
         AsyncRedis,
         redis.Redis(
-            host=_require_setting("REDIS_HOST", kwargs.get("host") or envs.STORAGE_REDIS_HOST or (None if require_check else "localhost")),
-            port=kwargs.get("port") or envs.STORAGE_REDIS_PORT,
-            db=kwargs.get("db", 0) or envs.STORAGE_REDIS_DB,
-            password=kwargs.get("password") or envs.STORAGE_REDIS_PASSWORD,
+            host=resolved_host,
+            port=resolved_port,
+            db=resolved_db,
+            password=resolved_password,
+            **{
+                key: value
+                for key, value in kwargs.items()
+                if key not in {"host", "port", "db", "password"}
+            },
         ),
     )

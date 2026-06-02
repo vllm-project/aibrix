@@ -16,6 +16,7 @@ import asyncio
 import time
 from typing import BinaryIO, Optional, TextIO, Union
 
+import aibrix.client.redis as redis
 from aibrix.storage.base import (
     BaseStorage,
     PutObjectOptions,
@@ -24,7 +25,6 @@ from aibrix.storage.base import (
 )
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata
-import aibrix.client.redis as redis
 
 
 class RedisStorage(BaseStorage):
@@ -199,6 +199,8 @@ class RedisStorage(BaseStorage):
         data = await redis_client.get(key)
         if data is None:
             raise FileNotFoundError(f"Object not found: {key}")
+        if isinstance(data, str):
+            data = data.encode("utf-8")
 
         # Handle range requests
         if range_start is not None:

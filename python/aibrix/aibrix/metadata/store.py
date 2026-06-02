@@ -23,8 +23,8 @@ This allows for easier testing, backend swapping, and separation of concerns.
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from aibrix.logger import init_logger
 import aibrix.client.redis as redis
+from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 
@@ -107,10 +107,10 @@ class RedisMetadataStore(MetadataStore):
 
     def __init__(self):
         self._client = redis.get_redis_client()
-        logger.info(f"Redis metadata store initialized")
+        logger.info("Redis metadata store initialized")
 
     @property
-    def client(self) -> redis.Redis:
+    def client(self) -> redis.AsyncRedis:
         """Expose underlying Redis client for backward compatibility.
 
         This property allows existing code that directly accesses the

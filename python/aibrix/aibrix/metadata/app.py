@@ -428,7 +428,9 @@ def build_app(args: argparse.Namespace, params={}):
         elif getattr(args, "enable_redis_job", False):
             from aibrix.metadata.cache.redis import RedisJobCache
 
-            job_entity_manager = RedisJobCache(redis.get_redis_client(require_check=True))
+            job_entity_manager = RedisJobCache(
+                redis.get_redis_client(require_check=True)
+            )
         elif getattr(args, "enable_metastore_job", False):
             from aibrix.metadata.cache.metastore import MetastoreJobCache
 
