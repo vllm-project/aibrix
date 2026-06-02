@@ -272,3 +272,31 @@ func BenchmarkPrefixHashTableAddAndMatchParallel(b *testing.B) {
 		}
 	})
 }
+
+func TestPrefixCacheHashSeed(t *testing.T) {
+	t.Run("statesync_enabled_defaults_to_zero", func(t *testing.T) {
+		t.Setenv(envStateSyncEnabled, "true")
+		t.Setenv(envPrefixCacheHashSeed, "")
+		assert.Equal(t, uint64(0), prefixCacheHashSeed())
+	})
+
+	t.Run("statesync_enabled_uses_env", func(t *testing.T) {
+		t.Setenv(envStateSyncEnabled, "true")
+		t.Setenv(envPrefixCacheHashSeed, "42")
+		assert.Equal(t, uint64(42), prefixCacheHashSeed())
+	})
+
+	t.Run("statesync_disabled_uses_env", func(t *testing.T) {
+		t.Setenv(envStateSyncEnabled, "false")
+		t.Setenv(envPrefixCacheHashSeed, "99")
+		assert.Equal(t, uint64(99), prefixCacheHashSeed())
+	})
+
+	t.Run("statesync_disabled_random_when_unset", func(t *testing.T) {
+		t.Setenv(envStateSyncEnabled, "false")
+		t.Setenv(envPrefixCacheHashSeed, "")
+		a := prefixCacheHashSeed()
+		b := prefixCacheHashSeed()
+		assert.NotEqual(t, a, b)
+	})
+}
