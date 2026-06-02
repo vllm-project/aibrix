@@ -83,6 +83,9 @@ Defined in `pyproject.toml`:
 - Use `aibrix.logger`; loggers are initialized through `init_logger` and support structlog
 - Follow existing subsystem patterns before introducing new abstractions
 - Prefer targeted tests for the subsystem you change, then run broader validation before finishing, using `poetry run pytest ...`
+- Keep existing comments unless they are clearly wrong or misleading
+- Add comments for non-obvious behavior in new or significantly modified code paths to support human review
+- If the user interrupts a running tool call or terminal command, stop the current execution flow and ask for user input before starting new tool calls or commands
 
 ## Test Map
 

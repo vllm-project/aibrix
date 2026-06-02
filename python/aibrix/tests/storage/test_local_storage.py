@@ -141,6 +141,30 @@ class TestLocalStorage:
             await local_storage.delete_object(key)
 
     @pytest.mark.asyncio
+    async def test_list_objects_supports_after_key(self, local_storage: LocalStorage):
+        test_files = [
+            "after/file1.txt",
+            "after/file2.txt",
+            "after/file3.txt",
+        ]
+
+        for key in test_files:
+            await local_storage.put_object(key, f"content of {key}")
+
+        first_page, _ = await local_storage.list_objects("after/", limit=2)
+        second_page, _ = await local_storage.list_objects(
+            "after/",
+            limit=2,
+            after_key=first_page[-1],
+        )
+
+        assert first_page == ["after/file1.txt", "after/file2.txt"]
+        assert second_page == ["after/file3.txt"]
+
+        for key in test_files:
+            await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
     async def test_concurrent_operations(self, local_storage: LocalStorage):
         """Test concurrent read/write operations."""
         import asyncio

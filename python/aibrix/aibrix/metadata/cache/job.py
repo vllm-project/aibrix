@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import asyncio
-from typing import Any, Callable, Coroutine, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import kopf
 from kubernetes import client
@@ -26,11 +26,14 @@ from aibrix.batch.job_entity import (
     BatchJobStatus,
     JobAnnotationKey,
     JobEntityManager,
+    aggregate_batch_job_status,
     k8s_job_to_batch_job,
 )
 from aibrix.batch.manifest import JobManifestRenderer
 from aibrix.batch.storage.batch_metastore import (
     delete_batch_job,
+    get_batch_job,
+    list_batch_jobs,
     put_batch_job,
 )
 from aibrix.batch.template import ProfileRegistry, TemplateRegistry
@@ -93,22 +96,8 @@ class JobCache(JobEntityManager):
         """
         super().__init__()
 
-        # Cache of BatchJob objects keyed by batch ID (K8s UID)
-        self.active_jobs: Dict[str, BatchJob] = {}
-
         # Register this instance as the global job cache for kopf handlers
         set_global_job_cache(self)
-
-        # Callback handlers for job lifecycle events
-        self._job_committed_handler: Optional[
-            Callable[[BatchJob], Coroutine[Any, Any, bool]]
-        ] = None
-        self._job_updated_handler: Optional[
-            Callable[[BatchJob, BatchJob], Coroutine[Any, Any, bool]]
-        ] = None
-        self._job_deleted_handler: Optional[
-            Callable[[BatchJob], Coroutine[Any, Any, bool]]
-        ] = None
 
         self._template_registry = template_registry
         self._profile_registry = profile_registry
@@ -136,6 +125,12 @@ class JobCache(JobEntityManager):
     def is_scheduler_enabled(self) -> bool:
         """Check if JobEntityManager has own scheduler enabled."""
         return True
+
+    async def start(self) -> None:
+        return
+
+    async def stop(self) -> None:
+        return
 
     async def _put_to_store(
         self, job: BatchJob, *, op: str, propagate: bool = False
@@ -186,7 +181,9 @@ class JobCache(JobEntityManager):
             )
 
     # Implementation of JobEntityManager abstract methods
-    async def get_job(self, job_id: str) -> Optional[BatchJob]:
+    async def get_job(
+        self, job_id: str, force_reload: bool = False
+    ) -> Optional[BatchJob]:
         """Get cached job detail by batch id.
 
         Args:
@@ -198,17 +195,32 @@ class JobCache(JobEntityManager):
         Raises:
             KeyError: If job with given job_id is not found.
         """
-        if job_id not in self.active_jobs:
-            return None
-        return self.active_jobs[job_id]
+        if job_id in self.active_jobs and not force_reload:
+            return self.active_jobs[job_id]
+        job = await get_batch_job(job_id)
+        if job is not None and not job.status.finished:
+            self.active_jobs[job_id] = job
+        return job
 
-    async def list_jobs(self) -> List[BatchJob]:
+    async def list_jobs(
+        self,
+        after: Optional[str] = None,
+        limit: int = JobEntityManager.DEFAULT_JOB_PAGE_LIMIT,
+    ) -> List[BatchJob]:
         """List unarchived jobs that cached locally.
 
         Returns:
             List[BatchJob]: List of jobs.
         """
-        return list(self.active_jobs.values())
+        return await list_batch_jobs(
+            after=after,
+            limit=limit,
+            cached_job_getter=self.active_jobs.get,
+        )
+
+    async def _list_recovery_jobs(self) -> List[BatchJob]:
+        # Since kops maintains own list, no need for intial recovery list.
+        return []
 
     async def submit_job(
         self,
@@ -419,10 +431,11 @@ class JobCache(JobEntityManager):
         old = self.active_jobs.get(batch_id)
 
         await self._put_to_store(job, op="update_job_status", propagate=True)
-        self.active_jobs[batch_id] = job
 
         if old is not None:
             await self.job_updated(old, job)
+        else:
+            self._sync_active_job(job)
 
     async def cancel_job(self, job: BatchJob) -> None:
         """Cancel a job by suspending the K8s Job and recording status.
@@ -682,6 +695,15 @@ def _state_rank(state: BatchJobState) -> int:
     return _STATE_RANK.get(state, -1)
 
 
+async def _reload_status_copies_from_backend(batch_job: BatchJob) -> BatchJob:
+    # [TODO][NEXT]: No conflict expected except status, resolve conflic if bug reported.
+    stored_job = await get_batch_job(batch_job.job_id)
+    if stored_job is None or not stored_job.status.status_copies:
+        return batch_job
+    batch_job.status = aggregate_batch_job_status(stored_job.status)
+    return batch_job
+
+
 # Standalone kopf handlers that work with the global JobCache instance
 # Use event handler only to avoid advanced kopf features such as state management,
 # which introduces customized annotation.
@@ -698,7 +720,12 @@ async def job_event_handler(type: str, body: Any, **kwargs: Any) -> None:
     elif type == "MODIFIED":
         job_id = body.get("metadata", {}).get("uid")
         if job_cache.active_jobs.get(job_id) is None:
-            await job_created_handler(body, **kwargs)
+            stored_job = await job_cache.get_job(
+                job_id
+            )  # double check from backend metastore
+            if stored_job is None or not stored_job.status.finished:
+                await job_created_handler(body, **kwargs)
+            # or simply ignored.
         else:
             await job_updated_handler(body, **kwargs)
     elif type == "DELETED":
@@ -717,6 +744,7 @@ async def job_created_handler(body: Any, **kwargs: Any) -> None:
         # Transform K8s Job to BatchJob
         batch_job = k8s_job_to_batch_job(body)
         job_id = batch_job.status.job_id if batch_job.status else body.metadata.uid
+        batch_job = await _reload_status_copies_from_backend(batch_job)
 
         logger.info(
             "Job created",
@@ -731,8 +759,6 @@ async def job_created_handler(body: Any, **kwargs: Any) -> None:
         try:
             committed_ok = await job_cache.job_committed(batch_job)
             if committed_ok:
-                # Store in cache
-                job_cache.active_jobs[job_id] = batch_job
                 # Seed the initial document. The K8s ADDED event is
                 # the first time anything outside K8s sees this job, so
                 # the store had no prior entry; subsequent status
@@ -774,12 +800,19 @@ async def job_updated_handler(body: Any, **kwargs: Any) -> None:
         job_id = (
             new_batch_job.status.job_id if new_batch_job.status else body.metadata.uid
         )
+        new_batch_job = await _reload_status_copies_from_backend(new_batch_job)
 
         # Get old job from cache
         old_batch_job = job_cache.active_jobs.get(job_id)
         if old_batch_job is None:
-            logger.warning("Job updating ignored due to job not found", job_id=job_id)  # type: ignore[call-arg]
-            return
+            stored_job = await job_cache.get_job(job_id)
+            if stored_job is None or stored_job.status.finished:
+                logger.debug(  # type: ignore[call-arg]
+                    "Job updating ignored due to finalized or missing job",
+                    job_id=job_id,
+                )
+                return
+            old_batch_job = stored_job
 
         # PR4 monotonicity: status annotations are no longer the source
         # of truth, so this kopf event may carry a lower-state view than
@@ -813,8 +846,8 @@ async def job_updated_handler(body: Any, **kwargs: Any) -> None:
         # Invoke callback if registered and we have both old and new jobs
         try:
             if await job_cache.job_updated(old_batch_job, new_batch_job):
-                # Update cache
-                job_cache.active_jobs[job_id] = new_batch_job
+                # Update metastore
+                await job_cache._put_to_store(new_batch_job, op="job_updated")
         except Exception as uhe:
             logger.error(
                 "Error in job updated handler",
@@ -872,8 +905,7 @@ async def job_deleted_handler(body: Any, **kwargs: Any) -> None:
 
     # Invoke callback if registered
     try:
-        if await job_cache.job_deleted(deleted_job):
-            del job_cache.active_jobs[job_id]
+        await job_cache.job_deleted(deleted_job)
     except Exception as e:
         logger.error(
             "Error in job deleted handler",

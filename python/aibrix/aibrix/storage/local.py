@@ -268,6 +268,7 @@ class LocalStorage(BaseStorage):
         delimiter: Optional[str] = None,
         limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
+        after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
         """List objects with given prefix.
 
@@ -315,9 +316,23 @@ class LocalStorage(BaseStorage):
                 relative_path = str(prefix_path.relative_to(self.base_path))
                 if relative_path.endswith(_METADATA_SUFFIX):
                     files.append(relative_path[: -len(_METADATA_SUFFIX)])
+            elif prefix:
+                for item in self.base_path.rglob("*"):
+                    if item.is_file():
+                        relative_path = str(item.relative_to(self.base_path))
+                        if relative_path.endswith(_METADATA_SUFFIX):
+                            key = relative_path[: -len(_METADATA_SUFFIX)]
+                            if key.startswith(prefix):
+                                files.append(key)
 
             # Sort files for consistent pagination (by filename)
             files.sort()
+
+            if continuation_token is None and after_key:
+                try:
+                    offset = files.index(after_key) + 1
+                except ValueError:
+                    return [], None
 
             # Apply pagination
             remaining_files = files[offset:] if offset > 0 else files

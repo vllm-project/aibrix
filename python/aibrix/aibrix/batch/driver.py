@@ -65,6 +65,7 @@ class BatchDriver:
 
         _storage.initialize_storage(storage_type, params)
         initialize_batch_metastore(metastore_type, params)
+        self._stand_alone = stand_alone
         self._async_thread_loop: Optional[AsyncLoopThread] = None
         if stand_alone:
             self._async_thread_loop = AsyncLoopThread("BatchDriver")
@@ -114,7 +115,9 @@ class BatchDriver:
 
     async def start(self):
         # Start thread
-        if self._async_thread_loop is not None:
+        if self._stand_alone:
+            if self._async_thread_loop is None:
+                self._async_thread_loop = AsyncLoopThread("BatchDriver")
             self._async_thread_loop.start()
             logger.info("Batch driver stand alone thread started")  # type: ignore[call-arg]
         else:
@@ -126,6 +129,7 @@ class BatchDriver:
             await self.run_coroutine(
                 self.job_manager.set_job_entity_manager(self._job_entity_manager)
             )
+            await self.run_coroutine(self._job_entity_manager.start())
 
         if self._scheduler is not None:
             logger.info("starting scheduler")
@@ -141,11 +145,18 @@ class BatchDriver:
 
     async def stop(self):
         """Properly shutdown the driver and cancel running tasks"""
+        if self._job_entity_manager is not None:
+            await self.run_coroutine(self._job_entity_manager.stop())
+
         if self._scheduler is not None:
             await self.run_coroutine(self._scheduler.stop())
+            self._scheduler.reset_runtime_state()
+
+        self._job_manager.reset_runtime_state()
 
         if self._async_thread_loop is not None:
             self._async_thread_loop.stop()
+            self._async_thread_loop = None
             logger.info("Batch driver stand alone thread stopped")  # type: ignore[call-arg]
 
     async def clear_job(self, job_id):

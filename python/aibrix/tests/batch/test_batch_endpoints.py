@@ -17,11 +17,15 @@
 from datetime import datetime, timezone
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from aibrix.batch.job_entity import (
     AibrixMetadata,
     BatchJob,
     BatchJobEndpoint,
+    BatchJobError,
+    BatchJobErrorCode,
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
@@ -36,6 +40,9 @@ from aibrix.metadata.api.v1.batch import (
     BatchSpec,
     _batch_job_to_openai_response,
     _validate_request_body_for_endpoint,
+)
+from aibrix.metadata.api.v1.batch import (
+    router as batch_router,
 )
 
 
@@ -416,6 +423,91 @@ def test_batch_response_includes_input_aibrix_metadata():
     assert response.aibrix.profile.name == "default-profile"
     assert response.aibrix.profile.overrides == {"scheduling": {"max_concurrency": 4}}
     assert response.model == "echo-template"
+
+
+def test_get_batch_response_omits_none_fields_from_json(monkeypatch):
+    created_at = datetime.now(timezone.utc)
+    batch_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="BatchJob"),
+        metadata=ObjectMeta(name="test-batch", namespace="default"),
+        spec=BatchJobSpec(
+            input_file_id="file-123",
+            endpoint="/v1/chat/completions",
+            completion_window=86400,
+            aibrix=AibrixMetadata(
+                job_id="planner-job-1",
+                planner_decision=PlannerDecision(
+                    provision_id="reservation-1",
+                    provision_resource_deadline=123,
+                    resource_details=[
+                        ResourceDetail(
+                            provider="tce",
+                            endpoint_cluster="cluster-a",
+                            resources=[
+                                ResourceRequirement(
+                                    accelerator_type="H100",
+                                    cpu=None,
+                                    memory=None,
+                                    accelerator_count=1,
+                                    replica=1,
+                                    name="default",
+                                )
+                            ],
+                        )
+                    ],
+                ),
+            ),
+        ),
+        status=BatchJobStatus(
+            jobID="job-123",
+            state=BatchJobState.CREATED,
+            createdAt=created_at,
+            failedAt=created_at,
+            errors=[
+                BatchJobError(
+                    code=BatchJobErrorCode.RESOURCE_CREATION_ERROR,
+                    message="workload already exists",
+                    param=None,
+                    line=None,
+                )
+            ],
+        ),
+    )
+
+    async def fake_resolve_batch_job(request, batch_id):
+        assert batch_id == "job-123"
+        return batch_job
+
+    monkeypatch.setattr(
+        "aibrix.metadata.api.v1.batch._resolve_batch_job",
+        fake_resolve_batch_job,
+    )
+
+    app = FastAPI()
+    app.include_router(batch_router, prefix="/v1/batches")
+
+    with TestClient(app) as client:
+        payload = client.get("/v1/batches/job-123").json()
+
+    assert "output_file_id" not in payload
+    assert "error_file_id" not in payload
+    assert "usage" not in payload
+
+    error = payload["errors"]["data"][0]
+    assert error == {
+        "code": BatchJobErrorCode.RESOURCE_CREATION_ERROR.value,
+        "message": "workload already exists",
+    }
+
+    resource = payload["aibrix"]["planner_decision"]["resource_details"][0][
+        "resources"
+    ][0]
+    assert resource == {
+        "accelerator_type": "H100",
+        "accelerator_count": 1,
+        "replica": 1,
+        "name": "default",
+    }
 
 
 @pytest.mark.parametrize(

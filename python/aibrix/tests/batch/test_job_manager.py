@@ -254,7 +254,7 @@ class MockJobEntityManager(JobEntityManager):
         if self.should_fail:
             raise RuntimeError("Mock job submission failed")
 
-        self.submitted_jobs.append((session_id, job))
+        self.submitted_jobs.append((session_id, job, request_count))
 
         # Simulate async job creation with a delay
         await self._simulate_job_creation(session_id, job)
@@ -285,7 +285,9 @@ class MockJobEntityManager(JobEntityManager):
         # Call the committed handler
         await self.job_committed(batch_job)
 
-    async def get_job(self, job_id: str) -> Optional[BatchJob]:
+    async def get_job(
+        self, job_id: str, force_reload: bool = False
+    ) -> Optional[BatchJob]:
         """Mock get_job implementation."""
         return None
 
@@ -297,9 +299,15 @@ class MockJobEntityManager(JobEntityManager):
         """Mock update_job_status implementation."""
         pass
 
-    async def list_jobs(self) -> List[BatchJob]:
+    async def list_jobs(
+        self,
+        after: Optional[str] = None,
+        limit: int = JobEntityManager.DEFAULT_JOB_PAGE_LIMIT,
+    ) -> List[BatchJob]:
         """Mock list_jobs implementation."""
-        return []
+        jobs = list(self.jobs.values())
+        jobs.sort(key=lambda job: job.status.created_at, reverse=True)
+        return self._paginate_jobs(jobs, after=after, limit=limit)
 
     async def cancel_job(self, job: BatchJob):
         """Mock cancel_job implementation."""
@@ -338,9 +346,12 @@ async def test_async_create_job():
 
     # Verify job was submitted to entity manager
     assert len(mock_entity_manager.submitted_jobs) == 1
-    submitted_session_id, submitted_spec = mock_entity_manager.submitted_jobs[0]
+    submitted_session_id, submitted_spec, submitted_request_count = (
+        mock_entity_manager.submitted_jobs[0]
+    )
     assert submitted_session_id == session_id
     assert submitted_spec.input_file_id == "test-input-1"
+    assert submitted_request_count == 0
 
     # Verify job was added to progress jobs since MockJobEntityManager set initial state to in_progress
     assert job_id in job_manager._in_progress_jobs
@@ -465,3 +476,68 @@ async def test_multiple_concurrent_job_creation():
 
     # Verify all jobs were submitted to entity manager
     assert len(mock_entity_manager.submitted_jobs) == 3
+
+
+def _listed_job(job_id: str, created_at: datetime) -> BatchJob:
+    return BatchJob(
+        sessionID=f"session-{job_id}",
+        typeMeta=TypeMeta(apiVersion="v1", kind="BatchJob"),
+        metadata=ObjectMeta(
+            resourceVersion="1",
+            creationTimestamp=created_at,
+            deletionTimestamp=None,
+        ),
+        spec=BatchJobSpec(
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            input_file_id=f"input-{job_id}",
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        ),
+        status=BatchJobStatus(
+            jobID=job_id,
+            state=BatchJobState.CREATED,
+            createdAt=created_at,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_paginates_without_entity_manager():
+    job_manager = _job_manager()
+    first = _listed_job("job-1", datetime(2024, 1, 1, 0, 0, 1))
+    second = _listed_job("job-2", datetime(2024, 1, 1, 0, 0, 2))
+    third = _listed_job("job-3", datetime(2024, 1, 1, 0, 0, 3))
+
+    job_manager._pending_jobs[first.job_id] = first
+    job_manager._in_progress_jobs[second.job_id] = second
+    job_manager._done_jobs[third.job_id] = third
+
+    page1 = await job_manager.list_jobs(limit=2)
+    assert [job.job_id for job in page1] == ["job-3", "job-2"]
+
+    page2 = await job_manager.list_jobs(after="job-2", limit=2)
+    assert [job.job_id for job in page2] == ["job-1"]
+
+    assert await job_manager.list_jobs(after="missing-job", limit=2) == []
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_delegates_pagination_to_entity_manager():
+    mock_entity_manager = MockJobEntityManager(delay=0.0)
+    job_manager = _job_manager()
+    await job_manager.set_job_entity_manager(mock_entity_manager)
+
+    first = _listed_job("job-1", datetime(2024, 1, 1, 0, 0, 1))
+    second = _listed_job("job-2", datetime(2024, 1, 1, 0, 0, 2))
+    third = _listed_job("job-3", datetime(2024, 1, 1, 0, 0, 3))
+
+    mock_entity_manager.jobs = {
+        first.job_id: first,
+        second.job_id: second,
+        third.job_id: third,
+    }
+
+    page1 = await job_manager.list_jobs(limit=2)
+    assert [job.job_id for job in page1] == ["job-3", "job-2"]
+
+    page2 = await job_manager.list_jobs(after="job-2", limit=2)
+    assert [job.job_id for job in page2] == ["job-1"]

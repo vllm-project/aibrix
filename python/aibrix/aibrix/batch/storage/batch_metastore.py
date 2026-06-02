@@ -12,19 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Tuple
+import asyncio
+from datetime import datetime
+from typing import Callable, Optional, Tuple
 
 from aibrix import envs
 from aibrix.batch.job_entity.batch_job import BatchJob
 from aibrix.logger import init_logger
 from aibrix.storage import BaseStorage, StorageType, create_storage
 from aibrix.storage.base import PutObjectOptionsBuilder
+from aibrix.batch.job_entity import BatchJobStatusCopy, BatchJobState, aggregate_batch_job_status
 
 logger = init_logger(__name__)
 
 p_metastore: Optional[BaseStorage] = None
 NUM_REQUESTS_PER_READ = 1024
 STATUS_REQUEST_LOCKING = "processing"
+METASTORE_LIST_PAGE_SIZE = 1000
+OLDEST_UNFINISHED_JOB_CREATED_AT_KEY = "batchjob_meta:oldest_unfinished_created_at"
 
 
 def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
@@ -209,25 +214,121 @@ async def get_batch_job(batch_id: str) -> Optional[BatchJob]:
     raw, exists = await get_metadata(f"batchjob:{batch_id}")
     if not exists:
         return None
-    return BatchJob.model_validate_json(raw)
+    job = BatchJob.model_validate_json(raw)
+    if job.status.state in (
+        BatchJobState.CREATED,
+        BatchJobState.VALIDATING,
+        BatchJobState.FINALIZED,
+    ):
+        return job
+
+    # Load updated status copies
+    status_copies = {}
+    prefix = f"batchstatus_copies:{batch_id}:"
+    for key in await list_metastore_all_keys(prefix):
+        storage_key = key if key.startswith(prefix) else f"{prefix}{key}"
+        worker_id = storage_key[len(prefix) :]
+        status_json, exists = await get_metadata(storage_key)
+        if exists:
+            status_copies[worker_id] = BatchJobStatusCopy.model_validate_json(
+                status_json
+            )
+    if len(status_copies) == 0:
+        return job
+
+    job.status.status_copies = status_copies
+    job.status = aggregate_batch_job_status(job.status, False)
+    return job
 
 
 async def delete_batch_job(batch_id: str) -> None:
     """Remove the BatchJob document. Silent no-op if absent."""
     try:
+        prefix = f"batchstatus_copies:{batch_id}:"
+        for key in await list_metastore_all_keys(prefix):
+            try:
+                storage_key = key if key.startswith(prefix) else f"{prefix}{key}"
+                await delete_metadata(storage_key)
+            except FileNotFoundError:
+                continue
+
         await delete_metadata(f"batchjob:{batch_id}")
     except FileNotFoundError:
         return
 
 
-async def list_metastore_keys(prefix: str) -> list[str]:
-    """List all keys from metastore matching the given prefix.
+async def get_oldest_unfinished_job_created_at() -> Optional[datetime]:
+    raw, exists = await get_metadata(OLDEST_UNFINISHED_JOB_CREATED_AT_KEY)
+    if not exists:
+        return None
+    return datetime.fromisoformat(raw)
+
+
+async def set_oldest_unfinished_job_created_at(
+    created_at: Optional[datetime],
+) -> None:
+    if created_at is None:
+        try:
+            await delete_metadata(OLDEST_UNFINISHED_JOB_CREATED_AT_KEY)
+        except FileNotFoundError:
+            return
+        return
+    await set_metadata(
+        OLDEST_UNFINISHED_JOB_CREATED_AT_KEY,
+        created_at.isoformat(),
+    )
+
+
+async def list_batch_jobs(
+    after: Optional[str] = None,
+    limit: int = METASTORE_LIST_PAGE_SIZE,
+    cached_job_getter: Optional[Callable[[str], Optional[BatchJob]]] = None,
+) -> list[BatchJob]:
+    """List BatchJob documents using public after/limit pagination."""
+    keys, _ = await list_metastore_keys(
+        "batchjob:",
+        after_key=f"batchjob:{after}" if after is not None else None,
+        limit=limit,
+    )
+    job_ids = [key.removeprefix("batchjob:") for key in keys]
+    jobs: list[Optional[BatchJob]] = [None] * len(job_ids)
+    uncached_indices: list[int] = []
+    uncached_job_ids: list[str] = []
+    for index, job_id in enumerate(job_ids):
+        cached_job = (
+            cached_job_getter(job_id) if cached_job_getter is not None else None
+        )
+        if cached_job is not None:
+            # Do not copy here, reuse cached_job_getter returns
+            jobs[index] = cached_job
+            continue
+        uncached_indices.append(index)
+        uncached_job_ids.append(job_id)
+    if uncached_job_ids:
+        fetched_jobs = await asyncio.gather(
+            *(get_batch_job(job_id) for job_id in uncached_job_ids)
+        )
+        for index, job in zip(uncached_indices, fetched_jobs):
+            jobs[index] = job
+    return [job for job in jobs if job is not None]
+
+
+async def list_metastore_keys(
+    prefix: str,
+    continuation_token: Optional[str] = None,
+    limit: int = METASTORE_LIST_PAGE_SIZE,
+    after_key: Optional[str] = None,
+) -> tuple[list[str], Optional[str]]:
+    """List metastore keys matching the given prefix with optional pagination.
 
     Args:
         prefix: Key prefix to filter
+        continuation_token: Pagination token from the previous page
+        limit: Maximum number of keys to return
+        after_key: Key to resume after when no continuation token is supplied
 
     Returns:
-        List of keys matching the prefix
+        Tuple of (keys, next_continuation_token)
 
     Raises:
         RuntimeError: If metastore has not been initialized
@@ -237,14 +338,40 @@ async def list_metastore_keys(prefix: str) -> list[str]:
             "Batch metastore not initialized. Call initialize_batch_metastore() first."
         )
 
-    keys = []
-    continuation_token = None
+    return await p_metastore.list_objects(
+        prefix=prefix,
+        continuation_token=continuation_token,
+        limit=limit,
+        after_key=after_key,
+    )
+
+
+async def list_metastore_all_keys(prefix: str) -> list[str]:
+    """List all metastore keys matching the given prefix.
+
+
+    Args:
+        prefix: Key prefix to filter
+
+    Returns:
+        keys
+
+    Raises:
+        RuntimeError: If metastore has not been initialized
+    """
+    if p_metastore is None:
+        raise RuntimeError(
+            "Batch metastore not initialized. Call initialize_batch_metastore() first."
+        )
+
+    keys: list[str] = []
+    continuation_token: Optional[str] = None
 
     while True:
         batch_keys, continuation_token = await p_metastore.list_objects(
             prefix=prefix,
             continuation_token=continuation_token,
-            limit=1000,  # Process in batches of 1000
+            limit=METASTORE_LIST_PAGE_SIZE,  # Process in batches of 1000
         )
         keys.extend(batch_keys)
 

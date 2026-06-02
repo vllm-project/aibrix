@@ -5,14 +5,58 @@ import pytest
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
-from aibrix.batch.job_entity import BatchJobSpec, BatchJobState, JobEntityManager
+from aibrix.batch.job_entity import BatchJobSpec, BatchJobState, JobEntityManager, BatchJobStatusCopy, RequestCountStats
 from aibrix.metadata.cache.redis import RedisJobCache
+
+
+class FakeRedisPipeline:
+    def __init__(self, redis):
+        self.redis = redis
+        self.commands = []
+
+    def get(self, key):
+        self.commands.append(("get", key))
+        return self
+
+    def smembers(self, key):
+        self.commands.append(("smembers", key))
+        return self
+
+    def set(self, key, value):
+        self.commands.append(("set", key, value))
+        return self
+
+    def delete(self, key):
+        self.commands.append(("delete", key))
+        return self
+
+    def zadd(self, key, mapping):
+        self.commands.append(("zadd", key, mapping))
+        return self
+
+    def zrem(self, key, member):
+        self.commands.append(("zrem", key, member))
+        return self
+
+    def sadd(self, key, value):
+        self.commands.append(("sadd", key, value))
+        return self
+
+    def execute(self):
+        results = []
+        for command in self.commands:
+            name = command[0]
+            results.append(getattr(self.redis, name)(*command[1:]))
+        return results
 
 
 class FakeRedis:
     def __init__(self):
         self.values = {}
         self.sorted_sets = {}
+        self.sets = {}
+        self.zrevrange_calls = []
+        self.pipeline_calls = []
 
     async def get(self, key):
         value = self.values.get(key)
@@ -49,10 +93,42 @@ class FakeRedis:
             for member in selected
         ]
 
+    async def zrevrank(self, key, member):
+        items = sorted(
+            self.sorted_sets.get(key, {}).items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        members = [
+            item_member.encode("utf-8") if isinstance(item_member, str) else item_member
+            for item_member, _ in items
+        ]
+        encoded_member = member.encode("utf-8") if isinstance(member, str) else member
+        try:
+            return members.index(encoded_member)
+        except ValueError:
+            return None
+
     async def zrem(self, key, member):
         if key in self.sorted_sets:
             self.sorted_sets[key].pop(member, None)
         return 1
+
+    async def sadd(self, key, value):
+        self.sets.setdefault(key, set()).add(value)
+        return 1
+
+    async def smembers(self, key):
+        return {
+            value.encode("utf-8") if isinstance(value, str) else value
+            for value in self.sets.get(key, set())
+        }
+
+    async def run_pipeline(self, callback):
+        pipeline = FakeRedisPipeline(self)
+        callback(pipeline)
+        self.pipeline_calls.append(copy.deepcopy(pipeline.commands))
+        return pipeline.execute()
 
 
 @pytest.mark.asyncio
@@ -93,6 +169,28 @@ async def test_redis_job_cache_submit_and_list_jobs():
     listed_jobs = await cache.list_jobs()
     assert [job.session_id for job in listed_jobs] == ["session-2", "session-1"]
     assert (await cache.get_job(committed_jobs[0].job_id)).session_id == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_redis_job_cache_list_jobs_paginates_with_after_cursor():
+    cache = RedisJobCache(redis_client=FakeRedis())
+
+    for index in range(4):
+        spec = BatchJobSpec.from_strings(
+            input_file_id=f"input-{index}",
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+        )
+        await cache.submit_job(f"session-{index}", spec)
+
+    first_page = await cache.list_jobs(limit=2)
+    assert [job.session_id for job in first_page] == ["session-3", "session-2"]
+
+    second_page = await cache.list_jobs(after=first_page[-1].job_id, limit=2)
+    assert [job.session_id for job in second_page] == ["session-1", "session-0"]
+
+    empty_page = await cache.list_jobs(after="missing-job", limit=2)
+    assert empty_page == []
 
 
 @pytest.mark.asyncio
@@ -148,3 +246,259 @@ async def test_redis_job_cache_update_and_delete_callbacks():
 
     assert await cache.get_job(job.job_id) is None
     assert deleted_jobs[0].job_id == job.job_id
+
+
+@pytest.mark.asyncio
+async def test_redis_job_cache_persists_status_copies_separately():
+    redis = FakeRedis()
+    cache = RedisJobCache(redis_client=redis)
+
+    spec = BatchJobSpec.from_strings(
+        input_file_id="input-1",
+        endpoint="/v1/chat/completions",
+        completion_window="24h",
+    )
+    await cache.submit_job("session-1", spec)
+
+    job = (await cache.list_jobs())[0]
+    job.status.state = BatchJobState.IN_PROGRESS
+    job.status.request_counts.total = 10
+    job.status.request_counts.launched = 0
+    job.status.request_counts.completed = 0
+    job.status.status_copies = {
+        "worker-1": BatchJobStatusCopy(
+            state=BatchJobState.IN_PROGRESS,
+            requestCounts=RequestCountStats(
+                total=10, launched=2, completed=1, failed=0
+            ),
+            updated=True,
+        ),
+        "worker-2": BatchJobStatusCopy(
+            state=BatchJobState.IN_PROGRESS,
+            requestCounts=RequestCountStats(
+                total=10, launched=3, completed=2, failed=1
+            ),
+            updated=True,
+        ),
+    }
+
+    await cache.update_job_status(job)
+
+    cache.active_jobs.clear()
+    fetched = await cache.get_job(job.job_id)
+    assert fetched.status.request_counts.total == 10
+    assert fetched.status.request_counts.launched == 5
+    assert fetched.status.request_counts.completed == 3
+    assert fetched.status.request_counts.failed == 1
+    assert set(fetched.status.status_copies) == {"worker-1", "worker-2"}
+    assert cache.active_jobs[job.job_id].status.request_counts.launched == 5
+    assert set(cache.active_jobs[job.job_id].status.status_copies) == {
+        "worker-1",
+        "worker-2",
+    }
+    assert f"batch_jobs:batchstatus_copies:{job.job_id}:worker-1" in redis.values
+    assert f"batch_jobs:batchstatus_copies:{job.job_id}:worker-2" in redis.values
+
+    finalized = fetched.model_copy(deep=True)
+    finalized.status.state = BatchJobState.FINALIZED
+    await cache.update_job_status(finalized)
+
+    assert job.job_id not in cache.active_jobs
+    uncached_finalized = await cache.get_job(job.job_id)
+    assert uncached_finalized.status.status_copies is None
+
+    await cache.delete_job(uncached_finalized)
+
+    assert f"batch_jobs:batchstatus_copies:{job.job_id}:worker-1" not in redis.values
+    assert f"batch_jobs:batchstatus_copies:{job.job_id}:worker-2" not in redis.values
+
+
+@pytest.mark.asyncio
+async def test_redis_job_cache_empty_prefix_interworks_with_batch_metastore_keys():
+    redis = FakeRedis()
+    cache = RedisJobCache(redis_client=redis, key_prefix="")
+
+    spec = BatchJobSpec.from_strings(
+        input_file_id="input-1",
+        endpoint="/v1/chat/completions",
+        completion_window="24h",
+    )
+    await cache.submit_job("session-1", spec)
+
+    job = (await cache.list_jobs())[0]
+    job.status.state = BatchJobState.IN_PROGRESS
+    job.status.request_counts.total = 10
+    job.status.request_counts.launched = 0
+    job.status.request_counts.completed = 0
+    job.status.status_copies = {
+        "worker-1": BatchJobStatusCopy(
+            state=BatchJobState.IN_PROGRESS,
+            requestCounts=RequestCountStats(
+                total=10, launched=2, completed=1, failed=0
+            ),
+            updated=True,
+        )
+    }
+
+    await cache.update_job_status(job)
+
+    assert f"batchjob:{job.job_id}" in redis.values
+    assert f"batchstatus_copies:{job.job_id}:worker-1" in redis.values
+    assert redis.sorted_sets["timestamps:all"][f"batchjob:{job.job_id}"] > 0
+    assert (
+        redis.sorted_sets["timestamps:all"][f"batchstatus_copies:{job.job_id}:worker-1"]
+        > 0
+    )
+
+    cache.active_jobs.clear()
+    fetched = await cache.get_job(job.job_id)
+    assert fetched.status.request_counts.launched == 2
+    assert fetched.status.request_counts.completed == 1
+    assert set(fetched.status.status_copies) == {"worker-1"}
+    assert cache.active_jobs[job.job_id].status.request_counts.launched == 2
+    assert set(cache.active_jobs[job.job_id].status.status_copies) == {"worker-1"}
+
+    finalized = fetched.model_copy(deep=True)
+    finalized.status.state = BatchJobState.FINALIZED
+    await cache.update_job_status(finalized)
+
+    assert job.job_id not in cache.active_jobs
+    uncached_finalized = await cache.get_job(job.job_id)
+    assert uncached_finalized.status.status_copies is None
+
+    listed_jobs = await cache.list_jobs()
+    assert [listed.job_id for listed in listed_jobs] == [job.job_id]
+
+    await cache.delete_job(uncached_finalized)
+
+    assert f"batchjob:{job.job_id}" not in redis.values
+    assert f"batchstatus_copies:{job.job_id}:worker-1" not in redis.values
+    assert f"batchjob:{job.job_id}" not in redis.sorted_sets["timestamps:all"]
+    assert (
+        f"batchstatus_copies:{job.job_id}:worker-1"
+        not in redis.sorted_sets["timestamps:all"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_redis_job_cache_list_jobs_caches_unfinished_loaded_jobs():
+    redis = FakeRedis()
+    cache = RedisJobCache(redis_client=redis)
+
+    spec = BatchJobSpec.from_strings(
+        input_file_id="input-1",
+        endpoint="/v1/chat/completions",
+        completion_window="24h",
+    )
+    await cache.submit_job("session-1", spec)
+
+    job = (await cache.list_jobs())[0]
+    job.status.state = BatchJobState.IN_PROGRESS
+    job.status.request_counts.total = 5
+    job.status.status_copies = {
+        "worker-1": BatchJobStatusCopy(
+            state=BatchJobState.IN_PROGRESS,
+            requestCounts=RequestCountStats(total=5, launched=4, completed=3, failed=1),
+            updated=True,
+        )
+    }
+    await cache.update_job_status(job)
+
+    cache.active_jobs.clear()
+    listed_jobs = await cache.list_jobs()
+
+    assert [listed.job_id for listed in listed_jobs] == [job.job_id]
+    assert listed_jobs[0].status.request_counts.launched == 4
+    assert set(listed_jobs[0].status.status_copies) == {"worker-1"}
+    assert cache.active_jobs[job.job_id].status.request_counts.launched == 4
+
+
+@pytest.mark.asyncio
+async def test_redis_job_cache_list_jobs_batches_status_copy_fetches_across_jobs():
+    redis = FakeRedis()
+    cache = RedisJobCache(redis_client=redis)
+
+    job_ids = []
+    for index in range(2):
+        spec = BatchJobSpec.from_strings(
+            input_file_id=f"input-{index}",
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+        )
+        await cache.submit_job(f"session-{index}", spec)
+        job = (await cache.list_jobs(limit=1))[0]
+        job.status.state = BatchJobState.IN_PROGRESS
+        job.status.request_counts.total = 5
+        job.status.status_copies = {
+            f"worker-{index}": BatchJobStatusCopy(
+                state=BatchJobState.IN_PROGRESS,
+                requestCounts=RequestCountStats(
+                    total=5, launched=index + 1, completed=index, failed=0
+                ),
+                updated=True,
+            )
+        }
+        await cache.update_job_status(job)
+        job_ids.append(job.job_id)
+
+    cache.active_jobs.clear()
+    redis.pipeline_calls.clear()
+
+    listed_jobs = await cache.list_jobs(limit=2)
+
+    assert [job.job_id for job in listed_jobs] == job_ids[::-1]
+    status_copy_get_batch = redis.pipeline_calls[-1]
+    assert [command[0] for command in status_copy_get_batch] == ["get", "get"]
+    assert {command[1] for command in status_copy_get_batch} == {
+        f"batch_jobs:batchstatus_copies:{job_ids[0]}:worker-0",
+        f"batch_jobs:batchstatus_copies:{job_ids[1]}:worker-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_redis_job_cache_empty_prefix_paginates_through_shared_list_path():
+    redis = FakeRedis()
+    cache = RedisJobCache(redis_client=redis, key_prefix="")
+
+    for index in range(4):
+        spec = BatchJobSpec.from_strings(
+            input_file_id=f"input-{index}",
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+        )
+        await cache.submit_job(f"session-{index}", spec)
+
+    first_page = await cache.list_jobs(limit=2)
+    assert [job.session_id for job in first_page] == ["session-3", "session-2"]
+
+    second_page = await cache.list_jobs(after=first_page[-1].job_id, limit=2)
+    assert [job.session_id for job in second_page] == ["session-1", "session-0"]
+    assert ("timestamps:all", 0, -1) not in redis.zrevrange_calls
+
+
+@pytest.mark.asyncio
+async def test_redis_job_cache_recovery_uses_oldest_unfinished_timestamp():
+    redis = FakeRedis()
+    cache = RedisJobCache(redis_client=redis)
+
+    unfinished_job_ids = []
+    for index in range(25):
+        spec = BatchJobSpec.from_strings(
+            input_file_id=f"input-{index}",
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+        )
+        await cache.submit_job(f"session-{index}", spec)
+        job = (await cache.list_jobs(limit=1))[0]
+        if index >= 22:
+            unfinished_job_ids.append(job.job_id)
+            continue
+        job.status.state = BatchJobState.FINALIZED
+        await cache.update_job_status(job)
+
+    redis.zrevrange_calls.clear()
+
+    recovered_jobs = await cache._list_recovery_jobs()
+
+    assert [job.job_id for job in recovered_jobs] == unfinished_job_ids[::-1]
+    assert ("batch_jobs:index", 0, 19) in redis.zrevrange_calls

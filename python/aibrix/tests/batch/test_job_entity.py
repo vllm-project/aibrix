@@ -402,6 +402,23 @@ class TestBatchJobEntityCreation:
         with pytest.raises(RenderError, match="profile registry is not configured"):
             await cache.submit_job("session-1", spec, job_name="batch-test")
 
+    @pytest.mark.asyncio
+    async def test_job_cache_start_stop_are_noops(self, monkeypatch):
+        cache = JobCache()
+        bootstrap = pytest.fail
+
+        async def fail_bootstrap():
+            bootstrap("JobCache.start should not bootstrap recovery")
+
+        async def fail_refresh_loop():
+            bootstrap("JobCache.start should not start refresh loop")
+
+        monkeypatch.setattr(cache, "_bootstrap_jobs", fail_bootstrap)
+        monkeypatch.setattr(cache, "_refresh_loop", fail_refresh_loop)
+
+        await cache.start()
+        await cache.stop()
+
 
 class TestExceptionMessageConversion:
     """Test various ways exceptions can be converted to messages."""
@@ -509,8 +526,8 @@ class TestBatchJobErrorFastAPICompatibility:
         parsed = json.loads(json_str)
         assert parsed["code"] == BatchJobErrorCode.AUTHENTICATION_ERROR.value
         assert parsed["message"] == "JSON TypeAdapter test"
-        assert parsed["param"] is None
-        assert parsed["line"] is None
+        assert "param" not in parsed
+        assert "line" not in parsed
 
     def test_batch_job_error_pydantic_validation_and_serialization_roundtrip(self):
         """Test BatchJobError validation and serialization roundtrip through Pydantic."""
@@ -581,4 +598,4 @@ class TestBatchJobErrorFastAPICompatibility:
             assert serialized_error["code"] == error_codes[i].value
             assert serialized_error["message"] == str(exceptions[i])
             assert serialized_error["param"] == f"param_{error_codes[i].value}"
-            assert serialized_error["line"] is None
+            assert "line" not in serialized_error

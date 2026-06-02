@@ -23,11 +23,59 @@ import pytest
 import aibrix.batch.constant as constant
 from aibrix.batch.driver import BatchDriver
 from aibrix.batch.job_driver import EchoInferenceEngineClient
-from aibrix.batch.job_entity import BatchJobErrorCode, BatchJobState, BatchJobStatus
+from aibrix.batch.job_entity import (
+    BatchJob,
+    BatchJobErrorCode,
+    BatchJobSpec,
+    BatchJobState,
+    BatchJobStatus,
+    JobEntityManager,
+)
 from aibrix.context import InfrastructureContext
 from aibrix.storage import StorageType
 
 constant.EXPIRE_INTERVAL = 0.1
+
+
+class LifecycleEntityManager(JobEntityManager):
+    def __init__(self):
+        super().__init__()
+        self.started = False
+        self.stopped = False
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    async def submit_job(
+        self,
+        session_id: str,
+        job_spec: BatchJobSpec,
+        request_count: int = 0,
+    ):
+        raise NotImplementedError
+
+    async def update_job_ready(self, job: BatchJob):
+        raise NotImplementedError
+
+    async def update_job_status(self, job: BatchJob):
+        raise NotImplementedError
+
+    async def cancel_job(self, job: BatchJob):
+        raise NotImplementedError
+
+    async def delete_job(self, job: BatchJob):
+        raise NotImplementedError
+
+    async def get_job(self, job_id: str, force_reload: bool = False):
+        return None
+
+    async def list_jobs(
+        self, after=None, limit=JobEntityManager.DEFAULT_JOB_PAGE_LIMIT
+    ):
+        return []
 
 
 def generate_input_data(num_requests, local_file):
@@ -42,7 +90,7 @@ def generate_input_data(num_requests, local_file):
     # to check if the read and write are exactly the same.
     with open(local_file, "w") as file:
         for i in range(num_requests):
-            data["custom_id"] = i
+            data["custom_id"] = str(i)
             file.write(json.dumps(data) + "\n")
 
 
@@ -99,6 +147,23 @@ async def test_batch_driver_job_creation():
 
         # Clean up temporary file
         Path(temp_path).unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_batch_driver_starts_and_stops_entity_manager():
+    entity_manager = LifecycleEntityManager()
+    driver = BatchDriver(
+        context=InfrastructureContext(),
+        job_entity_manager=entity_manager,
+        storage_type=StorageType.LOCAL,
+        metastore_type=StorageType.LOCAL,
+    )
+
+    await driver.start()
+    await driver.stop()
+
+    assert entity_manager.started is True
+    assert entity_manager.stopped is True
 
 
 @pytest.mark.asyncio

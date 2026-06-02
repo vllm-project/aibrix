@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from enum import Enum
-
+from typing import Optional, Any, Protocol, Callable, AbstractSet
 
 class StorageType(Enum):
     """Supported storage types."""
@@ -23,3 +23,55 @@ class StorageType(Enum):
     TOS = "tos"
     REDIS = "redis"
     AUTO = "auto"
+
+class RedisPipeline(Protocol):
+    def zadd(self, key: str, mapping: dict[str, float]) -> Any: ...
+
+    def sadd(self, key: str, value: str) -> Any: ...
+
+    def delete(self, key: str) -> Any: ...
+
+    def zrem(self, key: str, value: str) -> Any: ...
+
+    def srem(self, key: str, value: str) -> Any: ...
+
+class AsyncRedis(Protocol):
+    async def get(self, key: str) -> Optional[bytes]: ...
+
+    async def set(
+        self,
+        key: str,
+        value: bytes | str,
+        ex: Optional[int] = None,
+        px: Optional[int] = None,
+        nx: bool = False,
+        xx: bool = False,
+    ) -> Any: ...
+
+    async def exists(self, key: str) -> Any: ...
+
+    async def delete(self, key: str) -> Any: ...
+
+    async def ping(self) -> Any: ...
+
+    async def zadd(self, key: str, mapping: dict[str, float]) -> Any: ...
+
+    async def zrange(
+        self, key: str, start: int, end: int, withscores: bool = False
+    ) -> list[bytes]: ...
+
+    async def zrevrange(self, key: str, start: int, end: int) -> list[bytes | str]: ...
+
+    async def zrevrank(self, key: str, value: str) -> Optional[int]: ...
+
+    async def zrem(self, key: str, value: str) -> Any: ...
+
+    async def smembers(self, key: str) -> AbstractSet[bytes]: ...
+
+    async def strlen(self, key: str) -> int: ...
+
+    async def aclose(self) -> None: ...
+
+    async def run_pipeline(
+        self, callback: Callable[[RedisPipeline], None]
+    ) -> list[Any]: ...

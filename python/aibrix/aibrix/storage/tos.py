@@ -17,7 +17,7 @@ from io import BytesIO
 from typing import BinaryIO, Optional, TextIO, Union
 
 import tos
-from tos.exceptions import TosClientError, TosServerError
+from tos.exceptions import TosException, TosClientError, TosServerError
 
 from aibrix.storage.base import (
     BaseStorage,
@@ -167,6 +167,7 @@ class TOSStorage(BaseStorage):
         delimiter: Optional[str] = None,
         limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
+        after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
         """List objects with given prefix."""
 
@@ -191,34 +192,42 @@ class TOSStorage(BaseStorage):
 
             try:
                 if delimiter:
-                    # Use list_objects_type2 for hierarchical listing
-                    response = self.client.list_objects_type2(**kwargs)
-
-                    # Add files
-                    for obj in response.contents:
-                        objects.append(obj.key)
-
-                    # Add "directories" (common prefixes)
-                    for prefix_info in getattr(response, "common_prefixes", []):
-                        objects.append(prefix_info.prefix)
-
-                    # Get next continuation token
-                    next_token = (
-                        response.next_continuation_token
-                        if response.is_truncated
-                        else None
+                    response = self.client.list_prefix(
+                        prefix,
+                        delimiter,
+                        continuation_token or after_key or "",
+                        min(limit, 1000) if limit is not None else 1000,
                     )
                 else:
-                    # Use list_objects for flat listing
-                    response = self.client.list_objects(**kwargs)
-
-                    for obj in response.contents:
-                        objects.append(obj.key)
-
-                    # Get next continuation token (marker)
-                    next_token = response.next_marker if response.is_truncated else None
-
-            except (TosClientError, TosServerError) as e:
+                    objects = self._collect_all_objects(prefix)
+                    if continuation_token:
+                        try:
+                            offset = int(continuation_token)
+                        except (TypeError, ValueError):
+                            offset = 0
+                    elif after_key:
+                        try:
+                            offset = objects.index(after_key) + 1
+                        except ValueError:
+                            return [], None
+                    else:
+                        offset = 0
+                    if limit is not None:
+                        paginated_objects = objects[offset : offset + limit]
+                        next_token = (
+                            str(offset + len(paginated_objects))
+                            if offset + len(paginated_objects) < len(objects)
+                            else None
+                        )
+                        objects = paginated_objects
+                    else:
+                        objects = objects[offset:]
+                        next_token = None
+            except TypeError:
+                return self._list_objects_via_volcano_client(
+                    prefix, delimiter, limit, continuation_token, after_key
+                )
+            except (TosException, TosClientError, TosServerError) as e:
                 raise ValueError(f"Failed to list objects with prefix {prefix}: {e}")
 
             return objects, next_token

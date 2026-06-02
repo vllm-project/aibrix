@@ -45,6 +45,7 @@ from aibrix.batch.job_entity.batch_job import (
     ObjectMeta,
     RequestCountStats,
     TypeMeta,
+    BatchJobStatusCopy,
 )
 from aibrix.batch.template import local_profile_registry, local_template_registry
 from aibrix.metadata.cache.job import JobCache
@@ -147,8 +148,50 @@ class _FakeMetastore:
     def __init__(self) -> None:
         self._jobs: dict[str, BatchJob] = {}
 
-    async def put(self, batch_id: str, job: BatchJob) -> None:
-        self._jobs[batch_id] = job.model_copy(deep=True)
+    async def put_object(self, key: str, data, **kwargs) -> bool:
+        if isinstance(data, bytes):
+            payload = data
+        else:
+            payload = str(data).encode("utf-8")
+        self._objects[key] = payload
+        return True
+
+    async def get_object(self, key: str) -> bytes:
+        try:
+            return self._objects[key]
+        except KeyError as exc:
+            raise FileNotFoundError(key) from exc
+
+    async def list_objects(
+        self,
+        prefix: str = "",
+        delimiter=None,
+        limit: Optional[int] = None,
+        continuation_token: Optional[str] = None,
+        after_key: Optional[str] = None,
+    ) -> tuple[list[str], Optional[str]]:
+        keys = sorted(key for key in self._objects if key.startswith(prefix))
+        del delimiter
+        if continuation_token is not None:
+            offset = int(continuation_token or 0)
+        elif after_key is not None:
+            try:
+                offset = keys.index(after_key) + 1
+            except ValueError:
+                return [], None
+        else:
+            offset = 0
+        remaining = keys[offset:]
+        page = remaining[:limit] if limit is not None else remaining
+        next_token = (
+            str(offset + len(page))
+            if limit is not None and len(remaining) > len(page)
+            else None
+        )
+        return page, next_token
+
+    async def delete_object(self, key: str) -> None:
+        self._objects.pop(key, None)
 
     async def get(self, batch_id: str) -> Optional[BatchJob]:
         job = self._jobs.get(batch_id)
@@ -360,6 +403,22 @@ async def test_update_job_status_first_seen_skips_callback(fake_metastore):
     assert "batch-first" in cache.active_jobs
 
 
+@pytest.mark.asyncio
+async def test_job_cache_list_jobs_prefers_active_jobs(fake_metastore):
+    cache = _make_cache()
+    job = _make_job("batch-list")
+
+    await cache._put_to_store(job, op="update_job_status")
+
+    cached_job = job.model_copy(deep=True)
+    cached_job.status.temp_output_file_id = "cached-output"
+    cache.active_jobs[job.job_id] = cached_job
+
+    listed_jobs = await cache.list_jobs()
+
+    assert listed_jobs[0].status.temp_output_file_id == "cached-output"
+
+
 # ---------------------------------------------------------------------------
 # Kopf monotonicity rule.
 #
@@ -390,6 +449,7 @@ async def test_kopf_update_skips_when_cached_state_is_more_advanced(monkeypatch)
 
     class _StubJob:
         def __init__(self, state):
+            self.job_id = "uid-adv"
             self.status = _StubStatus(state)
             self.metadata = _StubMeta()
 
@@ -435,6 +495,7 @@ async def test_kopf_update_propagates_when_state_advances(monkeypatch):
 
     class _StubJob:
         def __init__(self, state):
+            self.job_id = "uid-adv"
             self.status = _StubStatus(state)
             self.metadata = _StubMeta()
 
@@ -445,16 +506,116 @@ async def test_kopf_update_propagates_when_state_advances(monkeypatch):
         def __init__(self):
             self.active_jobs = {"uid-adv": cached_job}
 
+        async def _put_to_store(self, job, op):
+            return None
+
         async def job_updated(self, old, new):
             received.append((old.status.state, new.status.state))
+            self.active_jobs["uid-adv"] = new
             return True
 
     stub = _StubCache()
     monkeypatch.setattr(job_module, "get_global_job_cache", lambda: stub)
     monkeypatch.setattr(job_module, "k8s_job_to_batch_job", lambda body: new_job)
 
+    async def _get_batch_job(job_id):
+        return None
+
+    monkeypatch.setattr(job_module, "get_batch_job", _get_batch_job)
+
     body = type("B", (), {"metadata": type("M", (), {"uid": "uid-adv"})()})()
     await job_module.job_updated_handler(body)
 
     assert received == [(BatchJobState.IN_PROGRESS, BatchJobState.FINALIZING)]
     assert stub.active_jobs["uid-adv"].status.state == BatchJobState.FINALIZING
+
+
+@pytest.mark.asyncio
+async def test_kopf_create_reloads_status_copies_from_metastore(monkeypatch):
+    from aibrix.metadata.cache import job as job_module
+
+    received: list[BatchJob] = []
+    stored_job = _make_job("uid-create")
+    stored_job.status.status_copies = {
+        "worker-1": BatchJobStatusCopy(
+            state=BatchJobState.IN_PROGRESS,
+            requestCounts=RequestCountStats(
+                total=10, launched=2, completed=1, failed=0
+            ),
+            updated=True,
+        )
+    }
+    incoming_job = _make_job("uid-create")
+    incoming_job.status.status_copies = None
+
+    class _StubCache:
+        async def job_committed(self, job):
+            received.append(job)
+            return True
+
+        async def _put_to_store(self, job, op):
+            return None
+
+    stub = _StubCache()
+    monkeypatch.setattr(job_module, "get_global_job_cache", lambda: stub)
+    monkeypatch.setattr(job_module, "k8s_job_to_batch_job", lambda body: incoming_job)
+
+    async def _get_batch_job(job_id):
+        return stored_job
+
+    monkeypatch.setattr(job_module, "get_batch_job", _get_batch_job)
+
+    body = type("B", (), {"metadata": type("M", (), {"uid": "uid-create"})()})()
+    await job_module.job_created_handler(body)
+
+    assert set(received[0].status.status_copies) == {"worker-1"}
+    assert received[0].status.request_counts.launched == 2
+
+
+@pytest.mark.asyncio
+async def test_kopf_update_reloads_status_copies_from_metastore(monkeypatch):
+    from aibrix.metadata.cache import job as job_module
+
+    received: list = []
+    cached_job = _make_job("uid-update")
+    cached_job.status.state = BatchJobState.IN_PROGRESS
+    stored_job = _make_job("uid-update")
+    stored_job.status.status_copies = {
+        "worker-1": BatchJobStatusCopy(
+            state=BatchJobState.IN_PROGRESS,
+            requestCounts=RequestCountStats(
+                total=10, launched=3, completed=2, failed=0
+            ),
+            updated=True,
+        )
+    }
+    new_job = _make_job("uid-update")
+    new_job.status.state = BatchJobState.FINALIZING
+    new_job.status.status_copies = None
+
+    class _StubCache:
+        def __init__(self):
+            self.active_jobs = {"uid-update": cached_job}
+
+        async def _put_to_store(self, job, op):
+            return None
+
+        async def job_updated(self, old, new):
+            received.append(new)
+            self.active_jobs["uid-update"] = new
+            return True
+
+    stub = _StubCache()
+    monkeypatch.setattr(job_module, "get_global_job_cache", lambda: stub)
+    monkeypatch.setattr(job_module, "k8s_job_to_batch_job", lambda body: new_job)
+
+    async def _get_batch_job(job_id):
+        return stored_job
+
+    monkeypatch.setattr(job_module, "get_batch_job", _get_batch_job)
+
+    body = type("B", (), {"metadata": type("M", (), {"uid": "uid-update"})()})()
+    await job_module.job_updated_handler(body)
+
+    assert set(received[0].status.status_copies) == {"worker-1"}
+    assert received[0].status.request_counts.completed == 2

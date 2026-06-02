@@ -35,6 +35,7 @@ from aibrix.batch.job_entity import (
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    BatchJobStatusCopy,
     BatchJobTransformer,
     BatchUsage,
     Condition,
@@ -45,6 +46,7 @@ from aibrix.batch.job_entity import (
     ObjectMeta,
     OutputTokensDetails,
     TypeMeta,
+    aggregate_batch_job_status,
 )
 from aibrix.batch.job_entity.k8s_transformer import JobAnnotationKey
 from aibrix.metadata.api.v1.batch import _batch_job_to_openai_response
@@ -202,6 +204,44 @@ class TestWorkerAccumulation:
         u = driver.get_accumulated_usage("j")
         assert u.input_tokens == 0
         assert u.output_tokens == 0
+
+    def test_aggregated_usage_includes_old_and_new_local_driver_status_copies(self):
+        status = BatchJobStatus(
+            jobID="job-1",
+            state=BatchJobState.IN_PROGRESS,
+            createdAt=datetime.now(timezone.utc),
+            statusCopies={
+                "worker-old": BatchJobStatusCopy(
+                    state=BatchJobState.IN_PROGRESS,
+                    usage=BatchUsage(
+                        input_tokens=100,
+                        output_tokens=40,
+                        total_tokens=140,
+                        input_tokens_details=InputTokensDetails(cached_tokens=10),
+                        output_tokens_details=OutputTokensDetails(reasoning_tokens=4),
+                    ),
+                ),
+                "worker-new": BatchJobStatusCopy(
+                    state=BatchJobState.IN_PROGRESS,
+                    usage=BatchUsage(
+                        input_tokens=30,
+                        output_tokens=12,
+                        total_tokens=42,
+                        input_tokens_details=InputTokensDetails(cached_tokens=3),
+                        output_tokens_details=OutputTokensDetails(reasoning_tokens=2),
+                    ),
+                ),
+            },
+        )
+
+        aggregated = aggregate_batch_job_status(status, False)
+
+        assert aggregated.usage is not None
+        assert aggregated.usage.input_tokens == 130
+        assert aggregated.usage.output_tokens == 52
+        assert aggregated.usage.total_tokens == 182
+        assert aggregated.usage.input_tokens_details.cached_tokens == 13
+        assert aggregated.usage.output_tokens_details.reasoning_tokens == 6
 
 
 # ─────────────────────────────────────────────────────────────────────────────
