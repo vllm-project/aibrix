@@ -12,14 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from enum import Enum
+from typing import Any
 
 
-class StorageType(Enum):
-    """Supported storage types."""
-
-    LOCAL = "local"
-    S3 = "s3"
-    TOS = "tos"
-    REDIS = "redis"
-    AUTO = "auto"
+def _require_setting(name: str, value: Any) -> Any:
+    if value is None or value == "":
+        raise RuntimeError(f"{name} environment variable is required")
+    return value

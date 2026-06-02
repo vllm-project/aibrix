@@ -88,8 +88,6 @@ class MetastoreJobCache(JobEntityManager):
             self._sync_active_job(stored_job)
 
     async def _upsert_job(self, job: BatchJob, old_job: Optional[BatchJob]) -> BatchJob:
-        if job.job_id is None:
-            raise ValueError("job_id is required")
         stored_job = job.model_copy(deep=True)
         stored_job_id = stored_job.job_id
         stored_job.metadata.resource_version = self._next_resource_version(old_job)

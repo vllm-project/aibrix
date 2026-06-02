@@ -5,7 +5,13 @@ import pytest
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
-from aibrix.batch.job_entity import BatchJobSpec, BatchJobState, JobEntityManager, BatchJobStatusCopy, RequestCountStats
+from aibrix.batch.job_entity import (
+    BatchJobSpec,
+    BatchJobState,
+    BatchJobStatusCopy,
+    JobEntityManager,
+    RequestCountStats,
+)
 from aibrix.metadata.cache.redis import RedisJobCache
 
 
@@ -22,31 +28,38 @@ class FakeRedisPipeline:
         self.commands.append(("smembers", key))
         return self
 
-    def set(self, key, value):
-        self.commands.append(("set", key, value))
+    def set(self, key, value, **kwargs):
+        self.commands.append(("set", key, value, kwargs))
         return self
 
-    def delete(self, key):
-        self.commands.append(("delete", key))
+    def delete(self, *keys):
+        self.commands.append(("delete", *keys))
         return self
 
-    def zadd(self, key, mapping):
-        self.commands.append(("zadd", key, mapping))
+    def zadd(self, key, mapping, **kwargs):
+        self.commands.append(("zadd", key, mapping, kwargs))
         return self
 
-    def zrem(self, key, member):
-        self.commands.append(("zrem", key, member))
+    def zrem(self, key, *members):
+        self.commands.append(("zrem", key, *members))
         return self
 
-    def sadd(self, key, value):
-        self.commands.append(("sadd", key, value))
+    def sadd(self, key, *values):
+        self.commands.append(("sadd", key, *values))
         return self
 
-    def execute(self):
+    async def execute(self, raise_on_error=True):
         results = []
         for command in self.commands:
             name = command[0]
-            results.append(getattr(self.redis, name)(*command[1:]))
+            args = list(command[1:])
+            kwargs = {}
+            if args and isinstance(args[-1], dict):
+                kwargs = args.pop()
+            result = getattr(self.redis, name)(*args, **kwargs)
+            if hasattr(result, "__await__"):
+                result = await result
+            results.append(result)
         return results
 
 
@@ -64,20 +77,22 @@ class FakeRedis:
             return None
         return copy.deepcopy(value)
 
-    async def set(self, key, value):
+    async def set(self, key, value, **kwargs):
         self.values[key] = value
         return True
 
-    async def delete(self, key):
-        self.values.pop(key, None)
+    async def delete(self, *keys):
+        for key in keys:
+            self.values.pop(key, None)
         return 1
 
-    async def zadd(self, key, mapping):
+    async def zadd(self, key, mapping, **kwargs):
         self.sorted_sets.setdefault(key, {})
         self.sorted_sets[key].update(mapping)
         return 1
 
     async def zrevrange(self, key, start, end):
+        self.zrevrange_calls.append((key, start, end))
         items = sorted(
             self.sorted_sets.get(key, {}).items(),
             key=lambda item: item[1],
@@ -109,13 +124,14 @@ class FakeRedis:
         except ValueError:
             return None
 
-    async def zrem(self, key, member):
+    async def zrem(self, key, *members):
         if key in self.sorted_sets:
-            self.sorted_sets[key].pop(member, None)
+            for member in members:
+                self.sorted_sets[key].pop(member, None)
         return 1
 
-    async def sadd(self, key, value):
-        self.sets.setdefault(key, set()).add(value)
+    async def sadd(self, key, *values):
+        self.sets.setdefault(key, set()).update(values)
         return 1
 
     async def smembers(self, key):
@@ -124,11 +140,10 @@ class FakeRedis:
             for value in self.sets.get(key, set())
         }
 
-    async def run_pipeline(self, callback):
+    def pipeline(self, transaction=True, shard_hint=None):
         pipeline = FakeRedisPipeline(self)
-        callback(pipeline)
-        self.pipeline_calls.append(copy.deepcopy(pipeline.commands))
-        return pipeline.execute()
+        self.pipeline_calls.append(pipeline.commands)
+        return pipeline
 
 
 @pytest.mark.asyncio

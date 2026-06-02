@@ -41,11 +41,11 @@ from aibrix.batch.job_entity.batch_job import (
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    BatchJobStatusCopy,
     CompletionWindow,
     ObjectMeta,
     RequestCountStats,
     TypeMeta,
-    BatchJobStatusCopy,
 )
 from aibrix.batch.template import local_profile_registry, local_template_registry
 from aibrix.metadata.cache.job import JobCache
@@ -147,6 +147,7 @@ class _FakeMetastore:
 
     def __init__(self) -> None:
         self._jobs: dict[str, BatchJob] = {}
+        self._objects: dict[str, bytes] = {}
 
     async def put_object(self, key: str, data, **kwargs) -> bool:
         if isinstance(data, bytes):
@@ -197,6 +198,9 @@ class _FakeMetastore:
         job = self._jobs.get(batch_id)
         return job.model_copy(deep=True) if job is not None else None
 
+    async def put(self, batch_id: str, job: BatchJob) -> None:
+        self._jobs[batch_id] = job.model_copy(deep=True)
+
     async def delete(self, batch_id: str) -> None:
         self._jobs.pop(batch_id, None)
 
@@ -211,7 +215,29 @@ def fake_metastore(monkeypatch) -> _FakeMetastore:
     store = _FakeMetastore()
     from aibrix.metadata.cache import job as job_module
 
+    async def _list_batch_jobs(
+        after: Optional[str] = None,
+        limit: int = 20,
+        cached_job_getter=None,
+    ) -> list[BatchJob]:
+        job_ids = sorted(store._jobs)
+        if after is not None:
+            try:
+                offset = job_ids.index(after) + 1
+            except ValueError:
+                return []
+            job_ids = job_ids[offset:]
+        jobs: list[BatchJob] = []
+        for job_id in job_ids[:limit]:
+            cached_job = cached_job_getter(job_id) if cached_job_getter else None
+            jobs.append(
+                cached_job if cached_job is not None else await store.get(job_id)
+            )
+        return [job for job in jobs if job is not None]
+
     monkeypatch.setattr(job_module, "put_batch_job", store.put)
+    monkeypatch.setattr(job_module, "get_batch_job", store.get)
+    monkeypatch.setattr(job_module, "list_batch_jobs", _list_batch_jobs)
     monkeypatch.setattr(job_module, "delete_batch_job", store.delete)
     return store
 

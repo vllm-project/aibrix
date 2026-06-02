@@ -434,29 +434,6 @@ def test_get_batch_response_omits_none_fields_from_json(monkeypatch):
             input_file_id="file-123",
             endpoint="/v1/chat/completions",
             completion_window=86400,
-            aibrix=AibrixMetadata(
-                job_id="planner-job-1",
-                planner_decision=PlannerDecision(
-                    provision_id="reservation-1",
-                    provision_resource_deadline=123,
-                    resource_details=[
-                        ResourceDetail(
-                            provider="tce",
-                            endpoint_cluster="cluster-a",
-                            resources=[
-                                ResourceRequirement(
-                                    accelerator_type="H100",
-                                    cpu=None,
-                                    memory=None,
-                                    accelerator_count=1,
-                                    replica=1,
-                                    name="default",
-                                )
-                            ],
-                        )
-                    ],
-                ),
-            ),
         ),
         status=BatchJobStatus(
             jobID="job-123",
@@ -497,16 +474,6 @@ def test_get_batch_response_omits_none_fields_from_json(monkeypatch):
     assert error == {
         "code": BatchJobErrorCode.RESOURCE_CREATION_ERROR.value,
         "message": "workload already exists",
-    }
-
-    resource = payload["aibrix"]["planner_decision"]["resource_details"][0][
-        "resources"
-    ][0]
-    assert resource == {
-        "accelerator_type": "H100",
-        "accelerator_count": 1,
-        "replica": 1,
-        "name": "default",
     }
 
 

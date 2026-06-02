@@ -305,7 +305,7 @@ class MockJobEntityManager(JobEntityManager):
         limit: int = JobEntityManager.DEFAULT_JOB_PAGE_LIMIT,
     ) -> List[BatchJob]:
         """Mock list_jobs implementation."""
-        jobs = list(self.jobs.values())
+        jobs = list(self.active_jobs.values())
         jobs.sort(key=lambda job: job.status.created_at, reverse=True)
         return self._paginate_jobs(jobs, after=after, limit=limit)
 
@@ -530,7 +530,7 @@ async def test_list_jobs_delegates_pagination_to_entity_manager():
     second = _listed_job("job-2", datetime(2024, 1, 1, 0, 0, 2))
     third = _listed_job("job-3", datetime(2024, 1, 1, 0, 0, 3))
 
-    mock_entity_manager.jobs = {
+    mock_entity_manager.active_jobs = {
         first.job_id: first,
         second.job_id: second,
         third.job_id: third,

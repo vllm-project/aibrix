@@ -37,7 +37,7 @@ def _args(**overrides):
         "disable_file_api": True,
         "disable_inference_endpoint": True,
         "enable_k8s_job": False,
-        "enable_mongo_job": False,
+        "enable_metastore_job": False,
         "enable_redis_job": False,
         "registry_provider": None,
         "dry_run": False,
@@ -215,16 +215,7 @@ def test_build_app_with_k8s_job(_mock_k8s_config_loading):
 
 def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset(
     k8s_config,
-    monkeypatch,
 ):
-    # Provide redis connection settings so the test does not depend on a
-    # REDIS_HOST being present in the ambient environment. RedisJobCache only
-    # constructs a client here (no connection), so the isinstance check below
-    # still exercises the real type.
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_HOST", "redis-service")
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PORT", 6379)
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_DB", 0)
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PASSWORD", None)
     args = _args(
         registry_provider=None,
         dry_run=False,
@@ -232,6 +223,7 @@ def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset(
         enable_redis_job=True,
         disable_inference_endpoint=True,
     )
+    redis_client = MagicMock(name="redis_client")
 
     with (
         patch("aibrix.metadata.app.config.load_incluster_config") as load_incluster,
@@ -240,6 +232,10 @@ def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset(
         patch("aibrix.metadata.app.k8s_client.AppsV1Api") as apps_api,
         patch("aibrix.metadata.app.k8s_template_registry") as template_registry,
         patch("aibrix.metadata.app.k8s_profile_registry") as profile_registry,
+        patch(
+            "aibrix.metadata.app.redis.get_redis_client",
+            return_value=redis_client,
+        ) as get_redis_client,
     ):
         app = build_app(args)
 
@@ -253,6 +249,8 @@ def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset(
     assert app.state.template_registry is None
     assert app.state.profile_registry is None
     assert isinstance(app.state.batch_driver._job_entity_manager, RedisJobCache)
+    assert app.state.batch_driver._job_entity_manager._client is redis_client
+    get_redis_client.assert_called_once_with()
 
 
 def test_load_batch_k8s_context_registry_loading_overrides_k8s_disabled(
@@ -300,88 +298,45 @@ def test_load_batch_k8s_context_registry_loading_overrides_k8s_disabled(
     assert app.state.profile_registry is profile_registry
 
 
-def test_build_app_with_redis_job(monkeypatch):
+def test_build_app_with_redis_job():
     args = _args(
         disable_k8s_support=True,
         disable_batch_api=False,
         enable_redis_job=True,
         dry_run=True,
     )
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_HOST", "redis-service")
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PORT", 6380)
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_DB", 2)
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PASSWORD", "secret")
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_REDIS_PREFIX", "batch_jobs_test:")
+    redis_client = MagicMock(name="redis_client")
 
-    with patch("aibrix.metadata.app.RedisJobCache") as redis_job_cache:
-        app = build_app(args)
-
-    assert hasattr(app.state, "batch_driver")
-    redis_job_cache.assert_called_once_with(
-        host="redis-service",
-        port=6380,
-        db=2,
-        password="secret",
-        key_prefix="batch_jobs_test:batch_jobs",
-    )
-
-
-def test_build_app_with_mongo_job(monkeypatch):
-    args = _args(
-        disable_k8s_support=True,
-        disable_batch_api=False,
-        enable_mongo_job=True,
-        dry_run=True,
-    )
-    monkeypatch.setattr(
-        "aibrix.metadata.app.envs.DB_MONGO_URI", "mongodb://mongo:27017"
-    )
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_DATABASE", "aibrix")
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_COLLECTION", "batch_jobs")
-
-    with patch("aibrix.metadata.app.MongoJobCache") as mongo_job_cache:
-        app = build_app(args)
-
-    assert hasattr(app.state, "batch_driver")
-    mongo_job_cache.assert_called_once_with(
-        uri="mongodb://mongo:27017",
-        database="aibrix",
-        collection="batch_jobs",
-    )
-
-
-def test_build_app_with_redis_job_missing_env(monkeypatch):
-    args = _args(
-        disable_k8s_support=True,
-        disable_batch_api=False,
-        enable_redis_job=True,
-        dry_run=True,
-    )
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_HOST", None)
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PORT", None)
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_DB", None)
-    monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PASSWORD", None)
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_REDIS_PREFIX", None)
-
-    with pytest.raises(
-        RuntimeError, match="REDIS_HOST environment variable is required"
+    with (
+        patch(
+            "aibrix.metadata.app.redis.get_redis_client",
+            return_value=redis_client,
+        ) as get_redis_client,
+        patch("aibrix.metadata.app.RedisJobCache") as redis_job_cache,
     ):
-        build_app(args)
+        app = build_app(args)
+
+    assert hasattr(app.state, "batch_driver")
+    get_redis_client.assert_called_once_with()
+    redis_job_cache.assert_called_once_with(redis_client)
 
 
-def test_build_app_with_mongo_job_missing_env(monkeypatch):
+def test_build_app_with_redis_job_missing_env():
     args = _args(
         disable_k8s_support=True,
         disable_batch_api=False,
-        enable_mongo_job=True,
+        enable_redis_job=True,
         dry_run=True,
     )
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_URI", None)
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_DATABASE", None)
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_COLLECTION", None)
 
-    with pytest.raises(
-        RuntimeError, match="DB_MONGO_URI environment variable is required"
+    with (
+        patch(
+            "aibrix.metadata.app.redis.get_redis_client",
+            side_effect=RuntimeError("REDIS_HOST environment variable is required"),
+        ),
+        pytest.raises(
+            RuntimeError, match="REDIS_HOST environment variable is required"
+        ),
     ):
         build_app(args)
 

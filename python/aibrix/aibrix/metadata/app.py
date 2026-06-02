@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 from kubernetes import client as k8s_client
 from kubernetes import config
 
+import aibrix.client.redis as redis
 from aibrix import envs
 from aibrix.batch import BatchDriver
 from aibrix.batch.job_driver import (
@@ -39,7 +40,6 @@ from aibrix.batch.template import (
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files, models, users
-from aibrix.metadata.cache import JobCache, MongoJobCache, RedisJobCache
 from aibrix.metadata.core import HTTPXClientWrapper
 from aibrix.metadata.setting import settings
 from aibrix.metadata.store import RedisMetadataStore
@@ -55,30 +55,6 @@ _LOG_HTTP_BODIES = os.getenv("AIBRIX_MDS_HTTP_BODY_LOG", "").lower() in (
     "true",
     "yes",
 )
-
-
-def _require_setting(name: str, value: Any) -> Any:
-    if value is None or value == "":
-        raise RuntimeError(f"{name} environment variable is required")
-    return value
-
-
-def _mongo_job_cache_from_env() -> MongoJobCache:
-    return MongoJobCache(
-        uri=_require_setting("DB_MONGO_URI", envs.DB_MONGO_URI),
-        database=_require_setting("DB_MONGO_DATABASE", envs.DB_MONGO_DATABASE),
-        collection=_require_setting("DB_MONGO_COLLECTION", envs.DB_MONGO_COLLECTION),
-    )
-
-
-def _redis_job_cache_from_env() -> RedisJobCache:
-    return RedisJobCache(
-        host=_require_setting("REDIS_HOST", envs.STORAGE_REDIS_HOST),
-        port=int(_require_setting("REDIS_PORT", envs.STORAGE_REDIS_PORT)),
-        db=int(_require_setting("REDIS_DB", envs.STORAGE_REDIS_DB)),
-        password=envs.STORAGE_REDIS_PASSWORD,
-        key_prefix=f"{envs.DB_REDIS_PREFIX}batch_jobs",
-    )
 
 
 def _load_batch_k8s_context(
@@ -222,12 +198,7 @@ async def lifespan(app: FastAPI):
     # Initialize metadata store (abstraction over Redis) only if not already set
     # (e.g., tests may pre-configure a mock store before lifespan runs)
     if not hasattr(app.state, "metadata_store") or app.state.metadata_store is None:
-        metadata_store = RedisMetadataStore(
-            host=envs.STORAGE_REDIS_HOST or "localhost",
-            port=envs.STORAGE_REDIS_PORT,
-            db=envs.STORAGE_REDIS_DB,
-            password=envs.STORAGE_REDIS_PASSWORD,
-        )
+        metadata_store = RedisMetadataStore()
         app.state.metadata_store = metadata_store
         # Backward compatibility: expose underlying Redis client for components
         # that haven't migrated to the MetadataStore interface yet
@@ -434,6 +405,10 @@ def build_app(args: argparse.Namespace, params={}):
                 "BatchJob metastore persistence enabled",
                 metastore_type=settings.METASTORE_TYPE.value,
             )
+
+            # On demand import JobCache to avoid kops handler registered without enable_k8s_job
+            from aibrix.metadata.cache.job import JobCache
+
             job_entity_manager = JobCache(
                 template_registry=infrastructure_context.template_registry,
                 profile_registry=infrastructure_context.profile_registry,
@@ -450,10 +425,17 @@ def build_app(args: argparse.Namespace, params={}):
         # for the runtime sidecar; that default is wrong for the metadata
         # service (no engine is implied) and would force ProxyInferenceEngineClient
         # in tests where no engine is running. Unset → None → echo client.
-        elif getattr(args, "enable_mongo_job", False):
-            job_entity_manager = _mongo_job_cache_from_env()
         elif getattr(args, "enable_redis_job", False):
-            job_entity_manager = _redis_job_cache_from_env()
+            from aibrix.metadata.cache.redis import RedisJobCache
+
+            job_entity_manager = RedisJobCache(redis.get_redis_client(require_check=True))
+        elif getattr(args, "enable_metastore_job", False):
+            from aibrix.metadata.cache.metastore import MetastoreJobCache
+
+            job_entity_manager = MetastoreJobCache(
+                storage_type=settings.METASTORE_TYPE,
+                params=params,
+            )
 
         app.state.batch_driver = BatchDriver(
             context=infrastructure_context,
@@ -534,10 +516,10 @@ def main():
         help="Enable native kubernetes jobs as the job executor.",
     )
     parser.add_argument(
-        "--enable-mongo-job",
+        "--enable-metastore-job",
         action="store_true",
         default=False,
-        help="Enable MongoDB as the persistent job entity manager.",
+        help="Enable metastore as the persistent job entity manager.",
     )
     parser.add_argument(
         "--enable-redis-job",
@@ -623,7 +605,7 @@ def main():
         for flag, enabled in (
             ("--dry-run", args.dry_run),
             ("--enable-k8s-job", args.enable_k8s_job),
-            ("--enable-mongo-job", args.enable_mongo_job),
+            ("--enable-metastore-job", args.enable_metastore_job),
             ("--enable-redis-job", args.enable_redis_job),
         )
         if enabled
@@ -631,7 +613,7 @@ def main():
     if len(enabled_job_modes) > 1:
         parser.error(
             "Only one of --dry-run, --enable-k8s-job, "
-            "--enable-mongo-job, and --enable-redis-job may be set. "
+            "--enable-metastore-job, and --enable-redis-job may be set. "
             f"Got: {', '.join(enabled_job_modes)}"
         )
 

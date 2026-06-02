@@ -398,7 +398,6 @@ async def test_deployment_driver_creates_runtime_and_finalizes_with_temp_files()
         _make_infrastructure_context(apps_v1_api=apps_api, core_v1_api=core_api),
         progress_manager=progress_manager,
         entity_manager=entity_manager,
-        job=job,
         renderer=FakeRenderer(),
     )
 
@@ -462,7 +461,6 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
         _make_infrastructure_context(apps_v1_api=apps_api, core_v1_api=core_api),
         progress_manager=progress_manager,
         entity_manager=entity_manager,
-        job=job,
         renderer=FakeRenderer(),
     )
 

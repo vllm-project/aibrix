@@ -16,8 +16,6 @@ import asyncio
 import time
 from typing import BinaryIO, Optional, TextIO, Union
 
-import redis.asyncio as redis
-
 from aibrix.storage.base import (
     BaseStorage,
     PutObjectOptions,
@@ -26,6 +24,7 @@ from aibrix.storage.base import (
 )
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata
+import aibrix.client.redis as redis
 
 
 class RedisStorage(BaseStorage):
@@ -48,18 +47,12 @@ class RedisStorage(BaseStorage):
 
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 6379,
-        db: int = 0,
-        password: Optional[str] = None,
         config: Optional[StorageConfig] = None,
+        **kwargs,
     ):
         super().__init__(config)
-        self.host = host
-        self.port = port
-        self.db = db
-        self.password = password
-        self._redis_clients: dict[int, redis.Redis] = {}
+        self._redis_clients: dict[int, redis.AsyncRedis] = {}
+        self._kwargs = kwargs
 
     def get_type(self) -> StorageType:
         """Get the type of storage.
@@ -69,17 +62,14 @@ class RedisStorage(BaseStorage):
         """
         return StorageType.REDIS
 
-    async def _get_redis(self) -> redis.Redis:
+    async def _get_redis(self) -> redis.AsyncRedis:
         """Get Redis connection, creating it if necessary."""
         loop_id = id(asyncio.get_running_loop())
         redis_client = self._redis_clients.get(loop_id)
         if redis_client is None:
-            redis_client = redis.Redis(
-                host=self.host,
-                port=self.port,
-                db=self.db,
-                password=self.password,
+            redis_client = redis.get_redis_client(
                 decode_responses=False,  # Keep as bytes
+                **self._kwargs,
             )
             self._redis_clients[loop_id] = redis_client
         return redis_client

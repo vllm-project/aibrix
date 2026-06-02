@@ -20,7 +20,6 @@ import uuid
 from typing import Any
 
 import pytest
-import redis.asyncio as redis
 from fastapi.testclient import TestClient
 from kubernetes import client as k8s_client
 
@@ -32,7 +31,7 @@ from aibrix.batch.job_entity import (
     CompletionWindow,
     ModelTemplateRef,
 )
-from aibrix.metadata.cache import RedisJobCache
+from aibrix.metadata.cache.redis import RedisJobCache
 from aibrix.storage import StorageType
 from tests.batch.conftest import create_test_app
 
@@ -216,16 +215,6 @@ def redis_deployment_test_app(
     monkeypatch.setattr(
         "aibrix.metadata.app.envs.DB_REDIS_PREFIX",
         f"batch-jobs-deployment-{uuid.uuid4().hex}",
-    )
-    monkeypatch.setattr(
-        "aibrix.metadata.cache.redis.RedisJobCache._build_client",
-        lambda self, host, port, db, password: redis.Redis(
-            host=host,
-            port=port,
-            db=db,
-            password=os.environ.get("REDIS_PASSWORD"),
-            decode_responses=False,
-        ),
     )
     monkeypatch.setenv("INFERENCE_ENGINE_ENDPOINT", "http://127.0.0.1:8000")
     return create_test_app(

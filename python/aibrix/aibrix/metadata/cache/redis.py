@@ -1,92 +1,43 @@
 import asyncio
 import json
 from datetime import datetime
-from typing import AbstractSet, Any, Awaitable, List, Optional, Protocol
+from typing import Any, List, Optional
 
-import redis.asyncio as redis
-
-from aibrix.batch.job_entity import BatchJob, BatchJobSpec, JobEntityManager, aggregate_batch_job_status, BatchJobState, BatchJobStatusCopy
-
-class RedisJobCachePipeline(Protocol):
-    def get(self, key: str) -> Any: ...
-
-    def smembers(self, key: str) -> Any: ...
-
-    def set(self, key: str, value: str) -> Any: ...
-
-    def delete(self, key: str) -> Any: ...
-
-    def zadd(self, key: str, mapping: dict[str, float]) -> Any: ...
-
-    def zrem(self, key: str, value: str) -> Any: ...
-
-    def sadd(self, key: str, value: str) -> Any: ...
-
-
-class RedisJobCacheClient(Protocol):
-    def get(self, key: str) -> bytes | str | None | Awaitable[bytes | str | None]: ...
-
-    def zrevrank(self, key: str, value: str) -> int | None | Awaitable[int | None]: ...
-
-    def zrevrange(
-        self, key: str, start: int, end: int
-    ) -> list[bytes | str] | Awaitable[list[bytes | str]]: ...
-
-    def smembers(
-        self, key: str
-    ) -> (
-        AbstractSet[bytes | str]
-        | list[bytes | str]
-        | Awaitable[AbstractSet[bytes | str] | list[bytes | str]]
-    ): ...
-
-    def delete(self, key: str) -> Any | Awaitable[Any]: ...
-
-    def zrem(self, key: str, value: str) -> Any | Awaitable[Any]: ...
-
-    def set(self, key: str, value: str) -> Any | Awaitable[Any]: ...
-
-    def zadd(self, key: str, mapping: dict[str, float]) -> Any | Awaitable[Any]: ...
-
-    def run_pipeline(self, callback: Any) -> list[Any] | Awaitable[list[Any]]: ...
+from aibrix.batch.job_entity import (
+    BatchJob,
+    BatchJobSpec,
+    BatchJobState,
+    BatchJobStatusCopy,
+    JobEntityManager,
+    aggregate_batch_job_status,
+)
+from aibrix.client.redis import AsyncRedis, RedisPipeline, run_pipeline
 
 
 class RedisJobCache(JobEntityManager):
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 6379,
-        db: int = 0,
-        password: Optional[str] = None,
+        redis_client: AsyncRedis,
         key_prefix: str = "batch_jobs",
-        redis_client: Optional[redis.Redis] = None,
     ) -> None:
         super().__init__()
-        if redis_client is not None:
-            self._client: RedisJobCacheClient = redis_client
-        else:
-            self._client = self._build_client(
-                host=host,
-                port=port,
-                db=db,
-                password=password,
-            )
+        self._client: AsyncRedis = redis_client
         self._key_prefix = key_prefix
         self._metastore_compatible_keys = key_prefix == ""
+        # If key_prefix is empty, we try to make it compatible with storage/redis convention.
         self._index_key = f"{key_prefix}:index" if key_prefix else "timestamps:all"
         self._job_prefix = f"{key_prefix}:batchjob" if key_prefix else "batchjob"
         self._status_copy_prefix = (
             f"{key_prefix}:batchstatus_copies" if key_prefix else "batchstatus_copies"
         )
         self._key_prefix = key_prefix
-        self._index_key = f"{key_prefix}:index"
 
     async def get_job(
         self, job_id: str, force_reload: bool = False
     ) -> Optional[BatchJob]:
         if job_id in self.active_jobs and not force_reload:
             return self.active_jobs[job_id]
-        payload = await self._maybe_await(self._client.get(self._job_key(job_id)))
+        payload = await self._client.get(self._job_key(job_id))
         if payload is None:
             return None
         return await self._prepare_loaded_job(self._deserialize_job(payload))
@@ -146,30 +97,16 @@ class RedisJobCache(JobEntityManager):
         await self._update_existing_job(job)
 
     async def delete_job(self, job: BatchJob):
-        if job.job_id is None:
-            raise ValueError("job_id is required")
         existing_job = await self.get_job(job.job_id) or job
         worker_ids = await self._list_status_copy_worker_ids(job.job_id)
-        await self._run_pipeline(
-            lambda pipeline: self._delete_job_pipeline(pipeline, job.job_id, worker_ids)
+        await run_pipeline(
+            self._client,
+            lambda pipeline: self._delete_job_pipeline(
+                pipeline, job.job_id, worker_ids
+            ),
         )
         await self._persist_oldest_unfinished_job_created_at(job)
         await self.job_deleted(existing_job)
-
-    def _build_client(
-        self,
-        host: str,
-        port: int,
-        db: int,
-        password: Optional[str],
-    ) -> redis.Redis:
-        return redis.Redis(
-            host=host,
-            port=port,
-            db=db,
-            password=password,
-            decode_responses=False,
-        )
 
     async def _update_existing_job(self, job: BatchJob) -> None:
         if job.job_id is None:
@@ -190,16 +127,30 @@ class RedisJobCache(JobEntityManager):
         if stored_job_id is None:
             raise ValueError("job_id is required")
         stored_job.metadata.resource_version = self._next_resource_version(old_job)
+        if not self._should_load_status_copies(stored_job):
+            stored_job.status.status_copies = None
         payload = stored_job.model_dump_json(by_alias=True)
-        await self._client.set(self._job_key(stored_job_id), payload)
-        await self._client.zadd(
-            self._index_key,
-            {stored_job_id: self._created_at_score(stored_job)},
+        status_copies = stored_job.status.status_copies or {}
+        await run_pipeline(
+            self._client,
+            lambda pipeline: self._upsert_job_pipeline(
+                pipeline,
+                stored_job_id,
+                payload,
+                stored_job,
+                status_copies,
+            ),
         )
         return stored_job
 
     def _job_key(self, job_id: str) -> str:
-        return f"{self._key_prefix}:{job_id}"
+        return f"{self._job_prefix}:{job_id}"
+
+    def _status_copy_key(self, job_id: str, worker_id: str) -> str:
+        return f"{self._status_copy_prefix}:{job_id}:{worker_id}"
+
+    def _status_copy_index_key(self, job_id: str) -> str:
+        return f"{self._status_copy_prefix}:{job_id}:index"
 
     def _deserialize_job(self, payload: Any) -> BatchJob:
         if isinstance(payload, bytes):
@@ -292,9 +243,7 @@ class RedisJobCache(JobEntityManager):
             prefix = f"{self._status_copy_prefix}:{job_id}:"
             keys = await self._list_keys_with_prefix(prefix)
             return [key[len(prefix) :] for key in keys]
-        worker_ids = await self._maybe_await(
-            self._client.smembers(self._status_copy_index_key(job_id))
-        )
+        worker_ids = await self._client.smembers(self._status_copy_index_key(job_id))
         return [self._decode(worker_id) for worker_id in worker_ids]
 
     async def _list_job_ids_from_metastore_keys(
@@ -305,8 +254,8 @@ class RedisJobCache(JobEntityManager):
         prefix = f"{self._job_prefix}:"
         start = 0
         if after is not None:
-            after_rank = await self._maybe_await(
-                self._client.zrevrank("timestamps:all", self._job_key(after))
+            after_rank = await self._client.zrevrank(
+                "timestamps:all", self._job_key(after)
             )
             if after_rank is None:
                 return []
@@ -325,16 +274,12 @@ class RedisJobCache(JobEntityManager):
             )
         start = 0
         if after is not None:
-            after_rank = await self._maybe_await(
-                self._client.zrevrank(self._index_key, after)
-            )
+            after_rank = await self._client.zrevrank(self._index_key, after)
             if after_rank is None:
                 return []
             start = after_rank + 1
         end = start + limit - 1
-        job_ids = await self._maybe_await(
-            self._client.zrevrange(self._index_key, start, end)
-        )
+        job_ids = await self._client.zrevrange(self._index_key, start, end)
         return [self._decode(raw_job_id) for raw_job_id in job_ids]
 
     async def _list_keys_with_prefix(
@@ -348,8 +293,8 @@ class RedisJobCache(JobEntityManager):
         chunk_size = max(limit, 100)
         while len(matched_keys) < limit:
             range_end = range_start + chunk_size - 1
-            raw_keys = await self._maybe_await(
-                self._client.zrevrange("timestamps:all", range_start, range_end)
+            raw_keys = await self._client.zrevrange(
+                "timestamps:all", range_start, range_end
             )
             if not raw_keys:
                 break
@@ -364,9 +309,7 @@ class RedisJobCache(JobEntityManager):
         return matched_keys
 
     async def _get_oldest_unfinished_job_created_at(self) -> Optional[datetime]:
-        raw_value = await self._maybe_await(
-            self._client.get(self._oldest_unfinished_created_at_key)
-        )
+        raw_value = await self._client.get(self._oldest_unfinished_created_at_key)
         if raw_value is None:
             return None
         return datetime.fromisoformat(self._decode(raw_value))
@@ -376,15 +319,11 @@ class RedisJobCache(JobEntityManager):
     ) -> None:
         oldest_created_at = self._oldest_unfinished_job_created_at(candidate_job)
         if oldest_created_at is None:
-            await self._maybe_await(
-                self._client.delete(self._oldest_unfinished_created_at_key)
-            )
+            await self._client.delete(self._oldest_unfinished_created_at_key)
             return
-        await self._maybe_await(
-            self._client.set(
-                self._oldest_unfinished_created_at_key,
-                oldest_created_at.isoformat(),
-            )
+        await self._client.set(
+            self._oldest_unfinished_created_at_key,
+            oldest_created_at.isoformat(),
         )
 
     def _oldest_unfinished_job_created_at(
@@ -408,23 +347,20 @@ class RedisJobCache(JobEntityManager):
     async def _pipeline_get(self, keys: list[str]) -> list[Any]:
         if not keys:
             return []
-        return await self._run_pipeline(
-            lambda pipeline: [pipeline.get(key) for key in keys]
+        return await run_pipeline(
+            self._client, lambda pipeline: [pipeline.get(key) for key in keys]
         )
 
     async def _pipeline_smembers(self, keys: list[str]) -> list[Any]:
         if not keys:
             return []
-        return await self._run_pipeline(
-            lambda pipeline: [pipeline.smembers(key) for key in keys]
+        return await run_pipeline(
+            self._client, lambda pipeline: [pipeline.smembers(key) for key in keys]
         )
-
-    async def _run_pipeline(self, callback: Any) -> list[Any]:
-        return await self._maybe_await(self._client.run_pipeline(callback))
 
     def _upsert_job_pipeline(
         self,
-        pipeline: RedisJobCachePipeline,
+        pipeline: RedisPipeline,
         job_id: str,
         payload: str,
         stored_job: BatchJob,
@@ -452,7 +388,7 @@ class RedisJobCache(JobEntityManager):
                 pipeline.sadd(self._status_copy_index_key(job_id), worker_id)
 
     def _delete_job_pipeline(
-        self, pipeline: RedisJobCachePipeline, job_id: str, worker_ids: list[str]
+        self, pipeline: RedisPipeline, job_id: str, worker_ids: list[str]
     ) -> None:
         pipeline.delete(self._job_key(job_id))
         if self._metastore_compatible_keys:

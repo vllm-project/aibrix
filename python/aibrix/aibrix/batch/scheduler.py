@@ -355,7 +355,6 @@ class JobScheduler:
         self._inactive_jobs.clear()
         self._due_jobs_list.clear()
         self._queued_running_jobs.clear()
-        self._job_execution_tasks.clear()
         self._CC_controller = BasicCongestionControl(self._current_pool_size)
 
     async def round_robin_get_job(self):

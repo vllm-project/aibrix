@@ -385,7 +385,7 @@ def ensure_job_rbac(job_rbac):
 def create_test_app(
     enable_k8s_job: bool = False,
     enable_redis_job: bool = False,
-    enable_mongo_job: bool = False,
+    enable_metastore_job: bool = False,
     disable_k8s_support: bool = False,
     storage_type: StorageType = StorageType.LOCAL,
     metastore_type: StorageType = StorageType.LOCAL,
@@ -402,7 +402,7 @@ def create_test_app(
     if params is None:
         params = {}
     if dry_run is None:
-        dry_run = not (enable_k8s_job or enable_redis_job or enable_mongo_job)
+        dry_run = not (enable_k8s_job or enable_redis_job or enable_metastore_job)
 
     # Save old settings
     oldStorage, oldMetaStore = settings.STORAGE_TYPE, settings.METASTORE_TYPE
@@ -419,7 +419,7 @@ def create_test_app(
             disable_k8s_support=disable_k8s_support,
             disable_inference_endpoint=True,
             enable_k8s_job=enable_k8s_job,
-            enable_mongo_job=enable_mongo_job,
+            enable_metastore_job=enable_metastore_job,
             enable_redis_job=enable_redis_job,
             k8s_namespace="default",
             k8s_job_patch=None,  # accepted by parser but always None in tests

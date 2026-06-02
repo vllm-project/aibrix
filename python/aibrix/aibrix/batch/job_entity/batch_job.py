@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field
 from pydantic_core import core_schema
 
 from .aibrix_metadata import AibrixMetadata
@@ -327,6 +327,7 @@ class BatchUsage(_Strict):
     output_tokens_details: OutputTokensDetails = Field(
         default_factory=OutputTokensDetails
     )
+
 
 class BatchJobStatusCopy(_Strict):
     """A job driver local copy of the BatchJobStatus, with all fields copied.
@@ -726,9 +727,9 @@ class BatchJob(_Strict):
         )
 
     @property
-    def job_id(self) -> Optional[str]:
+    def job_id(self) -> str:
         """Get the job ID."""
-        return self.status.job_id if self.status else None
+        return self.status.job_id
 
 
 def aggregate_batch_usage(

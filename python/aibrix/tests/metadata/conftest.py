@@ -82,7 +82,7 @@ def create_test_app(disable_batch_api: bool = False, disable_file_api: bool = Fa
                 disable_file_api=disable_file_api,
                 disable_inference_endpoint=False,
                 enable_k8s_job=False,
-                enable_mongo_job=False,
+                enable_metastore_job=False,
                 enable_redis_job=False,
                 registry_provider=None,
                 k8s_namespace="default",
