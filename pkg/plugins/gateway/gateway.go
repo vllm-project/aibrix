@@ -524,7 +524,7 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routing
 		httprouteErr = s.validateHTTPRouteStatus(ctx, model)
 	}
 
-	ctx, span := tracer.Start(ctx, "responseErrorProcessingWithHeaders")
+	_, span := tracer.Start(ctx, "responseErrorProcessingWithHeaders")
 	defer span.End()
 
 	if errMsg != "" && httprouteErr != nil {
