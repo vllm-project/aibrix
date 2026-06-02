@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
+	"google.golang.org/grpc/credentials"
 	"k8s.io/klog/v2"
 )
 
@@ -21,15 +22,16 @@ type Telemetry struct {
 }
 
 func (t *Telemetry) Shutdown() {
-	if t.tracerProvider != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+	if t == nil || t.tracerProvider == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-		if err := t.tracerProvider.Shutdown(ctx); err != nil {
-			klog.ErrorS(err, "Error stopping OpenTelemetry TracerProvider")
-		} else {
-			klog.InfoS("OpenTelemetry telemetry data successfully flushed")
-		}
+	if err := t.tracerProvider.Shutdown(ctx); err != nil {
+		klog.ErrorS(err, "Error stopping OpenTelemetry TracerProvider")
+	} else {
+		klog.InfoS("OpenTelemetry telemetry data successfully flushed")
 	}
 }
 
@@ -89,6 +91,12 @@ func newExporter(ctx context.Context, protocol string) (sdktrace.SpanExporter, e
 		return otlptracehttp.New(ctx, opts...)
 	case "grpc":
 		var opts []otlptracegrpc.Option
+		if LoadEnvBool("OTEL_EXPORTER_OTLP_INSECURE_SKIP_VERIFY", false) {
+			tlsCfg := &tls.Config{
+				InsecureSkipVerify: true,
+			}
+			opts = append(opts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsCfg)))
+		}
 		return otlptracegrpc.New(ctx, opts...)
 	default:
 		return nil, fmt.Errorf("unsupported OTLP protocol: %s", protocol)

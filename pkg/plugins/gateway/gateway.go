@@ -135,6 +135,9 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		if st.span != nil {
 			st.span.End()
 		}
+		if st.ttftSpan != nil {
+			st.ttftSpan.End()
+		}
 	}()
 
 	klog.InfoS("processing request", "requestID", st.requestID)
