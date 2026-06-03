@@ -234,6 +234,18 @@ class BaseJobDriver:
                 )
                 self._active_model_name = endpoint.model_name
 
+                # Aggregation rides the same axis as dispatch: the metadata
+                # aggregates only when it has a control-plane endpoint to drive.
+                # A self-hosting runtime hands back Endpoint(source=None) — the
+                # worker dispatches AND aggregates inside its own compute (e.g. a
+                # k8s Job), so the metadata must not aggregate or finalize would
+                # overwrite the worker's output. This is the one case a
+                # provisioning backend does not aggregate; it's distinguished by
+                # the absent endpoint, not by ``provisions`` (a Deployment also
+                # provisions but keeps its endpoint and aggregates here).
+                if endpoint.source is None and self._runtime.provisions:
+                    self._aggregate_on_finalize = False
+
                 if i_prepared:
                     logger.debug("Temp files not created, creating...", job_id=job_id)  # type: ignore[call-arg]
                     job = await self.prepare_job(job)
