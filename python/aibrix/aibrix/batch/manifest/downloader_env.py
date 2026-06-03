@@ -1,15 +1,13 @@
 from typing import Any, Dict, List
 
-from aibrix.batch.template import BatchProfile, ModelDeploymentTemplate
+from aibrix.batch.template import ModelDeploymentTemplate
 from aibrix.downloader.utils import infer_model_name
 
 _DEFAULT_ALLOW_FILE_SUFFIX = "json, safetensors"
 _DEFAULT_TOS_VERSION = "v2"
 
 
-def build_downloader_env(
-    template: ModelDeploymentTemplate, profile: BatchProfile
-) -> List[Dict[str, Any]]:
+def build_downloader_env(template: ModelDeploymentTemplate) -> List[Dict[str, Any]]:
     model_uri = template.spec.model_source.uri
     source_type = template.spec.model_source.type.value
     env = [
@@ -24,9 +22,9 @@ def build_downloader_env(
     ]
 
     if _is_tos_uri(model_uri, source_type):
-        return env + _tos_env(profile)
+        return env + _tos_env(template)
     if _is_s3_uri(model_uri, source_type):
-        return env + _s3_env(profile)
+        return env + _s3_env(template)
     return env + _huggingface_env(template)
 
 
@@ -46,66 +44,37 @@ def _huggingface_env(template: ModelDeploymentTemplate) -> List[Dict[str, Any]]:
     return env
 
 
-def _s3_env(profile: BatchProfile) -> List[Dict[str, Any]]:
+def _s3_env(template: ModelDeploymentTemplate) -> List[Dict[str, Any]]:
     env: List[Dict[str, Any]] = []
-    secret_ref = profile.spec.storage.credentials_secret_ref
+    secret_ref = template.spec.model_source.auth_secret_ref
     if secret_ref:
         env.extend(
             [
                 _secret_env("AWS_ACCESS_KEY_ID", secret_ref, "access-key-id"),
                 _secret_env("AWS_SECRET_ACCESS_KEY", secret_ref, "secret-access-key"),
+                _secret_env("AWS_REGION", secret_ref, "region"),
             ]
-        )
-    if profile.spec.storage.endpoint_url:
-        env.append(
-            {
-                "name": "AWS_ENDPOINT_URL",
-                "value": profile.spec.storage.endpoint_url,
-            }
-        )
-    if profile.spec.storage.region:
-        env.append(
-            {
-                "name": "AWS_REGION",
-                "value": profile.spec.storage.region,
-            }
         )
     return env
 
 
-def _tos_env(profile: BatchProfile) -> List[Dict[str, Any]]:
+def _tos_env(template: ModelDeploymentTemplate) -> List[Dict[str, Any]]:
     env: List[Dict[str, Any]] = [
         {
             "name": "DOWNLOADER_TOS_VERSION",
             "value": _DEFAULT_TOS_VERSION,
         }
     ]
-    secret_ref = profile.spec.storage.credentials_secret_ref
+    secret_ref = template.spec.model_source.auth_secret_ref
     if secret_ref:
         env.extend(
             [
                 _secret_env("TOS_ACCESS_KEY", secret_ref, "access-key"),
                 _secret_env("TOS_SECRET_KEY", secret_ref, "secret-key"),
+                _secret_env("TOS_ENDPOINT", secret_ref, "endpoint"),
+                _secret_env("TOS_REGION", secret_ref, "region"),
             ]
         )
-    if profile.spec.storage.endpoint_url:
-        env.append(
-            {
-                "name": "TOS_ENDPOINT",
-                "value": profile.spec.storage.endpoint_url,
-            }
-        )
-    elif secret_ref:
-        env.append(_secret_env("TOS_ENDPOINT", secret_ref, "endpoint"))
-    if profile.spec.storage.region:
-        env.append(
-            {
-                "name": "TOS_REGION",
-                "value": profile.spec.storage.region,
-            }
-        )
-    elif secret_ref:
-        env.append(_secret_env("TOS_REGION", secret_ref, "region"))
     return env
 
 

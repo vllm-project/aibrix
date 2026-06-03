@@ -579,11 +579,17 @@ class JobManifestRenderer(_RendererSupport):
 
     def _worker_container(self) -> Dict[str, Any]:
         """The batch-worker container as it appears in legacy yaml."""
+        env = list(_BASE_WORKER_ENV)
+        existing_names = {entry["name"] for entry in env}
+        for entry in build_storage_env() + build_metastore_env():
+            if entry["name"] not in existing_names:
+                env.append(entry)
+                existing_names.add(entry["name"])
         return {
             "name": _WORKER_CONTAINER_NAME,
             "image": _WORKER_IMAGE,
             "command": [_WORKER_ENTRYPOINT],
-            "env": list(_BASE_WORKER_ENV),
+            "env": env,
         }
 
     # ── Layer 2: template ──────────────────────────────────────────────────
@@ -621,20 +627,7 @@ class JobManifestRenderer(_RendererSupport):
     def _apply_profile(
         self, manifest: Dict[str, Any], profile: BatchProfile
     ) -> Dict[str, Any]:
-        """Inject storage and metastore env vars into batch-worker container.
-
-        Storage env comes from the per-batch profile (where files live).
-        Metastore env comes from per-profile metastore settings when
-        configured, otherwise from the process-global metastore type.
-        """
-        worker = self._find_container(manifest, _WORKER_CONTAINER_NAME)
-        existing_names = {entry["name"] for entry in worker["env"]}
-
-        for entry in build_storage_env() + build_metastore_env():
-            if entry["name"] not in existing_names:
-                worker["env"].append(entry)
-                existing_names.add(entry["name"])
-
+        """Apply batch-level profile policy to the Job manifest."""
         # Profile-driven scheduling fields that affect Job spec directly.
         # Only completion_window is honored, and only as 24h. The
         # actual deadline is set in apply_per_batch from

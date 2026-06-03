@@ -70,10 +70,20 @@ def build_storage_env() -> List[Dict[str, Any]]:
             if val:
                 env.append({"name": name, "value": val})
         endpoint = (
-            os.getenv("WORKER_STORAGE_AWS_ENDPOINT_URL") or envs.STORAGE_AWS_ENDPOINT_URL
+            os.getenv("WORKER_STORAGE_AWS_ENDPOINT_URL")
+            or envs.STORAGE_AWS_ENDPOINT_URL
         )
         if endpoint:
             env.append({"name": "STORAGE_AWS_ENDPOINT_URL", "value": endpoint})
+    elif storage_type == StorageType.LOCAL.value:
+        env.append(
+            {
+                "name": "STORAGE_LOCAL_PATH",
+                "value": os.getenv("WORKER_STORAGE_LOCAL_PATH")
+                or os.getenv("STORAGE_LOCAL_PATH")
+                or ".storage",
+            }
+        )
     return env
 
 

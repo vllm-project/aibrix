@@ -361,47 +361,6 @@ class ModelDeploymentTemplateList(RootModel[List[ModelDeploymentTemplate]]):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class StorageBackend(str, Enum):
-    S3 = "s3"
-    MINIO = "minio"
-    GCS = "gcs"
-    TOS = "tos"
-    LOCAL = "local"
-
-
-class StorageSpec(_Strict):
-    """Where batch input/output/checkpoint files live."""
-
-    backend: StorageBackend
-    bucket: str = Field(min_length=1, description="Bucket / container name")
-    region: Optional[str] = None
-    credentials_secret_ref: Optional[str] = Field(
-        default=None,
-        description="Name of K8s Secret with backend credentials",
-    )
-    endpoint_url: Optional[str] = Field(
-        default=None,
-        description="Override service endpoint (MinIO / S3-compatible)",
-    )
-
-
-class MetastoreBackend(str, Enum):
-    REDIS = "redis"
-    LOCAL = "local"
-
-
-class MetastoreSpec(_Strict):
-    backend: MetastoreBackend = Field(default=MetastoreBackend.REDIS)
-    credentials_secret_ref: Optional[str] = Field(
-        default=None,
-        description="Name of K8s Secret with metastore connection settings",
-    )
-    endpoint_url: Optional[str] = Field(
-        default=None,
-        description="Override metastore endpoint when secret does not provide one",
-    )
-
-
 class CompletionWindowOption(str, Enum):
     """SLO tier for batch completion.
 
@@ -482,8 +441,6 @@ class BatchProfileSpec(_Strict):
     there is no OpenAI compatibility being claimed at the field level.
     """
 
-    storage: StorageSpec
-    metastore: Optional[MetastoreSpec] = None
     scheduling: SchedulingSpec = Field(default_factory=SchedulingSpec)
     quota: QuotaSpec = Field(default_factory=QuotaSpec)
 

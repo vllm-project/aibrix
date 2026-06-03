@@ -115,6 +115,7 @@ def test_build_downloader_env_and_remote_init_container(tmp_path):
                     "model_source": {
                         "type": "tos",
                         "uri": "tos://aibrix-artifact-testing/models/deepseek-ai/deepseek-coder-6.7b-instruct/",
+                        "auth_secret_ref": "tos-credential",
                     },
                     "accelerator": {
                         "type": "NVIDIA-L20",
@@ -136,15 +137,7 @@ def test_build_downloader_env_and_remote_init_container(tmp_path):
             "items": [
                 {
                     "name": "tos-profile",
-                    "spec": {
-                        "storage": {
-                            "backend": "tos",
-                            "bucket": "aibrix-artifact-testing",
-                            "region": "cn-beijing",
-                            "endpoint_url": "tos-cn-beijing.ivolces.com",
-                            "credentials_secret_ref": "tos-credential",
-                        }
-                    },
+                    "spec": {},
                 }
             ],
         },
@@ -160,7 +153,7 @@ def test_build_downloader_env_and_remote_init_container(tmp_path):
     assert template is not None
     assert profile is not None
 
-    assert build_downloader_env(template, profile) == [
+    assert build_downloader_env(template) == [
         {
             "name": "DOWNLOADER_MODEL_NAME",
             "value": "deepseek-coder-6.7b-instruct",
@@ -193,11 +186,21 @@ def test_build_downloader_env_and_remote_init_container(tmp_path):
         },
         {
             "name": "TOS_ENDPOINT",
-            "value": "tos-cn-beijing.ivolces.com",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "tos-credential",
+                    "key": "endpoint",
+                }
+            },
         },
         {
             "name": "TOS_REGION",
-            "value": "cn-beijing",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "tos-credential",
+                    "key": "region",
+                }
+            },
         },
     ]
 

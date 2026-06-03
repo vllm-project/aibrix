@@ -103,16 +103,10 @@ def _mock_template(name="mock"):
     }
 
 
-def _profile(name="default-profile", backend="s3", bucket="b", metastore=None):
+def _profile(name="default-profile"):
     spec = {
-        "storage": {
-            "backend": backend,
-            "bucket": bucket,
-            "credentials_secret_ref": "creds",
-        },
+        "scheduling": {"completion_window": "24h"},
     }
-    if metastore is not None:
-        spec["metastore"] = metastore
     return {
         "name": name,
         "spec": spec,
@@ -165,18 +159,14 @@ def _worker_container(manifest):
 
 
 class TestRenderJobExample:
-    def test_k8s_job_example_matches_yaml(self, renderer_factory):
+    def test_k8s_job_example_matches_yaml(self, renderer_factory, monkeypatch):
+        monkeypatch.setenv("STORAGE_TYPE", "local")
+        monkeypatch.setenv("WORKER_STORAGE_LOCAL_PATH", "/tmp/aibrix-storage")
         template = _mock_template()
         template["spec"]["engine"]["health_endpoint"] = "/ready"
         r = renderer_factory(
             templates=[template],
-            profiles=[
-                _profile(
-                    name="example-profile",
-                    backend="local",
-                    bucket="/tmp/aibrix-storage",
-                )
-            ],
+            profiles=[_profile(name="example-profile")],
             default_profile="example-profile",
         )
         spec = _spec(model_template="mock")
@@ -232,10 +222,15 @@ class TestRendererHappyPath:
         # Mock uses shell wrapper
         assert engine["command"] == ["/bin/sh", "-c"]
 
-    def test_storage_env_injected(self, renderer_factory):
+    def test_storage_env_injected(self, renderer_factory, monkeypatch):
+        monkeypatch.setenv("STORAGE_TYPE", "s3")
+        monkeypatch.setattr(envs, "STORAGE_AWS_ACCESS_KEY_ID", "ak")
+        monkeypatch.setattr(envs, "STORAGE_AWS_SECRET_ACCESS_KEY", "sk")
+        monkeypatch.setattr(envs, "STORAGE_AWS_REGION", "us-east-1")
+        monkeypatch.setattr(envs, "STORAGE_AWS_BUCKET", "bucket")
         r = renderer_factory(
             templates=[_vllm_template(count=1)],  # tp default 1, count=1
-            profiles=[_profile(backend="s3")],
+            profiles=[_profile()],
         )
         m = r.render(session_id="s1", spec=_spec())
         worker = _worker_container(m)
@@ -244,10 +239,12 @@ class TestRendererHappyPath:
         assert "STORAGE_AWS_ACCESS_KEY_ID" in env_names
         assert "STORAGE_AWS_BUCKET" in env_names
 
-    def test_local_storage_env_injected(self, renderer_factory):
+    def test_local_storage_env_injected(self, renderer_factory, monkeypatch):
+        monkeypatch.setenv("STORAGE_TYPE", "local")
+        monkeypatch.setenv("WORKER_STORAGE_LOCAL_PATH", "/tmp/aibrix-storage")
         r = renderer_factory(
             templates=[_vllm_template(count=1)],
-            profiles=[_profile(backend="local", bucket="/tmp/aibrix-storage")],
+            profiles=[_profile()],
         )
         m = r.render(session_id="s1", spec=_spec())
         worker = _worker_container(m)
@@ -269,7 +266,7 @@ class TestRendererHappyPath:
     def test_explicit_profile_overrides_default(self, renderer_factory):
         r = renderer_factory(
             templates=[_vllm_template(count=1)],
-            profiles=[_profile("default-profile"), _profile("alt", bucket="alt-b")],
+            profiles=[_profile("default-profile"), _profile("alt")],
         )
         spec = _spec(profile_name="alt")
         m = r.render(session_id="s1", spec=spec)
@@ -282,11 +279,7 @@ class TestRendererHappyPath:
             profiles=[_profile(name="registry-profile")],
         )
         inline_template = _mock_template(name="inline-template")
-        inline_profile = _profile(
-            name="inline-profile",
-            backend="local",
-            bucket="/tmp/inline-storage",
-        )
+        inline_profile = _profile(name="inline-profile")
         spec = BatchJobSpec(
             input_file_id="file-1",
             endpoint="/v1/chat/completions",
@@ -309,10 +302,6 @@ class TestRendererHappyPath:
         ann = m["spec"]["template"]["metadata"]["annotations"]
         assert ann["batch.job.aibrix.ai/model-template-name"] == "inline-template"
         assert ann["batch.job.aibrix.ai/profile-name"] == "inline-profile"
-        worker = _worker_container(m)
-        env = {e["name"]: e.get("value") for e in worker["env"]}
-        assert env["STORAGE_TYPE"] == "local"
-        assert env["STORAGE_LOCAL_PATH"] == "/tmp/inline-storage"
 
     def test_per_batch_metadata_persisted(self, renderer_factory):
         r = renderer_factory(
@@ -577,77 +566,6 @@ class TestMetastoreEnv:
         }
         assert env["REDIS_HOST"] == "redis-shared.aibrix.svc"
         assert env["REDIS_PORT"] == "16379"
-
-    def test_profile_metastore_endpoint_url_overrides_process_host(
-        self, renderer_factory, monkeypatch
-    ):
-        from aibrix.batch.storage import batch_metastore
-        from aibrix.storage import StorageType
-
-        monkeypatch.setattr(
-            batch_metastore, "get_metastore_type", lambda: StorageType.REDIS
-        )
-        monkeypatch.setattr(envs, "STORAGE_REDIS_HOST", "redis-shared.aibrix.svc")
-        monkeypatch.setattr(envs, "STORAGE_REDIS_PORT", "16379")
-
-        r = renderer_factory(
-            templates=[_vllm_template(count=1)],
-            profiles=[
-                _profile(
-                    metastore={
-                        "backend": "redis",
-                        "endpoint_url": "redis-profile.aibrix.svc",
-                    }
-                )
-            ],
-        )
-        m = r.render(session_id="s1", spec=_spec())
-        env = {e["name"]: e for e in _worker_container(m)["env"]}
-        assert env["REDIS_HOST"]["value"] == "redis-profile.aibrix.svc"
-        assert env["REDIS_PORT"]["value"] == "16379"
-
-    def test_profile_metastore_secret_endpoint_has_fallback_host(
-        self, renderer_factory, monkeypatch
-    ):
-        from aibrix.batch.storage import batch_metastore
-        from aibrix.storage import StorageType
-
-        monkeypatch.setattr(
-            batch_metastore, "get_metastore_type", lambda: StorageType.REDIS
-        )
-        monkeypatch.delenv("WORKER_REDIS_HOST", raising=False)
-        monkeypatch.delenv("WORKER_REDIS_PORT", raising=False)
-
-        r = renderer_factory(
-            templates=[_vllm_template(count=1)],
-            profiles=[
-                _profile(
-                    metastore={
-                        "backend": "redis",
-                        "credentials_secret_ref": "redis-creds",
-                        "endpoint_url": "redis-profile.aibrix.svc",
-                    }
-                )
-            ],
-        )
-        m = r.render(session_id="s1", spec=_spec())
-        env = {e["name"]: e for e in _worker_container(m)["env"]}
-        assert env["REDIS_HOST"]["valueFrom"]["secretKeyRef"] == {
-            "name": "redis-creds",
-            "key": "host",
-        }
-        assert env["REDIS_PORT"]["valueFrom"]["secretKeyRef"] == {
-            "name": "redis-creds",
-            "key": "port",
-        }
-        assert env["REDIS_DB"]["valueFrom"]["secretKeyRef"] == {
-            "name": "redis-creds",
-            "key": "db",
-        }
-        assert env["REDIS_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
-            "name": "redis-creds",
-            "key": "password",
-        }
 
 
 class TestMockEngineOverrideNoop:
