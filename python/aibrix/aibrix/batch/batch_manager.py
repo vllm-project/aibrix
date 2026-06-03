@@ -330,6 +330,10 @@ class BatchManager(RunningJobs, SchedulableJobs):
         else:
             job_cancelled.status.state = BatchJobState.FINALIZED
             job_cancelled.status.finalized_at = job.status.cancelling_at
+            # OpenAI's Batch object stamps cancelled_at when cancellation
+            # completes; without this a cancelled batch reports status
+            # "cancelled" but cancelled_at=null.
+            job_cancelled.status.cancelled_at = job.status.cancelling_at
 
         if self._job_entity_manager:
             # Signal the entity manager to cancel the job
@@ -775,17 +779,31 @@ class BatchManager(RunningJobs, SchedulableJobs):
             )
 
         job = meta_data.model_copy(deep=True)
-        job.status.completed_at = datetime.now(timezone.utc)
-        job.status.finalized_at = job.status.completed_at
-        # Do not override existing condition. Fill up locally for data integrity in case apply_job_changes does nothing
-        if job.status.condition is None:
+        now = datetime.now(timezone.utc)
+        job.status.finalized_at = now
+        # Stamp the terminal timestamp matching the existing condition. A job
+        # cancelled while in progress reaches finalize already carrying a
+        # CANCELLED condition; stamping completed_at there would lose
+        # cancelled_at and mislabel the outcome. With no condition yet this is a
+        # normal completion. Do not override an existing condition.
+        existing = job.status.condition
+        if existing is None:
+            job.status.completed_at = now
             job.status.add_condition(
                 Condition(
                     type=ConditionType.COMPLETED,
                     status=ConditionStatus.TRUE,
-                    lastTransitionTime=job.status.completed_at,
+                    lastTransitionTime=now,
                 )
             )
+        elif existing == ConditionType.CANCELLED:
+            job.status.cancelled_at = now
+        elif existing == ConditionType.FAILED:
+            job.status.failed_at = now
+        elif existing == ConditionType.EXPIRED:
+            job.status.expired_at = now
+        else:  # COMPLETED already recorded
+            job.status.completed_at = now
         job.status.state = BatchJobState.FINALIZED
 
         if not await self.apply_job_changes(job, meta_data):

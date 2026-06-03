@@ -16,7 +16,7 @@ spec:
           - "0.0.0.0"
           - --port
           - "8090"
-          - --disable-inference-endpoint
+          - --enable-k8s-support
         env:
           - name: STORAGE_AWS_ACCESS_KEY_ID
             valueFrom:

@@ -138,8 +138,18 @@ class K8sJobRuntime(RuntimeBase):
         self._active_job_id = job_id
         self._delete_requested.clear()
 
-        assert job.session_id is not None, "session_id required to render a k8s Job"
-        manifest = self._renderer.render(job.session_id, job.spec, prepared_job=job)
+        # session_id is a transient pre-job_id correlation token (set at create,
+        # not preserved across the JobStore->metastore round-trip), so it is
+        # None here. job_id is the durable identifier the deployment runtime
+        # already keys off; fall back to it so render's SESSION_ID annotation is
+        # always populated. It is only an annotation — the Job name is independent.
+        session_id = job.session_id or job_id
+        if not session_id:
+            raise BatchJobError(
+                BatchJobErrorCode.INVALID_DRIVER,
+                "k8s Job render requires a session_id or job_id",
+            )
+        manifest = self._renderer.render(session_id, job.spec, prepared_job=job)
         meta = manifest["metadata"]
         handle = K8sJobHandle(
             namespace=meta.get("namespace") or "default",

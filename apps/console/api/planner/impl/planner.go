@@ -222,9 +222,10 @@ func (q *Planner) process(jobID string) {
 	q.persist(jobID)
 
 	aibrix := plannerclient.AIBrixExtraBody{
-		JobID:           req.JobID,
-		PlannerDecision: q.backend.BuildDecision(spec, readyResult, gpuType, gpusPerReplica),
-		ModelTemplate:   req.ModelTemplate,
+		JobID:              req.JobID,
+		Runtime:            plannerclient.RuntimeForProvisionType(q.prov.Type()),
+		ResourceAllocation: q.backend.BuildResourceAllocation(spec, readyResult, gpuType, gpusPerReplica),
+		ModelTemplate:      req.ModelTemplate,
 	}
 
 	if mt := req.ModelTemplate; mt != nil {

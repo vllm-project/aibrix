@@ -16,7 +16,7 @@
 ``base`` defines the contract (``Runtime`` / ``RuntimeBase``), the no-provision
 runtimes (``ExternalRuntime`` / ``NoopRuntime``), and the string-keyed registry. A
 backend is one module per provider that registers a factory under its
-``ComputeProvider`` key:
+``RuntimeTarget`` key:
 
     k8s_deployment  -> "Kubernetes"
     k8s_job         -> "KubernetesJob"

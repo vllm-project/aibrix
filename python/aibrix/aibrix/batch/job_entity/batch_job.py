@@ -158,8 +158,8 @@ class BatchJobSpec(_Strict):
     )
 
     @property
-    def compute_provider(self) -> Optional[str]:
-        return self.aibrix.compute_provider if self.aibrix else None
+    def runtime_target(self) -> Optional[str]:
+        return self.aibrix.runtime_target if self.aibrix else None
 
     @property
     def model_template_name(self) -> Optional[str]:

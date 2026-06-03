@@ -15,8 +15,9 @@ from aibrix.batch.job_entity import (
     CompletionWindow,
     JobAnnotationKey,
     ModelTemplateRef,
-    PlannerDecision,
+    ResourceAllocation,
     ResourceDetail,
+    RuntimeSpec,
 )
 from aibrix.batch.manifest.renderer import JobManifestRenderer, RenderError
 from aibrix.batch.template import local_profile_registry, local_template_registry
@@ -154,7 +155,8 @@ class TestBatchJobEntityCreation:
             completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
             aibrix=AibrixMetadata(
                 job_id="job-123",
-                planner_decision=PlannerDecision(
+                runtime=RuntimeSpec(target="Kubernetes"),
+                resource_allocation=ResourceAllocation(
                     provision_id="reservation-1",
                     provision_resource_deadline=3600,
                     resource_details=[
@@ -180,25 +182,28 @@ class TestBatchJobEntityCreation:
 
         assert spec.aibrix is not None
         assert spec.aibrix.job_id == "job-123"
-        assert spec.aibrix.planner_decision is not None
-        assert spec.aibrix.planner_decision.provision_id == "reservation-1"
-        assert spec.aibrix.planner_decision.resource_details is not None
-        assert spec.aibrix.planner_decision.resource_details[0].gpu_type == "H100"
+        assert spec.aibrix.runtime is not None
+        assert spec.aibrix.runtime.target == "Kubernetes"
+        assert spec.aibrix.runtime_target == "Kubernetes"
+        assert spec.aibrix.resource_allocation is not None
+        assert spec.aibrix.resource_allocation.provision_id == "reservation-1"
+        assert spec.aibrix.resource_allocation.resource_details is not None
+        assert spec.aibrix.resource_allocation.resource_details[0].gpu_type == "H100"
         assert spec.aibrix.model_template is not None
         assert spec.aibrix.model_template.name == "mock-vllm"
         assert spec.aibrix.profile is not None
         assert spec.aibrix.profile.name == "unittest"
 
-    def test_planner_decision_allows_extra_fields(self):
-        decision = PlannerDecision.model_validate(
+    def test_resource_allocation_allows_extra_fields(self):
+        allocation = ResourceAllocation.model_validate(
             {
                 "provision_id": "reservation-1",
                 "future_field": {"phase": "queued"},
             }
         )
 
-        assert decision.provision_id == "reservation-1"
-        assert getattr(decision, "future_field") == {"phase": "queued"}
+        assert allocation.provision_id == "reservation-1"
+        assert getattr(allocation, "future_field") == {"phase": "queued"}
 
     def test_resource_detail_allows_extra_fields(self):
         detail = ResourceDetail.model_validate(

@@ -14,11 +14,10 @@
 
 import argparse
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from kubernetes import client, config
 
 # Set required environment variable before importing
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
@@ -32,14 +31,10 @@ from aibrix.storage import StorageType
 def _args(**overrides):
     defaults = {
         "enable_fastapi_docs": False,
-        "disable_k8s_support": False,
+        "enable_k8s_support": False,
         "disable_batch_api": True,
         "disable_file_api": True,
-        "disable_inference_endpoint": True,
-        "registry_provider": None,
         "dry_run": False,
-        "k8s_namespace": "default",
-        "k8s_job_patch": None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -72,40 +67,8 @@ def _mock_k8s_runtime():
     with (
         patch("aibrix.metadata.app.k8s_client.CoreV1Api") as core_api,
         patch("aibrix.metadata.app.k8s_client.AppsV1Api") as apps_api,
-        patch("aibrix.metadata.app.k8s_template_registry") as template_registry,
-        patch("aibrix.metadata.app.k8s_profile_registry") as profile_registry,
     ):
-        yield core_api, apps_api, template_registry, profile_registry
-
-
-@pytest.fixture(scope="session")
-def k8s_config():
-    """Initialize Kubernetes client and test connectivity."""
-    try:
-        # Try to load in-cluster config first, then fallback to local config
-        try:
-            config.load_incluster_config()
-        except config.ConfigException:
-            try:
-                config.load_kube_config()
-            except config.ConfigException as e:
-                pytest.skip(f"Kubernetes configuration not available: {e}")
-
-        # Test API server accessibility with client-side request timeout.
-        try:
-            v1 = client.CoreV1Api()
-            api_host = v1.api_client.configuration.host
-            if not api_host:
-                pytest.skip(
-                    "Kubernetes configuration is invalid: no API server host found"
-                )
-            v1.list_namespace(limit=1, _request_timeout=(1, 2))
-
-        except Exception as e:
-            pytest.skip(f"Failed to create Kubernetes API client: {e}")
-
-    except Exception as e:
-        pytest.skip(f"Failed to initialize Kubernetes client: {e}")
+        yield core_api, apps_api
 
 
 def test_build_app_without_batch(_mock_k8s_config_loading):
@@ -113,8 +76,7 @@ def test_build_app_without_batch(_mock_k8s_config_loading):
     args = _args(
         disable_batch_api=True,
         disable_file_api=True,
-        disable_k8s_support=True,
-        disable_inference_endpoint=True,
+        enable_k8s_support=False,
     )
     load_incluster, load_kube = _mock_k8s_config_loading
 
@@ -128,39 +90,15 @@ def test_build_app_without_batch(_mock_k8s_config_loading):
     assert not hasattr(app.state, "batch_driver")
 
 
-def test_build_app_disabled_batch_api_without_inference_endpoint(
+def test_build_app_batch_no_global_inference_endpoint(
     _mock_k8s_config_loading, monkeypatch
 ):
-    """Regression for #2185: disabling the batch API must not require an
-    inference endpoint. The inference client is only consumed by the batch
-    API, so build_app should succeed (not sys.exit) when batch is off and no
-    INFERENCE_ENGINE_ENDPOINT is configured."""
+    """With the batch API enabled, build_app succeeds without any global
+    inference endpoint: jobs carry their own aibrix.runtime.target and the
+    per-job runtime builds its own EndpointSource. The default entity manager
+    is the metastore-backed JobStore."""
     monkeypatch.delenv("INFERENCE_ENGINE_ENDPOINT", raising=False)
-    args = _args(
-        disable_batch_api=True,
-        disable_inference_endpoint=False,
-        disable_k8s_support=True,
-    )
-
-    app = build_app(args)
-
-    assert not hasattr(app.state, "batch_driver")
-    assert hasattr(app.state, "httpx_client_wrapper")
-
-
-def test_build_app_batch_without_global_inference_endpoint(
-    _mock_k8s_runtime, _mock_k8s_config_loading, monkeypatch
-):
-    """With the batch API enabled but no global INFERENCE_ENGINE_ENDPOINT,
-    build_app must succeed when --disable-inference-endpoint is set: jobs carry
-    their own planner_decision provider (per-job k8s / deployment execution),
-    so no global engine is required. The default entity manager is the
-    metastore-backed JobStore."""
-    monkeypatch.delenv("INFERENCE_ENGINE_ENDPOINT", raising=False)
-    args = _args(
-        disable_batch_api=False,
-        disable_inference_endpoint=True,
-    )
+    args = _args(disable_batch_api=False)
 
     app = build_app(args)
 
@@ -168,107 +106,51 @@ def test_build_app_batch_without_global_inference_endpoint(
     assert isinstance(app.state.batch_driver.job_manager._job_entity_manager, JobStore)
 
 
-def test_build_app_batch_without_inference_endpoint_fails_fast(
-    _mock_k8s_runtime, _mock_k8s_config_loading, monkeypatch
+def test_build_app_creates_k8s_clients_when_enabled(
+    _mock_k8s_runtime, _mock_k8s_config_loading
 ):
-    """With the batch API enabled, no global INFERENCE_ENGINE_ENDPOINT, and the
-    inference endpoint NOT disabled, build_app fails fast (a standalone batch
-    run has no engine to call)."""
-    monkeypatch.delenv("INFERENCE_ENGINE_ENDPOINT", raising=False)
-    args = _args(
-        disable_batch_api=False,
-        disable_inference_endpoint=False,
-    )
+    """--enable-k8s-support loads kube config and creates the CoreV1/AppsV1
+    clients used for per-job k8s execution. The ConfigMap-driven template/
+    profile registries were removed, so they stay None."""
+    args = _args(disable_batch_api=False, enable_k8s_support=True)
+    load_incluster, load_kube = _mock_k8s_config_loading
+    core_api, apps_api = _mock_k8s_runtime
 
-    with pytest.raises(SystemExit):
-        build_app(args)
-
-
-def test_load_batch_k8s_context_skips_registry_loading_when_provider_unset(
-    k8s_config,
-):
-    # The default entity manager is the metastore-backed JobStore ("db"); the
-    # metastore is constructed lazily, so the isinstance check below exercises
-    # the real type without needing a live backend.
-    args = _args(
-        registry_provider=None,
-        dry_run=False,
-        disable_batch_api=False,
-        disable_inference_endpoint=True,
-    )
-
-    with (
-        patch("aibrix.metadata.app.config.load_incluster_config") as load_incluster,
-        patch("aibrix.metadata.app.config.load_kube_config") as load_kube,
-        patch("aibrix.metadata.app.k8s_client.CoreV1Api") as core_api,
-        patch("aibrix.metadata.app.k8s_client.AppsV1Api") as apps_api,
-        patch("aibrix.metadata.app.k8s_template_registry") as template_registry,
-        patch("aibrix.metadata.app.k8s_profile_registry") as profile_registry,
-    ):
-        app = build_app(args)
+    app = build_app(args)
 
     load_incluster.assert_called_once_with()
     load_kube.assert_not_called()
     core_api.assert_called_once_with()  # in _load_batch_k8s_context
     apps_api.assert_called_once_with()  # in _load_batch_k8s_context
-    template_registry.assert_not_called()
-    profile_registry.assert_not_called()
-    assert args.disable_k8s_support is False
     assert app.state.template_registry is None
     assert app.state.profile_registry is None
     assert isinstance(app.state.batch_driver.job_manager._job_entity_manager, JobStore)
 
 
-def test_load_batch_k8s_context_registry_loading_overrides_k8s_disabled(
-    _mock_k8s_runtime,
-    k8s_config,
+def test_build_app_skips_k8s_clients_when_disabled(
+    _mock_k8s_runtime, _mock_k8s_config_loading
 ):
-    args = _args(
-        disable_k8s_support=True,
-        registry_provider="configmap",
-        dry_run=False,
-        disable_batch_api=False,
-        disable_inference_endpoint=True,
-        k8s_namespace="test-namespace",
-    )
-    template_registry = MagicMock()
-    profile_registry = MagicMock()
-    core_api, apps_api, _, _ = _mock_k8s_runtime
+    """Without --enable-k8s-support (the default), build_app neither loads kube
+    config nor creates k8s clients, even with the batch API enabled."""
+    args = _args(disable_batch_api=False, enable_k8s_support=False)
+    load_incluster, load_kube = _mock_k8s_config_loading
+    core_api, apps_api = _mock_k8s_runtime
 
-    with (
-        patch(
-            "aibrix.metadata.app.k8s_template_registry",
-            return_value=template_registry,
-        ) as template_registry_factory,
-        patch(
-            "aibrix.metadata.app.k8s_profile_registry",
-            return_value=profile_registry,
-        ) as profile_registry_factory,
-    ):
-        app = build_app(args)
+    app = build_app(args)
 
-    core_api.assert_called_once_with()
-    apps_api.assert_called_once_with()
-    template_registry_factory.assert_called_once_with(
-        core_api.return_value, namespace="test-namespace"
-    )
-    profile_registry_factory.assert_called_once_with(
-        core_api.return_value, namespace="test-namespace"
-    )
-    template_registry.reload.assert_called_once_with()
-    profile_registry.reload.assert_called_once_with()
-    assert args.disable_k8s_support is False
-    assert app.state.template_registry is template_registry
-    assert app.state.profile_registry is profile_registry
+    load_incluster.assert_not_called()
+    load_kube.assert_not_called()
+    core_api.assert_not_called()
+    apps_api.assert_not_called()
+    assert hasattr(app.state, "batch_driver")
 
 
 def test_status_endpoint(_mock_k8s_config_loading):
     """The /status endpoint reports the HTTP client and batch driver (no kopf)."""
     args = _args(
-        disable_k8s_support=True,
+        enable_k8s_support=False,
         disable_batch_api=True,
         disable_file_api=True,
-        disable_inference_endpoint=True,
     )
     load_incluster, load_kube = _mock_k8s_config_loading
 
@@ -294,10 +176,9 @@ def test_status_endpoint(_mock_k8s_config_loading):
 def test_healthz_endpoint():
     """Test /healthz endpoint."""
     args = _args(
-        disable_k8s_support=True,
+        enable_k8s_support=False,
         disable_batch_api=True,
         disable_file_api=True,
-        disable_inference_endpoint=True,
     )
 
     app = build_app(args)
@@ -313,10 +194,9 @@ def test_healthz_endpoint():
 def test_ready_endpoint():
     """Test /readyz endpoint."""
     args = _args(
-        disable_k8s_support=True,
+        enable_k8s_support=False,
         disable_batch_api=True,
         disable_file_api=True,
-        disable_inference_endpoint=True,
     )
 
     app = build_app(args)

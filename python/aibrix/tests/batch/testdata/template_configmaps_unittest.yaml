@@ -1,6 +1,5 @@
 # Test fixture: minimal ModelDeploymentTemplate + BatchProfile ConfigMaps
-# for unit tests. Uses mock engine (no real GPU required) and a local
-# storage backend.
+# for unit tests. Uses mock engine (no real GPU required).
 
 ---
 apiVersion: v1
@@ -45,9 +44,6 @@ data:
     items:
       - name: unittest
         spec:
-          storage:
-            backend: local
-            bucket: /tmp/aibrix-batch-test
           scheduling:
             completion_window: 24h
             max_concurrency: 4

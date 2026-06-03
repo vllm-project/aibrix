@@ -118,6 +118,9 @@ class FakeCoreV1Api:
 
 
 class FakeRenderer:
+    def __init__(self):
+        self.provider_specs = []
+
     def render(
         self,
         job_id: str,
@@ -126,6 +129,7 @@ class FakeRenderer:
     ):
         assert job_id is not None
         assert spec.model_template_name == "mock-template"
+        self.provider_specs.append(provider_spec)
         return {
             "deployment": {
                 "apiVersion": "apps/v1",
@@ -177,8 +181,8 @@ def _make_job(job_id: str = "job-123456789abc") -> BatchJob:
         completion_window="24h",
         aibrix={
             "model_template": {"name": "mock-template"},
-            "compute": {"provider": "Kubernetes"},
-            "planner_decision": {
+            "runtime": {"target": "Kubernetes"},
+            "resource_allocation": {
                 "provision_id": "reservation-1",
                 "provision_resource_deadline": 3600,
                 "resource_details": [
@@ -206,6 +210,14 @@ def _make_job(job_id: str = "job-123456789abc") -> BatchJob:
         spec=spec,
         status=status,
     )
+
+
+def _make_job_without_resource_details() -> BatchJob:
+    job = _make_job()
+    assert job.spec.aibrix is not None
+    assert job.spec.aibrix.resource_allocation is not None
+    job.spec.aibrix.resource_allocation.resource_details = None
+    return job
 
 
 def _make_infrastructure_context(
@@ -361,8 +373,8 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
 
 
 @pytest.mark.asyncio
-async def test_create_job_driver_uses_deployment_runtime_for_kubernetes_provider():
-    """Protect Runtime selection for compute.provider=Kubernetes.
+async def test_create_job_driver_uses_deployment_runtime_for_kubernetes_target():
+    """Protect Runtime selection for runtime.target=Kubernetes.
 
     If the factory regresses and falls back to the local/standalone path,
     metadata-server jobs that request deployment execution silently stop
@@ -380,6 +392,26 @@ async def test_create_job_driver_uses_deployment_runtime_for_kubernetes_provider
 
     assert isinstance(driver, BaseJobDriver)
     assert isinstance(driver._runtime, DeploymentRuntime)
+
+
+@pytest.mark.asyncio
+async def test_deployment_runtime_defaults_when_resource_details_absent():
+    job = _make_job_without_resource_details()
+    apps_api = FakeAppsV1Api()
+    core_api = FakeCoreV1Api()
+    renderer = FakeRenderer()
+    driver = _make_deployment_driver(
+        _make_infrastructure_context(apps_api, core_api),
+        progress_manager=FakeProgressManager(job),
+        entity_manager=FakeEntityManager(),
+        renderer=renderer,
+    )
+
+    await driver._runtime._provision(job, job.job_id)
+
+    assert len(renderer.provider_specs) == 1
+    assert renderer.provider_specs[0].replica is None
+    assert apps_api.created[0][1]["spec"]["replicas"] == 1
 
 
 @pytest.mark.asyncio
@@ -498,7 +530,7 @@ def test_standalone_runtime_drives_inline_failure_policy():
 
 
 def test_factory_unknown_provider_raises_invalid_driver():
-    job = SimpleNamespace(spec=SimpleNamespace(compute_provider="providr"))
+    job = SimpleNamespace(spec=SimpleNamespace(runtime_target="providr"))
     with pytest.raises(BatchJobError) as excinfo:
         create_job_driver(
             _make_infrastructure_context(),
@@ -510,7 +542,7 @@ def test_factory_unknown_provider_raises_invalid_driver():
 
 
 def test_factory_kubernetes_without_entity_manager_raises_invalid_driver():
-    job = SimpleNamespace(spec=SimpleNamespace(compute_provider="Kubernetes"))
+    job = SimpleNamespace(spec=SimpleNamespace(runtime_target="Kubernetes"))
     with pytest.raises(BatchJobError) as excinfo:
         create_job_driver(
             _make_infrastructure_context(),
@@ -521,8 +553,21 @@ def test_factory_kubernetes_without_entity_manager_raises_invalid_driver():
     assert excinfo.value.code == BatchJobErrorCode.INVALID_DRIVER
 
 
+def test_factory_kubernetes_without_k8s_context_raises_invalid_driver():
+    job = SimpleNamespace(spec=SimpleNamespace(runtime_target="Kubernetes"))
+    with pytest.raises(BatchJobError) as excinfo:
+        create_job_driver(
+            InfrastructureContext(),
+            FakeProgressManager(_make_job()),
+            entity_manager=FakeEntityManager(),
+            job=job,
+        )
+    assert excinfo.value.code == BatchJobErrorCode.INVALID_DRIVER
+    assert "--enable-k8s-support" in excinfo.value.message
+
+
 def test_factory_external_provider_uses_local_runtime():
-    job = SimpleNamespace(spec=SimpleNamespace(compute_provider="External"))
+    job = SimpleNamespace(spec=SimpleNamespace(runtime_target="External"))
     sentinel = object()
     driver = create_job_driver(
         _make_infrastructure_context(),

@@ -15,12 +15,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from aibrix.batch.job_entity import BatchJobSpec, ResourceDetail
 from aibrix.batch.manifest.downloader_env import build_downloader_env
 from aibrix.batch.manifest.renderer import _RendererSupport
-from aibrix.batch.template import BatchProfile, ModelDeploymentTemplate
+from aibrix.batch.template import ModelDeploymentTemplate
 from aibrix.downloader.utils import infer_model_name
 
 _DEFAULT_NAMESPACE = "default"
@@ -48,11 +48,7 @@ class DeploymentManifestRenderer(_RendererSupport):
         provider_spec: ResourceDetail,
         namespace: str = _DEFAULT_NAMESPACE,
     ) -> Dict[str, Dict[str, Any]]:
-        # only require profile if model download is neeeded
         template, profile = self._resolve(spec)
-        if self._needs_model_download(template):
-            template, profile = self._resolve(spec, profile_required=True)
-        assert not self._needs_model_download(template) or profile is not None
 
         self._validate_template(template)
 
@@ -65,7 +61,6 @@ class DeploymentManifestRenderer(_RendererSupport):
             deployment_name,
             provider_spec.replica or 1,
             port,
-            profile,
         )
         deployment["metadata"]["namespace"] = namespace
         self._apply_template(deployment, template)
@@ -80,7 +75,6 @@ class DeploymentManifestRenderer(_RendererSupport):
         deployment_name: str,
         replicas: int,
         port: int,
-        profile: Optional[BatchProfile],
     ) -> Dict[str, Any]:
         labels = self._base_labels(template, deployment_name, port)
         volumes = [
@@ -127,8 +121,8 @@ class DeploymentManifestRenderer(_RendererSupport):
                             if self._needs_runtime_sidecar(template)
                             else []
                         ),
-                        "initContainers": self._init_containers(template, profile),
-                        "terminationGracePeriodSeconds": 300,
+                        "initContainers": self._init_containers(template),
+                        "terminationGracePeriodSeconds": 30,
                         "volumes": volumes,
                     },
                 },
@@ -168,12 +162,10 @@ class DeploymentManifestRenderer(_RendererSupport):
         }
 
     def _init_containers(
-        self, template: ModelDeploymentTemplate, profile: Optional[BatchProfile]
+        self, template: ModelDeploymentTemplate
     ) -> list[Dict[str, Any]]:
         if not self._needs_model_download(template):
             return []
-        if profile is None:
-            raise ValueError("profile is required for remote model downloads")
 
         return [
             {
@@ -186,7 +178,7 @@ class DeploymentManifestRenderer(_RendererSupport):
                     "--local-dir",
                     f"{_MODEL_MOUNT_PATH}/",
                 ],
-                "env": build_downloader_env(template, profile),
+                "env": build_downloader_env(template),
                 "volumeMounts": [
                     {
                         "mountPath": _MODEL_MOUNT_PATH,

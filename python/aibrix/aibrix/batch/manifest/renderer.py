@@ -215,9 +215,11 @@ class _RendererSupport:
         endpoint: Optional[str] = None,
         skip_deployment_check: bool = True,
     ) -> None:
-        # The endpoint setting overlap with per job spec.aibrix.planner_decision.resource_details[0].provider
+        # The endpoint setting overlaps with per-job
+        # spec.aibrix.resource_allocation.resource_details[0].provider.
         # Currently, endpoint can be None for platform independent template, and check will be waived.
-        # TODO: Align the endpoint setting with per job spec.aibrix.planner_decision.resource_details[0].provider
+        # TODO: Align the endpoint setting with per-job
+        # spec.aibrix.resource_allocation.resource_details[0].provider.
         if endpoint is None:
             return
         supported = [e.value for e in template.spec.supported_endpoints]
@@ -579,11 +581,17 @@ class JobManifestRenderer(_RendererSupport):
 
     def _worker_container(self) -> Dict[str, Any]:
         """The batch-worker container as it appears in legacy yaml."""
+        env = list(_BASE_WORKER_ENV)
+        existing_names = {entry["name"] for entry in env}
+        for entry in build_storage_env() + build_metastore_env():
+            if entry["name"] not in existing_names:
+                env.append(entry)
+                existing_names.add(entry["name"])
         return {
             "name": _WORKER_CONTAINER_NAME,
             "image": _WORKER_IMAGE,
             "command": [_WORKER_ENTRYPOINT],
-            "env": list(_BASE_WORKER_ENV),
+            "env": env,
         }
 
     # ── Layer 2: template ──────────────────────────────────────────────────
@@ -621,20 +629,7 @@ class JobManifestRenderer(_RendererSupport):
     def _apply_profile(
         self, manifest: Dict[str, Any], profile: BatchProfile
     ) -> Dict[str, Any]:
-        """Inject storage and metastore env vars into batch-worker container.
-
-        Storage env comes from the per-batch profile (where files live).
-        Metastore env comes from per-profile metastore settings when
-        configured, otherwise from the process-global metastore type.
-        """
-        worker = self._find_container(manifest, _WORKER_CONTAINER_NAME)
-        existing_names = {entry["name"] for entry in worker["env"]}
-
-        for entry in build_storage_env(profile) + build_metastore_env(profile):
-            if entry["name"] not in existing_names:
-                worker["env"].append(entry)
-                existing_names.add(entry["name"])
-
+        """Apply batch-level profile policy to the Job manifest."""
         # Profile-driven scheduling fields that affect Job spec directly.
         # Only completion_window is honored, and only as 24h. The
         # actual deadline is set in apply_per_batch from
@@ -711,7 +706,7 @@ class JobManifestRenderer(_RendererSupport):
             )
 
         # Persist the full aibrix block as a single JSON annotation so the
-        # non-template / profile fields (job_id, planner_decision) survive
+        # non-template / profile fields (job_id, resource_allocation) survive
         # the annotation roundtrip. Per-field annotations above remain for
         # backward compatibility with rows written by older builds.
         if spec.aibrix is not None:
@@ -751,6 +746,20 @@ class JobManifestRenderer(_RendererSupport):
             pod_annotations
         )
         manifest["spec"]["suspend"] = suspend
+
+        # The worker keys its metastore writes on its own job_id, taken from the
+        # JOB_UID env. The base env wires JOB_UID from the k8s controller-uid —
+        # a different UUID than the metadata service's batch job_id, which it
+        # finalizes the output file under. Override JOB_UID with the batch
+        # job_id so both sides share the same metastore key namespace; otherwise
+        # the worker writes results under one id and finalize reads zero.
+        if prepared_job is not None and prepared_job.job_id:
+            worker = self._find_container(manifest, _WORKER_CONTAINER_NAME)
+            for entry in worker["env"]:
+                if entry["name"] == "JOB_UID":
+                    entry.pop("valueFrom", None)
+                    entry["value"] = prepared_job.job_id
+                    break
 
         # Deadline: use the per-batch completion_window if supplied; else
         # fall back to system default. Phase 4 may further reduce this

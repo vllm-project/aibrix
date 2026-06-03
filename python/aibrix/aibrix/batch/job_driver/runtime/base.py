@@ -236,7 +236,7 @@ def registered_runtimes() -> List[str]:
 
 # OSS built-in runtimes that need no extra dependencies. Provisioning backends
 # (Kubernetes / KubernetesJob / LambdaCloud / RunPod) register from their own
-# modules, which pull in kubernetes / cloud SDKs. Keys match ComputeProvider.
+# modules, which pull in kubernetes / cloud SDKs. Keys match RuntimeTarget.
 # Factories take a uniform keyword bag and pick what they need.
 register_runtime(
     "External", lambda *, endpoint_source=None, **_: ExternalRuntime(endpoint_source)
