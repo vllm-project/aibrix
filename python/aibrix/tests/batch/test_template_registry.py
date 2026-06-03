@@ -50,7 +50,7 @@ def _valid_template(name="m", version="v1", status="active"):
 def _valid_profile(name="p1"):
     return {
         "name": name,
-        "spec": {"storage": {"backend": "local", "bucket": "/tmp"}},
+        "spec": {"scheduling": {"max_concurrency": 32}},
     }
 
 
@@ -165,7 +165,7 @@ class TestProfileRegistry:
         assert reg.default_name() is None or reg.default_name() == "p1"
 
     def test_per_item_error_isolation(self, tmp_path):
-        bad = {"name": "bad", "spec": {"storage": {}}}  # storage.backend missing
+        bad = {"name": "bad", "spec": {"scheduling": {"max_concurrency": 0}}}
         path = _write(
             tmp_path,
             "p.yaml",

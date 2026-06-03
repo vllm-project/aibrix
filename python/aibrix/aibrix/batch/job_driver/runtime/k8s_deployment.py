@@ -29,7 +29,6 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-from kubernetes import client as k8s_client
 from kubernetes.client import ApiException
 
 from aibrix.batch.client import EndpointSource
@@ -38,7 +37,12 @@ from aibrix.batch.client.sources import (
     PortForwardEndpointSource,
 )
 from aibrix.batch.job_driver.runtime import Endpoint, RuntimeBase, register_runtime
-from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobErrorCode
+from aibrix.batch.job_entity import (
+    BatchJob,
+    BatchJobError,
+    BatchJobErrorCode,
+    ResourceDetail,
+)
 from aibrix.batch.manifest import DeploymentManifestRenderer
 from aibrix.batch.state import JobEntityManager
 from aibrix.context import InfrastructureContext
@@ -84,8 +88,14 @@ class DeploymentRuntime(RuntimeBase):
         self._context = context
         self._entity_manager = entity_manager
         self._renderer = renderer or self._build_renderer(context)
-        self._apps_v1_api = context.apps_v1_api or k8s_client.AppsV1Api()
-        self._core_v1_api = context.core_v1_api or k8s_client.CoreV1Api()
+        if context.apps_v1_api is None or context.core_v1_api is None:
+            raise BatchJobError(
+                BatchJobErrorCode.INVALID_DRIVER,
+                "Kubernetes provider requires Kubernetes API clients; start "
+                "metadata service with --enable-k8s-support",
+            )
+        self._apps_v1_api = context.apps_v1_api
+        self._core_v1_api = context.core_v1_api
         self._ready_timeout_seconds = ready_timeout_seconds
         self._mgr_deleted_handler = entity_manager.on_job_deleted(
             self._job_deleted_handler
@@ -126,19 +136,12 @@ class DeploymentRuntime(RuntimeBase):
             raise ValueError("job_id is required")
         if job.spec.aibrix is None or job.spec.model_template_name is None:
             raise ValueError("DeploymentRuntime requires spec.aibrix.model_template")
+        resource_detail = ResourceDetail()
         resource_allocation = job.spec.aibrix.resource_allocation
-        if (
-            resource_allocation is None
-            or resource_allocation.resource_details is None
-            or len(resource_allocation.resource_details) == 0
-        ):
-            raise ValueError(
-                "DeploymentRuntime requires spec.aibrix.resource_allocation.resource_details"
-            )
+        if resource_allocation and resource_allocation.resource_details:
+            resource_detail = resource_allocation.resource_details[0]
 
-        rendered = self._renderer.render(
-            job.job_id, job.spec, resource_allocation.resource_details[0]
-        )
+        rendered = self._renderer.render(job.job_id, job.spec, resource_detail)
         deployment = rendered["deployment"]
         service = rendered["service"]
         model_name = (
@@ -232,6 +235,7 @@ class DeploymentRuntime(RuntimeBase):
         )
 
     async def _apply_deployment(self, namespace: str, deployment: dict) -> None:
+        name = deployment.get("metadata", {}).get("name", "<unknown>")
         try:
             await asyncio.to_thread(
                 self._apps_v1_api.create_namespaced_deployment,
@@ -240,9 +244,13 @@ class DeploymentRuntime(RuntimeBase):
             )
         except ApiException as ex:
             if ex.status != 409:
-                raise
+                raise RuntimeError(
+                    f"Failed to create Deployment '{name}' in namespace "
+                    f"'{namespace}': {ex}"
+                ) from ex
 
     async def _apply_service(self, namespace: str, service: dict) -> None:
+        name = service.get("metadata", {}).get("name", "<unknown>")
         try:
             await asyncio.to_thread(
                 self._core_v1_api.create_namespaced_service,
@@ -251,7 +259,10 @@ class DeploymentRuntime(RuntimeBase):
             )
         except ApiException as ex:
             if ex.status != 409:
-                raise
+                raise RuntimeError(
+                    f"Failed to create Service '{name}' in namespace "
+                    f"'{namespace}': {ex}"
+                ) from ex
 
     async def _wait_for_deployment_ready(
         self, namespace: str, deployment_name: str, replicas: int
@@ -260,11 +271,31 @@ class DeploymentRuntime(RuntimeBase):
         while True:
             if self._delete_requested.is_set():
                 raise asyncio.CancelledError
-            deployment = await asyncio.to_thread(
-                self._apps_v1_api.read_namespaced_deployment_status,
-                name=deployment_name,
-                namespace=namespace,
-            )
+            try:
+                deployment = await asyncio.to_thread(
+                    self._apps_v1_api.read_namespaced_deployment_status,
+                    name=deployment_name,
+                    namespace=namespace,
+                )
+            except ApiException as ex:
+                if ex.status != 404:
+                    raise RuntimeError(
+                        f"Failed to read Deployment '{deployment_name}' in "
+                        f"namespace '{namespace}': {ex}"
+                    ) from ex
+                logger.warning(
+                    "Deployment not found while waiting for readiness",
+                    deployment=deployment_name,
+                    namespace=namespace,
+                    job_id=self._active_job_id,
+                )  # type: ignore[call-arg]
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise TimeoutError(
+                        f"Timed out waiting for deployment '{deployment_name}' "
+                        "to appear"
+                    ) from ex
+                await asyncio.sleep(1)
+                continue
             available = deployment.status.available_replicas or 0
             if available >= replicas:
                 return
