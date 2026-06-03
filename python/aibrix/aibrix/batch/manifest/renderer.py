@@ -215,9 +215,11 @@ class _RendererSupport:
         endpoint: Optional[str] = None,
         skip_deployment_check: bool = True,
     ) -> None:
-        # The endpoint setting overlap with per job spec.aibrix.planner_decision.resource_details[0].provider
+        # The endpoint setting overlaps with per-job
+        # spec.aibrix.resource_allocation.resource_details[0].provider.
         # Currently, endpoint can be None for platform independent template, and check will be waived.
-        # TODO: Align the endpoint setting with per job spec.aibrix.planner_decision.resource_details[0].provider
+        # TODO: Align the endpoint setting with per-job
+        # spec.aibrix.resource_allocation.resource_details[0].provider.
         if endpoint is None:
             return
         supported = [e.value for e in template.spec.supported_endpoints]
@@ -704,7 +706,7 @@ class JobManifestRenderer(_RendererSupport):
             )
 
         # Persist the full aibrix block as a single JSON annotation so the
-        # non-template / profile fields (job_id, planner_decision) survive
+        # non-template / profile fields (job_id, resource_allocation) survive
         # the annotation roundtrip. Per-field annotations above remain for
         # backward compatibility with rows written by older builds.
         if spec.aibrix is not None:

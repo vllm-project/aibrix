@@ -38,5 +38,5 @@ if not (1 <= DEFAULT_JOB_POOL_SIZE <= 100):
 # Job opts are for testing purpose.
 BATCH_OPTS_FAIL_AFTER_N_REQUESTS = "fail_after_n_requests"
 
-# Compute-provider selection moved to the ComputeProvider enum
+# Runtime selection moved to the RuntimeTarget enum
 # (aibrix.batch.job_entity) and the runtime registry keys.

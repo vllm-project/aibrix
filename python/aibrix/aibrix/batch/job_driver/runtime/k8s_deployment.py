@@ -126,18 +126,18 @@ class DeploymentRuntime(RuntimeBase):
             raise ValueError("job_id is required")
         if job.spec.aibrix is None or job.spec.model_template_name is None:
             raise ValueError("DeploymentRuntime requires spec.aibrix.model_template")
-        planner_decision = job.spec.aibrix.planner_decision
+        resource_allocation = job.spec.aibrix.resource_allocation
         if (
-            planner_decision is None
-            or planner_decision.resource_details is None
-            or len(planner_decision.resource_details) == 0
+            resource_allocation is None
+            or resource_allocation.resource_details is None
+            or len(resource_allocation.resource_details) == 0
         ):
             raise ValueError(
-                "DeploymentRuntime requires spec.aibrix.planner_decision.resource_details"
+                "DeploymentRuntime requires spec.aibrix.resource_allocation.resource_details"
             )
 
         rendered = self._renderer.render(
-            job.job_id, job.spec, planner_decision.resource_details[0]
+            job.job_id, job.spec, resource_allocation.resource_details[0]
         )
         deployment = rendered["deployment"]
         service = rendered["service"]

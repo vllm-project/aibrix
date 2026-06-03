@@ -94,7 +94,7 @@ def test_build_app_batch_no_global_inference_endpoint(
     _mock_k8s_config_loading, monkeypatch
 ):
     """With the batch API enabled, build_app succeeds without any global
-    inference endpoint: jobs carry their own aibrix.compute.provider and the
+    inference endpoint: jobs carry their own aibrix.runtime.target and the
     per-job runtime builds its own EndpointSource. The default entity manager
     is the metastore-backed JobStore."""
     monkeypatch.delenv("INFERENCE_ENGINE_ENDPOINT", raising=False)

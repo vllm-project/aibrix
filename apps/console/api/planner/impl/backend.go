@@ -29,11 +29,11 @@ import (
 )
 
 // plannerBackend is the per-provisioner extension surface invoked per job
-// as: ValidateRequest → Schedule → BuildDecision.
+// as: ValidateRequest → Schedule → BuildResourceAllocation.
 //   - Schedule produces the ResourceProvisionSpec; it is the hook for
 //     future capacity-aware scheduling (replica sizing, gpu type selection, etc.).
-//   - BuildDecision projects the ProvisionResult onto the batch submission
-//     and folds in ready-state logging.
+//   - BuildResourceAllocation projects the ProvisionResult onto the batch
+//     submission and folds in ready-state logging.
 //
 // Accepted-provision logging is opt-in via provisionResponseLogger.
 //
@@ -42,7 +42,7 @@ import (
 type plannerBackend interface {
 	ValidateRequest(req *plannerapi.EnqueueRequest) error
 	Schedule(ctx context.Context, req *plannerapi.EnqueueRequest) (spec rmtypes.ResourceProvisionSpec, gpuType string, gpusPerReplica int, err error)
-	BuildDecision(spec rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult, gpuType string, gpusPerReplica int) plannerclient.PlannerDecision
+	BuildResourceAllocation(spec rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult, gpuType string, gpusPerReplica int) plannerclient.ResourceAllocation
 }
 
 // provisionResponseLogger is an optional capability to log provider-specific
@@ -133,7 +133,7 @@ func (b *defaultPlannerBackend) Schedule(_ context.Context, req *plannerapi.Enqu
 	return
 }
 
-func (b *defaultPlannerBackend) BuildDecision(_ rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult, _ string, _ int) plannerclient.PlannerDecision {
-	// Default decision shape; accelerator scalars are ignored here.
-	return &plannerclient.DefaultDecision{ProvisionID: prov.ProvisionID}
+func (b *defaultPlannerBackend) BuildResourceAllocation(_ rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult, _ string, _ int) plannerclient.ResourceAllocation {
+	// Default allocation shape; accelerator scalars are ignored here.
+	return &plannerclient.DefaultResourceAllocation{ProvisionID: prov.ProvisionID}
 }

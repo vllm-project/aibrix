@@ -106,7 +106,7 @@ async def test_on_prepared_unsuspends_the_job():
 
 def test_factory_selects_k8s_job_runtime_for_kubernetes_job_provider():
     job = SimpleNamespace(
-        spec=SimpleNamespace(compute_provider="KubernetesJob"),
+        spec=SimpleNamespace(runtime_target="KubernetesJob"),
     )
     ctx = SimpleNamespace(
         batch_v1_api=object(), template_registry=None, profile_registry=None

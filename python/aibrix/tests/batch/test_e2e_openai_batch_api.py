@@ -98,6 +98,7 @@ def build_batch_request(
     *,
     aibrix_template: str | None = None,
     aibrix_profile: str | None = None,
+    runtime_target: str | None = None,
     provider: str | None = None,
 ) -> dict[str, Any]:
     request: dict[str, Any] = {
@@ -110,8 +111,10 @@ def build_batch_request(
         aibrix["model_template"] = {"name": aibrix_template}
     if aibrix_profile:
         aibrix["profile"] = {"name": aibrix_profile}
+    if runtime_target:
+        aibrix["runtime"] = {"target": runtime_target}
     if provider:
-        aibrix["planner_decision"] = {
+        aibrix["resource_allocation"] = {
             "provision_id": "reservation-1",
             "provision_resource_deadline": 3600,
             "resource_details": [
@@ -575,6 +578,7 @@ async def test_openai_batch_api_metadata_server_workflow_with_redis_cache_and_de
             "/v1/chat/completions",
             aibrix_template="mock-vllm",
             aibrix_profile="unittest",
+            runtime_target="Kubernetes",
             provider="deployment",
         )
         create_response = client.post("/v1/batches", json=batch_request)

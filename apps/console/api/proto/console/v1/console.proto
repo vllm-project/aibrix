@@ -362,6 +362,14 @@ message CreateModelRequest {
 //       completion_window="24h",
 //       extra_body={
 //           "aibrix": {
+//               "runtime": {
+//                   "target": "Kubernetes",        # registered MDS runtime target
+//                   "options": {"namespace": "default"}  # optional, runtime-owned
+//               },
+//               "resource_allocation": {
+//                   "provision_id": "reservation-1",
+//                   "resource_details": []          # optional planner/RM payload
+//               },
 //               "model_template": {
 //                   "name":    "llama3-70b-prod",   # required
 //                   "version": "v1.3.0",            # optional; "" = latest active
@@ -381,6 +389,11 @@ message CreateModelRequest {
 //
 //
 // rules:
+//   - runtime.target selects the MDS Runtime. runtime.options is free-form and
+//     owned by the selected runtime; do not introduce runtime.placement.
+//   - resource_allocation carries generic planner / resource-manager output.
+//     resource_details remains a backend-defined array and is not renamed to
+//     placement.
 //   - model_template.name is required when extra_body.aibrix.model_template
 //     is present.
 //   - model_template.version: empty string -> latest active version of that

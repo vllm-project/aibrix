@@ -311,7 +311,7 @@ def build_app(args: argparse.Namespace, params={}):
     logger.info("User CRUD API mounted")
 
     # The batch BatchDriver does not get a global inference endpoint: jobs
-    # carry their own ``aibrix.compute.provider`` and the per-job runtime
+    # carry their own ``aibrix.runtime.target`` and the per-job runtime
     # (k8s job / deployment) builds its own EndpointSource. The only app-level
     # source is the echo client used by --dry-run.
     endpoint_source: Optional[EndpointSource] = None
@@ -339,7 +339,7 @@ def build_app(args: argparse.Namespace, params={}):
         # The single entity manager is the metastore-backed JobStore; the
         # substrate (LOCAL / Redis / S3 / TOS) is selected via METASTORE_TYPE, so
         # one store serves every backend. endpoint_source is None outside
-        # --dry-run: jobs carry their own aibrix.compute.provider and the per-job
+        # --dry-run: jobs carry their own aibrix.runtime.target and the per-job
         # runtime builds its own EndpointSource.
         app.state.batch_driver = BatchDriver(
             context=infrastructure_context,

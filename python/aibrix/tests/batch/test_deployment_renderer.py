@@ -15,7 +15,7 @@ def _write_yaml(path: Path, obj) -> Path:
 def _spec(template_name: str, replica: int = 1, profile_name: str | None = None):
     aibrix = {
         "model_template": {"name": template_name},
-        "planner_decision": {
+        "resource_allocation": {
             "resource_details": [
                 {
                     "provider": "deployment",
@@ -80,7 +80,7 @@ def test_deployment_manifest_renderer_matches_example_with_local_model(tmp_path)
     rendered = renderer.render(
         "job-123456789abc",
         spec,
-        spec.aibrix.planner_decision.resource_details[0],
+        spec.aibrix.resource_allocation.resource_details[0],
     )
 
     assert (
@@ -209,7 +209,7 @@ def test_build_downloader_env_and_remote_init_container(tmp_path):
     rendered = renderer.render(
         "job-remote1234",
         spec,
-        spec.aibrix.planner_decision.resource_details[0],
+        spec.aibrix.resource_allocation.resource_details[0],
     )
 
     deployment = rendered["deployment"]

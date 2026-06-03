@@ -6,12 +6,12 @@ from pydantic import Field
 from aibrix.batch.job_entity.base import _Lenient, _Strict
 
 
-class ComputeProvider(str, Enum):
-    """Where a batch job's compute comes from — the selector the user (or
-    Console / planner) sets under ``extra_body.aibrix.compute.provider``.
+class RuntimeTarget(str, Enum):
+    """Where a batch job runs — the selector the user (or Console / planner)
+    sets under ``extra_body.aibrix.runtime.target``.
 
     Each value maps to a registered ``Runtime`` (see ``register_runtime``).
-    ``ComputeSpec.provider`` is typed as ``str`` rather than this enum so a
+    ``RuntimeSpec.target`` is typed as ``str`` rather than this enum so a
     downstream-registered backend stays wire-valid without editing this
     upstream enum; these are the known values.
     """
@@ -29,12 +29,16 @@ class ComputeProvider(str, Enum):
     EXTERNAL = "External"
 
 
-class ComputeSpec(_Lenient):
-    """Selects the Runtime a batch job runs on. Kept separate from
-    ``model_template`` (engine startup) and from ``planner_decision``
-    (resource reservation): this is purely *which provider*."""
+class RuntimeSpec(_Lenient):
+    """Selects the Runtime a batch job runs on.
 
-    provider: str  # one of ComputeProvider; str keeps downstream providers valid
+    ``target`` maps to a registered Runtime (see ``register_runtime``).
+    ``options`` is intentionally free-form and passed through for runtime-
+    specific knobs such as Kubernetes namespace or cloud-region selectors.
+    """
+
+    target: str
+    options: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ResourceDetail(_Lenient):
@@ -43,7 +47,9 @@ class ResourceDetail(_Lenient):
     replica: Optional[int] = None
 
 
-class PlannerDecision(_Lenient):
+class ResourceAllocation(_Lenient):
+    """Resource allocation metadata returned by a planner / resource manager."""
+
     provision_id: Optional[str] = None
     provision_resource_deadline: Optional[int] = None
     resource_details: Optional[List[ResourceDetail]] = None
@@ -111,8 +117,8 @@ class ResolvedModelTemplate(_Strict):
 
 class AibrixMetadata(_Strict):
     job_id: Optional[str] = None
-    planner_decision: Optional[PlannerDecision] = None
-    compute: Optional[ComputeSpec] = None
+    resource_allocation: Optional[ResourceAllocation] = None
+    runtime: Optional[RuntimeSpec] = None
     model_template: Optional[ModelTemplateRef] = None
     profile: Optional[BatchProfileRef] = None
 
@@ -128,7 +134,8 @@ class AibrixMetadata(_Strict):
         profile_name: Optional[str] = None,
         template_overrides: Optional[Dict[str, Any]] = None,
         profile_overrides: Optional[Dict[str, Any]] = None,
-        compute_provider: Optional[str] = None,
+        runtime_target: Optional[str] = None,
+        runtime_options: Optional[Dict[str, Any]] = None,
     ) -> Optional["AibrixMetadata"]:
         model_template = None
         if model_template_name:
@@ -145,19 +152,21 @@ class AibrixMetadata(_Strict):
                 overrides=profile_overrides,
             )
 
-        compute = ComputeSpec(provider=compute_provider) if compute_provider else None
+        runtime = None
+        if runtime_target:
+            runtime = RuntimeSpec(target=runtime_target, options=runtime_options or {})
 
         if (
             job_id is None
             and model_template is None
             and profile is None
-            and compute is None
+            and runtime is None
         ):
             return None
 
         return cls(
             job_id=job_id,
-            compute=compute,
+            runtime=runtime,
             model_template=model_template,
             profile=profile,
         )
@@ -175,14 +184,14 @@ class AibrixMetadata(_Strict):
                 self.model_template.overrides if self.model_template else None
             ),
             "profile_overrides": self.profile.overrides if self.profile else None,
-            "compute_provider": self.compute.provider if self.compute else None,
+            "runtime_target": self.runtime_target,
+            "runtime_options": self.runtime.options if self.runtime else None,
         }
 
     @property
-    def compute_provider(self) -> Optional[str]:
-        """The Runtime selector (one of ComputeProvider); None routes to the
-        default/endpoint-source path."""
-        return self.compute.provider if self.compute else None
+    def runtime_target(self) -> Optional[str]:
+        """The Runtime selector; None routes to the default endpoint-source path."""
+        return self.runtime.target if self.runtime else None
 
     @property
     def model_template_name(self) -> Optional[str]:

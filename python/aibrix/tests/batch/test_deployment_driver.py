@@ -177,8 +177,8 @@ def _make_job(job_id: str = "job-123456789abc") -> BatchJob:
         completion_window="24h",
         aibrix={
             "model_template": {"name": "mock-template"},
-            "compute": {"provider": "Kubernetes"},
-            "planner_decision": {
+            "runtime": {"target": "Kubernetes"},
+            "resource_allocation": {
                 "provision_id": "reservation-1",
                 "provision_resource_deadline": 3600,
                 "resource_details": [
@@ -361,8 +361,8 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
 
 
 @pytest.mark.asyncio
-async def test_create_job_driver_uses_deployment_runtime_for_kubernetes_provider():
-    """Protect Runtime selection for compute.provider=Kubernetes.
+async def test_create_job_driver_uses_deployment_runtime_for_kubernetes_target():
+    """Protect Runtime selection for runtime.target=Kubernetes.
 
     If the factory regresses and falls back to the local/standalone path,
     metadata-server jobs that request deployment execution silently stop
@@ -498,7 +498,7 @@ def test_standalone_runtime_drives_inline_failure_policy():
 
 
 def test_factory_unknown_provider_raises_invalid_driver():
-    job = SimpleNamespace(spec=SimpleNamespace(compute_provider="providr"))
+    job = SimpleNamespace(spec=SimpleNamespace(runtime_target="providr"))
     with pytest.raises(BatchJobError) as excinfo:
         create_job_driver(
             _make_infrastructure_context(),
@@ -510,7 +510,7 @@ def test_factory_unknown_provider_raises_invalid_driver():
 
 
 def test_factory_kubernetes_without_entity_manager_raises_invalid_driver():
-    job = SimpleNamespace(spec=SimpleNamespace(compute_provider="Kubernetes"))
+    job = SimpleNamespace(spec=SimpleNamespace(runtime_target="Kubernetes"))
     with pytest.raises(BatchJobError) as excinfo:
         create_job_driver(
             _make_infrastructure_context(),
@@ -522,7 +522,7 @@ def test_factory_kubernetes_without_entity_manager_raises_invalid_driver():
 
 
 def test_factory_external_provider_uses_local_runtime():
-    job = SimpleNamespace(spec=SimpleNamespace(compute_provider="External"))
+    job = SimpleNamespace(spec=SimpleNamespace(runtime_target="External"))
     sentinel = object()
     driver = create_job_driver(
         _make_infrastructure_context(),

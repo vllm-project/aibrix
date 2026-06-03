@@ -34,9 +34,9 @@ from aibrix.batch.job_entity import (
     BatchProfileRef,
     BatchUsage,
     CompletionWindow,
-    ComputeSpec,
     ModelTemplateRef,
-    PlannerDecision,
+    ResourceAllocation,
+    RuntimeSpec,
 )
 from aibrix.batch.manifest import RenderError
 from aibrix.batch.storage.batch_metastore import get_batch_job
@@ -229,10 +229,10 @@ async def _validate_batch_input_file(
 
 
 # OpenAI Batch API request/response models
-class Decision(PlannerDecision):
-    """Resource-reservation metadata from the planner.
+class ResourceAllocationRef(ResourceAllocation):
+    """Resource allocation metadata from the planner / resource manager.
 
-    Wire shape (under ``extra_body.aibrix.planner_decision``)::
+    Wire shape (under ``extra_body.aibrix.resource_allocation``)::
 
         {
             "provision_id": "xxxxxxxx",
@@ -246,18 +246,18 @@ class Decision(PlannerDecision):
             ],
         }
 
-    The compute selector lives under ``extra_body.aibrix.compute.provider``
-    (see ``ComputeRef``), not here.
+    Runtime selection lives under ``extra_body.aibrix.runtime.target``.
     """
 
 
-class ComputeRef(ComputeSpec):
+class RuntimeRef(RuntimeSpec):
     """Selects which Runtime the batch job runs on.
 
-    Wire shape (under ``extra_body.aibrix.compute``)::
+    Wire shape (under ``extra_body.aibrix.runtime``)::
 
         {
-            "provider": "Kubernetes",  # one of ComputeProvider
+            "target": "Kubernetes",  # one registered runtime target
+            "options": {"namespace": "default"},  # free-form runtime options
         }
     """
 
@@ -305,6 +305,11 @@ class AibrixExtension(BaseModel):
             endpoint="/v1/chat/completions",
             extra_body={
                 "aibrix": {
+                    "runtime": {
+                        "target": "Kubernetes",
+                        "options": {"namespace": "default"},
+                    },
+                    "resource_allocation": {"provision_id": "reservation-1"},
                     "model_template": {"name": "llama3-70b-prod"},
                     "profile": {"name": "prod-24h"},
                 }
@@ -326,15 +331,15 @@ class AibrixExtension(BaseModel):
     keys off ``name`` + ``version``.
     """
 
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "forbid"}
 
     job_id: Optional[str] = None
-    planner_decision: Optional[Decision] = None
-    compute: Optional[ComputeRef] = Field(
+    resource_allocation: Optional[ResourceAllocationRef] = None
+    runtime: Optional[RuntimeRef] = Field(
         default=None,
         description=(
-            "Compute provider selection (which Runtime runs the job). Absent "
-            "routes to the injected endpoint-source / standalone path."
+            "Runtime target selection. Absent routes to the injected "
+            "endpoint-source / standalone path."
         ),
     )
     model_template: Optional[TemplateRef] = Field(
@@ -397,8 +402,8 @@ class BatchSpec(BaseModel):
         if spec.aibrix is not None:
             aibrix = AibrixMetadata(
                 job_id=spec.aibrix.job_id,
-                planner_decision=spec.aibrix.planner_decision,
-                compute=spec.aibrix.compute,
+                resource_allocation=spec.aibrix.resource_allocation,
+                runtime=spec.aibrix.runtime,
                 model_template=spec.aibrix.model_template,
                 profile=spec.aibrix.profile,
             )
@@ -424,21 +429,21 @@ def _validate_aibrix_extension(
     if extension is None:
         return
 
-    # compute.provider is a free-form string on the wire (ComputeSpec is
-    # lenient, for downstream providers); reject an unknown one here with a 400
+    # runtime.target is a free-form string on the wire (RuntimeSpec is
+    # lenient, for downstream runtimes); reject an unknown one here with a 400
     # instead of falling through to the standalone path / a late INVALID_DRIVER.
     # Validate against the live runtime registry (not the static enum) so
-    # downstream/custom registered providers are accepted.
-    if extension.compute is not None:
+    # downstream/custom registered runtimes are accepted.
+    if extension.runtime is not None:
         from aibrix.batch.job_driver.runtime import registered_runtimes
 
-        valid_providers = set(registered_runtimes())
-        if extension.compute.provider not in valid_providers:
+        valid_targets = set(registered_runtimes())
+        if extension.runtime.target not in valid_targets:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"aibrix.compute.provider '{extension.compute.provider}' is "
-                    f"not a known provider. Valid: {sorted(valid_providers)}"
+                    f"aibrix.runtime.target '{extension.runtime.target}' is "
+                    f"not a known runtime target. Valid: {sorted(valid_targets)}"
                 ),
             )
 

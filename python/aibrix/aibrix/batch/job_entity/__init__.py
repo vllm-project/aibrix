@@ -15,12 +15,12 @@
 from aibrix.batch.job_entity.aibrix_metadata import (
     AibrixMetadata,
     BatchProfileRef,
-    ComputeProvider,
-    ComputeSpec,
     ModelTemplateRef,
-    PlannerDecision,
     ResolvedModelTemplate,
+    ResourceAllocation,
     ResourceDetail,
+    RuntimeSpec,
+    RuntimeTarget,
 )
 from aibrix.batch.job_entity.batch_job import (
     BatchJob,
@@ -48,10 +48,10 @@ from aibrix.batch.job_entity.k8s_transformer import (
 
 __all__ = [
     "AibrixMetadata",
-    "ComputeProvider",
-    "ComputeSpec",
     "ModelTemplateRef",
-    "PlannerDecision",
+    "ResourceAllocation",
+    "RuntimeSpec",
+    "RuntimeTarget",
     "BatchProfileRef",
     "ResolvedModelTemplate",
     "ResourceDetail",

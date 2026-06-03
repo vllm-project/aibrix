@@ -15,7 +15,7 @@
 from typing import Optional
 
 # Import for side effects: each provisioning backend registers its Runtime
-# factory under its ComputeProvider key. External / noop register from
+# factory under its RuntimeTarget key. External / noop register from
 # runtime.base. (One import per provider module.)
 import aibrix.batch.job_driver.runtime.k8s_deployment  # noqa: F401,E402  Kubernetes
 import aibrix.batch.job_driver.runtime.k8s_job  # noqa: F401,E402  KubernetesJob
@@ -49,21 +49,23 @@ def create_job_driver(
 ) -> JobDriver:
     """One driver — ``BaseJobDriver`` — parameterized by a ``Runtime``.
 
-    The Runtime is selected by the job's ``aibrix.compute.provider``; a new
+    The Runtime is selected by the job's ``aibrix.runtime.target``; a new
     backend is a new registered Runtime, never a new driver. With no job or no
-    compute provider (the standalone path), the injected endpoint source drives
+    runtime target (the standalone path), the injected endpoint source drives
     an ``External`` runtime.
     """
-    provider = job.spec.compute_provider if job is not None else None
+    runtime_target = None
+    if job is not None:
+        runtime_target = getattr(job.spec, "runtime_target", None)
     job_id = getattr(job, "job_id", None)
-    if provider is None:
+    if runtime_target is None:
         # Standalone / endpoint-source path: dispatch against the injected
         # source (possibly None for prepare/finalize-only) via External.
         runtime = create_runtime("External", endpoint_source=endpoint_source)
         logger.info(
             "Selected job runtime",
             job_id=job_id,
-            provider=None,
+            runtime_target=None,
             runtime=type(runtime).__name__,
             endpoint_source=type(endpoint_source).__name__
             if endpoint_source is not None
@@ -73,7 +75,7 @@ def create_job_driver(
 
     try:
         runtime = create_runtime(
-            provider,
+            runtime_target,
             job=job,
             context=context,
             entity_manager=entity_manager,
@@ -82,13 +84,13 @@ def create_job_driver(
     except KeyError as exc:
         raise BatchJobError(
             BatchJobErrorCode.INVALID_DRIVER,
-            f"Unknown compute provider '{provider}'; "
+            f"Unknown runtime target '{runtime_target}'; "
             f"registered: {registered_runtimes()}",
         ) from exc
     logger.info(
         "Selected job runtime",
         job_id=job_id,
-        provider=provider,
+        runtime_target=runtime_target,
         runtime=type(runtime).__name__,
         registered=registered_runtimes(),
     )  # type: ignore[call-arg]

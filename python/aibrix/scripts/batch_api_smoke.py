@@ -64,11 +64,11 @@ What completes
 * K8s job mode: kopf spawns worker pods. This script doesn't care about
   the path — it only watches batch status — but completion depends on
   pod scheduling, image pull, and the engine. Pass --aibrix-extra-body
-  with compute.provider and full model_template/profile specs. Use --timeout 600+.
+  with runtime.target and full model_template/profile specs. Use --timeout 600+.
 * K8s deployment mode: job specific driver spawns long-running deployment pods,
   and drive job progressing. This script watches batch status — but completion
   depends on pod scheduling, image pull, and the engine. Pass --aibrix-extra-body
-  with compute.provider and full model_template/profile specs. Use --timeout 600+.
+  with runtime.target and full model_template/profile specs. Use --timeout 600+.
 
 ================================================================
 Exit codes
@@ -263,7 +263,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Complete extra_body.aibrix JSON object to include in batch creation. "
             "Use @file.json for full model_template/profile specs. Put the runtime "
-            "provider under compute.provider."
+            "target under runtime.target."
         ),
     )
     p.add_argument(

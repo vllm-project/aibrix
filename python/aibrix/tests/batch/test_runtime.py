@@ -100,15 +100,15 @@ def test_builtin_runtimes_are_registered():
     assert "noop" in keys
 
 
-def test_compute_provider_enum_values_are_registered():
-    """Every public ComputeProvider must resolve to a registered runtime, so a
+def test_runtime_target_enum_values_are_registered():
+    """Every public RuntimeTarget must resolve to a registered runtime, so a
     valid request never fails selection. Guards key<->enum drift."""
     import aibrix.batch.job_driver  # noqa: F401  triggers provider registration
-    from aibrix.batch.job_entity import ComputeProvider
+    from aibrix.batch.job_entity import RuntimeTarget
 
     registered = set(registered_runtimes())
-    missing = {p.value for p in ComputeProvider} - registered
-    assert not missing, f"ComputeProvider values not registered: {missing}"
+    missing = {p.value for p in RuntimeTarget} - registered
+    assert not missing, f"RuntimeTarget values not registered: {missing}"
 
 
 def test_registry_create_and_unknown_key():

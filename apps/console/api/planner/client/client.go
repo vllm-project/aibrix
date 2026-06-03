@@ -182,8 +182,11 @@ func buildExtraBodyOptions(eb AIBrixExtraBody) []option.RequestOption {
 	if eb.JobID != "" {
 		opts = append(opts, option.WithJSONSet("aibrix.job_id", eb.JobID))
 	}
-	if eb.PlannerDecision != nil {
-		opts = append(opts, option.WithJSONSet("aibrix.planner_decision", eb.PlannerDecision))
+	if eb.Runtime != nil && eb.Runtime.Target != "" {
+		opts = append(opts, option.WithJSONSet("aibrix.runtime", eb.Runtime))
+	}
+	if eb.ResourceAllocation != nil {
+		opts = append(opts, option.WithJSONSet("aibrix.resource_allocation", eb.ResourceAllocation))
 	}
 	if eb.ModelTemplate != nil && eb.ModelTemplate.Name != "" {
 		opts = append(opts, option.WithJSONSet("aibrix.model_template", eb.ModelTemplate))
