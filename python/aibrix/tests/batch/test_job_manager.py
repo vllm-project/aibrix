@@ -77,6 +77,10 @@ async def test_local_job_cancellation():
     cancelled_job = job_manager._done_jobs[job_id]
     assert cancelled_job.status.state == BatchJobState.FINALIZED
     assert cancelled_job.status.cancelled
+    # OpenAI parity: a finalized-cancelled batch must stamp cancelled_at, not
+    # leave it null (regression guard for the cancel timestamp bug).
+    assert cancelled_job.status.cancelled_at is not None
+    assert cancelled_job.status.completed_at is None
 
 
 @pytest.mark.asyncio
