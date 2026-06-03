@@ -36,9 +36,10 @@ class RenameStandardRule(StandardRule):
         self.new_name = new_name
 
     def __call__(self, metric: Metric) -> Iterable[Metric]:
-        assert (
-            metric.name == self.original_name
-        ), f"Metric name {metric.name} does not match Rule original name {self.original_name}"
+        if metric.name != self.original_name:
+            raise ValueError(
+                f"Metric name {metric.name} does not match Rule original name {self.original_name}"
+            )
         metric.name = self.new_name
 
         # rename all the samples
@@ -64,8 +65,9 @@ class PassthroughStandardRule(StandardRule):
         self.metric_name = metric_name
 
     def __call__(self, metric: Metric) -> Iterable[Metric]:
-        assert (
-            metric.name == self.metric_name
-        ), f"Metric name {metric.name} does not match Rule metric name {self.metric_name}"
+        if metric.name != self.metric_name:
+            raise ValueError(
+                f"Metric name {metric.name} does not match Rule metric name {self.metric_name}"
+            )
         # Return metric unchanged - pass through as-is
         yield metric

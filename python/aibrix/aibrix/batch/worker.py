@@ -348,9 +348,8 @@ class BatchWorker:
                 return 1
 
             # Step 2: Wait for vLLM service to become ready
-            assert (
-                self.health_checker is not None
-            ), "Health checker should be initialized"
+            if self.health_checker is None:
+                raise RuntimeError("Health checker should be initialized")
             if not await self.health_checker.wait_for_ready():
                 logger.error("vLLM service failed to become ready")
                 return 1
@@ -367,7 +366,8 @@ class BatchWorker:
                 raise RuntimeError("BatchJob job_id is None")
 
             runner = SingleJobRunner(batch_job)
-            assert self.llm_engine_base_url is not None, "engine base url not resolved"
+            if self.llm_engine_base_url is None:
+                raise RuntimeError("engine base url not resolved")
             driver = BaseJobDriver(
                 runner,
                 ExternalRuntime(GatewayEndpointSource(self.llm_engine_base_url)),

@@ -396,14 +396,14 @@ class TestStorageFunctionality:
                 # Content type inference varies by storage implementation
                 # Local storage can infer from extension, S3/TOS may not
                 if storage.__class__.__name__ == "LocalStorage":
-                    assert (
-                        metadata.content_type == expected_content_type
-                    ), f"Expected {expected_content_type} for {filename}, got {metadata.content_type}"
+                    assert metadata.content_type == expected_content_type, (
+                        f"Expected {expected_content_type} for {filename}, got {metadata.content_type}"
+                    )
                 else:
                     # For other storage types, just verify content type is set to something
-                    assert (
-                        metadata.content_type is not None
-                    ), f"Content type should be set for {filename}"
+                    assert metadata.content_type is not None, (
+                        f"Content type should be set for {filename}"
+                    )
 
             finally:
                 # Cleanup
@@ -546,9 +546,9 @@ class TestStorageFunctionality:
             local_storage = storage
             assert isinstance(local_storage, LocalStorage)
             metadata_path = local_storage._get_metadata_path(key)
-            assert (
-                not metadata_path.exists()
-            ), "Metadata file should be deleted with object"
+            assert not metadata_path.exists(), (
+                "Metadata file should be deleted with object"
+            )
 
     @pytest.mark.asyncio
     async def test_multipart_apis(self, storage: BaseStorage):
