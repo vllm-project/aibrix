@@ -35,6 +35,9 @@ from aibrix.batch.job_entity import (  # noqa: E402
 )
 from aibrix.batch.state import JobEntityManager, RunningJobs  # noqa: E402
 from aibrix.context import InfrastructureContext  # noqa: E402
+from aibrix.logger import init_logger  # noqa: E402
+
+logger = init_logger(__name__)
 
 
 def create_job_driver(
@@ -52,13 +55,21 @@ def create_job_driver(
     an ``External`` runtime.
     """
     provider = job.spec.compute_provider if job is not None else None
+    job_id = getattr(job, "job_id", None)
     if provider is None:
         # Standalone / endpoint-source path: dispatch against the injected
         # source (possibly None for prepare/finalize-only) via External.
-        return BaseJobDriver(
-            progress_manager,
-            create_runtime("External", endpoint_source=endpoint_source),
-        )
+        runtime = create_runtime("External", endpoint_source=endpoint_source)
+        logger.info(
+            "Selected job runtime",
+            job_id=job_id,
+            provider=None,
+            runtime=type(runtime).__name__,
+            endpoint_source=type(endpoint_source).__name__
+            if endpoint_source is not None
+            else None,
+        )  # type: ignore[call-arg]
+        return BaseJobDriver(progress_manager, runtime)
 
     try:
         runtime = create_runtime(
@@ -74,4 +85,11 @@ def create_job_driver(
             f"Unknown compute provider '{provider}'; "
             f"registered: {registered_runtimes()}",
         ) from exc
+    logger.info(
+        "Selected job runtime",
+        job_id=job_id,
+        provider=provider,
+        runtime=type(runtime).__name__,
+        registered=registered_runtimes(),
+    )  # type: ignore[call-arg]
     return BaseJobDriver(progress_manager, runtime)

@@ -130,9 +130,14 @@ class PortForwardEndpointSource:
             match = self._URL_RE.search(line)
             if match:
                 self._process = process
-                return HttpChannel(
-                    f"http://127.0.0.1:{match.group(1)}", timeout=self._timeout
-                )
+                local_url = f"http://127.0.0.1:{match.group(1)}"
+                logger.info(
+                    "port-forward established",
+                    local_url=local_url,
+                    target=f"service/{self._service_name}:{self._service_port}",
+                    namespace=self._namespace,
+                )  # type: ignore[call-arg]
+                return HttpChannel(local_url, timeout=self._timeout)
         process.terminate()
         raise InferenceError(
             InferenceErrorCode.CONNECTION_SETUP,

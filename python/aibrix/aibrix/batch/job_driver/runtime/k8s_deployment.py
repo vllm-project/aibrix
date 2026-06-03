@@ -164,6 +164,17 @@ class DeploymentRuntime(RuntimeBase):
         except Exception:
             await self._teardown_runtime(handle)
             raise
+        logger.info(
+            "Provisioned Deployment+Service for batch job",
+            job_id=job_id,
+            namespace=handle.namespace,
+            deployment=handle.deployment_name,
+            service=handle.service_name,
+            model_name=handle.model_name,
+            in_cluster_base_url=handle.base_url,
+            service_port=handle.service_port,
+            replicas=handle.replicas,
+        )  # type: ignore[call-arg]
         return handle
 
     async def _wait_ready(self, handle: DeploymentHandle) -> None:
@@ -201,7 +212,21 @@ class DeploymentRuntime(RuntimeBase):
         out-of-cluster control plane tunnels via ``kubectl port-forward``.
         """
         if os.environ.get("KUBERNETES_SERVICE_HOST"):
+            logger.info(
+                "Dispatch endpoint: in-cluster Service (control plane is in-cluster)",
+                job_id=self._active_job_id,
+                endpoint_source="InClusterEndpointSource",
+                base_url=handle.base_url,
+            )  # type: ignore[call-arg]
             return InClusterEndpointSource(handle.base_url)
+        logger.info(
+            "Dispatch endpoint: kubectl port-forward (control plane is out-of-cluster)",
+            job_id=self._active_job_id,
+            endpoint_source="PortForwardEndpointSource",
+            namespace=handle.namespace,
+            service=handle.service_name,
+            service_port=handle.service_port,
+        )  # type: ignore[call-arg]
         return PortForwardEndpointSource(
             handle.namespace, handle.service_name, handle.service_port
         )
