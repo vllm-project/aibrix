@@ -28,14 +28,9 @@ from aibrix import envs
 from aibrix.batch import BatchDriver
 from aibrix.batch.client import (
     EndpointSource,
-    GatewayEndpointSource,
     NoopEndpointSource,
 )
 from aibrix.batch.state import JobStore
-from aibrix.batch.template import (
-    k8s_profile_registry,
-    k8s_template_registry,
-)
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files, models, users
@@ -47,7 +42,6 @@ from aibrix.storage import create_storage
 logger = init_logger(__name__)
 router = APIRouter()
 
-_REGISTRY_PROVIDER_CONFIGMAP = "configmap"
 _MAX_LOGGED_BODY_BYTES = 8192
 _LOG_HTTP_BODIES = os.getenv("AIBRIX_MDS_HTTP_BODY_LOG", "").lower() in (
     "1",
@@ -71,27 +65,9 @@ def _load_batch_k8s_context(
     if args.dry_run:
         return context
 
-    if not args.disable_k8s_support:
+    if args.enable_k8s_support:
         context.core_v1_api = k8s_client.CoreV1Api()
         context.apps_v1_api = k8s_client.AppsV1Api()
-
-    # Set configmap as registry_provider will enable k8s support automatically
-    if args.registry_provider == _REGISTRY_PROVIDER_CONFIGMAP:
-        registry_ns = getattr(args, "k8s_namespace", "default")
-        # Build ConfigMap-driven registries. Both ConfigMaps must exist in
-        # aibrix-system; reload() on each materializes the in-memory
-        # cache. A 404 is treated as 'empty registry' by the source,
-        # so an admin who has not yet applied templates gets a
-        # helpful render-time error rather than a startup crash.
-        assert context.core_v1_api is not None
-        context.template_registry = k8s_template_registry(
-            context.core_v1_api, namespace=registry_ns
-        )
-        context.profile_registry = k8s_profile_registry(
-            context.core_v1_api, namespace=registry_ns
-        )
-        context.template_registry.reload()
-        context.profile_registry.reload()
 
     return context
 
@@ -241,11 +217,7 @@ def build_app(args: argparse.Namespace, params={}):
             redirect_slashes=False,
         )
 
-    if (
-        args.registry_provider == "configmap"
-        or not args.disable_k8s_support  # This condition required to load kube config.
-    ):
-        args.disable_k8s_support = False
+    if args.enable_k8s_support:
         try:
             config.load_incluster_config()
         except Exception:
@@ -337,14 +309,10 @@ def build_app(args: argparse.Namespace, params={}):
     app.include_router(users.router, tags=["users"])
     logger.info("User CRUD API mounted")
 
-    # Resolve the inference client up front so misconfigurations fail
-    # at startup instead of later when a request hits the scheduler.
-    #
-    # The inference client is only consumed by the batch API's BatchDriver
-    # (constructed below, inside the ``not args.disable_batch_api`` block), so
-    # only resolve and require an endpoint when the batch API is enabled.
-    # Requiring it unconditionally crashes plain installs that disable the
-    # batch API but do not wire an inference engine (regression from #2185).
+    # The batch BatchDriver does not get a global inference endpoint: jobs
+    # carry their own ``aibrix.compute.provider`` and the per-job runtime
+    # (k8s job / deployment) builds its own EndpointSource. The only app-level
+    # source is the echo client used by --dry-run.
     endpoint_source: Optional[EndpointSource] = None
     dry_run = getattr(args, "dry_run", False)
     if dry_run:
@@ -353,21 +321,6 @@ def build_app(args: argparse.Namespace, params={}):
             "DRY RUN MODE — outputs are echoed inputs, not real model "
             "completions. Refuses to write to non-local storage."
         )
-    elif not args.disable_batch_api and not args.disable_inference_endpoint:
-        if endpoint_url := os.environ.get("INFERENCE_ENGINE_ENDPOINT"):
-            endpoint_source = GatewayEndpointSource(endpoint_url)
-        else:
-            # A standalone batch run has no engine to call — fail fast. For
-            # per-job k8s/deployment execution where the worker pods bring their
-            # own engine endpoint, pass --disable-inference-endpoint (the jobs
-            # carry their own aibrix.compute.provider).
-            sys.stderr.write(
-                "ERROR: no inference backend configured. Pass --dry-run "
-                "for echo, set INFERENCE_ENGINE_ENDPOINT for an external "
-                "engine, or pass --disable-inference-endpoint if jobs carry "
-                "their own aibrix.compute.provider.\n"
-            )
-            sys.exit(2)
 
     # Initialize batches API
     if not args.disable_batch_api:
@@ -384,13 +337,9 @@ def build_app(args: argparse.Namespace, params={}):
 
         # The single entity manager is the metastore-backed JobStore; the
         # substrate (LOCAL / Redis / S3 / TOS) is selected via METASTORE_TYPE, so
-        # one store serves every backend. endpoint_source is resolved above from
-        # CLI/env (dry-run / engine URL / fail-fast) and injected: it is a
-        # per-job concern slated to move to admission. We read os.environ
-        # directly rather than envs.INFERENCE_ENGINE_ENDPOINT because the latter
-        # has a hardcoded ``http://localhost:8000`` default for the runtime
-        # sidecar; that default is wrong for the metadata service and would force
-        # a GatewayEndpointSource in tests where no engine is running.
+        # one store serves every backend. endpoint_source is None outside
+        # --dry-run: jobs carry their own aibrix.compute.provider and the per-job
+        # runtime builds its own EndpointSource.
         app.state.batch_driver = BatchDriver(
             context=infrastructure_context,
             job_entity_manager=JobStore(),
@@ -431,41 +380,32 @@ def main():
         help="Enable FastAPI's OpenAPI schema, Swagger UI, and ReDoc endpoint",
     )
     parser.add_argument(
-        "--disable-k8s-support",
+        "--enable-k8s-support",
         action="store_true",
         default=False,
         help=(
-            "Disable kubernetes support. If disabled, jobs depend on k8s resources may fail."
-            "following options will disregard this flag:"
-            f"--registry-provider {_REGISTRY_PROVIDER_CONFIGMAP}"
+            "Enable Kubernetes support so the batch API can create CoreV1/AppsV1 "
+            "clients and run jobs as k8s Jobs/Deployments. Disabled by default."
         ),
     )
     parser.add_argument(
         "--disable-batch-api",
         action="store_true",
         default=False,
-        help="Disable batch api",
+        help=(
+            "Disable the batch API. Useful for metadata-service deployments "
+            "that only serve models/users/health endpoints and should not "
+            "depend on batch, Kubernetes, or inference backend setup."
+        ),
     )
     parser.add_argument(
         "--disable-file-api",
         action="store_true",
         default=False,
-        help="Disable file api",
-    )
-    parser.add_argument(
-        "--disable-inference-endpoint",
-        action="store_true",
-        default=False,
         help=(
-            "Disable inference endpoint so that batch api can not invoke inference engine directly."
-            "This can be useful when jobs set extra_body.aibrix.compute.provider and you want to avoid setting INFERENCE_ENGINE_ENDPOINT."
+            "Disable the files API. Only valid when the batch API is also "
+            "disabled, because batch jobs use files as their input/output channel."
         ),
-    )
-    parser.add_argument(
-        "--registry-provider",
-        type=str,
-        default=None,
-        help=f"Registry provider for model templates and profiles (default: None, options: {_REGISTRY_PROVIDER_CONFIGMAP})",
     )
     parser.add_argument(
         "--dry-run",
@@ -480,19 +420,13 @@ def main():
             "deployment with a redis metastore for crash-safe long-running batches."
         ),
     )
-    parser.add_argument(
-        "--k8s-namespace",
-        type=str,
-        default="default",
-        help="Kubernetes namespace to monitor for jobs (default: default)",
-    )
     args = parser.parse_args()
 
     if args.disable_file_api and not args.disable_batch_api:
         # The batch API needs the files API as its input/output channel.
         parser.error(
             "--disable-file-api requires --disable-batch-api: the batch "
-            "API needs the files API for input/output."
+            "API uses the files API as its input/output channel."
         )
 
     # Bundle: dry-run forces local storage so a stray AWS_* / TOS_*

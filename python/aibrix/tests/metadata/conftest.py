@@ -77,13 +77,9 @@ def create_test_app(disable_batch_api: bool = False, disable_file_api: bool = Fa
                 host=None,
                 port=8090,
                 enable_fastapi_docs=False,
-                disable_k8s_support=True,
+                enable_k8s_support=False,
                 disable_batch_api=disable_batch_api,
                 disable_file_api=disable_file_api,
-                disable_inference_endpoint=False,
-                registry_provider=None,
-                k8s_namespace="default",
-                k8s_job_patch=None,
                 dry_run=True,
             )
         )
