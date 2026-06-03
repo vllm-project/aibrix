@@ -128,7 +128,7 @@ class DeploymentManifestRenderer(_RendererSupport):
                             else []
                         ),
                         "initContainers": self._init_containers(template, profile),
-                        "terminationGracePeriodSeconds": 300,
+                        "terminationGracePeriodSeconds": 30,
                         "volumes": volumes,
                     },
                 },
