@@ -18,11 +18,10 @@ from copy import deepcopy
 from typing import Any, Dict, Optional
 
 from aibrix.batch.job_entity import BatchJobSpec, ResourceDetail
+from aibrix.batch.manifest.downloader_env import build_downloader_env
+from aibrix.batch.manifest.renderer import _RendererSupport
 from aibrix.batch.template import BatchProfile, ModelDeploymentTemplate
 from aibrix.downloader.utils import infer_model_name
-
-from .downloader_env import build_downloader_env
-from .renderer import _RendererSupport
 
 _DEFAULT_NAMESPACE = "default"
 _AIBRIX_MODEL_NAME_KEY = "model.aibrix.ai/name"

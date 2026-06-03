@@ -54,6 +54,8 @@ from aibrix.batch.job_entity import (
     JobAnnotationKey,
     ModelTemplateRef,
 )
+from aibrix.batch.manifest.engine_adapter import build_engine_args, needs_shell_wrapper
+from aibrix.batch.manifest.storage_env import build_metastore_env, build_storage_env
 from aibrix.batch.template import (
     BatchProfile,
     DeploymentMode,
@@ -66,9 +68,6 @@ from aibrix.batch.template import (
     TemplateRegistry,
 )
 from aibrix.logger import init_logger
-
-from .engine_adapter import build_engine_args, needs_shell_wrapper
-from .storage_env import build_metastore_env, build_storage_env
 
 logger = init_logger(__name__)
 

@@ -14,7 +14,7 @@
 
 """ModelDeploymentTemplate and BatchProfile schema, registries, loaders."""
 
-from .registry import (
+from aibrix.batch.template.registry import (
     DEFAULT_NAMESPACE,
     PROFILES_CONFIGMAP_NAME,
     PROFILES_DATA_KEY,
@@ -31,7 +31,7 @@ from .registry import (
     local_profile_registry,
     local_template_registry,
 )
-from .schema import (
+from aibrix.batch.template.schema import (
     SCHEMA_API_VERSION,
     AcceleratorSpec,
     BatchProfile,

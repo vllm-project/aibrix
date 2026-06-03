@@ -14,38 +14,20 @@
 
 import argparse
 import os
-import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import boto3
-import kopf
 import pytest
 import yaml
 from kubernetes import client, config
 
 from aibrix.logger import init_logger
 from aibrix.metadata.app import build_app
-from aibrix.metadata.cache.job import JobCache
 from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
 
 logger = init_logger(__name__)
-
-# Use a threading.Event to signal when the operator is ready
-OPERATOR_READY = threading.Event()
-
-
-def run_operator_in_thread(stop_flag: threading.Event):
-    """The target function for the operator thread."""
-    # The 'ready_flag' is a special kopf argument that gets set
-    # when the operator has started and is ready to handle events.
-    kopf.run(
-        standalone=True,
-        ready_flag=OPERATOR_READY,
-        namespace="default",  # Monitor default namespace for tests
-        stop_flag=stop_flag,
-    )
 
 
 @pytest.fixture(scope="session")
@@ -83,65 +65,10 @@ def k8s_config():
         pytest.skip(f"Failed to initialize Kubernetes client: {e}")
 
 
-@pytest.fixture
-def kopf_operator(scope="function"):
-    """
-    A session-scoped fixture to run the kopf operator in a background thread.
-    This ensures JobCache handlers are properly triggered during tests.
-    """
-    from aibrix.metadata.core import KopfOperatorWrapper
-
-    operator = KopfOperatorWrapper(
-        namespace="default",
-        startup_timeout=30,
-        shutdown_timeout=10,
-    )
-    try:
-        # Start the kopf operator in a daemon thread
-        print("--- Starting kopf operator in background thread ---")
-        operator.start()
-        print("--- Kopf operator is ready, yielding to tests ---")
-        yield  # Tests run here
-
-    finally:
-        print("\n--- Kopf operator test session finished ---")
-        operator.stop()
-
-
 @pytest.fixture(scope="session")
 def test_namespace():
     """Use default namespace for testing."""
     return "default"
-
-
-@pytest.fixture(scope="function")
-def job_cache(kopf_operator, ensure_job_rbac):
-    """
-    Function-scoped fixture that provides a JobCache instance.
-    The kopf_operator fixture ensures the operator is running.
-
-    Loads ModelDeploymentTemplate and BatchProfile registries from the
-    multi-document fixture YAML so each test starts from a clean,
-    deterministic configuration.
-    """
-    from pathlib import Path
-
-    from aibrix.batch.template import (
-        local_profile_registry,
-        local_template_registry,
-    )
-
-    fixture_path = (
-        Path(__file__).parent / "testdata" / "template_configmaps_unittest.yaml"
-    )
-    template_registry = local_template_registry(fixture_path)
-    profile_registry = local_profile_registry(fixture_path)
-    template_registry.reload()
-    profile_registry.reload()
-    return JobCache(
-        template_registry=template_registry,
-        profile_registry=profile_registry,
-    )
 
 
 @pytest.fixture(scope="session")
@@ -418,14 +345,9 @@ def create_test_app(
             disable_file_api=False,
             disable_k8s_support=disable_k8s_support,
             disable_inference_endpoint=True,
-            enable_k8s_job=enable_k8s_job,
-            enable_mongo_job=enable_mongo_job,
-            enable_redis_job=enable_redis_job,
             k8s_namespace="default",
             k8s_job_patch=None,  # accepted by parser but always None in tests
             registry_provider=None,
-            kopf_startup_timeout=30.0,
-            kopf_shutdown_timeout=10.0,
             dry_run=dry_run,
         ),
         params,

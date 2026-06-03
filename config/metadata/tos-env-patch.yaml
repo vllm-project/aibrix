@@ -10,19 +10,19 @@ spec:
     spec:
       containers:
       - name: metadata-service
-        command: 
+        command:
           - aibrix_metadata
           - --host
           - "0.0.0.0"
-          - --enable-k8s-job
-          - --k8s-job-patch
-          - /app/config/job_template_patch.yaml
+          - --port
+          - "8090"
+          - --disable-inference-endpoint
         env:
           - name: STORAGE_TOS_ACCESS_KEY
             valueFrom:
-            secretKeyRef:
-              name: aibrix-tos-credentials
-              key: access-key
+              secretKeyRef:
+                name: aibrix-tos-credentials
+                key: access-key
           - name: STORAGE_TOS_SECRET_KEY
             valueFrom:
               secretKeyRef:

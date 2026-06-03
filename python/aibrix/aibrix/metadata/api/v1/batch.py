@@ -34,6 +34,7 @@ from aibrix.batch.job_entity import (
     BatchProfileRef,
     BatchUsage,
     CompletionWindow,
+    ComputeSpec,
     ModelTemplateRef,
     PlannerDecision,
 )
@@ -229,7 +230,7 @@ async def _validate_batch_input_file(
 
 # OpenAI Batch API request/response models
 class Decision(PlannerDecision):
-    """Decision from planner
+    """Resource-reservation metadata from the planner.
 
     Wire shape (under ``extra_body.aibrix.planner_decision``)::
 
@@ -238,12 +239,25 @@ class Decision(PlannerDecision):
             "provision_resource_deadline": 1422443902,  # optional; 0 / null = will not expire
             "resource_details": [
                 {
-                    "provider": "xxxxxxxx",
-                    "endpoint_cluster": 1422443902,  # optional; 0 / null = will not expire
+                    "endpoint_cluster": "cluster-a",  # optional
                     "gpu_type": "A100-SM-80G",  # optional
                     "replica": 2,  # optional; 1 / null = 1
                 }
             ],
+        }
+
+    The compute selector lives under ``extra_body.aibrix.compute.provider``
+    (see ``ComputeRef``), not here.
+    """
+
+
+class ComputeRef(ComputeSpec):
+    """Selects which Runtime the batch job runs on.
+
+    Wire shape (under ``extra_body.aibrix.compute``)::
+
+        {
+            "provider": "Kubernetes",  # one of ComputeProvider
         }
     """
 
@@ -316,6 +330,13 @@ class AibrixExtension(BaseModel):
 
     job_id: Optional[str] = None
     planner_decision: Optional[Decision] = None
+    compute: Optional[ComputeRef] = Field(
+        default=None,
+        description=(
+            "Compute provider selection (which Runtime runs the job). Absent "
+            "routes to the injected endpoint-source / standalone path."
+        ),
+    )
     model_template: Optional[TemplateRef] = Field(
         default=None,
         description="ModelDeploymentTemplate reference (name + optional version + overrides)",
@@ -377,6 +398,7 @@ class BatchSpec(BaseModel):
             aibrix = AibrixMetadata(
                 job_id=spec.aibrix.job_id,
                 planner_decision=spec.aibrix.planner_decision,
+                compute=spec.aibrix.compute,
                 model_template=spec.aibrix.model_template,
                 profile=spec.aibrix.profile,
             )
@@ -399,7 +421,28 @@ def _validate_aibrix_extension(
     have not yet attached registries), this is a no-op and validation
     falls back to render time with a less-friendly error path.
     """
-    if extension is None or extension.model_template is None:
+    if extension is None:
+        return
+
+    # compute.provider is a free-form string on the wire (ComputeSpec is
+    # lenient, for downstream providers); reject an unknown one here with a 400
+    # instead of falling through to the standalone path / a late INVALID_DRIVER.
+    # Validate against the live runtime registry (not the static enum) so
+    # downstream/custom registered providers are accepted.
+    if extension.compute is not None:
+        from aibrix.batch.job_driver.runtime import registered_runtimes
+
+        valid_providers = set(registered_runtimes())
+        if extension.compute.provider not in valid_providers:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"aibrix.compute.provider '{extension.compute.provider}' is "
+                    f"not a known provider. Valid: {sorted(valid_providers)}"
+                ),
+            )
+
+    if extension.model_template is None:
         return
 
     template_registry: Optional[TemplateRegistry] = getattr(
@@ -683,19 +726,17 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
             request_count=request_count,
         )  # type: ignore[call-arg]
 
-        # Create job using JobManager. Pass the validated input line
-        # count so request_counts.total is fixed at creation, matching
+        # Create the job through the driver facade. Pass the validated input
+        # line count so request_counts.total is fixed at creation, matching
         # OpenAI Batch API semantics.
-        job_id = await batch_driver.run_coroutine(
-            batch_driver.job_manager.create_job_with_spec(
-                session_id=session_id,
-                job_spec=batch_request,
-                request_count=request_count,
-            )
+        job_id = await batch_driver.create_job(
+            session_id=session_id,
+            job_spec=batch_request,
+            request_count=request_count,
         )
 
         # Retrieve the created job
-        job = await batch_driver.run_coroutine(batch_driver.job_manager.get_job(job_id))
+        job = await batch_driver.get_job(job_id)
         if not job:
             logger.error("Created job not found", job_id=job_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=500, detail="Created batch not found")
@@ -724,22 +765,19 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
 
 
 async def _resolve_batch_job(request: Request, batch_id: str) -> Optional[BatchJob]:
-    """Resolve a BatchJob by id, metastore-first with JobManager fallback.
+    """Resolve a BatchJob by id, metastore-first with BatchManager fallback.
 
-    The batch metastore is the source of truth. The fallback to
-    ``JobManager.get_job`` covers the brief window between
-    ``create_namespaced_job`` returning and the kopf ADDED handler
-    persisting the document, since the metadata service seeds the
-    JobManager pool synchronously on POST. Standalone mode (no kopf,
-    no K8s) also relies on the JobManager fallback because no
-    metastore document is ever written.
+    The batch metastore is the source of truth. The fallback to the driver's
+    in-memory pool covers the brief window after POST before the store write
+    is observable, since the metadata service seeds the BatchManager pool
+    synchronously on create.
     """
     job = await get_batch_job(batch_id)
     if job is not None:
         return job
 
     batch_driver: BatchDriver = request.app.state.batch_driver
-    return await batch_driver.run_coroutine(batch_driver.job_manager.get_job(batch_id))
+    return await batch_driver.get_job(batch_id)
 
 
 @router.get("/{batch_id}")
@@ -787,12 +825,9 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
             logger.warning("Batch not found for cancellation", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=404, detail="Batch not found")
 
-        # Cancel the job. JobManager.cancel_job drives the K8s suspend
-        # patch and the status write to the BatchJobStore via
-        # JobCache._put_to_store.
-        success = await batch_driver.run_coroutine(
-            batch_driver.job_manager.cancel_job(batch_id)
-        )
+        # Cancel the job. BatchManager.cancel_job signals the entity manager
+        # to persist the cancellation and stops execution.
+        success = await batch_driver.cancel_job(batch_id)
         if not success:
             logger.warning("Failed to cancel batch", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=400, detail="Batch cannot be cancelled")
@@ -834,15 +869,13 @@ async def list_batches(
 
         logger.debug("Listing batches", after=after, limit=limit)  # type: ignore[call-arg]
 
-        # List still goes through JobManager. Adding a list_by_prefix to
+        # List still goes through BatchManager. Adding a list_by_prefix to
         # BatchJobStore would require either an eagerly-maintained index
         # (Redis ZSET keyed by created_at) or an S3 list-objects walk;
         # the latter does not fit the current cursor-based pagination
         # cheaply. Point reads already serve from the store, so the
         # tradeoff only hurts the rare list call.
-        all_jobs: List[BatchJob] = await batch_driver.run_coroutine(
-            batch_driver.job_manager.list_jobs()
-        )
+        all_jobs: List[BatchJob] = await batch_driver.list_jobs()
 
         # Apply cursor-based pagination
         if after:
