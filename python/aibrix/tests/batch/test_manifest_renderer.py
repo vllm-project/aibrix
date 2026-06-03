@@ -239,6 +239,32 @@ class TestRendererHappyPath:
         assert "STORAGE_AWS_ACCESS_KEY_ID" in env_names
         assert "STORAGE_AWS_BUCKET" in env_names
 
+    def test_tos_storage_env_injected(self, renderer_factory, monkeypatch):
+        monkeypatch.setenv("STORAGE_TYPE", "tos")
+        monkeypatch.setenv("WORKER_STORAGE_TOS_ENDPOINT", "http://tos.worker")
+        monkeypatch.setattr(envs, "STORAGE_TOS_VERSION", "v2")
+        monkeypatch.setattr(envs, "STORAGE_TOS_ACCESS_KEY", "ak")
+        monkeypatch.setattr(envs, "STORAGE_TOS_SECRET_KEY", "sk")
+        monkeypatch.setattr(envs, "STORAGE_TOS_ENDPOINT", "http://tos.metadata")
+        monkeypatch.setattr(envs, "STORAGE_TOS_REGION", "cn-beijing")
+        monkeypatch.setattr(envs, "STORAGE_TOS_BUCKET", "bucket")
+        monkeypatch.setattr(envs, "STORAGE_TOS_ENABLE_CRC", True)
+        r = renderer_factory(
+            templates=[_vllm_template(count=1)],
+            profiles=[_profile()],
+        )
+        m = r.render(session_id="s1", spec=_spec())
+        worker = _worker_container(m)
+        env = {e["name"]: e.get("value") for e in worker["env"]}
+        assert env["STORAGE_TYPE"] == "tos"
+        assert env["STORAGE_TOS_VERSION"] == "v2"
+        assert env["STORAGE_TOS_ACCESS_KEY"] == "ak"
+        assert env["STORAGE_TOS_SECRET_KEY"] == "sk"
+        assert env["STORAGE_TOS_ENDPOINT"] == "http://tos.worker"
+        assert env["STORAGE_TOS_REGION"] == "cn-beijing"
+        assert env["STORAGE_TOS_BUCKET"] == "bucket"
+        assert env["STORAGE_TOS_ENABLE_CRC"] == "true"
+
     def test_local_storage_env_injected(self, renderer_factory, monkeypatch):
         monkeypatch.setenv("STORAGE_TYPE", "local")
         monkeypatch.setenv("WORKER_STORAGE_LOCAL_PATH", "/tmp/aibrix-storage")

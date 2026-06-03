@@ -24,9 +24,10 @@ not consulted.
 Worker pods often need a different *address* than the metadata service: when the
 metadata service runs off-cluster and reaches storage/redis via a port-forwarded
 ``localhost`` endpoint, a pod would resolve that to its own loopback.
-``WORKER_REDIS_HOST`` / ``WORKER_REDIS_PORT`` and ``WORKER_STORAGE_AWS_ENDPOINT_URL``
-override the addresses with in-cluster-reachable ones; credentials / bucket /
-region / db are inherited as-is.
+``WORKER_REDIS_HOST`` / ``WORKER_REDIS_PORT``,
+``WORKER_STORAGE_AWS_ENDPOINT_URL``, and ``WORKER_STORAGE_TOS_ENDPOINT`` override
+the addresses with in-cluster-reachable ones; credentials / bucket / region / db
+are inherited as-is.
 
 The output structure matches the Kubernetes V1EnvVar dict shape so it can be
 appended directly into the worker container's env list.
@@ -53,11 +54,18 @@ def build_storage_env() -> List[Dict[str, Any]]:
     # Resolve the effective storage type the way the metadata process does.
     storage_type = os.getenv("STORAGE_TYPE")
     if not storage_type or storage_type.lower() == StorageType.AUTO.value:
-        storage_type = (
-            StorageType.S3.value
-            if envs.STORAGE_AWS_ACCESS_KEY_ID and envs.STORAGE_AWS_SECRET_ACCESS_KEY
-            else StorageType.LOCAL.value
-        )
+        if (
+            envs.STORAGE_TOS_ACCESS_KEY
+            and envs.STORAGE_TOS_SECRET_KEY
+            and envs.STORAGE_TOS_ENDPOINT
+            and envs.STORAGE_TOS_REGION
+        ):
+            storage_type = StorageType.TOS.value
+        elif envs.STORAGE_AWS_ACCESS_KEY_ID and envs.STORAGE_AWS_SECRET_ACCESS_KEY:
+            storage_type = StorageType.S3.value
+        else:
+            storage_type = StorageType.LOCAL.value
+    storage_type = storage_type.lower()
     env: List[Dict[str, Any]] = [{"name": "STORAGE_TYPE", "value": storage_type}]
     if storage_type == StorageType.S3.value:
         passthrough = {
@@ -75,6 +83,20 @@ def build_storage_env() -> List[Dict[str, Any]]:
         )
         if endpoint:
             env.append({"name": "STORAGE_AWS_ENDPOINT_URL", "value": endpoint})
+    elif storage_type == StorageType.TOS.value:
+        passthrough = {
+            "STORAGE_TOS_VERSION": envs.STORAGE_TOS_VERSION,
+            "STORAGE_TOS_ACCESS_KEY": envs.STORAGE_TOS_ACCESS_KEY,
+            "STORAGE_TOS_SECRET_KEY": envs.STORAGE_TOS_SECRET_KEY,
+            "STORAGE_TOS_ENDPOINT": os.getenv("WORKER_STORAGE_TOS_ENDPOINT")
+            or envs.STORAGE_TOS_ENDPOINT,
+            "STORAGE_TOS_REGION": envs.STORAGE_TOS_REGION,
+            "STORAGE_TOS_BUCKET": envs.STORAGE_TOS_BUCKET,
+            "STORAGE_TOS_ENABLE_CRC": str(envs.STORAGE_TOS_ENABLE_CRC).lower(),
+        }
+        for name, val in passthrough.items():
+            if val:
+                env.append({"name": name, "value": val})
     elif storage_type == StorageType.LOCAL.value:
         env.append(
             {
