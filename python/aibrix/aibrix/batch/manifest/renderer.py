@@ -630,7 +630,7 @@ class JobManifestRenderer(_RendererSupport):
         worker = self._find_container(manifest, _WORKER_CONTAINER_NAME)
         existing_names = {entry["name"] for entry in worker["env"]}
 
-        for entry in build_storage_env(profile) + build_metastore_env(profile):
+        for entry in build_storage_env() + build_metastore_env():
             if entry["name"] not in existing_names:
                 worker["env"].append(entry)
                 existing_names.add(entry["name"])
@@ -751,6 +751,20 @@ class JobManifestRenderer(_RendererSupport):
             pod_annotations
         )
         manifest["spec"]["suspend"] = suspend
+
+        # The worker keys its metastore writes on its own job_id, taken from the
+        # JOB_UID env. The base env wires JOB_UID from the k8s controller-uid —
+        # a different UUID than the metadata service's batch job_id, which it
+        # finalizes the output file under. Override JOB_UID with the batch
+        # job_id so both sides share the same metastore key namespace; otherwise
+        # the worker writes results under one id and finalize reads zero.
+        if prepared_job is not None and prepared_job.job_id:
+            worker = self._find_container(manifest, _WORKER_CONTAINER_NAME)
+            for entry in worker["env"]:
+                if entry["name"] == "JOB_UID":
+                    entry.pop("valueFrom", None)
+                    entry["value"] = prepared_job.job_id
+                    break
 
         # Deadline: use the per-batch completion_window if supplied; else
         # fall back to system default. Phase 4 may further reduce this
