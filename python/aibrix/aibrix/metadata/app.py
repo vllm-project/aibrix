@@ -171,8 +171,9 @@ async def lifespan(app: FastAPI):
     # Initialize metadata store (abstraction over Redis) only if not already set
     # (e.g., tests may pre-configure a mock store before lifespan runs)
     if not hasattr(app.state, "metadata_store") or app.state.metadata_store is None:
+        redis_host = envs.STORAGE_REDIS_HOST or "localhost"
         metadata_store = RedisMetadataStore(
-            host=envs.STORAGE_REDIS_HOST or "localhost",
+            host=redis_host,
             port=envs.STORAGE_REDIS_PORT,
             db=envs.STORAGE_REDIS_DB,
             password=envs.STORAGE_REDIS_PASSWORD,
@@ -182,7 +183,7 @@ async def lifespan(app: FastAPI):
         # that haven't migrated to the MetadataStore interface yet
         app.state.redis_client = metadata_store.client
         logger.info(
-            f"Metadata store initialized: {envs.STORAGE_REDIS_HOST}:{envs.STORAGE_REDIS_PORT}"
+            f"Metadata store initialized: {redis_host}:{envs.STORAGE_REDIS_PORT}"
         )
 
     if hasattr(app.state, "httpx_client_wrapper"):
