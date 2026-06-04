@@ -119,7 +119,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		headers = append(headers, &configPb.HeaderValueOption{
 			Header: &configPb.HeaderValue{
 				Key:   k,
-				Value: val, // OTel 生成的是 string，直接赋给 Envoy 的 Value
+				Value: val, // OTel generates a string, which is assigned directly to Envoy's Value field
 			},
 			AppendAction: configPb.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
 		})

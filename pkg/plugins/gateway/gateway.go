@@ -297,7 +297,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 			body := string(req.Request.(*extProcPb.ProcessingRequest_ResponseBody).ResponseBody.GetBody())
 			resp = s.responseErrorProcessingWithHeaders(st.ctx, st.routerCtx, st.lastRespHeaders, st.respErrorCode, st.model, st.requestID, body)
 		} else {
-			resp, st.completed = s.HandleResponseBody(st.routerCtx, st.requestID, req, st.user, st.rpm, st.model, st.stream, st.traceTerm, st.completed)
+			resp, st.completed = s.HandleResponseBody(st.ctx, st.routerCtx, st.requestID, req, st.user, st.rpm, st.model, st.stream, st.traceTerm, st.completed)
 		}
 		st.metricLabel = gatewayRespBody
 

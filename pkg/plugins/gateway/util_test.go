@@ -1141,3 +1141,64 @@ func Test_ValidateRequestBody_Classify(t *testing.T) {
 		}
 	}
 }
+
+func TestGetTraceID(t *testing.T) {
+	tests := []struct {
+		name        string
+		traceparent string
+		requestID   string
+		want        string
+	}{
+		{
+			name:        "Valid W3C traceparent",
+			traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+			requestID:   "req-id-12345",
+			want:        "4bf92f3577b34da6a3ce929d0e0e4736",
+		},
+		{
+			name:        "Valid traceparent with leading/trailing spaces",
+			traceparent: "   00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01   ",
+			requestID:   "req-id-12345",
+			want:        "4bf92f3577b34da6a3ce929d0e0e4736",
+		},
+		{
+			name:        "Empty traceparent",
+			traceparent: "",
+			requestID:   "fallback-req-id",
+			want:        "fallback-req-id",
+		},
+		{
+			name:        "Whitespace only traceparent",
+			traceparent: "     ",
+			requestID:   "fallback-req-id",
+			want:        "fallback-req-id",
+		},
+		{
+			name:        "Invalid format: missing parts",
+			traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736", // 只有两部分，少于4部分
+			requestID:   "fallback-req-id",
+			want:        "fallback-req-id",
+		},
+		{
+			name:        "Invalid format: trace ID length not 32",
+			traceparent: "00-shortid-00f067aa0ba902b7-01", // ID长度不对
+			requestID:   "fallback-req-id",
+			want:        "fallback-req-id",
+		},
+		{
+			name:        "Invalid format: completely random string",
+			traceparent: "just-a-random-string-without-proper-format",
+			requestID:   "fallback-req-id",
+			want:        "fallback-req-id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GetTraceID(tt.traceparent, tt.requestID)
+			if got != tt.want {
+				t.Errorf("GetTraceID() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

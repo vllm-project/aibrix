@@ -181,7 +181,7 @@ func main() {
 	}
 	klog.Infof("Started HTTP server on %s", httpAddr)
 
-	s := grpc.NewServer()
+	var opts []grpc.ServerOption
 
 	otelEnabled := utils.OTELEnabled()
 	var telApp *utils.Telemetry
@@ -194,10 +194,10 @@ func main() {
 		if err != nil || telApp == nil {
 			klog.Fatalf("Failed to initialize OpenTelemetry: %v", err)
 		}
-		s = grpc.NewServer(
-			grpc.StatsHandler(otelgrpc.NewServerHandler()),
-		)
+		opts = append(opts, grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	}
+
+	s := grpc.NewServer(opts...)
 
 	extProcPb.RegisterExternalProcessorServer(s, gatewayServer)
 
