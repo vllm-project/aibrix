@@ -32,9 +32,14 @@ limitations under the License.
 package handler
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
+	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/openai/openai-go/v3"
@@ -47,6 +52,7 @@ import (
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
+	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
 
@@ -114,6 +120,7 @@ func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb
 	for _, job := range resp.Data {
 		jobs = append(jobs, mergeJob(job, nil))
 	}
+	h.enrichJobs(ctx, jobs)
 	// SDK CursorPage exposes Data and HasMore. first_id / last_id ride along
 	// in the upstream JSON but are not surfaced as named fields; the UI
 	// doesn't consume them yet, so leave empty and revisit if pagination
@@ -124,25 +131,12 @@ func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb
 	}, nil
 }
 
-// GetJob proxies to GET /v1/batches/{id}. Terminal jobs are served from
-// the store to avoid the planner placeholder path dropping MDS-owned
-// fields.
+// GetJob proxies to GET /v1/batches/{id}. Planner owns JobID -> MDS batch.ID
+// resolution and reads MDS whenever a batch exists, including terminal
+// batches whose usage/output/extra_body fields are not stored locally.
 func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job, error) {
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
-	}
-	if h.store != nil {
-		rec, err := h.store.GetJob(ctx, req.Id)
-		if err != nil {
-			klog.Warningf("GetJob store lookup id=%s: %v", req.Id, err)
-		} else if rec != nil && plannerapi.JobStatus(rec.Status).IsTerminal() {
-			pbJob, perr := rec.ToPB()
-			if perr != nil {
-				klog.Warningf("GetJob terminal store->pb id=%s: %v", req.Id, perr)
-			} else {
-				return pbJob, nil
-			}
-		}
 	}
 	job, err := h.planner.GetJob(ctx, req.Id)
 	if err != nil {
@@ -157,9 +151,23 @@ func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job
 				}
 			}
 		}
+		if h.store != nil {
+			rec, serr := h.store.GetJob(ctx, req.Id)
+			if serr != nil {
+				klog.Warningf("GetJob store fallback lookup id=%s: %v", req.Id, serr)
+			} else if rec != nil && plannerapi.JobStatus(rec.Status).IsTerminal() {
+				pbJob, perr := rec.ToPB()
+				if perr != nil {
+					klog.Warningf("GetJob terminal store fallback id=%s: %v", req.Id, perr)
+				} else {
+					klog.Warningf("GetJob planner failed; returning terminal store fallback id=%s: %v", req.Id, err)
+					return h.enrichJob(ctx, pbJob), nil
+				}
+			}
+		}
 		return nil, mapPlannerError(err, "get batch")
 	}
-	return mergeJob(job, nil), nil
+	return h.enrichJob(ctx, mergeJob(job, nil)), nil
 }
 
 // CreateJob calls POST /v1/batches with console-owned fields (display name,
@@ -256,7 +264,7 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	if err != nil {
 		return nil, mapPlannerError(err, "create batch")
 	}
-	return mergeJob(job, nil), nil
+	return h.enrichJob(ctx, mergeJob(job, nil)), nil
 }
 
 // CancelJob routes through Planner.Cancel; the planner resolves JobID
@@ -269,7 +277,7 @@ func (h *JobHandler) CancelJob(ctx context.Context, req *pb.CancelJobRequest) (*
 	if err != nil {
 		return nil, mapPlannerError(err, "cancel batch")
 	}
-	return mergeJob(job, nil), nil
+	return h.enrichJob(ctx, mergeJob(job, nil)), nil
 }
 
 // currentUserEmail returns the authenticated user's email if available.
@@ -364,6 +372,7 @@ func mergeJob(v *plannerapi.Job, overlay *pb.Job) *pb.Job {
 	if v != nil {
 		job.Id = v.JobID
 		if b := v.Batch; b != nil {
+			job.BatchId = b.ID
 			job.Endpoint = b.Endpoint
 			job.Model = b.Model
 			job.InputDataset = b.InputFileID
@@ -414,6 +423,23 @@ func mergeJob(v *plannerapi.Job, overlay *pb.Job) *pb.Job {
 					TotalTokens:  b.Usage.TotalTokens,
 				}
 			}
+			if b.JSON.Errors.Valid() {
+				for _, e := range b.Errors.Data {
+					job.Errors = append(job.Errors, &pb.JobError{
+						Code:    e.Code,
+						Message: e.Message,
+						Param:   e.Param,
+						Line:    e.Line,
+					})
+				}
+			}
+			if extraBody := parseBatchExtraBody(b); len(extraBody) > 0 {
+				job.ExtraBody = compactRawJSONMap(extraBody)
+				applyKnownBatchExtensions(job, extraBody)
+			}
+		}
+		if v.State != nil {
+			applyPlannerState(job, v.State)
 		}
 	}
 	// Overlay still respected when caller chooses to pass one (future path).
@@ -434,5 +460,413 @@ func mergeJob(v *plannerapi.Job, overlay *pb.Job) *pb.Job {
 			job.Id = overlay.Id
 		}
 	}
+	if job.ProvisionId == "" && job.ResourceAllocation != nil {
+		job.ProvisionId = job.ResourceAllocation.ProvisionId
+	}
+	job.Events = buildJobEvents(job)
 	return job
+}
+
+type rawBatchExtensionPayload struct {
+	JobID              string          `json:"job_id"`
+	Runtime            json.RawMessage `json:"runtime"`
+	ResourceAllocation json.RawMessage `json:"resource_allocation"`
+	ModelTemplate      json.RawMessage `json:"model_template"`
+	Profile            json.RawMessage `json:"profile"`
+}
+
+type rawRuntimePayload struct {
+	Target  string                 `json:"target"`
+	Options map[string]interface{} `json:"options"`
+}
+
+type rawResourceAllocationPayload struct {
+	ProvisionID               string            `json:"provision_id"`
+	ProvisionResourceDeadline int64             `json:"provision_resource_deadline"`
+	ResourceDetails           []json.RawMessage `json:"resource_details"`
+}
+
+type rawResourceDetailPayload struct {
+	EndpointCluster string `json:"endpoint_cluster"`
+	GPUType         string `json:"gpu_type"`
+	Replica         int32  `json:"replica"`
+}
+
+type rawNamedRefPayload struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+var standardBatchResponseFields = map[string]struct{}{
+	"id":                {},
+	"object":            {},
+	"endpoint":          {},
+	"model":             {},
+	"errors":            {},
+	"input_file_id":     {},
+	"completion_window": {},
+	"status":            {},
+	"output_file_id":    {},
+	"error_file_id":     {},
+	"created_at":        {},
+	"in_progress_at":    {},
+	"expires_at":        {},
+	"finalizing_at":     {},
+	"completed_at":      {},
+	"failed_at":         {},
+	"expired_at":        {},
+	"cancelling_at":     {},
+	"cancelled_at":      {},
+	"request_counts":    {},
+	"usage":             {},
+	"metadata":          {},
+}
+
+func parseBatchExtraBody(b *openai.Batch) map[string]json.RawMessage {
+	if b == nil || b.RawJSON() == "" {
+		return nil
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(b.RawJSON()), &root); err != nil {
+		return nil
+	}
+	out := make(map[string]json.RawMessage)
+	if raw, ok := root["extra_body"]; ok && len(raw) > 0 && string(raw) != "null" {
+		var extra map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &extra); err == nil {
+			for k, v := range extra {
+				if len(v) > 0 && string(v) != "null" {
+					out[k] = v
+				}
+			}
+		}
+	}
+	for k, v := range root {
+		if k == "extra_body" {
+			continue
+		}
+		if _, standard := standardBatchResponseFields[k]; standard {
+			continue
+		}
+		if len(v) > 0 && string(v) != "null" {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func compactRawJSONMap(in map[string]json.RawMessage) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = compactJSON(v)
+	}
+	return out
+}
+
+func applyKnownBatchExtensions(job *pb.Job, extraBody map[string]json.RawMessage) {
+	if job == nil || len(extraBody) == 0 {
+		return
+	}
+	if raw, ok := extraBody["aibrix"]; ok {
+		applyAibrixBatchExtension(job, raw)
+	}
+}
+
+func applyAibrixBatchExtension(job *pb.Job, raw json.RawMessage) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return
+	}
+	var payload rawBatchExtensionPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return
+	}
+	if len(payload.Runtime) > 0 && string(payload.Runtime) != "null" {
+		var runtime rawRuntimePayload
+		if err := json.Unmarshal(payload.Runtime, &runtime); err == nil {
+			job.Runtime = &pb.JobRuntime{
+				Target:  runtime.Target,
+				Options: stringifyMap(runtime.Options),
+				RawJson: compactJSON(payload.Runtime),
+			}
+		}
+	}
+	if len(payload.ResourceAllocation) > 0 && string(payload.ResourceAllocation) != "null" {
+		var allocation rawResourceAllocationPayload
+		if err := json.Unmarshal(payload.ResourceAllocation, &allocation); err == nil {
+			job.ResourceAllocation = &pb.JobResourceAllocation{
+				ProvisionId:               allocation.ProvisionID,
+				ProvisionResourceDeadline: allocation.ProvisionResourceDeadline,
+				RawJson:                   compactJSON(payload.ResourceAllocation),
+			}
+			for _, rawDetail := range allocation.ResourceDetails {
+				detail := parseResourceDetail(rawDetail)
+				if detail != nil {
+					job.ResourceAllocation.ResourceDetails = append(job.ResourceAllocation.ResourceDetails, detail)
+				}
+			}
+			if job.ProvisionId == "" {
+				job.ProvisionId = allocation.ProvisionID
+			}
+		}
+	}
+	if len(payload.ModelTemplate) > 0 && string(payload.ModelTemplate) != "null" {
+		var modelTemplate rawNamedRefPayload
+		if err := json.Unmarshal(payload.ModelTemplate, &modelTemplate); err == nil {
+			job.ModelTemplateRef = &pb.JobModelTemplateRef{
+				Name:    modelTemplate.Name,
+				Version: modelTemplate.Version,
+				RawJson: compactJSON(payload.ModelTemplate),
+			}
+			if job.ModelTemplateName == "" {
+				job.ModelTemplateName = modelTemplate.Name
+			}
+			if job.ModelTemplateVersion == "" {
+				job.ModelTemplateVersion = modelTemplate.Version
+			}
+		}
+	}
+	if len(payload.Profile) > 0 && string(payload.Profile) != "null" {
+		var profile rawNamedRefPayload
+		if err := json.Unmarshal(payload.Profile, &profile); err == nil {
+			job.Profile = &pb.JobProfileRef{
+				Name:    profile.Name,
+				RawJson: compactJSON(payload.Profile),
+			}
+		}
+	}
+}
+
+func parseResourceDetail(raw json.RawMessage) *pb.JobResourceDetail {
+	var detail rawResourceDetailPayload
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		return nil
+	}
+	var all map[string]interface{}
+	_ = json.Unmarshal(raw, &all)
+	delete(all, "endpoint_cluster")
+	delete(all, "gpu_type")
+	delete(all, "replica")
+	return &pb.JobResourceDetail{
+		EndpointCluster: detail.EndpointCluster,
+		GpuType:         detail.GPUType,
+		Replica:         detail.Replica,
+		Extra:           stringifyMap(all),
+	}
+}
+
+func stringifyMap(in map[string]interface{}) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = stringifyJSONValue(v)
+	}
+	return out
+}
+
+func stringifyJSONValue(v interface{}) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return x
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(x)
+	default:
+		b, err := json.Marshal(x)
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	}
+}
+
+func compactJSON(raw json.RawMessage) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return string(raw)
+	}
+	return buf.String()
+}
+
+func applyPlannerState(job *pb.Job, state *plannerapi.JobState) {
+	if state.BatchID != "" {
+		job.BatchId = state.BatchID
+	}
+	if state.ProvisionID != "" {
+		job.ProvisionId = state.ProvisionID
+	}
+	if state.ErrorMessage != "" {
+		job.ErrorMessage = state.ErrorMessage
+	}
+	job.QueuedAt = unixOrZero(state.QueuedAt)
+	job.ResourcePreparingAt = unixOrZero(state.ResourcePreparingAt)
+	job.SubmittingAt = unixOrZero(state.SubmittingAt)
+	job.ResourceFailedAt = unixOrZero(state.ResourceFailedAt)
+	job.SubmitFailedAt = unixOrZero(state.SubmitFailedAt)
+	job.CancelRequestedAt = unixOrZero(state.CancelRequestedAt)
+	if job.CancelledAt == 0 {
+		job.CancelledAt = unixOrZero(state.CancelledAt)
+	}
+}
+
+func (h *JobHandler) enrichJob(ctx context.Context, job *pb.Job) *pb.Job {
+	if job == nil {
+		return nil
+	}
+	h.attachProvision(ctx, job)
+	job.Events = buildJobEvents(job)
+	return job
+}
+
+func (h *JobHandler) enrichJobs(ctx context.Context, jobs []*pb.Job) {
+	provisions := h.listProvisionsForJobs(ctx, jobs)
+	for _, job := range jobs {
+		if job == nil {
+			continue
+		}
+		if prov := provisions[job.ProvisionId]; prov != nil {
+			applyProvision(job, prov)
+		}
+		job.Events = buildJobEvents(job)
+	}
+}
+
+func (h *JobHandler) listProvisionsForJobs(ctx context.Context, jobs []*pb.Job) map[string]*rmtypes.ProvisionResult {
+	if h.store == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	ids := make([]string, 0, len(jobs))
+	for _, job := range jobs {
+		if job == nil || job.ProvisionId == "" {
+			continue
+		}
+		if _, ok := seen[job.ProvisionId]; ok {
+			continue
+		}
+		seen[job.ProvisionId] = struct{}{}
+		ids = append(ids, job.ProvisionId)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	results, err := h.store.ListProvisions(ctx, &rmtypes.ListOptions{
+		ProvisionIDs: &ids,
+		Limit:        len(ids),
+	})
+	if err != nil {
+		klog.Warningf("list provisions for jobs: %v", err)
+		return nil
+	}
+	out := make(map[string]*rmtypes.ProvisionResult, len(results))
+	for _, result := range results {
+		if result != nil && result.ProvisionID != "" {
+			out[result.ProvisionID] = result
+		}
+	}
+	return out
+}
+
+func (h *JobHandler) attachProvision(ctx context.Context, job *pb.Job) {
+	if h.store == nil || job.ProvisionId == "" {
+		return
+	}
+	prov, err := h.store.GetProvision(ctx, job.ProvisionId)
+	if err != nil || prov == nil {
+		return
+	}
+	applyProvision(job, prov)
+}
+
+func applyProvision(job *pb.Job, prov *rmtypes.ProvisionResult) {
+	if job == nil || prov == nil {
+		return
+	}
+	raw, _ := json.Marshal(prov)
+	job.Provision = &pb.JobProvision{
+		ProvisionId:    prov.ProvisionID,
+		Provider:       prov.Provider,
+		IdempotencyKey: prov.IdempotencyKey,
+		Status:         string(prov.Status),
+		Region:         prov.Region,
+		ErrorMessage:   prov.ErrorMessage,
+		CreatedAt:      unixOrZero(prov.CreatedAt),
+		UpdatedAt:      unixOrZero(prov.UpdatedAt),
+		RawJson:        string(raw),
+	}
+	if job.ErrorMessage == "" && prov.ErrorMessage != "" {
+		job.ErrorMessage = prov.ErrorMessage
+	}
+}
+
+func buildJobEvents(job *pb.Job) []*pb.JobEvent {
+	if job == nil {
+		return nil
+	}
+	events := make([]*pb.JobEvent, 0, 12)
+	add := func(id, label, status, source string, at int64, message string) {
+		if at == 0 {
+			return
+		}
+		events = append(events, &pb.JobEvent{
+			Id:      id,
+			Label:   label,
+			Status:  status,
+			Source:  source,
+			At:      at,
+			Message: message,
+		})
+	}
+	add("queued", "Queued", "queued", "planner", job.QueuedAt, "Console accepted the job.")
+	add("resource_preparing", "Provisioning", "resource_preparing", "planner", job.ResourcePreparingAt, "Resource provisioning started.")
+	add("submitting", "Submitting", "submitting", "planner", job.SubmittingAt, "Provisioning reached ready and the batch was submitted to MDS.")
+	if job.BatchId != "" {
+		add("batch_created", "MDS batch created", "validating", "mds", job.CreatedAt, "Metadata Service created the OpenAI batch.")
+	}
+	add("in_progress", "In progress", "in_progress", "mds", job.InProgressAt, "MDS started processing requests.")
+	add("finalizing", "Finalizing", "finalizing", "mds", job.FinalizingAt, "MDS started finalizing output files.")
+	add("cancel_requested", "Cancel requested", "cancelling", "planner", job.CancelRequestedAt, "Console requested cancellation.")
+	add("cancelling", "Cancelling", "cancelling", "mds", job.CancellingAt, "MDS started cancelling the batch.")
+	add("completed", "Completed", "completed", "mds", job.CompletedAt, "Batch completed.")
+	if job.ResourceFailedAt == 0 && job.SubmitFailedAt == 0 {
+		add("failed", "Failed", "failed", "mds", job.FailedAt, firstNonEmpty(job.ErrorMessage, "Batch failed."))
+	}
+	add("expired", "Expired", "expired", "mds", job.ExpiredAt, "Batch expired.")
+	add("cancelled", "Cancelled", "cancelled", "mds", job.CancelledAt, "Batch cancelled.")
+	add("resource_failed", "Provision failed", "resource_failed", "planner", job.ResourceFailedAt, firstNonEmpty(job.ErrorMessage, "Resource provisioning failed."))
+	add("submit_failed", "Submit failed", "submit_failed", "planner", job.SubmitFailedAt, firstNonEmpty(job.ErrorMessage, "MDS batch submission failed."))
+
+	sort.SliceStable(events, func(i, j int) bool {
+		if events[i].At == events[j].At {
+			return events[i].Id < events[j].Id
+		}
+		return events[i].At < events[j].At
+	})
+	return events
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func unixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
 }

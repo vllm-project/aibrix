@@ -165,6 +165,15 @@ message Job {
   JobRequestCounts request_counts = 19;
   JobUsage usage = 20;
   map<string, string> metadata = 21;
+  // Raw extension payloads carried through OpenAI SDK extra_body. Values are
+  // compact JSON strings keyed by extension namespace, for example
+  // extra_body["aibrix"].
+  map<string, string> extra_body = 22;
+  repeated JobError errors = 23;
+  JobRuntime runtime = 24;
+  JobResourceAllocation resource_allocation = 25;
+  JobModelTemplateRef model_template_ref = 26;
+  JobProfileRef profile = 27;
 
   // Console-owned fields (persisted in the store)
   string name = 100;             // display name; resolved from metadata.display_name
@@ -174,6 +183,17 @@ message Job {
   // SDK-path jobs that pin templates through extra_body.aibrix instead.
   string model_template_name = 102;
   string model_template_version = 103;
+  string batch_id = 104;          // MDS/OpenAI batch id when different from Console job id
+  string provision_id = 105;      // Resource-manager provision id
+  string error_message = 106;     // Planner/provision/submit error summary
+  int64 queued_at = 107;
+  int64 resource_preparing_at = 108;
+  int64 submitting_at = 109;
+  int64 resource_failed_at = 110;
+  int64 submit_failed_at = 111;
+  int64 cancel_requested_at = 112;
+  JobProvision provision = 113;
+  repeated JobEvent events = 114;
 }
 
 message JobRequestCounts {
@@ -186,6 +206,65 @@ message JobUsage {
   int64 input_tokens = 1;
   int64 output_tokens = 2;
   int64 total_tokens = 3;
+}
+
+message JobError {
+  string code = 1;
+  string message = 2;
+  string param = 3;
+  int64 line = 4;
+}
+
+message JobRuntime {
+  string target = 1;
+  map<string, string> options = 2;
+  string raw_json = 100;
+}
+
+message JobResourceAllocation {
+  string provision_id = 1;
+  int64 provision_resource_deadline = 2;
+  repeated JobResourceDetail resource_details = 3;
+  string raw_json = 100;
+}
+
+message JobResourceDetail {
+  string endpoint_cluster = 1;
+  string gpu_type = 2;
+  int32 replica = 3;
+  map<string, string> extra = 100;
+}
+
+message JobModelTemplateRef {
+  string name = 1;
+  string version = 2;
+  string raw_json = 100;
+}
+
+message JobProfileRef {
+  string name = 1;
+  string raw_json = 100;
+}
+
+message JobProvision {
+  string provision_id = 1;
+  string provider = 2;
+  string idempotency_key = 3;
+  string status = 4;
+  string region = 5;
+  string error_message = 6;
+  int64 created_at = 7;
+  int64 updated_at = 8;
+  string raw_json = 100;
+}
+
+message JobEvent {
+  string id = 1;
+  string label = 2;
+  string status = 3;
+  string source = 4;
+  int64 at = 5;
+  string message = 6;
 }
 
 message ListJobsRequest {

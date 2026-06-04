@@ -97,6 +97,24 @@ func terminalTime(j *queuedJob) time.Time {
 	return time.Time{}
 }
 
+func jobStateSnapshot(j *queuedJob) *plannerapi.JobState {
+	if j == nil {
+		return nil
+	}
+	return &plannerapi.JobState{
+		BatchID:             j.batchID,
+		ProvisionID:         j.provisionID,
+		ErrorMessage:        j.errMsg,
+		QueuedAt:            j.queuedAt,
+		ResourcePreparingAt: j.resourcePreparingAt,
+		SubmittingAt:        j.submittingAt,
+		ResourceFailedAt:    j.resourceFailedAt,
+		SubmitFailedAt:      j.submitFailedAt,
+		CancelRequestedAt:   j.cancelRequestedAt,
+		CancelledAt:         j.canceledAt,
+	}
+}
+
 // DefaultWorkerCount sizes the worker pool.
 const DefaultWorkerCount = 8
 
@@ -617,6 +635,9 @@ func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (
 	return &plannerapi.Job{
 		JobID: req.JobID,
 		Batch: placeholderBatch(req, statusFor(plannerapi.JobStatusQueued), now, time.Time{}),
+		State: &plannerapi.JobState{
+			QueuedAt: now,
+		},
 	}, nil
 }
 
@@ -636,22 +657,28 @@ func (q *Planner) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, er
 	req := job.req
 	queuedAt := job.queuedAt
 	terminalAt := terminalTime(job)
+	state := jobStateSnapshot(job)
 	q.mu.RUnlock()
 
-	// Forward to MDS only when an MDS batch exists AND the local status
-	// hasn't already settled to a Planner-side terminal
-	if batchID != "" && !status.IsTerminal() {
+	// Once an MDS batch exists, read through MDS. Even terminal MDS batches
+	// carry output/error files, usage, and extra_body extensions that the
+	// local placeholder/store snapshot does not own. The exception is a local
+	// cancel-race that has already been accepted by Console; MDS may briefly
+	// report stale in_progress, so keep the local cancelled view until a future
+	// reconciler owns that transition.
+	if batchID != "" && !(status == plannerapi.JobStatusCancelled && !state.CancelRequestedAt.IsZero()) {
 		klog.Infof("[planner] get_job job_id=%q batch_id=%q", jobID, batchID)
 		batch, err := q.bc.GetBatch(ctx, batchID)
 		if err != nil {
 			return nil, err
 		}
 		q.syncFromBatch(jobID, batch)
-		return &plannerapi.Job{JobID: jobID, Batch: batch}, nil
+		return &plannerapi.Job{JobID: jobID, Batch: batch, State: state}, nil
 	}
 	return &plannerapi.Job{
 		JobID: jobID,
 		Batch: placeholderBatch(req, statusFor(status), queuedAt, terminalAt),
+		State: state,
 	}, nil
 }
 
@@ -675,11 +702,12 @@ func (q *Planner) getJobFromStore(ctx context.Context, jobID string) (*plannerap
 		if err != nil {
 			return nil, err
 		}
-		return &plannerapi.Job{JobID: jobID, Batch: batch}, nil
+		return &plannerapi.Job{JobID: jobID, Batch: batch, State: jobStateSnapshot(j)}, nil
 	}
 	return &plannerapi.Job{
 		JobID: jobID,
 		Batch: placeholderBatch(j.req, statusFor(j.status), j.queuedAt, terminalTime(j)),
+		State: jobStateSnapshot(j),
 	}, nil
 }
 
@@ -712,12 +740,17 @@ func (q *Planner) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, er
 	} else {
 		terminalAt = terminalTime(job)
 	}
+	state := jobStateSnapshot(job)
 	q.mu.Unlock()
 
 	if preSubmit {
 		q.persist(jobID)
 		klog.Infof("[planner] cancel pre-submit job_id=%q prior_status=%s", jobID, status)
-		return &plannerapi.Job{JobID: jobID, Batch: placeholderBatch(req, openai.BatchStatusCancelled, queuedAt, terminalAt)}, nil
+		return &plannerapi.Job{
+			JobID: jobID,
+			Batch: placeholderBatch(req, openai.BatchStatusCancelled, queuedAt, terminalAt),
+			State: state,
+		}, nil
 	}
 	if batchID != "" && !status.IsTerminal() {
 		klog.Infof("[planner] cancel submitted job_id=%q batch_id=%q", jobID, batchID)
@@ -739,10 +772,14 @@ func (q *Planner) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, er
 			q.releaseAfter(jobID, toRelease, "cancel submitted")
 		}
 		q.syncFromBatch(jobID, batch)
-		return &plannerapi.Job{JobID: jobID, Batch: batch}, nil
+		return &plannerapi.Job{JobID: jobID, Batch: batch, State: state}, nil
 	}
 	// Already terminal — return current view, no double-cancel side effects.
-	return &plannerapi.Job{JobID: jobID, Batch: placeholderBatch(req, statusFor(status), queuedAt, terminalAt)}, nil
+	return &plannerapi.Job{
+		JobID: jobID,
+		Batch: placeholderBatch(req, statusFor(status), queuedAt, terminalAt),
+		State: state,
+	}, nil
 }
 
 // ListJobs merges MDS batches with local not-yet-submitted jobs. Local jobs
@@ -771,7 +808,11 @@ func (q *Planner) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest)
 	missingEntries := make(map[string]*plannerapi.Job)
 	for _, b := range resp.Data {
 		jobID := q.jobByBatch[b.ID]
-		entry := &plannerapi.Job{JobID: jobID, Batch: b}
+		var state *plannerapi.JobState
+		if jobID != "" {
+			state = jobStateSnapshot(q.jobs[jobID])
+		}
+		entry := &plannerapi.Job{JobID: jobID, Batch: b, State: state}
 		out = append(out, entry)
 		if jobID != "" {
 			tagged = append(tagged, struct {
@@ -793,8 +834,9 @@ func (q *Planner) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest)
 			klog.Warningf("[planner] list jobs by batch ids: %v", err)
 		} else {
 			for batchID, entry := range missingEntries {
-				if rec, ok := recs[batchID]; ok && rec.ID != "" {
+				if rec, ok := recs[batchID]; ok && rec != nil && rec.ID != "" {
 					entry.JobID = rec.ID
+					entry.State = jobStateSnapshot(modelToJob(rec))
 				}
 			}
 		}
@@ -816,6 +858,7 @@ func (q *Planner) unsubmittedJobs() []*plannerapi.Job {
 		status     plannerapi.JobStatus
 		queuedAt   time.Time
 		terminalAt time.Time
+		state      *plannerapi.JobState
 	}
 	q.mu.RLock()
 	unsubmitted := make([]snap, 0)
@@ -826,6 +869,7 @@ func (q *Planner) unsubmittedJobs() []*plannerapi.Job {
 				status:     job.status,
 				queuedAt:   job.queuedAt,
 				terminalAt: terminalTime(job),
+				state:      jobStateSnapshot(job),
 			})
 		}
 	}
@@ -838,6 +882,7 @@ func (q *Planner) unsubmittedJobs() []*plannerapi.Job {
 		out = append(out, &plannerapi.Job{
 			JobID: job.req.JobID,
 			Batch: placeholderBatch(job.req, statusFor(job.status), job.queuedAt, job.terminalAt),
+			State: job.state,
 		})
 	}
 	return out
@@ -875,7 +920,7 @@ func placeholderBatch(req *plannerapi.EnqueueRequest, st openai.BatchStatus, enq
 		Endpoint:         string(req.BatchParams.Endpoint),
 		InputFileID:      req.BatchParams.InputFileID,
 		CompletionWindow: string(req.BatchParams.CompletionWindow),
-		CreatedAt:        enqueuedAt.Unix(),
+		CreatedAt:        unixOrZero(enqueuedAt),
 	}
 	if len(req.BatchParams.Metadata) > 0 {
 		b.Metadata = map[string]string(req.BatchParams.Metadata)
@@ -891,4 +936,11 @@ func placeholderBatch(req *plannerapi.EnqueueRequest, st openai.BatchStatus, enq
 		}
 	}
 	return b
+}
+
+func unixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
 }

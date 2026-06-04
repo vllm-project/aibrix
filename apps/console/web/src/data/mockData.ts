@@ -28,6 +28,65 @@ export interface JobRequestCounts {
   failed: number;
 }
 
+export interface JobError {
+  code: string;
+  message: string;
+  param?: string;
+  line?: number;
+}
+
+export interface JobRuntime {
+  target: string;
+  options?: Record<string, string>;
+  rawJson?: string;
+}
+
+export interface JobResourceDetail {
+  endpointCluster?: string;
+  gpuType?: string;
+  replica?: number;
+  extra?: Record<string, string>;
+}
+
+export interface JobResourceAllocation {
+  provisionId?: string;
+  provisionResourceDeadline?: number;
+  resourceDetails?: JobResourceDetail[];
+  rawJson?: string;
+}
+
+export interface JobModelTemplateRef {
+  name: string;
+  version?: string;
+  rawJson?: string;
+}
+
+export interface JobProfileRef {
+  name: string;
+  rawJson?: string;
+}
+
+export interface JobProvision {
+  provisionId: string;
+  provider?: string;
+  idempotencyKey?: string;
+  status?: string;
+  region?: string;
+  errorMessage?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  rawJson?: string;
+}
+
+export interface JobEvent {
+  id: string;
+  label: string;
+  status: string;
+  source: string;
+  at: number;
+  message?: string;
+}
+
 // Job is the Console BFF's view of a batch — superset of OpenAI Batch.
 // Timestamps are unix seconds.
 export interface Job {
@@ -52,6 +111,12 @@ export interface Job {
   requestCounts?: JobRequestCounts;
   usage?: JobUsage;
   metadata?: Record<string, string>;
+  extraBody?: Record<string, string>;
+  errors?: JobError[];
+  runtime?: JobRuntime;
+  resourceAllocation?: JobResourceAllocation;
+  modelTemplateRef?: JobModelTemplateRef;
+  profile?: JobProfileRef;
 
   // Console-side fields persisted in the Console store
   name: string;
@@ -60,6 +125,17 @@ export interface Job {
   // template in the create-job wizard; empty for legacy/SDK-path jobs.
   modelTemplateName?: string;
   modelTemplateVersion?: string;
+  batchId?: string;
+  provisionId?: string;
+  errorMessage?: string;
+  queuedAt?: number;
+  resourcePreparingAt?: number;
+  submittingAt?: number;
+  resourceFailedAt?: number;
+  submitFailedAt?: number;
+  cancelRequestedAt?: number;
+  provision?: JobProvision;
+  events?: JobEvent[];
 }
 
 export interface Deployment {

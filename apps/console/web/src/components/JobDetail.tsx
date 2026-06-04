@@ -1,18 +1,100 @@
 import { useState, useEffect } from 'react';
-import { ChevronLeft, Copy, Trash2, CheckCircle, XCircle, Download } from 'lucide-react';
+import {
+  AlertTriangle,
+  CheckCircle,
+  ChevronLeft,
+  Clock,
+  Copy,
+  Download,
+  Server,
+  Trash2,
+  XCircle,
+} from 'lucide-react';
 import { getJob, getUserInfo } from '../utils/api';
-import { Job, JobStatus } from '../data/mockData';
+import { Job, JobEvent, JobStatus } from '../data/mockData';
 
 interface JobDetailProps {
   jobId: string | null;
   onBack: () => void;
 }
 
-const TERMINAL: JobStatus[] = ['completed', 'failed', 'expired', 'cancelled'];
+const TERMINAL_STATUSES = new Set<JobStatus>([
+  'completed',
+  'failed',
+  'expired',
+  'cancelled',
+  'resource_failed',
+  'submit_failed',
+]);
+
+const CONSOLE_METADATA_KEYS = new Set([
+  'aibrix.console.display_name',
+  'aibrix.console.created_by',
+  'aibrix.console.template_name',
+  'aibrix.console.template_version',
+  'display_name',
+]);
 
 function formatTimestamp(unixSec?: number): string {
-  if (!unixSec) return '—';
+  if (!unixSec || unixSec <= 0) return '—';
   return new Date(unixSec * 1000).toLocaleString();
+}
+
+function formatCompactTime(unixSec?: number): string {
+  if (!unixSec || unixSec <= 0) return '—';
+  return new Date(unixSec * 1000).toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function formatNumber(n?: number): string {
+  return typeof n === 'number' ? n.toLocaleString() : '—';
+}
+
+function terminalStatus(status: JobStatus): boolean {
+  return TERMINAL_STATUSES.has(status);
+}
+
+function progressCount(job: Job): number | null {
+  const counts = job.requestCounts;
+  if (!counts) return null;
+  return counts.completed + counts.failed;
+}
+
+function getEvents(job: Job): JobEvent[] {
+  if (job.events && job.events.length > 0) {
+    return [...job.events].sort((a, b) => a.at - b.at);
+  }
+  const fallback: Array<Omit<JobEvent, 'at'> & { at?: number }> = [
+    { id: 'created', label: 'Created', status: 'validating', source: 'mds', at: job.createdAt },
+    { id: 'in_progress', label: 'In progress', status: 'in_progress', source: 'mds', at: job.inProgressAt },
+    { id: 'finalizing', label: 'Finalizing', status: 'finalizing', source: 'mds', at: job.finalizingAt },
+    { id: 'completed', label: 'Completed', status: 'completed', source: 'mds', at: job.completedAt },
+    { id: 'failed', label: 'Failed', status: 'failed', source: 'mds', at: job.failedAt },
+    { id: 'expired', label: 'Expired', status: 'expired', source: 'mds', at: job.expiredAt },
+    { id: 'cancelling', label: 'Cancelling', status: 'cancelling', source: 'mds', at: job.cancellingAt },
+    { id: 'cancelled', label: 'Cancelled', status: 'cancelled', source: 'mds', at: job.cancelledAt },
+    { id: 'resource_failed', label: 'Provision failed', status: 'resource_failed', source: 'planner', at: job.resourceFailedAt },
+    { id: 'submit_failed', label: 'Submit failed', status: 'submit_failed', source: 'planner', at: job.submitFailedAt },
+  ].filter((event): event is JobEvent => typeof event.at === 'number' && event.at > 0);
+  return fallback.sort((a, b) => a.at - b.at);
+}
+
+function eventDotClass(status: string): string {
+  if (status === 'completed') return 'bg-emerald-500 ring-emerald-100';
+  if (status === 'failed' || status === 'resource_failed' || status === 'submit_failed') {
+    return 'bg-red-500 ring-red-100';
+  }
+  if (status === 'cancelled' || status === 'expired') return 'bg-gray-400 ring-gray-100';
+  return 'bg-amber-500 ring-amber-100';
+}
+
+function visibleMetadata(job: Job): [string, string][] {
+  return Object.entries(job.metadata || {})
+    .filter(([key]) => !CONSOLE_METADATA_KEYS.has(key))
+    .sort(([a], [b]) => a.localeCompare(b));
 }
 
 function statusClass(s: JobStatus): string {
@@ -62,7 +144,6 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
     if (!jobId) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const TERMINAL = new Set(['completed', 'failed', 'expired', 'cancelled']);
 
     const fetchJob = (initial: boolean) => {
       if (initial) {
@@ -73,7 +154,7 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
         .then(j => {
           if (cancelled) return;
           setJob(j);
-          if (!TERMINAL.has(j.status)) {
+          if (!terminalStatus(j.status)) {
             timer = setTimeout(() => fetchJob(false), 5000);
           }
         })
@@ -125,16 +206,18 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
   }
 
   const displayName = job.name || job.id;
-  const isTerminal = TERMINAL.includes(job.status);
-  const isCompleted = job.status === 'completed';
+  const isTerminal = terminalStatus(job.status);
   const counts = job.requestCounts;
   const usage = job.usage;
+  const doneCount = progressCount(job);
   const successPct = counts && counts.total > 0
     ? ((counts.completed / counts.total) * 100).toFixed(2)
     : '0.00';
   // Only the owner may download datasets (input/output/error); other users are
   // view-only. This is a UX guard and must also be enforced server-side.
   const isOwner = !!currentUser && (job.createdBy || '').toLowerCase() === currentUser;
+  const events = getEvents(job);
+  const metadataEntries = visibleMetadata(job);
 
   return (
     <div className="p-8">
@@ -179,13 +262,13 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                     className="h-full bg-teal-500 rounded-full transition-all"
                     style={{
                       width: counts && counts.total > 0
-                        ? `${(counts.completed / counts.total) * 100}%`
+                        ? `${((doneCount ?? 0) / counts.total) * 100}%`
                         : '0%',
                     }}
                   ></div>
                 </div>
                 <div className="text-center mt-2 text-sm text-gray-500">
-                  {counts ? `${counts.completed} / ${counts.total}` : 'Pending'}
+                  {counts ? `${doneCount ?? 0} / ${counts.total}` : 'Pending'}
                 </div>
               </div>
 
@@ -225,31 +308,90 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                 </div>
               </div>
 
-              {isCompleted && (
-                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-                  <h2 className="text-lg mb-4">Token Usage</h2>
+            </>
+          )}
 
-                  {usage ? (
-                    <div className="grid grid-cols-3 gap-6">
-                      <div>
-                        <div className="text-sm text-gray-500 mb-2">Total tokens</div>
-                        <div className="text-2xl">{usage.totalTokens.toLocaleString()}</div>
+          {(job.errorMessage || (job.errors && job.errors.length > 0)) && (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <AlertTriangle className="w-5 h-5 text-red-500" />
+                <h2 className="text-lg">Errors</h2>
+              </div>
+              {job.errorMessage && (
+                <p className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-3">
+                  {job.errorMessage}
+                </p>
+              )}
+              {job.errors && job.errors.length > 0 && (
+                <div className="space-y-2">
+                  {job.errors.map((err, idx) => (
+                    <div key={`${err.code}-${idx}`} className="border border-gray-100 rounded-lg p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <code className="text-xs bg-gray-100 px-2 py-1 rounded-md text-gray-700">
+                          {err.code || 'error'}
+                        </code>
+                        {err.line && err.line > 0 ? <span className="text-xs text-gray-400">line {err.line}</span> : null}
                       </div>
-                      <div>
-                        <div className="text-sm text-gray-500 mb-2">Input tokens</div>
-                        <div className="text-2xl">{usage.inputTokens.toLocaleString()}</div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-gray-500 mb-2">Output tokens</div>
-                        <div className="text-2xl">{usage.outputTokens.toLocaleString()}</div>
-                      </div>
+                      <p className="text-sm text-gray-800 mt-2">{err.message || '—'}</p>
+                      {err.param && <p className="text-xs text-gray-400 mt-1">param: {err.param}</p>}
                     </div>
-                  ) : (
-                    <p className="text-sm text-gray-500">No usage data available.</p>
-                  )}
+                  ))}
                 </div>
               )}
-            </>
+            </div>
+          )}
+
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <div className="flex items-center gap-2 mb-5">
+              <Clock className="w-5 h-5 text-teal-600" />
+              <h2 className="text-lg">Timeline</h2>
+            </div>
+            {events.length > 0 ? (
+              <div className="space-y-4">
+                {events.map((event) => (
+                  <div key={`${event.id}-${event.at}`} className="flex gap-3">
+                    <div className="pt-1">
+                      <div className={`w-3 h-3 rounded-full ring-4 ${eventDotClass(event.status)}`} />
+                    </div>
+                    <div className="min-w-0 flex-1 pb-4 border-b border-gray-100 last:border-b-0 last:pb-0">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-sm text-gray-900">{event.label}</div>
+                        <div className="text-xs text-gray-400 whitespace-nowrap">{formatCompactTime(event.at)}</div>
+                      </div>
+                      <div className="mt-1 flex items-center gap-2">
+                        <span className="text-xs text-gray-500">{formatTimestamp(event.at)}</span>
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
+                          {event.source}
+                        </span>
+                      </div>
+                      {event.message && <p className="text-xs text-gray-500 mt-1">{event.message}</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">No timeline data available.</p>
+            )}
+          </div>
+
+          {usage && (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+              <h2 className="text-lg mb-4">Token Usage</h2>
+              <div className="grid grid-cols-3 gap-6">
+                <div>
+                  <div className="text-sm text-gray-500 mb-2">Total tokens</div>
+                  <div className="text-2xl">{formatNumber(usage.totalTokens)}</div>
+                </div>
+                <div>
+                  <div className="text-sm text-gray-500 mb-2">Input tokens</div>
+                  <div className="text-2xl">{formatNumber(usage.inputTokens)}</div>
+                </div>
+                <div>
+                  <div className="text-sm text-gray-500 mb-2">Output tokens</div>
+                  <div className="text-2xl">{formatNumber(usage.outputTokens)}</div>
+                </div>
+              </div>
+            </div>
           )}
         </div>
 
@@ -270,13 +412,23 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                 <div className="text-gray-500 mb-1">Expires</div>
                 <div className="text-gray-900">{formatTimestamp(job.expiresAt)}</div>
               </div>
-              {job.completedAt && (
+              <div>
+                <div className="text-gray-500 mb-1">Completion Window</div>
+                <div className="text-gray-900">{job.completionWindow || '—'}</div>
+              </div>
+              {job.batchId && (
+                <div>
+                  <div className="text-gray-500 mb-1">MDS Batch ID</div>
+                  <code className="text-sm bg-gray-100 px-2 py-1 rounded-md break-all">{job.batchId}</code>
+                </div>
+              )}
+              {(job.completedAt ?? 0) > 0 && (
                 <div>
                   <div className="text-gray-500 mb-1">Completed</div>
                   <div className="text-gray-900">{formatTimestamp(job.completedAt)}</div>
                 </div>
               )}
-              {job.failedAt && (
+              {(job.failedAt ?? 0) > 0 && (
                 <div>
                   <div className="text-gray-500 mb-1">Failed</div>
                   <div className="text-gray-900">{formatTimestamp(job.failedAt)}</div>
@@ -286,6 +438,76 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                 <div className="text-gray-500 mb-1">Display Name</div>
                 <div className="text-gray-900">{displayName}</div>
               </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <Server className="w-5 h-5 text-teal-600" />
+              <h2 className="text-lg">Execution</h2>
+            </div>
+
+            <div className="space-y-3 text-sm">
+              <div>
+                <div className="text-gray-500 mb-1">Runtime</div>
+                <div className="text-gray-900">{job.runtime?.target || '—'}</div>
+              </div>
+              {job.runtime?.options && Object.keys(job.runtime.options).length > 0 && (
+                <KeyValueRows entries={Object.entries(job.runtime.options)} />
+              )}
+              <div>
+                <div className="text-gray-500 mb-1">Provision</div>
+                <code className="text-sm bg-gray-100 px-2 py-1 rounded-md break-all">
+                  {job.provisionId || job.resourceAllocation?.provisionId || '—'}
+                </code>
+              </div>
+              {job.provision && (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="text-gray-500 mb-1">Provider</div>
+                      <div className="text-gray-900">{job.provision.provider || '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-500 mb-1">Status</div>
+                      <div className="text-gray-900">{job.provision.status || '—'}</div>
+                    </div>
+                  </div>
+                  {job.provision.region && (
+                    <div>
+                      <div className="text-gray-500 mb-1">Region</div>
+                      <div className="text-gray-900 break-all">{job.provision.region}</div>
+                    </div>
+                  )}
+                  {(job.provision.updatedAt ?? 0) > 0 && (
+                    <div>
+                      <div className="text-gray-500 mb-1">Provision Updated</div>
+                      <div className="text-gray-900">{formatTimestamp(job.provision.updatedAt)}</div>
+                    </div>
+                  )}
+                </>
+              )}
+              {job.resourceAllocation?.resourceDetails?.map((detail, idx) => (
+                <div key={`${detail.endpointCluster || 'resource'}-${idx}`} className="rounded-lg border border-gray-100 p-3">
+                  <div className="text-xs text-gray-500 mb-2">Resource {idx + 1}</div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="text-gray-500 mb-1">GPU</div>
+                      <div className="text-gray-900">{detail.gpuType || '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-500 mb-1">Replicas</div>
+                      <div className="text-gray-900">{detail.replica ?? '—'}</div>
+                    </div>
+                  </div>
+                  {detail.endpointCluster && (
+                    <div className="mt-2">
+                      <div className="text-gray-500 mb-1">Cluster</div>
+                      <div className="text-gray-900 break-all">{detail.endpointCluster}</div>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
 
@@ -310,6 +532,12 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                   </code>
                 </div>
               )}
+              {job.profile?.name && (
+                <div>
+                  <div className="text-gray-500 mb-1">Batch Profile</div>
+                  <code className="text-sm bg-gray-100 px-2 py-1 rounded-md">{job.profile.name}</code>
+                </div>
+              )}
               {!isOwner && (job.inputDataset || job.outputDataset || job.errorDataset) && (
                 <p className="text-xs text-gray-400">View only — only the job owner can download datasets.</p>
               )}
@@ -318,8 +546,28 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
               {job.errorDataset && <FileRow label="Error Dataset" fileId={job.errorDataset} canDownload={isOwner} />}
             </div>
           </div>
+
+          {metadataEntries.length > 0 && (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+              <h2 className="text-lg mb-4">Metadata</h2>
+              <KeyValueRows entries={metadataEntries} />
+            </div>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function KeyValueRows({ entries }: { entries: [string, string][] }) {
+  return (
+    <div className="space-y-2">
+      {entries.map(([key, value]) => (
+        <div key={key} className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-3 text-xs">
+          <div className="text-gray-500 truncate" title={key}>{key}</div>
+          <div className="text-gray-900 break-all">{value || '—'}</div>
+        </div>
+      ))}
     </div>
   );
 }

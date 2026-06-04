@@ -117,6 +117,15 @@ func (j *Job) FromPB(src *pb.Job) error {
 	j.CreatedBy = src.CreatedBy
 	j.ModelTemplateName = src.ModelTemplateName
 	j.ModelTemplateVersion = src.ModelTemplateVersion
+	j.BatchID = src.BatchId
+	j.ProvisionID = src.ProvisionId
+	j.QueuedAt = utils.UnixToTimePtr(src.QueuedAt)
+	j.ResourcePreparingAt = utils.UnixToTimePtr(src.ResourcePreparingAt)
+	j.SubmittingAt = utils.UnixToTimePtr(src.SubmittingAt)
+	j.ResourceFailedAt = utils.UnixToTimePtr(src.ResourceFailedAt)
+	j.SubmitFailedAt = utils.UnixToTimePtr(src.SubmitFailedAt)
+	j.CancelRequestedAt = utils.UnixToTimePtr(src.CancelRequestedAt)
+	j.ErrorMessage = src.ErrorMessage
 	return nil
 }
 
@@ -171,5 +180,14 @@ func (j *Job) ToPB() (*pb.Job, error) {
 		CreatedBy:            j.CreatedBy,
 		ModelTemplateName:    j.ModelTemplateName,
 		ModelTemplateVersion: j.ModelTemplateVersion,
+		BatchId:              j.BatchID,
+		ProvisionId:          j.ProvisionID,
+		ErrorMessage:         j.ErrorMessage,
+		QueuedAt:             utils.TimeToUnix(j.QueuedAt),
+		ResourcePreparingAt:  utils.TimeToUnix(j.ResourcePreparingAt),
+		SubmittingAt:         utils.TimeToUnix(j.SubmittingAt),
+		ResourceFailedAt:     utils.TimeToUnix(j.ResourceFailedAt),
+		SubmitFailedAt:       utils.TimeToUnix(j.SubmitFailedAt),
+		CancelRequestedAt:    utils.TimeToUnix(j.CancelRequestedAt),
 	}, nil
 }

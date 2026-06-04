@@ -169,6 +169,88 @@ export interface UpdateModelDeploymentTemplateRequest {
   spec?: ModelDeploymentTemplateSpec;
 }
 
+const JOB_NUMERIC_FIELDS = [
+  'createdAt',
+  'inProgressAt',
+  'expiresAt',
+  'finalizingAt',
+  'completedAt',
+  'failedAt',
+  'expiredAt',
+  'cancellingAt',
+  'cancelledAt',
+  'queuedAt',
+  'resourcePreparingAt',
+  'submittingAt',
+  'resourceFailedAt',
+  'submitFailedAt',
+  'cancelRequestedAt',
+] as const;
+
+function coerceNumber(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+function normalizeNumericFields(target: Record<string, unknown>, keys: readonly string[]) {
+  for (const key of keys) {
+    if (!(key in target)) continue;
+    const n = coerceNumber(target[key]);
+    target[key] = n ?? 0;
+  }
+}
+
+function normalizeJob(job: Job): Job {
+  const out = job as unknown as Record<string, unknown>;
+  normalizeNumericFields(out, JOB_NUMERIC_FIELDS);
+  if (out.requestCounts && typeof out.requestCounts === 'object') {
+    normalizeNumericFields(out.requestCounts as Record<string, unknown>, ['total', 'completed', 'failed']);
+  }
+  if (out.usage && typeof out.usage === 'object') {
+    normalizeNumericFields(out.usage as Record<string, unknown>, ['inputTokens', 'outputTokens', 'totalTokens']);
+  }
+  if (out.provision && typeof out.provision === 'object') {
+    normalizeNumericFields(out.provision as Record<string, unknown>, ['createdAt', 'updatedAt']);
+  }
+  if (out.resourceAllocation && typeof out.resourceAllocation === 'object') {
+    const allocation = out.resourceAllocation as Record<string, unknown>;
+    normalizeNumericFields(allocation, ['provisionResourceDeadline']);
+    if (Array.isArray(allocation.resourceDetails)) {
+      for (const detail of allocation.resourceDetails) {
+        if (detail && typeof detail === 'object') {
+          normalizeNumericFields(detail as Record<string, unknown>, ['replica']);
+        }
+      }
+    }
+  }
+  if (Array.isArray(out.errors)) {
+    for (const err of out.errors) {
+      if (err && typeof err === 'object') {
+        normalizeNumericFields(err as Record<string, unknown>, ['line']);
+      }
+    }
+  }
+  if (Array.isArray(out.events)) {
+    for (const event of out.events) {
+      if (event && typeof event === 'object') {
+        normalizeNumericFields(event as Record<string, unknown>, ['at']);
+      }
+    }
+  }
+  return job;
+}
+
+function normalizeJobsResponse(resp: ListJobsResponse): ListJobsResponse {
+  return {
+    ...resp,
+    jobs: (resp.jobs || []).map(normalizeJob),
+  };
+}
+
 // --- Case conversion utilities ---
 
 function snakeToCamelKey(key: string): string {
@@ -179,7 +261,7 @@ function camelToSnakeKey(key: string): string {
   return key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
 }
 
-const PRESERVE_VALUE_KEYS = new Set(['engineArgs', 'tags', 'metadata']);
+const PRESERVE_VALUE_KEYS = new Set(['engineArgs', 'tags', 'metadata', 'options', 'extra', 'extraBody']);
 
 export function snakeToCamel<T>(data: unknown): T {
   if (Array.isArray(data)) {
@@ -292,25 +374,25 @@ export async function listJobs(params?: { after?: string; limit?: number }): Pro
     after: params?.after,
     limit: params?.limit !== undefined ? String(params.limit) : undefined,
   });
-  return apiFetch<ListJobsResponse>(`/api/v1/jobs${query}`);
+  return normalizeJobsResponse(await apiFetch<ListJobsResponse>(`/api/v1/jobs${query}`));
 }
 
 export async function getJob(id: string): Promise<Job> {
-  return apiFetch<Job>(`/api/v1/jobs/${encodeURIComponent(id)}`);
+  return normalizeJob(await apiFetch<Job>(`/api/v1/jobs/${encodeURIComponent(id)}`));
 }
 
 export async function createJob(req: CreateJobRequest): Promise<Job> {
-  return apiFetch<Job>('/api/v1/jobs', {
+  return normalizeJob(await apiFetch<Job>('/api/v1/jobs', {
     method: 'POST',
     body: JSON.stringify(camelToSnake(req)),
-  });
+  }));
 }
 
 export async function cancelJob(id: string): Promise<Job> {
-  return apiFetch<Job>(`/api/v1/jobs/${encodeURIComponent(id)}/cancel`, {
+  return normalizeJob(await apiFetch<Job>(`/api/v1/jobs/${encodeURIComponent(id)}/cancel`, {
     method: 'POST',
     body: '{}',
-  });
+  }));
 }
 
 // --- Deployments ---

@@ -208,6 +208,22 @@ func validReq(jobID string) *plannerapi.EnqueueRequest {
 	}
 }
 
+func TestPlaceholderBatchZeroEnqueuedAtKeepsCreatedAtZero(t *testing.T) {
+	req := &plannerapi.EnqueueRequest{
+		BatchParams: openai.BatchNewParams{
+			InputFileID:      "file-input",
+			Endpoint:         openai.BatchNewParamsEndpoint("/v1/chat/completions"),
+			CompletionWindow: openai.BatchNewParamsCompletionWindow("24h"),
+		},
+	}
+
+	batch := placeholderBatch(req, openai.BatchStatusValidating, time.Time{}, time.Time{})
+
+	if batch.CreatedAt != 0 {
+		t.Fatalf("CreatedAt = %d, want 0", batch.CreatedAt)
+	}
+}
+
 // waitFor polls cond until true or the timeout elapses. Used to assert
 // eventual state without coupling to internal goroutine timing. 10ms
 // cadence is the sweet spot under -race: fast enough to feel instant on
@@ -391,6 +407,49 @@ func TestExpiredBatchKeepsExpiredAtAfterSync(t *testing.T) {
 	}
 	if got.Batch.Status != openai.BatchStatusExpired || got.Batch.ExpiredAt != expiredAt {
 		t.Fatalf("cached batch = %+v, want expired with ExpiredAt=%d", got.Batch, expiredAt)
+	}
+}
+
+func TestGetJobWithTerminalMDSBatchStillFetchesMDS(t *testing.T) {
+	var getCalls atomic.Int32
+	prov := &fakeProvisioner{}
+	bc := &fakeBatchClient{
+		GetFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			getCalls.Add(1)
+			return &openai.Batch{
+				ID:           batchID,
+				Status:       openai.BatchStatusCompleted,
+				OutputFileID: "file-output",
+			}, nil
+		},
+	}
+	q := newTestPlanner(t, bc, prov, 1)
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-terminal")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		creates, _ := bc.snapshot()
+		return len(creates) == 1 && creates[0] == "j-terminal"
+	}, "expected CreateBatch to fire for j-terminal")
+
+	first, err := q.GetJob(context.Background(), "j-terminal")
+	if err != nil {
+		t.Fatalf("first GetJob: %v", err)
+	}
+	if first.Batch.Status != openai.BatchStatusCompleted || first.Batch.OutputFileID != "file-output" {
+		t.Fatalf("first GetJob batch = %+v, want completed with output file", first.Batch)
+	}
+
+	second, err := q.GetJob(context.Background(), "j-terminal")
+	if err != nil {
+		t.Fatalf("second GetJob: %v", err)
+	}
+	if second.Batch.Status != openai.BatchStatusCompleted || second.Batch.OutputFileID != "file-output" {
+		t.Fatalf("second GetJob batch = %+v, want MDS batch, not placeholder", second.Batch)
+	}
+	if got := getCalls.Load(); got < 2 {
+		t.Fatalf("GetBatch calls = %d, want at least 2", got)
 	}
 }
 
