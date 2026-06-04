@@ -41,6 +41,12 @@ class SchedulingPolicy(Protocol):
         """Whether there are no queued jobs."""
         ...
 
+    def reset_runtime_state(self) -> None:
+        """Reset the runtime state of the scheduling policy.
+        This method is used for simlating service restarting.
+        """
+        ...
+
 
 class FIFOScheduling:
     """First-in, first-out ordering (the default)."""
@@ -58,3 +64,6 @@ class FIFOScheduling:
 
     def empty(self) -> bool:
         return self._queue.empty()
+
+    def reset_runtime_state(self) -> None:
+        self._queue = queue.Queue()

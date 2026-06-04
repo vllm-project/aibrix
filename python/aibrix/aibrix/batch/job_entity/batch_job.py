@@ -430,6 +430,16 @@ class BatchJobError(Exception):
         return new_copy
 
 
+def ensure_batch_job_error(
+    e: Exception, default_code: BatchJobErrorCode, **kwargs
+) -> BatchJobError:
+    """Ensures that the exception is a BatchJobError."""
+    if isinstance(e, BatchJobError):
+        return e
+    else:
+        return BatchJobError(code=default_code, message=str(e), **kwargs)
+
+
 class BatchJobStatus(_Strict):
     """Defines the observed state of BatchJobSpec."""
 

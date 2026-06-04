@@ -40,6 +40,7 @@ from aibrix.batch.job_entity.batch_job import (
     OutputTokensDetails,
     RequestCountStats,
     TypeMeta,
+    ensure_batch_job_error,
 )
 from aibrix.batch.job_entity.k8s_transformer import (
     BatchJobTransformer,
@@ -61,6 +62,7 @@ __all__ = [
     "BatchJobState",
     "BatchJobErrorCode",
     "BatchJobError",
+    "ensure_batch_job_error",
     "BatchJobStatus",
     "BatchUsage",
     "CompletionWindow",

@@ -27,7 +27,7 @@ SCHEDULE_IDLE_INTERVAL: float = 1
 # This is the job pool size in job scheduler.
 # It should be proportional to resource size in the backend.
 # Can be configured via AIBRIX_BATCH_JOB_POOL_SIZE environment variable.
-DEFAULT_JOB_POOL_SIZE = int(os.environ.get("AIBRIX_BATCH_JOB_POOL_SIZE", "1"))
+DEFAULT_JOB_POOL_SIZE = int(os.environ.get("AIBRIX_BATCH_JOB_POOL_SIZE", "10"))
 
 # Validate job pool size
 if not (1 <= DEFAULT_JOB_POOL_SIZE <= 100):
