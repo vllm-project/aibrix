@@ -748,12 +748,18 @@ def aggregate_batch_usage(
         aggregated_usage.input_tokens += status_copy.usage.input_tokens
         aggregated_usage.output_tokens += status_copy.usage.output_tokens
         aggregated_usage.total_tokens += status_copy.usage.total_tokens
-        aggregated_usage.input_tokens_details.cached_tokens += (
-            status_copy.usage.input_tokens_details.cached_tokens
-        )
-        aggregated_usage.output_tokens_details.reasoning_tokens += (
-            status_copy.usage.output_tokens_details.reasoning_tokens
-        )
+        if status_copy.usage.input_tokens_details is not None:
+            if aggregated_usage.input_tokens_details is None:
+                aggregated_usage.input_tokens_details = InputTokensDetails()
+            aggregated_usage.input_tokens_details.cached_tokens += (
+                status_copy.usage.input_tokens_details.cached_tokens
+            )
+        if status_copy.usage.output_tokens_details is not None:
+            if aggregated_usage.output_tokens_details is None:
+                aggregated_usage.output_tokens_details = OutputTokensDetails()
+            aggregated_usage.output_tokens_details.reasoning_tokens += (
+                status_copy.usage.output_tokens_details.reasoning_tokens
+            )
     if has_usage:
         return aggregated_usage
     return base_usage.model_copy(deep=True) if base_usage is not None else None
