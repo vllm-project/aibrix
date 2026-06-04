@@ -209,7 +209,6 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
             "port": info.ssh_port,
             "username": info.ssh_user,
             "known_hosts": None,  # ephemeral boxes: no stable host key (TOFU/off)
-            "timeout": 15.0,
         }
         if self._private_key_path:
             connect_kwargs["client_keys"] = [self._private_key_path]

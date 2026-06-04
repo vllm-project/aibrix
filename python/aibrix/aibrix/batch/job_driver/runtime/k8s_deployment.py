@@ -33,7 +33,9 @@ from kubernetes.client import ApiException
 
 from aibrix.batch.client import EndpointSource
 from aibrix.batch.client.sources import (
+    DiscoveryEndpointSource,
     InClusterEndpointSource,
+    K8sEndpointSliceDiscovery,
     PortForwardEndpointSource,
 )
 from aibrix.batch.job_driver.runtime import Endpoint, RuntimeBase, register_runtime
@@ -49,6 +51,9 @@ from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
+
+_K8S_ENDPOINT_SOURCE_ENV = "AIBRIX_BATCH_K8S_ENDPOINT_SOURCE"
+_ENDPOINT_SLICE_SOURCE = "endpointslice"
 
 
 @dataclass
@@ -215,13 +220,30 @@ class DeploymentRuntime(RuntimeBase):
         out-of-cluster control plane tunnels via ``kubectl port-forward``.
         """
         if os.environ.get("KUBERNETES_SERVICE_HOST"):
+            if self._use_endpoint_slice_source():
+                logger.info(
+                    "Dispatch endpoint: in-cluster EndpointSlice discovery",
+                    job_id=self._active_job_id,
+                    endpoint_source="DiscoveryEndpointSource",
+                    namespace=handle.namespace,
+                    service=handle.service_name,
+                    service_port=handle.service_port,
+                )  # type: ignore[call-arg]
+                discovery = K8sEndpointSliceDiscovery(
+                    self._discovery_v1_api(),
+                    namespace=handle.namespace,
+                    service_name=handle.service_name,
+                    service_port=handle.service_port,
+                )
+                return DiscoveryEndpointSource(discovery, handle.model_name)
             logger.info(
                 "Dispatch endpoint: in-cluster Service (control plane is in-cluster)",
                 job_id=self._active_job_id,
                 endpoint_source="InClusterEndpointSource",
                 base_url=handle.base_url,
+                replicas=handle.replicas,
             )  # type: ignore[call-arg]
-            return InClusterEndpointSource(handle.base_url)
+            return InClusterEndpointSource(handle.base_url, capacity=handle.replicas)
         logger.info(
             "Dispatch endpoint: kubectl port-forward (control plane is out-of-cluster)",
             job_id=self._active_job_id,
@@ -233,6 +255,20 @@ class DeploymentRuntime(RuntimeBase):
         return PortForwardEndpointSource(
             handle.namespace, handle.service_name, handle.service_port
         )
+
+    @staticmethod
+    def _use_endpoint_slice_source() -> bool:
+        value = os.environ.get(_K8S_ENDPOINT_SOURCE_ENV, "").strip().lower()
+        return value in {_ENDPOINT_SLICE_SOURCE, "endpoint_slice", "endpoint-slice"}
+
+    def _discovery_v1_api(self):
+        discovery_v1_api = self._context.get("discovery_v1_api")
+        if discovery_v1_api is not None:
+            return discovery_v1_api
+
+        from kubernetes import client as k8s_client
+
+        return k8s_client.DiscoveryV1Api()
 
     async def _apply_deployment(self, namespace: str, deployment: dict) -> None:
         name = deployment.get("metadata", {}).get("name", "<unknown>")

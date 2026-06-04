@@ -36,7 +36,7 @@ from aibrix.batch.job_entity import (
     ObjectMeta,
     TypeMeta,
 )
-from aibrix.batch.state import JobEntityManager
+from aibrix.batch.state import JobEntityManager, JobMetaInfo
 from aibrix.context import InfrastructureContext
 
 
@@ -200,6 +200,44 @@ async def test_validate_job_finalizes_worker_style_validation_failure(monkeypatc
     failed_job = job_manager._done_jobs["test-worker-job-id"]
     assert failed_job.status.state == BatchJobState.FINALIZED
     assert failed_job.status.failed
+
+
+@pytest.mark.asyncio
+async def test_mark_job_failed_only_finalizes_when_all_output_artifacts_prepared():
+    job_manager = _job_manager()
+    batch_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
+        metadata=ObjectMeta(
+            name="test-job",
+            namespace="default",
+            uid="test-uid-partial-output",
+            creationTimestamp=datetime.now(),
+            resourceVersion=None,
+            deletionTimestamp=None,
+        ),
+        spec=BatchJobSpec(
+            input_file_id="test-file-partial-output",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        ),
+        status=BatchJobStatus(
+            jobID="test-partial-output-job-id",
+            state=BatchJobState.IN_PROGRESS,
+            createdAt=datetime.now(),
+            tempOutputFileID="temp-output-id",
+            tempErrorFileID="temp-error-id",
+        ),
+    )
+    job_manager._in_progress_jobs[batch_job.job_id] = JobMetaInfo(batch_job)
+
+    result = await job_manager.mark_job_failed(
+        batch_job.job_id,
+        BatchJobError(code=BatchJobErrorCode.UNKNOWN_ERROR, message="boom"),
+    )
+
+    assert result.status.state == BatchJobState.FINALIZED
+    assert result.status.finalized_at is not None
+    assert result.status.finalizing_at is None
 
 
 @pytest.mark.asyncio
