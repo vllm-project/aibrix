@@ -36,6 +36,7 @@ NUM_REQUESTS_PER_READ = 1024
 STATUS_REQUEST_LOCKING = "processing"
 METASTORE_LIST_PAGE_SIZE = 1000
 JOB_KEY_PREFIX = "batchjob:"
+JOB_STATUS_COPIES_PREFIX = "batchstatus_copies:"
 OLDEST_UNFINISHED_JOB_CREATED_AT_KEY = "batchjob_meta:oldest_unfinished_created_at"
 
 
@@ -238,12 +239,15 @@ async def get_batch_job(batch_id: str) -> Optional[BatchJob]:
 
     # Load updated status copies
     status_copies = {}
-    prefix = f"batchstatus_copies:{batch_id}:"
-    for key in await list_metastore_all_keys(prefix):
-        storage_key = key if key.startswith(prefix) else f"{prefix}{key}"
-        worker_id = storage_key[len(prefix) :]
-        status_json, exists = await get_metadata(storage_key)
+    prefix = f"{JOB_STATUS_COPIES_PREFIX}{batch_id}:"
+    keys = await list_metastore_all_keys(prefix)
+    storage_keys = [key if key.startswith(prefix) else f"{prefix}{key}" for key in keys]
+    metadata_results = await asyncio.gather(
+        *(get_metadata(storage_key) for storage_key in storage_keys)
+    )
+    for storage_key, (status_json, exists) in zip(storage_keys, metadata_results):
         if exists:
+            worker_id = storage_key[len(prefix) :]
             status_copies[worker_id] = BatchJobStatusCopy.model_validate_json(
                 status_json
             )
@@ -258,7 +262,7 @@ async def get_batch_job(batch_id: str) -> Optional[BatchJob]:
 async def delete_batch_job(batch_id: str) -> None:
     """Remove the BatchJob document. Silent no-op if absent."""
     try:
-        prefix = f"batchstatus_copies:{batch_id}:"
+        prefix = f"{JOB_STATUS_COPIES_PREFIX}{batch_id}:"
         for key in await list_metastore_all_keys(prefix):
             try:
                 storage_key = key if key.startswith(prefix) else f"{prefix}{key}"
@@ -298,7 +302,12 @@ async def list_batch_jobs(
     limit: int = METASTORE_LIST_PAGE_SIZE,
     cached_job_getter: Optional[Callable[[str], Optional[BatchJob]]] = None,
 ) -> list[BatchJob]:
-    """List BatchJob documents using public after/limit pagination."""
+    """List BatchJob documents using backend-native created-time ordering."""
+    if not supports_created_at_desc_batch_job_listing():
+        raise RuntimeError(
+            f"Metastore backend {get_metastore_type().value} cannot list batch jobs "
+            "in descending created_at order."
+        )
     keys, _ = await list_metastore_keys(
         JOB_KEY_PREFIX,
         after_key=f"{JOB_KEY_PREFIX}{after}" if after is not None else None,
@@ -325,6 +334,10 @@ async def list_batch_jobs(
         for index, job in zip(uncached_indices, fetched_jobs):
             jobs[index] = job
     return [job for job in jobs if job is not None]
+
+
+def supports_created_at_desc_batch_job_listing() -> bool:
+    return get_metastore_type() == StorageType.LOCAL
 
 
 async def list_metastore_keys(

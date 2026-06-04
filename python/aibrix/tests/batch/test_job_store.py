@@ -17,8 +17,9 @@ from aibrix.storage import StorageType
 
 
 class FakeMetastore:
-    def __init__(self) -> None:
+    def __init__(self, storage_type: StorageType = StorageType.LOCAL) -> None:
         self.objects: dict[str, bytes] = {}
+        self.storage_type = storage_type
 
     async def put_object(self, key: str, data, **kwargs) -> bool:
         del kwargs
@@ -65,6 +66,9 @@ class FakeMetastore:
             else None
         )
         return page, next_token
+
+    def get_type(self) -> StorageType:
+        return self.storage_type
 
 
 @pytest.fixture
@@ -202,6 +206,26 @@ async def test_job_store_delete_removes_from_metastore_and_fires_deleted(
     assert deleted_jobs[0].job_id == job.job_id
     assert await store.get_job(job.job_id, force_reload=True) is None
     assert await store.list_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_job_store_delete_updates_oldest_unfinished_marker(fake_metastore):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+
+    await store.submit_job("session-1", _spec("input-1"))
+    await store.submit_job("session-2", _spec("input-2"))
+
+    listed_jobs = await store.list_jobs()
+    oldest_job = min(listed_jobs, key=lambda job: job.status.created_at)
+    expected_next_oldest = max(listed_jobs, key=lambda job: job.status.created_at)
+
+    await store.delete_job(oldest_job)
+
+    assert (
+        await batch_metastore.get_oldest_unfinished_job_created_at()
+        == expected_next_oldest.status.created_at
+    )
 
 
 @pytest.mark.asyncio
@@ -427,3 +451,58 @@ async def test_job_store_recovery_stops_after_oldest_unfinished_marker(
     assert [job.job_id for job in recovered_jobs] == [
         job.job_id for job in first_page[:3]
     ]
+
+
+@pytest.mark.asyncio
+async def test_job_store_recovery_does_not_stop_early_without_time_ordering(
+    fake_metastore, monkeypatch
+):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+    jobs: list[BatchJob] = []
+    for index in range(25):
+        spec = _spec(f"input-{index}")
+        job = BatchJob.new_local(spec=spec)
+        job.session_id = f"session-{index}"
+        jobs.append(job)
+    jobs.sort(key=lambda job: job.status.created_at, reverse=True)
+    unfinished_jobs = jobs[:3]
+    for job in jobs[3:]:
+        job.status.state = BatchJobState.FINALIZED
+    oldest_unfinished = min(job.status.created_at for job in unfinished_jobs)
+
+    first_page = jobs[:2] + jobs[3:20] + [jobs[-1]]
+    second_page = [jobs[2]] + jobs[22:24]
+
+    async def fake_list_jobs(after=None, limit=JobEntityManager.DEFAULT_JOB_PAGE_LIMIT):
+        del limit
+        if after is None:
+            return first_page
+        if after == first_page[-1].job_id:
+            return second_page
+        return []
+
+    monkeypatch.setattr(store, "list_jobs", fake_list_jobs)
+    monkeypatch.setattr(
+        store,
+        "_supports_created_at_desc_recovery_ordering",
+        lambda: False,
+    )
+
+    recovered_jobs = await store._list_jobs_for_recovery(oldest_unfinished)
+
+    assert [job.job_id for job in recovered_jobs] == [job.job_id for job in jobs[:3]]
+
+
+@pytest.mark.asyncio
+async def test_batch_metastore_list_batch_jobs_errors_for_unsupported_ordering_backend(
+    monkeypatch,
+):
+    store = FakeMetastore(storage_type=StorageType.S3)
+    monkeypatch.setattr(batch_metastore, "p_metastore", store)
+
+    with pytest.raises(
+        RuntimeError,
+        match="cannot list batch jobs in descending created_at order",
+    ):
+        await batch_metastore.list_batch_jobs(limit=1)

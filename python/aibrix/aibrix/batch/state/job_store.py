@@ -19,7 +19,7 @@ A single JobEntityManager whose document store is the **batch metastore**
 Role split (see ``JobEntityManager``):
   * command store — document CRUD delegated to the metastore (one source of truth);
   * event source — committed / updated / deleted emitted on writes;
-  * recovery — ``list_jobs`` reads the metastore on startup.
+  * recovery — ``_list_recovery_jobs`` reads the metastore on startup.
 
 """
 
@@ -77,6 +77,9 @@ class JobStore(JobEntityManager):
             await batch_metastore.get_oldest_unfinished_job_created_at()
         )
 
+    def _supports_created_at_desc_recovery_ordering(self) -> bool:
+        return batch_metastore.supports_created_at_desc_batch_job_listing()
+
     async def submit_job(
         self, session_id: str, job_spec: BatchJobSpec, request_count: int = 0
     ):
@@ -99,8 +102,8 @@ class JobStore(JobEntityManager):
             raise ValueError("job_id is required")
         existing_job = await self.get_job(job.job_id) or job
         await delete_batch_job(job.job_id)
-        await self._persist_oldest_unfinished_job_created_at(job)
         await self.job_deleted(existing_job)
+        await self._persist_oldest_unfinished_job_created_at(None)
 
     async def _update_existing_job(self, job: BatchJob) -> None:
         if job.job_id is None:

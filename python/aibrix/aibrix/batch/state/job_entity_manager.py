@@ -283,12 +283,20 @@ class JobEntityManager(ABC):
             if last_job_id is None or len(jobs) < self.DEFAULT_JOB_PAGE_LIMIT:
                 return recovered_jobs
             if (
-                oldest_unfinished_created_at is not None
+                self._supports_created_at_desc_recovery_ordering()
+                and oldest_unfinished_created_at is not None
                 and last_created_at is not None
                 and last_created_at < oldest_unfinished_created_at
             ):
                 return recovered_jobs
             after = last_job_id
+
+    def _supports_created_at_desc_recovery_ordering(self) -> bool:
+        """Whether ``list_jobs`` is guaranteed newest->oldest by created_at.
+
+        Recovery can stop early only when this ordering guarantee holds.
+        """
+        return False
 
     # TODO: remove, no manual pagination
     def _paginate_jobs(

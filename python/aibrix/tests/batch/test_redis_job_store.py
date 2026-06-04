@@ -264,6 +264,31 @@ async def test_redis_job_cache_update_and_delete_callbacks():
 
 
 @pytest.mark.asyncio
+async def test_redis_job_cache_delete_updates_oldest_unfinished_timestamp():
+    redis = FakeRedis()
+    cache = RedisJobStore(redis_client=redis)
+
+    for index in range(2):
+        spec = BatchJobSpec.from_strings(
+            input_file_id=f"input-{index}",
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+        )
+        await cache.submit_job(f"session-{index}", spec)
+
+    listed_jobs = await cache.list_jobs()
+    oldest_job = min(listed_jobs, key=lambda job: job.status.created_at)
+    expected_next_oldest = max(listed_jobs, key=lambda job: job.status.created_at)
+
+    await cache.delete_job(oldest_job)
+
+    assert (
+        await cache._get_oldest_unfinished_job_created_at()
+        == expected_next_oldest.status.created_at
+    )
+
+
+@pytest.mark.asyncio
 async def test_redis_job_cache_persists_status_copies_separately():
     redis = FakeRedis()
     cache = RedisJobStore(redis_client=redis)

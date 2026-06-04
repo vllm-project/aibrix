@@ -196,7 +196,11 @@ def get_redis_client(require_check: bool = False, **kwargs) -> AsyncRedis:
         or (None if require_check else "localhost"),
     )
     resolved_port = kwargs.get("port") or envs.STORAGE_REDIS_PORT
-    resolved_db = kwargs.get("db", 0) or envs.STORAGE_REDIS_DB
+    resolved_db = (
+        cast(int, kwargs.get("db"))
+        if kwargs.get("db") is not None
+        else envs.STORAGE_REDIS_DB
+    )
     resolved_password = kwargs.get("password") or envs.STORAGE_REDIS_PASSWORD
     logger.info(  # type: ignore[call-arg]
         "Creating Redis client",

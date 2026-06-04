@@ -183,7 +183,7 @@ def test_build_app_with_redis_job_store_during_dry_run():
 
 def test_build_app_with_redis_job_missing_env():
     args = _args(
-        disable_k8s_support=True,
+        enable_k8s_support=False,
         disable_batch_api=False,
         job_store_provider="redis",
     )

@@ -806,9 +806,12 @@ def merge_batch_job_status_copies(
     existing_status: BatchJobStatus, new_status: BatchJobStatus
 ) -> BatchJobStatus:
     merged = new_status.model_copy(deep=True)
-    if existing_status.status_copies and merged.status_copies:
-        merged.status_copies.update(copy.deepcopy(existing_status.status_copies))
-    if new_status.status_copies and merged.status_copies:
-        merged.status_copies.update(copy.deepcopy(new_status.status_copies))
+    if existing_status.status_copies or new_status.status_copies:
+        merged_copies: Dict[str, BatchJobStatusCopy] = {}
+        merged.status_copies = merged_copies
+    if existing_status.status_copies:
+        merged_copies.update(copy.deepcopy(existing_status.status_copies))
+    if new_status.status_copies:
+        merged_copies.update(copy.deepcopy(new_status.status_copies))
     aggregated = aggregate_batch_job_status(merged)
     return aggregated

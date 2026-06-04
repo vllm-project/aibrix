@@ -11,6 +11,11 @@ from aibrix.batch.job_entity import (
     aggregate_batch_job_status,
 )
 from aibrix.batch.state import JobEntityManager
+from aibrix.batch.storage.batch_metastore import (
+    JOB_KEY_PREFIX,
+    JOB_STATUS_COPIES_PREFIX,
+    OLDEST_UNFINISHED_JOB_CREATED_AT_KEY,
+)
 from aibrix.client.redis import AsyncRedis, RedisPipeline, run_pipeline
 
 
@@ -18,19 +23,35 @@ class RedisJobStore(JobEntityManager):
     def __init__(
         self,
         redis_client: AsyncRedis,
-        key_prefix: str = "batch_jobs",
+        key_prefix: str = "batch_jobs:",
     ) -> None:
         super().__init__()
         self._client: AsyncRedis = redis_client
-        self._key_prefix = key_prefix
-        self._metastore_compatible_keys = key_prefix == ""
         # If key_prefix is empty, we try to make it compatible with storage/redis convention.
-        self._index_key = f"{key_prefix}:index" if key_prefix else "timestamps:all"
-        self._job_prefix = f"{key_prefix}:batchjob" if key_prefix else "batchjob"
-        self._status_copy_prefix = (
-            f"{key_prefix}:batchstatus_copies" if key_prefix else "batchstatus_copies"
-        )
+        # Normalize key_prefix to ensure it ends with colon if non-empty
+        key_prefix = f"{key_prefix.rstrip(':')}:" if key_prefix != "" else ""
+        self._metastore_compatible_keys = key_prefix == ""
         self._key_prefix = key_prefix
+        self._index_key = (
+            "timestamps:all"
+            if self._metastore_compatible_keys
+            else f"{key_prefix}index"
+        )
+        self._job_prefix = (
+            JOB_KEY_PREFIX
+            if self._metastore_compatible_keys
+            else f"{key_prefix}{JOB_KEY_PREFIX}"
+        )
+        self._status_copy_prefix = (
+            JOB_STATUS_COPIES_PREFIX
+            if self._metastore_compatible_keys
+            else f"{key_prefix}{JOB_STATUS_COPIES_PREFIX}"
+        )
+        self._oldest_unfinished_created_at_key = (
+            OLDEST_UNFINISHED_JOB_CREATED_AT_KEY
+            if self._metastore_compatible_keys
+            else f"{key_prefix}{OLDEST_UNFINISHED_JOB_CREATED_AT_KEY}"
+        )
 
     async def get_job(
         self, job_id: str, force_reload: bool = False
@@ -79,6 +100,9 @@ class RedisJobStore(JobEntityManager):
             await self._get_oldest_unfinished_job_created_at()
         )
 
+    def _supports_created_at_desc_recovery_ordering(self) -> bool:
+        return True
+
     async def submit_job(
         self, session_id: str, job_spec: BatchJobSpec, request_count: int = 0
     ):
@@ -105,8 +129,8 @@ class RedisJobStore(JobEntityManager):
                 pipeline, job.job_id, worker_ids
             ),
         )
-        await self._persist_oldest_unfinished_job_created_at(job)
         await self.job_deleted(existing_job)
+        await self._persist_oldest_unfinished_job_created_at(None)
 
     async def _update_existing_job(self, job: BatchJob) -> None:
         if job.job_id is None:
@@ -144,13 +168,13 @@ class RedisJobStore(JobEntityManager):
         return stored_job
 
     def _job_key(self, job_id: str) -> str:
-        return f"{self._job_prefix}:{job_id}"
+        return f"{self._job_prefix}{job_id}"
 
     def _status_copy_key(self, job_id: str, worker_id: str) -> str:
-        return f"{self._status_copy_prefix}:{job_id}:{worker_id}"
+        return f"{self._status_copy_prefix}{job_id}:{worker_id}"
 
     def _status_copy_index_key(self, job_id: str) -> str:
-        return f"{self._status_copy_prefix}:{job_id}:index"
+        return f"{self._status_copy_prefix}{job_id}:index"
 
     def _deserialize_job(self, payload: Any) -> BatchJob:
         if isinstance(payload, bytes):
@@ -240,7 +264,7 @@ class RedisJobStore(JobEntityManager):
 
     async def _list_status_copy_worker_ids(self, job_id: str) -> list[str]:
         if self._metastore_compatible_keys:
-            prefix = f"{self._status_copy_prefix}:{job_id}:"
+            prefix = f"{self._status_copy_prefix}{job_id}:"
             keys = await self._list_keys_with_prefix(prefix)
             return [key[len(prefix) :] for key in keys]
         worker_ids = await self._client.smembers(self._status_copy_index_key(job_id))
@@ -251,7 +275,6 @@ class RedisJobStore(JobEntityManager):
         after: Optional[str] = None,
         limit: int = JobEntityManager.DEFAULT_JOB_PAGE_LIMIT,
     ) -> list[str]:
-        prefix = f"{self._job_prefix}:"
         start = 0
         if after is not None:
             after_rank = await self._client.zrevrank(
@@ -260,8 +283,10 @@ class RedisJobStore(JobEntityManager):
             if after_rank is None:
                 return []
             start = after_rank + 1
-        job_keys = await self._list_keys_with_prefix(prefix, start=start, limit=limit)
-        return [job_key[len(prefix) :] for job_key in job_keys]
+        job_keys = await self._list_keys_with_prefix(
+            self._job_prefix, start=start, limit=limit
+        )
+        return [job_key[len(self._job_prefix) :] for job_key in job_keys]
 
     async def _list_indexed_job_ids(
         self,
@@ -425,11 +450,3 @@ class RedisJobStore(JobEntityManager):
 
     def _created_at_score(self, job: BatchJob) -> float:
         return job.status.created_at.timestamp()
-
-    @property
-    def _oldest_unfinished_created_at_key(self) -> str:
-        return (
-            f"{self._key_prefix}:oldest_unfinished_created_at"
-            if self._key_prefix
-            else "oldest_unfinished_created_at"
-        )

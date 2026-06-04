@@ -45,8 +45,10 @@ from aibrix.batch.job_entity import (
     ModelTemplateRef,
     ObjectMeta,
     OutputTokensDetails,
+    RequestCountStats,
     TypeMeta,
     aggregate_batch_job_status,
+    merge_batch_job_status_copies,
 )
 from aibrix.metadata.api.v1.batch import _batch_job_to_openai_response
 
@@ -104,6 +106,49 @@ def driver() -> JobDriver:
     return BaseJobDriver(
         progress_manager=MagicMock(),
         runtime=ExternalRuntime(NoopEndpointSource()),
+    )
+
+
+def _make_status_copy(
+    *,
+    total: int,
+    launched: int,
+    completed: int,
+    failed: int,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cached_tokens: int = 0,
+    reasoning_tokens: int = 0,
+) -> BatchJobStatusCopy:
+    return BatchJobStatusCopy(
+        state=BatchJobState.IN_PROGRESS,
+        requestCounts=RequestCountStats(
+            total=total,
+            launched=launched,
+            completed=completed,
+            failed=failed,
+        ),
+        usage=BatchUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            input_tokens_details=InputTokensDetails(cached_tokens=cached_tokens),
+            output_tokens_details=OutputTokensDetails(
+                reasoning_tokens=reasoning_tokens
+            ),
+        ),
+    )
+
+
+def _make_status(
+    *, status_copies: Optional[dict[str, BatchJobStatusCopy]]
+) -> BatchJobStatus:
+    return BatchJobStatus(
+        jobID="job-1",
+        state=BatchJobState.IN_PROGRESS,
+        createdAt=datetime.now(timezone.utc),
+        requestCounts=RequestCountStats(),
+        statusCopies=status_copies,
     )
 
 
@@ -241,6 +286,79 @@ class TestWorkerAccumulation:
         assert aggregated.usage.total_tokens == 182
         assert aggregated.usage.input_tokens_details.cached_tokens == 13
         assert aggregated.usage.output_tokens_details.reasoning_tokens == 6
+
+
+class TestStatusCopyMerging:
+    def test_merge_preserves_existing_copies_when_new_status_has_none(self):
+        existing = _make_status(
+            status_copies={
+                "worker-old": _make_status_copy(
+                    total=4,
+                    launched=4,
+                    completed=3,
+                    failed=1,
+                    input_tokens=100,
+                    output_tokens=40,
+                    cached_tokens=10,
+                    reasoning_tokens=4,
+                )
+            }
+        )
+        new = _make_status(status_copies=None)
+
+        merged = merge_batch_job_status_copies(existing, new)
+
+        assert merged.status_copies is not None
+        assert set(merged.status_copies) == {"worker-old"}
+        assert merged.request_counts.total == 4
+        assert merged.request_counts.launched == 4
+        assert merged.request_counts.completed == 3
+        assert merged.request_counts.failed == 1
+        assert merged.usage is not None
+        assert merged.usage.input_tokens == 100
+        assert merged.usage.output_tokens == 40
+
+    def test_merge_combines_existing_and_new_status_copies(self):
+        existing = _make_status(
+            status_copies={
+                "worker-old": _make_status_copy(
+                    total=5,
+                    launched=5,
+                    completed=2,
+                    failed=1,
+                    input_tokens=70,
+                    output_tokens=20,
+                    cached_tokens=7,
+                    reasoning_tokens=2,
+                )
+            }
+        )
+        new = _make_status(
+            status_copies={
+                "worker-new": _make_status_copy(
+                    total=5,
+                    launched=4,
+                    completed=3,
+                    failed=1,
+                    input_tokens=30,
+                    output_tokens=10,
+                    cached_tokens=3,
+                    reasoning_tokens=1,
+                )
+            }
+        )
+
+        merged = merge_batch_job_status_copies(existing, new)
+
+        assert merged.status_copies is not None
+        assert set(merged.status_copies) == {"worker-old", "worker-new"}
+        assert merged.request_counts.total == 5
+        assert merged.request_counts.launched == 5
+        assert merged.request_counts.completed == 5
+        assert merged.request_counts.failed == 0
+        assert merged.usage is not None
+        assert merged.usage.input_tokens == 100
+        assert merged.usage.output_tokens == 30
 
 
 # ─────────────────────────────────────────────────────────────────────────────
