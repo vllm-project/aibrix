@@ -154,7 +154,10 @@ class BatchScheduler:
         while True:
             self._prune_execution_tasks()
             if len(self._job_execution_tasks) >= self._pool_size:
-                await asyncio.sleep(0)
+                await asyncio.wait(
+                    self._job_execution_tasks.values(),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
                 continue
 
             scheduled: Optional[Tuple[str, "JobDriver"]] = None
