@@ -28,7 +28,8 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import ValidationError
 
-from aibrix.batch.job_driver import EchoInferenceEngineClient, JobDriver, LocalJobDriver
+from aibrix.batch.client import NoopEndpointSource
+from aibrix.batch.job_driver import BaseJobDriver, ExternalRuntime, JobDriver
 from aibrix.batch.job_entity import (
     AibrixMetadata,
     BatchJob,
@@ -36,7 +37,6 @@ from aibrix.batch.job_entity import (
     BatchJobState,
     BatchJobStatus,
     BatchJobStatusCopy,
-    BatchJobTransformer,
     BatchUsage,
     Condition,
     ConditionStatus,
@@ -48,7 +48,6 @@ from aibrix.batch.job_entity import (
     TypeMeta,
     aggregate_batch_job_status,
 )
-from aibrix.batch.job_entity.k8s_transformer import JobAnnotationKey
 from aibrix.metadata.api.v1.batch import _batch_job_to_openai_response
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -102,9 +101,9 @@ class TestBatchUsageSchema:
 
 @pytest.fixture
 def driver() -> JobDriver:
-    return LocalJobDriver(
+    return BaseJobDriver(
         progress_manager=MagicMock(),
-        inference_client=EchoInferenceEngineClient(),
+        runtime=ExternalRuntime(NoopEndpointSource()),
     )
 
 
@@ -242,73 +241,6 @@ class TestWorkerAccumulation:
         assert aggregated.usage.total_tokens == 182
         assert aggregated.usage.input_tokens_details.cached_tokens == 13
         assert aggregated.usage.output_tokens_details.reasoning_tokens == 6
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# K8s annotation persistence roundtrip
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def _make_status(usage=None, **kwargs) -> BatchJobStatus:
-    data = {
-        "jobID": "j1",
-        "state": kwargs.get("state", BatchJobState.IN_PROGRESS),
-        "createdAt": datetime.now(timezone.utc),
-        "requestCounts": {
-            "total": kwargs.get("total", 100),
-            "launched": 100,
-            "completed": kwargs.get("completed", 90),
-            "failed": kwargs.get("failed", 0),
-        },
-    }
-    s = BatchJobStatus.model_validate(data)
-    if usage is not None:
-        s.usage = usage
-    return s
-
-
-class TestUsageAnnotationRoundtrip:
-    def test_full_usage_persisted_and_restored(self):
-        original = _make_status(
-            usage=BatchUsage(
-                input_tokens=10_000,
-                output_tokens=5_000,
-                total_tokens=15_000,
-                input_tokens_details=InputTokensDetails(cached_tokens=2_000),
-                output_tokens_details=OutputTokensDetails(reasoning_tokens=300),
-            )
-        )
-        annotations = BatchJobTransformer.create_status_annotations(original)
-        assert JobAnnotationKey.USAGE.value in annotations
-
-        # Hydrate a fresh status from annotations
-        fresh = _make_status()  # usage is None
-        restored = BatchJobTransformer.update_status_from_annotations(
-            fresh, annotations
-        )
-        assert restored.usage is not None
-        assert restored.usage.input_tokens == 10_000
-        assert restored.usage.output_tokens == 5_000
-        assert restored.usage.input_tokens_details.cached_tokens == 2_000
-        assert restored.usage.output_tokens_details.reasoning_tokens == 300
-
-    def test_zero_usage_not_persisted(self):
-        """Empty BatchUsage shouldn't bloat annotations on uninitialized batches."""
-        original = _make_status(usage=BatchUsage())  # all zero
-        annotations = BatchJobTransformer.create_status_annotations(original)
-        assert JobAnnotationKey.USAGE.value not in annotations
-
-    def test_none_usage_not_persisted(self):
-        original = _make_status()  # usage stays None
-        annotations = BatchJobTransformer.create_status_annotations(original)
-        assert JobAnnotationKey.USAGE.value not in annotations
-
-    def test_malformed_usage_annotation_yields_none(self):
-        fresh = _make_status()
-        restored = BatchJobTransformer.update_status_from_annotations(
-            fresh, {JobAnnotationKey.USAGE.value: "not-json{{"}
-        )
-        assert restored.usage is None  # graceful, no crash
 
 
 # ─────────────────────────────────────────────────────────────────────────────

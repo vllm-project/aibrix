@@ -45,11 +45,13 @@ spec:
             - "0.0.0.0"
             - --port
             - "8090"
-            # Run the batch API in native Kubernetes job mode. Worker pods bring
-            # their own inference engine endpoint, so the metadata service does
-            # not need INFERENCE_ENGINE_ENDPOINT. Requires the jobs/leases/CRD
-            # RBAC granted in rbac.yaml.
-            - --enable-k8s-job
+            # Per-job k8s execution: jobs select the k8s-job provider via
+            # extra_body.aibrix.planner_decision and their worker pods bring
+            # their own inference engine endpoint. --enable-k8s-support lets the
+            # metadata service create the k8s clients needed to run jobs as
+            # Kubernetes Jobs/Deployments. Requires the jobs RBAC granted in
+            # rbac.yaml.
+            - --enable-k8s-support
           ports:
             - containerPort: 8090
           resources: {{ toYaml .Values.metadata.service.container.resources | nindent 12 }}

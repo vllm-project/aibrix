@@ -23,15 +23,7 @@ import pytest
 from fastapi.testclient import TestClient
 from kubernetes import client as k8s_client
 
-from aibrix.batch.job_entity import (
-    AibrixMetadata,
-    BatchJobEndpoint,
-    BatchJobSpec,
-    BatchProfileRef,
-    CompletionWindow,
-    ModelTemplateRef,
-)
-from aibrix.metadata.cache.redis import RedisJobCache
+from aibrix.batch.state import JobStore
 from aibrix.storage import StorageType
 from tests.batch.conftest import create_test_app
 
@@ -106,6 +98,7 @@ def build_batch_request(
     *,
     aibrix_template: str | None = None,
     aibrix_profile: str | None = None,
+    runtime_target: str | None = None,
     provider: str | None = None,
 ) -> dict[str, Any]:
     request: dict[str, Any] = {
@@ -118,8 +111,10 @@ def build_batch_request(
         aibrix["model_template"] = {"name": aibrix_template}
     if aibrix_profile:
         aibrix["profile"] = {"name": aibrix_profile}
+    if runtime_target:
+        aibrix["runtime"] = {"target": runtime_target}
     if provider:
-        aibrix["planner_decision"] = {
+        aibrix["resource_allocation"] = {
             "provision_id": "reservation-1",
             "provision_resource_deadline": 3600,
             "resource_details": [
@@ -235,7 +230,7 @@ async def test_openai_batch_api_e2e():
     3. Poll job status until completion
     4. Download and verify output via Files API
     """
-    app = create_test_app(disable_k8s_support=True)
+    app = create_test_app(enable_k8s_support=False, dry_run=True)
 
     with TestClient(app) as client:
         # Step 1: Upload sample input file via Files API
@@ -369,46 +364,6 @@ async def test_openai_batch_api_e2e():
             "\n🎉 E2E test completed successfully! All OpenAI Batch API endpoints working correctly."
         )
         await app.state.batch_driver.clear_job(batch_id)
-
-
-@pytest.mark.asyncio
-async def test_metadata_server_workflow_renders_worker_env_from_s3_and_cluster_redis(
-    test_app,
-):
-    job_cache = test_app.state.batch_driver._job_entity_manager
-    assert job_cache is not None
-
-    spec = BatchJobSpec(
-        input_file_id="file-input",
-        endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
-        completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
-        aibrix=AibrixMetadata(
-            model_template=ModelTemplateRef(name="mock-vllm"),
-            profile=BatchProfileRef(name="unittest"),
-        ),
-    )
-
-    manifest = job_cache._batch_job_spec_to_k8s_job(
-        session_id="test-session",
-        job_spec=spec,
-        job_name="batch-env-check",
-    )
-    worker_env = {
-        item["name"]: item
-        for item in manifest["spec"]["template"]["spec"]["containers"][0]["env"]
-    }
-
-    assert worker_env["STORAGE_TYPE"]["value"] == "s3"
-    assert "STORAGE_LOCAL_PATH" not in worker_env
-    assert "STORAGE_AWS_ACCESS_KEY_ID" in worker_env
-    assert "STORAGE_AWS_SECRET_ACCESS_KEY" in worker_env
-    assert "STORAGE_AWS_REGION" in worker_env
-    assert "STORAGE_AWS_BUCKET" in worker_env
-    assert (
-        worker_env["REDIS_HOST"]["value"]
-        == "aibrix-redis-master.aibrix-system.svc.cluster.local"
-    )
-    assert worker_env["REDIS_PORT"]["value"] == "6379"
 
 
 @pytest.mark.asyncio
@@ -598,7 +553,7 @@ async def test_openai_batch_api_metadata_server_workflow_with_redis_cache_and_de
     redis_deployment_test_app,
 ):
     app = redis_deployment_test_app
-    assert isinstance(app.state.batch_driver._job_entity_manager, RedisJobCache)
+    assert isinstance(app.state.batch_driver.job_manager._job_entity_manager, JobStore)
     infrastructure_context = app.state.batch_driver._context
     assert infrastructure_context is not None
 
@@ -623,6 +578,7 @@ async def test_openai_batch_api_metadata_server_workflow_with_redis_cache_and_de
             "/v1/chat/completions",
             aibrix_template="mock-vllm",
             aibrix_profile="unittest",
+            runtime_target="Kubernetes",
             provider="deployment",
         )
         create_response = client.post("/v1/batches", json=batch_request)
@@ -727,7 +683,7 @@ async def test_openai_batch_api_multi_endpoint(endpoint: str):
     - /v1/embeddings
     - /v1/rerank
     """
-    app = create_test_app(disable_k8s_support=True)
+    app = create_test_app(enable_k8s_support=False, dry_run=True)
     num_requests = 3
 
     with TestClient(app) as client:
@@ -809,7 +765,7 @@ async def test_openai_batch_api_multi_endpoint(endpoint: str):
 @pytest.mark.asyncio
 async def test_batch_api_error_handling():
     """Test error handling in batch API."""
-    app = create_test_app(disable_k8s_support=True)
+    app = create_test_app(enable_k8s_support=False)
 
     with TestClient(app) as client:
         # Test creating batch with non-existent file ID

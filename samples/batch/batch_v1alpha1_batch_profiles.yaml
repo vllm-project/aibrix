@@ -25,15 +25,10 @@ data:
     default: prod-24h
     items:
       # ───────────────────────────────────────────────────────────────
-      # Production profile: full-size batches, S3 prod bucket, 24h SLO.
+      # Production profile: full-size batches, 24h SLO.
       # ───────────────────────────────────────────────────────────────
       - name: prod-24h
         spec:
-          storage:
-            backend: s3
-            bucket: aibrix-batch-prod
-            region: us-east-1
-            credentials_secret_ref: aibrix-s3-credentials
           scheduling:
             completion_window: 24h
             priority: normal
@@ -43,18 +38,12 @@ data:
             max_requests_per_batch: 100000
             max_input_size_mb: 500
             max_output_size_gb: 20
-          openai_service_tier_alias: batch
 
       # ───────────────────────────────────────────────────────────────
-      # Development profile: smaller batches, S3 dev bucket, faster SLO.
+      # Development profile: smaller batches, faster SLO.
       # ───────────────────────────────────────────────────────────────
       - name: dev
         spec:
-          storage:
-            backend: s3
-            bucket: aibrix-batch-dev
-            region: us-east-1
-            credentials_secret_ref: aibrix-s3-credentials-dev
           scheduling:
             completion_window: 4h           # accepted, treated as 24h until Phase 4
             priority: high                  # accepted, ignored in Phase 1
@@ -64,4 +53,3 @@ data:
             max_requests_per_batch: 5000
             max_input_size_mb: 50
             max_output_size_gb: 2
-          openai_service_tier_alias: flex

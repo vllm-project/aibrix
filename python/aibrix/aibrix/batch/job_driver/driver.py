@@ -14,22 +14,61 @@
 
 from typing import Protocol, runtime_checkable
 
+from aibrix.batch.job_driver.runtime import Endpoint
 from aibrix.batch.job_entity import BatchJob
 
 
 @runtime_checkable
 class JobDriver(Protocol):
+    """One batch job, run through an explicit, multi-phase lifecycle.
+
+    ``execute`` orchestrates the phases inside the runtime's
+    provision/teardown session:
+
+        validate_job -> prepare_job -> run_job -> finalize_job
+
+    (with ``provision / wait_ready / connect / teardown`` owned by the Runtime).
+    the interface is the lifecycle, ``BaseJobDriver`` implements the common
+    behavior; a backend overrides only the phases that differ.
+    """
+
     async def validate_job(self, job: BatchJob) -> None:
-        """Validate the job before scheduling.
+        """Pre-flight validation: input file exists.
+
         Raises:
             BatchJobError: If the job is invalid.
         """
-        pass
+        ...
 
-    async def execute_job(self, job_id: str) -> None:
-        """Execute the job.
+    async def prepare_job(self, job: BatchJob) -> BatchJob:
+        """Prepare the job's output/error multipart uploads.
+        provision resources for some specific runtime like kubernetes.
+        Normally, the resource provision is done in resource manager(batch's backend)
+        """
+        ...
+
+    async def run_job(self, job_id: str, endpoint: Endpoint) -> BatchJob:
+        """Send job's requests against endpoint once a runtime endpoint
+        become ready.
+
+        ``endpoint.source`` is the reachable engine source (None when the
+        worker self-hosts inference). Returns the job in its post-execution
+        state (FINALIZING when complete).
+        """
+        ...
+
+    async def finalize_job(self, job: BatchJob) -> BatchJob:
+        """Aggregate outputs/errors and mark the job done.
+        Terminate resources if the the provision is managed inside runtime.
+        """
+        ...
+
+    async def execute(self, job_id: str) -> None:
+        """Orchestrate the full lifecycle: session(provision/teardown) wraps
+        prepare -> run_job -> finalize.
+
         Raises:
-            RuntimeError: If something prevent all jobs from executing.
+            RuntimeError: If something prevents all jobs from executing.
             BatchJobError: If something prevents one job from executing.
         """
-        pass
+        ...

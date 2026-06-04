@@ -165,6 +165,29 @@ class TestLocalStorage:
             await local_storage.delete_object(key)
 
     @pytest.mark.asyncio
+    async def test_list_with_flat_string_prefix(self, local_storage: LocalStorage):
+        """list_objects matches a STRING prefix, not just a directory path.
+
+        Flat root-level keys like ``batchjob:<id>`` (no '/') must be found by a
+        partial prefix such as ``batchjob:`` — this is the JobStore.list_jobs
+        recovery contract on a LOCAL metastore. The old directory-descent
+        implementation returned nothing for any non-directory prefix.
+        """
+        await local_storage.put_object("batchjob:abc", b"a")
+        await local_storage.put_object("batchjob:def", b"b")
+        await local_storage.put_object("other:zzz", b"c")
+
+        keys, _ = await local_storage.list_objects(prefix="batchjob:")
+        assert sorted(keys) == ["batchjob:abc", "batchjob:def"]
+
+        # A delimiter must not break flat-prefix matching.
+        keys2, _ = await local_storage.list_objects(prefix="batchjob:", delimiter=":")
+        assert sorted(keys2) == ["batchjob:abc", "batchjob:def"]
+
+        for key in ("batchjob:abc", "batchjob:def", "other:zzz"):
+            await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
     async def test_concurrent_operations(self, local_storage: LocalStorage):
         """Test concurrent read/write operations."""
         import asyncio

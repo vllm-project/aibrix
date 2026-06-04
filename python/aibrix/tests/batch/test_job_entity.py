@@ -1,6 +1,5 @@
 """Unit tests for BatchJobError and related job entity classes"""
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -16,37 +15,14 @@ from aibrix.batch.job_entity import (
     CompletionWindow,
     JobAnnotationKey,
     ModelTemplateRef,
-    PlannerDecision,
+    ResourceAllocation,
     ResourceDetail,
+    RuntimeSpec,
 )
-from aibrix.batch.manifest.renderer import RenderError
+from aibrix.batch.manifest.renderer import JobManifestRenderer, RenderError
 from aibrix.batch.template import local_profile_registry, local_template_registry
-from aibrix.metadata.cache.job import JobCache
 
 _FIXTURE = Path(__file__).parent / "testdata" / "template_configmaps_unittest.yaml"
-
-
-class _AsyncResult:
-    def get(self):
-        class _Meta:
-            name = "batch-test"
-            uid = "uid-123"
-
-        class _Job:
-            metadata = _Meta()
-
-        return _Job()
-
-
-class _BatchApi:
-    def __init__(self, captured):
-        self._captured = captured
-
-    def create_namespaced_job(self, namespace, body, async_req):
-        self._captured["namespace"] = namespace
-        self._captured["body"] = body
-        self._captured["async_req"] = async_req
-        return _AsyncResult()
 
 
 class TestBatchJobError:
@@ -179,7 +155,8 @@ class TestBatchJobEntityCreation:
             completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
             aibrix=AibrixMetadata(
                 job_id="job-123",
-                planner_decision=PlannerDecision(
+                runtime=RuntimeSpec(target="Kubernetes"),
+                resource_allocation=ResourceAllocation(
                     provision_id="reservation-1",
                     provision_resource_deadline=3600,
                     resource_details=[
@@ -205,25 +182,28 @@ class TestBatchJobEntityCreation:
 
         assert spec.aibrix is not None
         assert spec.aibrix.job_id == "job-123"
-        assert spec.aibrix.planner_decision is not None
-        assert spec.aibrix.planner_decision.provision_id == "reservation-1"
-        assert spec.aibrix.planner_decision.resource_details is not None
-        assert spec.aibrix.planner_decision.resource_details[0].gpu_type == "H100"
+        assert spec.aibrix.runtime is not None
+        assert spec.aibrix.runtime.target == "Kubernetes"
+        assert spec.aibrix.runtime_target == "Kubernetes"
+        assert spec.aibrix.resource_allocation is not None
+        assert spec.aibrix.resource_allocation.provision_id == "reservation-1"
+        assert spec.aibrix.resource_allocation.resource_details is not None
+        assert spec.aibrix.resource_allocation.resource_details[0].gpu_type == "H100"
         assert spec.aibrix.model_template is not None
         assert spec.aibrix.model_template.name == "mock-vllm"
         assert spec.aibrix.profile is not None
         assert spec.aibrix.profile.name == "unittest"
 
-    def test_planner_decision_allows_extra_fields(self):
-        decision = PlannerDecision.model_validate(
+    def test_resource_allocation_allows_extra_fields(self):
+        allocation = ResourceAllocation.model_validate(
             {
                 "provision_id": "reservation-1",
                 "future_field": {"phase": "queued"},
             }
         )
 
-        assert decision.provision_id == "reservation-1"
-        assert getattr(decision, "future_field") == {"phase": "queued"}
+        assert allocation.provision_id == "reservation-1"
+        assert getattr(allocation, "future_field") == {"phase": "queued"}
 
     def test_resource_detail_allows_extra_fields(self):
         detail = ResourceDetail.model_validate(
@@ -264,20 +244,13 @@ class TestBatchJobEntityCreation:
             assert isinstance(error, Exception)
             assert isinstance(error, BatchJobError)
 
-    @pytest.mark.asyncio
-    async def test_job_cache_submit_job_with_template_and_profile(self):
+    def test_render_job_manifest_with_template_and_profile(self):
         template_registry = local_template_registry(_FIXTURE)
         profile_registry = local_profile_registry(_FIXTURE)
         template_registry.reload()
         profile_registry.reload()
 
-        cache = JobCache(
-            template_registry=template_registry,
-            profile_registry=profile_registry,
-        )
-        captured = {}
-        cache.batch_v1_api = _BatchApi(captured)
-
+        renderer = JobManifestRenderer(template_registry, profile_registry)
         spec = BatchJobSpec(
             input_file_id="test-input-123",
             endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
@@ -288,29 +261,21 @@ class TestBatchJobEntityCreation:
             ),
         )
 
-        await cache.submit_job("session-1", spec, job_name="batch-test")
-        await asyncio.sleep(0)
+        manifest = renderer.render("session-1", spec, job_name="batch-test")
 
-        pod_annotations = captured["body"]["spec"]["template"]["metadata"][
-            "annotations"
-        ]
-        assert captured["namespace"] == "default"
-        assert captured["async_req"] is True
-        assert captured["body"]["metadata"]["name"] == "batch-test"
+        pod_annotations = manifest["spec"]["template"]["metadata"]["annotations"]
+        assert manifest["metadata"]["name"] == "batch-test"
         assert (
             pod_annotations[JobAnnotationKey.MODEL_TEMPLATE_NAME.value] == "mock-vllm"
         )
         assert pod_annotations[JobAnnotationKey.PROFILE_NAME.value] == "unittest"
-        assert captured["body"]["spec"]["suspend"] is True
+        assert manifest["spec"]["suspend"] is True
         assert (
-            captured["body"]["spec"]["template"]["spec"]["containers"][1]["image"]
+            manifest["spec"]["template"]["spec"]["containers"][1]["image"]
             == "aibrix/vllm-mock:nightly"
         )
 
-    @pytest.mark.asyncio
-    async def test_job_cache_submit_job_with_inline_template_and_profile_without_registries(
-        self,
-    ):
+    def test_render_with_inline_template_and_profile_without_registries(self):
         # Prepare template and profile from fixture, so inline spec is available.
         template_registry = local_template_registry(_FIXTURE)
         profile_registry = local_profile_registry(_FIXTURE)
@@ -321,11 +286,8 @@ class TestBatchJobEntityCreation:
         assert template is not None
         assert profile is not None
 
-        # Initialize JobCache without registries.
-        cache = JobCache()
-        captured = {}
-        cache.batch_v1_api = _BatchApi(captured)
-
+        # Renderer without registries: the inline specs carry the resolved data.
+        renderer = JobManifestRenderer()
         spec = BatchJobSpec(
             input_file_id="test-input-123",
             endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
@@ -343,25 +305,16 @@ class TestBatchJobEntityCreation:
             ),
         )
 
-        await cache.submit_job("session-1", spec, job_name="batch-test")
-        await asyncio.sleep(0)
+        manifest = renderer.render("session-1", spec, job_name="batch-test")
 
-        pod_annotations = captured["body"]["spec"]["template"]["metadata"][
-            "annotations"
-        ]
+        pod_annotations = manifest["spec"]["template"]["metadata"]["annotations"]
         assert (
             pod_annotations[JobAnnotationKey.MODEL_TEMPLATE_NAME.value] == template.name
         )
         assert pod_annotations[JobAnnotationKey.PROFILE_NAME.value] == profile.name
 
-    @pytest.mark.asyncio
-    async def test_job_cache_submit_job_without_template_registry_reports_render_error(
-        self,
-    ):
-        # Initialize JobCache without registries.
-        cache = JobCache()
-        cache.batch_v1_api = _BatchApi({})
-
+    def test_render_without_template_registry_reports_render_error(self):
+        renderer = JobManifestRenderer()
         spec = BatchJobSpec(
             input_file_id="test-input-123",
             endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
@@ -370,21 +323,17 @@ class TestBatchJobEntityCreation:
         )
 
         with pytest.raises(RenderError, match="template registry is not configured"):
-            await cache.submit_job("session-1", spec, job_name="batch-test")
+            renderer.render("session-1", spec, job_name="batch-test")
 
-    @pytest.mark.asyncio
-    async def test_job_cache_submit_job_without_profile_registry_reports_render_error(
-        self,
-    ):
-        # Prepare template only from fixture, so inline spec is available.
+    def test_render_without_profile_registry_reports_render_error(self):
+        # Inline template spec is available; the profile is referenced by name
+        # with no registry configured -> render error.
         template_registry = local_template_registry(_FIXTURE)
         template_registry.reload()
         template = template_registry.get("mock-vllm")
         assert template is not None
 
-        cache = JobCache()
-        cache.batch_v1_api = _BatchApi({})
-
+        renderer = JobManifestRenderer()
         spec = BatchJobSpec(
             input_file_id="test-input-123",
             endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
@@ -400,24 +349,7 @@ class TestBatchJobEntityCreation:
         )
 
         with pytest.raises(RenderError, match="profile registry is not configured"):
-            await cache.submit_job("session-1", spec, job_name="batch-test")
-
-    @pytest.mark.asyncio
-    async def test_job_cache_start_stop_are_noops(self, monkeypatch):
-        cache = JobCache()
-        bootstrap = pytest.fail
-
-        async def fail_bootstrap():
-            bootstrap("JobCache.start should not bootstrap recovery")
-
-        async def fail_refresh_loop():
-            bootstrap("JobCache.start should not start refresh loop")
-
-        monkeypatch.setattr(cache, "_bootstrap_jobs", fail_bootstrap)
-        monkeypatch.setattr(cache, "_refresh_loop", fail_refresh_loop)
-
-        await cache.start()
-        await cache.stop()
+            renderer.render("session-1", spec, job_name="batch-test")
 
 
 class TestExceptionMessageConversion:

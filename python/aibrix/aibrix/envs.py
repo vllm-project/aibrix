@@ -102,10 +102,14 @@ STORAGE_AWS_REGION = os.getenv("STORAGE_AWS_REGION")
 STORAGE_AWS_BUCKET = os.getenv("STORAGE_AWS_BUCKET")
 
 # Storage Redis Envs
-STORAGE_REDIS_HOST = os.getenv("REDIS_HOST")
-STORAGE_REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-STORAGE_REDIS_DB = int(os.getenv("REDIS_DB", 0))
-STORAGE_REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+STORAGE_REDIS_HOST = os.getenv("STORAGE_REDIS_HOST") or os.getenv("REDIS_HOST")
+_STORAGE_REDIS_PORT = os.getenv("STORAGE_REDIS_PORT") or os.getenv("REDIS_PORT")
+STORAGE_REDIS_PORT = int(_STORAGE_REDIS_PORT or "6379")
+_STORAGE_REDIS_DB = os.getenv("STORAGE_REDIS_DB") or os.getenv("REDIS_DB")
+STORAGE_REDIS_DB = int(_STORAGE_REDIS_DB or "0")
+STORAGE_REDIS_PASSWORD = os.getenv("STORAGE_REDIS_PASSWORD") or os.getenv(
+    "REDIS_PASSWORD"
+)
 
 # Database Redis Envs, other settings simply reuse Storage Redis Envs
 DB_REDIS_PREFIX = os.getenv("DB_REDIS_PREFIX", "db")

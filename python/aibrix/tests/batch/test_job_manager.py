@@ -22,6 +22,7 @@ import pytest
 # Set required environment variable before importing
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
+from aibrix.batch.batch_manager import BatchManager
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobEndpoint,
@@ -31,16 +32,16 @@ from aibrix.batch.job_entity import (
     BatchJobState,
     BatchJobStatus,
     CompletionWindow,
-    JobEntityManager,
+    ConditionType,
     ObjectMeta,
     TypeMeta,
 )
-from aibrix.batch.job_manager import JobManager
+from aibrix.batch.state import JobEntityManager
 from aibrix.context import InfrastructureContext
 
 
-def _job_manager() -> JobManager:
-    return JobManager(InfrastructureContext())
+def _job_manager() -> BatchManager:
+    return BatchManager(InfrastructureContext())
 
 
 @pytest.mark.asyncio
@@ -76,6 +77,10 @@ async def test_local_job_cancellation():
     cancelled_job = job_manager._done_jobs[job_id]
     assert cancelled_job.status.state == BatchJobState.FINALIZED
     assert cancelled_job.status.cancelled
+    # OpenAI parity: a finalized-cancelled batch must stamp cancelled_at, not
+    # leave it null (regression guard for the cancel timestamp bug).
+    assert cancelled_job.status.cancelled_at is not None
+    assert cancelled_job.status.completed_at is None
 
 
 @pytest.mark.asyncio
@@ -185,16 +190,68 @@ async def test_validate_job_finalizes_worker_style_validation_failure(monkeypatc
         )
 
     monkeypatch.setattr(
-        "aibrix.batch.job_driver.local_driver.LocalJobDriver.validate_job",
+        "aibrix.batch.job_driver.base.BaseJobDriver.validate_job",
         _fail_validate,
     )
 
-    result = await job_manager.validate_job("test-worker-job-id")
+    result = await job_manager.admit("test-worker-job-id")
 
-    assert result is False
+    assert result is None
     failed_job = job_manager._done_jobs["test-worker-job-id"]
     assert failed_job.status.state == BatchJobState.FINALIZED
     assert failed_job.status.failed
+
+
+@pytest.mark.asyncio
+async def test_expire_job_finalizes_pending_job():
+    """A past-due pending job is expired into the done pool with the expired
+    condition + expired_at, instead of being silently left in pending."""
+    job_manager = _job_manager()
+    await job_manager.create_job(
+        session_id="test-session-expire",
+        input_file_id="test-file-expire",
+        api_endpoint="/v1/chat/completions",
+        completion_window="24h",
+        meta_data={},
+    )
+    job_id = next(iter(job_manager._pending_jobs.keys()))
+
+    result = await job_manager.expire_job(job_id)
+
+    assert result is True
+    assert job_id not in job_manager._pending_jobs
+    assert job_id in job_manager._done_jobs
+    expired = job_manager._done_jobs[job_id]
+    assert expired.status.state == BatchJobState.FINALIZED
+    assert expired.status.finished
+    assert expired.status.expired_at is not None
+    assert expired.status.condition == ConditionType.EXPIRED
+
+
+@pytest.mark.asyncio
+async def test_expire_job_skips_admitted_job():
+    """Intended semantics: only pending jobs expire. A job that already left the
+    pending pool (admitted, racing with the cleanup snapshot) is not finalized —
+    it runs to completion."""
+    job_manager = _job_manager()
+    await job_manager.create_job(
+        session_id="test-session-expire2",
+        input_file_id="test-file-expire2",
+        api_endpoint="/v1/chat/completions",
+        completion_window="24h",
+        meta_data={},
+    )
+    job_id = next(iter(job_manager._pending_jobs.keys()))
+    # Simulate admission: the job left pending for in-progress.
+    job = job_manager._pending_jobs.pop(job_id)
+    job_manager._in_progress_jobs[job_id] = job
+
+    result = await job_manager.expire_job(job_id)
+
+    assert result is False
+    assert job_id in job_manager._in_progress_jobs
+    assert job_id not in job_manager._done_jobs
+    assert job_manager._in_progress_jobs[job_id].status.state != BatchJobState.FINALIZED
 
 
 @pytest.mark.asyncio
@@ -360,7 +417,46 @@ async def test_async_create_job():
     assert job.status.job_id == job_id
 
     # Verify the future was cleaned up
-    assert session_id not in job_manager._creating_jobs
+    assert session_id not in job_manager._bridge._creating_jobs
+
+
+@pytest.mark.asyncio
+async def test_expire_job_persists_via_entity_manager():
+    """Regression: under the db-default an entity manager is ALWAYS wired, so a
+    pending job past its completion window must still be expired AND persisted
+    via the store. Previously expire_job early-returned whenever an entity
+    manager was present, silently skipping expiry."""
+    recorded: List[BatchJob] = []
+
+    class _RecordingEM(MockJobEntityManager):
+        async def update_job_status(self, job: BatchJob) -> None:
+            recorded.append(job)
+
+    asyncio.get_running_loop().name = "test_expire_job_persists"
+    job_manager = _job_manager()
+    await job_manager.set_job_entity_manager(_RecordingEM(delay=0.0))
+
+    job = BatchJob(
+        sessionID="sess-expire",
+        typeMeta=TypeMeta(apiVersion="v1", kind="BatchJob"),
+        metadata=ObjectMeta(resourceVersion="1", creationTimestamp=datetime.now()),
+        spec=BatchJobSpec(
+            input_file_id="f-expire",
+            endpoint="/v1/chat/completions",
+            completion_window=86400,
+        ),
+        status=BatchJobStatus(
+            jobID="job-expire",
+            state=BatchJobState.CREATED,
+            createdAt=datetime.now(),
+        ),
+    )
+    job_manager._pending_jobs[job.job_id] = job
+
+    assert await job_manager.expire_job(job.job_id) is True
+    assert len(recorded) == 1
+    assert recorded[0].status.state == BatchJobState.FINALIZED
+    assert recorded[0].status.expired_at is not None
 
 
 @pytest.mark.asyncio
@@ -388,7 +484,7 @@ async def test_async_create_job_with_timeout():
 
     # Verify job was submitted but future was cleaned up due to timeout
     assert len(mock_entity_manager.submitted_jobs) == 1
-    assert session_id not in job_manager._creating_jobs
+    assert session_id not in job_manager._bridge._creating_jobs
 
     # Verify no job was added to _in_progress_jobs (since timeout occurred)
     assert len(job_manager._in_progress_jobs) == 0
@@ -428,7 +524,7 @@ async def test_async_create_job_throws_error():
 
     # Verify no job was submitted or added
     assert len(mock_entity_manager.submitted_jobs) == 0
-    assert session_id not in job_manager._creating_jobs
+    assert session_id not in job_manager._bridge._creating_jobs
     assert len(job_manager._pending_jobs) == 0
 
 
@@ -472,7 +568,7 @@ async def test_multiple_concurrent_job_creation():
         assert job.session_id == session_ids[i]
 
     # Verify all futures were cleaned up
-    assert len(job_manager._creating_jobs) == 0
+    assert len(job_manager._bridge._creating_jobs) == 0
 
     # Verify all jobs were submitted to entity manager
     assert len(mock_entity_manager.submitted_jobs) == 3

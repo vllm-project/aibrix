@@ -10,8 +10,8 @@ two ConfigMap-driven resource types:
 - **ModelDeploymentTemplate** describes *what* engine and hardware to
   use for a given model: image, GPU SKU, parallelism, engine tuning,
   quantization, model source.
-- **BatchProfile** describes *how* a batch should be scheduled and
-  stored: storage backend, completion window, per-batch limits.
+- **BatchProfile** describes batch-level policy: completion window,
+  scheduling hints, retry policy, and per-batch limits.
 
 End users reference these by name through the OpenAI Batch API's
 ``extra_body`` field, keeping wire compatibility with the official
@@ -31,8 +31,7 @@ deployments, operators need to control:
 - Tensor / pipeline / data parallelism
 - Engine tuning (max_num_batched_tokens, prefix caching, quantization)
 - Where model weights live (HuggingFace, S3, internal registry)
-- Storage backend for input/output files
-- Per-profile batch size limits
+- Per-profile scheduling policy and batch size limits
 
 All of these are admin-time decisions. End users keep the OpenAI ergonomics:
 they reference a pre-registered template name, optionally override a
@@ -175,8 +174,10 @@ The full schema is defined in :py:mod:`aibrix.batch.template.schema`.
 BatchProfile Schema
 -------------------
 
-Profiles are simpler: storage settings, scheduling policy, per-batch
-quotas. The full schema is in :py:mod:`aibrix.batch.template.schema`.
+Profiles are simpler: scheduling policy and per-batch quotas. Runtime
+storage and metastore configuration are resolved from the metadata
+service environment, not from BatchProfile. The full schema is in
+:py:mod:`aibrix.batch.template.schema`.
 
 .. list-table::
    :header-rows: 1
@@ -185,11 +186,6 @@ quotas. The full schema is in :py:mod:`aibrix.batch.template.schema`.
    * - Field
      - Required?
      - Description
-   * - ``storage``
-     - yes
-     - ``backend`` (s3 / minio / gcs / tos / local), ``bucket``,
-       optional ``region``, ``credentials_secret_ref``,
-       ``endpoint_url``
    * - ``scheduling``
      - default
      - ``completion_window`` (1h / 4h / 24h / best_effort,
@@ -200,9 +196,6 @@ quotas. The full schema is in :py:mod:`aibrix.batch.template.schema`.
      - ``max_requests_per_batch`` (default 50000),
        ``max_input_size_mb`` (default 200), ``max_output_size_gb``
        (default 10). Enforced at validating phase.
-   * - ``openai_service_tier_alias``
-     - optional
-     - Maps OpenAI's ``service_tier`` field to this profile.
 
 
 Honored vs Deferred Fields
@@ -224,7 +217,6 @@ know which configuration is not yet active.
 - ``provider_config`` for ``type: k8s`` only
 - ``supported_endpoints``
 - ``deployment_mode: dedicated`` only
-- ``storage`` (all fields)
 - ``scheduling.completion_window``: only ``24h`` honored
 - ``scheduling.max_concurrency``, ``scheduling.request_timeout_seconds``
 - ``quota`` (all fields, enforced at batch validating)
@@ -238,7 +230,6 @@ know which configuration is not yet active.
 - ``scheduling.provider_preference`` (Phase 3)
 - ``scheduling.allow_preempt``, ``allow_spot`` (Phase 4)
 - ``scheduling.retry_policy`` (Phase 2 smart client)
-- ``openai_service_tier_alias`` (Phase 4)
 
 
 User-Facing Fields in ``extra_body.aibrix``

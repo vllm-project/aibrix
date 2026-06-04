@@ -32,8 +32,9 @@ from aibrix.batch.job_entity import (
     BatchProfileRef,
     ModelTemplateRef,
     ObjectMeta,
-    PlannerDecision,
+    ResourceAllocation,
     ResourceDetail,
+    RuntimeSpec,
     TypeMeta,
 )
 from aibrix.metadata.api.v1.batch import (
@@ -252,12 +253,12 @@ def test_batch_spec_accepts_aibrix_metadata():
             "completion_window": "24h",
             "aibrix": {
                 "job_id": "planner-job-1",
-                "planner_decision": {
+                "runtime": {"target": "Kubernetes"},
+                "resource_allocation": {
                     "provision_id": "reservation-1",
                     "provision_resource_deadline": 123,
                     "resource_details": [
                         {
-                            "provider": "deployment",
                             "endpoint_cluster": "cluster-a",
                             "gpu_type": "H100",
                             "replica": 4,
@@ -289,16 +290,18 @@ def test_batch_spec_accepts_aibrix_metadata():
 
     assert batch_job_spec.aibrix is not None
     assert batch_job_spec.aibrix.job_id == "planner-job-1"
-    assert batch_job_spec.aibrix.planner_decision is not None
-    assert batch_job_spec.aibrix.planner_decision.provision_id == "reservation-1"
-    assert batch_job_spec.aibrix.planner_decision.provision_resource_deadline == 123
-    assert len(batch_job_spec.aibrix.planner_decision.resource_details or []) == 1
-    resource = batch_job_spec.aibrix.planner_decision.resource_details[0]
+    assert batch_job_spec.aibrix.resource_allocation is not None
+    assert batch_job_spec.aibrix.resource_allocation.provision_id == "reservation-1"
+    assert batch_job_spec.aibrix.resource_allocation.provision_resource_deadline == 123
+    assert len(batch_job_spec.aibrix.resource_allocation.resource_details or []) == 1
+    resource = batch_job_spec.aibrix.resource_allocation.resource_details[0]
     assert resource is not None
-    assert resource.provider == "deployment"
     assert resource.endpoint_cluster == "cluster-a"
     assert resource.gpu_type == "H100"
     assert resource.replica == 4
+    assert batch_job_spec.aibrix.runtime is not None
+    assert batch_job_spec.aibrix.runtime.target == "Kubernetes"
+    assert batch_job_spec.aibrix.runtime_target == "Kubernetes"
     assert batch_job_spec.aibrix.model_template is not None
     assert batch_job_spec.aibrix.model_template.name == "echo-template"
     assert batch_job_spec.aibrix.model_template.overrides == {
@@ -340,9 +343,8 @@ def test_batch_spec_accepts_full_template_and_profile_objects():
                 "profile": {
                     "name": "inline-profile",
                     "spec": {
-                        "storage": {
-                            "backend": "local",
-                            "bucket": "/tmp/aibrix-storage",
+                        "scheduling": {
+                            "completion_window": "24h",
                         }
                     },
                 },
@@ -361,7 +363,9 @@ def test_batch_spec_accepts_full_template_and_profile_objects():
     assert batch_job_spec.aibrix.profile is not None
     assert batch_job_spec.aibrix.profile.name == "inline-profile"
     assert batch_job_spec.aibrix.profile.spec is not None
-    assert batch_job_spec.aibrix.profile.spec["storage"]["backend"] == "local"
+    assert (
+        batch_job_spec.aibrix.profile.spec["scheduling"]["completion_window"] == "24h"
+    )
 
 
 def test_batch_response_includes_input_aibrix_metadata():
@@ -375,12 +379,12 @@ def test_batch_response_includes_input_aibrix_metadata():
             completion_window=86400,
             aibrix=AibrixMetadata(
                 job_id="planner-job-1",
-                planner_decision=PlannerDecision(
+                runtime=RuntimeSpec(target="Kubernetes"),
+                resource_allocation=ResourceAllocation(
                     provision_id="reservation-1",
                     provision_resource_deadline=123,
                     resource_details=[
                         ResourceDetail(
-                            provider="deployment",
                             endpoint_cluster="cluster-a",
                             gpu_type="H100",
                             replica=4,
@@ -409,11 +413,13 @@ def test_batch_response_includes_input_aibrix_metadata():
 
     assert response.aibrix is not None
     assert response.aibrix.job_id == "planner-job-1"
-    assert response.aibrix.planner_decision is not None
-    assert response.aibrix.planner_decision.provision_id == "reservation-1"
-    assert response.aibrix.planner_decision.resource_details is not None
-    assert len(response.aibrix.planner_decision.resource_details) == 1
-    assert response.aibrix.planner_decision.resource_details[0].gpu_type == "H100"
+    assert response.aibrix.resource_allocation is not None
+    assert response.aibrix.resource_allocation.provision_id == "reservation-1"
+    assert response.aibrix.resource_allocation.resource_details is not None
+    assert len(response.aibrix.resource_allocation.resource_details) == 1
+    assert response.aibrix.resource_allocation.resource_details[0].gpu_type == "H100"
+    assert response.aibrix.runtime is not None
+    assert response.aibrix.runtime.target == "Kubernetes"
     assert response.aibrix.model_template is not None
     assert response.aibrix.model_template.name == "echo-template"
     assert response.aibrix.model_template.overrides == {
@@ -510,3 +516,28 @@ def test_all_endpoints_accept_valid_bodies(endpoint, body):
     """Parametrized test: all endpoints accept their valid bodies."""
     result = _validate_request_body_for_endpoint(body, endpoint, 1)
     assert result is None, f"Unexpected error for {endpoint}: {result}"
+
+
+def test_validate_aibrix_extension_rejects_unknown_runtime_target():
+    from fastapi import HTTPException
+
+    from aibrix.metadata.api.v1.batch import (
+        AibrixExtension,
+        _validate_aibrix_extension,
+    )
+
+    ext = AibrixExtension(runtime={"target": "kubernetes"})  # lowercase typo
+    with pytest.raises(HTTPException) as excinfo:
+        _validate_aibrix_extension(None, ext)
+    assert excinfo.value.status_code == 400
+
+
+def test_validate_aibrix_extension_accepts_known_runtime_target():
+    from aibrix.metadata.api.v1.batch import (
+        AibrixExtension,
+        _validate_aibrix_extension,
+    )
+
+    # Known runtime target + no model_template returns cleanly (no request access).
+    ext = AibrixExtension(runtime={"target": "Kubernetes"})
+    _validate_aibrix_extension(None, ext)

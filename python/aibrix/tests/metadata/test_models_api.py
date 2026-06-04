@@ -336,12 +336,7 @@ class TestModelsAPI:
             enable_fastapi_docs=False,
             disable_batch_api=True,
             disable_file_api=True,
-            enable_k8s_job=False,
-            enable_metastore_job=False,
-            enable_redis_job=False,
-            registry_provider=None,
-            disable_k8s_support=False,
-            disable_inference_endpoint=True,
+            enable_k8s_support=True,
         )
         app = build_app(args)
         client = TestClient(app)

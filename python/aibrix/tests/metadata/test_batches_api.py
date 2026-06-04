@@ -304,8 +304,8 @@ class TestListBatches:
             assert body["object"] == "list"
             assert body["data"] == []
             assert body["has_more"] is False
-            assert body["first_id"] is None
-            assert body["last_id"] is None
+            assert "first_id" not in body
+            assert "last_id" not in body
 
     def test_list_with_limit_reports_has_more(self):
         with TestClient(create_test_app()) as client:

@@ -252,6 +252,11 @@ async def list_files(
         # only pay head_object for what's relevant when a filter is set).
         file_objects: list[FileObject] = []
         for file_id in all_keys:
+            # Skip internal/hidden keys (e.g. the co-located ``.metastore``
+            # document store under a shared LOCAL storage root). The files API
+            # lists only user-uploaded blobs, never internal storage artifacts.
+            if file_id.startswith("."):
+                continue
             try:
                 head_object = await storage.head_object(file_id)
                 metadata = head_object.metadata or {}

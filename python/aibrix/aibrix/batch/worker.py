@@ -18,20 +18,26 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 import httpx
 
 import aibrix.batch.constant as constant
-from aibrix.batch.driver import BatchDriver
+from aibrix.batch.client import GatewayEndpointSource
+from aibrix.batch.job_driver.base import BaseJobDriver
+from aibrix.batch.job_driver.runtime import ExternalRuntime
 from aibrix.batch.job_entity import (
     BatchJob,
+    BatchJobError,
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    Condition,
+    ConditionStatus,
+    ConditionType,
 )
-from aibrix.context import InfrastructureContext
+from aibrix.batch.state import JobMetaInfo
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -76,12 +82,103 @@ class LLMHealthChecker:
         return False
 
 
+class SingleJobRunner:
+    """A minimal ``RunningJobs`` for executing ONE batch job in-process (the
+    batch worker pod).
+
+    Wraps a single ``JobMetaInfo`` (BatchJob + JobProgressTracker) and answers
+    the driver's per-request progress calls directly — no scheduler, no job
+    pools, no entity-manager persistence. It mirrors ``BatchManager``'s per-job
+    semantics for one job, reusing ``JobMetaInfo`` / ``JobProgressTracker`` so
+    the launch/complete bitmap is shared, not reimplemented. This lets the
+    worker execute a job through ``BaseJobDriver`` without standing up the
+    list-level orchestrator (``BatchDriver`` / scheduler / ``BatchManager``).
+    """
+
+    def __init__(self, job: BatchJob) -> None:
+        self._meta = JobMetaInfo(job)
+
+    async def get_job(self, job_id: str) -> Optional[BatchJob]:
+        return self._meta if job_id == self._meta.job_id else None
+
+    async def get_job_next_request(self, job_id: str) -> Tuple[BatchJob, int]:
+        return self._meta, self._meta.next_request_id()
+
+    async def mark_job_progress_and_get_next_request(
+        self, job_id: str, req_id: int
+    ) -> Tuple[BatchJob, int]:
+        self._meta.complete_one_request(req_id)
+        return self._meta, self._meta.next_request_id()
+
+    async def mark_jobs_progresses(
+        self, job_id: str, executed_requests: List[int]
+    ) -> BatchJob:
+        total = self._meta.status.request_counts.total
+        for req_id in executed_requests:
+            if req_id < 0 or req_id > total:
+                logger.error(  # type: ignore[call-arg]
+                    "Mark job progress failed - request index out of boundary",
+                    job_id=job_id,
+                    req_id=req_id,
+                    total=total,
+                )
+                continue
+            self._meta.complete_one_request(req_id)
+        return self._meta
+
+    async def mark_job_total(self, job_id: str, total_requests: int) -> BatchJob:
+        # Mirrors BatchManager.mark_job_total -> mark_job_progress(total+1): the
+        # (total+1) sentinel tells the tracker the total is now known.
+        req_id = total_requests + 1
+        if req_id < 0 or req_id > self._meta.status.request_counts.total:
+            raise ValueError(f"invalid request_id: {req_id}")
+        self._meta.complete_one_request(req_id)
+        return self._meta
+
+    async def mark_job_done(self, job_id: str) -> BatchJob:
+        job = self._meta
+        if job.status.state != BatchJobState.FINALIZING:
+            raise RuntimeError(f"Job is not in finalizing state: {job.status.state}")
+        job.status.completed_at = datetime.now(timezone.utc)
+        job.status.finalized_at = job.status.completed_at
+        if job.status.condition is None:
+            job.status.add_condition(
+                Condition(
+                    type=ConditionType.COMPLETED,
+                    status=ConditionStatus.TRUE,
+                    lastTransitionTime=job.status.completed_at,
+                )
+            )
+        job.status.state = BatchJobState.FINALIZED
+        return job
+
+    async def mark_job_failed(self, job_id: str, ex: BatchJobError) -> BatchJob:
+        job = self._meta
+        job.status.failed_at = datetime.now(timezone.utc)
+        job.status.add_condition(
+            Condition(
+                type=ConditionType.FAILED,
+                status=ConditionStatus.TRUE,
+                lastTransitionTime=job.status.failed_at,
+                reason=ex.code,
+                message=ex.message,
+            )
+        )
+        job.status.errors = [ex]
+        if job.status.state == BatchJobState.IN_PROGRESS:
+            job.status.finalizing_at = datetime.now(timezone.utc)
+            job.status.state = BatchJobState.FINALIZING
+        else:
+            job.status.finalized_at = job.status.failed_at
+            job.status.state = BatchJobState.FINALIZED
+        return job
+
+
 class BatchWorker:
     """Batch worker that processes jobs using the sidecar pattern."""
 
     def __init__(self) -> None:
         self.health_checker: Optional[LLMHealthChecker] = None
-        self.driver: Optional[BatchDriver] = None
         self.llm_engine_base_url: Optional[str] = None
 
     def load_job_from_env(self) -> BatchJob:
@@ -195,51 +292,6 @@ class BatchWorker:
                 f"Error creating BatchJob from environment variables: {e}"
             ) from e
 
-    async def execute_batch_job(self, batch_job: BatchJob) -> str:
-        """Execute the provided batch job."""
-        assert (
-            self.driver is not None
-        ), "Driver must be initialized before executing jobs"
-
-        job_id = batch_job.job_id
-        if job_id is None:
-            raise RuntimeError("BatchJob job_id is None")
-
-        logger.info(
-            "Executing batch job",
-            job_id=job_id,
-            input_file_id=batch_job.spec.input_file_id,
-            endpoint=batch_job.spec.endpoint,
-        )  # type: ignore[call-arg]
-
-        # Commit job to job manager
-        await self.driver.job_manager.job_committed_handler(batch_job)
-        logger.info("Job committed to manager", job_id=job_id)  # type: ignore[call-arg]
-
-        # Wait until job reaches FINALIZING state
-        logger.debug("Worker entering wait_for_finalizing", job_id=job_id)  # type: ignore[call-arg]
-        final_job = await self.wait_for_finalizing(job_id)
-        logger.debug(  # type: ignore[call-arg]
-            "Worker observed final job state",
-            job_id=job_id,
-            state=(
-                final_job.status.state.value
-                if getattr(final_job.status, "state", None) is not None
-                else None
-            ),
-            failed=final_job.status.failed,
-            condition=(
-                final_job.status.condition.value if final_job.status.condition else None
-            ),
-        )
-        if final_job.status.failed:
-            condition = final_job.status.condition
-            raise RuntimeError(
-                f"Batch job failed in worker: {condition.value if condition else 'unknown'}"
-            )
-
-        return job_id
-
     async def wait_for_in_progress(
         self, job: BatchJob, max_wait: int = 300
     ) -> BatchJob:
@@ -273,43 +325,6 @@ class BatchWorker:
         # Unlikely, should raise ReadTimeoutError
         return job
 
-    async def wait_for_finalizing(self, job_id: str, max_wait: int = 600) -> BatchJob:
-        """Wait for job to reach FINALIZING state."""
-        assert (
-            self.driver is not None
-        ), "Driver must be initialized before waiting for jobs"
-
-        start_time = time.time()
-        attempt = 0
-
-        while time.time() - start_time < max_wait:
-            attempt += 1
-            job = await self.driver.job_manager.get_job(job_id)
-            logger.info(  # type: ignore[call-arg]
-                "Worker polled job while waiting final state",
-                job_id=job_id,
-                attempt=attempt,
-                job_exists=job is not None,
-                state=job.status.state.value if job else None,
-                failed=job.status.failed if job else None,
-                condition=job.status.condition.value
-                if job and job.status.condition
-                else None,
-            )
-            if job and job.status.finished:
-                logger.info(
-                    "Job reached final state",
-                    job_id=job_id,
-                    state=job.status.state.value,
-                )  # type: ignore[call-arg]
-                return job
-
-            await asyncio.sleep(1)
-
-        raise TimeoutError(
-            f"Job {job_id} did not reach final state within {max_wait} seconds"
-        )
-
     async def run(self) -> int:
         """Main worker execution flow."""
         try:
@@ -340,19 +355,26 @@ class BatchWorker:
                 logger.error("vLLM service failed to become ready")
                 return 1
 
-            # Step 3: Initialize BatchDriver
-            self.driver = BatchDriver(
-                context=InfrastructureContext(),
-                llm_engine_endpoint=self.llm_engine_base_url,
+            # Step 3: Execute the single job in-process through a JobDriver.
+            # No BatchDriver / scheduler / BatchManager: a SingleJobRunner gives
+            # the driver the per-job RunningJobs surface it needs, and the worker
+            # dispatches against its own pod-local engine. execute runs
+            # prepare(skipped — the metadata service already prepared the output
+            # files) -> run_job -> finalize, and re-raises on failure
+            # (BaseJobDriver._reraise_on_failure=True).
+            job_id = batch_job.job_id
+            if job_id is None:
+                raise RuntimeError("BatchJob job_id is None")
+
+            runner = SingleJobRunner(batch_job)
+            assert self.llm_engine_base_url is not None, "engine base url not resolved"
+            driver = BaseJobDriver(
+                runner,
+                ExternalRuntime(GatewayEndpointSource(self.llm_engine_base_url)),
             )
-            await self.driver.start()
-            logger.info("BatchDriver initialized successfully")
-
-            # Step 4: Execute batch job
-            job_id = await self.execute_batch_job(batch_job)
+            logger.info("Executing batch job", job_id=job_id)  # type: ignore[call-arg]
+            await driver.execute(job_id)
             logger.info("Batch worker completed successfully", job_id=job_id)  # type: ignore[call-arg]
-
-            await self.driver.stop()
             return 0
 
         except Exception as e:
@@ -365,12 +387,6 @@ class BatchWorker:
                 function=func_name,
             )  # type: ignore[call-arg]
             return 1
-
-        finally:
-            # Cleanup driver if initialized
-            if self.driver:
-                logger.info("Cleaning up BatchDriver...")
-                await self.driver.stop()
 
 
 def get_error_details(ex: Exception) -> tuple[str, int | None, str]:

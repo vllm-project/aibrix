@@ -25,18 +25,12 @@ from kubernetes import client as k8s_client
 from kubernetes import config
 
 import aibrix.client.redis as redis
-from aibrix import envs
 from aibrix.batch import BatchDriver
-from aibrix.batch.job_driver import (
-    EchoInferenceEngineClient,
-    InferenceEngineClient,
-    ProxyInferenceEngineClient,
+from aibrix.batch.client import (
+    EndpointSource,
+    NoopEndpointSource,
 )
-from aibrix.batch.job_entity import JobEntityManager
-from aibrix.batch.template import (
-    k8s_profile_registry,
-    k8s_template_registry,
-)
+from aibrix.batch.state import JobEntityManager
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files, models, users
@@ -48,7 +42,6 @@ from aibrix.storage import create_storage
 logger = init_logger(__name__)
 router = APIRouter()
 
-_REGISTRY_PROVIDER_CONFIGMAP = "configmap"
 _MAX_LOGGED_BODY_BYTES = 8192
 _LOG_HTTP_BODIES = os.getenv("AIBRIX_MDS_HTTP_BODY_LOG", "").lower() in (
     "1",
@@ -66,27 +59,9 @@ def _load_batch_k8s_context(
     if args.dry_run:
         return context
 
-    if not args.disable_k8s_support:
+    if args.enable_k8s_support:
         context.core_v1_api = k8s_client.CoreV1Api()
         context.apps_v1_api = k8s_client.AppsV1Api()
-
-    # Set configmap as registry_provider will enable k8s support automatically
-    if args.registry_provider == _REGISTRY_PROVIDER_CONFIGMAP:
-        registry_ns = getattr(args, "k8s_namespace", "default")
-        # Build ConfigMap-driven registries. Both ConfigMaps must exist in
-        # aibrix-system; reload() on each materializes the in-memory
-        # cache. A 404 is treated as 'empty registry' by the source,
-        # so an admin who has not yet applied templates gets a
-        # helpful render-time error rather than a startup crash.
-        assert context.core_v1_api is not None
-        context.template_registry = k8s_template_registry(
-            context.core_v1_api, namespace=registry_ns
-        )
-        context.profile_registry = k8s_profile_registry(
-            context.core_v1_api, namespace=registry_ns
-        )
-        context.template_registry.reload()
-        context.profile_registry.reload()
 
     return context
 
@@ -174,18 +149,10 @@ async def status_check(request: Request):
             if hasattr(request.app.state, "httpx_client_wrapper")
             else "not_initialized",
         },
-        "kopf_operator": {
-            "available": hasattr(request.app.state, "kopf_operator_wrapper"),
-        },
         "batch_driver": {
             "available": hasattr(request.app.state, "batch_driver"),
         },
     }
-
-    # Get detailed kopf operator status if available
-    if hasattr(request.app.state, "kopf_operator_wrapper"):
-        kopf_status = request.app.state.kopf_operator_wrapper.get_status()
-        status["kopf_operator"].update(kopf_status)
 
     return JSONResponse(content=status, status_code=200)
 
@@ -203,14 +170,10 @@ async def lifespan(app: FastAPI):
         # Backward compatibility: expose underlying Redis client for components
         # that haven't migrated to the MetadataStore interface yet
         app.state.redis_client = metadata_store.client
-        logger.info(
-            f"Metadata store initialized: {envs.STORAGE_REDIS_HOST}:{envs.STORAGE_REDIS_PORT}"
-        )
+        logger.info("Metadata store initialized")
 
     if hasattr(app.state, "httpx_client_wrapper"):
         app.state.httpx_client_wrapper.start()
-    if hasattr(app.state, "kopf_operator_wrapper"):
-        app.state.kopf_operator_wrapper.start()
     if hasattr(app.state, "batch_driver"):
         await app.state.batch_driver.start()
     yield
@@ -219,8 +182,6 @@ async def lifespan(app: FastAPI):
     logger.info("Finalizing FastAPI app...")
     if hasattr(app.state, "batch_driver"):
         await app.state.batch_driver.stop()
-    if hasattr(app.state, "kopf_operator_wrapper"):
-        app.state.kopf_operator_wrapper.stop()
     if hasattr(app.state, "httpx_client_wrapper"):
         await app.state.httpx_client_wrapper.stop()
     if hasattr(app.state, "metadata_store"):
@@ -243,12 +204,7 @@ def build_app(args: argparse.Namespace, params={}):
             redirect_slashes=False,
         )
 
-    if (
-        args.enable_k8s_job
-        or args.registry_provider == "configmap"
-        or not args.disable_k8s_support  # This condition required to load kube config.
-    ):
-        args.disable_k8s_support = False
+    if args.enable_k8s_support:
         try:
             config.load_incluster_config()
         except Exception:
@@ -328,16 +284,6 @@ def build_app(args: argparse.Namespace, params={}):
         )
         return response
 
-    # Initialize kopf operator wrapper if K8s jobs are enabled
-    if args.enable_k8s_job:
-        from aibrix.metadata.core import KopfOperatorWrapper
-
-        app.state.kopf_operator_wrapper = KopfOperatorWrapper(
-            namespace=getattr(args, "k8s_namespace", "default"),
-            startup_timeout=getattr(args, "kopf_startup_timeout", 30.0),
-            shutdown_timeout=getattr(args, "kopf_shutdown_timeout", 10.0),
-        )
-
     app.include_router(router)
 
     # Initialize models API
@@ -350,91 +296,54 @@ def build_app(args: argparse.Namespace, params={}):
     app.include_router(users.router, tags=["users"])
     logger.info("User CRUD API mounted")
 
-    # Resolve the inference client up front so misconfigurations fail
-    # at startup instead of later when a request hits the scheduler.
-    #
-    # The inference client is only consumed by the batch API's BatchDriver
-    # (constructed below, inside the ``not args.disable_batch_api`` block), so
-    # only resolve and require an endpoint when the batch API is enabled.
-    # Requiring it unconditionally crashes plain installs that disable the
-    # batch API but do not wire an inference engine (regression from #2185).
-    inference_client: Optional[InferenceEngineClient] = None
+    # The batch BatchDriver does not get a global inference endpoint: jobs
+    # carry their own ``aibrix.runtime.target`` and the per-job runtime
+    # (k8s job / deployment) builds its own EndpointSource. The only app-level
+    # source is the echo client used by --dry-run.
+    endpoint_source: Optional[EndpointSource] = None
     dry_run = getattr(args, "dry_run", False)
     if dry_run:
-        inference_client = EchoInferenceEngineClient()
+        endpoint_source = NoopEndpointSource()
         logger.warning(
             "DRY RUN MODE — outputs are echoed inputs, not real model "
             "completions. Refuses to write to non-local storage."
         )
-    elif not args.disable_batch_api and not args.disable_inference_endpoint:
-        if endpoint_url := os.environ.get("INFERENCE_ENGINE_ENDPOINT"):
-            inference_client = ProxyInferenceEngineClient(endpoint_url)
-        elif not args.enable_k8s_job:
-            # In k8s-job mode the worker pods bring their own engine endpoint,
-            # so a missing INFERENCE_ENGINE_ENDPOINT here is fine. Otherwise a
-            # standalone batch run has no engine to call — fail fast.
-            sys.stderr.write(
-                "ERROR: no inference backend configured. Pass --dry-run "
-                "for echo, set INFERENCE_ENGINE_ENDPOINT for an external "
-                "engine, or pass --enable-k8s-job to provision workers.\n"
-            )
-            sys.exit(2)
 
     # Initialize batches API
     if not args.disable_batch_api:
-        job_entity_manager: Optional[JobEntityManager] = None
-
         # Registries are now moved to infrastructure_context for sharing between components
-        # The construction of context should before any k8s dependent compenents' (e.g., JobCache)
-        # initialization.
+        # The construction of context should before any k8s dependent components'
+        # (e.g., k8s job execution) initialization.
         infrastructure_context = _load_batch_k8s_context(args)
         app.state.template_registry = infrastructure_context.template_registry
         app.state.profile_registry = infrastructure_context.profile_registry
 
+        job_entity_manager: Optional[JobEntityManager] = None
         if not args.dry_run:
             if infrastructure_context is None:
                 raise RuntimeError("Kubernetes batch context is required")
+        else:
+            if args.job_store_provider == "redis":
+                raise RuntimeError("Redis job store is not supported in dry run mode")
 
-        if args.enable_k8s_job:
-            # BatchJob documents are persisted to the batch metastore
-            # (Redis in prod, LOCAL in dry-run / tests) keyed by
-            # ``batchjob:<id>``. Same backend as the per-request
-            # markers and locks. K8s Job annotations carry only the
-            # immutable spec the worker reads via downward API.
-            logger.info(  # type: ignore[call-arg]
-                "BatchJob metastore persistence enabled",
-                metastore_type=settings.METASTORE_TYPE.value,
-            )
+        # The single entity manager is the metastore-backed JobStore; the
+        # substrate (LOCAL / Redis / S3 / TOS) is selected via METASTORE_TYPE, so
+        # one store serves every backend. endpoint_source is None outside
+        # --dry-run: jobs carry their own aibrix.runtime.target and the per-job
+        # runtime builds its own EndpointSource.
+        if args.job_store_provider == "redis":
+            logger.info("Will run using entity manager RedisJobStore")
+            # Use RedisJobCache for optimized performance.
+            from aibrix.batch.state.redis_job_store import RedisJobStore
 
-            # On demand import JobCache to avoid kops handler registered without enable_k8s_job
-            from aibrix.metadata.cache.job import JobCache
-
-            job_entity_manager = JobCache(
-                template_registry=infrastructure_context.template_registry,
-                profile_registry=infrastructure_context.profile_registry,
-            )
-
-        # In K8s mode the actual inference is run by ``aibrix_batch_worker``
-        # pods that bring their own ``llm_engine_endpoint``; here we still
-        # forward INFERENCE_ENGINE_ENDPOINT so that standalone runs (no
-        # K8s, BatchDriver runs inference itself) hit the configured
-        # engine instead of falling back to the echo client.
-        #
-        # We read os.environ directly rather than envs.INFERENCE_ENGINE_ENDPOINT
-        # because the latter has a hardcoded ``http://localhost:8000`` default
-        # for the runtime sidecar; that default is wrong for the metadata
-        # service (no engine is implied) and would force ProxyInferenceEngineClient
-        # in tests where no engine is running. Unset → None → echo client.
-        elif getattr(args, "enable_redis_job", False):
-            from aibrix.metadata.cache.redis import RedisJobCache
-
-            job_entity_manager = RedisJobCache(
+            job_entity_manager = RedisJobStore(
                 redis.get_redis_client(require_check=True)
             )
-        elif getattr(args, "enable_metastore_job", False):
-            from aibrix.metadata.cache.metastore import MetastoreJobCache
+        else:
+            logger.info("Will run using entity manager JobStore")
+            from aibrix.batch.state.job_store import JobStore
 
-            job_entity_manager = MetastoreJobCache(
+            job_entity_manager = JobStore(
                 storage_type=settings.METASTORE_TYPE,
                 params=params,
             )
@@ -444,8 +353,7 @@ def build_app(args: argparse.Namespace, params={}):
             job_entity_manager=job_entity_manager,
             storage_type=settings.STORAGE_TYPE,
             metastore_type=settings.METASTORE_TYPE,
-            inference_client=inference_client,
-            stand_alone=True,
+            endpoint_source=endpoint_source,
             params=params,
         )
         app.include_router(
@@ -480,60 +388,38 @@ def main():
         help="Enable FastAPI's OpenAPI schema, Swagger UI, and ReDoc endpoint",
     )
     parser.add_argument(
-        "--disable-k8s-support",
+        "--enable-k8s-support",
         action="store_true",
         default=False,
         help=(
-            "Disable kubernetes support. If disabled, jobs depend on k8s resources may fail."
-            "following options will disregard this flag:"
-            "--enable-k8s-job"
-            f"--registry-provider {_REGISTRY_PROVIDER_CONFIGMAP}"
+            "Enable Kubernetes support so the batch API can create CoreV1/AppsV1 "
+            "clients and run jobs as k8s Jobs/Deployments. Disabled by default."
         ),
     )
     parser.add_argument(
         "--disable-batch-api",
         action="store_true",
         default=False,
-        help="Disable batch api",
+        help=(
+            "Disable the batch API. Useful for metadata-service deployments "
+            "that only serve models/users/health endpoints and should not "
+            "depend on batch, Kubernetes, or inference backend setup."
+        ),
     )
     parser.add_argument(
         "--disable-file-api",
         action="store_true",
         default=False,
-        help="Disable file api",
-    )
-    parser.add_argument(
-        "--disable-inference-endpoint",
-        action="store_true",
-        default=False,
         help=(
-            "Disable inference endpoint so that batch api can not invoke inference engine directly."
-            "This can be useful if extra_body.aibrix.planner_decision is a must and avoid setting INFERENCE_ENGINE_ENDPOINT."
+            "Disable the files API. Only valid when the batch API is also "
+            "disabled, because batch jobs use files as their input/output channel."
         ),
     )
     parser.add_argument(
-        "--enable-k8s-job",
-        action="store_true",
-        default=False,
-        help="Enable native kubernetes jobs as the job executor.",
-    )
-    parser.add_argument(
-        "--enable-metastore-job",
-        action="store_true",
-        default=False,
-        help="Enable metastore as the persistent job entity manager.",
-    )
-    parser.add_argument(
-        "--enable-redis-job",
-        action="store_true",
-        default=False,
-        help="Enable Redis as the persistent job entity manager.",
-    )
-    parser.add_argument(
-        "--registry-provider",
+        "--job-store-provider",
         type=str,
         default=None,
-        help=f"Registry provider for model templates and profiles (default: None, options: {_REGISTRY_PROVIDER_CONFIGMAP})",
+        help="Job store provider for the job entity manager. Choose redis for optimized performance.",
     )
     parser.add_argument(
         "--dry-run",
@@ -542,83 +428,23 @@ def main():
         help=(
             "Bundle for dev/CI: forces local storage and metastore, uses an "
             "echo inference client (responses are the request body verbatim, "
-            "NOT real model completions). Refuses to combine with "
-            "--enable-k8s-job. Not crash-safe: in-process multipart upload "
-            "ids are kept in memory only, so if the server is killed mid-batch "
-            "the partial output is unrecoverable. Use a real K8s deployment "
-            "with BatchJobStore for crash-safe long-running batches."
+            "NOT real model completions). Not crash-safe: in-process multipart "
+            "upload ids are kept in memory only, so if the server is killed "
+            "mid-batch the partial output is unrecoverable. Use a real K8s "
+            "deployment with a redis metastore for crash-safe long-running batches."
         ),
     )
-    parser.add_argument(
-        "--k8s-namespace",
-        type=str,
-        default="default",
-        help="Kubernetes namespace to monitor for jobs (default: default)",
-    )
-    parser.add_argument(
-        "--k8s-job-patch",
-        # Removed in favor of ModelDeploymentTemplate / BatchProfile.
-        # Kept as an accepted-but-rejected CLI argument so
-        # old startup scripts fail loudly with a useful migration message
-        # instead of silently producing the wrong manifest.
-        type=str,
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--kopf-startup-timeout",
-        type=float,
-        default=30.0,
-        help="Timeout in seconds for kopf operator startup (default: 30.0)",
-    )
-    parser.add_argument(
-        "--kopf-shutdown-timeout",
-        type=float,
-        default=10.0,
-        help="Timeout in seconds for kopf operator shutdown (default: 10.0)",
-    )
     args = parser.parse_args()
-
-    if args.k8s_job_patch is not None:
-        # The legacy yaml-patch mechanism was removed when manifests
-        # became driven by the ConfigMap-backed ModelDeploymentTemplate
-        # registry. Fail loudly so admins running old startup scripts
-        # know to migrate rather than silently producing the wrong manifest.
-        sys.stderr.write(
-            "ERROR: --k8s-job-patch is no longer supported. The manifest "
-            "template is now driven by the ConfigMaps "
-            "'aibrix-model-deployment-templates' and "
-            "'aibrix-batch-profiles' in the 'aibrix-system' namespace. "
-            "See docs/source/features/batch-templates.rst for migration.\n"
-        )
-        sys.exit(2)
 
     if args.disable_file_api and not args.disable_batch_api:
         # The batch API needs the files API as its input/output channel.
         parser.error(
             "--disable-file-api requires --disable-batch-api: the batch "
-            "API needs the files API for input/output."
+            "API uses the files API as its input/output channel."
         )
 
     # Bundle: dry-run forces local storage so a stray AWS_* / TOS_*
     # in the environment doesn't accidentally write to a real bucket.
-    enabled_job_modes = [
-        flag
-        for flag, enabled in (
-            ("--dry-run", args.dry_run),
-            ("--enable-k8s-job", args.enable_k8s_job),
-            ("--enable-metastore-job", args.enable_metastore_job),
-            ("--enable-redis-job", args.enable_redis_job),
-        )
-        if enabled
-    ]
-    if len(enabled_job_modes) > 1:
-        parser.error(
-            "Only one of --dry-run, --enable-k8s-job, "
-            "--enable-metastore-job, and --enable-redis-job may be set. "
-            f"Got: {', '.join(enabled_job_modes)}"
-        )
-
     if args.dry_run:
         from aibrix.storage import StorageType  # local import: avoid cycle
 

@@ -48,7 +48,9 @@ poetry run python scripts/batch_api_smoke.py --keep
 poetry run python scripts/batch_api_smoke.py --timeout 600 --poll-interval 5
 
 # K8s deployment mode:
-poetry run python scripts/batch_api_smoke.py --resource-type deployment -timeout 600 --poll-interval 5
+poetry run python scripts/batch_api_smoke.py \\
+  --aibrix-extra-body @aibrix-extra-body.json \\
+  --timeout 600 --poll-interval 5
 
 ================================================================
 What completes
@@ -61,11 +63,12 @@ What completes
   proxies to the real engine; raise --timeout if the model is slow.
 * K8s job mode: kopf spawns worker pods. This script doesn't care about
   the path — it only watches batch status — but completion depends on
-  pod scheduling, image pull, and the engine. Use --timeout 600+.
+  pod scheduling, image pull, and the engine. Pass --aibrix-extra-body
+  with runtime.target and full model_template/profile specs. Use --timeout 600+.
 * K8s deployment mode: job specific driver spawns long-running deployment pods,
-  and drive job progressing. Set "--resource-type deployment" to enable.
-  This script watches batch status — but completion depends on
-  pod scheduling, image pull, and the engine. Use --timeout 600+.
+  and drive job progressing. This script watches batch status — but completion
+  depends on pod scheduling, image pull, and the engine. Pass --aibrix-extra-body
+  with runtime.target and full model_template/profile specs. Use --timeout 600+.
 
 ================================================================
 Exit codes
@@ -84,7 +87,8 @@ import json
 import random
 import sys
 import time
-from typing import Iterable
+from pathlib import Path
+from typing import Any, Iterable
 
 from openai import APIStatusError, OpenAI
 
@@ -112,6 +116,28 @@ MODEL_BANK: list[str] = [
 TERMINAL_OK = {"completed"}
 TERMINAL_FAIL = {"failed", "expired"}
 CANCELLED_STATES = {"cancelling", "cancelled"}
+
+
+def parse_json_object(value: str) -> dict[str, Any]:
+    """Parse a JSON object from an inline string or @file reference."""
+    source = value
+    if value.startswith("@"):
+        path = Path(value[1:])
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise argparse.ArgumentTypeError(
+                f"failed to read JSON file '{path}': {exc}"
+            ) from exc
+
+    try:
+        parsed = json.loads(source)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(f"invalid JSON object: {exc}") from exc
+
+    if not isinstance(parsed, dict):
+        raise argparse.ArgumentTypeError("expected a JSON object")
+    return parsed
 
 
 def build_record(idx: int, endpoint: str, rng: random.Random) -> dict:
@@ -230,31 +256,14 @@ def parse_args() -> argparse.Namespace:
         help="Total seconds to wait for a terminal state. Default: %(default)s",
     )
     p.add_argument(
-        "--provider",
+        "--aibrix-extra-body",
+        type=parse_json_object,
         default=None,
+        metavar="JSON|@FILE",
         help=(
-            "Deployment type specified to run the job via "
-            "extra_body.aibrix.planner_decisions.resource_details[].provider. "
-            "Required if --disable-inference-engine and not --enable-k8s-job "
-            "mode (no built-in fallback); ignored by standalone --dry-run."
-        ),
-    )
-    p.add_argument(
-        "--aibrix-template",
-        default=None,
-        help=(
-            "AIBrix ModelDeploymentTemplate name to attach via "
-            "extra_body.aibrix.model_template. Required in --enable-k8s-job "
-            "mode (no built-in fallback); ignored by standalone --dry-run."
-        ),
-    )
-    p.add_argument(
-        "--aibrix-profile",
-        default=None,
-        help=(
-            "AIBrix BatchProfile name to attach via "
-            "extra_body.aibrix.profile. Falls back to the registry default "
-            "if omitted. Has no effect in standalone mode."
+            "Complete extra_body.aibrix JSON object to include in batch creation. "
+            "Use @file.json for full model_template/profile specs. Put the runtime "
+            "target under runtime.target."
         ),
     )
     p.add_argument(
@@ -355,29 +364,16 @@ def main() -> None:
     step(
         f"Create  POST /v1/batches  endpoint={args.endpoint} "
         f"completion_window={args.completion_window}"
-        + (f"  template={args.aibrix_template}" if args.aibrix_template else "")
-        + (f"  profile={args.aibrix_profile}" if args.aibrix_profile else "")
+        + ("  aibrix_extra_body=yes" if args.aibrix_extra_body else "")
     )
 
-    # Build extra_body.aibrix only if the user opted into K8s-mode
-    # selectors. Standalone --dry-run servers ignore this block; K8s
-    # servers reject batches without a model_template.
     create_kwargs: dict = {
         "input_file_id": input_file.id,
         "endpoint": args.endpoint,
         "completion_window": args.completion_window,
     }
-    aibrix_block: dict = {}
-    if args.provider:
-        aibrix_block["planner_decision"] = {
-            "resource_details": [{"provider": args.provider}]
-        }
-    if args.aibrix_template:
-        aibrix_block["model_template"] = {"name": args.aibrix_template}
-    if args.aibrix_profile:
-        aibrix_block["profile"] = {"name": args.aibrix_profile}
-    if aibrix_block:
-        create_kwargs["extra_body"] = {"aibrix": aibrix_block}
+    if args.aibrix_extra_body:
+        create_kwargs["extra_body"] = {"aibrix": args.aibrix_extra_body}
 
     try:
         batch = client.batches.create(**create_kwargs)

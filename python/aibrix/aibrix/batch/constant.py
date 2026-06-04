@@ -16,8 +16,13 @@
 # The following are all constants.
 import os
 
-# This is the time interval for the sliding window to check.
+# Cadence (seconds) of the scheduler's expiry/cleanup loop.
 EXPIRE_INTERVAL: float = 1
+
+# Idle poll interval (seconds): how long the scheduler waits when no job is
+# queued before re-checking. Distinct from EXPIRE_INTERVAL — they are unrelated
+# concerns and were previously conflated on a single constant.
+SCHEDULE_IDLE_INTERVAL: float = 1
 
 # This is the job pool size in job scheduler.
 # It should be proportional to resource size in the backend.
@@ -33,5 +38,5 @@ if not (1 <= DEFAULT_JOB_POOL_SIZE <= 100):
 # Job opts are for testing purpose.
 BATCH_OPTS_FAIL_AFTER_N_REQUESTS = "fail_after_n_requests"
 
-BATCH_PROVIDER_LOCAL = "local"
-BATCH_PROVIDER_DEPLOYMENT = "deployment"
+# Runtime selection moved to the RuntimeTarget enum
+# (aibrix.batch.job_entity) and the runtime registry keys.

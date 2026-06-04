@@ -396,3 +396,68 @@ func TestDeltaLifecycle(t *testing.T) {
 	assert.Len(t, updated, 1)
 	assert.Contains(t, updated, strconv.FormatUint(h2[0], 10))
 }
+
+// TestCrossReplicaPrefixCacheLookupAfterSync verifies that a second gateway instance
+// can match a prefix after receiving synced block data, as long as both use the same hash seed.
+func TestCrossReplicaPrefixCacheLookupAfterSync(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	t.Cleanup(func() { prefixCacheBlockSize = originalBlockSize })
+	prefixCacheBlockSize = 4
+
+	t.Setenv(envPrefixCacheHashSeed, "42")
+
+	gatewayA := NewPrefixHashTable()
+	gatewayA.EnableDeltaSync()
+	gatewayB := NewPrefixHashTable()
+
+	tokens := []byte("prefix-cache state sync cross-replica test padding")
+	model := "model1"
+	readyPods := getReadyPods()
+
+	hashes := gatewayA.GetPrefixHashes(tokens)
+	gatewayA.AddPrefix(hashes, model, "p1")
+
+	updated, _, err := gatewayA.GetDeltaForSync(context.Background())
+	require.NoError(t, err)
+	require.NotEmpty(t, updated, "warm gateway should have dirty blocks to sync")
+	for id, data := range updated {
+		require.NoError(t, gatewayB.ApplyRemoteForSync(context.Background(), id, data))
+	}
+
+	matched, _ := gatewayB.MatchPrefix(tokens, model, readyPods)
+	require.Len(t, matched, 1)
+	assert.Equal(t, "p1", getFirstKey(matched))
+	assert.Equal(t, 100, matched["p1"])
+}
+
+// TestCrossReplicaPrefixCacheLookupRequiresSharedSeed verifies mismatched seeds break lookup
+// even when block payloads are synced under the writer's hash IDs.
+func TestCrossReplicaPrefixCacheLookupRequiresSharedSeed(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	t.Cleanup(func() { prefixCacheBlockSize = originalBlockSize })
+	prefixCacheBlockSize = 4
+
+	t.Setenv(envPrefixCacheHashSeed, "1")
+	gatewayA := NewPrefixHashTable()
+	gatewayA.EnableDeltaSync()
+
+	tokens := []byte("prefix-cache state sync cross-replica test padding")
+	model := "model1"
+	readyPods := getReadyPods()
+
+	hashes := gatewayA.GetPrefixHashes(tokens)
+	gatewayA.AddPrefix(hashes, model, "p1")
+
+	updated, _, err := gatewayA.GetDeltaForSync(context.Background())
+	require.NoError(t, err)
+	require.NotEmpty(t, updated)
+
+	t.Setenv(envPrefixCacheHashSeed, "2")
+	gatewayB := NewPrefixHashTable()
+	for id, data := range updated {
+		require.NoError(t, gatewayB.ApplyRemoteForSync(context.Background(), id, data))
+	}
+
+	matched, _ := gatewayB.MatchPrefix(tokens, model, readyPods)
+	assert.Empty(t, matched, "different hash seeds must not produce cross-replica prefix hits")
+}

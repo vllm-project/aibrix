@@ -38,9 +38,7 @@ from typing import Any, Dict, Generic, List, Optional, Tuple, TypeVar
 import yaml
 from pydantic import ValidationError
 
-from aibrix.logger import init_logger
-
-from .schema import (
+from aibrix.batch.template.schema import (
     BatchProfile,
     BatchProfileList,
     CompletionWindowOption,
@@ -50,6 +48,7 @@ from .schema import (
     Priority,
     TemplateStatus,
 )
+from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 

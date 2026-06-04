@@ -12,15 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .aibrix_metadata import (
+from aibrix.batch.job_entity.aibrix_metadata import (
     AibrixMetadata,
     BatchProfileRef,
     ModelTemplateRef,
-    PlannerDecision,
     ResolvedModelTemplate,
+    ResourceAllocation,
     ResourceDetail,
+    RuntimeSpec,
+    RuntimeTarget,
 )
-from .batch_job import (
+from aibrix.batch.job_entity.batch_job import (
     BatchJob,
     BatchJobEndpoint,
     BatchJobError,
@@ -43,13 +45,17 @@ from .batch_job import (
     aggregate_batch_usage,
     merge_batch_job_status_copies,
 )
-from .job_entity_manager import JobEntityManager
-from .k8s_transformer import BatchJobTransformer, JobAnnotationKey, k8s_job_to_batch_job
+from aibrix.batch.job_entity.k8s_transformer import (
+    BatchJobTransformer,
+    JobAnnotationKey,
+)
 
 __all__ = [
     "AibrixMetadata",
     "ModelTemplateRef",
-    "PlannerDecision",
+    "ResourceAllocation",
+    "RuntimeSpec",
+    "RuntimeTarget",
     "BatchProfileRef",
     "ResolvedModelTemplate",
     "ResourceDetail",
@@ -66,7 +72,6 @@ __all__ = [
     "ConditionStatus",
     "ConditionType",
     "InputTokensDetails",
-    "JobEntityManager",
     "ObjectMeta",
     "OutputTokensDetails",
     "RequestCountStats",
