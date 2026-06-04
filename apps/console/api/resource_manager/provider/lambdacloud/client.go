@@ -223,7 +223,30 @@ func (c *Client) TerminateInstances(ctx context.Context, ids []string) error {
 	body := struct {
 		InstanceIDs []string `json:"instance_ids"`
 	}{InstanceIDs: ids}
-	return c.do(ctx, http.MethodPost, "/instance-operations/terminate", body, nil)
+	err := c.do(ctx, http.MethodPost, "/instance-operations/terminate", body, nil)
+	if isAlreadyTerminated(err) {
+		return nil
+	}
+	return err
+}
+
+func isAlreadyTerminated(err error) bool {
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		return false
+	}
+	if apiErr.Status == http.StatusNotFound {
+		return true
+	}
+	code := strings.ToLower(apiErr.Code)
+	msg := strings.ToLower(apiErr.Message)
+	return strings.Contains(code, "not") && strings.Contains(code, "found") ||
+		strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "does not exist") ||
+		strings.Contains(msg, "already terminated") ||
+		strings.Contains(msg, "already been terminated") ||
+		strings.Contains(msg, "already in terminated") ||
+		strings.Contains(msg, "is terminated")
 }
 
 // do performs an authenticated JSON request. The Lambda Cloud API uses HTTP

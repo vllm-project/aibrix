@@ -29,11 +29,13 @@ import (
 )
 
 // plannerBackend is the per-provisioner extension surface invoked per job
-// as: ValidateRequest → Schedule → BuildResourceAllocation.
+// as: ValidateRequest → Schedule → BuildRuntime → BuildResourceAllocation.
 //   - Schedule produces the ResourceProvisionSpec; it is the hook for
 //     future capacity-aware scheduling (replica sizing, gpu type selection, etc.).
 //   - BuildResourceAllocation projects the ProvisionResult onto the batch
 //     submission and folds in ready-state logging.
+//   - BuildRuntime projects the ready ProvisionResult plus model-template
+//     serving config onto the MDS RuntimeRef.
 //
 // Accepted-provision logging is opt-in via provisionResponseLogger.
 //
@@ -42,6 +44,7 @@ import (
 type plannerBackend interface {
 	ValidateRequest(req *plannerapi.EnqueueRequest) error
 	Schedule(ctx context.Context, req *plannerapi.EnqueueRequest) (spec rmtypes.ResourceProvisionSpec, gpuType string, gpusPerReplica int, err error)
+	BuildRuntime(req *plannerapi.EnqueueRequest, prov *rmtypes.ProvisionResult) (*plannerapi.RuntimeRef, error)
 	BuildResourceAllocation(spec rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult, gpuType string, gpusPerReplica int) plannerclient.ResourceAllocation
 }
 
@@ -95,6 +98,26 @@ func decodeAcceleratorFromTemplate(ref *plannerapi.ModelTemplateRef) (gpuType st
 	return spec.Accelerator.Type, spec.Accelerator.Count, nil
 }
 
+// decodeEngineFromTemplate parses ModelTemplateRef.Spec (protojson-encoded
+// ModelDeploymentTemplateSpec) and returns the engine serving image and serve
+// args. Returns ("", nil, nil) when ref or Spec is empty. The handler marshals
+// with UseProtoNames=true (handler/job.go), so JSON keys are snake_case.
+func decodeEngineFromTemplate(ref *plannerapi.ModelTemplateRef) (image string, serveArgs []string, err error) {
+	if ref == nil || len(ref.Spec) == 0 {
+		return "", nil, nil
+	}
+	var spec struct {
+		Engine struct {
+			Image     string   `json:"image"`
+			ServeArgs []string `json:"serve_args"`
+		} `json:"engine"`
+	}
+	if err := json.Unmarshal(ref.Spec, &spec); err != nil {
+		return "", nil, fmt.Errorf("decode model_template.spec engine: %w", err)
+	}
+	return spec.Engine.Image, spec.Engine.ServeArgs, nil
+}
+
 // buildProvisionGroupPlan composes the single-replica ResourceGroupSpec
 // shared by all backends today.
 func buildProvisionGroupPlan(gpuType string, gpusPerReplica int) rmtypes.ResourceGroupSpec {
@@ -110,7 +133,8 @@ func buildProvisionGroupPlan(gpuType string, gpusPerReplica int) rmtypes.Resourc
 	return group
 }
 
-// defaultPlannerBackend serves kubernetes / aws / lambdaCloud.
+// defaultPlannerBackend serves providers that only need default scheduling and
+// allocation behavior.
 type defaultPlannerBackend struct {
 	provider rmtypes.ResourceProvisionType
 }
@@ -131,6 +155,17 @@ func (b *defaultPlannerBackend) Schedule(_ context.Context, req *plannerapi.Enqu
 	}
 	spec.Groups = &[]rmtypes.ResourceGroupSpec{buildProvisionGroupPlan(gpuType, gpusPerReplica)}
 	return
+}
+
+func (b *defaultPlannerBackend) BuildRuntime(req *plannerapi.EnqueueRequest, prov *rmtypes.ProvisionResult) (*plannerapi.RuntimeRef, error) {
+	if req == nil {
+		return nil, fmt.Errorf("missing enqueue request")
+	}
+	image, serveArgs, err := decodeEngineFromTemplate(req.ModelTemplate)
+	if err != nil {
+		return nil, err
+	}
+	return plannerclient.RuntimeForProvisionResult(b.provider, prov, req.Model, image, serveArgs)
 }
 
 func (b *defaultPlannerBackend) BuildResourceAllocation(_ rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult, _ string, _ int) plannerclient.ResourceAllocation {

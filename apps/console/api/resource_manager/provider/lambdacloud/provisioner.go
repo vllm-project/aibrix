@@ -244,6 +244,9 @@ func (p *lambdaProvisioner) reconcile(ctx context.Context, result *types.Provisi
 				inst.PublicIp = &ip
 				changed = true
 			}
+			if setLambdaConnInfo(inst) {
+				changed = true
+			}
 			if live.PrivateIP != "" && (inst.PrivateIp == nil || *inst.PrivateIp != live.PrivateIP) {
 				ip := live.PrivateIP
 				inst.PrivateIp = &ip
@@ -295,6 +298,28 @@ func lambdaGroups(groups *[]types.ResourceGroupSpec) []types.ResourceGroupSpec {
 		return []types.ResourceGroupSpec{{GpusPerReplica: 1}}
 	}
 	return *groups
+}
+
+func setLambdaConnInfo(inst *types.LambdaCloudInstanceDetail) bool {
+	if inst == nil || inst.Status != StatusActive || inst.PublicIp == nil || *inst.PublicIp == "" {
+		return false
+	}
+	changed := false
+	if inst.SshUser != "ubuntu" {
+		inst.SshUser = "ubuntu"
+		changed = true
+	}
+	if inst.SshPort == nil || *inst.SshPort != 22 {
+		port := 22
+		inst.SshPort = &port
+		changed = true
+	}
+	httpBaseURL := fmt.Sprintf("http://%s:8000", *inst.PublicIp)
+	if inst.HttpBaseUrl != httpBaseURL {
+		inst.HttpBaseUrl = httpBaseURL
+		changed = true
+	}
+	return changed
 }
 
 func firstPreferredType(pref *types.AcceleratorPreference) string {

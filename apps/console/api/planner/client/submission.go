@@ -18,7 +18,6 @@ package client
 
 import (
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
-	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 )
 
 // ResourceAllocation is the backend-agnostic planner allocation metadata
@@ -42,46 +41,13 @@ type DefaultResourceAllocation struct {
 
 func (*DefaultResourceAllocation) isResourceAllocation() {}
 
-// RuntimeRef selects the metadata-service Runtime used to materialize the job.
-// Options is intentionally free-form for runtime-specific fields such as
-// Kubernetes namespace, region, or provisioner-specific switches.
-type RuntimeRef struct {
-	Target  string                 `json:"target,omitempty"`
-	Options map[string]interface{} `json:"options,omitempty"`
-}
-
-// RuntimeForProvisionType maps Resource Manager provider names to MDS Runtime
-// targets. Keep this flat for now; if a provider grows many runtimes, introduce
-// an explicit console-side runtime selector instead of deriving it here.
-func RuntimeForProvisionType(t rmtypes.ResourceProvisionType) *RuntimeRef {
-	target := ""
-	switch t {
-	case rmtypes.ResourceProvisionTypeKubernetes:
-		target = "Kubernetes"
-	case rmtypes.ResourceProvisionTypeLambdaCloud:
-		target = "LambdaCloud"
-	case rmtypes.ResourceProvisionTypeRunPod:
-		target = "RunPod"
-	case rmtypes.ResourceProvisionTypeAWS:
-		target = "External"
-	default:
-		if t != "" {
-			target = string(t)
-		}
-	}
-	if target == "" {
-		return nil
-	}
-	return &RuntimeRef{Target: target}
-}
-
 // AIBrixExtraBody is the AIBrix-specific extension the BatchClient
 // serializes onto POST /v1/batches via the openai-go SDK's extra_body
 // channel. Everything else on the submission rides on openai.BatchNewParams
 // directly.
 type AIBrixExtraBody struct {
 	JobID              string                       `json:"job_id,omitempty"`
-	Runtime            *RuntimeRef                  `json:"runtime,omitempty"`
+	Runtime            *plannerapi.RuntimeRef       `json:"runtime,omitempty"`
 	ResourceAllocation ResourceAllocation           `json:"resource_allocation,omitempty"`
 	ModelTemplate      *plannerapi.ModelTemplateRef `json:"model_template,omitempty"`
 }

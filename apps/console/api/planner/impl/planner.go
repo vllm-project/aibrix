@@ -76,18 +76,21 @@ type queuedJob struct {
 	submittingAt        time.Time
 	resourceFailedAt    time.Time
 	submitFailedAt      time.Time
+	expiredAt           time.Time
 	cancelRequestedAt   time.Time
 	canceledAt          time.Time
 }
 
-// terminalTime returns the timestamp at which the job transitioned into a
-// terminal pre-submit state (resource_failed, submit_failed, cancelled)
+// terminalTime returns the timestamp surfaced on placeholder batches for
+// terminal states tracked locally.
 func terminalTime(j *queuedJob) time.Time {
 	switch j.status {
 	case plannerapi.JobStatusResourceFailed:
 		return j.resourceFailedAt
 	case plannerapi.JobStatusSubmitFailed:
 		return j.submitFailedAt
+	case plannerapi.JobStatusExpired:
+		return j.expiredAt
 	case plannerapi.JobStatusCancelled:
 		return j.canceledAt
 	}
@@ -221,9 +224,16 @@ func (q *Planner) process(jobID string) {
 	q.mu.Unlock()
 	q.persist(jobID)
 
+	runtime, err := q.backend.BuildRuntime(req, readyResult)
+	if err != nil {
+		q.releaseAfter(jobID, provResult.ProvisionID, "build runtime failure")
+		q.markFailed(jobID, plannerapi.JobStatusResourceFailed, err)
+		return
+	}
+
 	aibrix := plannerclient.AIBrixExtraBody{
 		JobID:              req.JobID,
-		Runtime:            plannerclient.RuntimeForProvisionType(q.prov.Type()),
+		Runtime:            runtime,
 		ResourceAllocation: q.backend.BuildResourceAllocation(spec, readyResult, gpuType, gpusPerReplica),
 		ModelTemplate:      req.ModelTemplate,
 	}
@@ -309,6 +319,9 @@ func (q *Planner) waitForProvisionReady(provisionID string) (*rmtypes.ProvisionR
 // "cancel submitted") appears in the log line so each call site is
 // self-identifying.
 func (q *Planner) releaseAfter(jobID, provisionID, reason string) {
+	if q.prov == nil || provisionID == "" {
+		return
+	}
 	if err := q.prov.Release(q.baseCtx, provisionID); err != nil {
 		klog.Warningf("[planner] release after %s job_id=%q provision_id=%q: %v",
 			reason, jobID, provisionID, err)
@@ -354,6 +367,9 @@ func (q *Planner) syncFromBatch(jobID string, batch *openai.Batch) {
 	statusChanged := job.status != newStatus
 	if statusChanged {
 		job.status = newStatus
+	}
+	if batch.ExpiredAt != 0 {
+		job.expiredAt = utils.TimeOrZero(utils.UnixToTimePtr(batch.ExpiredAt))
 	}
 	provisionID := job.provisionID
 	rec := jobToModel(job)
@@ -501,6 +517,7 @@ func modelToJob(rec *models.Job) *queuedJob {
 		submittingAt:        utils.TimeOrZero(rec.SubmittingAt),
 		resourceFailedAt:    utils.TimeOrZero(rec.ResourceFailedAt),
 		submitFailedAt:      utils.TimeOrZero(rec.SubmitFailedAt),
+		expiredAt:           utils.TimeOrZero(rec.ExpiredAt),
 		cancelRequestedAt:   utils.TimeOrZero(rec.CancelRequestedAt),
 		canceledAt:          utils.TimeOrZero(rec.CancelledAt),
 	}
@@ -522,6 +539,7 @@ func jobToModel(j *queuedJob) *models.Job {
 		SubmittingAt:        utils.TimeToPtr(j.submittingAt),
 		ResourceFailedAt:    utils.TimeToPtr(j.resourceFailedAt),
 		SubmitFailedAt:      utils.TimeToPtr(j.submitFailedAt),
+		ExpiredAt:           utils.TimeToPtr(j.expiredAt),
 		CancelRequestedAt:   utils.TimeToPtr(j.cancelRequestedAt),
 		CancelledAt:         utils.TimeToPtr(j.canceledAt),
 		ErrorMessage:        j.errMsg,
@@ -841,6 +859,8 @@ func statusFor(s plannerapi.JobStatus) openai.BatchStatus {
 		return openai.BatchStatusFailed
 	case plannerapi.JobStatusCancelled:
 		return openai.BatchStatusCancelled
+	case plannerapi.JobStatusExpired:
+		return openai.BatchStatusExpired
 	}
 	return openai.BatchStatus(string(s))
 }
@@ -864,6 +884,8 @@ func placeholderBatch(req *plannerapi.EnqueueRequest, st openai.BatchStatus, enq
 		switch st {
 		case openai.BatchStatusFailed:
 			b.FailedAt = terminalAt.Unix()
+		case openai.BatchStatusExpired:
+			b.ExpiredAt = terminalAt.Unix()
 		case openai.BatchStatusCancelled:
 			b.CancelledAt = terminalAt.Unix()
 		}

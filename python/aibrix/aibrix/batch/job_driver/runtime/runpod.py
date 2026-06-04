@@ -11,29 +11,29 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""RunPod runtime.
-
-Registers under the ``RunPod`` provider key so selection works end-to-end; the
-actual start-a-pod + SSH/API-launch mechanics are not implemented yet.
-``provision`` raises so a job routed here fails clearly instead of silently
-doing nothing.
-"""
+"""RunPod runtime: leases an SSH box (RM) and launches vLLM over SSH."""
 
 from __future__ import annotations
 
-from typing import Any
-
-from aibrix.batch.job_driver.runtime import RuntimeBase, register_runtime
-from aibrix.batch.job_entity import BatchJob
-
-
-class RunPodRuntime(RuntimeBase):
-    """Placeholder for the RunPod backend (not implemented yet)."""
-
-    provisions = True
-
-    async def _provision(self, job: BatchJob, job_id: str) -> Any:
-        raise NotImplementedError("RunPod runtime is not implemented yet")
+from aibrix.batch.job_driver.runtime import register_runtime
+from aibrix.batch.job_driver.runtime.ssh_launch import (
+    SSHConnInfo,
+    SSHLaunchRuntime,
+    build_launch_command,
+)
 
 
-register_runtime("RunPod", lambda **_: RunPodRuntime())
+class RunPodRuntime(SSHLaunchRuntime):
+    """RunPod uses the shared SSH-launch flow; conn info comes from RM via
+    runtime.options (host = publicIp, ssh_port = portMappings['22'],
+    http_base_url = proxy URL). The pod image has vLLM preinstalled, so it
+    launches the vLLM binary directly."""
+
+    def _launch_command(self, info: SSHConnInfo) -> str:
+        return build_launch_command(info)
+
+
+register_runtime(
+    "RunPod",
+    lambda *, job=None, context=None, entity_manager=None, **_: RunPodRuntime(),
+)

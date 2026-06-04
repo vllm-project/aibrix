@@ -136,11 +136,11 @@ def test_registry_allows_downstream_registration():
         runtime_mod._RUNTIME_FACTORIES.pop("custom-test-runtime", None)
 
 
-@pytest.mark.asyncio
-async def test_cloud_runtimes_registered_as_placeholders():
+def test_cloud_runtimes_registered_as_ssh_launch():
     import aibrix.batch.job_driver  # noqa: F401  triggers provider registration
     from aibrix.batch.job_driver.runtime.lambda_cloud import LambdaCloudRuntime
     from aibrix.batch.job_driver.runtime.runpod import RunPodRuntime
+    from aibrix.batch.job_driver.runtime.ssh_launch import SSHLaunchRuntime
 
     assert "LambdaCloud" in registered_runtimes()
     assert "RunPod" in registered_runtimes()
@@ -148,10 +148,7 @@ async def test_cloud_runtimes_registered_as_placeholders():
     assert isinstance(create_runtime("LambdaCloud"), LambdaCloudRuntime)
     assert isinstance(create_runtime("RunPod"), RunPodRuntime)
 
-    # Placeholders: provisioning is not implemented, so the session fails clearly.
     for key in ("LambdaCloud", "RunPod"):
         runtime = create_runtime(key)
+        assert isinstance(runtime, SSHLaunchRuntime)
         assert runtime.provisions is True
-        with pytest.raises(NotImplementedError):
-            async with runtime.session(job=None, job_id="j"):
-                pass

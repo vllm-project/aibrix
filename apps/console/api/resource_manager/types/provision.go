@@ -509,6 +509,10 @@ type LambdaCloudInstanceDetail struct {
 
 	// PublicIp is the public IP address.
 	PublicIp *string `json:"publicIp,omitempty"`
+
+	SshUser     string `json:"sshUser,omitempty"`
+	SshPort     *int   `json:"sshPort,omitempty"`
+	HttpBaseUrl string `json:"httpBaseUrl,omitempty"`
 }
 
 // RunPodProvisionDetail contains RunPod-specific provision result details.
@@ -534,8 +538,15 @@ type RunPodPodDetail struct {
 	// PublicIp is the pod's public IP address.
 	PublicIp *string `json:"publicIp,omitempty"`
 
+	SshUser     string `json:"sshUser,omitempty"`
+	SshPort     *int   `json:"sshPort,omitempty"`
+	HttpBaseUrl string `json:"httpBaseUrl,omitempty"`
+
 	// DataCenterId is the RunPod data center the pod runs in.
 	DataCenterId string `json:"dataCenterId,omitempty"`
+
+	// PortMappings is the pod's public TCP port map (internal -> external).
+	PortMappings map[string]int `json:"portMappings,omitempty"`
 }
 
 type InstanceTypeSpec struct {
