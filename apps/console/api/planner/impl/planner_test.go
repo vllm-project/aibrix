@@ -42,6 +42,7 @@ import (
 // assertion and tracks peak concurrent in-flight Provisions so worker-pool
 // parallelism can be measured directly.
 type fakeProvisioner struct {
+	Provider    rmtypes.ResourceProvisionType
 	ProvisionFn func(ctx context.Context, req *rmtypes.ResourceProvision) (*rmtypes.ProvisionResult, error)
 	ReleaseFn   func(ctx context.Context, provisionID string) error
 	ListFn      func(ctx context.Context, opts *rmtypes.ListOptions) ([]*rmtypes.ProvisionResult, error)
@@ -54,6 +55,9 @@ type fakeProvisioner struct {
 }
 
 func (f *fakeProvisioner) Type() rmtypes.ResourceProvisionType {
+	if f.Provider != "" {
+		return f.Provider
+	}
 	return rmtypes.ResourceProvisionTypeKubernetes
 }
 
@@ -348,6 +352,45 @@ func TestHappyPathReachesSubmitted(t *testing.T) {
 	}
 	if job.Batch.ID != "batch-j1" || job.Batch.Status != openai.BatchStatusInProgress {
 		t.Errorf("post-submit GetJob: got %+v, want batch-j1/in_progress", job.Batch)
+	}
+}
+
+func TestExpiredBatchKeepsExpiredAtAfterSync(t *testing.T) {
+	const expiredAt int64 = 1_800_000_000
+	prov := &fakeProvisioner{}
+	bc := &fakeBatchClient{
+		GetFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			return &openai.Batch{
+				ID:        batchID,
+				Status:    openai.BatchStatusExpired,
+				ExpiredAt: expiredAt,
+			}, nil
+		},
+	}
+	q := newTestPlanner(t, bc, prov, 1)
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-expired")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		creates, _ := bc.snapshot()
+		return len(creates) == 1 && creates[0] == "j-expired"
+	}, "expected CreateBatch to fire for j-expired")
+
+	got, err := q.GetJob(context.Background(), "j-expired")
+	if err != nil {
+		t.Fatalf("GetJob sync: %v", err)
+	}
+	if got.Batch.Status != openai.BatchStatusExpired || got.Batch.ExpiredAt != expiredAt {
+		t.Fatalf("synced batch = %+v, want expired with ExpiredAt=%d", got.Batch, expiredAt)
+	}
+
+	got, err = q.GetJob(context.Background(), "j-expired")
+	if err != nil {
+		t.Fatalf("GetJob cached terminal: %v", err)
+	}
+	if got.Batch.Status != openai.BatchStatusExpired || got.Batch.ExpiredAt != expiredAt {
+		t.Fatalf("cached batch = %+v, want expired with ExpiredAt=%d", got.Batch, expiredAt)
 	}
 }
 

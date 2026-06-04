@@ -220,6 +220,31 @@ files = [
 ]
 
 [[package]]
+name = "asyncssh"
+version = "2.23.0"
+description = "AsyncSSH: Asynchronous SSHv2 client and server library"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "asyncssh-2.23.0-py3-none-any.whl", hash = "sha256:14108bfdaae17457f0c1841e883ad934271bbfdd46458aa4c4d0973451940ad0"},
+    {file = "asyncssh-2.23.0.tar.gz", hash = "sha256:8c54760953c1f2cf282591bcba5c8c70efc48d645bbf26bd2307a9c66a0ed1a7"},
+]
+
+[package.dependencies]
+cryptography = ">=39.0"
+typing_extensions = ">=4.0.0"
+
+[package.extras]
+bcrypt = ["bcrypt (>=3.1.3)"]
+fido2 = ["fido2 (>=2)"]
+gssapi = ["gssapi (>=1.2.0)"]
+ifaddr = ["ifaddr (>=0.2.0)"]
+pkcs11 = ["python-pkcs11 (>=0.7.0)"]
+pyopenssl = ["pyOpenSSL (>=23.0.0)"]
+pywin32 = ["pywin32 (>=227)"]
+
+[[package]]
 name = "attrs"
 version = "26.1.0"
 description = "Classes Without Boilerplate"
@@ -5142,4 +5167,4 @@ testing = ["coverage[toml]", "zope.event", "zope.testing"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.13"
-content-hash = "b100279114a1b9a8120fb67d7da3a754e84f652e325177ae4032c7cb5873a865"
+content-hash = "651942714d151cb386eb2c076f9015c65e65538513ad358ff48ec10f9b6ac3b4"

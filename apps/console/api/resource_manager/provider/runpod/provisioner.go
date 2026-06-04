@@ -49,6 +49,12 @@ func newProvisioner(s store.Store, cfg *Config) (*runpodProvisioner, error) {
 			Code:    "MissingCredential",
 		}
 	}
+	if cfg.SSHPublicKey == "" {
+		return nil, &types.ProvisionerError{
+			Message: "runpod provisioner selected but RUNPOD_SSH_PUBLIC_KEY is not set",
+			Code:    "MissingCredential",
+		}
+	}
 	return &runpodProvisioner{store: s, cfg: cfg, client: NewClient(cfg)}, nil
 }
 
@@ -188,6 +194,16 @@ func (p *runpodProvisioner) reconcile(ctx context.Context, result *types.Provisi
 			pod.PublicIp = &ip
 			changed = true
 		}
+		if len(live.PortMappings) > 0 && !samePortMappings(pod.PortMappings, live.PortMappings) {
+			pod.PortMappings = live.PortMappings
+			changed = true
+		}
+		if pod.SshPort == nil {
+			if sshPort, ok := live.PortMappings["22"]; ok {
+				pod.SshPort = &sshPort
+				changed = true
+			}
+		}
 	}
 
 	if agg := aggregateRunPodStatus(statuses); agg != result.Status {
@@ -228,23 +244,57 @@ func (p *runpodProvisioner) Release(ctx context.Context, provisionID string) err
 // ============================================================================
 
 func (p *runpodProvisioner) buildInput(name string, gpuTypeIds []string, gpuCount int) PodCreateInput {
-	input := PodCreateInput{
-		Name:            name,
-		ComputeType:     "GPU",
-		GpuTypeIds:      gpuTypeIds,
-		GpuCount:        gpuCount,
-		GpuTypePriority: "availability",
+	image := p.cfg.ImageName
+	if image == "" {
+		image = "vllm/vllm-openai:latest"
 	}
-	input.ImageName = p.cfg.ImageName
-	input.CloudType = p.cfg.CloudType
-	input.DataCenterIds = p.cfg.DataCenterIds
-	input.ContainerDiskInGb = p.cfg.ContainerDiskInGb
-	input.VolumeInGb = p.cfg.VolumeInGb
-	input.Ports = p.cfg.Ports
-	if input.CloudType == "" {
-		input.CloudType = CloudTypeSecure
+	cloud := p.cfg.CloudType
+	if cloud == "" {
+		cloud = CloudTypeSecure
 	}
-	return input
+	// Keep the container alive with sshd running, but do NOT start vLLM —
+	// the MDS runtime launches vLLM over SSH. The vllm/vllm-openai image has an
+	// ENTRYPOINT (the vLLM server) and no openssh-server, so we (1) OVERRIDE the
+	// entrypoint with /bin/bash -lc — otherwise the script below is appended as
+	// args to vLLM and never runs — and (2) install openssh-server on boot, wire
+	// the injected public key into authorized_keys, generate host keys, then exec
+	// sshd in the foreground so the container stays up (and fails loudly if SSH
+	// can't come up).
+	entrypoint := []string{"/bin/bash", "-lc"}
+	script := "set -e; export DEBIAN_FRONTEND=noninteractive; " +
+		"[ -x /usr/sbin/sshd ] || { apt-get update && apt-get install -y openssh-server; }; " +
+		"mkdir -p /run/sshd ~/.ssh && chmod 700 ~/.ssh; " +
+		"printf '%s\\n' \"$PUBLIC_KEY\" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys; " +
+		"ssh-keygen -A; exec /usr/sbin/sshd -D -e"
+
+	ports := p.cfg.Ports
+	if len(ports) == 0 {
+		ports = []string{"8000/http", "22/tcp"}
+	}
+	supportPublicIp := true
+
+	in := PodCreateInput{
+		Name:              name,
+		ImageName:         image,
+		ComputeType:       "GPU",
+		CloudType:         cloud,
+		GpuTypeIds:        gpuTypeIds,
+		GpuCount:          gpuCount,
+		GpuTypePriority:   "availability",
+		DataCenterIds:     p.cfg.DataCenterIds,
+		ContainerDiskInGb: p.cfg.ContainerDiskInGb,
+		VolumeInGb:        p.cfg.VolumeInGb,
+		Ports:             ports,
+		DockerEntrypoint:  entrypoint,
+		DockerStartCmd:    []string{script},
+		SupportPublicIp:   &supportPublicIp,
+		Env:               map[string]string{},
+	}
+	if p.cfg.SSHPublicKey != "" {
+		in.Env["PUBLIC_KEY"] = p.cfg.SSHPublicKey
+		in.Env["SSH_PUBLIC_KEY"] = p.cfg.SSHPublicKey
+	}
+	return in
 }
 
 func (p *runpodProvisioner) deleteBestEffort(ctx context.Context, ids []string) {
@@ -259,12 +309,33 @@ func podDetail(pod *Pod, gpuTypeId string) types.RunPodPodDetail {
 		GpuTypeId:     gpuTypeId,
 		DesiredStatus: pod.DesiredStatus,
 		DataCenterId:  pod.Machine.DataCenterId,
+		SshUser:       "root",
+		HttpBaseUrl:   fmt.Sprintf("https://%s-8000.proxy.runpod.net", pod.ID),
 	}
 	if pod.PublicIp != "" {
 		ip := pod.PublicIp
 		detail.PublicIp = &ip
 	}
+	if len(pod.PortMappings) > 0 {
+		detail.PortMappings = pod.PortMappings
+		if sshPort, ok := pod.PortMappings["22"]; ok {
+			detail.SshPort = &sshPort
+		}
+	}
 	return detail
+}
+
+func samePortMappings(a, b map[string]int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok || bv != av {
+			return false
+		}
+	}
+	return true
 }
 
 func runpodGroups(groups *[]types.ResourceGroupSpec) []types.ResourceGroupSpec {

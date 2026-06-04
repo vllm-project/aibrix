@@ -38,11 +38,12 @@ const (
 
 	defaultTimeout = 30 * time.Second
 
-	envAPIKey      = "RUNPOD_API_KEY"
-	envBaseURL     = "RUNPOD_BASE_URL"
-	envDataCenters = "RUNPOD_DATA_CENTERS" // comma-separated
-	envImage       = "RUNPOD_IMAGE"
-	envCloudType   = "RUNPOD_CLOUD_TYPE" // SECURE | COMMUNITY
+	envAPIKey       = "RUNPOD_API_KEY"
+	envBaseURL      = "RUNPOD_BASE_URL"
+	envDataCenters  = "RUNPOD_DATA_CENTERS" // comma-separated
+	envImage        = "RUNPOD_IMAGE"
+	envCloudType    = "RUNPOD_CLOUD_TYPE" // SECURE | COMMUNITY
+	envSSHPublicKey = "RUNPOD_SSH_PUBLIC_KEY"
 
 	// desiredStatus values returned by the API.
 	StatusRunning    = "RUNNING"
@@ -61,6 +62,7 @@ type Config struct {
 	DataCenterIds     []string
 	ImageName         string
 	CloudType         string
+	SSHPublicKey      string // operator public key injected for inbound SSH
 	Ports             []string
 	ContainerDiskInGb int
 	VolumeInGb        int
@@ -76,6 +78,7 @@ func ConfigFromEnv() *Config {
 		ImageName: os.Getenv(envImage),
 		CloudType: os.Getenv(envCloudType),
 	}
+	cfg.SSHPublicKey = os.Getenv(envSSHPublicKey)
 	if raw := os.Getenv(envDataCenters); raw != "" {
 		for _, dc := range strings.Split(raw, ",") {
 			if dc = strings.TrimSpace(dc); dc != "" {
@@ -128,7 +131,13 @@ type PodCreateInput struct {
 	VolumeInGb        int               `json:"volumeInGb,omitempty"`
 	Ports             []string          `json:"ports,omitempty"`
 	Env               map[string]string `json:"env,omitempty"`
-	SupportPublicIp   *bool             `json:"supportPublicIp,omitempty"`
+	// DockerStartCmd overrides the image CMD so the server does NOT auto-start
+	// (the container runs sshd + idles; MDS launches vLLM over SSH).
+	DockerStartCmd []string `json:"dockerStartCmd,omitempty"`
+	// DockerEntrypoint overrides the image ENTRYPOINT when the base image's
+	// entrypoint would still launch/alter the server.
+	DockerEntrypoint []string `json:"dockerEntrypoint,omitempty"`
+	SupportPublicIp  *bool    `json:"supportPublicIp,omitempty"`
 }
 
 // Machine is the subset of a pod's machine details we read.

@@ -100,3 +100,11 @@ type ModelTemplateRef struct {
 	Version string          `json:"version,omitempty"`
 	Spec    json.RawMessage `json:"spec,omitempty"`
 }
+
+// RuntimeRef selects the metadata-service Runtime used to materialize the job.
+// Options is intentionally free-form for runtime-specific fields such as
+// Kubernetes namespace, region, or provisioner-specific switches.
+type RuntimeRef struct {
+	Target  string         `json:"target,omitempty"`
+	Options map[string]any `json:"options,omitempty"`
+}
