@@ -96,13 +96,11 @@ class BatchStorageAdapter:
             if len(line) == 0:
                 continue
 
-            # Try to lock this request before processing
+            # Try to lock this request before processing.
             lock_key = self._get_request_meta_output_key(job, idx)
             try:
-                # Try to acquire lock with 1 hour expiration
                 locked = await lock_request(lock_key, expiration_seconds=3600)
             except Exception as e:
-                # Lock operation failed (should not happen with return False requirement)
                 logger.warning(
                     "Error on locking request in the job, assuming locking not supported",
                     job_id=job.job_id,
@@ -112,7 +110,6 @@ class BatchStorageAdapter:
                 locked = True
 
             if locked:
-                # Successfully locked, yield the request data
                 request_data = json.loads(line)
                 request_data["_request_index"] = idx  # Add index for tracking
                 logger.debug(
@@ -123,7 +120,6 @@ class BatchStorageAdapter:
                 )  # type:ignore[call-arg]
                 yield request_data
             else:
-                # Request already locked by another worker, skip it
                 logger.debug(
                     "Skipping already locked request in the job",
                     job_id=job.job_id,
@@ -234,7 +230,7 @@ class BatchStorageAdapter:
             json_str,
         )
 
-        # Unlock the request by setting completion status
+        # Unlock the request by setting completion status.
         unlock_key = self._get_request_meta_output_key(job, request_index)
         completion_status = self._get_request_meta_output_val(is_error, etag)
         await unlock_request(unlock_key, completion_status)

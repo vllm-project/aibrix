@@ -384,8 +384,9 @@ class Priority(str, Enum):
 class RetryPolicy(_Strict):
     """Per-request retry policy.
 
-    Schema accepted; runtime retry is delegated to engine HTTP layer
-    plus the smart client when that lands.
+    Schema accepted for profile compatibility. Runtime dispatch already uses
+    the smart client's built-in retry defaults; this profile-level policy is
+    not mapped into engine RetryConfig yet.
     """
 
     max_retries: int = Field(default=2, ge=0)

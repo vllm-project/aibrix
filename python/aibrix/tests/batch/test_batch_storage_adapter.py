@@ -92,6 +92,29 @@ def mock_storage():
 
 
 @pytest.mark.asyncio
+async def test_read_job_next_input_data_keeps_locking_behavior(mock_storage):
+    adapter = BatchStorageAdapter(mock_storage)
+    job = create_test_batch_job(total=2)
+    mock_storage.readline_iter.side_effect = _readline_iter_from_lines(
+        [
+            '{"custom_id":"a","body":{"i":0}}',
+            '{"custom_id":"b","body":{"i":1}}',
+        ]
+    )
+
+    with patch(
+        "aibrix.batch.storage.adapter.lock_request",
+        AsyncMock(return_value=True),
+    ) as mock_lock:
+        requests = [
+            item async for item in adapter.read_job_next_input_data(job, start_index=0)
+        ]
+
+    assert [request["_request_index"] for request in requests] == [0, 1]
+    assert mock_lock.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_finalize_job_output_data_corrects_counts_from_metastore(mock_storage):
     """Test that finalize_job_output_data correctly calculates counts from metastore keys."""
     adapter = BatchStorageAdapter(mock_storage)

@@ -33,12 +33,22 @@ worker only after the output files it writes to exist.
 """
 
 import asyncio
+import contextlib
+import os
 import uuid
+from math import isfinite
 from typing import Any, Dict, Optional, Set
 
 import aibrix.batch.constant as constant
 import aibrix.batch.storage as storage
-from aibrix.batch.client import DispatchEngine, InferenceError, InferenceRequest
+from aibrix.batch.client import (
+    DispatchEngine,
+    DispatchStats,
+    DispatchStatsSnapshot,
+    InferenceError,
+    InferenceRequest,
+    RetryConfig,
+)
 from aibrix.batch.job_driver.runtime import Endpoint, NoopRuntime, Runtime
 from aibrix.batch.job_entity import (
     BatchJob,
@@ -53,6 +63,97 @@ from aibrix.batch.state import RunningJobs
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
+
+_ADAPTIVE_MAX_FACTOR_ENV = "AIBRIX_BATCH_ADAPTIVE_MAX_FACTOR"
+_TELEMETRY_INTERVAL_ENV = "AIBRIX_BATCH_TELEMETRY_INTERVAL_SECONDS"
+_INFERENCE_MAX_RETRIES_ENV = "AIBRIX_BATCH_INFERENCE_MAX_RETRIES"
+_NO_ENDPOINT_MAX_RETRIES_ENV = "AIBRIX_BATCH_NO_ENDPOINT_MAX_RETRIES"
+_DEFAULT_ADAPTIVE_MAX_FACTOR = 8.0
+_DEFAULT_TELEMETRY_INTERVAL_SECONDS = 5.0
+_DEFAULT_INFERENCE_MAX_RETRIES = 120
+_DEFAULT_NO_ENDPOINT_MAX_RETRIES = 120
+
+
+def _adaptive_max_factor() -> float:
+    return max(
+        _float_env(_ADAPTIVE_MAX_FACTOR_ENV, _DEFAULT_ADAPTIVE_MAX_FACTOR),
+        1.0,
+    )
+
+
+def _telemetry_interval_seconds() -> float:
+    return max(
+        _float_env(_TELEMETRY_INTERVAL_ENV, _DEFAULT_TELEMETRY_INTERVAL_SECONDS),
+        0.0,
+    )
+
+
+def _no_endpoint_max_retries() -> int:
+    return max(
+        _int_env(
+            _NO_ENDPOINT_MAX_RETRIES_ENV,
+            _DEFAULT_NO_ENDPOINT_MAX_RETRIES,
+        ),
+        0,
+    )
+
+
+def _inference_max_retries() -> int:
+    return max(
+        _int_env(
+            _INFERENCE_MAX_RETRIES_ENV,
+            _DEFAULT_INFERENCE_MAX_RETRIES,
+        ),
+        0,
+    )
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid float environment value; using default",
+            name=name,
+            value=raw,
+            default=default,
+        )  # type: ignore[call-arg]
+        return default
+    if not isfinite(value):
+        logger.warning(
+            "Invalid float environment value; using default",
+            name=name,
+            value=raw,
+            default=default,
+        )  # type: ignore[call-arg]
+        return default
+    return value
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid int environment value; using default",
+            name=name,
+            value=raw,
+            default=default,
+        )  # type: ignore[call-arg]
+        return default
+    return value
+
+
+def _round_optional(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    return round(value, 6)
 
 
 class BaseJobDriver:
@@ -108,6 +209,7 @@ class BaseJobDriver:
         # contributes at most once.
         self._usage_by_job: Dict[str, BatchUsage] = {}
         self._usage_counted_ids: Dict[str, Set[str]] = {}
+        self._usage_lock = asyncio.Lock()
 
     # ── failure / error helpers ──────────────────────────────────────────
 
@@ -196,11 +298,11 @@ class BaseJobDriver:
         self._usage_by_job.pop(job_id, None)
         self._usage_counted_ids.pop(job_id, None)
 
-    # BUG: This function is not thread-safe. Usage from multiple workers can overwrite each other.
     async def _snapshot_usage_to_status(self, job_id: str) -> None:
         """Push the current accumulator into the live BatchJob's status so
         downstream persistence reflects the latest tally."""
-        accumulated = self.get_accumulated_usage(job_id)
+        async with self._usage_lock:
+            accumulated = self.get_accumulated_usage(job_id)
         if accumulated is None:
             return
         current = await self._progress_manager.get_job(job_id)
@@ -229,7 +331,15 @@ class BaseJobDriver:
         try:
             async with self._runtime.session(job, job_id) as endpoint:
                 self._engine = (
-                    DispatchEngine(endpoint.source)
+                    DispatchEngine(
+                        endpoint.source,
+                        retry=RetryConfig(
+                            max_retries=_inference_max_retries(),
+                            base_delay_seconds=0.5,
+                            max_delay_seconds=5.0,
+                            no_endpoint_max_retries=_no_endpoint_max_retries(),
+                        ),
+                    )
                     if endpoint.source is not None
                     else None
                 )
@@ -369,10 +479,10 @@ class BaseJobDriver:
     async def execute_worker(self, job_id) -> BatchJob:
         """Process requests without file preparation or finalization.
 
-        Sending one request is delegated to the dispatch engine (``send_one``):
-        the engine owns endpoint resolution and failover. The metastore's
-        streaming launch/complete protocol (resume, skip, total detection)
-        stays here, request by request.
+        Sending requests is delegated to the dispatch engine: the engine owns
+        endpoint resolution, failover, and concurrency. Jobs with a known total
+        use the concurrent engine loop; unknown-total jobs keep a compatibility
+        serial cursor because input EOF discovery is part of that protocol.
         """
         if self._engine is None:
             raise RuntimeError(
@@ -382,6 +492,25 @@ class BaseJobDriver:
                 "--dry-run, GatewayEndpointSource(url) for a real engine). "
                 "(prepare_job / finalize_job do not need an engine.)"
             )
+
+        job_for_mode = await self._progress_manager.get_job(job_id)
+        if (
+            job_for_mode is not None
+            and job_for_mode.status.request_counts.total > 0
+            and self._parse_fail_after_n_requests(job_for_mode) is None
+        ):
+            return await self._execute_worker_concurrent(job_for_mode)
+
+        return await self._execute_worker_serial(job_id)
+
+    async def _execute_worker_serial(self, job_id: str) -> BatchJob:
+        """Compatibility path for unknown-total inputs.
+
+        It is serial only because the old cursor protocol discovers EOF while
+        advancing one request at a time. Transport still goes through
+        DispatchEngine, so this is not a second inference client.
+        """
+        assert self._engine is not None  # guaranteed by execute_worker
 
         job, line_no = await self._get_next_request(job_id)
         if line_no < 0:
@@ -438,9 +567,10 @@ class BaseJobDriver:
                 )
 
                 if last_error is None and isinstance(request_output, dict):
-                    self._accumulate_usage(
-                        job_id, custom_id, request_output.get("usage")
-                    )
+                    async with self._usage_lock:
+                        self._accumulate_usage(
+                            job_id, custom_id, request_output.get("usage")
+                        )
 
                 response = self._build_response(
                     custom_id, job_id, line_no, request_output, last_error
@@ -482,10 +612,181 @@ class BaseJobDriver:
         )  # type: ignore[call-arg]
         return job
 
+    async def _execute_worker_concurrent(self, job: BatchJob) -> BatchJob:
+        """Known-total worker path backed by DispatchEngine.run().
+
+        The request stream is storage-backed. Because DispatchEngine acquires a
+        concurrency slot before pulling the next item, the worker only reads
+        requests it can dispatch immediately.
+        """
+        assert self._engine is not None  # guaranteed by execute_worker
+        job_id = job.job_id
+        assert job_id is not None
+        total = job.status.request_counts.total
+        latest_job = job
+
+        logger.debug(
+            "Start processing job concurrently",
+            job_id=job_id,
+            total=total,
+            opts=job.spec.opts,
+        )  # type: ignore[call-arg]
+
+        async def feed():
+            async for request_input in storage.read_job_next_request(job, 0):
+                request_id = request_input.pop("_request_index", -1)
+                if request_id < 0 or request_id >= total:
+                    continue
+
+                if "body" not in request_input:
+                    raise BatchJobError(
+                        code=BatchJobErrorCode.INVALID_INPUT_FILE,
+                        message="Request missing 'body' field",
+                        line=request_id,
+                    )
+
+                custom_id = request_input.get("custom_id", "")
+                yield InferenceRequest(
+                    path=job.spec.endpoint,
+                    payload=self._shape_payload(request_input["body"]),
+                    ref=(request_id, custom_id),
+                )
+
+        async def on_result(
+            request: InferenceRequest,
+            response: Optional[dict[str, Any]],
+            error: Optional[InferenceError],
+        ) -> None:
+            nonlocal latest_job
+            request_id, custom_id = request.ref
+            if error is None and isinstance(response, dict):
+                async with self._usage_lock:
+                    self._accumulate_usage(job_id, custom_id, response.get("usage"))
+
+            record = self._build_response(
+                custom_id, job_id, request_id, response, error
+            )
+            await storage.write_job_output_data(job, request_id, record)
+            latest_job = await self._progress_manager.complete_job_request(
+                job_id, request_id, failed=error is not None
+            )
+            await self._snapshot_usage_to_status(job_id)
+
+        stats = DispatchStats()
+        telemetry_interval = _telemetry_interval_seconds()
+        telemetry_task = (
+            asyncio.create_task(
+                self._log_dispatch_telemetry(
+                    job_id,
+                    stats,
+                    telemetry_interval,
+                )
+            )
+            if telemetry_interval > 0
+            else None
+        )
+        try:
+            await self._engine.run(
+                feed(),
+                on_result,
+                adaptive_concurrency=True,
+                adaptive_max_factor=_adaptive_max_factor(),
+                stats=stats,
+            )
+        finally:
+            if telemetry_task is not None:
+                telemetry_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await telemetry_task
+            self._emit_dispatch_telemetry(
+                job_id,
+                stats.snapshot(reset_window=True),
+                telemetry_interval if telemetry_interval > 0 else 1.0,
+                final=True,
+            )
+
+        latest_job = await self._sync_completed_requests_from_storage(
+            job_id, latest_job
+        )
+
+        logger.debug(
+            "Worker completed, job state:",
+            job_id=job_id,
+            total=latest_job.status.request_counts.total if latest_job else None,
+            state=latest_job.status.state.value if latest_job else None,
+        )  # type: ignore[call-arg]
+        return latest_job
+
+    async def _log_dispatch_telemetry(
+        self,
+        job_id: str,
+        stats: DispatchStats,
+        interval: float,
+    ) -> None:
+        while True:
+            started = asyncio.get_running_loop().time()
+            await asyncio.sleep(interval)
+            elapsed = max(asyncio.get_running_loop().time() - started, 1e-9)
+            self._emit_dispatch_telemetry(
+                job_id,
+                stats.snapshot(reset_window=True),
+                elapsed,
+                final=False,
+            )
+
+    def _emit_dispatch_telemetry(
+        self,
+        job_id: str,
+        snapshot: DispatchStatsSnapshot,
+        window_seconds: float,
+        *,
+        final: bool,
+    ) -> None:
+        window_seconds = max(window_seconds, 1e-9)
+        logger.info(
+            "Batch dispatch telemetry",
+            job_id=job_id,
+            final=final,
+            started_qps=round(snapshot.window_started / window_seconds, 3),
+            completed_qps=round(snapshot.window_completed / window_seconds, 3),
+            failed_qps=round(snapshot.window_failed / window_seconds, 3),
+            inflight=snapshot.inflight,
+            concurrency_limit=snapshot.limit,
+            max_inflight=snapshot.max_inflight,
+            started=snapshot.started,
+            completed=snapshot.completed,
+            failed=snapshot.failed,
+            window_started=snapshot.window_started,
+            window_completed=snapshot.window_completed,
+            window_failed=snapshot.window_failed,
+            avg_latency_seconds=_round_optional(snapshot.avg_latency_seconds),
+            p95_latency_seconds=_round_optional(snapshot.p95_latency_seconds),
+        )  # type: ignore[call-arg]
+
+    async def _sync_completed_requests_from_storage(
+        self, job_id: str, job: BatchJob
+    ) -> BatchJob:
+        """Reconcile already-finished requests skipped by storage.
+
+        This keeps resume behavior correct without duplicating the durable done
+        record in the client.
+        """
+        latest_job = job
+        total = job.status.request_counts.total
+        for request_id in range(total):
+            counts = latest_job.status.request_counts
+            if counts.completed + counts.failed == counts.total:
+                break
+            if await storage.is_request_done(job, request_id):
+                latest_job = await self._progress_manager.complete_job_request(
+                    job_id, request_id
+                )
+        return latest_job
+
     async def _send_one(
         self, endpoint: str, body: Dict[str, Any], request_id: int
     ) -> tuple[Any, Optional[Exception]]:
-        """Dispatch one request via the engine, returning (output, error)."""
+        """Serial fallback adapter around DispatchEngine.send_one."""
         assert self._engine is not None  # guaranteed by execute_worker
         try:
             output = await self._engine.send_one(
