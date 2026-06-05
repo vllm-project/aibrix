@@ -182,7 +182,7 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	}
 
 	// Register file proxy routes
-	fileHandler := handler.NewFileHandler(s.cfg.MetadataServiceURL)
+	fileHandler := handler.NewFileHandler(s.cfg.MetadataServiceURL, s.store)
 	fileHandler.RegisterRoutes(mux)
 
 	// Register auth routes

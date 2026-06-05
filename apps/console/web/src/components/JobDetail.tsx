@@ -7,10 +7,11 @@ import {
   Copy,
   Download,
   Server,
-  Trash2,
   XCircle,
 } from 'lucide-react';
-import { getJob, getUserInfo } from '../utils/api';
+import { cancelJob, getJob, getUserInfo } from '../utils/api';
+import { canCancelBatchJob, copyBatchIdentifier, getBatchDatasetRows } from '../utils/batchProduct';
+import { copyToClipboard } from '../utils/clipboard';
 import { Job, JobEvent, JobStatus } from '../data/mockData';
 
 interface JobDetailProps {
@@ -123,6 +124,10 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [cancellingJob, setCancellingJob] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const [copyFeedback, setCopyFeedback] = useState<'Copied' | 'Copy failed' | null>(null);
   // Current viewer; datasets are downloadable only by the job owner.
   const [currentUser, setCurrentUser] = useState('');
 
@@ -179,6 +184,28 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
     };
   }, [jobId]);
 
+  const handleCancelJob = async () => {
+    if (!job || cancellingJob) return;
+    setCancellingJob(true);
+    setCancelError(null);
+    try {
+      const next = await cancelJob(job.id);
+      setJob(next);
+      setConfirmCancel(false);
+    } catch (err) {
+      setCancelError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCancellingJob(false);
+    }
+  };
+
+  const handleCopyJobId = async () => {
+    if (!job) return;
+    const feedback = await copyBatchIdentifier(job.id, copyToClipboard);
+    setCopyFeedback(feedback);
+    setTimeout(() => setCopyFeedback(null), 1800);
+  };
+
   if (loading) {
     return (
       <div className="p-8">
@@ -216,8 +243,16 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
   // Only the owner may download datasets (input/output/error); other users are
   // view-only. This is a UX guard and must also be enforced server-side.
   const isOwner = !!currentUser && (job.createdBy || '').toLowerCase() === currentUser;
+  const viewerIsKnownNonOwner = !!currentUser && !!job.createdBy && (job.createdBy || '').toLowerCase() !== currentUser;
+  const canCancel = canCancelBatchJob(job.status) && !viewerIsKnownNonOwner && !cancellingJob;
+  const cancelDisabledReason = isTerminal
+    ? 'Terminal jobs cannot be cancelled'
+    : viewerIsKnownNonOwner
+      ? 'Only the job owner can cancel this batch'
+      : 'Cancel batch';
   const events = getEvents(job);
   const metadataEntries = visibleMetadata(job);
+  const datasetRows = getBatchDatasetRows(job);
 
   return (
     <div className="p-8">
@@ -232,8 +267,14 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
             <h1 className="text-2xl mb-2">{displayName}</h1>
             <div className="flex items-center gap-3">
               <code className="text-sm text-gray-600 bg-gray-100 px-2 py-1 rounded-md">{job.id}</code>
-              <button className="text-gray-400 hover:text-gray-600">
+              <button
+                type="button"
+                onClick={handleCopyJobId}
+                className="inline-flex items-center gap-1 text-gray-400 hover:text-gray-600"
+                title="Copy batch id"
+              >
                 <Copy className="w-4 h-4" />
+                {copyFeedback && <span className="text-xs">{copyFeedback}</span>}
               </button>
               <span className={`inline-flex px-2.5 py-1 text-xs rounded-full ${statusClass(job.status)}`}>
                 {job.status}
@@ -241,10 +282,50 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
             </div>
           </div>
 
-          <button className="w-10 h-10 rounded-lg border border-gray-200 flex items-center justify-center hover:bg-gray-50">
-            <Trash2 className="w-4 h-4 text-red-500" />
+          <button
+            type="button"
+            onClick={() => setConfirmCancel(true)}
+            disabled={!canCancel}
+            title={cancelDisabledReason}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 text-sm text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white"
+          >
+            <XCircle className="w-4 h-4" />
+            Cancel batch
           </button>
         </div>
+
+        {confirmCancel && (
+          <div className="mt-4 flex items-start justify-between gap-4 rounded-lg border border-red-200 bg-red-50 p-4">
+            <div>
+              <div className="text-sm font-medium text-red-800">Cancel this batch?</div>
+              <p className="text-xs text-red-700 mt-1">
+                In-flight requests may keep running briefly. Completed results remain available if the backend returns output files.
+              </p>
+              {cancelError && <p className="text-xs text-red-700 mt-2">Failed to cancel: {cancelError}</p>}
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmCancel(false);
+                  setCancelError(null);
+                }}
+                disabled={cancellingJob}
+                className="px-3 py-1.5 rounded-lg border border-red-200 bg-white text-xs text-red-700 hover:bg-red-50 disabled:opacity-40"
+              >
+                Keep running
+              </button>
+              <button
+                type="button"
+                onClick={handleCancelJob}
+                disabled={cancellingJob}
+                className="px-3 py-1.5 rounded-lg bg-red-600 text-xs text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {cancellingJob ? 'Cancelling...' : 'Confirm cancel'}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -538,12 +619,22 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                   <code className="text-sm bg-gray-100 px-2 py-1 rounded-md">{job.profile.name}</code>
                 </div>
               )}
-              {!isOwner && (job.inputDataset || job.outputDataset || job.errorDataset) && (
+              {!isOwner && datasetRows.some(row => row.fileId) && (
                 <p className="text-xs text-gray-400">View only — only the job owner can download datasets.</p>
               )}
-              {job.inputDataset && <FileRow label="Input Dataset" fileId={job.inputDataset} canDownload={isOwner} />}
-              {job.outputDataset && <FileRow label="Output Dataset" fileId={job.outputDataset} canDownload={isOwner} />}
-              {job.errorDataset && <FileRow label="Error Dataset" fileId={job.errorDataset} canDownload={isOwner} />}
+              {datasetRows.length > 0 ? (
+                datasetRows.map(row => (
+                  <FileRow
+                    key={row.key}
+                    label={row.label}
+                    fileId={row.fileId}
+                    canDownload={isOwner}
+                    unavailableReason={row.unavailableReason}
+                  />
+                ))
+              ) : (
+                <p className="text-xs text-gray-400">No datasets linked to this batch.</p>
+              )}
             </div>
           </div>
 
@@ -572,13 +663,31 @@ function KeyValueRows({ entries }: { entries: [string, string][] }) {
   );
 }
 
-function FileRow({ label, fileId, canDownload }: { label: string; fileId: string; canDownload: boolean }) {
+function FileRow({
+  label,
+  fileId,
+  canDownload,
+  unavailableReason,
+}: {
+  label: string;
+  fileId: string;
+  canDownload: boolean;
+  unavailableReason?: string;
+}) {
+  const hasFile = fileId.trim() !== '';
+  const disabledTitle = unavailableReason || 'Only the job owner can download files';
   return (
     <div>
       <div className="text-gray-500 mb-1">{label}</div>
       <div className="flex items-center gap-2">
-        <code className="text-sm bg-gray-100 px-2 py-1 rounded-md">{fileId}</code>
-        {canDownload ? (
+        {hasFile ? (
+          <code className="text-sm bg-gray-100 px-2 py-1 rounded-md break-all">{fileId}</code>
+        ) : (
+          <span className="text-xs text-gray-400 bg-gray-50 border border-gray-100 px-2 py-1 rounded-md">
+            Not available
+          </span>
+        )}
+        {canDownload && hasFile ? (
           <a
             href={`/api/v1/files/${encodeURIComponent(fileId)}/content`}
             download
@@ -592,7 +701,7 @@ function FileRow({ label, fileId, canDownload }: { label: string; fileId: string
           <span
             aria-disabled="true"
             className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-300 rounded-md cursor-not-allowed select-none"
-            title="Only the job owner can download files"
+            title={disabledTitle}
           >
             <Download className="w-3.5 h-3.5" />
             Download

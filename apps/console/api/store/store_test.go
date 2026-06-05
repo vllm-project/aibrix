@@ -282,6 +282,32 @@ func TestMemoryStore(t *testing.T) {
 			}
 		})
 
+		t.Run("ListJobsByDatasetID", func(t *testing.T) {
+			fileID := "file-dataset-owner-check"
+			for _, job := range []*models.Job{
+				{ID: "dataset-input-job", InputDataset: fileID, CreatedBy: "owner@example.com"},
+				{ID: "dataset-output-job", OutputDataset: fileID, CreatedBy: "other@example.com"},
+				{ID: "dataset-unrelated-job", InputDataset: "file-unrelated", CreatedBy: "owner@example.com"},
+			} {
+				if err := s.UpsertJob(ctx, job); err != nil {
+					t.Fatalf("UpsertJob failed: %v", err)
+				}
+			}
+
+			jobs, err := s.ListJobsByDatasetID(ctx, fileID)
+			if err != nil {
+				t.Fatalf("ListJobsByDatasetID failed: %v", err)
+			}
+
+			ids := map[string]bool{}
+			for _, job := range jobs {
+				ids[job.ID] = true
+			}
+			if len(ids) != 2 || !ids["dataset-input-job"] || !ids["dataset-output-job"] {
+				t.Fatalf("ListJobsByDatasetID ids = %#v, want input and output jobs", ids)
+			}
+		})
+
 		t.Run("DeleteJob", func(t *testing.T) {
 			job := &models.Job{
 				ID:        "job-to-delete",

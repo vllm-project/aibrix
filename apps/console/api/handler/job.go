@@ -39,6 +39,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -273,11 +274,33 @@ func (h *JobHandler) CancelJob(ctx context.Context, req *pb.CancelJobRequest) (*
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
+	existing, err := h.planner.GetJob(ctx, req.Id)
+	if err != nil {
+		return nil, mapPlannerError(err, "cancel batch")
+	}
+	if err := requireJobOwner(ctx, mergeJob(existing, nil), "cancel"); err != nil {
+		return nil, err
+	}
 	job, err := h.planner.Cancel(ctx, req.Id)
 	if err != nil {
 		return nil, mapPlannerError(err, "cancel batch")
 	}
 	return h.enrichJob(ctx, mergeJob(job, nil)), nil
+}
+
+func requireJobOwner(ctx context.Context, job *pb.Job, action string) error {
+	if job == nil {
+		return nil
+	}
+	viewer := strings.TrimSpace(currentUserEmail(ctx))
+	owner := strings.TrimSpace(job.CreatedBy)
+	if owner == "" {
+		return nil
+	}
+	if viewer == "" || !strings.EqualFold(viewer, owner) {
+		return status.Errorf(codes.PermissionDenied, "only the job owner can %s this batch", action)
+	}
+	return nil
 }
 
 // currentUserEmail returns the authenticated user's email if available.
@@ -334,6 +357,8 @@ func mapPlannerError(err error, op string) error {
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, plannerapi.ErrInsufficientResources):
 		return status.Error(codes.ResourceExhausted, err.Error())
+	case errors.Is(err, plannerapi.ErrJobNotFound):
+		return status.Error(codes.NotFound, err.Error())
 	}
 	return mapSDKError(err, op)
 }

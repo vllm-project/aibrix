@@ -182,6 +182,12 @@ export function validateBatchLines(parsed: ParseResult, ctx: ValidationContext):
     pushError(`Mixed models found: ${[...models].join(', ')}. All requests must use the same model.`);
   }
 
+  if (endpoints.size > 1) {
+    pushError(
+      `Multiple request endpoints found: ${[...endpoints].join(', ')}. A batch file must use one endpoint.`,
+    );
+  }
+
   const detectedModel = models.size >= 1 ? [...models][0] : null;
   // expectedModel comes from model.serving_name (the inference identifier).
   // Empty means the selected model isn't deployed yet; skip the identifier
