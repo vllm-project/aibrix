@@ -439,6 +439,7 @@ Collect logs from the Envoy proxy and the gateway plugin for deeper investigatio
 
     kubectl logs aibrix-gateway-plugins-6bd9fcd5b9-2bwpr -n aibrix-system
 
+.. _observability_telemetry:
 Observability & Telemetry
 -------------------------
 
@@ -466,8 +467,7 @@ Enable ``openTelemetry.enable`` in your helm chart or add the telemetry configur
             openTelemetry:
               # -- The hostname or IP address of the OpenTelemetry Collector/OTLP receiver.
               # Do NOT include the protocol scheme (e.g., http://) or port here.
-              # Example: "otel-collector.monitoring.svc.cluster.local"
-              host: ""
+              host: "otel-collector.monitoring.svc.cluster.local"
 
               # -- The port of the OTLP gRPC receiver (Envoy strictly uses gRPC for this).
               port: 4317
