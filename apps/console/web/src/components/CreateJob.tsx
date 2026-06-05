@@ -30,6 +30,7 @@ import {
   MutationDiff,
   ParseResult,
   parseJsonl,
+  validateBatchFileName,
   applyBatchOverrides,
   serializeJsonl,
   hasAnyOverride,
@@ -38,6 +39,7 @@ import {
 import {
   formatBytes,
   formatFileCreatedAt,
+  formatModelSelectionLabel,
   getBatchExampleJsonlLine,
   getCreateJobEndpoint,
   getCreateJobReadiness,
@@ -91,6 +93,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [datasetDragActive, setDatasetDragActive] = useState(false);
 
   // Validation state
   const [validating, setValidating] = useState(false);
@@ -211,16 +214,26 @@ export function CreateJob({ onBack }: CreateJobProps) {
     }
   };
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const handleDatasetFile = async (file: File) => {
     setSelectedFile(file);
     setUploadedFileId(null);
     setSelectedExistingFile(null);
     setValidation(null);
     setSelectedFileParse(null);
     setSubmitError(null);
+
+    const fileNameError = validateBatchFileName(file.name);
+    if (fileNameError) {
+      setValidation({
+        valid: false,
+        totalLines: 0,
+        errors: [fileNameError],
+        warnings: [],
+        detectedModel: null,
+        endpoints: [],
+      });
+      return;
+    }
 
     // Validate immediately
     setValidating(true);
@@ -244,6 +257,41 @@ export function CreateJob({ onBack }: CreateJobProps) {
     } finally {
       setValidating(false);
     }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    void handleDatasetFile(file);
+  };
+
+  const handleDatasetDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    setDatasetDragActive(true);
+  };
+
+  const handleDatasetDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const nextTarget = e.relatedTarget;
+    if (!nextTarget || !e.currentTarget.contains(nextTarget as Node)) {
+      setDatasetDragActive(false);
+    }
+  };
+
+  const handleDatasetDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDatasetDragActive(false);
+
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    void handleDatasetFile(file);
   };
 
   const handleRemoveFile = () => {
@@ -350,6 +398,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
   });
   const canSubmit = readiness.canSubmit;
   const canContinueDataset = selectedExistingFile != null || (selectedFile != null && (validation?.valid ?? false));
+  const selectedModelLabel = formatModelSelectionLabel(selectedModel, selectedServingName);
 
   const handleCreateJob = async () => {
     if (!canSubmit) return;
@@ -452,7 +501,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
                   onClick={() => setShowModelDropdown(!showModelDropdown)}
                   className="w-full px-4 py-2 border border-gray-200 rounded-lg text-left flex items-center justify-between hover:bg-gray-50"
                 >
-                  <span className="text-sm">{selectedModel || 'Select Model'}</span>
+                  <span className="text-sm truncate pr-2">{selectedModelLabel || 'Select Model'}</span>
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
@@ -484,10 +533,12 @@ export function CreateJob({ onBack }: CreateJobProps) {
                             onClick={() => handleSelectModel(model)}
                             className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 rounded flex items-center gap-2"
                           >
-                            <div className="w-5 h-5 rounded-full bg-teal-50 flex items-center justify-center">
+                            <div className="w-5 h-5 rounded-full bg-teal-50 flex items-center justify-center shrink-0">
                               <div className="w-2 h-2 rounded-full bg-teal-500"></div>
                             </div>
-                            {model.name}
+                            <span className="min-w-0 flex-1 truncate">
+                              {formatModelSelectionLabel(model.name, model.servingName)}
+                            </span>
                           </button>
                         ))
                       )}
@@ -590,15 +641,22 @@ export function CreateJob({ onBack }: CreateJobProps) {
                     type="file"
                     ref={fileInputRef}
                     onChange={handleFileSelect}
-                    accept=".json,.jsonl"
+                    accept=".jsonl"
                     className="hidden"
                   />
                   {selectedFile ? (
-                    <div className={`border-2 rounded-xl p-4 flex items-center justify-between ${
-                      validation?.valid === false
-                        ? 'border-red-200 bg-red-50'
-                        : 'border-teal-200 bg-teal-50'
-                    }`}>
+                    <div
+                      onDragOver={handleDatasetDragOver}
+                      onDragLeave={handleDatasetDragLeave}
+                      onDrop={handleDatasetDrop}
+                      className={`border-2 rounded-xl p-4 flex items-center justify-between ${
+                        validation?.valid === false
+                          ? 'border-red-200 bg-red-50'
+                          : datasetDragActive
+                            ? 'border-teal-500 bg-teal-50'
+                            : 'border-teal-200 bg-teal-50'
+                      }`}
+                    >
                       <div className="flex items-center gap-3">
                         <Upload className={`w-5 h-5 ${validation?.valid === false ? 'text-red-600' : 'text-teal-600'}`} />
                         <span className="text-sm text-gray-900">{selectedFile.name}</span>
@@ -613,7 +671,14 @@ export function CreateJob({ onBack }: CreateJobProps) {
                   ) : (
                     <div
                       onClick={() => fileInputRef.current?.click()}
-                      className="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center hover:border-teal-400 transition-colors cursor-pointer"
+                      onDragOver={handleDatasetDragOver}
+                      onDragLeave={handleDatasetDragLeave}
+                      onDrop={handleDatasetDrop}
+                      className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer ${
+                        datasetDragActive
+                          ? 'border-teal-500 bg-teal-50'
+                          : 'border-gray-200 hover:border-teal-400'
+                      }`}
                     >
                       <Upload className="w-8 h-8 text-gray-300 mx-auto mb-2" />
                       <p className="text-sm text-gray-500 mb-1">Click to upload or drag and drop</p>
