@@ -76,7 +76,7 @@ def build_launch_command(info: SSHConnInfo, *, log_path: str = "/tmp/vllm.log") 
     """Background vLLM launch command. Detaches so the SSH session can close."""
     args = " ".join(shlex.quote(a) for a in info.vllm_args)
     serve = (
-        f"vllm serve {shlex.quote(info.model)} " f"--host 0.0.0.0 --port 8000 {args}"
+        f"vllm serve {shlex.quote(info.model)} --host 0.0.0.0 --port 8000 {args}"
     ).strip()
     # Ensure pip-user installs (~/.local/bin, e.g. LambdaCloud bare VMs) are on
     # PATH; harmless when vllm lives in /usr/local/bin (RunPod image). asyncssh

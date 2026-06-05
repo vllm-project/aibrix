@@ -312,8 +312,7 @@ def verify_output(output_bytes: bytes, expected_custom_ids: set[str]) -> None:
     lines = [line for line in output_bytes.decode("utf-8").splitlines() if line.strip()]
     if len(lines) != len(expected_custom_ids):
         fail(
-            f"output line count {len(lines)} != input count "
-            f"{len(expected_custom_ids)}"
+            f"output line count {len(lines)} != input count {len(expected_custom_ids)}"
         )
     seen: set[str] = set()
     for i, line in enumerate(lines, start=1):
