@@ -29,8 +29,27 @@ export interface FileInfo {
   name: string;
   purpose: string;
   size: number;
-  createdAt: string;
+  createdAt: string | number;
 }
+
+interface RawFileInfo {
+  id?: string;
+  name?: string;
+  filename?: string;
+  purpose?: string;
+  size?: number;
+  bytes?: number;
+  createdAt?: string | number;
+  created_at?: string | number;
+}
+
+interface RawFilesEnvelope {
+  files?: RawFileInfo[];
+  data?: RawFileInfo[];
+  [key: string]: unknown;
+}
+
+type RawFilesResponse = RawFileInfo[] | RawFilesEnvelope;
 
 export interface UserInfo {
   id: string;
@@ -249,6 +268,17 @@ function normalizeJobsResponse(resp: ListJobsResponse): ListJobsResponse {
     ...resp,
     jobs: (resp.jobs || []).map(normalizeJob),
   };
+}
+
+export function normalizeFilesResponse(resp: RawFilesResponse): FileInfo[] {
+  const rows = Array.isArray(resp) ? resp : resp.files ?? resp.data ?? [];
+  return rows.map((file) => ({
+    id: file.id || '',
+    name: file.name || file.filename || file.id || '',
+    purpose: file.purpose || '',
+    size: coerceNumber(file.size) ?? coerceNumber(file.bytes) ?? 0,
+    createdAt: file.createdAt ?? file.created_at ?? '',
+  }));
 }
 
 // --- Case conversion utilities ---
@@ -580,8 +610,8 @@ export async function uploadFile(file: File, purpose?: string): Promise<FileInfo
 }
 
 export async function listFiles(): Promise<FileInfo[]> {
-  const data = await apiFetch<{ files: FileInfo[] }>('/api/v1/files');
-  return data.files;
+  const data = await apiFetch<RawFilesResponse>('/api/v1/files');
+  return normalizeFilesResponse(data);
 }
 
 // --- Auth ---

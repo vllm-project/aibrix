@@ -17,14 +17,137 @@ limitations under the License.
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/shared"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
+	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 )
+
+type fakeJobPlanner struct {
+	job         *plannerapi.Job
+	getErr      error
+	cancelErr   error
+	cancelledID string
+}
+
+func (p *fakeJobPlanner) Enqueue(context.Context, *plannerapi.EnqueueRequest) (*plannerapi.Job, error) {
+	return nil, nil
+}
+
+func (p *fakeJobPlanner) GetJob(context.Context, string) (*plannerapi.Job, error) {
+	return p.job, p.getErr
+}
+
+func (p *fakeJobPlanner) ListJobs(context.Context, *plannerapi.ListJobsRequest) (*plannerapi.ListJobsResponse, error) {
+	return &plannerapi.ListJobsResponse{}, nil
+}
+
+func (p *fakeJobPlanner) Cancel(_ context.Context, jobID string) (*plannerapi.Job, error) {
+	p.cancelledID = jobID
+	return p.job, p.cancelErr
+}
+
+func (p *fakeJobPlanner) Recover(context.Context) error { return nil }
+
+func (p *fakeJobPlanner) Close() error { return nil }
+
+func contextWithUserEmail(email string) context.Context {
+	return metadata.NewIncomingContext(
+		context.Background(),
+		metadata.Pairs(middleware.MetadataUserEmail, email),
+	)
+}
+
+func plannerJobWithOwner(jobID, owner string) *plannerapi.Job {
+	return &plannerapi.Job{
+		JobID: jobID,
+		Batch: &openai.Batch{
+			ID:               "batch-mds-1",
+			Endpoint:         "/v1/chat/completions",
+			InputFileID:      "file-input",
+			CompletionWindow: "24h",
+			Status:           openai.BatchStatusValidating,
+			Metadata: shared.Metadata{
+				metadataConsoleCreatedBy: owner,
+			},
+		},
+	}
+}
+
+func TestCancelJobRejectsNonOwner(t *testing.T) {
+	planner := &fakeJobPlanner{job: plannerJobWithOwner("job-console-1", "owner@example.com")}
+	handler := NewJobHandler(nil, planner, "", false)
+
+	_, err := handler.CancelJob(contextWithUserEmail("other@example.com"), &pb.CancelJobRequest{
+		Id: "job-console-1",
+	})
+
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("CancelJob code = %v, want PermissionDenied; err=%v", status.Code(err), err)
+	}
+	if planner.cancelledID != "" {
+		t.Fatalf("planner.Cancel called for non-owner with id %q", planner.cancelledID)
+	}
+}
+
+func TestCancelJobRejectsMissingViewerForOwnedJob(t *testing.T) {
+	planner := &fakeJobPlanner{job: plannerJobWithOwner("job-console-1", "owner@example.com")}
+	handler := NewJobHandler(nil, planner, "", false)
+
+	_, err := handler.CancelJob(context.Background(), &pb.CancelJobRequest{
+		Id: "job-console-1",
+	})
+
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("CancelJob code = %v, want PermissionDenied; err=%v", status.Code(err), err)
+	}
+	if planner.cancelledID != "" {
+		t.Fatalf("planner.Cancel called without viewer with id %q", planner.cancelledID)
+	}
+}
+
+func TestCancelJobAllowsOwner(t *testing.T) {
+	planner := &fakeJobPlanner{job: plannerJobWithOwner("job-console-1", "owner@example.com")}
+	handler := NewJobHandler(nil, planner, "", false)
+
+	job, err := handler.CancelJob(contextWithUserEmail("owner@example.com"), &pb.CancelJobRequest{
+		Id: "job-console-1",
+	})
+
+	if err != nil {
+		t.Fatalf("CancelJob returned error for owner: %v", err)
+	}
+	if planner.cancelledID != "job-console-1" {
+		t.Fatalf("planner.Cancel id = %q, want job-console-1", planner.cancelledID)
+	}
+	if job == nil || job.Id != "job-console-1" {
+		t.Fatalf("job = %#v, want job-console-1", job)
+	}
+}
+
+func TestGetJobMapsPlannerNotFound(t *testing.T) {
+	planner := &fakeJobPlanner{
+		getErr: fmt.Errorf("%w: job-console-missing", plannerapi.ErrJobNotFound),
+	}
+	handler := NewJobHandler(nil, planner, "", false)
+
+	_, err := handler.GetJob(context.Background(), &pb.GetJobRequest{Id: "job-console-missing"})
+
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("GetJob code = %v, want NotFound; err=%v", status.Code(err), err)
+	}
+}
 
 func TestMergeJobExposesExtraBodyRuntimeAndErrors(t *testing.T) {
 	raw := []byte(`{

@@ -297,6 +297,24 @@ func (s *GORMStore) ListJobsByBatchIDs(ctx context.Context, batchIDs []string) (
 	return out, nil
 }
 
+func (s *GORMStore) ListJobsByDatasetID(ctx context.Context, fileID string) ([]*models.Job, error) {
+	if fileID == "" {
+		return nil, nil
+	}
+	var rows []models.Job
+	if err := s.db.WithContext(ctx).
+		Where("deleted = ?", false).
+		Where("input_dataset = ? OR output_dataset = ? OR error_dataset = ?", fileID, fileID, fileID).
+		Find(&rows).Error; err != nil {
+		return nil, status.Errorf(codes.Internal, "list jobs by dataset id: %v", err)
+	}
+	out := make([]*models.Job, len(rows))
+	for i := range rows {
+		out[i] = &rows[i]
+	}
+	return out, nil
+}
+
 func (s *GORMStore) DeleteJob(ctx context.Context, id string) error {
 	return s.db.WithContext(ctx).Model(&models.Job{}).Where("id = ? AND deleted = ?", id, false).Update("deleted", true).Error
 }
