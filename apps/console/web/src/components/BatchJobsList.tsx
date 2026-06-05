@@ -37,6 +37,9 @@ const TERMINAL_STATUSES = new Set<JobStatus>([
 ]);
 
 function formatDate(unixSec: number): { date: string; time: string } {
+  if (!unixSec || unixSec <= 0) {
+    return { date: '—', time: '' };
+  }
   const d = new Date(unixSec * 1000);
   return {
     date: d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
@@ -64,6 +67,17 @@ function statusClass(s: JobStatus): string {
     case 'submit_failed':
       return 'bg-red-50 text-red-700 border border-red-200';
   }
+}
+
+function runtimeLabel(job: Job): string {
+  return job.runtime?.target || job.provision?.provider || '—';
+}
+
+function provisionLabel(job: Job): string {
+  const status = job.provision?.status;
+  const id = job.provisionId || job.resourceAllocation?.provisionId;
+  if (status && id) return `${status} · ${id}`;
+  return status || id || '—';
 }
 
 export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) {
@@ -246,6 +260,7 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
               <tr>
                 <th className="px-6 py-3 text-left text-xs text-gray-500 uppercase tracking-wider">Batch</th>
                 <th className="px-6 py-3 text-left text-xs text-gray-500 uppercase tracking-wider">Model</th>
+                <th className="px-6 py-3 text-left text-xs text-gray-500 uppercase tracking-wider">Runtime</th>
                 <th className="px-6 py-3 text-left text-xs text-gray-500 uppercase tracking-wider">Input dataset</th>
                 <th className="px-6 py-3 text-left text-xs text-gray-500 uppercase tracking-wider">Created</th>
                 <th className="px-6 py-3 text-left text-xs text-gray-500 uppercase tracking-wider">Created by</th>
@@ -256,11 +271,11 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
             <tbody className="divide-y divide-gray-50">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-12 text-center text-sm text-gray-500">Loading...</td>
+                  <td colSpan={8} className="px-6 py-12 text-center text-sm text-gray-500">Loading...</td>
                 </tr>
               ) : filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-12 text-center text-sm text-gray-500">No jobs found.</td>
+                  <td colSpan={8} className="px-6 py-12 text-center text-sm text-gray-500">No jobs found.</td>
                 </tr>
               ) : (
                 paged.map((job, idx) => {
@@ -280,6 +295,10 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
                       <td className="px-6 py-4">
                         <div className="text-sm text-gray-900">{job.model || '—'}</div>
                         <div className="text-xs text-gray-400">{job.endpoint}</div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="text-sm text-gray-900">{runtimeLabel(job)}</div>
+                        <div className="text-xs text-gray-400 max-w-44 truncate">{provisionLabel(job)}</div>
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-900">{job.inputDataset}</td>
                       <td className="px-6 py-4 text-sm text-gray-500">

@@ -18,6 +18,7 @@ package plannerapi
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/openai/openai-go/v3"
 )
@@ -64,6 +65,23 @@ type EnqueueRequest struct {
 type Job struct {
 	JobID string        `json:"job_id"`
 	Batch *openai.Batch `json:"batch,omitempty"`
+	State *JobState     `json:"state,omitempty"`
+}
+
+// JobState is the planner-owned lifecycle data that does not exist on the
+// OpenAI Batch object. It is persisted in Console's store and lets the BFF
+// expose pre-MDS events such as resource provisioning and submit failures.
+type JobState struct {
+	BatchID             string    `json:"batch_id,omitempty"`
+	ProvisionID         string    `json:"provision_id,omitempty"`
+	ErrorMessage        string    `json:"error_message,omitempty"`
+	QueuedAt            time.Time `json:"queued_at,omitempty"`
+	ResourcePreparingAt time.Time `json:"resource_preparing_at,omitempty"`
+	SubmittingAt        time.Time `json:"submitting_at,omitempty"`
+	ResourceFailedAt    time.Time `json:"resource_failed_at,omitempty"`
+	SubmitFailedAt      time.Time `json:"submit_failed_at,omitempty"`
+	CancelRequestedAt   time.Time `json:"cancel_requested_at,omitempty"`
+	CancelledAt         time.Time `json:"cancelled_at,omitempty"`
 }
 
 // ListJobsRequest queries the planner-merged job list using the same
