@@ -43,7 +43,7 @@ class SchedulingPolicy(Protocol):
 
     def reset_runtime_state(self) -> None:
         """Reset the runtime state of the scheduling policy.
-        This method is used for simlating service restarting.
+        This method is used for simulating service restarting.
         """
         ...
 
