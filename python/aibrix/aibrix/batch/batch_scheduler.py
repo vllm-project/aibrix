@@ -28,7 +28,6 @@ import time
 from typing import TYPE_CHECKING, Optional, Tuple
 
 import aibrix.batch.constant as constant
-from aibrix.batch.job_entity import BatchJobError, BatchJobErrorCode
 from aibrix.batch.scheduling_policy import FIFOScheduling, SchedulingPolicy
 from aibrix.batch.state import SchedulableJobs
 from aibrix.context import InfrastructureContext
@@ -56,11 +55,12 @@ class BatchScheduler:
         the scheduler keeps no duplicated due-time / inactive bookkeeping — the
         registry is the single source of truth for job state.
 
-        ``pool_size`` is retained for API compatibility but the scheduler is
-        sequential; it is a hint for a future bounded-concurrency runner.
+        ``pool_size`` caps the number of concurrently executing jobs while the
+        policy still decides which pending job is admitted next.
         """
         self._context = context
         self._job_progress_manager = job_progress_manager
+        self._pool_size = max(1, pool_size)
         self._policy: SchedulingPolicy = policy or FIFOScheduling()
         self._idle_interval = constant.SCHEDULE_IDLE_INTERVAL
         self._expire_interval = constant.EXPIRE_INTERVAL
@@ -70,6 +70,7 @@ class BatchScheduler:
         self._serve_loop: Optional[asyncio.AbstractEventLoop] = None
         self._jobs_running_task: Optional[asyncio.Task] = None
         self._jobs_cleanup_task: Optional[asyncio.Task] = None
+        self._job_execution_tasks: dict[str, asyncio.Task[None]] = {}
 
     def append_job(self, job_id: str):
         # Enqueue a job for scheduling; the policy owns the ordering. Expiry is
@@ -121,10 +122,44 @@ class BatchScheduler:
         self._jobs_cleanup_task = self._serve_loop.create_task(self.jobs_cleanup_loop())
         logger.info("cleanup loop set up")
 
+    async def _execute_scheduled_job(
+        self, job_id: str, job_driver: "JobDriver"
+    ) -> None:
+        try:
+            await job_driver.execute(job_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # Since _job_progress_manager(SchedulableJobs) not support mark_job_failed anymore,
+            # It is expected that job_driver mark_job_failed using RunningJobs protocol
+            # The exception here is for guardian purpose and should not be reached.
+            logger.error(
+                "Failed to execute job",
+                job_id=job_id,
+                error=str(e),
+            )  # type: ignore[call-arg]
+
+    def _prune_execution_tasks(self) -> None:
+        finished_job_ids = [
+            job_id for job_id, task in self._job_execution_tasks.items() if task.done()
+        ]
+        for job_id in finished_job_ids:
+            del self._job_execution_tasks[job_id]
+
     async def jobs_running_loop(self) -> None:
-        """Pop the next due, valid job (FIFO) and run it to completion."""
+        """Pop the next due, valid job (FIFO) and dispatch up to pool_size."""
+        if self._serve_loop is None:
+            self._serve_loop = asyncio.get_running_loop()
         logger.info("Starting scheduling...")
         while True:
+            self._prune_execution_tasks()
+            if len(self._job_execution_tasks) >= self._pool_size:
+                await asyncio.wait(
+                    self._job_execution_tasks.values(),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                continue
+
             scheduled: Optional[Tuple[str, "JobDriver"]] = None
             try:
                 scheduled = await self.schedule_next_job()
@@ -136,52 +171,10 @@ class BatchScheduler:
 
             if scheduled:
                 one_job, job_driver = scheduled
-                try:
-                    await job_driver.execute(one_job)
-                except RuntimeError as re:
-                    # A single job's failure must not kill the scheduler loop;
-                    # the driver already marked the job terminal before raising.
-                    logger.error(
-                        "Runtime err",
-                        job_id=one_job,
-                        error=str(re),
-                    )  # type: ignore[call-arg]
-                except Exception as e:
-                    # Preserve the original error code when the driver already
-                    # classified it (e.g. RESOURCE_CREATION_ERROR from workload
-                    # provisioning). Only fall back to a generic code for raw,
-                    # unclassified exceptions so failures aren't mislabeled as
-                    # inference failures.
-                    err = (
-                        e
-                        if isinstance(e, BatchJobError)
-                        else BatchJobError(
-                            code=BatchJobErrorCode.UNKNOWN_ERROR, message=str(e)
-                        )
-                    )
-                    # Guard mark_job_failed: if it raises (e.g. the job is no
-                    # longer in_progress) the exception must not escape and tear
-                    # down the loop, stranding all future jobs.
-                    try:
-                        # The injected manager is a BatchManager (RunningJobs +
-                        # SchedulableJobs); mark_job_failed lives on RunningJobs.
-                        job = await self._job_progress_manager.mark_job_failed(  # type: ignore[attr-defined]
-                            one_job, err
-                        )
-                        state = job.status.state.value
-                    except Exception as me:
-                        state = "unknown"
-                        logger.error(
-                            "Failed to mark job failed",
-                            job_id=one_job,
-                            error=str(me),
-                        )  # type: ignore[call-arg]
-                    logger.error(
-                        "Failed to execute job",
-                        job_id=one_job,
-                        status=state,
-                        error=str(e),
-                    )  # type: ignore[call-arg]
+                task = self._serve_loop.create_task(
+                    self._execute_scheduled_job(one_job, job_driver)
+                )
+                self._job_execution_tasks[one_job] = task
             # yield loop
             await asyncio.sleep(0)
 
@@ -220,3 +213,15 @@ class BatchScheduler:
                 await self._jobs_cleanup_task
             except asyncio.CancelledError:
                 pass
+
+        running_tasks = list(self._job_execution_tasks.values())
+        for task in running_tasks:
+            if not task.done():
+                task.cancel()
+        if running_tasks:
+            await asyncio.gather(*running_tasks, return_exceptions=True)
+        self._job_execution_tasks.clear()
+
+    def reset_runtime_state(self) -> None:
+        self._policy.reset_runtime_state()
+        self._job_execution_tasks.clear()

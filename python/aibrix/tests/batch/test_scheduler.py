@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -41,6 +42,7 @@ class FakeProgressManager:
         self.job_id_status = job_id_status or {}
         self.validated_job_ids = []
         self.expired_job_ids = []
+        self.failed_errors = {}
         self._pending = list(pending or [])
 
     async def get_job_status(self, job_id):
@@ -72,11 +74,11 @@ class FakeProgressManager:
         return list(self._pending)
 
 
-def _make_scheduler(progress_manager):
+def _make_scheduler(progress_manager, pool_size=1):
     scheduler = BatchScheduler(
         InfrastructureContext(),
         progress_manager,
-        pool_size=1,
+        pool_size=pool_size,
     )
     scheduler._idle_interval = 0
     return scheduler
@@ -148,3 +150,51 @@ def test_fifo_scheduling_policy_order_and_empty():
     assert policy.next() == "b"
     assert policy.next() is None
     assert policy.empty() is True
+
+
+@pytest.mark.asyncio
+async def test_jobs_running_loop_dispatches_second_job_while_first_is_blocked(
+    monkeypatch,
+):
+    scheduler = _make_scheduler(FakeProgressManager(), pool_size=2)
+    first_job_entered = asyncio.Event()
+    release_first_job = asyncio.Event()
+    second_job_started = asyncio.Event()
+    scheduled = []
+
+    class _Driver:
+        def __init__(self, job_id):
+            self.job_id = job_id
+
+        async def execute(self, job_id):
+            assert job_id == self.job_id
+            if job_id == "job-1":
+                first_job_entered.set()
+                await release_first_job.wait()
+                return
+            second_job_started.set()
+
+    scheduled.extend(
+        [
+            ("job-1", _Driver("job-1")),
+            ("job-2", _Driver("job-2")),
+        ]
+    )
+
+    async def _schedule_next_job():
+        if scheduled:
+            return scheduled.pop(0)
+        await asyncio.sleep(0)
+        return None
+
+    monkeypatch.setattr(scheduler, "schedule_next_job", _schedule_next_job)
+
+    task = asyncio.create_task(scheduler.jobs_running_loop())
+    try:
+        await asyncio.wait_for(first_job_entered.wait(), timeout=1)
+        await asyncio.wait_for(second_job_started.wait(), timeout=1)
+    finally:
+        release_first_job.set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task

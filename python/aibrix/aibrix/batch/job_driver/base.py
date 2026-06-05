@@ -47,6 +47,7 @@ from aibrix.batch.job_entity import (
     BatchJobState,
     BatchUsage,
     ConditionType,
+    ensure_batch_job_error,
 )
 from aibrix.batch.state import RunningJobs
 from aibrix.logger import init_logger
@@ -276,7 +277,31 @@ class BaseJobDriver:
                 logger.info("Execution interrupted by job deletion", job_id=job_id)  # type: ignore[call-arg]
                 return
             raise
+        except Exception as e:
+            # Guard mark_job_failed: if it raises (e.g. the job is no
+            # longer in_progress) the exception must not escape and tear
+            # down the loop, stranding all future jobs.
+            try:
+                job = await self._progress_manager.mark_job_failed(
+                    job_id,
+                    ensure_batch_job_error(e, BatchJobErrorCode.INFERENCE_FAILED),
+                )
+                state = job.status.state.value
+            except Exception as me:
+                state = "unknown"
+                logger.error(
+                    "Failed to mark job failed",
+                    job_id=job_id,
+                    error=str(me),
+                )  # type: ignore[call-arg]
+            logger.error(
+                "Failed to execute job",
+                job_id=job_id,
+                status=state,
+                error=str(e),
+            )  # type: ignore[call-arg]
 
+        # [TODO][NEXT] This is legacy error handling. It is confusing and may be suitable for worker only.
         if self._reraise_on_failure and job.status.failed:
             failed_condition = job.status.get_condition(ConditionType.FAILED)
             if failed_condition is None:
