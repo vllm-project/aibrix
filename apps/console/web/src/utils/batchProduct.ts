@@ -55,6 +55,15 @@ export interface BatchJobSummary {
   totalRequests: number;
 }
 
+export function formatModelSelectionLabel(name: string, servingName?: string): string {
+  const displayName = name.trim();
+  const inferenceName = (servingName || '').trim();
+
+  if (!displayName) return inferenceName;
+  if (!inferenceName || inferenceName === displayName) return displayName;
+  return `${displayName} (${inferenceName})`;
+}
+
 export function getCreateJobReadiness(input: CreateJobReadinessInput): CreateJobReadiness {
   if (input.submitting) return { canSubmit: false, reason: 'Creating job' };
   if (!input.selectedModel) return { canSubmit: false, reason: 'Select a model' };

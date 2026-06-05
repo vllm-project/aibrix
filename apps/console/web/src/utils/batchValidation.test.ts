@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseJsonl, validateBatchLines } from './batchValidation';
+import { parseJsonl, validateBatchFile, validateBatchLines } from './batchValidation';
 
 function jsonlLine(url: string, model = 'qwen-serving'): string {
   return JSON.stringify({
@@ -25,5 +25,19 @@ describe('batch validation', () => {
     expect(result.valid).toBe(true);
     expect(result.errors).toEqual([]);
     expect(result.endpoints).toEqual(['/v1/embeddings']);
+  });
+
+  it('rejects a json file even when the content is valid jsonl', async () => {
+    const file = new File([jsonlLine('/v1/chat/completions')], 'requests.json', {
+      type: 'application/json',
+    });
+
+    const result = await validateBatchFile(file, {
+      expectedModel: 'qwen-serving',
+      supportedEndpoints: ['/v1/chat/completions'],
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain('File must use the .jsonl extension.');
   });
 });
