@@ -35,13 +35,15 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
+func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.RoutingContext, requestID string, req *extProcPb.ProcessingRequest, user utils.User) (*extProcPb.ProcessingResponse, string, bool, int64) {
 	var term int64 // Identify the trace window
 
-	routingCtx, _ := ctx.(*types.RoutingContext)
 	requestPath := routingCtx.ReqPath
 
 	body := req.Request.(*extProcPb.ProcessingRequest_RequestBody)
+
+	ctx, span := tracer.Start(ctx, "HandleRequestBody")
+	defer span.End()
 
 	var model, message string
 	var stream bool
@@ -54,14 +56,14 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		// Parse multipart form data for audio endpoints
 		model, stream, errRes = parseMultipartFormData(requestID, contentType, body.RequestBody.GetBody())
 		if errRes != nil {
-			return errRes, model, routingCtx, stream, term
+			return errRes, model, stream, term
 		}
 		message = "" // Audio requests don't have a text message for token counting
 	} else {
 		// Use existing JSON validation for other endpoints
 		model, message, stream, errRes = validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)
 		if errRes != nil {
-			return errRes, model, routingCtx, stream, term
+			return errRes, model, stream, term
 		}
 	}
 
@@ -73,7 +75,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	var podsArr types.PodList
 	podsArr, errRes = s.validateModelAvailability(requestID, model)
 	if errRes != nil {
-		return errRes, model, routingCtx, stream, term
+		return errRes, model, stream, term
 	}
 
 	// Read engine label from pods and assign to routing context
@@ -92,7 +94,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		var ok bool
 		if routingAlgorithm, ok = routing.Validate(strategy); !ok {
 			klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", strategy)
-			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategy %s", strategy), "", "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
+			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("incorrect routing strategy %s", strategy), "", "", HeaderErrorRouting, "true"), model, stream, term
 		}
 		routingCtx.Algorithm = routingAlgorithm
 	}
@@ -108,7 +110,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	}
 
 	if errRes = s.enforceModelRPS(ctx, model, routingCtx); errRes != nil {
-		return errRes, model, routingCtx, stream, term
+		return errRes, model, stream, term
 	}
 	needsRollback := true
 	defer func() {
@@ -119,16 +121,16 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 	if routingAlgorithm == routing.RouterNotSet {
 		if err := s.validateHTTPRouteStatus(ctx, model); err != nil {
-			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, err.Error(), ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
+			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, err.Error(), ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
 		}
 		headers = buildEnvoyProxyHeaders(headers, HeaderModel, model)
 		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream)
 	} else {
 		externalFilter := routingCtx.ReqHeaders[HeaderExternalFilter]
-		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr, externalFilter)
+		targetPodIP, err := s.selectTargetPod(ctx, routingCtx, podsArr, externalFilter)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingAlgorithm, "model", model, "routingDuration", routingCtx.GetRoutingDelay())
-			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, "error on selecting target pod", ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, routingCtx, stream, term
+			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, "error on selecting target pod", ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
 		}
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
@@ -171,7 +173,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 				},
 			},
 		},
-	}, model, routingCtx, stream, term
+	}, model, stream, term
 }
 
 // getEngineBasedPathRewrite returns the rewritten path for image/video generation endpoints

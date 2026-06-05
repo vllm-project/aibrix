@@ -33,6 +33,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/client-go/kubernetes"
@@ -87,9 +89,12 @@ type processState struct {
 	isRespError      bool
 	isGatewayRspDone bool
 	completed        bool
+	span             trace.Span
+	ttftSpan         trace.Span
 }
 
 var podName = os.Getenv("POD_NAME")
+var tracer = otel.Tracer("envoy-ext-proc-server")
 
 func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient gatewayapi.Interface) *Server {
 	c, err := cache.Get()
@@ -125,6 +130,15 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		ctx:       srv.Context(),
 		requestID: uuid.New().String(),
 	}
+
+	defer func() {
+		if st.span != nil {
+			st.span.End()
+		}
+		if st.ttftSpan != nil {
+			st.ttftSpan.End()
+		}
+	}()
 
 	klog.InfoS("processing request", "requestID", st.requestID)
 	labels := map[string]string{"pod_name": podName}
@@ -250,19 +264,23 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 
 	switch req.Request.(type) {
 	case *extProcPb.ProcessingRequest_RequestHeaders:
+		st.ctx, st.span = tracer.Start(st.ctx, "ExtProc_HTTP_Request")
+
 		resp, st.user, st.rpm, st.routerCtx = s.HandleRequestHeaders(st.ctx, st.requestID, req)
 		if st.routerCtx != nil {
-			st.ctx = st.routerCtx
 			st.model = st.routerCtx.Model
+			st.requestID = st.routerCtx.RequestID
 		}
 		st.metricLabel = "gateway_req_headers"
 
 	case *extProcPb.ProcessingRequest_RequestBody:
-		resp, st.model, st.routerCtx, st.stream, st.traceTerm = s.HandleRequestBody(st.ctx, st.requestID, req, st.user)
+		resp, st.model, st.stream, st.traceTerm = s.HandleRequestBody(st.ctx, st.routerCtx, st.requestID, req, st.user)
 		st.metricLabel = gatewayReqBody
+		// create a ttftSpan to collect time from reqBody to first respBody
+		_, st.ttftSpan = tracer.Start(st.ctx, "Wait_For_LLM_First_Token")
 
 	case *extProcPb.ProcessingRequest_ResponseHeaders:
-		resp, st.isRespError, st.respErrorCode = s.HandleResponseHeaders(st.ctx, st.requestID, st.model, req)
+		resp, st.isRespError, st.respErrorCode = s.HandleResponseHeaders(st.ctx, st.routerCtx, st.requestID, st.model, req)
 		st.lastRespHeaders = resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
 		if st.isRespError {
 			resp = s.responseForResponseHeaderError(st, resp)
@@ -270,11 +288,16 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		st.metricLabel = gatewayRespHeaders
 
 	case *extProcPb.ProcessingRequest_ResponseBody:
+		// stop collecting on first resp only
+		if st.ttftSpan != nil {
+			st.ttftSpan.End()
+			st.ttftSpan = nil
+		}
 		if st.isRespError {
 			body := string(req.Request.(*extProcPb.ProcessingRequest_ResponseBody).ResponseBody.GetBody())
-			resp = s.responseErrorProcessingWithHeaders(st.ctx, st.lastRespHeaders, st.respErrorCode, st.model, st.requestID, body)
+			resp = s.responseErrorProcessingWithHeaders(st.ctx, st.routerCtx, st.lastRespHeaders, st.respErrorCode, st.model, st.requestID, body)
 		} else {
-			resp, st.completed = s.HandleResponseBody(st.ctx, st.requestID, req, st.user, st.rpm, st.model, st.stream, st.traceTerm, st.completed)
+			resp, st.completed = s.HandleResponseBody(st.ctx, st.routerCtx, st.requestID, req, st.user, st.rpm, st.model, st.stream, st.traceTerm, st.completed)
 		}
 		st.metricLabel = gatewayRespBody
 
@@ -315,9 +338,9 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 func (s *Server) responseForResponseHeaderError(st *processState, resp *extProcPb.ProcessingResponse) *extProcPb.ProcessingResponse {
 	switch st.respErrorCode {
 	case 500:
-		return s.responseErrorProcessing(st.ctx, resp, st.respErrorCode, st.model, st.requestID, "Internal server error")
+		return s.responseErrorProcessing(st.ctx, st.routerCtx, resp, st.respErrorCode, st.model, st.requestID, "Internal server error")
 	case 401:
-		return s.responseErrorProcessing(st.ctx, resp, st.respErrorCode, st.model, st.requestID, "Incorrect API key provided")
+		return s.responseErrorProcessing(st.ctx, st.routerCtx, resp, st.respErrorCode, st.model, st.requestID, "Incorrect API key provided")
 	default:
 		return resp
 	}
@@ -342,8 +365,12 @@ func (s *Server) sendProcessingResponse(srv extProcPb.ExternalProcessor_ProcessS
 	return nil
 }
 
-func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList, externalFilterExpr string) (string, error) {
-	router, err := routing.Select(ctx)
+func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingContext, pods types.PodList, externalFilterExpr string) (string, error) {
+	var span trace.Span
+	_, span = tracer.Start(ctx, "selectTargetPod")
+	defer span.End()
+
+	router, err := routing.Select(routeCtx)
 	if err != nil {
 		return "", err
 	}
@@ -363,12 +390,12 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList, 
 		return "", fmt.Errorf("no ready pods for routing")
 	}
 	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 {
-		ctx.SetTargetPod(readyPods[0])
-		return ctx.TargetAddress(), nil
+		routeCtx.SetTargetPod(readyPods[0])
+		return routeCtx.TargetAddress(), nil
 	}
 	utils.CryptoShuffle(readyPods)
 
-	return router.Route(ctx, &utils.PodArray{Pods: readyPods})
+	return router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 }
 
 // validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true
@@ -483,20 +510,23 @@ func (s *Server) Shutdown() {
 	}
 }
 
-func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.ProcessingResponse, respErrorCode int,
+func (s *Server) responseErrorProcessing(ctx context.Context, routingCtx *types.RoutingContext, resp *extProcPb.ProcessingResponse, respErrorCode int,
 	model, requestID, errMsg string) *extProcPb.ProcessingResponse {
 	headers := resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
-	return s.responseErrorProcessingWithHeaders(ctx, headers, respErrorCode, model, requestID, errMsg)
+	return s.responseErrorProcessingWithHeaders(ctx, routingCtx, headers, respErrorCode, model, requestID, errMsg)
 }
 
-func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, headers []*configPb.HeaderValueOption, respErrorCode int,
+func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routingCtx *types.RoutingContext, headers []*configPb.HeaderValueOption, respErrorCode int,
 	model, requestID, errMsg string) *extProcPb.ProcessingResponse {
 	var httprouteErr error
-	routingCtx, ok := ctx.(*types.RoutingContext)
 	// if use pd route Algorithm, we don't check httproute status
-	if !ok || routingCtx.Algorithm != routing.RouterPD {
+	if routingCtx == nil || routingCtx.Algorithm != routing.RouterPD {
 		httprouteErr = s.validateHTTPRouteStatus(ctx, model)
 	}
+
+	_, span := tracer.Start(ctx, "responseErrorProcessingWithHeaders")
+	defer span.End()
+
 	if errMsg != "" && httprouteErr != nil {
 		errMsg = fmt.Sprintf("%s. %s", errMsg, httprouteErr.Error())
 	} else if errMsg == "" && httprouteErr != nil {

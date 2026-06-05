@@ -56,7 +56,7 @@ type OpenAIResponse struct {
 	Code int `json:"code"`
 }
 
-func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
+func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.RoutingContext, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 	arrival := time.Now()
 
@@ -64,7 +64,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	var promptTokens, completionTokens, totalTokens int64
 	var headers []*configPb.HeaderValueOption
 	complete := hasCompleted
-	routerCtx, _ := ctx.(*types.RoutingContext)
+
+	// Omitted tracer.Start(ctx, "HandleResponseBody") here to avoid excessive CPU and gRPC overhead.
+	// Creating a span for each individual token in the stream is too resource-intensive.
 
 	defer func() {
 		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
@@ -154,7 +156,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 
 		// Count token per user.
 		if user.Name != "" {
-			tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), totalTokens)
+			tpm, err := s.ratelimiter.Incr(routerCtx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), totalTokens)
 			if err != nil {
 				return generateErrorResponse(
 					envoyTypePb.StatusCode_InternalServerError,

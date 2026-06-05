@@ -711,7 +711,8 @@ func Test_handleRequestBody(t *testing.T) {
 				}
 				routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(tt.routingAlgo)
 			}
-			resp, model, routingCtx, stream, term := server.HandleRequestBody(
+			resp, model, stream, term := server.HandleRequestBody(
+				context.Background(),
 				routingCtx,
 				"test-request-id",
 				req,
@@ -800,7 +801,7 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 	routingCtx.ReqPath = PathChatCompletions
 	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(TestRouterAlgorithm)
 
-	resp, _, _, _, term := server.HandleRequestBody(routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+	resp, _, _, term := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
 
 	assert.NotNil(t, resp)
 	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, resp.GetImmediateResponse().GetStatus().GetCode())

@@ -703,3 +703,16 @@ func GetModelTag(model string) string {
 	}
 	return model
 }
+
+func GetTraceID(traceparent, requestID string) string {
+	traceparent = strings.TrimSpace(traceparent)
+	if traceparent != "" {
+		// W3C standard: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+		parts := strings.Split(traceparent, "-")
+		if len(parts) == 4 && len(parts[1]) == 32 {
+			return parts[1]
+		}
+	}
+
+	return requestID
+}

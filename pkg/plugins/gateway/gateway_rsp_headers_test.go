@@ -143,12 +143,7 @@ func Test_HandleResponseHeaders(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
-			var ctx context.Context
-			if tt.routingCtx != nil {
-				ctx = tt.routingCtx
-			} else {
-				ctx = context.Background()
-			}
+			ctx := context.Background()
 
 			if tt.expected.isProcessingError {
 				mockCache.On("DoneRequestCount",
@@ -171,7 +166,7 @@ func Test_HandleResponseHeaders(t *testing.T) {
 				},
 			}
 
-			resp, isErr, isErrCode := server.HandleResponseHeaders(ctx, "test-req-id", "test-model", req)
+			resp, isErr, isErrCode := server.HandleResponseHeaders(ctx, tt.routingCtx, "test-req-id", "test-model", req)
 
 			// Validate status code from :status
 			assert.Equal(t, tt.expected.processingErrorCode, isErrCode)

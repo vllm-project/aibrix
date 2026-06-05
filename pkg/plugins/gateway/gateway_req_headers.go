@@ -20,6 +20,8 @@ import (
 	"context"
 	"strings"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	"k8s.io/klog/v2"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -47,6 +49,9 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	var routingCtx *types.RoutingContext
 	var reqConfigProfile string
 
+	_, span := tracer.Start(ctx, "HandleRequestHeaders")
+	defer span.End()
+
 	h := req.Request.(*extProcPb.ProcessingRequest_RequestHeaders)
 	reqHeaders := map[string]string{}
 	for _, n := range h.RequestHeaders.Headers.Headers {
@@ -67,6 +72,9 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			reqConfigProfile = strings.TrimSpace(string(n.RawValue))
 		case HeaderSessionID:
 			reqHeaders[n.Key] = string(n.RawValue)
+		case HeaderTraceParent:
+			reqHeaders[n.Key] = string(n.RawValue)
+			requestID = GetTraceID(string(n.RawValue), requestID)
 		}
 	}
 
@@ -104,6 +112,18 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			RawValue: []byte("true"),
 		},
 	})
+
+	outCarrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, outCarrier)
+	for k, val := range outCarrier {
+		headers = append(headers, &configPb.HeaderValueOption{
+			Header: &configPb.HeaderValue{
+				Key:   k,
+				Value: val, // OTel generates a string, which is assigned directly to Envoy's Value field
+			},
+			AppendAction: configPb.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+		})
+	}
 
 	// Note: Path rewriting for /v1/images/generations and /v1/video/generations
 	// is handled in HandleRequestBody based on the engine type (model.aibrix.ai/engine label).

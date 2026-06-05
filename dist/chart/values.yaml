@@ -307,6 +307,16 @@ prometheus:
 certmanager:
   enable: false
 
+openTelemetry:
+  enable: false
+  host: ""
+  port: 4317
+  # -- (Envoy-side only) The sampling rate for distributed tracing.
+  # Note: This configuration currently only applies to Envoy's internal tracing.
+  # The external authorization/processing plugin (Go service) currently uses a
+  # default always-on sampler (100%). If you set this to a low value (e.g., 10),
+  # be aware that the Go plugin will still export spans for all requests it processes.
+  samplingRate: 100
 
 # TODO: manage common labels
 # app.kubernetes.io/component: aibrix-controller-manager
