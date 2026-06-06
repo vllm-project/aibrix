@@ -110,6 +110,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
         ],
         BatchJobState.IN_PROGRESS: [
             BatchJobState.FINALIZING,
+            BatchJobState.FINALIZED,  # failure with no output to aggregate
             BatchJobState.CANCELLING,  # For cancellation
         ],
         BatchJobState.FINALIZING: [BatchJobState.FINALIZED],
@@ -834,7 +835,11 @@ class BatchManager(RunningJobs, SchedulableJobs):
             )
         )
         job.status.errors = [ex]
-        if meta_data.status.state == BatchJobState.IN_PROGRESS:
+        has_partial_output = (
+            meta_data.status.temp_output_file_id is not None
+            and meta_data.status.temp_error_file_id is not None
+        )
+        if meta_data.status.state == BatchJobState.IN_PROGRESS and has_partial_output:
             job.status.finalizing_at = datetime.now(timezone.utc)
             job.status.state = BatchJobState.FINALIZING
         else:
