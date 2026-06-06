@@ -29,6 +29,7 @@ const STATUS_OPTIONS: { label: string; value: BatchStatusFilter }[] = [
   { label: 'queued', value: 'queued' },
   { label: 'resource_preparing', value: 'resource_preparing' },
   { label: 'submitting', value: 'submitting' },
+  { label: 'scheduling', value: 'scheduling' },
   { label: 'validating', value: 'validating' },
   { label: 'in_progress', value: 'in_progress' },
   { label: 'finalizing', value: 'finalizing' },
@@ -70,6 +71,7 @@ function statusClass(s: JobStatus): string {
     case 'queued':
     case 'resource_preparing':
     case 'submitting':
+    case 'scheduling':
     case 'validating':
     case 'in_progress':
     case 'finalizing':

@@ -857,7 +857,7 @@ func buildJobEvents(job *pb.Job) []*pb.JobEvent {
 	add("resource_preparing", "Provisioning", "resource_preparing", "planner", job.ResourcePreparingAt, "Resource provisioning started.")
 	add("submitting", "Submitting", "submitting", "planner", job.SubmittingAt, "Provisioning reached ready and the batch was submitted to MDS.")
 	if job.BatchId != "" {
-		add("batch_created", "MDS batch created", "validating", "mds", job.CreatedAt, "Metadata Service created the OpenAI batch.")
+		add("batch_created", "MDS batch created", "scheduling", "mds", job.CreatedAt, "Metadata Service created the OpenAI batch.")
 	}
 	add("in_progress", "In progress", "in_progress", "mds", job.InProgressAt, "MDS started processing requests.")
 	add("finalizing", "Finalizing", "finalizing", "mds", job.FinalizingAt, "MDS started finalizing output files.")

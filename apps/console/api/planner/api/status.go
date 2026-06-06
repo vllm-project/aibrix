@@ -24,6 +24,7 @@ const (
 	JobStatusResourcePreparing JobStatus = "resource_preparing"
 	JobStatusSubmitting        JobStatus = "submitting"
 
+	JobStatusScheduling JobStatus = "scheduling"
 	JobStatusValidating JobStatus = "validating"
 	JobStatusInProgress JobStatus = "in_progress"
 	JobStatusFinalizing JobStatus = "finalizing"
