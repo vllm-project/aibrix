@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strconv"
 )
 
 // AuthModeDev is the development auth mode name.
@@ -50,6 +51,11 @@ type Config struct {
 	// which validates against the supported set defined in
 	// resource_manager/types.ResourceProvisionType*
 	Provisioner string
+	// PlanningPolicy is the policy type to use for the planner.
+	PlanningPolicy string
+	// PlannerWorkerCount is the number of worker threads to use for the planner.
+	// Defaults to 10.
+	PlannerWorkerCount int
 
 	// GRPCAddr is the listen address for the gRPC server.
 	GRPCAddr string
@@ -146,12 +152,19 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	plannerWorkerCount, err := strconv.Atoi(envOrDefault("PLANNER_WORKER_COUNT", "10"))
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		StoreURI:                            envOrDefault("STORE_URI", "sqlite:/tmp/aibrix-console.db"),
 		GatewayEndpoint:                     envOrDefault("GATEWAY_ENDPOINT", "http://localhost:8888"),
 		MetadataServiceURL:                  envOrDefault("METADATA_SERVICE_URL", "http://localhost:8090"),
 		DefaultBatchModelDeploymentTemplate: envOrDefault("DEFAULT_BATCH_MODEL_DEPLOYMENT_TEMPLATE", ""),
 		Provisioner:                         envOrDefault("PROVISIONER", "kubernetes"),
+		PlanningPolicy:                      envOrDefault("PLANNING_POLICY", "simple"),
+		PlannerWorkerCount:                  plannerWorkerCount,
 		GRPCAddr:                            envOrDefault("GRPC_ADDR", ":50060"),
 		HTTPAddr:                            envOrDefault("HTTP_ADDR", ":8080"),
 		AuthMode:                            authMode,

@@ -27,6 +27,14 @@ func TimeToUnix(t *time.Time) int64 {
 	return t.Unix()
 }
 
+// UnixOrZero returns unix seconds for non-zero time.Time, or 0 for zero time.Time.
+func UnixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
 // TimeOrZero dereferences *time.Time, returning zero value for nil.
 // Useful for converting nullable DB timestamps to in-memory structs.
 func TimeOrZero(t *time.Time) time.Time {
