@@ -88,7 +88,7 @@ function statusClass(s: JobStatus): string {
 }
 
 function runtimeLabel(job: Job): string {
-  return job.runtime?.target || job.provision?.provider || '—';
+  return job.runtime?.target || '—';
 }
 
 function provisionLabel(job: Job): string {
