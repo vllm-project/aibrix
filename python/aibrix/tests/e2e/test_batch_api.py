@@ -290,7 +290,7 @@ async def test_batch_api_e2e_real_service(service_health):
                 pytest.fail(f"Batch job failed: {error_info}")
             elif current_status in ["cancelled", "expired"]:
                 pytest.fail(f"Batch job was {current_status}")
-            elif current_status in ["validating", "in_progress", "finalizing"]:
+            elif current_status in ["scheduling", "validating", "in_progress", "finalizing"]:
                 # These are expected intermediate states
                 pass
             else:
@@ -435,7 +435,7 @@ async def test_openai_batch_api(service_health):
                 pytest.fail(f"Batch job failed: {error_info}")
             elif current_status in ["cancelled", "expired"]:
                 pytest.fail(f"Batch job was {current_status}")
-            elif current_status in ["validating", "in_progress", "finalizing"]:
+            elif current_status in ["scheduling", "validating", "in_progress", "finalizing"]:
                 # These are expected intermediate states
                 pass
             else:

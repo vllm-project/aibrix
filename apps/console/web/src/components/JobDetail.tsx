@@ -105,6 +105,7 @@ function statusClass(s: JobStatus): string {
     case 'queued':
     case 'resource_preparing':
     case 'submitting':
+    case 'scheduling':
     case 'validating':
     case 'in_progress':
     case 'finalizing':
