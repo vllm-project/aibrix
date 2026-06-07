@@ -88,7 +88,7 @@ func (p *k8sProvisioner) Provision(ctx context.Context, req *types.ResourceProvi
 		regionStr = primary.Region.String()
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	result := &types.ProvisionResult{
 		ProvisionID:    provisionID,
 		IdempotencyKey: req.IdempotencyKey,

@@ -124,7 +124,7 @@ func (p *runpodProvisioner) Provision(ctx context.Context, req *types.ResourcePr
 		}
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	result := &types.ProvisionResult{
 		ProvisionID:    uuid.New().String(),
 		IdempotencyKey: req.IdempotencyKey,
@@ -211,7 +211,7 @@ func (p *runpodProvisioner) reconcile(ctx context.Context, result *types.Provisi
 		changed = true
 	}
 	if changed {
-		result.UpdatedAt = time.Now()
+		result.UpdatedAt = time.Now().UTC()
 	}
 	return changed
 }
