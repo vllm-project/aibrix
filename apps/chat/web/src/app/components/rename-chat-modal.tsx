@@ -33,7 +33,12 @@ export function RenameChatModal({ isOpen, currentTitle, onClose, onSave }: Renam
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <button
+        type="button"
+        aria-label="Close modal"
+        className="absolute inset-0 bg-black/60 border-0 p-0"
+        onClick={onClose}
+      />
       <div className="relative bg-card border border-border rounded-2xl w-full max-w-[400px] p-6 shadow-2xl">
         <h2 className="mb-5" style={{ fontSize: '1.1rem' }}>
           Rename chat
@@ -52,12 +57,14 @@ export function RenameChatModal({ isOpen, currentTitle, onClose, onSave }: Renam
 
         <div className="flex items-center justify-end gap-2.5 mt-5">
           <button
+            type="button"
             onClick={onClose}
             className="px-4 py-1.5 rounded-lg text-sm text-foreground/70 hover:text-foreground hover:bg-accent transition-colors"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={handleSave}
             disabled={!value.trim()}
             className="px-4 py-1.5 rounded-lg text-sm bg-foreground text-background hover:opacity-90 transition-opacity disabled:opacity-40"

@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from routers import audio, auth, chat, conversations, health, images, models, projects, video
+from routers import audio, auth, chat, conversations, health, images, models, video
 from services.providers import (
     get_audio_provider,
     get_chat_provider,
@@ -65,7 +65,6 @@ app.include_router(health.router)
 app.include_router(models.router)
 app.include_router(conversations.router)
 app.include_router(chat.router)
-app.include_router(projects.router)
 app.include_router(images.router)
 app.include_router(audio.router)
 app.include_router(video.router)

@@ -4,7 +4,6 @@ import { useLocation, useParams } from 'react-router'
 import {
   type Message as ApiMessage,
   type ChatAttachmentPayload,
-  type Conversation,
   editImage,
   generateImage,
   generateSpeech,
@@ -64,7 +63,6 @@ export function ChatPage() {
   const location = useLocation()
   const [messages, setMessages] = useState<Message[]>([])
   const [selectedModel, setSelectedModel] = useState('gpt-4-0613')
-  const [conversation, setConversation] = useState<Conversation | null>(null)
   const [loading, setLoading] = useState(true)
   const [streaming, setStreaming] = useState(false)
   const [playingMessageId, setPlayingMessageId] = useState<string | null>(null)
@@ -122,12 +120,10 @@ export function ChatPage() {
     loadedConvId.current = null // reset until load completes
     setLoading(true)
     setMessages([])
-    setConversation(null)
 
     getConversation(id)
       .then((conv) => {
         if (conv) {
-          setConversation(conv)
           const apiMsgs: Message[] = (conv.messages ?? [])
             .filter((m: ApiMessage) => m.role !== 'system')
             .map((m: ApiMessage) => ({
@@ -293,7 +289,7 @@ export function ChatPage() {
    * and streams the response. Use this for edit/regenerate flows.
    */
   const streamResponse = useCallback(
-    (content: string, model: string) => {
+    (content: string, model: string, opts?: { replaceMessageId?: string; retryFromMessageId?: string }) => {
       if (!id || streaming) return
 
       lastModelRef.current = model
@@ -309,30 +305,37 @@ export function ChatPage() {
       setMessages((prev) => [...prev, assistantMsg])
       setStreaming(true)
 
-      controllerRef.current = streamCompletion(id, content, model, undefined, {
-        onDelta: (delta) => {
-          setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + delta } : m)))
+      controllerRef.current = streamCompletion(
+        id,
+        content,
+        model,
+        undefined,
+        {
+          onDelta: (delta) => {
+            setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + delta } : m)))
+          },
+          onDone: () => {
+            setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)))
+            setStreaming(false)
+            notifyConversationsChanged()
+          },
+          onError: (errMsg) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId
+                  ? {
+                      ...m,
+                      content: m.content || `Error: ${errMsg}`,
+                      streaming: false,
+                    }
+                  : m,
+              ),
+            )
+            setStreaming(false)
+          },
         },
-        onDone: () => {
-          setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)))
-          setStreaming(false)
-          notifyConversationsChanged()
-        },
-        onError: (errMsg) => {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId
-                ? {
-                    ...m,
-                    content: m.content || `Error: ${errMsg}`,
-                    streaming: false,
-                  }
-                : m,
-            ),
-          )
-          setStreaming(false)
-        },
-      })
+        opts,
+      )
     },
     [id, streaming],
   )
@@ -515,7 +518,7 @@ export function ChatPage() {
     // Stream a new response (user message is already in the array)
     // We need a small delay so the state update settles
     setTimeout(() => {
-      streamResponse(editText.trim(), model)
+      streamResponse(editText.trim(), model, { replaceMessageId: editingId })
     }, 0)
   }
 
@@ -545,7 +548,7 @@ export function ChatPage() {
 
     // Stream a new response
     setTimeout(() => {
-      streamResponse(userMsg.content, model)
+      streamResponse(userMsg.content, model, { retryFromMessageId: userMsg.id })
     }, 0)
   }
 
@@ -620,7 +623,10 @@ export function ChatPage() {
       {msg.images && msg.images.length > 0 && (
         <div className="flex gap-3 flex-wrap">
           {msg.images.map((img, idx) => (
-            <div key={idx} className="relative group">
+            <div
+              key={[img.url, img.b64_json, img.revised_prompt].filter(Boolean).join(':') || `img-${idx}`}
+              className="relative group"
+            >
               <img
                 src={img.url || (img.b64_json ? `data:image/png;base64,${img.b64_json}` : '')}
                 alt={img.revised_prompt || 'Generated image'}
@@ -650,14 +656,18 @@ export function ChatPage() {
         <div className="rounded-lg bg-accent/50 border border-border p-4">
           {msg.videoJob.status === 'completed' ? (
             <div className="space-y-3">
+              {/* biome-ignore lint/a11y/useMediaCaption: generated video responses do not include caption tracks. */}
               <video src={getVideoContentUrl(msg.videoJob.id)} controls className="max-w-[480px] rounded-lg" />
               <div className="flex items-center gap-3">
                 <Check size={16} className="text-green-400" />
                 <span className="text-sm text-green-400">Video ready</span>
                 <button
+                  type="button"
                   onClick={async () => {
                     try {
-                      const res = await fetch(getVideoContentUrl(msg.videoJob!.id))
+                      const videoId = msg.videoJob?.id
+                      if (!videoId) return
+                      const res = await fetch(getVideoContentUrl(videoId))
                       if (!res.ok) throw new Error('Download failed')
                       const blob = await res.blob()
                       const url = URL.createObjectURL(blob)
@@ -710,15 +720,6 @@ export function ChatPage() {
 
   return (
     <div className="flex-1 flex flex-col h-full">
-      {/* Project context badge */}
-      {conversation?.project_id && (
-        <div className="px-4 pt-3 pb-0">
-          <div className="max-w-[680px] mx-auto">
-            <span className="text-xs text-amber-400/70">(Project context active)</span>
-          </div>
-        </div>
-      )}
-
       <div className="flex-1 overflow-y-auto px-4 py-6">
         <div className="max-w-[680px] mx-auto space-y-6">
           {messages.map((msg, idx) => {
@@ -763,12 +764,14 @@ export function ChatPage() {
                             />
                             <div className="flex gap-2">
                               <button
+                                type="button"
                                 onClick={handleEditSave}
                                 className="px-3 py-1 rounded-lg bg-amber-600 text-white text-xs hover:bg-amber-500 transition-colors"
                               >
                                 Save &amp; Resend
                               </button>
                               <button
+                                type="button"
                                 onClick={handleEditCancel}
                                 className="px-3 py-1 rounded-lg bg-white/10 text-foreground/70 text-xs hover:bg-white/20 transition-colors"
                               >
@@ -791,6 +794,7 @@ export function ChatPage() {
                           <div className="opacity-0 group-hover:opacity-100 transition-opacity mt-1">
                             <Tooltip content="Edit message">
                               <button
+                                type="button"
                                 onClick={() => handleEdit(msg.id)}
                                 className="p-1 rounded hover:bg-accent text-foreground/40 hover:text-foreground/70 transition-colors"
                               >
@@ -822,6 +826,7 @@ export function ChatPage() {
                       >
                         <Tooltip content="Copy message">
                           <button
+                            type="button"
                             onClick={() => navigator.clipboard.writeText(msg.content)}
                             className="p-1 rounded hover:bg-accent text-foreground/40 hover:text-foreground/70 transition-colors"
                           >
@@ -830,6 +835,7 @@ export function ChatPage() {
                         </Tooltip>
                         <Tooltip content={playingMessageId === msg.id ? 'Stop' : 'Read aloud'}>
                           <button
+                            type="button"
                             onClick={() => handleTTS(msg.id, msg.content)}
                             className="p-1 rounded hover:bg-accent text-foreground/40 hover:text-foreground/70 transition-colors"
                           >
@@ -846,6 +852,7 @@ export function ChatPage() {
                         {idx === messages.length - 1 && !streaming && (
                           <Tooltip content="Regenerate response">
                             <button
+                              type="button"
                               onClick={() => handleRegenerate(msg.id)}
                               className="p-1 rounded hover:bg-accent text-foreground/40 hover:text-foreground/70 transition-colors"
                             >
@@ -867,13 +874,21 @@ export function ChatPage() {
       {streaming && (
         <div className="flex justify-center py-2">
           <button
+            type="button"
             onClick={() => {
               controllerRef.current?.abort()
               setStreaming(false)
             }}
             className="flex items-center gap-2 px-4 py-2 rounded-full border border-white/10 bg-background hover:bg-accent text-sm text-foreground/70 hover:text-foreground transition-colors"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <svg
+              aria-hidden="true"
+              xmlns="http://www.w3.org/2000/svg"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+            >
               <rect x="4" y="4" width="16" height="16" rx="2" />
             </svg>
             Stop generating

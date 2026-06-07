@@ -23,7 +23,6 @@ interface ChatInputProps {
   selectedModel?: string
   onModelChange?: (model: string) => void
   onSend?: (message: string, model: string, attachments?: Attachment[]) => void
-  onStartNewProject?: () => void
 }
 
 export function ChatInput({
@@ -32,7 +31,6 @@ export function ChatInput({
   selectedModel,
   onModelChange,
   onSend,
-  onStartNewProject,
 }: ChatInputProps) {
   const [message, setMessage] = useState('')
   const [internalSelectedModel, setInternalSelectedModel] = useState('')
@@ -219,8 +217,9 @@ export function ChatInput({
 
   return (
     <div className="w-full max-w-[680px] mx-auto">
-      <div
-        className={`bg-card border rounded-2xl transition-colors ${
+      <fieldset
+        aria-label="Message composer attachment drop zone"
+        className={`min-w-0 p-0 bg-card border rounded-2xl transition-colors ${
           isDragOver ? 'border-blue-500/50 bg-blue-500/5' : 'border-border'
         }`}
         onDrop={handleDrop}
@@ -255,6 +254,7 @@ export function ChatInput({
 
                 {!attachment.uploading && (
                   <button
+                    type="button"
                     onClick={() => removeAttachment(attachment.id)}
                     className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-foreground/80 text-background flex items-center justify-center opacity-0 group-hover/attachment:opacity-100 transition-opacity"
                   >
@@ -286,7 +286,7 @@ export function ChatInput({
           />
         </div>
         <div className="flex items-center justify-between px-3 pb-3">
-          <PlusMenu onStartNewProject={onStartNewProject} onAddFilesOrPhotos={handleAddFilesOrPhotos} />
+          <PlusMenu onAddFilesOrPhotos={handleAddFilesOrPhotos} />
           <div className="flex items-center gap-3">
             <ModelSelector selectedModel={currentModel} onModelChange={handleModelChange} />
 
@@ -299,6 +299,7 @@ export function ChatInput({
                 </span>
                 <Tooltip content="Cancel recording">
                   <button
+                    type="button"
                     onClick={handleAudioCancel}
                     className="p-1.5 rounded-lg hover:bg-accent text-foreground/50 hover:text-foreground transition-colors"
                   >
@@ -307,6 +308,7 @@ export function ChatInput({
                 </Tooltip>
                 <Tooltip content="Stop and transcribe">
                   <button
+                    type="button"
                     onClick={handleAudioStop}
                     className="w-8 h-8 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center transition-colors"
                   >
@@ -321,6 +323,7 @@ export function ChatInput({
               </div>
             ) : hasContent ? (
               <button
+                type="button"
                 onClick={handleSubmit}
                 disabled={disabled}
                 className="w-8 h-8 rounded-full bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-white flex items-center justify-center transition-colors"
@@ -330,6 +333,7 @@ export function ChatInput({
             ) : (
               <Tooltip content="Use voice mode">
                 <button
+                  type="button"
                   onClick={handleAudioClick}
                   className="p-1.5 rounded-lg hover:bg-accent text-foreground/50 hover:text-foreground transition-colors"
                 >
@@ -346,7 +350,7 @@ export function ChatInput({
             <p className="text-xs text-red-500">{audioError}</p>
           </div>
         )}
-      </div>
+      </fieldset>
       <input
         ref={fileInputRef}
         type="file"

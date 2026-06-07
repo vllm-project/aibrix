@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 
 interface TooltipProps {
   content: string
@@ -8,36 +8,16 @@ interface TooltipProps {
 }
 
 export function Tooltip({ content, children, position = 'top', delay = 400 }: TooltipProps) {
-  const [visible, setVisible] = useState(false)
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const show = () => {
-    timeoutRef.current = setTimeout(() => setVisible(true), delay)
-  }
-
-  const hide = () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current)
-    setVisible(false)
-  }
-
-  useEffect(() => {
-    return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current)
-    }
-  }, [])
-
   return (
-    <div className="relative inline-flex" onMouseEnter={show} onMouseLeave={hide} onClick={hide}>
+    <span className="relative inline-flex group" style={{ '--tooltip-delay': `${delay}ms` } as CSSProperties}>
       {children}
-      {visible && (
-        <div
-          className={`absolute left-1/2 -translate-x-1/2 z-[300] px-2.5 py-1 rounded-lg bg-foreground text-background text-xs whitespace-nowrap pointer-events-none ${
-            position === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'
-          }`}
-        >
-          {content}
-        </div>
-      )}
-    </div>
+      <span
+        className={`absolute left-1/2 -translate-x-1/2 z-[300] px-2.5 py-1 rounded-lg bg-foreground text-background text-xs whitespace-nowrap pointer-events-none opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity delay-0 group-hover:delay-[var(--tooltip-delay)] group-focus-within:delay-[var(--tooltip-delay)] ${
+          position === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'
+        }`}
+      >
+        {content}
+      </span>
+    </span>
   )
 }
