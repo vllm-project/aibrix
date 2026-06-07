@@ -1,5 +1,5 @@
-import { Check, FolderInput, Info, Loader2, Plus, Search, Trash2, X } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Check, Info, Loader2, Plus, Search, Trash2, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import {
   type ConversationSummary,
@@ -7,7 +7,6 @@ import {
   listConversations,
   notifyConversationsChanged,
 } from '@/api/client'
-import { MoveChatModal } from './move-chat-modal'
 
 /* ── Toast ─────────────────────────────────────────────── */
 function Toast({ message, onDismiss }: { message: string; onDismiss: () => void }) {
@@ -21,6 +20,7 @@ function Toast({ message, onDismiss }: { message: string; onDismiss: () => void 
       <Info size={16} className="text-foreground/50 flex-shrink-0" />
       <span>{message}</span>
       <button
+        type="button"
         onClick={onDismiss}
         className="p-0.5 rounded-md text-foreground/40 hover:text-foreground transition-colors"
       >
@@ -34,7 +34,12 @@ function Toast({ message, onDismiss }: { message: string; onDismiss: () => void 
 function BulkDeleteModal({ count, onClose, onDelete }: { count: number; onClose: () => void; onDelete: () => void }) {
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <button
+        type="button"
+        aria-label="Close modal"
+        className="absolute inset-0 bg-black/60 border-0 p-0"
+        onClick={onClose}
+      />
       <div className="relative bg-card border border-border rounded-2xl w-full max-w-[380px] p-6 shadow-2xl">
         <h2 style={{ fontSize: '1.1rem', fontWeight: 600 }} className="mb-2">
           Delete {count} chat{count !== 1 ? 's' : ''}
@@ -46,12 +51,14 @@ function BulkDeleteModal({ count, onClose, onDelete }: { count: number; onClose:
 
         <div className="flex items-center justify-end gap-2.5 mt-6">
           <button
+            type="button"
             onClick={onClose}
             className="px-4 py-1.5 rounded-lg text-sm text-foreground/70 hover:text-foreground hover:bg-accent transition-colors"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={onDelete}
             className="px-4 py-1.5 rounded-lg text-sm bg-red-500 text-white hover:bg-red-600 transition-colors"
           >
@@ -69,27 +76,44 @@ function Checkbox({
   indeterminate,
   onChange,
   className = '',
+  inputId,
 }: {
   checked: boolean
   indeterminate?: boolean
   onChange: () => void
   className?: string
+  inputId?: string
 }) {
+  const checkboxRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (checkboxRef.current) {
+      checkboxRef.current.indeterminate = !!indeterminate
+    }
+  }, [indeterminate])
+
   return (
-    <div
-      role="checkbox"
-      aria-checked={indeterminate ? 'mixed' : checked}
-      onClick={(e) => {
-        e.stopPropagation()
-        onChange()
-      }}
-      className={`w-[18px] h-[18px] rounded flex-shrink-0 flex items-center justify-center border transition-colors cursor-pointer ${
+    <span
+      className={`relative w-[18px] h-[18px] rounded flex-shrink-0 flex items-center justify-center border transition-colors ${
         checked || indeterminate ? 'bg-blue-500 border-blue-500' : 'border-foreground/25 hover:border-foreground/45'
       } ${className}`}
     >
-      {checked && <Check size={12} className="text-white" strokeWidth={3} />}
-      {indeterminate && !checked && <div className="w-2 h-0.5 rounded-full bg-white" />}
-    </div>
+      <input
+        ref={checkboxRef}
+        id={inputId}
+        type="checkbox"
+        checked={checked}
+        aria-label="Select chat"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+        onChange={onChange}
+        className="absolute inset-0 z-10 m-0 cursor-pointer opacity-0"
+      />
+      <span aria-hidden="true" className="pointer-events-none flex items-center justify-center">
+        {checked && <Check size={12} className="text-white" strokeWidth={3} />}
+        {indeterminate && !checked && <span className="w-2 h-0.5 rounded-full bg-white" />}
+      </span>
+    </span>
   )
 }
 
@@ -113,7 +137,6 @@ export function ChatsPage() {
   const [selectMode, setSelectMode] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [showDeleteModal, setShowDeleteModal] = useState(false)
-  const [showMoveModal, setShowMoveModal] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
 
   const loadChats = useCallback(async () => {
@@ -177,15 +200,6 @@ export function ChatsPage() {
     setToast(`${count} chat${count !== 1 ? 's' : ''} deleted`)
   }
 
-  const handleBulkMove = (projectId: string) => {
-    const count = selected.size
-    console.log(`Moved ${count} chats to project ${projectId}`)
-    setSelected(new Set())
-    setSelectMode(false)
-    setShowMoveModal(false)
-    setToast(`${count} chat${count !== 1 ? 's' : ''} moved`)
-  }
-
   const dismissToast = useCallback(() => setToast(null), [])
 
   const allSelected = filteredChats.length > 0 && selected.size === filteredChats.length
@@ -207,6 +221,7 @@ export function ChatsPage() {
             Chats
           </h1>
           <button
+            type="button"
             onClick={() => navigate('/')}
             className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-foreground text-background text-sm hover:bg-foreground/90 transition-colors"
           >
@@ -236,6 +251,7 @@ export function ChatsPage() {
             </span>
             {filteredChats.length > 0 && (
               <button
+                type="button"
                 onClick={() => setSelectMode(true)}
                 className="text-sm text-blue-400 hover:text-blue-300 underline underline-offset-2 transition-colors"
               >
@@ -249,19 +265,7 @@ export function ChatsPage() {
             <Checkbox checked={allSelected} indeterminate={someSelected} onChange={toggleSelectAll} />
             <span className="text-sm text-muted-foreground">{selected.size} selected</span>
             <button
-              onClick={() => {
-                if (selected.size > 0) setShowMoveModal(true)
-              }}
-              className={`p-1.5 rounded-md transition-colors ${
-                selected.size > 0
-                  ? 'text-foreground/60 hover:text-foreground hover:bg-accent'
-                  : 'text-foreground/20 cursor-default'
-              }`}
-              title="Move to project"
-            >
-              <FolderInput size={17} />
-            </button>
-            <button
+              type="button"
               onClick={() => {
                 if (selected.size > 0) setShowDeleteModal(true)
               }}
@@ -276,6 +280,7 @@ export function ChatsPage() {
             </button>
             <div className="flex-1" />
             <button
+              type="button"
               onClick={exitSelectMode}
               className="p-1.5 rounded-md text-foreground/50 hover:text-foreground hover:bg-accent transition-colors"
               title="Exit select mode"
@@ -300,30 +305,47 @@ export function ChatsPage() {
           ) : (
             filteredChats.map((chat) => {
               const isSelected = selected.has(chat.id)
+              const activateChat = () => {
+                if (selectMode) {
+                  toggleSelect(chat.id)
+                } else {
+                  navigate(`/chat/${chat.id}`)
+                }
+              }
+              const rowContent = (
+                <>
+                  {selectMode && (
+                    <Checkbox
+                      inputId={`chat-select-${chat.id}`}
+                      checked={isSelected}
+                      onChange={() => toggleSelect(chat.id)}
+                    />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-foreground truncate">{chat.title}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {chat.message_count} message{chat.message_count !== 1 ? 's' : ''}
+                      {' · '}
+                      {timeAgo(chat.updated_at)}
+                    </p>
+                  </div>
+                </>
+              )
+              const rowClassName = `flex items-center gap-3 w-full text-left px-3 py-4 rounded-lg transition-colors group ${
+                isSelected ? 'bg-blue-500/15' : 'hover:bg-accent/50'
+              }`
+
               return (
                 <div key={chat.id}>
-                  <button
-                    onClick={() => {
-                      if (selectMode) {
-                        toggleSelect(chat.id)
-                      } else {
-                        navigate(`/chat/${chat.id}`)
-                      }
-                    }}
-                    className={`flex items-center gap-3 w-full text-left px-3 py-4 rounded-lg transition-colors group ${
-                      isSelected ? 'bg-blue-500/15' : 'hover:bg-accent/50'
-                    }`}
-                  >
-                    {selectMode && <Checkbox checked={isSelected} onChange={() => toggleSelect(chat.id)} />}
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm text-foreground truncate">{chat.title}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {chat.message_count} message{chat.message_count !== 1 ? 's' : ''}
-                        {' · '}
-                        {timeAgo(chat.updated_at)}
-                      </p>
-                    </div>
-                  </button>
+                  {selectMode ? (
+                    <label htmlFor={`chat-select-${chat.id}`} className={`${rowClassName} cursor-pointer`}>
+                      {rowContent}
+                    </label>
+                  ) : (
+                    <button type="button" onClick={activateChat} className={rowClassName}>
+                      {rowContent}
+                    </button>
+                  )}
                   <div className="border-t border-border mx-3" />
                 </div>
               )
@@ -336,9 +358,6 @@ export function ChatsPage() {
       {showDeleteModal && selected.size > 0 && (
         <BulkDeleteModal count={selected.size} onClose={() => setShowDeleteModal(false)} onDelete={handleBulkDelete} />
       )}
-
-      {/* ── Move modal ── */}
-      <MoveChatModal isOpen={showMoveModal} onClose={() => setShowMoveModal(false)} onMove={handleBulkMove} />
 
       {/* ── Toast notification ── */}
       {toast && <Toast message={toast} onDismiss={dismissToast} />}
