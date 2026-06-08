@@ -55,6 +55,9 @@ func (a *NIXLAgent) MergePrefillResponse(
 	if err := sonic.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
 		return fmt.Errorf("failed to unmarshal original request body: %w", err)
 	}
+	if originalRequest == nil {
+		return fmt.Errorf("original request body is empty or null")
+	}
 
 	originalRequest["disagg_prefill_resp"] = prefillResponse
 	updatedReqBody, err := sonic.Marshal(originalRequest)

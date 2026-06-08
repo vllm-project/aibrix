@@ -17,6 +17,7 @@ limitations under the License.
 package transfer
 
 import (
+	"errors"
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
@@ -50,6 +51,9 @@ func ResolveConnectorType(podLabelValue, globalDefault string) string {
 // ResolveAgentForPod resolves the KVTransferAgent for a pod. It checks the
 // ConnectorTypeIdentifier pod label first, then falls back to globalDefault.
 func ResolveAgentForPod(pod *v1.Pod, globalDefault string) (KVTransferAgent, error) {
+	if pod == nil {
+		return nil, errors.New("cannot resolve KV transfer agent: pod is nil")
+	}
 	connectorType := ResolveConnectorType(pod.Labels[ConnectorTypeIdentifier], globalDefault)
 	return Resolve(connectorType)
 }
