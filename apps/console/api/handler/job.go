@@ -68,6 +68,7 @@ const (
 	metadataConsoleTemplateName    = "aibrix.console.template_name"
 	metadataConsoleTemplateVersion = "aibrix.console.template_version"
 	defaultListLimit               = 20
+	jsonNullLiteral                = "null"
 )
 
 // JobHandler implements console.v1.JobService.
@@ -556,11 +557,11 @@ func parseBatchExtraBody(b *openai.Batch) map[string]json.RawMessage {
 		return nil
 	}
 	out := make(map[string]json.RawMessage)
-	if raw, ok := root["extra_body"]; ok && len(raw) > 0 && string(raw) != "null" {
+	if raw, ok := root["extra_body"]; ok && len(raw) > 0 && string(raw) != jsonNullLiteral {
 		var extra map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &extra); err == nil {
 			for k, v := range extra {
-				if len(v) > 0 && string(v) != "null" {
+				if len(v) > 0 && string(v) != jsonNullLiteral {
 					out[k] = v
 				}
 			}
@@ -573,7 +574,7 @@ func parseBatchExtraBody(b *openai.Batch) map[string]json.RawMessage {
 		if _, standard := standardBatchResponseFields[k]; standard {
 			continue
 		}
-		if len(v) > 0 && string(v) != "null" {
+		if len(v) > 0 && string(v) != jsonNullLiteral {
 			out[k] = v
 		}
 	}
@@ -604,14 +605,14 @@ func applyKnownBatchExtensions(job *pb.Job, extraBody map[string]json.RawMessage
 }
 
 func applyAibrixBatchExtension(job *pb.Job, raw json.RawMessage) {
-	if len(raw) == 0 || string(raw) == "null" {
+	if len(raw) == 0 || string(raw) == jsonNullLiteral {
 		return
 	}
 	var payload rawBatchExtensionPayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return
 	}
-	if len(payload.Runtime) > 0 && string(payload.Runtime) != "null" {
+	if len(payload.Runtime) > 0 && string(payload.Runtime) != jsonNullLiteral {
 		var runtime rawRuntimePayload
 		if err := json.Unmarshal(payload.Runtime, &runtime); err == nil {
 			job.Runtime = &pb.JobRuntime{
@@ -621,7 +622,7 @@ func applyAibrixBatchExtension(job *pb.Job, raw json.RawMessage) {
 			}
 		}
 	}
-	if len(payload.ResourceAllocation) > 0 && string(payload.ResourceAllocation) != "null" {
+	if len(payload.ResourceAllocation) > 0 && string(payload.ResourceAllocation) != jsonNullLiteral {
 		var allocation rawResourceAllocationPayload
 		if err := json.Unmarshal(payload.ResourceAllocation, &allocation); err == nil {
 			job.ResourceAllocation = &pb.JobResourceAllocation{
@@ -640,7 +641,7 @@ func applyAibrixBatchExtension(job *pb.Job, raw json.RawMessage) {
 			}
 		}
 	}
-	if len(payload.ModelTemplate) > 0 && string(payload.ModelTemplate) != "null" {
+	if len(payload.ModelTemplate) > 0 && string(payload.ModelTemplate) != jsonNullLiteral {
 		var modelTemplate rawNamedRefPayload
 		if err := json.Unmarshal(payload.ModelTemplate, &modelTemplate); err == nil {
 			job.ModelTemplateRef = &pb.JobModelTemplateRef{
@@ -656,7 +657,7 @@ func applyAibrixBatchExtension(job *pb.Job, raw json.RawMessage) {
 			}
 		}
 	}
-	if len(payload.Profile) > 0 && string(payload.Profile) != "null" {
+	if len(payload.Profile) > 0 && string(payload.Profile) != jsonNullLiteral {
 		var profile rawNamedRefPayload
 		if err := json.Unmarshal(payload.Profile, &profile); err == nil {
 			job.Profile = &pb.JobProfileRef{
