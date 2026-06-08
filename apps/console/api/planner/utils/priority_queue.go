@@ -25,7 +25,8 @@ import (
 type pqEntry[T any] struct {
 	item     T
 	priority int64
-	index    int // index in the heap, needed for update
+	sequence int64 // monotonically increasing sequence number for FIFO ordering
+	index    int   // index in the heap, needed for update
 }
 
 // priorityQueueHeap implements heap.Interface for a max-heap.
@@ -35,15 +36,13 @@ type priorityQueueHeap[T any] []*pqEntry[T]
 func (h priorityQueueHeap[T]) Len() int { return len(h) }
 
 func (h priorityQueueHeap[T]) Less(i, j int) bool {
-	// convert to english comment
-	// First compare priority, then compare index
-	if h[i].priority == h[j].priority {
-		// If priority is the same, compare index
-		// Fall back to FIFO if all priorities are the same
-		return h[i].index < h[j].index
+	// First compare priority (higher priority comes first)
+	if h[i].priority != h[j].priority {
+		return h[i].priority > h[j].priority
 	}
-	// If priority is different, return higher priority first
-	return h[i].priority > h[j].priority
+	// If priority is the same, use sequence number for stable FIFO ordering
+	// Lower sequence number means earlier insertion, so it comes first
+	return h[i].sequence < h[j].sequence
 }
 
 func (h priorityQueueHeap[T]) Swap(i, j int) {
@@ -92,9 +91,10 @@ type PriorityQueue[T PriorityQueueItem] interface {
 //
 // Higher priority values come first (max-heap behavior).
 type PriorityQueueImpl[T PriorityQueueItem] struct {
-	mu     sync.RWMutex
-	h      priorityQueueHeap[T]
-	lookup map[string]*pqEntry[T]
+	mu          sync.RWMutex
+	h           priorityQueueHeap[T]
+	lookup      map[string]*pqEntry[T]
+	nextSequence int64 // monotonically increasing counter for FIFO ordering
 }
 
 // NewPriorityQueue creates a new priority queue.
@@ -122,7 +122,9 @@ func (pq *PriorityQueueImpl[T]) Push(item T, priority int64) {
 	entry := &pqEntry[T]{
 		item:     item,
 		priority: priority,
+		sequence: pq.nextSequence,
 	}
+	pq.nextSequence++
 	heap.Push(&pq.h, entry)
 	pq.lookup[item.Key()] = entry
 }

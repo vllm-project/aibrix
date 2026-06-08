@@ -138,7 +138,7 @@ func (p *SimplePolicy) Plan(ctx context.Context, input PlanningInput[*queuedJob]
 		hasSchedule := job.scheduledResource != nil
 		job.mu.RUnlock()
 
-		if status == plannerapi.JobStatusQueued && hasSchedule {
+		if (status == plannerapi.JobStatusQueued && hasSchedule) || status == plannerapi.JobStatusPlanned {
 			// Job has been scheduled but hasn't started provisioning yet
 			// Count it to prevent over-scheduling
 			activeProvisioningJobs++

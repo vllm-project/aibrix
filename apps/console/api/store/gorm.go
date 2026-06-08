@@ -344,19 +344,22 @@ func (s *GORMStore) ListNonTerminalJobs(ctx context.Context) ([]*models.Job, err
 func (s *GORMStore) ListAllJobs(ctx context.Context, after string, limit int) ([]*models.Job, bool, error) {
 	q := s.db.WithContext(ctx).Model(&models.Job{}).
 		Where("deleted = ?", false).
-		Order("created_at DESC")
+		Order("created_at DESC, id DESC")
 
 	// Cursor-based pagination: after is a job ID, find jobs created before it
+	// Use composite cursor (created_at, id) to handle timestamp collisions
 	if after != "" {
 		var cursor models.Job
-		if err := s.db.WithContext(ctx).Select("created_at").Where("id = ? AND deleted = ?", after, false).First(&cursor).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select("id, created_at").Where("id = ? AND deleted = ?", after, false).First(&cursor).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
 				// Cursor not found, return empty result
 				return nil, false, nil
 			}
 			return nil, false, status.Errorf(codes.Internal, "find cursor job: %v", err)
 		}
-		q = q.Where("created_at < ?", cursor.CreatedAt)
+		// Composite cursor: (created_at, id) tuple comparison
+		// Select jobs where created_at < cursor.created_at OR (created_at = cursor.created_at AND id < cursor.id)
+		q = q.Where("created_at < ? OR (created_at = ? AND id < ?)", cursor.CreatedAt, cursor.CreatedAt, cursor.ID)
 	}
 
 	// Fetch one extra to check hasMore

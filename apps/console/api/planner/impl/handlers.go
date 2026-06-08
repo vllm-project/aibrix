@@ -63,8 +63,6 @@ func updateStatusUnsafe(job *queuedJob, newStatus plannerapi.JobStatus) {
 		job.expiredAt = now
 	case plannerapi.JobStatusCompleted:
 		job.completedAt = now
-	case plannerapi.JobStatusFailed:
-		job.submitFailedAt = now
 	}
 }
 

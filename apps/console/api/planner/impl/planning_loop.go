@@ -229,14 +229,14 @@ func (w *planningLoop) removeTerminalJobs() {
 		job.mu.Lock()
 		status := job.status
 		queue := job.queue
-		job.queue = nil
-		job.mu.Unlock()
 		if status.IsTerminal() {
+			job.queue = nil
 			toDelete = append(toDelete, jobID)
 			if queue != nil {
 				keysToRemove[queue] = append(keysToRemove[queue], jobID)
 			}
 		}
+		job.mu.Unlock()
 	}
 
 	w.planner.mu.Lock()
