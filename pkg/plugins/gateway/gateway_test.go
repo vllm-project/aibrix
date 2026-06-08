@@ -1417,3 +1417,43 @@ func TestProcess_CompletedExitsLoop(t *testing.T) {
 	srv.AssertExpectations(t)
 	mc.AssertExpectations(t)
 }
+
+// TestProcess_ShutdownWhileRecvBlocked verifies that Process exits promptly when
+// shutdownCh is closed while srv.Recv() is blocking (the idle-stream case that
+// previously caused GracefulStop to hang until SIGKILL).
+func TestProcess_ShutdownWhileRecvBlocked(t *testing.T) {
+	mc := &MockCache{}
+	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+
+	shutdownCh := make(chan struct{})
+
+	srv := &mockProcessServer{ctx: context.Background()}
+	// Recv blocks until shutdownCh is closed, then returns an error.
+	srv.On("Recv").Return((*extProcPb.ProcessingRequest)(nil), status.Error(codes.Unavailable, "stream closed")).
+		Run(func(args mock.Arguments) {
+			// Simulate Envoy holding an idle stream open; close shutdown concurrently.
+			close(shutdownCh)
+			// Recv itself returns after shutdown (as it would when the gRPC server
+			// eventually tears down the connection), but the select should have
+			// already fired the shutdownCh case and returned before this matters.
+			time.Sleep(10 * time.Millisecond)
+		})
+
+	s := newProcessTestServer(shutdownCh, mc)
+
+	done := make(chan error, 1)
+	go func() { done <- s.Process(srv) }()
+
+	select {
+	case err := <-done:
+		assert.Error(t, err)
+		st, ok := status.FromError(err)
+		assert.True(t, ok)
+		assert.Equal(t, codes.Unavailable, st.Code())
+		assert.Contains(t, st.Message(), "server shutdown in progress")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Process did not exit within 2s after shutdownCh was closed (would have hung GracefulStop)")
+	}
+
+	mc.AssertExpectations(t)
+}

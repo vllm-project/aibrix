@@ -27,6 +27,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -71,7 +72,9 @@ type Server struct {
 	cache               cache.Cache
 	httpServer          *http.Server
 	// Broadcast channel for server-initiated shutdown
-	shutdownCh <-chan struct{}
+	shutdownCh   <-chan struct{}
+	shutdown     chan struct{}
+	shutdownOnce sync.Once
 }
 
 type processState struct {
@@ -114,6 +117,7 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 	// Initialize the routers
 	routing.Init()
 
+	shutdown := make(chan struct{})
 	return &Server{
 		redisClient:         redisClient,
 		ratelimiter:         r,
@@ -122,6 +126,8 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		gatewayClient:       gatewayClient,
 		requestCountTracker: map[string]int{},
 		cache:               c,
+		shutdownCh:          shutdown,
+		shutdown:            shutdown,
 	}
 }
 
@@ -166,16 +172,42 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 		return err
 	}
 
-	req, err := srv.Recv()
-	if err != nil {
-		return s.handleRecvError(st, err)
+	// Run Recv in a goroutine so we can interrupt it if shutdown or context
+	// cancellation arrives while the stream is idle. Envoy keeps ext_proc
+	// streams open indefinitely between requests, so a bare srv.Recv() would
+	// block GracefulStop() forever on rollout.
+	type recvResult struct {
+		req *extProcPb.ProcessingRequest
+		err error
+	}
+	ch := make(chan recvResult, 1)
+	go func() {
+		req, err := srv.Recv()
+		ch <- recvResult{req, err}
+	}()
+
+	// ctx.Done() is intentionally omitted here: gRPC unblocks Recv when the
+	// stream context is cancelled, so handleRecvError handles that path.
+	// preRecvCheck covers the case where ctx is already done before we spawn.
+	var req *extProcPb.ProcessingRequest
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return s.handleRecvError(st, r.err)
+		}
+		req = r.req
+	case <-s.shutdownCh:
+		modelTag := GetModelTag(st.model)
+		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "aibrix_gateway_server_shutdown", "503")
+		klog.ErrorS(nil, "server shutdown requested; aborting blocked Recv", "request_id", st.requestID, "model", st.model)
+		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		return status.Error(codes.Unavailable, "server shutdown in progress")
 	}
 
 	resp, err := s.handleProcessingRequest(st, req)
 	if err != nil {
 		return err
 	}
-
 	return s.sendProcessingResponse(srv, st, resp)
 }
 
@@ -501,6 +533,9 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) Shutdown() {
+	if s.shutdown != nil {
+		s.shutdownOnce.Do(func() { close(s.shutdown) })
+	}
 	if s.httpServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
