@@ -197,10 +197,11 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 		}
 		req = r.req
 	case <-s.shutdownCh:
-		modelTag := GetModelTag(st.model)
-		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "aibrix_gateway_server_shutdown", "503")
+		if st.model != "" {
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503")
+			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		}
 		klog.ErrorS(nil, "server shutdown requested; aborting blocked Recv", "request_id", st.requestID, "model", st.model)
-		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
 		return status.Error(codes.Unavailable, "server shutdown in progress")
 	}
 
@@ -213,20 +214,21 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 
 func (s *Server) preRecvCheck(st *processState) error {
 	select {
-	// Always emit a server-shutdown metric
 	case <-s.shutdownCh:
-		modelTag := GetModelTag(st.model)
-		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "aibrix_gateway_server_shutdown", "503")
+		if st.model != "" {
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503")
+			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		}
 		klog.ErrorS(nil, "server shutdown requested; draining request", "request_id", st.requestID, "model", st.model)
-		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
 		return status.Error(codes.Unavailable, "server shutdown in progress")
 
 	// Client cancelled or deadline exceeded
 	case <-st.ctx.Done():
-		modelTag := GetModelTag(st.model)
-		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "context_cancelled", "499")
+		if st.model != "" {
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "context_cancelled", "499")
+			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		}
 		klog.ErrorS(st.ctx.Err(), "context cancelled", "request_id", st.requestID, "model", st.model)
-		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
 		return st.ctx.Err()
 
 	default:
@@ -239,10 +241,11 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 		select {
 		// check for shutdown
 		case <-s.shutdownCh:
-			modelTag := GetModelTag(st.model)
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, modelTag, "aibrix_gateway_server_shutdown", "503")
+			if st.model != "" {
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503")
+				s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			}
 			klog.ErrorS(nil, "server shutdown requested; stream closed (EOF) during shutdown drain", "requestID", st.requestID, "model", st.model)
-			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
 			return status.Error(codes.Unavailable, "server shutdown in progress")
 
 		default:

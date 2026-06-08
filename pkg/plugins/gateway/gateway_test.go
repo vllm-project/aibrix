@@ -1191,7 +1191,7 @@ func openShutdownCh() <-chan struct{} {
 // shutdown channel is closed before any message is received.
 func TestProcess_ServerShutdown(t *testing.T) {
 	mc := &MockCache{}
-	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	// st.model is empty (idle stream); DoneRequestCount must not be called.
 
 	srv := &mockProcessServer{ctx: context.Background()}
 	s := newProcessTestServer(closedShutdownCh(), mc)
@@ -1212,7 +1212,7 @@ func TestProcess_ServerShutdown(t *testing.T) {
 // context is cancelled before any message is received.
 func TestProcess_ContextCancelled(t *testing.T) {
 	mc := &MockCache{}
-	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	// st.model is empty (idle stream); DoneRequestCount must not be called.
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -1318,7 +1318,7 @@ func TestProcess_RecvNonGRPCError(t *testing.T) {
 // server shutdown is in progress results in a codes.Unavailable error.
 func TestProcess_RecvEOF_DuringShutdown(t *testing.T) {
 	mc := &MockCache{}
-	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	// st.model is empty (idle stream); DoneRequestCount must not be called.
 
 	shutdownCh := make(chan struct{})
 
@@ -1423,7 +1423,7 @@ func TestProcess_CompletedExitsLoop(t *testing.T) {
 // previously caused GracefulStop to hang until SIGKILL).
 func TestProcess_ShutdownWhileRecvBlocked(t *testing.T) {
 	mc := &MockCache{}
-	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	// st.model is empty (idle stream); DoneRequestCount must not be called.
 
 	shutdownCh := make(chan struct{})
 
