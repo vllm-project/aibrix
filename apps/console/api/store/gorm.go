@@ -339,6 +339,53 @@ func (s *GORMStore) ListNonTerminalJobs(ctx context.Context) ([]*models.Job, err
 	return out, nil
 }
 
+// ListAllJobs lists all jobs with cursor-based pagination, sorted by created_at descending.
+// after is the job ID cursor - returns jobs created before this job.
+func (s *GORMStore) ListAllJobs(ctx context.Context, after string, limit int) ([]*models.Job, bool, error) {
+	q := s.db.WithContext(ctx).Model(&models.Job{}).
+		Where("deleted = ?", false).
+		Order("created_at DESC, id DESC")
+
+	// Cursor-based pagination: after is a job ID, find jobs created before it
+	// Use composite cursor (created_at, id) to handle timestamp collisions
+	if after != "" {
+		var cursor models.Job
+		if err := s.db.WithContext(ctx).Select("id, created_at").Where("id = ? AND deleted = ?", after, false).First(&cursor).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				// Cursor not found, return empty result
+				return nil, false, nil
+			}
+			return nil, false, status.Errorf(codes.Internal, "find cursor job: %v", err)
+		}
+		// Composite cursor: (created_at, id) tuple comparison
+		// Select jobs where created_at < cursor.created_at OR (created_at = cursor.created_at AND id < cursor.id)
+		q = q.Where("created_at < ? OR (created_at = ? AND id < ?)", cursor.CreatedAt, cursor.CreatedAt, cursor.ID)
+	}
+
+	// Fetch one extra to check hasMore
+	fetchLimit := limit + 1
+	if limit > 0 {
+		q = q.Limit(fetchLimit)
+	}
+
+	var rows []models.Job
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, false, status.Errorf(codes.Internal, "list all jobs: %v", err)
+	}
+
+	hasMore := false
+	if limit > 0 && len(rows) > limit {
+		hasMore = true
+		rows = rows[:limit]
+	}
+
+	out := make([]*models.Job, len(rows))
+	for i := range rows {
+		out[i] = &rows[i]
+	}
+	return out, hasMore, nil
+}
+
 func (s *GORMStore) ListModels(ctx context.Context, search, category string) ([]*pb.Model, error) {
 	q := s.db.WithContext(ctx).Model(&models.Model{}).Where("deleted = ?", false)
 	if search != "" {

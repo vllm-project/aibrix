@@ -41,6 +41,10 @@ type Store interface {
 	DeleteJob(ctx context.Context, id string) error
 
 	ListNonTerminalJobs(ctx context.Context) ([]*models.Job, error)
+	// ListAllJobs lists all jobs with cursor-based pagination.
+	// after is the job ID cursor (empty string for first page).
+	// Returns jobs sorted by created_at descending, hasMore indicates if more results exist.
+	ListAllJobs(ctx context.Context, after string, limit int) ([]*models.Job, bool, error)
 
 	// Models
 	ListModels(ctx context.Context, search, category string) ([]*pb.Model, error)

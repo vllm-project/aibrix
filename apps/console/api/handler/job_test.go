@@ -41,6 +41,8 @@ type fakeJobPlanner struct {
 	cancelledID string
 }
 
+func (p *fakeJobPlanner) Start(context.Context) error { return nil }
+
 func (p *fakeJobPlanner) Enqueue(context.Context, *plannerapi.EnqueueRequest) (*plannerapi.Job, error) {
 	return nil, nil
 }

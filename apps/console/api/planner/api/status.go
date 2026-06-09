@@ -16,11 +16,16 @@ limitations under the License.
 
 package plannerapi
 
+import (
+	"github.com/openai/openai-go/v3"
+)
+
 // JobStatus is the authoritative user-facing lifecycle status for a Job.
 type JobStatus string
 
 const (
 	JobStatusQueued            JobStatus = "queued"
+	JobStatusPlanned           JobStatus = "planned"
 	JobStatusResourcePreparing JobStatus = "resource_preparing"
 	JobStatusSubmitting        JobStatus = "submitting"
 
@@ -50,4 +55,16 @@ func (s JobStatus) IsTerminal() bool {
 		return true
 	}
 	return false
+}
+
+func (s JobStatus) ToBatchStatus() openai.BatchStatus {
+	switch s {
+	case JobStatusResourceFailed, JobStatusSubmitFailed:
+		return openai.BatchStatusFailed
+	case JobStatusCancelled:
+		return openai.BatchStatusCancelled
+	case JobStatusExpired:
+		return openai.BatchStatusExpired
+	}
+	return openai.BatchStatus(string(s))
 }
