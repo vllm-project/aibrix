@@ -267,6 +267,7 @@ func submitToMDS(p *Planner, job *queuedJob) {
 		// TODO: backend should extract gpuType and gpusPerReplica from allocated resource
 		ResourceAllocation: p.backend.BuildResourceAllocation(*spec, alloc, "", 1),
 		ModelTemplate:      req.ModelTemplate,
+		Model:              req.Model,
 	}
 
 	batch, err := p.bc.CreateBatch(p.baseCtx, req.BatchParams, aibrix)

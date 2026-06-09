@@ -461,6 +461,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
         name: displayName,
         modelTemplateName: selectedTemplate?.name,
         modelTemplateVersion: selectedTemplate?.version,
+        modelId: selectedModelId || undefined,
       });
       onBack();
     } catch (err) {

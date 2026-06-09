@@ -32,6 +32,7 @@ import (
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
+	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
 
 type fakeJobPlanner struct {
@@ -325,5 +326,75 @@ func TestBuildJobEventsBreaksSameSecondTiesByLifecycle(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("event order = %v, want %v", got, want)
 		}
+	}
+}
+
+// Template names are only unique per (model_id, name, version): two models can
+// each own a template with the same name. CreateJob must resolve under the
+// model the wizard picked, and map it to that model's serving_name — not the
+// console-internal model id or the template name.
+func TestResolveTemplateAndServingNameScopedByModel(t *testing.T) {
+	ctx := context.Background()
+	s := store.NewMemoryStore()
+	t.Cleanup(func() { _ = s.Close() })
+
+	seed := []struct {
+		modelID     string
+		servingName string
+		sourceURI   string
+	}{
+		{"model-a", "org/model-a", "org/model-a"},
+		{"model-b", "", "/models/model-b"}, // no serving_name → fall back to source uri
+	}
+	for _, m := range seed {
+		if _, err := s.CreateModel(ctx, &pb.Model{Id: m.modelID, Name: m.modelID, ServingName: m.servingName}); err != nil {
+			t.Fatalf("CreateModel(%s): %v", m.modelID, err)
+		}
+		_, err := s.CreateModelDeploymentTemplate(ctx, &pb.CreateModelDeploymentTemplateRequest{
+			ModelId: m.modelID,
+			Name:    "default",
+			Spec: &pb.ModelDeploymentTemplateSpec{
+				ModelSource: &pb.ModelSourceSpec{Uri: m.sourceURI},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateModelDeploymentTemplate(%s): %v", m.modelID, err)
+		}
+	}
+
+	h := NewJobHandler(s, &fakeJobPlanner{}, "", false)
+
+	tpl := h.resolveTemplate(ctx, "model-b", "default", "")
+	if tpl == nil {
+		t.Fatal("resolveTemplate(model-b, default) = nil")
+	}
+	if tpl.ModelId != "model-b" {
+		t.Fatalf("resolved template under model %q, want model-b", tpl.ModelId)
+	}
+	if got := h.resolveServingName(ctx, tpl); got != "/models/model-b" {
+		t.Fatalf("serving name = %q, want source uri fallback /models/model-b", got)
+	}
+
+	tplA := h.resolveTemplate(ctx, "model-a", "default", "")
+	if tplA == nil || tplA.ModelId != "model-a" {
+		t.Fatalf("resolveTemplate(model-a, default) = %#v, want template under model-a", tplA)
+	}
+	if got := h.resolveServingName(ctx, tplA); got != "org/model-a" {
+		t.Fatalf("serving name = %q, want org/model-a", got)
+	}
+
+	// Legacy path (no model id) still resolves by bare name.
+	if tpl := h.resolveTemplate(ctx, "", "default", ""); tpl == nil {
+		t.Fatal("legacy resolveTemplate(default) = nil")
+	}
+
+	// Templates cannot dangle under an unregistered model.
+	_, err := s.CreateModelDeploymentTemplate(ctx, &pb.CreateModelDeploymentTemplateRequest{
+		ModelId: "model-ghost",
+		Name:    "default",
+		Spec:    &pb.ModelDeploymentTemplateSpec{},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("create template under unknown model: err = %v, want FailedPrecondition", err)
 	}
 }

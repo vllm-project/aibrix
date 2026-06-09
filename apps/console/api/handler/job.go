@@ -228,15 +228,15 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	}
 	var (
 		modelTemplate *plannerapi.ModelTemplateRef
-		modelID       string
+		servingName   string
 	)
 	if templateName != "" {
 		modelTemplate = &plannerapi.ModelTemplateRef{
 			Name:    templateName,
 			Version: req.ModelTemplateVersion,
 		}
-		if tpl := h.resolveTemplate(ctx, templateName, req.ModelTemplateVersion); tpl != nil {
-			modelID = tpl.ModelId
+		if tpl := h.resolveTemplate(ctx, req.ModelId, templateName, req.ModelTemplateVersion); tpl != nil {
+			servingName = h.resolveServingName(ctx, tpl)
 			if tpl.Spec != nil {
 				// UseProtoNames keeps snake_case proto field names (engine_args,
 				// model_source, ...) that the Python pydantic consumer expects;
@@ -252,7 +252,7 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 
 	enqueueReq := &plannerapi.EnqueueRequest{
 		JobID:         jobID,
-		Model:         modelID,
+		Model:         servingName,
 		ModelTemplate: modelTemplate,
 		BatchParams: openai.BatchNewParams{
 			InputFileID:      req.InputDataset,
@@ -364,11 +364,19 @@ func mapPlannerError(err error, op string) error {
 	return mapSDKError(err, op)
 }
 
-// resolveTemplate looks up the ModelDeploymentTemplate by (name, version).
-// Returns nil when name is empty, store errors out, or no match.
-func (h *JobHandler) resolveTemplate(ctx context.Context, name, version string) *pb.ModelDeploymentTemplate {
+// resolveTemplate looks up the ModelDeploymentTemplate. With modelID it
+// resolves by the unique (model_id, name, version) tuple
+func (h *JobHandler) resolveTemplate(ctx context.Context, modelID, name, version string) *pb.ModelDeploymentTemplate {
 	if name == "" {
 		return nil
+	}
+	if modelID != "" {
+		tpl, err := h.store.ResolveModelDeploymentTemplate(ctx, modelID, name, version)
+		if err != nil {
+			klog.Warningf("resolveTemplate(%q,%q,%q): %v", modelID, name, version, err)
+			return nil
+		}
+		return tpl
 	}
 	statusFilter := ""
 	if version == "" {
@@ -385,6 +393,27 @@ func (h *JobHandler) resolveTemplate(ctx context.Context, name, version string) 
 		}
 	}
 	return nil
+}
+
+// resolveServingName maps the template's model to the identifier batch
+// requests carry in body.model. Prefers the model's serving_name;
+// falls back to the template's model_source.uri
+func (h *JobHandler) resolveServingName(ctx context.Context, tpl *pb.ModelDeploymentTemplate) string {
+	if tpl == nil {
+		return ""
+	}
+	if tpl.ModelId != "" {
+		m, err := h.store.GetModel(ctx, tpl.ModelId)
+		if err != nil {
+			klog.Warningf("resolveServingName: get model %q: %v", tpl.ModelId, err)
+		} else if m.ServingName != "" {
+			return m.ServingName
+		}
+	}
+	if tpl.Spec != nil && tpl.Spec.ModelSource != nil {
+		return tpl.Spec.ModelSource.Uri
+	}
+	return ""
 }
 
 // mergeJob aggregates the planner's Job with optional Console overlay.

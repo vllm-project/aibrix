@@ -296,6 +296,10 @@ message CreateJobRequest {
   string model_template_name = 5;
   string model_template_version = 6;  // optional; "" = latest active
 
+  // Model the template is resolved under. Template names are only unique
+  // per (model_id, name, version)
+  string model_id = 7;
+
   // Fields 10..13 (max_tokens / temperature / top_p / n) were removed:
   // the console wizard bakes per-batch sampling params into the uploaded
   // JSONL itself, so there's nothing for the BFF to forward. The OpenAI
