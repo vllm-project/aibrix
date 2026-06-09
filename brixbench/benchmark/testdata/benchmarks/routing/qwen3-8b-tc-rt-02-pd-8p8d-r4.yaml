@@ -14,7 +14,7 @@ vllmArgs:
   backend: openai-chat
   model: qwen3-8b
   tokenizer: /data01/models/Qwen3-8B
-  num-prompts: 200
+  num-prompts: 1000
   request-rate: 4
   concurrency: 32
   metric-percentiles: 50,90,95,99

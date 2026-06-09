@@ -1,5 +1,23 @@
 Scenario: aibrix-routing-qwen3-8b-v0.6.0
 Tests:
+- name: v060-tc-rt-02-pd-conf-rt-04-4p4d-r8
+  provider: aibrix
+  fullstack: false
+  gateway:
+    image:
+      baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+      outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+    env:
+      ROUTING_ALGORITHM: pd
+      AIBRIX_PREFIX_CACHE_BLOCK_SIZE: 512
+    resources:
+    - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-gateway-resources.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p4d.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-r8.yaml
+  commit: v0.6.0
 - name: v060-tc-rt-02-pd-conf-rt-04-4p4d-r16
   provider: aibrix
   fullstack: false

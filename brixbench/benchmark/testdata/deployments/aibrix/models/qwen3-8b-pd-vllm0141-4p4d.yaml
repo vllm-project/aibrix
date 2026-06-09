@@ -6,7 +6,7 @@ metadata:
   labels:
     engine: "vllm"
     deployment: "disaggregated"
-    routing-test-config: "conf-rt-01"
+    routing-test-config: "conf-rt-04"
 spec:
   replicas: 1
   updateStrategy:
@@ -36,10 +36,10 @@ spec:
                 model.aibrix.ai/role: prefill
             spec:
               nodeSelector:
-                kubernetes.io/hostname: 192.168.0.7
+                kubernetes.io/hostname: 192.168.0.6
               containers:
                 - name: prefill
-                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.22.0-cu129
+                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.14.1
                   command: ["sh", "-c"]
                   args:
                     - |
@@ -49,9 +49,10 @@ spec:
                         --uvicorn-log-level warning \
                         --model /models/Qwen3-8B \
                         --served-model-name qwen3-8b \
+                        --disable-log-requests \
+                        --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
                         --max-model-len 16384 \
-                        --tensor-parallel-size=1 \
-                        --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}'
+                        --tensor-parallel-size=1
                   env:
                     - name: UCX_TLS
                       value: "^gga"
@@ -126,7 +127,7 @@ spec:
                     medium: Memory
                   name: shared-mem
         - name: decode
-          replicas: 8
+          replicas: 4
           stateful: true
           template:
             metadata:
@@ -143,7 +144,7 @@ spec:
                 kubernetes.io/hostname: 192.168.0.6
               containers:
                 - name: decode
-                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.22.0-cu129
+                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.14.1
                   command: ["sh", "-c"]
                   args:
                     - |
@@ -153,9 +154,10 @@ spec:
                         --uvicorn-log-level warning \
                         --model /models/Qwen3-8B \
                         --served-model-name qwen3-8b \
+                        --disable-log-requests \
+                        --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}' \
                         --max-model-len 16384 \
-                        --tensor-parallel-size=1 \
-                        --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
+                        --tensor-parallel-size=1
                   env:
                     - name: UCX_TLS
                       value: "^gga"
