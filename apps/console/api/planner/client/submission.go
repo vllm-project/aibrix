@@ -50,4 +50,5 @@ type AIBrixExtraBody struct {
 	Runtime            *plannerapi.RuntimeRef       `json:"runtime,omitempty"`
 	ResourceAllocation ResourceAllocation           `json:"resource_allocation,omitempty"`
 	ModelTemplate      *plannerapi.ModelTemplateRef `json:"model_template,omitempty"`
+	Model              string                       `json:"model,omitempty"`
 }

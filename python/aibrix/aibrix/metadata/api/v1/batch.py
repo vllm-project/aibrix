@@ -656,7 +656,7 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
     return BatchResponse(
         id=status.job_id,
         endpoint=spec.endpoint,
-        model=spec.model_template_name,
+        model=spec.model or spec.model_template_name,
         errors=BatchErrors(data=status.errors) if status.errors else None,
         input_file_id=spec.input_file_id,
         completion_window=completion_window,

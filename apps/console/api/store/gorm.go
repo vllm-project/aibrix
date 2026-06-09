@@ -497,6 +497,14 @@ func (s *GORMStore) CreateModelDeploymentTemplate(ctx context.Context, req *pb.C
 	if req.GetSpec() == nil {
 		return nil, status.Error(codes.InvalidArgument, "spec is required")
 	}
+	// model_id is a soft reference (no DB-level FK); reject templates that
+	// would dangle under a model the catalog doesn't know about.
+	if _, err := s.GetModel(ctx, req.GetModelId()); err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, status.Errorf(codes.FailedPrecondition, "model %q not found; register the model before attaching templates", req.GetModelId())
+		}
+		return nil, err
+	}
 	version := req.GetVersion()
 	if version == "" {
 		version = "v1.0.0"

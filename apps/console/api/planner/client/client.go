@@ -191,5 +191,8 @@ func buildExtraBodyOptions(eb AIBrixExtraBody) []option.RequestOption {
 	if eb.ModelTemplate != nil && eb.ModelTemplate.Name != "" {
 		opts = append(opts, option.WithJSONSet("aibrix.model_template", eb.ModelTemplate))
 	}
+	if eb.Model != "" {
+		opts = append(opts, option.WithJSONSet("aibrix.model", eb.Model))
+	}
 	return opts
 }

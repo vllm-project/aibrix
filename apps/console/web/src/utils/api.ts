@@ -76,6 +76,8 @@ export interface CreateJobRequest {
   // extra_body.aibrix.model_template.
   modelTemplateName?: string;
   modelTemplateVersion?: string;
+  // Model the template was picked under (wizard step 1). 
+  modelId?: string;
 }
 
 export interface ListJobsResponse {

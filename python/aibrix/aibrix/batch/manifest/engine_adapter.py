@@ -27,7 +27,7 @@ Other engine types raise UnsupportedEngineError until their adapter
 is implemented in later phases.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from aibrix.batch.template import (
     EngineSpec,
@@ -42,12 +42,19 @@ class UnsupportedEngineError(ValueError):
 
 
 def build_engine_args(
-    spec: ModelDeploymentTemplateSpec, ignore_model: bool = False
+    spec: ModelDeploymentTemplateSpec,
+    ignore_model: bool = False,
+    served_model_name: Optional[str] = None,
 ) -> List[str]:
     """Dispatch to the engine-specific argument builder.
 
     Args:
         spec: The full template spec.
+        served_model_name: Serving identifier batch requests carry in
+            body.model (spec.aibrix.model). Pinned via the engine's
+            --served-model-name so the served name doesn't silently
+            default to the weights path; a template that sets the flag
+            itself (engine_args or serve_args) wins.
 
     Returns:
         List of CLI args (or shell-script lines for shell-mode engines)
@@ -58,7 +65,7 @@ def build_engine_args(
     """
     engine_type = spec.engine.type
     if engine_type == EngineType.VLLM:
-        return _build_vllm_args(spec, ignore_model)
+        return _build_vllm_args(spec, ignore_model, served_model_name)
     if engine_type == EngineType.MOCK:
         return _build_mock_args(spec)
     raise UnsupportedEngineError(
@@ -67,7 +74,9 @@ def build_engine_args(
 
 
 def _build_vllm_args(
-    spec: ModelDeploymentTemplateSpec, ignore_model: bool = False
+    spec: ModelDeploymentTemplateSpec,
+    ignore_model: bool = False,
+    served_model_name: Optional[str] = None,
 ) -> List[str]:
     """Render vLLM `vllm serve` (or `python -m vllm.entrypoints.openai.api_server`) arguments.
 
@@ -80,6 +89,8 @@ def _build_vllm_args(
     # 1. Model
     if not ignore_model:
         args.extend(["--model", spec.model_source.uri])
+    if served_model_name and not _pins_served_model_name(spec):
+        args.extend(["--served-model-name", served_model_name])
     if spec.model_source.revision:
         args.extend(["--revision", spec.model_source.revision])
     if spec.model_source.tokenizer_path:
@@ -171,6 +182,19 @@ def _engine_args_extras(dumped: Dict[str, Any]) -> Dict[str, Any]:
     EngineArgsSpec's lenient model_config (extra='allow').
     """
     return {k: v for k, v in dumped.items() if k not in _VLLM_TYPED_FIELDS}
+
+
+def _pins_served_model_name(spec: ModelDeploymentTemplateSpec) -> bool:
+    """Whether the template already sets --served-model-name explicitly,
+    via an engine_args extra or a raw serve_args entry."""
+    extras = _engine_args_extras(spec.engine_args.model_dump(exclude_none=True))
+    for key in extras:
+        if key.strip().lstrip("-").replace("-", "_") == "served_model_name":
+            return True
+    for arg in spec.engine.serve_args:
+        if arg == "--served-model-name" or arg.startswith("--served-model-name="):
+            return True
+    return False
 
 
 def _build_mock_args(spec: ModelDeploymentTemplateSpec) -> List[str]:
