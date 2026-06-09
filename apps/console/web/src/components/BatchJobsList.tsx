@@ -42,7 +42,7 @@ const STATUS_OPTIONS: { label: string; value: BatchStatusFilter }[] = [
   { label: 'submit_failed', value: 'submit_failed' },
 ];
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 10;
 
 const TERMINAL_STATUSES = new Set<JobStatus>([
   'completed',
@@ -52,6 +52,14 @@ const TERMINAL_STATUSES = new Set<JobStatus>([
   'resource_failed',
   'submit_failed',
 ]);
+
+// Console-level creation time (enqueue). batch.createdAt is the MDS
+// batch-creation time, which lags enqueue by the provisioning duration and
+// is absent for jobs that fail before a batch exists — sorting or displaying
+// it makes the list look out of order.
+function jobCreatedTs(job: Job): number {
+  return job.queuedAt || job.createdAt || 0;
+}
 
 function formatDate(unixSec: number): { date: string; time: string } {
   if (!unixSec || unixSec <= 0) {
@@ -127,7 +135,10 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
       listJobs()
         .then(res => {
           if (cancelled) return;
-          const next = res.jobs ?? [];
+          // Order strictly by creation time, newest first. The store list is
+          // already ordered this way, but in-memory/placeholder entries from
+          // older BFF builds were prepended out of order — sort defensively.
+          const next = [...(res.jobs ?? [])].sort((a, b) => jobCreatedTs(b) - jobCreatedTs(a));
           setJobs(next);
           // Poll while any job is in a non-terminal state.
           const hasActive = next.some(j => !TERMINAL_STATUSES.has(j.status));
@@ -356,7 +367,7 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
                 </tr>
               ) : (
                 paged.map((job, idx) => {
-                  const created = formatDate(job.createdAt);
+                  const created = formatDate(jobCreatedTs(job));
                   const counts = job.requestCounts;
                   const clickable = !!job.id;
                   return (
