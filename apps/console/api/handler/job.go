@@ -835,6 +835,48 @@ func applyProvision(job *pb.Job, prov *rmtypes.ProvisionResult) {
 	}
 }
 
+// eventLifecycleRank returns the canonical batch-lifecycle ranking used to break
+// ties when two timeline events share the same timestamp. Event timestamps are
+// unix seconds and originate from two sources (planner and MDS) that keep
+// independent clocks, so the timestamp alone cannot order events that land in
+// the same second. Lifecycle rank is the source of truth for those ties — e.g.
+// Finalizing must precede Failed even though "failed" sorts before "finalizing"
+// lexically.
+func eventLifecycleRank(id string) int {
+	switch id {
+	case "queued":
+		return 0
+	case "resource_preparing":
+		return 1
+	case "resource_failed":
+		return 2
+	case "submitting":
+		return 3
+	case "submit_failed":
+		return 4
+	case "batch_created":
+		return 5
+	case "in_progress":
+		return 6
+	case "finalizing":
+		return 7
+	case "cancel_requested":
+		return 8
+	case "cancelling":
+		return 9
+	case "completed":
+		return 10
+	case "failed":
+		return 11
+	case "expired":
+		return 12
+	case "cancelled":
+		return 13
+	default:
+		return 14
+	}
+}
+
 func buildJobEvents(job *pb.Job) []*pb.JobEvent {
 	if job == nil {
 		return nil
@@ -874,7 +916,7 @@ func buildJobEvents(job *pb.Job) []*pb.JobEvent {
 
 	sort.SliceStable(events, func(i, j int) bool {
 		if events[i].At == events[j].At {
-			return events[i].Id < events[j].Id
+			return eventLifecycleRank(events[i].Id) < eventLifecycleRank(events[j].Id)
 		}
 		return events[i].At < events[j].At
 	})

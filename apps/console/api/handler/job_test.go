@@ -287,3 +287,41 @@ func TestMergeJobAcceptsNestedExtraBodyExtension(t *testing.T) {
 		t.Fatalf("ProvisionId = %q, want prov-2", job.ProvisionId)
 	}
 }
+
+// Timeline events carry second-granularity timestamps from two clocks (planner
+// and MDS), so events frequently collide on the same second. They must then fall
+// back to lifecycle order, not the lexical id order that put Failed before
+// Finalizing and MDS-batch-created before Submitting.
+func TestBuildJobEventsBreaksSameSecondTiesByLifecycle(t *testing.T) {
+	const submit = int64(1700000043)
+	const finalize = int64(1700001067)
+	job := &pb.Job{
+		QueuedAt:            1700000033,
+		ResourcePreparingAt: 1700000033, // ties with Queued
+		CreatedAt:           submit,     // MDS batch created, ties with Submitting
+		BatchId:             "batch-1",
+		SubmittingAt:        submit,
+		InProgressAt:        1700000044,
+		FinalizingAt:        finalize,
+		FailedAt:            finalize, // ties with Finalizing
+		ErrorMessage:        "boom",
+	}
+
+	events := buildJobEvents(job)
+	got := make([]string, len(events))
+	for i, e := range events {
+		got[i] = e.Id
+	}
+	want := []string{
+		"queued", "resource_preparing", "submitting", "batch_created",
+		"in_progress", "finalizing", "failed",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("event ids = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("event order = %v, want %v", got, want)
+		}
+	}
+}
