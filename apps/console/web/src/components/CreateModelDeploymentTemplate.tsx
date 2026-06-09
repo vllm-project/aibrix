@@ -321,7 +321,7 @@ export function CreateModelDeploymentTemplate({
       <fieldset disabled={isView} className="space-y-6 disabled:opacity-90">
         {/* Identity */}
         <Section title="Identity">
-          <Field label="Name">
+          <Field label="Name" required>
             <input
               type="text"
               value={name}
@@ -453,7 +453,7 @@ export function CreateModelDeploymentTemplate({
 
         {/* Accelerator */}
         <Section title="Accelerator">
-          <Field label="GPU">
+          <Field label="GPU" required>
             <select
               value={spec.accelerator?.type ?? ''}
               onChange={(e) => {
@@ -595,7 +595,7 @@ export function CreateModelDeploymentTemplate({
         </Group>
 
         {/* Endpoints */}
-        <Section title="Supported endpoints">
+        <Section title="Supported endpoints" required>
           <div className="col-span-full flex flex-wrap gap-2">
             {COMMON_ENDPOINTS.map((ep) => {
               const active = (spec.supportedEndpoints ?? []).includes(ep);
@@ -651,10 +651,23 @@ const inputClsBase =
 const inputCls = `${inputClsBase} border-gray-200`;
 const inputErrCls = `${inputClsBase} border-red-300`;
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  required,
+  children,
+}: {
+  title: string;
+  required?: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-      <h3 className="text-sm mb-4">{title}</h3>
+      <h3 className="text-sm mb-4">
+        {title}
+        {required && (
+          <span className="text-red-500 ml-0.5" aria-hidden="true">*</span>
+        )}
+      </h3>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">{children}</div>
     </div>
   );
@@ -683,15 +696,22 @@ function SubSection({ title, children }: { title: string; children: React.ReactN
 function Field({
   label,
   wide,
+  required,
   children,
 }: {
   label: string;
   wide?: boolean;
+  required?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div className={wide ? 'sm:col-span-2 lg:col-span-3' : ''}>
-      <label className="block text-xs text-gray-600 mb-1">{label}</label>
+      <label className="block text-xs text-gray-600 mb-1">
+        {label}
+        {required && (
+          <span className="text-red-500 ml-0.5" aria-hidden="true">*</span>
+        )}
+      </label>
       {children}
     </div>
   );
