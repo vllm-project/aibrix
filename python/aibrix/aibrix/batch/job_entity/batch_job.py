@@ -48,6 +48,7 @@ class BatchJobState(str, Enum):
     """Current state of the batch job."""
 
     CREATED = "created"
+    SCHEDULING = "scheduling"
     VALIDATING = "validating"
     IN_PROGRESS = "in_progress"
     CANCELLING = "cancelling"
