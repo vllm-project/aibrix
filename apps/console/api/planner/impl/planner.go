@@ -35,7 +35,9 @@ import (
 )
 
 const (
-	defaultListJobsLimit = 20
+	defaultWorkerCount      = 10
+	defaultPlanningInterval = 60 * time.Second
+	defaultListJobsLimit    = 20
 )
 
 // Planner is an asynchronous implementation of plannerapi.Planner.
@@ -82,8 +84,8 @@ type PlannerConfig struct {
 // DefaultPlannerConfig returns a PlannerConfig with default values.
 func DefaultPlannerConfig() PlannerConfig {
 	return PlannerConfig{
-		WorkerCount:            10,
-		PlanningInterval:       60 * time.Second,
+		WorkerCount:            defaultWorkerCount,
+		PlanningInterval:       defaultPlanningInterval,
 		PolicyType:             PlanningPolicyTypeSimple,
 		MaxConcurrentProvision: DefaultPolicyConfig().MaxConcurrentProvisioning,
 	}
@@ -250,7 +252,7 @@ func (q *Planner) persist(job *queuedJob) {
 // Recover is supposed to be invoked once at startup. No locks are held.
 func (q *Planner) Recover(ctx context.Context) error {
 	if q.store == nil {
-		return nil
+		return q.Start(ctx)
 	}
 	rows, err := q.store.ListNonTerminalJobs(ctx)
 	if err != nil {

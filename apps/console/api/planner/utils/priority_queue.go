@@ -91,9 +91,9 @@ type PriorityQueue[T PriorityQueueItem] interface {
 //
 // Higher priority values come first (max-heap behavior).
 type PriorityQueueImpl[T PriorityQueueItem] struct {
-	mu          sync.RWMutex
-	h           priorityQueueHeap[T]
-	lookup      map[string]*pqEntry[T]
+	mu           sync.RWMutex
+	h            priorityQueueHeap[T]
+	lookup       map[string]*pqEntry[T]
 	nextSequence int64 // monotonically increasing counter for FIFO ordering
 }
 
