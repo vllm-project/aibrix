@@ -222,12 +222,39 @@ export function CreateModelDeploymentTemplate({
 
   const handleSave = async () => {
     setError(null);
+    // Validation runs top-to-bottom in the form's visual order so the first
+    // error surfaced maps to the topmost incomplete field.
     if (!name.trim()) {
       setError('Template name is required');
       return;
     }
+    if (!version.trim()) {
+      setError('Version is required');
+      return;
+    }
+    if (!spec.modelSource?.uri?.trim()) {
+      setError('Model source URI is required');
+      return;
+    }
+    const uriErr = validateSourceUri(spec.modelSource?.type, spec.modelSource?.uri ?? '');
+    if (uriErr) {
+      setError(uriErr);
+      return;
+    }
     if (!spec.accelerator?.type) {
       setError('Accelerator type is required');
+      return;
+    }
+    if (!spec.accelerator?.count || spec.accelerator.count < 1) {
+      setError('Accelerator count must be at least 1');
+      return;
+    }
+    if (!spec.engine?.version?.trim()) {
+      setError('Engine version is required');
+      return;
+    }
+    if (!spec.engine?.image?.trim()) {
+      setError('Engine image is required');
       return;
     }
     // Treat 0 (proto int default for unset fields) as 1, since each dim is 1-based.
@@ -242,11 +269,6 @@ export function CreateModelDeploymentTemplate({
     }
     if (!spec.supportedEndpoints || spec.supportedEndpoints.length === 0) {
       setError('Pick at least one supported endpoint');
-      return;
-    }
-    const uriErr = validateSourceUri(spec.modelSource?.type, spec.modelSource?.uri ?? '');
-    if (uriErr) {
-      setError(uriErr);
       return;
     }
     if (engineArgsError) {
@@ -338,7 +360,7 @@ export function CreateModelDeploymentTemplate({
               }
             />
           </Field>
-          <Field label="Version">
+          <Field label="Version" required>
             <input
               type="text"
               value={version}
@@ -346,7 +368,7 @@ export function CreateModelDeploymentTemplate({
               className={inputCls}
             />
           </Field>
-          <Field label="Status">
+          <Field label="Status" required>
             <select value={statusValue} onChange={(e) => setStatusValue(e.target.value)} className={inputCls}>
               {STATUS_OPTIONS.map((s) => (
                 <option key={s} value={s}>{s}</option>
@@ -362,7 +384,7 @@ export function CreateModelDeploymentTemplate({
           const isHF = sourceType === 'huggingface';
           return (
             <Section title="Model Source">
-              <Field label="Type">
+              <Field label="Type" required>
                 <select
                   value={sourceType}
                   onChange={(e) => updateSpec('modelSource', { type: e.target.value })}
@@ -373,7 +395,7 @@ export function CreateModelDeploymentTemplate({
                   ))}
                 </select>
               </Field>
-              <Field label="URI" wide>
+              <Field label="URI" wide required>
                 {(() => {
                   const uri = spec.modelSource?.uri ?? '';
                   const uriErr = validateSourceUri(sourceType, uri);
@@ -476,7 +498,7 @@ export function CreateModelDeploymentTemplate({
               ))}
             </select>
           </Field>
-          <Field label="Count">
+          <Field label="Count" required>
             <input
               type="number"
               min={1}
@@ -499,7 +521,7 @@ export function CreateModelDeploymentTemplate({
         {/* Engine (mega-group: engine selection + tuning) */}
         <Group title="Engine">
           <SubSection title="Engine">
-            <Field label="Type">
+            <Field label="Type" required>
               <select
                 value={spec.engine?.type ?? 'vllm'}
                 onChange={(e) => updateSpec('engine', { type: e.target.value })}
@@ -510,7 +532,7 @@ export function CreateModelDeploymentTemplate({
                 ))}
               </select>
             </Field>
-            <Field label="Version">
+            <Field label="Version" required>
               <input
                 type="text"
                 value={spec.engine?.version ?? ''}
@@ -527,7 +549,7 @@ export function CreateModelDeploymentTemplate({
                 className={inputCls}
               />
             </Field>
-            <Field label="Image" wide>
+            <Field label="Image" wide required>
               <input
                 type="text"
                 value={spec.engine?.image ?? ''}
@@ -618,7 +640,7 @@ export function CreateModelDeploymentTemplate({
         </Section>
       </fieldset>
 
-      <div className="flex items-center gap-3 mt-6">
+      <div className="flex flex-wrap items-center gap-3 mt-6">
         {!isView && (
           <button
             onClick={handleSave}
@@ -641,6 +663,7 @@ export function CreateModelDeploymentTemplate({
         >
           {isView ? 'Back' : 'Cancel'}
         </button>
+        {error && <span className="text-sm text-red-600">{error}</span>}
       </div>
     </div>
   );
@@ -665,7 +688,10 @@ function Section({
       <h3 className="text-sm mb-4">
         {title}
         {required && (
-          <span className="text-red-500 ml-0.5" aria-hidden="true">*</span>
+          <>
+            <span className="text-red-500 ml-0.5" aria-hidden="true">*</span>
+            <span className="sr-only"> (required)</span>
+          </>
         )}
       </h3>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">{children}</div>
@@ -709,7 +735,10 @@ function Field({
       <label className="block text-xs text-gray-600 mb-1">
         {label}
         {required && (
-          <span className="text-red-500 ml-0.5" aria-hidden="true">*</span>
+          <>
+            <span className="text-red-500 ml-0.5" aria-hidden="true">*</span>
+            <span className="sr-only"> (required)</span>
+          </>
         )}
       </label>
       {children}
