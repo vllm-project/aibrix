@@ -62,6 +62,89 @@ Example APA yaml config
    :language: yaml
 
 
+Supported PodAutoscaler annotations
+-----------------------------------
+
+Metric-based autoscalers can be tuned with annotations on the
+``PodAutoscaler`` object. The controller currently recognizes the generic
+``autoscaling.aibrix.ai/`` annotation keys listed below. Annotation values are
+strings in Kubernetes metadata, so quote numeric and duration values in YAML
+when needed.
+
+Durations are parsed with Go duration syntax such as ``30s`` or ``5m``.
+Floating-point values are parsed as decimal numbers such as ``0.1`` or ``2.0``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 14 16 18 48
+
+   * - Annotation
+     - Value type
+     - Default
+     - Strategy use
+     - Description
+   * - ``autoscaling.aibrix.ai/max-scale-up-rate``
+     - float
+     - ``2``
+     - HPA, KPA, APA
+     - Limits how quickly replicas can increase in one scaling decision. For example, ``2.0`` allows the recommendation to grow up to 2x the current replica count.
+   * - ``autoscaling.aibrix.ai/max-scale-down-rate``
+     - float
+     - ``2``
+     - HPA, KPA, APA
+     - Limits how quickly replicas can decrease in one scaling decision. For example, ``2.0`` prevents scaling below roughly half of the current replica count in one decision.
+   * - ``autoscaling.aibrix.ai/scale-up-tolerance``
+     - float
+     - ``0.1``
+     - KPA, APA
+     - Avoids scale-up for small metric fluctuations. A value of ``0.1`` means the metric must exceed the target by more than 10% before scaling up.
+   * - ``autoscaling.aibrix.ai/scale-down-tolerance``
+     - float
+     - ``0.1``
+     - KPA, APA
+     - Avoids scale-down for small metric fluctuations. A value of ``0.1`` means the metric must fall below the target by more than 10% before scaling down.
+   * - ``autoscaling.aibrix.ai/panic-threshold``
+     - float
+     - ``2.0``
+     - KPA
+     - Sets the threshold for entering KPA panic mode when short-window demand is high relative to stable-window demand.
+   * - ``autoscaling.aibrix.ai/scale-up-cooldown-window``
+     - duration
+     - ``0s``
+     - HPA, KPA, APA
+     - Stabilization window for scale-up recommendations.
+   * - ``autoscaling.aibrix.ai/scale-down-cooldown-window``
+     - duration
+     - ``300s``
+     - HPA, KPA, APA
+     - Stabilization window for scale-down recommendations. The default is 5 minutes.
+   * - ``autoscaling.aibrix.ai/scale-to-zero``
+     - bool
+     - ``false``
+     - KPA, APA
+     - Enables the scaling context's scale-to-zero flag. The final replica count is still bounded by ``spec.minReplicas``.
+
+Example:
+
+.. code-block:: yaml
+
+   apiVersion: autoscaling.aibrix.ai/v1alpha1
+   kind: PodAutoscaler
+   metadata:
+     name: example-kpa
+     annotations:
+       autoscaling.aibrix.ai/max-scale-up-rate: "3.0"
+       autoscaling.aibrix.ai/max-scale-down-rate: "2.0"
+       autoscaling.aibrix.ai/scale-up-tolerance: "0.2"
+       autoscaling.aibrix.ai/scale-down-tolerance: "0.1"
+       autoscaling.aibrix.ai/panic-threshold: "2.5"
+       autoscaling.aibrix.ai/scale-up-cooldown-window: "30s"
+       autoscaling.aibrix.ai/scale-down-cooldown-window: "5m"
+       autoscaling.aibrix.ai/scale-to-zero: "false"
+   spec:
+     scalingStrategy: KPA
+
+
 StormService Role-Level Autoscaling
 ------------------------------------
 
