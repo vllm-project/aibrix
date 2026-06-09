@@ -64,9 +64,46 @@ function progressCount(job: Job): number | null {
   return counts.completed + counts.failed;
 }
 
+// EVENT_ORDER is the canonical batch-lifecycle ranking used to break ties when
+// two events share the same timestamp. Event timestamps are unix *seconds* (the
+// whole pipeline truncates to seconds) and come from two sources — planner and
+// MDS — that keep independent clocks, so the timestamp alone cannot order events
+// landing in the same second. Lifecycle rank is the source of truth for ties.
+const EVENT_ORDER: Record<string, number> = {
+  created: 0,
+  queued: 0,
+  resource_preparing: 1,
+  resource_failed: 2,
+  submitting: 3,
+  submit_failed: 4,
+  batch_created: 5,
+  in_progress: 6,
+  finalizing: 7,
+  cancel_requested: 8,
+  cancelling: 9,
+  completed: 10,
+  failed: 11,
+  expired: 12,
+  cancelled: 13,
+};
+
+function eventRank(id: string): number {
+  // Use the value type, not the `in` operator: `in` walks the prototype chain,
+  // so an id like 'toString' would resolve to a function and poison the sort.
+  return typeof EVENT_ORDER[id] === 'number' ? EVENT_ORDER[id] : Number.MAX_SAFE_INTEGER;
+}
+
+// compareEvents sorts chronologically, then by lifecycle rank when two events
+// share the same (second-granularity) timestamp — so e.g. Finalizing always
+// precedes Failed instead of being ordered alphabetically by id.
+function compareEvents(a: JobEvent, b: JobEvent): number {
+  if (a.at !== b.at) return a.at - b.at;
+  return eventRank(a.id) - eventRank(b.id);
+}
+
 function getEvents(job: Job): JobEvent[] {
   if (job.events && job.events.length > 0) {
-    return [...job.events].sort((a, b) => a.at - b.at);
+    return [...job.events].sort(compareEvents);
   }
   const fallback: Array<Omit<JobEvent, 'at'> & { at?: number }> = [
     { id: 'created', label: 'Created', status: 'validating', source: 'mds', at: job.createdAt },
@@ -80,16 +117,20 @@ function getEvents(job: Job): JobEvent[] {
     { id: 'resource_failed', label: 'Provision failed', status: 'resource_failed', source: 'planner', at: job.resourceFailedAt },
     { id: 'submit_failed', label: 'Submit failed', status: 'submit_failed', source: 'planner', at: job.submitFailedAt },
   ].filter((event): event is JobEvent => typeof event.at === 'number' && event.at > 0);
-  return fallback.sort((a, b) => a.at - b.at);
+  return fallback.sort(compareEvents);
 }
 
-function eventDotClass(status: string): string {
+const FAILED_EVENT_STATUSES = new Set(['failed', 'resource_failed', 'submit_failed']);
+const NEUTRAL_TERMINAL_EVENT_STATUSES = new Set(['cancelled', 'expired']);
+
+// Timeline dot color: a passed stage is green, the stage currently in progress is
+// amber, failures are red, and neutral terminal states (cancelled/expired) gray.
+// `isCurrent` marks the latest event of a job that is still running.
+function eventDotClass(status: string, isCurrent: boolean): string {
+  if (FAILED_EVENT_STATUSES.has(status)) return 'bg-red-500 ring-red-100';
   if (status === 'completed') return 'bg-emerald-500 ring-emerald-100';
-  if (status === 'failed' || status === 'resource_failed' || status === 'submit_failed') {
-    return 'bg-red-500 ring-red-100';
-  }
-  if (status === 'cancelled' || status === 'expired') return 'bg-gray-400 ring-gray-100';
-  return 'bg-amber-500 ring-amber-100';
+  if (NEUTRAL_TERMINAL_EVENT_STATUSES.has(status)) return 'bg-gray-400 ring-gray-100';
+  return isCurrent ? 'bg-amber-500 ring-amber-100' : 'bg-emerald-500 ring-emerald-100';
 }
 
 function visibleMetadata(job: Job): [string, string][] {
@@ -430,10 +471,13 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
             </div>
             {events.length > 0 ? (
               <div className="space-y-4">
-                {events.map((event) => (
+                {events.map((event, index) => {
+                  // The latest event of a still-running job is the active stage.
+                  const isCurrent = !isTerminal && index === events.length - 1;
+                  return (
                   <div key={`${event.id}-${event.at}`} className="flex gap-3">
                     <div className="pt-1">
-                      <div className={`w-3 h-3 rounded-full ring-4 ${eventDotClass(event.status)}`} />
+                      <div className={`w-3 h-3 rounded-full ring-4 ${eventDotClass(event.status, isCurrent)}`} />
                     </div>
                     <div className="min-w-0 flex-1 pb-4 border-b border-gray-100 last:border-b-0 last:pb-0">
                       <div className="flex items-center justify-between gap-3">
@@ -449,7 +493,8 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                       {event.message && <p className="text-xs text-gray-500 mt-1">{event.message}</p>}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <p className="text-sm text-gray-500">No timeline data available.</p>
