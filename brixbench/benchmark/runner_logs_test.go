@@ -54,6 +54,8 @@ func captureDeploymentArtifacts(t *testing.T, ctx context.Context, deployer depl
 func captureCasePodLogs(t *testing.T, ctx context.Context, testCase *resolver.Test, benchmarkNamespace string, caseLogDir string) {
 	t.Helper()
 
+	captureCaseResourceYAML(t, ctx, testCase, benchmarkNamespace, caseLogDir)
+
 	benchmarkPodName := benchmarkPodNameForTest(testCase.Name)
 	enginePodNames, err := listPodsInNamespace(ctx, benchmarkNamespace)
 	if err != nil {
@@ -80,6 +82,77 @@ func captureCasePodLogs(t *testing.T, ctx context.Context, testCase *resolver.Te
 		return
 	}
 	capturePodLogs(t, ctx, "aibrix-system", gatewayPodNames, filepath.Join(caseLogDir, "gateway-logs"), "gateway")
+}
+
+func captureCaseResourceYAML(t *testing.T, ctx context.Context, testCase *resolver.Test, benchmarkNamespace string, caseLogDir string) {
+	t.Helper()
+
+	resourceDir := filepath.Join(caseLogDir, "resource-yaml")
+	if err := os.MkdirAll(resourceDir, 0755); err != nil {
+		t.Logf("Warning: failed to create resource yaml directory %s: %v", resourceDir, err)
+		return
+	}
+
+	captureResourceYAML(t, ctx, benchmarkNamespace, "pods", "", filepath.Join(resourceDir, "benchmark-namespace-pods.yaml"))
+	captureStormServiceYAMLs(t, ctx, benchmarkNamespace, resourceDir)
+
+	if testCase.ProviderName() != "aibrix" {
+		return
+	}
+	gatewayPodNames, err := listPodsWithPrefix(ctx, "aibrix-system", "aibrix-gateway-plugins-")
+	if err != nil {
+		t.Logf("Warning: failed to list gateway pods in aibrix-system for yaml capture: %v", err)
+		return
+	}
+	for _, podName := range gatewayPodNames {
+		captureResourceYAML(t, ctx, "aibrix-system", "pod", podName, filepath.Join(resourceDir, fmt.Sprintf("gateway-pod-%s.yaml", sanitizePathComponent(podName))))
+	}
+}
+
+func captureResourceYAML(t *testing.T, ctx context.Context, namespace string, resourceType string, resourceName string, outputPath string) {
+	t.Helper()
+
+	args := []string{"get", resourceType}
+	if resourceName != "" {
+		args = append(args, resourceName)
+	}
+	args = append(args, "-n", namespace, "-o", "yaml")
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	output, cmdErr := cmd.CombinedOutput()
+
+	body := output
+	if cmdErr != nil {
+		body = append(body, []byte(fmt.Sprintf("\n[yaml capture error] %v\n", cmdErr))...)
+	}
+	if writeErr := os.WriteFile(outputPath, body, 0644); writeErr != nil {
+		t.Logf("Warning: failed to write yaml capture %s: %v", outputPath, writeErr)
+		return
+	}
+	progressLog(t, "Saved resource yaml: %s", outputPath)
+}
+
+func captureStormServiceYAMLs(t *testing.T, ctx context.Context, namespace string, resourceDir string) {
+	t.Helper()
+
+	services, err := listStormServices(ctx)
+	if err != nil {
+		t.Logf("Warning: failed to list StormServices for yaml capture: %v", err)
+		captureResourceYAML(t, ctx, namespace, "stormservice", "", filepath.Join(resourceDir, "stormservices.yaml"))
+		return
+	}
+
+	captured := false
+	for _, service := range services {
+		if service.Namespace != namespace {
+			continue
+		}
+		outputPath := filepath.Join(resourceDir, fmt.Sprintf("stormservice-%s.yaml", sanitizePathComponent(service.Name)))
+		captureResourceYAML(t, ctx, namespace, "stormservice", service.Name, outputPath)
+		captured = true
+	}
+	if !captured {
+		captureResourceYAML(t, ctx, namespace, "stormservice", "", filepath.Join(resourceDir, "stormservices.yaml"))
+	}
 }
 
 func capturePodLogs(t *testing.T, ctx context.Context, namespace string, podNames []string, logDir string, logKind string) {

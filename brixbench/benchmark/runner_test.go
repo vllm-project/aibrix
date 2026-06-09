@@ -78,19 +78,23 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 
 	result.BenchmarkKind = testCase.BenchmarkKind
 
-	namespaceResetDone := progressStep(t, "reset benchmark namespace %s for %s", defaultBenchmarkNamespace, testCase.Name)
-	if resetErr := resetBenchmarkNamespace(ctx, defaultBenchmarkNamespace); resetErr != nil {
-		result.Error = fmt.Sprintf("Benchmark namespace reset failed: %v", resetErr)
-		return result, fmt.Errorf("Benchmark namespace reset failed: %w", resetErr)
-	}
-	namespaceResetDone()
+	if resetBeforeTestEnabled() {
+		namespaceResetDone := progressStep(t, "reset benchmark namespace %s for %s", defaultBenchmarkNamespace, testCase.Name)
+		if resetErr := resetBenchmarkNamespace(ctx, defaultBenchmarkNamespace); resetErr != nil {
+			result.Error = fmt.Sprintf("Benchmark namespace reset failed: %v", resetErr)
+			return result, fmt.Errorf("Benchmark namespace reset failed: %w", resetErr)
+		}
+		namespaceResetDone()
 
-	preflightDone := progressStep(t, "check existing StormService resources for %s", testCase.Name)
-	if preflightErr := ensureStormServicesCleared(ctx); preflightErr != nil {
-		result.Error = fmt.Sprintf("StormService preflight failed: %v", preflightErr)
-		return result, fmt.Errorf("StormService preflight failed: %w", preflightErr)
+		preflightDone := progressStep(t, "check existing StormService resources for %s", testCase.Name)
+		if preflightErr := ensureStormServicesCleared(ctx); preflightErr != nil {
+			result.Error = fmt.Sprintf("StormService preflight failed: %v", preflightErr)
+			return result, fmt.Errorf("StormService preflight failed: %w", preflightErr)
+		}
+		preflightDone()
+	} else {
+		progressLog(t, "Skipping benchmark namespace reset before %s; namespace %s will be reused", testCase.Name, defaultBenchmarkNamespace)
 	}
-	preflightDone()
 
 	caseLogDir := caseLogRoot(scenarioLogRoot, testCase.Name)
 	deployDone := progressStep(t, "deploy control plane and engine for %s", testCase.Name)
@@ -105,7 +109,11 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 	}
 	result.GatewayURL = gatewayURL
 	deployDone()
-	defer teardownTestResources(t, ctx, deployer, defaultBenchmarkNamespace, testCase.Name)
+	if cleanupAfterTestEnabled() {
+		defer teardownTestResources(t, ctx, deployer, defaultBenchmarkNamespace, testCase.Name)
+	} else {
+		progressLog(t, "Skipping cleanup after %s; benchmark namespace %s will be left in place", testCase.Name, defaultBenchmarkNamespace)
+	}
 	defer captureCasePodLogs(t, ctx, &testCase, defaultBenchmarkNamespace, caseLogDir)
 
 	configureBenchmarkEnvironment(t, testCase.Name, testCase.ProviderName(), defaultBenchmarkNamespace, gatewayURL)

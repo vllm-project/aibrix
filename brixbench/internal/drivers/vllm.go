@@ -24,14 +24,16 @@ type VLLMBenchDriver struct {
 }
 
 type vllmBenchConfig struct {
-	Kind          string `yaml:"kind"`
-	Execution     string `yaml:"execution"`
-	Image         string `yaml:"image"`
-	Namespace     string `yaml:"namespace"`
-	PodName       string `yaml:"podName"`
-	ModelHostPath string `yaml:"modelHostPath"`
-	RootHostPath  string `yaml:"rootHostPath"`
-	Artifacts     struct {
+	Kind           string                 `yaml:"kind"`
+	Execution      string                 `yaml:"execution"`
+	Image          string                 `yaml:"image"`
+	Namespace      string                 `yaml:"namespace"`
+	PodName        string                 `yaml:"podName"`
+	ModelHostPath  string                 `yaml:"modelHostPath"`
+	RootHostPath   string                 `yaml:"rootHostPath"`
+	PodResources   map[string]interface{} `yaml:"podResources"`
+	WarmupRequests int                    `yaml:"warmupRequests"`
+	Artifacts      struct {
 		ResultFilename string `yaml:"resultFilename"`
 		LogDir         string `yaml:"logDir"`
 	} `yaml:"artifacts"`
@@ -323,42 +325,25 @@ func (c *vllmBenchConfig) validate() error {
 
 func buildPodManifest(config *vllmBenchConfig) ([]byte, error) {
 	argsLines := []string{
+		"set -euo pipefail",
 		"cd /tmp",
-		"python3 -m vllm.entrypoints.cli.main bench serve \\",
 	}
 
-	for k, v := range config.VLLMArgs {
-		flagKey := normalizeVLLMBenchFlagKey(k)
-		if v == nil {
-			argsLines = append(argsLines, fmt.Sprintf("  --%s \\", flagKey))
-			continue
-		}
-
-		if b, ok := v.(bool); ok {
-			if b {
-				argsLines = append(argsLines, fmt.Sprintf("  --%s \\", flagKey))
-			}
-			// if false, we just skip it or pass --k false depending on CLI.
-			// Usually boolean flags in CLI don't take values, presence means true.
-			continue
-		}
-
-		strVal := fmt.Sprintf("%v", v)
-		if strVal != "" {
-			argsLines = append(argsLines, fmt.Sprintf("  --%s %s \\", flagKey, shellWord(strVal)))
-		} else {
-			argsLines = append(argsLines, fmt.Sprintf("  --%s \\", flagKey))
-		}
+	if config.WarmupRequests > 0 {
+		warmupArgs := cloneVLLMArgs(config.VLLMArgs)
+		warmupArgs["num-prompts"] = config.WarmupRequests
+		delete(warmupArgs, "save-result")
+		delete(warmupArgs, "save-detailed")
+		delete(warmupArgs, "result-filename")
+		delete(warmupArgs, "result-dir")
+		argsLines = append(argsLines, fmt.Sprintf("echo '[vllm-bench] START warmup: %d requests'", config.WarmupRequests))
+		argsLines = appendVLLMBenchCommand(argsLines, warmupArgs, "", false)
+		argsLines = append(argsLines, "  2>&1 | tee /tmp/warmup.log")
+		argsLines = append(argsLines, "echo '[vllm-bench] DONE warmup'")
 	}
 
-	// Append fixed arguments that the framework depends on.
-	if _, ok := config.VLLMArgs["dataset-name"]; !ok {
-		argsLines = append(argsLines, "  --dataset-name random \\")
-	}
+	argsLines = appendVLLMBenchCommand(argsLines, config.VLLMArgs, config.Artifacts.ResultFilename, true)
 	argsLines = append(argsLines,
-		"  --seed 1 \\",
-		"  --save-result \\",
-		fmt.Sprintf("  --result-filename %s \\", shellWord(config.Artifacts.ResultFilename)),
 		"  2>&1 | tee /tmp/bench.log",
 		"echo __AIBRIX_BENCH_RESULTS_BEGIN__",
 		fmt.Sprintf("cat /tmp/%s || true", shellWord(config.Artifacts.ResultFilename)),
@@ -366,6 +351,35 @@ func buildPodManifest(config *vllmBenchConfig) ([]byte, error) {
 	)
 
 	command := strings.Join(argsLines, "\n")
+
+	container := map[string]interface{}{
+		"name":  config.PodName,
+		"image": config.Image,
+		"securityContext": map[string]interface{}{
+			"capabilities": map[string]interface{}{
+				"add": []string{"IPC_LOCK"},
+			},
+		},
+		"command": []string{"bash", "-lc"},
+		"args":    []string{command},
+		"volumeMounts": []map[string]string{
+			{
+				"name":      "model-vol",
+				"mountPath": config.ModelHostPath,
+			},
+			{
+				"name":      "shared-mem",
+				"mountPath": "/dev/shm",
+			},
+			{
+				"name":      "root",
+				"mountPath": "/root",
+			},
+		},
+	}
+	if len(config.PodResources) > 0 {
+		container["resources"] = config.PodResources
+	}
 
 	pod := map[string]interface{}{
 		"apiVersion": "v1",
@@ -379,31 +393,7 @@ func buildPodManifest(config *vllmBenchConfig) ([]byte, error) {
 			"hostNetwork":   true,
 			"dnsPolicy":     "ClusterFirstWithHostNet",
 			"containers": []map[string]interface{}{
-				{
-					"name":  config.PodName,
-					"image": config.Image,
-					"securityContext": map[string]interface{}{
-						"capabilities": map[string]interface{}{
-							"add": []string{"IPC_LOCK"},
-						},
-					},
-					"command": []string{"bash", "-lc"},
-					"args":    []string{command},
-					"volumeMounts": []map[string]string{
-						{
-							"name":      "model-vol",
-							"mountPath": config.ModelHostPath,
-						},
-						{
-							"name":      "shared-mem",
-							"mountPath": "/dev/shm",
-						},
-						{
-							"name":      "root",
-							"mountPath": "/root",
-						},
-					},
-				},
+				container,
 			},
 			"volumes": []map[string]interface{}{
 				{
@@ -437,6 +427,54 @@ func buildPodManifest(config *vllmBenchConfig) ([]byte, error) {
 	return data, nil
 }
 
+func appendVLLMBenchCommand(argsLines []string, vllmArgs map[string]interface{}, resultFilename string, saveResult bool) []string {
+	argsLines = append(argsLines, "python3 -m vllm.entrypoints.cli.main bench serve \\")
+	for k, v := range vllmArgs {
+		flagKey := normalizeVLLMBenchFlagKey(k)
+		if v == nil {
+			argsLines = append(argsLines, fmt.Sprintf("  --%s \\", flagKey))
+			continue
+		}
+
+		if b, ok := v.(bool); ok {
+			if b {
+				argsLines = append(argsLines, fmt.Sprintf("  --%s \\", flagKey))
+			}
+			// Boolean flags in this CLI generally use presence as true.
+			continue
+		}
+
+		argValues := renderVLLMBenchArgValues(v)
+		if argValues != "" {
+			argsLines = append(argsLines, fmt.Sprintf("  --%s %s \\", flagKey, argValues))
+		} else {
+			argsLines = append(argsLines, fmt.Sprintf("  --%s \\", flagKey))
+		}
+	}
+
+	if _, ok := vllmArgs["dataset-name"]; !ok {
+		argsLines = append(argsLines, "  --dataset-name random \\")
+	}
+	if _, ok := vllmArgs["seed"]; !ok {
+		argsLines = append(argsLines, "  --seed 1 \\")
+	}
+	if saveResult {
+		if _, ok := vllmArgs["save-result"]; !ok {
+			argsLines = append(argsLines, "  --save-result \\")
+		}
+		argsLines = append(argsLines, fmt.Sprintf("  --result-filename %s \\", shellWord(resultFilename)))
+	}
+	return argsLines
+}
+
+func cloneVLLMArgs(args map[string]interface{}) map[string]interface{} {
+	cloned := make(map[string]interface{}, len(args))
+	for k, v := range args {
+		cloned[k] = v
+	}
+	return cloned
+}
+
 func joinInts(values []int) string {
 	parts := make([]string, 0, len(values))
 	for _, value := range values {
@@ -447,6 +485,29 @@ func joinInts(values []int) string {
 
 func shellWord(value string) string {
 	return strconv.Quote(value)
+}
+
+func renderVLLMBenchArgValues(value interface{}) string {
+	switch values := value.(type) {
+	case []interface{}:
+		parts := make([]string, 0, len(values))
+		for _, item := range values {
+			parts = append(parts, shellWord(fmt.Sprintf("%v", item)))
+		}
+		return strings.Join(parts, " ")
+	case []string:
+		parts := make([]string, 0, len(values))
+		for _, item := range values {
+			parts = append(parts, shellWord(item))
+		}
+		return strings.Join(parts, " ")
+	default:
+		strVal := fmt.Sprintf("%v", value)
+		if strVal == "" {
+			return ""
+		}
+		return shellWord(strVal)
+	}
 }
 
 func runBash(ctx context.Context, command string) error {

@@ -34,6 +34,14 @@ The runner deploys the selected serving path, waits for readiness, runs the
 benchmark client in the cluster, persists artifacts, and then tears down the
 run-scoped benchmark namespace.
 
+By default, the runner resets the benchmark namespace before each test case and
+cleans it up after the case finishes. Set `BENCHMARK_RESET_BEFORE_TEST=false`
+or pass `-benchmark.reset=false` to reuse the existing benchmark namespace at
+the start of a case. Set `BENCHMARK_CLEANUP_AFTER_TEST=false` or pass
+`-benchmark.cleanup=false` to leave resources in place after a test case
+finishes. Use both options together when you want to preserve an existing
+deployment across a benchmark run.
+
 ## Scenario Example
 
 ```yaml
@@ -137,6 +145,18 @@ Run one scenario directly:
 
 ```bash
 go test -v ./benchmark -run TestAIBrixBenchmarkSuite -scenario testdata/scenarios/aibrix-hello-world.yaml -count=1
+```
+
+Keep resources after the run for inspection:
+
+```bash
+BENCHMARK_CLEANUP_AFTER_TEST=false go test -v ./benchmark -run TestAIBrixBenchmarkSuite -scenario testdata/scenarios/aibrix-hello-world.yaml -count=1
+```
+
+Reuse existing benchmark namespace resources and keep them after the run:
+
+```bash
+BENCHMARK_RESET_BEFORE_TEST=false BENCHMARK_CLEANUP_AFTER_TEST=false go test -v ./benchmark -run TestAIBrixBenchmarkSuite -scenario testdata/scenarios/aibrix-hello-world.yaml -count=1
 ```
 
 Run a single test case:
