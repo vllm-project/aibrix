@@ -39,12 +39,12 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/transfer"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -238,19 +238,16 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 		routingCtx.ReqBody = bodyCopy
 	}
 
-	// vLLM SHFS mode: send a kv_transfer_params skeleton; the remote_host and
-	// remote_block_ids are populated by updateRoutingContextWithKVTransferParams
-	// after the prefill response arrives. NIXL mode omits this field entirely
-	// because the backend manages KV transfer through its own mechanism.
-	kvConnectorType := selectKvConnectorType(pod.Labels[KVConnectorTypeIdentifier])
-	if llmEngine == VLLMEngine && kvConnectorType == KVConnectorTypeSHFS {
-		completionRequest["kv_transfer_params"] = map[string]any{
-			"do_remote_decode":  true,
-			"do_remote_prefill": false,
-			"remote_engine_id":  nil,
-			"remote_block_ids":  nil,
-			"remote_host":       nil,
-			"remote_port":       nil,
+	// For vLLM, delegate connector-specific request augmentation to the transfer agent.
+	// Each agent decides what fields (if any) to add to the prefill request body
+	// (e.g. SHFSAgent adds a kv_transfer_params skeleton; NIXLAgent is a no-op).
+	if llmEngine == VLLMEngine {
+		agent, err := transfer.ResolveAgentForPod(pod, aibrixKVConnectorType)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve KV transfer agent for prefill payload: %w", err)
+		}
+		if err := agent.AugmentPrefillRequest(routingCtx, pod, completionRequest); err != nil {
+			return nil, fmt.Errorf("failed to augment prefill request: %w", err)
 		}
 	}
 
@@ -356,57 +353,11 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 // pod did not fill the field), the function returns nil without modifying
 // the request body, which is a valid no-op for backends that self-coordinate.
 func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.RoutingContext, responseData map[string]any, prefillPod *v1.Pod) error {
-	var originalRequest map[string]any
-	if err := sonic.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
-		return fmt.Errorf("failed to unmarshal original request body: %w", err)
+	agent, err := transfer.ResolveAgentForPod(prefillPod, aibrixKVConnectorType)
+	if err != nil {
+		return fmt.Errorf("failed to resolve KV transfer agent for response merge: %w", err)
 	}
-
-	kvConnectorType := selectKvConnectorType(prefillPod.Labels[KVConnectorTypeIdentifier])
-	if kvConnectorType == KVConnectorTypeNIXL {
-		originalRequest["disagg_prefill_resp"] = responseData
-
-		updatedReqBody, err := sonic.Marshal(originalRequest)
-		if err != nil {
-			return fmt.Errorf("failed to marshal updated request body: %w", err)
-		}
-
-		routingCtx.ReqBody = updatedReqBody
-
-		klog.InfoS("updated routing context with disagg_prefill_resp (NIXL mode)",
-			"request_id", routingCtx.RequestID,
-			"prefill_pod", prefillPod.Name,
-			"prefill_host", prefillPod.Status.PodIP,
-			"kv_connector_type", kvConnectorType)
-	} else {
-		kvTransferParams, exists := responseData["kv_transfer_params"]
-		if !exists {
-			klog.InfoS("no kv_transfer_params in prefill response", "request_id", routingCtx.RequestID)
-			return nil
-		}
-
-		originalRequest["kv_transfer_params"] = kvTransferParams
-
-		kvTransferParamsMap, ok := kvTransferParams.(map[string]any)
-		if !ok {
-			return fmt.Errorf("kv_transfer_params has unexpected type %T, expected map[string]any", kvTransferParams)
-		}
-		kvTransferParamsMap["remote_host"] = prefillPod.Status.PodIP
-
-		updatedReqBody, err := sonic.Marshal(originalRequest)
-		if err != nil {
-			return fmt.Errorf("failed to marshal updated request body: %w", err)
-		}
-
-		routingCtx.ReqBody = updatedReqBody
-
-		klog.InfoS("updated routing context with kv_transfer_params (SHFS mode)",
-			"request_id", routingCtx.RequestID,
-			"prefill_pod", prefillPod.Name,
-			"prefill_host", prefillPod.Status.PodIP,
-			"kv_connector_type", kvConnectorType)
-	}
-
-	return nil
+	return agent.MergePrefillResponse(routingCtx, responseData, prefillPod)
 }
 
 // updateRoutingContextWithTRTDisaggParams merges TensorRT-LLM disaggregated
@@ -480,17 +431,9 @@ func (r *pdRouter) updateRoutingContextWithTRTDisaggParams(routingCtx *types.Rou
 	return nil
 }
 
-// selectKvConnectorType resolves the KV connector type from the pod label,
-// allowing per-pod overrides for mixed PD deployments and falling back to
-// the global configuration when the label is empty or invalid.
+// selectKvConnectorType resolves the KV connector type from a pod label value,
+// falling back to aibrixKVConnectorType when the value is absent or unrecognized.
+// Delegates to transfer.ResolveConnectorType for consistent resolution logic.
 func selectKvConnectorType(value string) string {
-	switch strings.ToLower(value) {
-	case KVConnectorTypeNIXL, KVConnectorTypeSHFS:
-		return strings.ToLower(value)
-	default:
-		if value != "" {
-			klog.Warningf("unrecognized kv-connector-type label %q, falling back to global config", value)
-		}
-		return aibrixKVConnectorType
-	}
+	return transfer.ResolveConnectorType(value, aibrixKVConnectorType)
 }
