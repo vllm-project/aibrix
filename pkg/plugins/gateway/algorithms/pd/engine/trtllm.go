@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -31,16 +32,19 @@ import (
 
 // Snowflake-style disagg request ID constants for TensorRT-LLM PD routing.
 // Layout: [timestamp(41b)][machineID(10b)][counter(12b)]
-// The modulo rotation guarantees result >= trtMinGlobalID so TRT-LLM's executor
+// The modulo rotation guarantees result >= TRTMinGlobalID so TRT-LLM's executor
 // treats it as a global (cross-worker) disagg ID rather than a local one.
 const (
+	// TRTMachineIDBits is the width of the machine-ID field in snowflake disagg request IDs.
+	TRTMachineIDBits = 10
+	// TRTMinGlobalID is the minimum global disagg ID; values below this are treated as local by TRT-LLM.
+	TRTMinGlobalID = int64(1) << 42
+
 	trtCounterBits      = 12
-	trtMachineIDBits    = 10
 	trtTimestampBits    = 41
 	trtSnowflakeEpochMs = int64(1672531200000) // 2023-01-01T00:00:00Z in milliseconds
 	trtCounterMask      = (1 << trtCounterBits) - 1
 	trtTimestampMax     = (1 << trtTimestampBits) - 1
-	trtMinGlobalID      = int64(1) << 42
 	trtMaxInt64         = int64(1<<63 - 1)
 )
 
@@ -50,10 +54,6 @@ var (
 
 	// globalDisaggCounter is a per-process monotonic counter for snowflake ID generation.
 	globalDisaggCounter atomic.Int64
-
-	// sonicJSONInt64 unmarshals JSON numbers as int64 to avoid float64 precision loss
-	// on large fields such as disagg_request_id.
-	sonicJSONInt64 = sonic.Config{UseInt64: true}.Froze()
 )
 
 func init() {
@@ -63,9 +63,9 @@ func init() {
 	Register(&TRTLLMHandler{})
 }
 
-// ValidateTRTMachineID returns an error if machineID does not fit in trtMachineIDBits bits.
+// ValidateTRTMachineID returns an error if machineID does not fit in TRTMachineIDBits bits.
 func ValidateTRTMachineID(machineID int64) error {
-	maxExclusive := int64(1 << trtMachineIDBits)
+	maxExclusive := int64(1 << TRTMachineIDBits)
 	if machineID < 0 || machineID >= maxExclusive {
 		return fmt.Errorf("invalid AIBRIX_TRT_MACHINE_ID=%d: must satisfy 0 <= id < %d (10-bit field)", machineID, maxExclusive)
 	}
@@ -83,10 +83,10 @@ func GetDisaggRequestID(machineID int64) int64 {
 		timestampMs = trtTimestampMax
 	}
 	counter := (globalDisaggCounter.Add(1) - 1) & trtCounterMask
-	globalID := (timestampMs << (trtMachineIDBits + trtCounterBits)) |
+	globalID := (timestampMs << (TRTMachineIDBits + trtCounterBits)) |
 		(machineID << trtCounterBits) |
 		counter
-	return globalID%(trtMaxInt64-trtMinGlobalID) + trtMinGlobalID
+	return globalID%(trtMaxInt64-TRTMinGlobalID) + TRTMinGlobalID
 }
 
 // TRTLLMHandler implements EngineHandler for TensorRT-LLM.
@@ -118,7 +118,7 @@ func (h *TRTLLMHandler) MergePrefillResponse(
 	prefillPod *v1.Pod,
 ) error {
 	var originalRequest map[string]any
-	if err := sonicJSONInt64.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
+	if err := pd.SonicJSONInt64.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
 		return fmt.Errorf("failed to unmarshal original request body: %w", err)
 	}
 	if originalRequest == nil {

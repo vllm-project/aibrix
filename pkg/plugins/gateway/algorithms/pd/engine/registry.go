@@ -22,8 +22,9 @@ import (
 )
 
 var (
-	mu       sync.RWMutex
-	registry = map[string]EngineHandler{}
+	mu             sync.RWMutex
+	registry       = map[string]EngineHandler{}
+	defaultHandler = &DefaultHandler{}
 )
 
 // Register adds h to the global engine registry.
@@ -43,7 +44,7 @@ func Resolve(name string) EngineHandler {
 	if h, ok := registry[name]; ok {
 		return h
 	}
-	return &DefaultHandler{}
+	return defaultHandler
 }
 
 // ValidEngineNames returns the sorted list of registered engine names.

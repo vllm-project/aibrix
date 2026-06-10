@@ -22,7 +22,6 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,19 +42,12 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// sonicJSONInt64 unmarshals JSON numbers into map[string]any as int64 (not float64), so large
-// integer fields (e.g. ctx_request_id, disagg_request_id in disaggregated_params) survive
-// marshal/unmarshal without float64 precision loss.
-var sonicJSONInt64 = sonic.Config{UseInt64: true}.Froze()
-
 const (
-	RouterPD                      types.RoutingAlgorithm = "pd"
-	VLLMEngine                    string                 = "vllm"
-	SGLangEngine                  string                 = "sglang"
-	TensorRTLLM                   string                 = "trtllm"
-	SGLangBootstrapPort           int64                  = 8998
-	SGLangBootstrapPortIdentifier string                 = "model.aibrix.ai/sglang-bootstrap-port"
-	LLMEngineIdentifier           string                 = constants.ModelLabelEngine
+	RouterPD            types.RoutingAlgorithm = "pd"
+	VLLMEngine          string                 = "vllm"
+	SGLangEngine        string                 = "sglang"
+	TensorRTLLM         string                 = "trtllm"
+	LLMEngineIdentifier string                 = constants.ModelLabelEngine
 	PDRoleSetIdentifier           string                 = "roleset-name"
 	PDRoleIdentifier              string                 = "role-name"
 	RoleReplicaIndex              string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
@@ -972,15 +964,6 @@ func getLLMEngine(pod *v1.Pod, labelName string, defaultValue string) string {
 		return defaultValue
 	}
 	return labelTarget
-}
-
-func getSGLangBootstrapPort(pod *v1.Pod) int64 {
-	if portStr, exists := pod.Annotations[SGLangBootstrapPortIdentifier]; exists {
-		if port, err := strconv.ParseInt(portStr, 10, 32); err == nil {
-			return port
-		}
-	}
-	return SGLangBootstrapPort // Default port
 }
 
 // validateAndGetLLMEngine validates that all prefill pods use the same engine and returns it.

@@ -67,7 +67,8 @@ import (
 //     to inject disaggregated_params into the decode request body.
 //   - default: synchronous, no response processing.
 func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod *v1.Pod, llmEngine string) error {
-	payload, err := r.preparePrefillPayload(routingCtx, prefillPod, llmEngine)
+	handler := engine.Resolve(llmEngine)
+	payload, err := r.preparePrefillPayload(routingCtx, prefillPod, llmEngine, handler)
 	if err != nil {
 		return fmt.Errorf("failed to prepare prefill payload for request %s: %w", routingCtx.RequestID, err)
 	}
@@ -115,8 +116,6 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 
 	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name)
 	routingCtx.PrefillStartTime = time.Now()
-
-	handler := engine.Resolve(llmEngine)
 
 	if handler.IsAsync() {
 		// SGLang uses a bootstrap handshake to coordinate KV transfer out-of-band;
@@ -203,14 +202,12 @@ func (r *pdRouter) handleSyncPrefill(
 // All engines: sets max_tokens=1, max_completion_tokens=1 (except TRT-LLM),
 // stream=false, and removes stream_options so the prefill pod returns a single
 // JSON response rather than an SSE stream.
-func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *v1.Pod, llmEngine string) ([]byte, error) {
+func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *v1.Pod, llmEngine string, handler engine.EngineHandler) ([]byte, error) {
 	var completionRequest map[string]any
 	if err := sonic.Unmarshal(routingCtx.ReqBody, &completionRequest); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal prefill request body: %w", err)
 	}
 
-	// Delegate all engine-specific request augmentation to the engine handler.
-	handler := engine.Resolve(llmEngine)
 	if err := handler.AugmentPrefillRequest(routingCtx, pod, completionRequest); err != nil {
 		return nil, fmt.Errorf("failed to augment prefill request for %s: %w", llmEngine, err)
 	}
@@ -282,7 +279,7 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 	var responseData map[string]any
 	var errUnmarshal error
 	if routingCtx.Engine == TensorRTLLM {
-		errUnmarshal = sonicJSONInt64.Unmarshal(body, &responseData)
+		errUnmarshal = pd.SonicJSONInt64.Unmarshal(body, &responseData)
 	} else {
 		errUnmarshal = sonic.Unmarshal(body, &responseData)
 	}

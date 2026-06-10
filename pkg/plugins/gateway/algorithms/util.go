@@ -20,31 +20,12 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
-
-// trtMachineIDBits and trtMinGlobalID are kept here so tests in this package
-// can reference them without importing pd/engine. The authoritative definitions
-// live in pd/engine.
-const (
-	trtMachineIDBits = 10
-	trtMinGlobalID   = int64(1) << 42
-)
-
-// getDisaggRequestID forwards to engine.GetDisaggRequestID.
-func getDisaggRequestID(machineID int64) int64 {
-	return engine.GetDisaggRequestID(machineID)
-}
-
-// validateTRTMachineIDValue forwards to engine.ValidateTRTMachineID.
-func validateTRTMachineIDValue(machineID int64) error {
-	return engine.ValidateTRTMachineID(machineID)
-}
 
 // mean calculates the mean of a slice of float64 numbers.
 func mean(numbers []float64) float64 {
