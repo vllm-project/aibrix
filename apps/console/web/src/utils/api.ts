@@ -409,6 +409,23 @@ export async function listJobs(params?: { after?: string; limit?: number }): Pro
   return normalizeJobsResponse(await apiFetch<ListJobsResponse>(`/api/v1/jobs${query}`));
 }
 
+// Fetch every job by following the cursor until the server reports no more pages.
+export async function listAllJobs(): Promise<Job[]> {
+  const PAGE_LIMIT = 200;
+  const MAX_PAGES = 50;
+  const all: Job[] = [];
+  let after: string | undefined;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const res = await listJobs({ after, limit: PAGE_LIMIT });
+    const batch = res.jobs ?? [];
+    all.push(...batch);
+    const last = batch[batch.length - 1];
+    if (!res.hasMore || !last?.id) break;
+    after = last.id;
+  }
+  return all;
+}
+
 export async function getJob(id: string): Promise<Job> {
   return normalizeJob(await apiFetch<Job>(`/api/v1/jobs/${encodeURIComponent(id)}`));
 }
