@@ -6,7 +6,7 @@ metadata:
   labels:
     engine: "vllm"
     deployment: "disaggregated"
-    routing-test-config: "conf-rt-02"
+    routing-test-config: "conf-rt-04"
 spec:
   replicas: 1
   updateStrategy:
@@ -22,7 +22,7 @@ spec:
     spec:
       roles:
         - name: prefill
-          replicas: 8
+          replicas: 4
           stateful: true
           template:
             metadata:
@@ -35,9 +35,11 @@ spec:
                 model.aibrix.ai/engine: vllm
                 model.aibrix.ai/role: prefill
             spec:
+              nodeSelector:
+                kubernetes.io/hostname: 192.168.0.6
               containers:
                 - name: prefill
-                  image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai-aibrix-kvcache-nixl:v0.10.2-nixl-0.7.1-ucx-1.19.0
+                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.22.0-cu129
                   command: ["sh", "-c"]
                   args:
                     - |
@@ -47,9 +49,7 @@ spec:
                         --uvicorn-log-level warning \
                         --model /models/Qwen3-8B \
                         --served-model-name qwen3-8b \
-                        --disable-log-requests \
-                        --no-enable-chunked-prefill \
-                        --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
+                        --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}' \
                         --max-model-len 16384 \
                         --tensor-parallel-size=1
                   env:
@@ -139,9 +139,11 @@ spec:
                 model.aibrix.ai/engine: vllm
                 model.aibrix.ai/role: decode
             spec:
+              nodeSelector:
+                kubernetes.io/hostname: 192.168.0.6
               containers:
                 - name: decode
-                  image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai-aibrix-kvcache-nixl:v0.10.2-nixl-0.7.1-ucx-1.19.0
+                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.22.0-cu129
                   command: ["sh", "-c"]
                   args:
                     - |
@@ -151,8 +153,6 @@ spec:
                         --uvicorn-log-level warning \
                         --model /models/Qwen3-8B \
                         --served-model-name qwen3-8b \
-                        --disable-log-requests \
-                        --no-enable-chunked-prefill \
                         --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}' \
                         --max-model-len 16384 \
                         --tensor-parallel-size=1
