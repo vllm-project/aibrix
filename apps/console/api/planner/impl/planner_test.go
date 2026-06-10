@@ -33,7 +33,12 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
 
-const defaultTimeout = 2 * time.Second
+const (
+	defaultTimeout = 2 * time.Second
+	// concurrentEnqueueTimeout is used by race-stress tests where SQLite upserts
+	// under -race can take hundreds of ms each on CI runners.
+	concurrentEnqueueTimeout = 30 * time.Second
+)
 
 // =============================================================================
 // Fakes
@@ -1263,7 +1268,7 @@ func TestConcurrentEnqueuesNoRace(t *testing.T) {
 	wg.Wait()
 
 	// All N jobs eventually reach CreateBatch.
-	waitFor(t, defaultTimeout, func() bool {
+	waitFor(t, concurrentEnqueueTimeout, func() bool {
 		creates, _ := bc.snapshot()
 		return len(creates) == N
 	}, fmt.Sprintf("not all %d jobs reached CreateBatch", N))

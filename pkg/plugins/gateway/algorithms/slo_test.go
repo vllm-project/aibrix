@@ -61,6 +61,18 @@ func route(cache cache.Cache, req *types.RoutingContext, pods types.PodList) (st
 	return router.Route(req, pods)
 }
 
+// waitForPendingLoadMetric polls until queueRouter's background goroutine
+// publishes realtime_normalized_pendings after routing.
+func waitForPendingLoadMetric(store cache.Cache, pod *v1.Pod) metrics.MetricValue {
+	var pendingLoad metrics.MetricValue
+	var err error
+	Eventually(func() bool {
+		pendingLoad, err = store.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNormalizedPendings)
+		return err == nil
+	}, time.Second, 5*time.Millisecond).Should(BeTrue(), "pending load metric: %v", err)
+	return pendingLoad
+}
+
 func getBlockChannel(cb func()) chan bool {
 	block := make(chan bool)
 	go func() {
@@ -230,9 +242,7 @@ var _ = Describe("SLO", func() {
 		podAddr1, err := route(store, req1, pods)
 		Expect(err).To(BeNil())
 
-		time.Sleep(1 * time.Millisecond) // There is a small gap between route and metric update due to operated by different goroutines.
-		pendingLoad, err := store.GetMetricValueByPod(req1.TargetPod().Name, req1.TargetPod().Namespace, metrics.RealtimeNormalizedPendings)
-		Expect(err).To(BeNil())
+		pendingLoad := waitForPendingLoadMetric(store, req1.TargetPod())
 		Expect(pendingLoad.GetSimpleValue() <= 0.5).To(BeTrue())
 
 		podAddr2, err := route(store, req2, pods)
@@ -252,9 +262,7 @@ var _ = Describe("SLO", func() {
 			_, err := route(store, req, pods)
 			Expect(err).To(BeNil())
 
-			time.Sleep(1 * time.Millisecond) // There is a small gap between route and metric update due to operated by different goroutines.
-			pendingLoad, err := store.GetMetricValueByPod(req.TargetPod().Name, req.TargetPod().Namespace, metrics.RealtimeNormalizedPendings)
-			Expect(err).To(BeNil())
+			pendingLoad := waitForPendingLoadMetric(store, req.TargetPod())
 			return req, pendingLoad.GetSimpleValue()
 		}
 
@@ -300,10 +308,7 @@ var _ = Describe("SLO", func() {
 		Expect(req.HasRouted()).To(BeTrue())
 		Expect(req.Algorithm).To(Equal(RouterSLO))
 
-		// Wait for metric to be updated
-		time.Sleep(1 * time.Millisecond) // There is a small gap between route and metric update due to operated by different goroutines.
-		_, err = store.GetMetricValueByPod(req.TargetPod().Name, req.TargetPod().Namespace, metrics.RealtimeNormalizedPendings)
-		Expect(err).To(BeNil())
+		waitForPendingLoadMetric(store, req.TargetPod())
 
 		trace := store.DumpRequestTrace(model)
 		Expect(trace).ToNot(BeNil())
