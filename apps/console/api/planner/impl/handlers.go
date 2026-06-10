@@ -17,6 +17,7 @@ limitations under the License.
 package impl
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -267,6 +268,14 @@ func submitToMDS(p *Planner, job *queuedJob) {
 		ResourceAllocation: p.backend.BuildResourceAllocation(*spec, alloc),
 		ModelTemplate:      req.ModelTemplate,
 		Model:              req.Model,
+	}
+
+	if batchParamsJson, err := json.Marshal(req.BatchParams); err == nil {
+		klog.Infof("[planner] BatchParams: %s", batchParamsJson)
+	}
+
+	if aibrixBodyJson, err := json.Marshal(aibrix); err == nil {
+		klog.Infof("[planner] AIBrixExtraBody: %s", aibrixBodyJson)
 	}
 
 	batch, err := p.bc.CreateBatch(p.baseCtx, req.BatchParams, aibrix)
