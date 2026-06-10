@@ -43,18 +43,18 @@ import (
 )
 
 const (
-	RouterPD            types.RoutingAlgorithm = "pd"
-	VLLMEngine          string                 = "vllm"
-	SGLangEngine        string                 = "sglang"
-	TensorRTLLM         string                 = "trtllm"
-	LLMEngineIdentifier string                 = constants.ModelLabelEngine
-	PDRoleSetIdentifier           string                 = "roleset-name"
-	PDRoleIdentifier              string                 = "role-name"
-	RoleReplicaIndex              string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
-	PodGroupIndex                 string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
-	PromptLenBucketMinLength      string                 = "prompt-len-bucket-min-length"
-	PromptLenBucketMaxLength      string                 = "prompt-len-bucket-max-length"
-	defaultPrefillRequestTimeout  int                    = 30
+	RouterPD                     types.RoutingAlgorithm = "pd"
+	VLLMEngine                   string                 = "vllm"
+	SGLangEngine                 string                 = "sglang"
+	TensorRTLLM                  string                 = "trtllm"
+	LLMEngineIdentifier          string                 = constants.ModelLabelEngine
+	PDRoleSetIdentifier          string                 = "roleset-name"
+	PDRoleIdentifier             string                 = "role-name"
+	RoleReplicaIndex             string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
+	PodGroupIndex                string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
+	PromptLenBucketMinLength     string                 = "prompt-len-bucket-min-length"
+	PromptLenBucketMaxLength     string                 = "prompt-len-bucket-max-length"
+	defaultPrefillRequestTimeout int                    = 30
 
 	defaultPrefillLoadImbalanceMinSpread      int32   = 16
 	defaultDecodeLoadImbalanceMinSpread       float64 = 16
