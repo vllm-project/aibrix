@@ -154,7 +154,6 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 	}
 
 	job.provisionID = provResult.ProvisionID
-	job.allocatedResource = provResult
 	job.resourcePreparingAt = time.Now().UTC()
 	if job.status == plannerapi.JobStatusCancelling {
 		job.mu.Unlock()
@@ -211,6 +210,7 @@ func handleResourcePreparing(p *Planner, job *queuedJob) {
 		// Provision is ready, mark job as ready to submit
 		// The planningLoop will submit to MDS in next iteration
 		job.mu.Lock()
+		job.allocatedResource = provResult
 		if !job.status.IsTerminal() && job.status == plannerapi.JobStatusResourcePreparing {
 			job.readyToSubmit = true
 			klog.Infof("[planner] job_id=%q provision ready, marked readyToSubmit", jobID)
