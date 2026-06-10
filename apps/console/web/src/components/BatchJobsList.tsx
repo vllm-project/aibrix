@@ -9,7 +9,7 @@ import {
   Plus,
   Search,
 } from 'lucide-react';
-import { listJobs, getUserInfo } from '../utils/api';
+import { listAllJobs, getUserInfo } from '../utils/api';
 import { Job, JobStatus } from '../data/mockData';
 import {
   getBatchJobSummary,
@@ -132,13 +132,17 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
         setLoading(true);
         setLoadError(null);
       }
-      listJobs()
-        .then(res => {
+      // Pull the full job set via cursor paging so the client-side
+      // pagination/search/filter/summary (which all assume every job is in
+      // memory) sees everything. The BFF defaults to a 20-job page without an
+      // explicit limit, which silently hid jobs past the 2nd page.
+      listAllJobs()
+        .then(allJobs => {
           if (cancelled) return;
           // Order strictly by creation time, newest first. The store list is
           // already ordered this way, but in-memory/placeholder entries from
           // older BFF builds were prepended out of order — sort defensively.
-          const next = [...(res.jobs ?? [])].sort((a, b) => jobCreatedTs(b) - jobCreatedTs(a));
+          const next = [...allJobs].sort((a, b) => jobCreatedTs(b) - jobCreatedTs(a));
           setJobs(next);
           // Poll while any job is in a non-terminal state.
           const hasActive = next.some(j => !TERMINAL_STATUSES.has(j.status));
