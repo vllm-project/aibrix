@@ -37,6 +37,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/selector"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -95,6 +97,7 @@ func TestPDRouter_Route(t *testing.T) {
 		httpClient:            &http.Client{},
 		selectionCounts:       map[string]int64{},
 	}
+	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -985,7 +988,7 @@ func TestPreparePrefillPayload(t *testing.T) {
 				Context: context.Background(),
 			}
 
-			payload, err := router.preparePrefillPayload(routingCtx, pod, tt.llmEngine)
+			payload, err := router.preparePrefillPayload(routingCtx, pod, tt.llmEngine, engine.Resolve(tt.llmEngine))
 			assert.NoError(t, err, tt.description)
 
 			var result map[string]any
@@ -1054,7 +1057,7 @@ func TestPreparePrefillPayloadBackwardCompatibility(t *testing.T) {
 				Context: context.Background(),
 			}
 
-			payload, err := router.preparePrefillPayload(routingCtx, pod, tc.engine)
+			payload, err := router.preparePrefillPayload(routingCtx, pod, tc.engine, engine.Resolve(tc.engine))
 			assert.NoError(t, err)
 
 			var result map[string]any
@@ -2619,17 +2622,17 @@ func TestFilterPrefillDecodePods_CombinedPickImbalance(t *testing.T) {
 }
 
 func TestGetDisaggRequestID_CustomEpoch(t *testing.T) {
-	id1 := getDisaggRequestID(0)
-	id2 := getDisaggRequestID(0)
-	assert.GreaterOrEqual(t, id1, trtMinGlobalID)
-	assert.GreaterOrEqual(t, id2, trtMinGlobalID)
+	id1 := engine.GetDisaggRequestID(0)
+	id2 := engine.GetDisaggRequestID(0)
+	assert.GreaterOrEqual(t, id1, engine.TRTMinGlobalID)
+	assert.GreaterOrEqual(t, id2, engine.TRTMinGlobalID)
 	assert.NotEqual(t, id1, id2, "counter should advance")
-	id3 := getDisaggRequestID(42)
-	assert.GreaterOrEqual(t, id3, trtMinGlobalID)
+	id3 := engine.GetDisaggRequestID(42)
+	assert.GreaterOrEqual(t, id3, engine.TRTMinGlobalID)
 }
 
 func TestValidateTRTMachineIDValue(t *testing.T) {
-	maxExclusive := int64(1 << trtMachineIDBits)
+	maxExclusive := int64(1 << engine.TRTMachineIDBits)
 	tests := []struct {
 		name    string
 		id      int64
@@ -2644,7 +2647,7 @@ func TestValidateTRTMachineIDValue(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateTRTMachineIDValue(tt.id)
+			err := engine.ValidateTRTMachineID(tt.id)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
