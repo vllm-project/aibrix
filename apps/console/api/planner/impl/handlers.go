@@ -262,10 +262,9 @@ func submitToMDS(p *Planner, job *queuedJob) {
 	}
 
 	aibrix := plannerclient.AIBrixExtraBody{
-		JobID:   jobID,
-		Runtime: runtime,
-		// TODO: backend should extract gpuType and gpusPerReplica from allocated resource
-		ResourceAllocation: p.backend.BuildResourceAllocation(*spec, alloc, "", 1),
+		JobID:              jobID,
+		Runtime:            runtime,
+		ResourceAllocation: p.backend.BuildResourceAllocation(*spec, alloc),
 		ModelTemplate:      req.ModelTemplate,
 		Model:              req.Model,
 	}
