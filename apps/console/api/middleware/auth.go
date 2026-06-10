@@ -90,7 +90,6 @@ const UserContextKey contextKey = "user"
 // context across the gateway dial).
 const (
 	MetadataUserEmail = "x-aibrix-user-email"
-	MetadataUserName  = "x-aibrix-user-name"
 	MetadataUserID    = "x-aibrix-user-id"
 )
 
