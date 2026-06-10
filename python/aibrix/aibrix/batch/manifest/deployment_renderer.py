@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from aibrix.batch.job_entity import BatchJobSpec, ResourceDetail
 from aibrix.batch.manifest.downloader_env import build_downloader_env
@@ -63,7 +63,7 @@ class DeploymentManifestRenderer(_RendererSupport):
             port,
         )
         deployment["metadata"]["namespace"] = namespace
-        self._apply_template(deployment, template)
+        self._apply_template(deployment, template, spec.model)
         service = self._build_service(deployment, template)
         return {"deployment": deployment, "service": service}
 
@@ -191,7 +191,10 @@ class DeploymentManifestRenderer(_RendererSupport):
     # ── Layer 2: template ──────────────────────────────────────────────────
 
     def _apply_template(
-        self, manifest: Dict[str, Any], template: ModelDeploymentTemplate
+        self,
+        manifest: Dict[str, Any],
+        template: ModelDeploymentTemplate,
+        served_model_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Add the engine container based on the template spec."""
         template_for_engine = (
@@ -200,7 +203,9 @@ class DeploymentManifestRenderer(_RendererSupport):
             else template
         )
         port = self._resolve_engine_port(template_for_engine)
-        engine_container = self._build_engine_container(template_for_engine, port)
+        engine_container = self._build_engine_container(
+            template_for_engine, port, served_model_name
+        )
         volumes = engine_container.setdefault("volumeMounts", [])
         volumes.append({"name": _DSHM_VOLUME_NAME, "mountPath": _DSHM_MOUNT_PATH})
         if self._needs_model_download(template):

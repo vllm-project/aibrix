@@ -48,6 +48,7 @@ class BatchJobState(str, Enum):
     """Current state of the batch job."""
 
     CREATED = "created"
+    SCHEDULING = "scheduling"
     VALIDATING = "validating"
     IN_PROGRESS = "in_progress"
     CANCELLING = "cancelling"
@@ -160,6 +161,11 @@ class BatchJobSpec(_Strict):
     @property
     def runtime_target(self) -> Optional[str]:
         return self.aibrix.runtime_target if self.aibrix else None
+
+    @property
+    def model(self) -> Optional[str]:
+        """Serving identifier the batch's requests carry in body.model."""
+        return self.aibrix.model if self.aibrix else None
 
     @property
     def model_template_name(self) -> Optional[str]:

@@ -54,7 +54,6 @@ class Conversation(BaseModel):
     messages: list[Message] = Field(default_factory=list)
     model: str | None = None
     user_id: str = ""
-    project_id: str | None = None
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -163,45 +162,11 @@ class ModelInfo(BaseModel):
     name: str | None = None
     capabilities: list[str] = Field(default_factory=lambda: ["text"])
     owned_by: str | None = None
+    created: int | None = None
 
 
 class ModelListResponse(BaseModel):
     models: list[ModelInfo]
-
-
-# ── Projects ──────────────────────────────────────────────
-
-
-class Project(BaseModel):
-    """A project with instructions and metadata."""
-
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    description: str = ""
-    instructions: str = ""
-    user_id: str = ""
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-
-class ProjectSummary(BaseModel):
-    """Lightweight view returned when listing projects."""
-
-    id: str
-    name: str
-    description: str
-    updated_at: str
-
-
-class CreateProjectRequest(BaseModel):
-    name: str
-    description: str = ""
-
-
-class UpdateProjectRequest(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    instructions: str | None = None
 
 
 # ── Auth ──────────────────────────────────────────────────

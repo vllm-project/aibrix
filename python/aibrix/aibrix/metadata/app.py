@@ -36,7 +36,6 @@ from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files, models, users
 from aibrix.metadata.core import HTTPXClientWrapper
 from aibrix.metadata.setting import settings
-from aibrix.metadata.store import RedisMetadataStore
 from aibrix.storage import create_storage
 
 logger = init_logger(__name__)
@@ -171,6 +170,8 @@ async def lifespan(app: FastAPI):
     # Initialize metadata store (abstraction over Redis) only if not already set
     # (e.g., tests may pre-configure a mock store before lifespan runs)
     if not hasattr(app.state, "metadata_store") or app.state.metadata_store is None:
+        from aibrix.metadata.store import RedisMetadataStore
+
         redis_host = envs.STORAGE_REDIS_HOST or "localhost"
         metadata_store = RedisMetadataStore(
             host=redis_host,

@@ -1,39 +1,14 @@
-import {
-  Blocks,
-  Camera,
-  Check,
-  ChevronRight,
-  FolderOpen,
-  Github,
-  Globe,
-  Paintbrush,
-  Paperclip,
-  Plus,
-  Search,
-} from 'lucide-react'
+import { Blocks, Camera, Check, ChevronRight, Github, Globe, Paintbrush, Paperclip, Plus, Search } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Tooltip } from './tooltip'
 
-interface Project {
-  id: string
-  name: string
-  owner: string
-}
-
-const existingProjects: Project[] = [
-  { id: '1', name: 'AIBrix', owner: 'Test User' },
-  { id: '2', name: 'How to use AIBrix Chat', owner: 'Test User' },
-]
-
 interface PlusMenuProps {
   onAddFilesOrPhotos?: () => void
-  onAddToProject?: (projectId: string) => void
-  onStartNewProject?: () => void
 }
 
-export function PlusMenu({ onAddFilesOrPhotos, onAddToProject, onStartNewProject }: PlusMenuProps) {
+export function PlusMenu({ onAddFilesOrPhotos }: PlusMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
-  const [activeSubmenu, setActiveSubmenu] = useState<'project' | 'style' | null>(null)
+  const [activeSubmenu, setActiveSubmenu] = useState<'style' | null>(null)
   const [webSearchEnabled, setWebSearchEnabled] = useState(true)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -65,6 +40,7 @@ export function PlusMenu({ onAddFilesOrPhotos, onAddToProject, onStartNewProject
     <div className="relative" ref={containerRef}>
       <Tooltip content="Add files, connectors, and more" position="bottom">
         <button
+          type="button"
           onClick={() => {
             setIsOpen(!isOpen)
             setActiveSubmenu(null)
@@ -94,50 +70,6 @@ export function PlusMenu({ onAddFilesOrPhotos, onAddToProject, onStartNewProject
               onClick={closeMenu}
               onMouseEnter={() => setActiveSubmenu(null)}
             />
-            <div className="relative" onMouseEnter={() => setActiveSubmenu('project')}>
-              <MenuItem
-                icon={<FolderOpen size={16} />}
-                label="Add to project"
-                hasSubmenu
-                isActive={activeSubmenu === 'project'}
-              />
-              {/* Project Submenu */}
-              {activeSubmenu === 'project' && (
-                <div className="absolute left-full top-0 ml-1 w-[220px] bg-popover border border-border rounded-xl shadow-xl z-50">
-                  <div className="p-1.5">
-                    {existingProjects.map((project) => (
-                      <button
-                        key={project.id}
-                        onClick={() => {
-                          onAddToProject?.(project.id)
-                          closeMenu()
-                        }}
-                        className="flex items-start gap-2.5 w-full px-3 py-2 rounded-lg hover:bg-accent transition-colors text-left"
-                      >
-                        <FolderOpen size={16} className="text-foreground/50 mt-0.5 flex-shrink-0" />
-                        <div className="min-w-0">
-                          <p className="text-sm text-foreground truncate">{project.name}</p>
-                          <p className="text-xs text-muted-foreground">{project.owner}</p>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                  <div className="border-t border-border mx-1.5" />
-                  <div className="p-1.5">
-                    <button
-                      onClick={() => {
-                        onStartNewProject?.()
-                        closeMenu()
-                      }}
-                      className="flex items-center gap-2.5 w-full px-3 py-2 rounded-lg hover:bg-accent transition-colors text-sm text-foreground"
-                    >
-                      <Plus size={16} className="text-foreground/50" />
-                      Start a new project
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
             <MenuItem
               icon={<Github size={16} />}
               label="Add from GitHub"
@@ -163,12 +95,13 @@ export function PlusMenu({ onAddFilesOrPhotos, onAddToProject, onStartNewProject
               onClick={() => setWebSearchEnabled(!webSearchEnabled)}
               onMouseEnter={() => setActiveSubmenu(null)}
             />
-            <div className="relative" onMouseEnter={() => setActiveSubmenu('style')}>
+            <div className="relative">
               <MenuItem
                 icon={<Paintbrush size={16} />}
                 label="Use style"
                 hasSubmenu
                 isActive={activeSubmenu === 'style'}
+                onMouseEnter={() => setActiveSubmenu('style')}
               />
               {/* Style Submenu */}
               {activeSubmenu === 'style' && (
@@ -176,6 +109,7 @@ export function PlusMenu({ onAddFilesOrPhotos, onAddToProject, onStartNewProject
                   <div className="p-1.5">
                     {['Normal', 'Concise', 'Formal', 'Explanatory'].map((style) => (
                       <button
+                        type="button"
                         key={style}
                         onClick={closeMenu}
                         className="w-full text-left px-3 py-2 rounded-lg hover:bg-accent text-sm text-foreground transition-colors"
@@ -216,6 +150,7 @@ function MenuItem({ icon, label, hasSubmenu, isActive, isToggleActive, onClick, 
 
   return (
     <button
+      type="button"
       onClick={onClick}
       onMouseEnter={onMouseEnter}
       className={`flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors ${

@@ -16,6 +16,7 @@ export function QuickActions() {
     <div className="flex items-center justify-center gap-2 flex-wrap">
       {actions.map((action) => (
         <button
+          type="button"
           key={action.label}
           onClick={() => {
             if (action.path) navigate(action.path)

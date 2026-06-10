@@ -46,6 +46,8 @@ async def chat_completions(
     temperature: float = Form(0.7),
     max_tokens: int = Form(2048),
     system_prompt: str | None = Form(None),
+    replace_message_id: str | None = Form(None),
+    retry_from_message_id: str | None = Form(None),
     files: list[UploadFile] = File(default=[]),
     user: User = Depends(get_current_user),
 ):
@@ -88,18 +90,27 @@ async def chat_completions(
     if conv.model != model:
         conv.model = model
 
-    # Store the user message
-    user_msg = Message(role="user", content=message, attachments=attachments)
-    store.add_message(conversation_id, user_msg)
+    if replace_message_id and retry_from_message_id:
+        raise HTTPException(status_code=400, detail="Choose either replace_message_id or retry_from_message_id")
 
-    # Resolve system prompt: explicit request > project instructions > None
+    if replace_message_id:
+        replaced = store.replace_user_message_and_truncate(
+            conversation_id,
+            replace_message_id,
+            message,
+            attachments,
+        )
+        if replaced is None:
+            raise HTTPException(status_code=404, detail="User message not found")
+    elif retry_from_message_id:
+        retry_from = store.truncate_after_user_message(conversation_id, retry_from_message_id)
+        if retry_from is None:
+            raise HTTPException(status_code=404, detail="User message not found")
+    else:
+        # Store the user message
+        store.add_message(conversation_id, Message(role="user", content=message, attachments=attachments))
+
     resolved_system_prompt = system_prompt
-    if not resolved_system_prompt and conv.project_id:
-        from services.project import project_store
-
-        project = project_store.get(conv.project_id)
-        if project and project.instructions:
-            resolved_system_prompt = project.instructions
 
     # Build full message history for the gateway
     messages = store.get_messages_for_gateway(conversation_id, system_prompt=resolved_system_prompt)

@@ -1,23 +1,49 @@
 import { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, Search, Upload, Check, X, AlertCircle, CheckCircle2, Loader2, Cpu, Layers as LayersIcon } from 'lucide-react';
+import {
+  AlertCircle,
+  Check,
+  CheckCircle2,
+  ChevronLeft,
+  Cpu,
+  FileText,
+  Layers as LayersIcon,
+  Loader2,
+  RefreshCw,
+  Search,
+  Upload,
+  X,
+} from 'lucide-react';
 import {
   createJob,
+  listFiles,
   uploadFile,
   listModels as apiListModels,
   listModelDeploymentTemplates,
   JobEndpoint,
 } from '../utils/api';
-import type { ModelDeploymentTemplate } from '../utils/api';
+import type { FileInfo, ModelDeploymentTemplate } from '../utils/api';
 import {
   validateBatchFile,
+  validateBatchLines,
   generateJobDisplayName,
   ValidationResult,
+  MutationDiff,
+  ParseResult,
   parseJsonl,
+  validateBatchFileName,
   applyBatchOverrides,
   serializeJsonl,
   hasAnyOverride,
   BatchOverrides,
 } from '../utils/batchValidation';
+import {
+  formatBytes,
+  formatFileCreatedAt,
+  formatModelSelectionLabel,
+  getBatchExampleJsonlLine,
+  getCreateJobEndpoint,
+  getCreateJobReadiness,
+} from '../utils/batchProduct';
 import { Model } from '../data/mockData';
 
 interface CreateJobProps {
@@ -44,6 +70,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [temperature, setTemperature] = useState('');
   const [topP, setTopP] = useState('');
   const [n, setN] = useState('');
+  const [selectedEndpoint, setSelectedEndpoint] = useState('');
 
   const [models, setModels] = useState<Model[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
@@ -57,13 +84,23 @@ export function CreateJob({ onBack }: CreateJobProps) {
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadedFileId, setUploadedFileId] = useState<string | null>(null);
+  const [selectedExistingFile, setSelectedExistingFile] = useState<FileInfo | null>(null);
+  const [existingFiles, setExistingFiles] = useState<FileInfo[]>([]);
+  const [filesLoading, setFilesLoading] = useState(false);
+  const [filesError, setFilesError] = useState<string | null>(null);
+  const [showExistingFiles, setShowExistingFiles] = useState(false);
+  const [fileSearchQuery, setFileSearchQuery] = useState('');
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [datasetDragActive, setDatasetDragActive] = useState(false);
 
   // Validation state
   const [validating, setValidating] = useState(false);
   const [validation, setValidation] = useState<ValidationResult | null>(null);
+  const [selectedFileParse, setSelectedFileParse] = useState<ParseResult | null>(null);
+  const [overridePreview, setOverridePreview] = useState<MutationDiff | null>(null);
+  const [overridePreviewLoading, setOverridePreviewLoading] = useState(false);
 
   // Hyperparameter validation errors
   const [paramErrors, setParamErrors] = useState<Record<string, string>>({});
@@ -84,6 +121,30 @@ export function CreateJob({ onBack }: CreateJobProps) {
     m.name.toLowerCase().includes(modelSearchQuery.toLowerCase())
   );
 
+  const batchFiles = existingFiles.filter((file) => {
+    const purpose = (file.purpose || '').toLowerCase();
+    const q = fileSearchQuery.trim().toLowerCase();
+    const matchesPurpose = purpose === '' || purpose === 'batch';
+    const matchesQuery =
+      q === '' ||
+      file.id.toLowerCase().includes(q) ||
+      (file.name || '').toLowerCase().includes(q);
+    return matchesPurpose && matchesQuery;
+  });
+
+  const loadExistingFiles = () => {
+    setShowExistingFiles(true);
+    setFilesLoading(true);
+    setFilesError(null);
+    listFiles()
+      .then((files) => setExistingFiles(files || []))
+      .catch((err) => {
+        setFilesError(err instanceof Error ? err.message : String(err));
+        setExistingFiles([]);
+      })
+      .finally(() => setFilesLoading(false));
+  };
+
   const handleSelectModel = (model: Model) => {
     setSelectedModel(model.name);
     setSelectedModelId(model.id);
@@ -93,9 +154,11 @@ export function CreateJob({ onBack }: CreateJobProps) {
     setDisplayName(generateJobDisplayName(model.name));
     // Reset downstream state when model changes
     setSelectedTemplate(null);
+    setSelectedEndpoint('');
     setTemplates([]);
     setTemplatesError(null);
     setUploadedFileId(null);
+    setSelectedExistingFile(null);
     setCurrentStep('template');
 
     // Load templates for this model
@@ -121,7 +184,10 @@ export function CreateJob({ onBack }: CreateJobProps) {
     // endpoint check will be re-applied when a template is selected.
     if (selectedFile) {
       setValidating(true);
-      validateBatchFile(selectedFile, { expectedModel: model.servingName ?? '' }).then((r) => {
+      const validate = selectedFileParse
+        ? Promise.resolve(validateBatchLines(selectedFileParse, { expectedModel: model.servingName ?? '' }))
+        : validateBatchFile(selectedFile, { expectedModel: model.servingName ?? '' });
+      validate.then((r) => {
         setValidation(r);
         setValidating(false);
       });
@@ -130,32 +196,51 @@ export function CreateJob({ onBack }: CreateJobProps) {
 
   const handleSelectTemplate = (tpl: ModelDeploymentTemplate) => {
     setSelectedTemplate(tpl);
+    setSelectedEndpoint(tpl.spec?.supportedEndpoints?.[0] || '/v1/chat/completions');
     setCurrentStep('dataset');
     // Re-validate selected file with the template's supported endpoints.
     if (selectedFile) {
       setValidating(true);
-      validateBatchFile(selectedFile, {
+      const ctx = {
         expectedModel: selectedServingName,
         supportedEndpoints: tpl.spec?.supportedEndpoints,
-      })
+      };
+      const validate = selectedFileParse
+        ? Promise.resolve(validateBatchLines(selectedFileParse, ctx))
+        : validateBatchFile(selectedFile, ctx);
+      validate
         .then((r) => setValidation(r))
         .finally(() => setValidating(false));
     }
   };
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const handleDatasetFile = async (file: File) => {
     setSelectedFile(file);
     setUploadedFileId(null);
+    setSelectedExistingFile(null);
     setValidation(null);
+    setSelectedFileParse(null);
     setSubmitError(null);
+
+    const fileNameError = validateBatchFileName(file.name);
+    if (fileNameError) {
+      setValidation({
+        valid: false,
+        totalLines: 0,
+        errors: [fileNameError],
+        warnings: [],
+        detectedModel: null,
+        endpoints: [],
+      });
+      return;
+    }
 
     // Validate immediately
     setValidating(true);
     try {
-      const result = await validateBatchFile(file, {
+      const parsed = parseJsonl(await file.text());
+      setSelectedFileParse(parsed);
+      const result = validateBatchLines(parsed, {
         expectedModel: selectedServingName,
         supportedEndpoints: selectedTemplate?.spec?.supportedEndpoints,
       });
@@ -174,14 +259,69 @@ export function CreateJob({ onBack }: CreateJobProps) {
     }
   };
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    void handleDatasetFile(file);
+  };
+
+  const handleDatasetDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    setDatasetDragActive(true);
+  };
+
+  const handleDatasetDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const nextTarget = e.relatedTarget;
+    if (!nextTarget || !e.currentTarget.contains(nextTarget as Node)) {
+      setDatasetDragActive(false);
+    }
+  };
+
+  const handleDatasetDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDatasetDragActive(false);
+
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    void handleDatasetFile(file);
+  };
+
   const handleRemoveFile = () => {
     setSelectedFile(null);
     setUploadedFileId(null);
     setValidation(null);
+    setSelectedFileParse(null);
     setSubmitError(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
+  };
+
+  const handleSelectExistingFile = (file: FileInfo) => {
+    setSelectedExistingFile(file);
+    setSelectedFile(null);
+    setSelectedFileParse(null);
+    setUploadedFileId(file.id);
+    setValidation(null);
+    setSubmitError(null);
+    setShowExistingFiles(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleClearExistingFile = () => {
+    setSelectedExistingFile(null);
+    setUploadedFileId(null);
+    setSubmitError(null);
   };
 
   const validateParam = (_field: string, value: string, min: number, max: number, isInt: boolean): string => {
@@ -209,20 +349,63 @@ export function CreateJob({ onBack }: CreateJobProps) {
 
   const hasParamErrors = Object.values(paramErrors).some(e => e !== '');
 
-  const canSubmit =
-    selectedModel &&
-    selectedTemplate &&
-    !submitting &&
-    !hasParamErrors &&
-    displayName.trim() !== '' &&
-    (!selectedFile || (validation?.valid ?? false));
+  useEffect(() => {
+    if (selectedFile) {
+      setUploadedFileId(null);
+    }
+  }, [selectedFile, maxTokens, temperature, topP, n]);
+
+  useEffect(() => {
+    if (!selectedFile || !selectedFileParse || !(validation?.valid ?? false)) {
+      setOverridePreview(null);
+      setOverridePreviewLoading(false);
+      return;
+    }
+
+    const overrides: BatchOverrides = {
+      maxTokens: parseNumber(maxTokens),
+      temperature: parseNumber(temperature),
+      topP: parseNumber(topP),
+      n: parseNumber(n),
+    };
+
+    if (!hasAnyOverride(overrides) || hasParamErrors) {
+      setOverridePreview(null);
+      setOverridePreviewLoading(false);
+      return;
+    }
+
+    const { diff } = applyBatchOverrides(selectedFileParse.records, overrides);
+    setOverridePreview(diff);
+    setOverridePreviewLoading(false);
+  }, [selectedFile, selectedFileParse, validation?.valid, maxTokens, temperature, topP, n, hasParamErrors]);
+
+  const hasInferenceOverrides = hasAnyOverride({
+    maxTokens: parseNumber(maxTokens),
+    temperature: parseNumber(temperature),
+    topP: parseNumber(topP),
+    n: parseNumber(n),
+  });
+  const readiness = getCreateJobReadiness({
+    selectedModel,
+    selectedTemplate,
+    displayName,
+    hasParamErrors,
+    submitting,
+    hasValidUploadedFile: selectedFile != null && (validation?.valid ?? false),
+    selectedExistingFileId: selectedExistingFile?.id ?? '',
+    hasInferenceOverrides,
+  });
+  const canSubmit = readiness.canSubmit;
+  const canContinueDataset = selectedExistingFile != null || (selectedFile != null && (validation?.valid ?? false));
+  const selectedModelLabel = formatModelSelectionLabel(selectedModel, selectedServingName);
 
   const handleCreateJob = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
     setSubmitError(null);
     try {
-      let datasetId = uploadedFileId;
+      let datasetId = selectedExistingFile?.id || uploadedFileId;
       if (selectedFile && !datasetId) {
         setUploading(true);
         try {
@@ -235,18 +418,8 @@ export function CreateJob({ onBack }: CreateJobProps) {
 
           let fileToUpload: File = selectedFile;
           if (hasAnyOverride(overrides)) {
-            const text = await selectedFile.text();
-            const parsed = parseJsonl(text);
-            const { records, diff } = applyBatchOverrides(parsed.records, overrides);
-            // Initial audit trail; UI surfacing comes later.
-            console.groupCollapsed(
-              `[batch override] ${diff.changedLines}/${diff.totalLines} lines mutated`,
-            );
-            console.log('overrides:', overrides);
-            console.table(diff.fieldsChanged);
-            if (diff.samples.length) console.log('samples:', diff.samples);
-            if (diff.skipped.length) console.log('skipped (incompatible endpoint):', diff.skipped);
-            console.groupEnd();
+            const parsed = selectedFileParse ?? parseJsonl(await selectedFile.text());
+            const { records } = applyBatchOverrides(parsed.records, overrides);
             fileToUpload = new File(
               [serializeJsonl(records)],
               selectedFile.name,
@@ -266,10 +439,18 @@ export function CreateJob({ onBack }: CreateJobProps) {
           setUploading(false);
         }
       }
+      if (!datasetId) {
+        setSubmitError('Select or upload a dataset before creating a job.');
+        return;
+      }
 
       // Pick the endpoint from JSONL validation; default to chat completions.
       const endpoint: JobEndpoint =
-        (validation?.endpoints[0] as JobEndpoint | undefined) || '/v1/chat/completions';
+        getCreateJobEndpoint({
+          validationEndpoints: validation?.endpoints ?? [],
+          selectedEndpoint,
+          selectedTemplate,
+        }) as JobEndpoint;
 
       // maxTokens/temperature/topP/n are baked into the JSONL via
       // applyBatchOverrides above; no need to forward them to BFF.
@@ -280,6 +461,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
         name: displayName,
         modelTemplateName: selectedTemplate?.name,
         modelTemplateVersion: selectedTemplate?.version,
+        modelId: selectedModelId || undefined,
       });
       onBack();
     } catch (err) {
@@ -320,7 +502,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
                   onClick={() => setShowModelDropdown(!showModelDropdown)}
                   className="w-full px-4 py-2 border border-gray-200 rounded-lg text-left flex items-center justify-between hover:bg-gray-50"
                 >
-                  <span className="text-sm">{selectedModel || 'Select Model'}</span>
+                  <span className="text-sm truncate pr-2">{selectedModelLabel || 'Select Model'}</span>
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
@@ -352,10 +534,12 @@ export function CreateJob({ onBack }: CreateJobProps) {
                             onClick={() => handleSelectModel(model)}
                             className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 rounded flex items-center gap-2"
                           >
-                            <div className="w-5 h-5 rounded-full bg-teal-50 flex items-center justify-center">
+                            <div className="w-5 h-5 rounded-full bg-teal-50 flex items-center justify-center shrink-0">
                               <div className="w-2 h-2 rounded-full bg-teal-500"></div>
                             </div>
-                            {model.name}
+                            <span className="min-w-0 flex-1 truncate">
+                              {formatModelSelectionLabel(model.name, model.servingName)}
+                            </span>
                           </button>
                         ))
                       )}
@@ -458,15 +642,22 @@ export function CreateJob({ onBack }: CreateJobProps) {
                     type="file"
                     ref={fileInputRef}
                     onChange={handleFileSelect}
-                    accept=".json,.jsonl"
+                    accept=".jsonl"
                     className="hidden"
                   />
                   {selectedFile ? (
-                    <div className={`border-2 rounded-xl p-4 flex items-center justify-between ${
-                      validation?.valid === false
-                        ? 'border-red-200 bg-red-50'
-                        : 'border-teal-200 bg-teal-50'
-                    }`}>
+                    <div
+                      onDragOver={handleDatasetDragOver}
+                      onDragLeave={handleDatasetDragLeave}
+                      onDrop={handleDatasetDrop}
+                      className={`border-2 rounded-xl p-4 flex items-center justify-between ${
+                        validation?.valid === false
+                          ? 'border-red-200 bg-red-50'
+                          : datasetDragActive
+                            ? 'border-teal-500 bg-teal-50'
+                            : 'border-teal-200 bg-teal-50'
+                      }`}
+                    >
                       <div className="flex items-center gap-3">
                         <Upload className={`w-5 h-5 ${validation?.valid === false ? 'text-red-600' : 'text-teal-600'}`} />
                         <span className="text-sm text-gray-900">{selectedFile.name}</span>
@@ -481,7 +672,14 @@ export function CreateJob({ onBack }: CreateJobProps) {
                   ) : (
                     <div
                       onClick={() => fileInputRef.current?.click()}
-                      className="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center hover:border-teal-400 transition-colors cursor-pointer"
+                      onDragOver={handleDatasetDragOver}
+                      onDragLeave={handleDatasetDragLeave}
+                      onDrop={handleDatasetDrop}
+                      className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer ${
+                        datasetDragActive
+                          ? 'border-teal-500 bg-teal-50'
+                          : 'border-gray-200 hover:border-teal-400'
+                      }`}
                     >
                       <Upload className="w-8 h-8 text-gray-300 mx-auto mb-2" />
                       <p className="text-sm text-gray-500 mb-1">Click to upload or drag and drop</p>
@@ -548,9 +746,101 @@ export function CreateJob({ onBack }: CreateJobProps) {
                   <div className="flex-1 h-px bg-gray-200"></div>
                 </div>
 
-                <button className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm hover:bg-gray-50">
-                  Select an existing dataset
-                </button>
+                {selectedExistingFile ? (
+                  <div className="border border-teal-200 bg-teal-50 rounded-xl p-4 flex items-center justify-between">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <FileText className="w-5 h-5 text-teal-600 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-sm text-gray-900 truncate">
+                          {selectedExistingFile.name || selectedExistingFile.id}
+                        </div>
+                        <div className="text-xs text-gray-500 truncate">
+                          {selectedExistingFile.id} · {formatBytes(selectedExistingFile.size)}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleClearExistingFile}
+                      className="text-gray-400 hover:text-gray-600"
+                      title="Clear selected dataset"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={loadExistingFiles}
+                    className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm hover:bg-gray-50"
+                  >
+                    Select an existing dataset
+                  </button>
+                )}
+
+                {showExistingFiles && (
+                  <div className="mt-3 border border-gray-200 rounded-xl bg-white overflow-hidden">
+                    <div className="p-3 border-b border-gray-100 flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                        <input
+                          type="text"
+                          placeholder="Search files by name or id"
+                          value={fileSearchQuery}
+                          onChange={(e) => setFileSearchQuery(e.target.value)}
+                          className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={loadExistingFiles}
+                        className="w-9 h-9 rounded-lg border border-gray-200 flex items-center justify-center hover:bg-gray-50"
+                        title="Refresh files"
+                      >
+                        <RefreshCw className={`w-4 h-4 ${filesLoading ? 'animate-spin' : ''}`} />
+                      </button>
+                    </div>
+                    <div className="max-h-64 overflow-y-auto p-2">
+                      {filesLoading ? (
+                        <div className="flex items-center justify-center gap-2 py-6 text-sm text-gray-500">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Loading files...
+                        </div>
+                      ) : filesError ? (
+                        <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
+                          Failed to load files: {filesError}
+                        </div>
+                      ) : batchFiles.length === 0 ? (
+                        <div className="text-sm text-gray-500 text-center py-6">
+                          No batch files found. Upload a JSONL dataset instead.
+                        </div>
+                      ) : (
+                        batchFiles.map((file) => (
+                          <button
+                            key={file.id}
+                            type="button"
+                            onClick={() => handleSelectExistingFile(file)}
+                            className="w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-left hover:bg-gray-50"
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <FileText className="w-4 h-4 text-gray-400 shrink-0" />
+                              <div className="min-w-0">
+                                <div className="text-sm text-gray-900 truncate">{file.name || file.id}</div>
+                                <div className="text-xs text-gray-400 truncate">{file.id}</div>
+                              </div>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <div className="text-xs text-gray-500">{formatBytes(file.size)}</div>
+                              <div className="text-[11px] text-gray-400">{formatFileCreatedAt(file.createdAt)}</div>
+                            </div>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                    <div className="px-3 py-2 border-t border-gray-100 text-xs text-gray-500">
+                      Existing files are not re-read in the browser; make sure the JSONL endpoint matches the selected template.
+                    </div>
+                  </div>
+                )}
 
                 {currentStep === 'dataset' && (
                   <div className="flex gap-3 mt-4">
@@ -562,9 +852,9 @@ export function CreateJob({ onBack }: CreateJobProps) {
                     </button>
                     <button
                       onClick={() => setCurrentStep('settings')}
-                      disabled={selectedFile != null && !validation?.valid}
+                      disabled={!canContinueDataset}
                       className={`flex-1 px-4 py-2 rounded-lg text-sm text-white ${
-                        selectedFile != null && !validation?.valid
+                        !canContinueDataset
                           ? 'bg-teal-400 cursor-not-allowed'
                           : 'bg-teal-600 hover:bg-teal-700'
                       }`}
@@ -613,13 +903,18 @@ export function CreateJob({ onBack }: CreateJobProps) {
                 </div>
 
                 <div>
-                  <label className="block text-sm mb-2">Output Dataset ID (Optional)</label>
-                  <input
-                    type="text"
-                    placeholder="Enter a dataset ID"
-                    className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500"
-                  />
+                  <label className="block text-sm mb-2">Output dataset</label>
+                  <div className="px-4 py-2 border border-gray-200 rounded-lg text-sm text-gray-500 bg-gray-50">
+                    Created automatically when the batch completes.
+                  </div>
                 </div>
+
+                <BatchEndpointControl
+                  template={selectedTemplate}
+                  selectedEndpoint={selectedEndpoint}
+                  detectedEndpoint={validation?.endpoints[0] ?? ''}
+                  onChange={setSelectedEndpoint}
+                />
 
                 {/* Hyperparameters section */}
                 <div className="border-t border-gray-100 pt-4">
@@ -697,6 +992,13 @@ export function CreateJob({ onBack }: CreateJobProps) {
                       )}
                     </div>
                   </div>
+
+                  <ParameterOverridePreview
+                    loading={overridePreviewLoading}
+                    diff={overridePreview}
+                    hasOverrides={hasInferenceOverrides}
+                    usingExistingFile={selectedExistingFile != null}
+                  />
                 </div>
 
                 {/* Error display */}
@@ -726,6 +1028,9 @@ export function CreateJob({ onBack }: CreateJobProps) {
                     {uploading ? 'Uploading file...' : submitting ? 'Creating...' : 'Create Job'}
                   </button>
                 </div>
+                {!canSubmit && readiness.reason && (
+                  <p className="text-xs text-gray-500 text-right">{readiness.reason}</p>
+                )}
               </div>
             )}
           </div>
@@ -823,7 +1128,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
                 <div className="bg-gray-50 p-3 rounded-lg text-xs text-gray-600">
                   <strong>Example JSONL line:</strong>
                   <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all text-[11px] text-gray-500">
-{`{"custom_id":"req-001","method":"POST","url":"/v1/responses","body":{"model":"${selectedServingName || selectedModel || 'your-model'}","input":"Hello"}}`}
+{getBatchExampleJsonlLine(selectedTemplate, selectedServingName || selectedModel)}
                   </pre>
                 </div>
 
@@ -846,8 +1151,8 @@ export function CreateJob({ onBack }: CreateJobProps) {
                 </div>
 
                 <div>
-                  <div className="mb-1">Output Dataset ID:</div>
-                  <p className="text-gray-500">The output dataset will be created automatically when you start the batch inference job</p>
+                  <div className="mb-1">Output Dataset:</div>
+                  <p className="text-gray-500">The output file is created automatically after successful requests complete.</p>
                 </div>
 
                 <h4 className="mt-4 mb-2">Inference Parameters</h4>
@@ -880,6 +1185,132 @@ export function CreateJob({ onBack }: CreateJobProps) {
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ParameterOverridePreview({
+  loading,
+  diff,
+  hasOverrides,
+  usingExistingFile,
+}: {
+  loading: boolean;
+  diff: MutationDiff | null;
+  hasOverrides: boolean;
+  usingExistingFile: boolean;
+}) {
+  if (!hasOverrides) return null;
+
+  if (usingExistingFile) {
+    return (
+      <div className="mt-4 flex items-start gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+        <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+        <div>
+          <div className="font-medium">Overrides require an uploaded file</div>
+          <p className="text-xs mt-1">
+            Existing files are not downloaded and rewritten in the browser. Clear these overrides or upload a JSONL file if you want to apply batch-level parameters.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="mt-4 flex items-center gap-2 text-sm text-gray-500">
+        <Loader2 className="w-4 h-4 animate-spin" />
+        Calculating override preview...
+      </div>
+    );
+  }
+
+  if (!diff) return null;
+
+  const changedFields = Object.entries(diff.fieldsChanged);
+  return (
+    <div className="mt-4 border border-teal-200 bg-teal-50 rounded-lg p-3 text-sm">
+      <div className="flex items-start gap-2">
+        <CheckCircle2 className="w-4 h-4 mt-0.5 text-teal-600 shrink-0" />
+        <div className="min-w-0">
+          <div className="font-medium text-teal-800">
+            {diff.changedLines} of {diff.totalLines} request lines will be updated
+          </div>
+          {changedFields.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {changedFields.map(([field, count]) => (
+                <span key={field} className="px-2 py-1 bg-white/70 rounded-md text-xs text-teal-800 font-mono">
+                  {field}: {count}
+                </span>
+              ))}
+            </div>
+          )}
+          {diff.samples.length > 0 && (
+            <div className="mt-2 text-xs text-teal-700">
+              Sample: line {diff.samples[0].lineNumber} changes {diff.samples[0].field}
+            </div>
+          )}
+          {diff.skipped.length > 0 && (
+            <div className="mt-2 text-xs text-amber-700">
+              {diff.skipped.length} field updates skipped because their endpoint does not accept that parameter.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BatchEndpointControl({
+  template,
+  selectedEndpoint,
+  detectedEndpoint,
+  onChange,
+}: {
+  template: ModelDeploymentTemplate | null;
+  selectedEndpoint: string;
+  detectedEndpoint: string;
+  onChange: (value: string) => void;
+}) {
+  const supported = template?.spec?.supportedEndpoints ?? [];
+  const effectiveEndpoint = detectedEndpoint || selectedEndpoint || supported[0] || '/v1/chat/completions';
+
+  if (detectedEndpoint) {
+    return (
+      <div>
+        <label className="block text-sm mb-2">Batch endpoint</label>
+        <div className="px-4 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 bg-gray-50">
+          {effectiveEndpoint}
+        </div>
+        <p className="text-xs text-gray-400 mt-1">Detected from the uploaded JSONL file.</p>
+      </div>
+    );
+  }
+
+  if (supported.length > 1) {
+    return (
+      <div>
+        <label className="block text-sm mb-2">Batch endpoint</label>
+        <select
+          value={effectiveEndpoint}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 bg-white"
+        >
+          {supported.map((endpoint) => (
+            <option key={endpoint} value={endpoint}>{endpoint}</option>
+          ))}
+        </select>
+        <p className="text-xs text-gray-400 mt-1">For existing files, choose the endpoint used in the JSONL request url.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <label className="block text-sm mb-2">Batch endpoint</label>
+      <div className="px-4 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 bg-gray-50">
+        {effectiveEndpoint}
       </div>
     </div>
   );
