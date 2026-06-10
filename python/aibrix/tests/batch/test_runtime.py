@@ -190,6 +190,83 @@ async def test_runtime_base_session_retries_wait_ready_batch_job_not_found(
 
 
 @pytest.mark.asyncio
+async def test_runtime_base_session_ignores_teardown_failure_during_retry(
+    monkeypatch,
+):
+    calls: list[tuple[str, str]] = []
+    sleeps: list[float] = []
+    warnings: list[dict[str, object]] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    def _fake_warning(message: str, **kwargs) -> None:
+        warnings.append({"message": message, **kwargs})
+
+    monkeypatch.setattr(runtime_base_mod.asyncio, "sleep", _fake_sleep)
+    monkeypatch.setattr(runtime_base_mod.logger, "warning", _fake_warning)
+
+    class _RetryableReadyError(RuntimeError):
+        pass
+
+    class _R(RuntimeBase):
+        provisions = True
+
+        def __init__(self) -> None:
+            self._attempt = 0
+
+        def _should_retry_wait_ready(self, exc: Exception) -> bool:
+            return isinstance(exc, _RetryableReadyError)
+
+        def _should_teardown_failed_wait_ready(self, exc: Exception) -> bool:
+            return True
+
+        async def _provision(self, job, job_id):
+            self._attempt += 1
+            handle = f"handle-{self._attempt}"
+            calls.append(("provision", handle))
+            return handle
+
+        async def _wait_ready(self, handle):
+            calls.append(("wait_ready", handle))
+            if handle == "handle-1":
+                raise _RetryableReadyError("try again")
+
+        async def _connect(self, handle):
+            calls.append(("connect", handle))
+            return Endpoint(source=None, model_name="m")
+
+        async def _teardown(self, handle):
+            calls.append(("teardown", handle))
+            if handle == "handle-1":
+                raise RuntimeError("teardown failed")
+
+    runtime = _R()
+    async with runtime.session(job=None, job_id="job-1") as endpoint:
+        assert endpoint.model_name == "m"
+
+    assert sleeps == [2.0]
+    assert calls == [
+        ("provision", "handle-1"),
+        ("wait_ready", "handle-1"),
+        ("teardown", "handle-1"),
+        ("provision", "handle-2"),
+        ("wait_ready", "handle-2"),
+        ("connect", "handle-2"),
+        ("teardown", "handle-2"),
+    ]
+    assert warnings == [
+        {
+            "message": "Runtime teardown failed during retry recovery; continuing with retry",
+            "job_id": "job-1",
+            "phase": "wait_ready",
+            "handle": "'handle-1'",
+            "error": "teardown failed",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_local_runtime_yields_injected_source():
     sentinel_source = object()
     runtime = ExternalRuntime(sentinel_source)  # type: ignore[arg-type]

@@ -52,6 +52,9 @@ from typing import (
 
 from aibrix.batch.client import EndpointSource
 from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobErrorCode
+from aibrix.logger import init_logger
+
+logger = init_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -180,10 +183,10 @@ class RuntimeBase:
         if isinstance(exc, BatchJobError):
             return exc.code == BatchJobErrorCode.RESOURCE_NOTFOUND_ERROR.value
         status = getattr(exc, "status", None)
-        if status == 404:
+        if status in (404, "404"):
             return True
         status_code = getattr(exc, "status_code", None)
-        if status_code == 404:
+        if status_code in (404, "404"):
             return True
         if isinstance(exc, FileNotFoundError):
             return True
@@ -204,7 +207,6 @@ class RuntimeBase:
     @asynccontextmanager
     async def session(self, job: BatchJob, job_id: str) -> AsyncIterator[Endpoint]:
         handle = None
-        ready = False
         max_attempts = self.session_retry_attempts + 1
         for attempt in range(max_attempts):
             phase = "provision"
@@ -214,7 +216,6 @@ class RuntimeBase:
                 await self._wait_ready(handle)
                 # Only yield a connected endpoint after both startup phases
                 # succeed within the same attempt.
-                ready = True
                 break
             except Exception as exc:
                 should_retry = False
@@ -235,15 +236,20 @@ class RuntimeBase:
                     should_teardown = self._should_teardown_failed_wait_ready(exc)
 
                 if should_teardown and handle is not None:
-                    await self._teardown(handle)
+                    try:
+                        await self._teardown(handle)
+                    except Exception as teardown_exc:
+                        logger.warning(
+                            "Runtime teardown failed during retry recovery; continuing with retry",
+                            job_id=job_id,
+                            phase=phase,
+                            handle=repr(handle),
+                            error=str(teardown_exc),
+                        )  # type: ignore[call-arg]
                 if not should_retry:
                     raise
                 handle = None
                 await self._sleep_before_session_retry(attempt)
-        if not ready:
-            raise RuntimeError(
-                "runtime session exhausted retries without becoming ready"
-            )
         try:
             yield await self._connect(handle)
         finally:
