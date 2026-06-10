@@ -7,12 +7,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
 var scenarioFlag = flag.String("scenario", "", "Path to the benchmark scenario YAML file")
+var cleanupAfterTestFlag = flag.Bool("benchmark.cleanup", true, "Clean up benchmark resources after each test case")
+var resetBeforeTestFlag = flag.Bool("benchmark.reset", true, "Reset the benchmark namespace before each test case")
 
 func sanitizePathComponent(value string) string {
 	value = strings.TrimSpace(strings.ToLower(value))
@@ -128,6 +131,48 @@ func configureBenchmarkEnvironment(t *testing.T, testCaseName string, providerNa
 	}
 }
 
+func cleanupAfterTestEnabled() bool {
+	envValue := strings.TrimSpace(os.Getenv("BENCHMARK_CLEANUP_AFTER_TEST"))
+	if envValue == "" {
+		return *cleanupAfterTestFlag
+	}
+
+	enabled, err := strconv.ParseBool(envValue)
+	if err == nil {
+		return enabled
+	}
+
+	switch strings.ToLower(envValue) {
+	case "on", "yes", "y":
+		return true
+	case "off", "no", "n":
+		return false
+	default:
+		return *cleanupAfterTestFlag
+	}
+}
+
+func resetBeforeTestEnabled() bool {
+	envValue := strings.TrimSpace(os.Getenv("BENCHMARK_RESET_BEFORE_TEST"))
+	if envValue == "" {
+		return *resetBeforeTestFlag
+	}
+
+	enabled, err := strconv.ParseBool(envValue)
+	if err == nil {
+		return enabled
+	}
+
+	switch strings.ToLower(envValue) {
+	case "on", "yes", "y":
+		return true
+	case "off", "no", "n":
+		return false
+	default:
+		return *resetBeforeTestFlag
+	}
+}
+
 func resetBenchmarkNamespace(ctx context.Context, namespace string) error {
 	checkCmd := exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("kubectl get namespace %q -o name 2>/dev/null || true", namespace))
 	checkOutput, err := checkCmd.CombinedOutput()
@@ -142,7 +187,6 @@ func resetBenchmarkNamespace(ctx context.Context, namespace string) error {
 	if output, err := deleteCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to delete namespace %s: %v, output: %s", namespace, err, string(output))
 	}
-
 	waitCmd := exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("kubectl wait --for=delete namespace/%q --timeout=10m", namespace))
 	if output, err := waitCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed waiting for namespace %s deletion: %v, output: %s", namespace, err, string(output))
