@@ -1704,8 +1704,11 @@ type CreateJobRequest struct {
 	// through extra_body.aibrix.model_template.
 	ModelTemplateName    string `protobuf:"bytes,5,opt,name=model_template_name,json=modelTemplateName,proto3" json:"model_template_name,omitempty"`
 	ModelTemplateVersion string `protobuf:"bytes,6,opt,name=model_template_version,json=modelTemplateVersion,proto3" json:"model_template_version,omitempty"` // optional; "" = latest active
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// Model the template is resolved under. Template names are only unique
+	// per (model_id, name, version)
+	ModelId       string `protobuf:"bytes,7,opt,name=model_id,json=modelId,proto3" json:"model_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateJobRequest) Reset() {
@@ -1776,6 +1779,13 @@ func (x *CreateJobRequest) GetModelTemplateName() string {
 func (x *CreateJobRequest) GetModelTemplateVersion() string {
 	if x != nil {
 		return x.ModelTemplateVersion
+	}
+	return ""
+}
+
+func (x *CreateJobRequest) GetModelId() string {
+	if x != nil {
+		return x.ModelId
 	}
 	return ""
 }
@@ -4381,14 +4391,15 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\alast_id\x18\x03 \x01(\tR\x06lastId\x12\x19\n" +
 	"\bhas_more\x18\x04 \x01(\bR\ahasMore\"\x1f\n" +
 	"\rGetJobRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\xb5\x02\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xd0\x02\n" +
 	"\x10CreateJobRequest\x12#\n" +
 	"\rinput_dataset\x18\x01 \x01(\tR\finputDataset\x12\x1a\n" +
 	"\bendpoint\x18\x02 \x01(\tR\bendpoint\x12+\n" +
 	"\x11completion_window\x18\x03 \x01(\tR\x10completionWindow\x12\x12\n" +
 	"\x04name\x18\x04 \x01(\tR\x04name\x12.\n" +
 	"\x13model_template_name\x18\x05 \x01(\tR\x11modelTemplateName\x124\n" +
-	"\x16model_template_version\x18\x06 \x01(\tR\x14modelTemplateVersionJ\x04\b\n" +
+	"\x16model_template_version\x18\x06 \x01(\tR\x14modelTemplateVersion\x12\x19\n" +
+	"\bmodel_id\x18\a \x01(\tR\amodelIdJ\x04\b\n" +
 	"\x10\vJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\r\x10\x0eR\n" +
 	"max_tokensR\vtemperatureR\x05top_pR\x01n\"\"\n" +
 	"\x10CancelJobRequest\x12\x0e\n" +

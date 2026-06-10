@@ -1,20 +1,18 @@
-import { Blocks, Code, FolderKanban, MessageSquare, PanelLeft, PanelLeftClose, Plus, Sparkles } from 'lucide-react'
+import { Blocks, Code, MessageSquare, PanelLeft, PanelLeftClose, Plus, Sparkles } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { deleteConversation, listConversations, renameConversation } from '@/api/client'
 import { useAuth } from '@/app/context/auth-context'
 import { ChatItem, type ChatItemData } from './chat-item'
 import { DeleteChatModal } from './delete-chat-modal'
-import { MoveChatModal } from './move-chat-modal'
 import { RenameChatModal } from './rename-chat-modal'
 import { UserMenu } from './user-menu'
 
 const navItems = [
   { icon: MessageSquare, label: 'Chats', path: '/chats' },
   { icon: Sparkles, label: 'AI Creation', path: '/ai-creation', badge: 'New' },
-  { icon: FolderKanban, label: 'Projects', path: '/projects' },
-  { icon: Blocks, label: 'Artifacts', path: '/artifacts' },
-  { icon: Code, label: 'Code', path: '/code' },
+  { icon: Blocks, label: 'Artifacts', path: '/artifacts', disabled: true },
+  { icon: Code, label: 'Code', path: '/code', disabled: true },
 ]
 
 interface SidebarProps {
@@ -30,7 +28,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
   // Modal state
   const [renameTarget, setRenameTarget] = useState<ChatItemData | null>(null)
-  const [moveTarget, setMoveTarget] = useState<ChatItemData | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<ChatItemData | null>(null)
 
   // Fetch conversations from API
@@ -88,18 +85,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     setRenameTarget(null)
   }
 
-  const handleRequestMove = (id: string) => {
-    const chat = chats.find((c) => c.id === id)
-    if (chat) setMoveTarget(chat)
-  }
-
-  const handleMoveConfirm = (projectId: string) => {
-    if (moveTarget) {
-      console.log(`Moved "${moveTarget.title}" to project ${projectId}`)
-    }
-    setMoveTarget(null)
-  }
-
   const handleRequestDelete = (id: string) => {
     const chat = chats.find((c) => c.id === id)
     if (chat) setDeleteTarget(chat)
@@ -131,7 +116,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         onClick={() => navigate(`/chat/${chat.id}`)}
         onStar={handleStar}
         onRequestRename={handleRequestRename}
-        onRequestMove={handleRequestMove}
         onRequestDelete={handleRequestDelete}
       />
     ))
@@ -144,13 +128,15 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         }`}
       >
         <div className="flex items-center justify-between px-4 pt-3 pb-1">
-          <span
-            className="cursor-pointer text-[15px] font-semibold text-sidebar-foreground"
+          <button
+            type="button"
+            className="text-left text-[15px] font-semibold text-sidebar-foreground"
             onClick={() => navigate('/')}
           >
             AIBrix Chat
-          </span>
+          </button>
           <button
+            type="button"
             onClick={onToggle}
             className="p-1 rounded-md hover:bg-sidebar-accent text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors"
           >
@@ -159,6 +145,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </div>
 
         <button
+          type="button"
           onClick={() => navigate('/')}
           className="flex items-center gap-2 mx-3 mt-3 mb-1 px-2 py-1.5 rounded-lg hover:bg-sidebar-accent transition-colors text-sm"
         >
@@ -168,15 +155,22 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
         <nav className="flex flex-col gap-0.5 px-3 mt-1">
           {navItems.map((item) => {
-            const isActive = location.pathname === item.path || location.pathname.startsWith(`${item.path}/`)
+            const disabled = 'disabled' in item && item.disabled
+            const isActive =
+              !disabled && (location.pathname === item.path || location.pathname.startsWith(`${item.path}/`))
             return (
               <button
+                type="button"
                 key={item.path}
-                onClick={() => navigate(item.path)}
+                onClick={disabled ? undefined : () => navigate(item.path)}
+                disabled={disabled}
+                aria-disabled={disabled}
                 className={`flex items-center gap-2.5 px-2 py-1.5 rounded-lg transition-colors text-sm ${
-                  isActive
-                    ? 'bg-sidebar-accent text-sidebar-foreground'
-                    : 'text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground'
+                  disabled
+                    ? 'text-sidebar-foreground/40 cursor-not-allowed opacity-60'
+                    : isActive
+                      ? 'bg-sidebar-accent text-sidebar-foreground'
+                      : 'text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground'
                 }`}
               >
                 <item.icon size={16} />
@@ -184,6 +178,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 {'badge' in item && item.badge && (
                   <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400">
                     {item.badge}
+                  </span>
+                )}
+                {disabled && (
+                  <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-sidebar-foreground/10 text-sidebar-foreground/50">
+                    Soon
                   </span>
                 )}
               </button>
@@ -208,7 +207,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           )}
         </div>
 
-        <UserMenu userName={user?.name ?? 'User'} userEmail="" planName="" />
+        <UserMenu userName={user?.name ?? 'User'} userEmail="" />
       </div>
 
       {/* ── Modals ── */}
@@ -219,8 +218,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         onSave={handleRenameConfirm}
       />
 
-      <MoveChatModal isOpen={!!moveTarget} onClose={() => setMoveTarget(null)} onMove={handleMoveConfirm} />
-
       <DeleteChatModal isOpen={!!deleteTarget} onClose={() => setDeleteTarget(null)} onDelete={handleDeleteConfirm} />
     </>
   )
@@ -229,6 +226,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 export function SidebarToggle({ onClick }: { onClick: () => void }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       className="fixed top-3 left-3 z-50 p-1.5 rounded-md bg-background/80 backdrop-blur hover:bg-accent text-foreground/60 hover:text-foreground transition-colors"
     >

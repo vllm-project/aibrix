@@ -8,8 +8,6 @@ import { HomeWrapper } from './components/home-wrapper'
 import { Layout } from './components/layout'
 import { LoginPage } from './components/login-page'
 import { ArtifactsPlaceholder, CodePlaceholder } from './components/placeholder-pages'
-import { ProjectDetailPage } from './components/project-detail-page'
-import { ProjectsWrapper } from './components/projects-wrapper'
 
 export const router = createBrowserRouter([
   {
@@ -27,8 +25,6 @@ export const router = createBrowserRouter([
               { path: 'chat/:id', Component: ChatPage },
               { path: 'chats', Component: ChatsPage },
               { path: 'ai-creation', Component: AICreationPage },
-              { path: 'projects', Component: ProjectsWrapper },
-              { path: 'projects/:id', Component: ProjectDetailPage },
               { path: 'artifacts', Component: ArtifactsPlaceholder },
               { path: 'code', Component: CodePlaceholder },
             ],

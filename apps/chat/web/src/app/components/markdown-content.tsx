@@ -26,11 +26,13 @@ export function MarkdownContent({ content }: MarkdownContentProps) {
             <div className="relative group my-3">
               <pre className="bg-black/30 rounded-lg p-4 overflow-x-auto text-sm">{children}</pre>
               <button
+                type="button"
                 onClick={() => navigator.clipboard.writeText(textContent)}
                 className="absolute top-2 right-2 p-1.5 rounded-md bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity text-foreground/60 hover:text-foreground hover:bg-white/20"
                 title="Copy code"
               >
                 <svg
+                  aria-hidden="true"
                   xmlns="http://www.w3.org/2000/svg"
                   width="14"
                   height="14"

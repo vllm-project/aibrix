@@ -121,6 +121,7 @@ class AibrixMetadata(_Strict):
     runtime: Optional[RuntimeSpec] = None
     model_template: Optional[ModelTemplateRef] = None
     profile: Optional[BatchProfileRef] = None
+    model: Optional[str] = None
 
     def to_metadata(self) -> "AibrixMetadata":
         return AibrixMetadata(**self.model_dump(exclude_none=True))
@@ -136,6 +137,7 @@ class AibrixMetadata(_Strict):
         profile_overrides: Optional[Dict[str, Any]] = None,
         runtime_target: Optional[str] = None,
         runtime_options: Optional[Dict[str, Any]] = None,
+        model: Optional[str] = None,
     ) -> Optional["AibrixMetadata"]:
         model_template = None
         if model_template_name:
@@ -161,6 +163,7 @@ class AibrixMetadata(_Strict):
             and model_template is None
             and profile is None
             and runtime is None
+            and model is None
         ):
             return None
 
@@ -169,10 +172,12 @@ class AibrixMetadata(_Strict):
             runtime=runtime,
             model_template=model_template,
             profile=profile,
+            model=model,
         )
 
     def to_extension_fields(self) -> Dict[str, Any]:
         return {
+            "model": self.model,
             "model_template_name": (
                 self.model_template.name if self.model_template else None
             ),

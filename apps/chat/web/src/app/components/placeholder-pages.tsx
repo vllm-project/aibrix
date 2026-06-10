@@ -22,10 +22,6 @@ export function ArtifactsPlaceholder() {
 
 export function CodePlaceholder() {
   return (
-    <PlaceholderPage
-      title="Code"
-      description="Code snippets and projects from your conversations will appear here."
-      icon="code"
-    />
+    <PlaceholderPage title="Code" description="Code snippets from your conversations will appear here." icon="code" />
   )
 }

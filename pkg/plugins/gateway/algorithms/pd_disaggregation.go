@@ -77,11 +77,12 @@ const (
 )
 
 const (
-	// KVConnectorTypeIdentifier specifies the KV transfer backend for a PD pod. Supported values include "shfs" and "nixl".
+	// KVConnectorTypeIdentifier specifies the KV transfer backend for a PD pod. Supported values include "shfs", "nixl", and "mooncake".
 	KVConnectorTypeIdentifier = "model.aibrix.ai/kv-connector-type"
 	// KV connector types for different backends
-	KVConnectorTypeSHFS = "shfs" // Default - AIBrix SHFS/KVCacheManager (GPU)
-	KVConnectorTypeNIXL = "nixl" // NIXL for Neuron (uses disagg_prefill_resp wrapper)
+	KVConnectorTypeSHFS     = "shfs"     // Default - AIBrix SHFS/KVCacheManager (GPU)
+	KVConnectorTypeNIXL     = "nixl"     // NIXL for Neuron (uses disagg_prefill_resp wrapper)
+	KVConnectorTypeMooncake = "mooncake" // Mooncake KV transfer backend
 
 	HeaderPrefillTargetPodIP = "prefill-target-pod-ip"
 	HeaderPrefillTargetPod   = "prefill-target-pod"

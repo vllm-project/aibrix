@@ -1,6 +1,7 @@
 """Model discovery endpoint."""
 
 import re
+import time
 
 from fastapi import APIRouter, Query
 
@@ -33,10 +34,23 @@ _VIDEO_PATTERNS = [
 _AUDIO_PATTERNS = [
     re.compile(r"whisper", re.I),
     re.compile(r"tts", re.I),
+    re.compile(r"realtime", re.I),
+    re.compile(r"audio", re.I),
+    re.compile(r"transcribe", re.I),
+    re.compile(r"speech", re.I),
 ]
 
 _EMBEDDING_PATTERNS = [
     re.compile(r"embedding", re.I),
+]
+
+# Models served by /v1/moderations or the legacy /v1/completions endpoint —
+# not usable from /v1/chat/completions, so they must not appear as "text".
+_OTHER_PATTERNS = [
+    re.compile(r"moderation", re.I),
+    re.compile(r"-instruct", re.I),
+    re.compile(r"^(babbage|davinci|curie|ada)(-|$)", re.I),
+    re.compile(r"^o1-pro", re.I),  # responses-only, not chat/completions
 ]
 
 
@@ -57,6 +71,10 @@ def _infer_capabilities(model_id: str) -> list[str]:
     for p in _EMBEDDING_PATTERNS:
         if p.search(model_id):
             caps.append("embedding")
+            break
+    for p in _OTHER_PATTERNS:
+        if p.search(model_id):
+            caps.append("other")
             break
     # Default: if no special capability matched, it's a text/chat model
     if not caps:
@@ -107,6 +125,12 @@ async def list_models(capability: str | None = Query(None)):
     raw_models = await gateway.list_models()
     allowlist = _get_allowlist(capability)
 
+    # Recency cutoff: hide models older than MODELS_MAX_AGE_DAYS, but only when the
+    # provider reports a `created` timestamp (self-hosted models often don't).
+    cutoff_ts = 0.0
+    if settings.models_max_age_days > 0:
+        cutoff_ts = time.time() - settings.models_max_age_days * 86400
+
     models = []
     for m in raw_models:
         model_id = m.get("id", "")
@@ -115,13 +139,22 @@ async def list_models(capability: str | None = Query(None)):
             continue
         if allowlist and model_id.lower() not in allowlist:
             continue
+        created = m.get("created")
+        if not isinstance(created, int | float):
+            created = None
+        if cutoff_ts and created and created < cutoff_ts:
+            continue
         models.append(
             ModelInfo(
                 id=model_id,
                 name=model_id,
                 capabilities=caps,
                 owned_by=m.get("owned_by"),
+                created=int(created) if created else None,
             )
         )
+
+    # Newest first; models without a timestamp keep their original order at the end.
+    models.sort(key=lambda x: x.created or 0, reverse=True)
 
     return ModelListResponse(models=models)

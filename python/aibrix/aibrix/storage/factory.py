@@ -18,10 +18,11 @@ from typing import Dict, Optional, Union
 from aibrix import envs
 from aibrix.storage.base import BaseStorage, StorageConfig
 from aibrix.storage.local import LocalStorage
-from aibrix.storage.redis import RedisStorage
-from aibrix.storage.s3 import S3Storage
-from aibrix.storage.tos import TOSStorage
 from aibrix.storage.types import StorageType
+
+# NOTE: remote backends (redis/s3/tos) are imported lazily inside
+# ``create_storage`` so that ``import aibrix.storage`` does not eagerly pull in
+# their optional dependencies (e.g. ``redis.asyncio``, ``boto3``, ``tos``).
 
 
 def create_storage(
@@ -68,6 +69,8 @@ def create_storage(
         return LocalStorage(base_path=base_path, config=config)
 
     elif storage_type == StorageType.S3:
+        from aibrix.storage.s3 import S3Storage
+
         bucket_name = kwargs.get("bucket_name") or envs.STORAGE_AWS_BUCKET
         if not bucket_name:
             raise ValueError("bucket_name is required for S3 storage")
@@ -84,6 +87,8 @@ def create_storage(
         )
 
     elif storage_type == StorageType.TOS:
+        from aibrix.storage.tos import TOSStorage
+
         bucket_name = kwargs.get("bucket_name") or envs.STORAGE_TOS_BUCKET
         access_key = kwargs.get("access_key") or envs.STORAGE_TOS_ACCESS_KEY
         secret_key = kwargs.get("secret_key") or envs.STORAGE_TOS_SECRET_KEY
@@ -111,6 +116,8 @@ def create_storage(
         )
 
     elif storage_type == StorageType.REDIS:
+        from aibrix.storage.redis import RedisStorage
+
         host = kwargs.get("host") or envs.STORAGE_REDIS_HOST or "localhost"
         port = kwargs.get("port") or envs.STORAGE_REDIS_PORT or 6379
         db = kwargs.get("db", 0) or envs.STORAGE_REDIS_DB

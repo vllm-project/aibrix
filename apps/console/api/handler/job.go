@@ -39,6 +39,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -67,6 +68,7 @@ const (
 	metadataConsoleTemplateName    = "aibrix.console.template_name"
 	metadataConsoleTemplateVersion = "aibrix.console.template_version"
 	defaultListLimit               = 20
+	jsonNullLiteral                = "null"
 )
 
 // JobHandler implements console.v1.JobService.
@@ -226,15 +228,15 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	}
 	var (
 		modelTemplate *plannerapi.ModelTemplateRef
-		modelID       string
+		servingName   string
 	)
 	if templateName != "" {
 		modelTemplate = &plannerapi.ModelTemplateRef{
 			Name:    templateName,
 			Version: req.ModelTemplateVersion,
 		}
-		if tpl := h.resolveTemplate(ctx, templateName, req.ModelTemplateVersion); tpl != nil {
-			modelID = tpl.ModelId
+		if tpl := h.resolveTemplate(ctx, req.ModelId, templateName, req.ModelTemplateVersion); tpl != nil {
+			servingName = h.resolveServingName(ctx, tpl)
 			if tpl.Spec != nil {
 				// UseProtoNames keeps snake_case proto field names (engine_args,
 				// model_source, ...) that the Python pydantic consumer expects;
@@ -250,7 +252,7 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 
 	enqueueReq := &plannerapi.EnqueueRequest{
 		JobID:         jobID,
-		Model:         modelID,
+		Model:         servingName,
 		ModelTemplate: modelTemplate,
 		BatchParams: openai.BatchNewParams{
 			InputFileID:      req.InputDataset,
@@ -273,11 +275,33 @@ func (h *JobHandler) CancelJob(ctx context.Context, req *pb.CancelJobRequest) (*
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
+	existing, err := h.planner.GetJob(ctx, req.Id)
+	if err != nil {
+		return nil, mapPlannerError(err, "cancel batch")
+	}
+	if err := requireJobOwner(ctx, mergeJob(existing, nil), "cancel"); err != nil {
+		return nil, err
+	}
 	job, err := h.planner.Cancel(ctx, req.Id)
 	if err != nil {
 		return nil, mapPlannerError(err, "cancel batch")
 	}
 	return h.enrichJob(ctx, mergeJob(job, nil)), nil
+}
+
+func requireJobOwner(ctx context.Context, job *pb.Job, action string) error {
+	if job == nil {
+		return nil
+	}
+	viewer := strings.TrimSpace(currentUserEmail(ctx))
+	owner := strings.TrimSpace(job.CreatedBy)
+	if owner == "" {
+		return nil
+	}
+	if viewer == "" || !strings.EqualFold(viewer, owner) {
+		return status.Errorf(codes.PermissionDenied, "only the job owner can %s this batch", action)
+	}
+	return nil
 }
 
 // currentUserEmail returns the authenticated user's email if available.
@@ -334,15 +358,25 @@ func mapPlannerError(err error, op string) error {
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, plannerapi.ErrInsufficientResources):
 		return status.Error(codes.ResourceExhausted, err.Error())
+	case errors.Is(err, plannerapi.ErrJobNotFound):
+		return status.Error(codes.NotFound, err.Error())
 	}
 	return mapSDKError(err, op)
 }
 
-// resolveTemplate looks up the ModelDeploymentTemplate by (name, version).
-// Returns nil when name is empty, store errors out, or no match.
-func (h *JobHandler) resolveTemplate(ctx context.Context, name, version string) *pb.ModelDeploymentTemplate {
+// resolveTemplate looks up the ModelDeploymentTemplate. With modelID it
+// resolves by the unique (model_id, name, version) tuple
+func (h *JobHandler) resolveTemplate(ctx context.Context, modelID, name, version string) *pb.ModelDeploymentTemplate {
 	if name == "" {
 		return nil
+	}
+	if modelID != "" {
+		tpl, err := h.store.ResolveModelDeploymentTemplate(ctx, modelID, name, version)
+		if err != nil {
+			klog.Warningf("resolveTemplate(%q,%q,%q): %v", modelID, name, version, err)
+			return nil
+		}
+		return tpl
 	}
 	statusFilter := ""
 	if version == "" {
@@ -359,6 +393,27 @@ func (h *JobHandler) resolveTemplate(ctx context.Context, name, version string) 
 		}
 	}
 	return nil
+}
+
+// resolveServingName maps the template's model to the identifier batch
+// requests carry in body.model. Prefers the model's serving_name;
+// falls back to the template's model_source.uri
+func (h *JobHandler) resolveServingName(ctx context.Context, tpl *pb.ModelDeploymentTemplate) string {
+	if tpl == nil {
+		return ""
+	}
+	if tpl.ModelId != "" {
+		m, err := h.store.GetModel(ctx, tpl.ModelId)
+		if err != nil {
+			klog.Warningf("resolveServingName: get model %q: %v", tpl.ModelId, err)
+		} else if m.ServingName != "" {
+			return m.ServingName
+		}
+	}
+	if tpl.Spec != nil && tpl.Spec.ModelSource != nil {
+		return tpl.Spec.ModelSource.Uri
+	}
+	return ""
 }
 
 // mergeJob aggregates the planner's Job with optional Console overlay.
@@ -531,11 +586,11 @@ func parseBatchExtraBody(b *openai.Batch) map[string]json.RawMessage {
 		return nil
 	}
 	out := make(map[string]json.RawMessage)
-	if raw, ok := root["extra_body"]; ok && len(raw) > 0 && string(raw) != "null" {
+	if raw, ok := root["extra_body"]; ok && len(raw) > 0 && string(raw) != jsonNullLiteral {
 		var extra map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &extra); err == nil {
 			for k, v := range extra {
-				if len(v) > 0 && string(v) != "null" {
+				if len(v) > 0 && string(v) != jsonNullLiteral {
 					out[k] = v
 				}
 			}
@@ -548,7 +603,7 @@ func parseBatchExtraBody(b *openai.Batch) map[string]json.RawMessage {
 		if _, standard := standardBatchResponseFields[k]; standard {
 			continue
 		}
-		if len(v) > 0 && string(v) != "null" {
+		if len(v) > 0 && string(v) != jsonNullLiteral {
 			out[k] = v
 		}
 	}
@@ -579,14 +634,14 @@ func applyKnownBatchExtensions(job *pb.Job, extraBody map[string]json.RawMessage
 }
 
 func applyAibrixBatchExtension(job *pb.Job, raw json.RawMessage) {
-	if len(raw) == 0 || string(raw) == "null" {
+	if len(raw) == 0 || string(raw) == jsonNullLiteral {
 		return
 	}
 	var payload rawBatchExtensionPayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return
 	}
-	if len(payload.Runtime) > 0 && string(payload.Runtime) != "null" {
+	if len(payload.Runtime) > 0 && string(payload.Runtime) != jsonNullLiteral {
 		var runtime rawRuntimePayload
 		if err := json.Unmarshal(payload.Runtime, &runtime); err == nil {
 			job.Runtime = &pb.JobRuntime{
@@ -596,7 +651,7 @@ func applyAibrixBatchExtension(job *pb.Job, raw json.RawMessage) {
 			}
 		}
 	}
-	if len(payload.ResourceAllocation) > 0 && string(payload.ResourceAllocation) != "null" {
+	if len(payload.ResourceAllocation) > 0 && string(payload.ResourceAllocation) != jsonNullLiteral {
 		var allocation rawResourceAllocationPayload
 		if err := json.Unmarshal(payload.ResourceAllocation, &allocation); err == nil {
 			job.ResourceAllocation = &pb.JobResourceAllocation{
@@ -615,7 +670,7 @@ func applyAibrixBatchExtension(job *pb.Job, raw json.RawMessage) {
 			}
 		}
 	}
-	if len(payload.ModelTemplate) > 0 && string(payload.ModelTemplate) != "null" {
+	if len(payload.ModelTemplate) > 0 && string(payload.ModelTemplate) != jsonNullLiteral {
 		var modelTemplate rawNamedRefPayload
 		if err := json.Unmarshal(payload.ModelTemplate, &modelTemplate); err == nil {
 			job.ModelTemplateRef = &pb.JobModelTemplateRef{
@@ -631,7 +686,7 @@ func applyAibrixBatchExtension(job *pb.Job, raw json.RawMessage) {
 			}
 		}
 	}
-	if len(payload.Profile) > 0 && string(payload.Profile) != "null" {
+	if len(payload.Profile) > 0 && string(payload.Profile) != jsonNullLiteral {
 		var profile rawNamedRefPayload
 		if err := json.Unmarshal(payload.Profile, &profile); err == nil {
 			job.Profile = &pb.JobProfileRef{
@@ -809,6 +864,48 @@ func applyProvision(job *pb.Job, prov *rmtypes.ProvisionResult) {
 	}
 }
 
+// eventLifecycleRank returns the canonical batch-lifecycle ranking used to break
+// ties when two timeline events share the same timestamp. Event timestamps are
+// unix seconds and originate from two sources (planner and MDS) that keep
+// independent clocks, so the timestamp alone cannot order events that land in
+// the same second. Lifecycle rank is the source of truth for those ties — e.g.
+// Finalizing must precede Failed even though "failed" sorts before "finalizing"
+// lexically.
+func eventLifecycleRank(id string) int {
+	switch id {
+	case "queued":
+		return 0
+	case "resource_preparing":
+		return 1
+	case "resource_failed":
+		return 2
+	case "submitting":
+		return 3
+	case "submit_failed":
+		return 4
+	case "batch_created":
+		return 5
+	case "in_progress":
+		return 6
+	case "finalizing":
+		return 7
+	case "cancel_requested":
+		return 8
+	case "cancelling":
+		return 9
+	case "completed":
+		return 10
+	case "failed":
+		return 11
+	case "expired":
+		return 12
+	case "cancelled":
+		return 13
+	default:
+		return 14
+	}
+}
+
 func buildJobEvents(job *pb.Job) []*pb.JobEvent {
 	if job == nil {
 		return nil
@@ -831,7 +928,7 @@ func buildJobEvents(job *pb.Job) []*pb.JobEvent {
 	add("resource_preparing", "Provisioning", "resource_preparing", "planner", job.ResourcePreparingAt, "Resource provisioning started.")
 	add("submitting", "Submitting", "submitting", "planner", job.SubmittingAt, "Provisioning reached ready and the batch was submitted to MDS.")
 	if job.BatchId != "" {
-		add("batch_created", "MDS batch created", "validating", "mds", job.CreatedAt, "Metadata Service created the OpenAI batch.")
+		add("batch_created", "MDS batch created", "scheduling", "mds", job.CreatedAt, "Metadata Service created the OpenAI batch.")
 	}
 	add("in_progress", "In progress", "in_progress", "mds", job.InProgressAt, "MDS started processing requests.")
 	add("finalizing", "Finalizing", "finalizing", "mds", job.FinalizingAt, "MDS started finalizing output files.")
@@ -848,7 +945,7 @@ func buildJobEvents(job *pb.Job) []*pb.JobEvent {
 
 	sort.SliceStable(events, func(i, j int) bool {
 		if events[i].At == events[j].At {
-			return events[i].Id < events[j].Id
+			return eventLifecycleRank(events[i].Id) < eventLifecycleRank(events[j].Id)
 		}
 		return events[i].At < events[j].At
 	})

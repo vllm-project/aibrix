@@ -414,7 +414,10 @@ class _RendererSupport:
         return port
 
     def _build_engine_container(
-        self, template: ModelDeploymentTemplate, port: int
+        self,
+        template: ModelDeploymentTemplate,
+        port: int,
+        served_model_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         spec = template.spec
         container: Dict[str, Any] = {
@@ -435,7 +438,7 @@ class _RendererSupport:
             },
         }
 
-        engine_args = build_engine_args(spec)
+        engine_args = build_engine_args(spec, served_model_name=served_model_name)
         if needs_shell_wrapper(spec.engine):
             container["command"] = ["/bin/sh", "-c"]
             container["args"] = engine_args
@@ -523,7 +526,7 @@ class JobManifestRenderer(_RendererSupport):
 
         # Layered composition.
         manifest = self._system_base()
-        manifest = self._apply_template(manifest, template)
+        manifest = self._apply_template(manifest, template, spec.model)
         manifest = self._apply_profile(manifest, profile)
         manifest = self._apply_per_batch(
             manifest,
@@ -597,11 +600,16 @@ class JobManifestRenderer(_RendererSupport):
     # ── Layer 2: template ──────────────────────────────────────────────────
 
     def _apply_template(
-        self, manifest: Dict[str, Any], template: ModelDeploymentTemplate
+        self,
+        manifest: Dict[str, Any],
+        template: ModelDeploymentTemplate,
+        served_model_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Add the engine container based on the template spec."""
         port = self._resolve_engine_port(template)
-        engine_container = self._build_engine_container(template, port)
+        engine_container = self._build_engine_container(
+            template, port, served_model_name
+        )
 
         # Append engine container to the pod spec containers list.
         containers = manifest["spec"]["template"]["spec"]["containers"]

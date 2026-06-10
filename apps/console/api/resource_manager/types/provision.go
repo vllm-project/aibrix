@@ -568,12 +568,12 @@ type ProvisionRecord struct {
 
 func (pr *ProvisionRecord) MarkDeleted() {
 	pr.Deleted = true
-	pr.UpdatedAt = time.Now()
+	pr.UpdatedAt = time.Now().UTC()
 }
 
 func (pr *ProvisionRecord) UpdateStatus(status ProvisionStatus) {
 	pr.Status = string(status)
-	pr.UpdatedAt = time.Now()
+	pr.UpdatedAt = time.Now().UTC()
 }
 
 func (pr *ProvisionRecord) ToProvisionResult() (*ProvisionResult, error) {

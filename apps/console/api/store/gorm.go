@@ -297,6 +297,24 @@ func (s *GORMStore) ListJobsByBatchIDs(ctx context.Context, batchIDs []string) (
 	return out, nil
 }
 
+func (s *GORMStore) ListJobsByDatasetID(ctx context.Context, fileID string) ([]*models.Job, error) {
+	if fileID == "" {
+		return nil, nil
+	}
+	var rows []models.Job
+	if err := s.db.WithContext(ctx).
+		Where("deleted = ?", false).
+		Where("input_dataset = ? OR output_dataset = ? OR error_dataset = ?", fileID, fileID, fileID).
+		Find(&rows).Error; err != nil {
+		return nil, status.Errorf(codes.Internal, "list jobs by dataset id: %v", err)
+	}
+	out := make([]*models.Job, len(rows))
+	for i := range rows {
+		out[i] = &rows[i]
+	}
+	return out, nil
+}
+
 func (s *GORMStore) DeleteJob(ctx context.Context, id string) error {
 	return s.db.WithContext(ctx).Model(&models.Job{}).Where("id = ? AND deleted = ?", id, false).Update("deleted", true).Error
 }
@@ -319,6 +337,53 @@ func (s *GORMStore) ListNonTerminalJobs(ctx context.Context) ([]*models.Job, err
 		out[i] = &rows[i]
 	}
 	return out, nil
+}
+
+// ListAllJobs lists all jobs with cursor-based pagination, sorted by created_at descending.
+// after is the job ID cursor - returns jobs created before this job.
+func (s *GORMStore) ListAllJobs(ctx context.Context, after string, limit int) ([]*models.Job, bool, error) {
+	q := s.db.WithContext(ctx).Model(&models.Job{}).
+		Where("deleted = ?", false).
+		Order("created_at DESC, id DESC")
+
+	// Cursor-based pagination: after is a job ID, find jobs created before it
+	// Use composite cursor (created_at, id) to handle timestamp collisions
+	if after != "" {
+		var cursor models.Job
+		if err := s.db.WithContext(ctx).Select("id, created_at").Where("id = ? AND deleted = ?", after, false).First(&cursor).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				// Cursor not found, return empty result
+				return nil, false, nil
+			}
+			return nil, false, status.Errorf(codes.Internal, "find cursor job: %v", err)
+		}
+		// Composite cursor: (created_at, id) tuple comparison
+		// Select jobs where created_at < cursor.created_at OR (created_at = cursor.created_at AND id < cursor.id)
+		q = q.Where("created_at < ? OR (created_at = ? AND id < ?)", cursor.CreatedAt, cursor.CreatedAt, cursor.ID)
+	}
+
+	// Fetch one extra to check hasMore
+	fetchLimit := limit + 1
+	if limit > 0 {
+		q = q.Limit(fetchLimit)
+	}
+
+	var rows []models.Job
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, false, status.Errorf(codes.Internal, "list all jobs: %v", err)
+	}
+
+	hasMore := false
+	if limit > 0 && len(rows) > limit {
+		hasMore = true
+		rows = rows[:limit]
+	}
+
+	out := make([]*models.Job, len(rows))
+	for i := range rows {
+		out[i] = &rows[i]
+	}
+	return out, hasMore, nil
 }
 
 func (s *GORMStore) ListModels(ctx context.Context, search, category string) ([]*pb.Model, error) {
@@ -431,6 +496,14 @@ func (s *GORMStore) CreateModelDeploymentTemplate(ctx context.Context, req *pb.C
 	}
 	if req.GetSpec() == nil {
 		return nil, status.Error(codes.InvalidArgument, "spec is required")
+	}
+	// model_id is a soft reference (no DB-level FK); reject templates that
+	// would dangle under a model the catalog doesn't know about.
+	if _, err := s.GetModel(ctx, req.GetModelId()); err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, status.Errorf(codes.FailedPrecondition, "model %q not found; register the model before attaching templates", req.GetModelId())
+		}
+		return nil, err
 	}
 	version := req.GetVersion()
 	if version == "" {

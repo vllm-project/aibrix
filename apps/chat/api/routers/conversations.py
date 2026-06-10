@@ -13,11 +13,10 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 class CreateConversationRequest(BaseModel):
     model: str | None = None
     title: str = "New Chat"
-    project_id: str | None = None
 
 
-class UpdateTitleRequest(BaseModel):
-    title: str
+class UpdateConversationRequest(BaseModel):
+    title: str | None = None
 
 
 @router.post("", response_model=Conversation, status_code=201)
@@ -29,7 +28,6 @@ async def create_conversation(
         model=req.model,
         title=req.title,
         user_id=user.id,
-        project_id=req.project_id,
     )
 
 
@@ -52,13 +50,14 @@ async def get_conversation(
 @router.patch("/{conversation_id}", response_model=Conversation)
 async def update_conversation(
     conversation_id: str,
-    req: UpdateTitleRequest,
+    req: UpdateConversationRequest,
     user: User = Depends(get_current_user),
 ):
     conv = store.get(conversation_id)
     if conv is None or (conv.user_id and conv.user_id != user.id):
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return store.update_title(conversation_id, req.title)
+
+    return store.update(conversation_id, title=req.title)
 
 
 @router.delete("/{conversation_id}", status_code=204)

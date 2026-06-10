@@ -628,13 +628,13 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
     total_hours = delta.total_seconds() / 3600
     completion_window = f"{int(total_hours)}h"
 
-    # Map the internal state machine to OpenAI's 8-state enum:
-    #   {validating, failed, in_progress, finalizing, completed, expired,
-    #    cancelling, cancelled}
-    # Two internal states have no direct OpenAI counterpart:
-    #   - CREATED: batch just created, validation not yet started — surfaced
-    #     to clients as 'validating' since they cannot distinguish it from
-    #     in-flight validation.
+    # Map the internal state machine to the client-facing status:
+    #   - CREATED: accepted and waiting in the scheduler's pending pool for
+    #     admission (resource bring-up) — surfaced as 'scheduling'. NOTE: this
+    #     deviates from the OpenAI batch enum (no 'scheduling' state); we accept
+    #     the break because our platform spends real time here and 'scheduling'
+    #     is more accurate than OpenAI's 'validating' (which on our side is
+    #     near-instant: VALIDATING flips to IN_PROGRESS inside admit()).
     #   - FINALIZED: terminal umbrella state; the actual outcome lives in
     #     `status.condition` (completed / failed / expired / cancelled).
     if status.finished:
@@ -649,14 +649,14 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
             raise ValueError("job finalized without condition")
         state = condition.value
     elif status.state == BatchJobState.CREATED:
-        state = BatchJobState.VALIDATING.value
+        state = BatchJobState.SCHEDULING.value
     else:
         state = status.state.value
 
     return BatchResponse(
         id=status.job_id,
         endpoint=spec.endpoint,
-        model=spec.model_template_name,
+        model=spec.model or spec.model_template_name,
         errors=BatchErrors(data=status.errors) if status.errors else None,
         input_file_id=spec.input_file_id,
         completion_window=completion_window,

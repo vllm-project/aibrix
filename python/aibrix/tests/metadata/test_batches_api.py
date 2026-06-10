@@ -94,8 +94,9 @@ class TestCreateBatch:
             assert body["object"] == "batch"
             assert body["endpoint"] == "/v1/chat/completions"
             assert body["completion_window"] == "24h"
-            # CREATED state is mapped to "validating" for OpenAI compatibility.
-            assert body["status"] in {"validating", "in_progress"}
+            # CREATED is surfaced as "scheduling" (awaiting admission); may have
+            # already advanced to validating/in_progress by the time we read it.
+            assert body["status"] in {"scheduling", "validating", "in_progress"}
             assert body["input_file_id"]
             assert body["created_at"] > 0
             assert body["expires_at"] > body["created_at"]

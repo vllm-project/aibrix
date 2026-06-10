@@ -262,12 +262,12 @@ _OPENAI_8_STATES = {
 
 
 class TestApiResponseStateFlatten:
-    """Internal CREATED / FINALIZED states must not leak to the API."""
+    """FINALIZED is flattened to its condition; CREATED is surfaced as the
+    non-OpenAI 'scheduling' status (it spends real time awaiting admission)."""
 
     @pytest.mark.parametrize(
         "state,expected",
         [
-            (BatchJobState.CREATED, "validating"),
             (BatchJobState.VALIDATING, "validating"),
             (BatchJobState.IN_PROGRESS, "in_progress"),
             (BatchJobState.FINALIZING, "finalizing"),

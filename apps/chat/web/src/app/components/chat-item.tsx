@@ -1,4 +1,4 @@
-import { FolderInput, MoreHorizontal, Pencil, Star, Trash2 } from 'lucide-react'
+import { MoreHorizontal, Pencil, Star, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 export interface ChatItemData {
@@ -13,19 +13,10 @@ interface ChatItemProps {
   onClick: () => void
   onStar: (id: string) => void
   onRequestRename: (id: string) => void
-  onRequestMove: (id: string) => void
   onRequestDelete: (id: string) => void
 }
 
-export function ChatItem({
-  chat,
-  isActive,
-  onClick,
-  onStar,
-  onRequestRename,
-  onRequestMove,
-  onRequestDelete,
-}: ChatItemProps) {
+export function ChatItem({ chat, isActive, onClick, onStar, onRequestRename, onRequestDelete }: ChatItemProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -62,15 +53,6 @@ export function ChatItem({
       iconClass: 'text-foreground/50',
     },
     {
-      icon: FolderInput,
-      label: 'Move to project',
-      onClick: () => {
-        onRequestMove(chat.id)
-        setMenuOpen(false)
-      },
-      iconClass: 'text-foreground/50',
-    },
-    {
       icon: Trash2,
       label: 'Delete',
       onClick: () => {
@@ -85,6 +67,7 @@ export function ChatItem({
   return (
     <div className="relative group">
       <button
+        type="button"
         onClick={onClick}
         className={`flex items-center w-full text-left pl-2 pr-7 py-1.5 rounded-lg text-sm transition-colors truncate ${
           isActive
@@ -99,6 +82,7 @@ export function ChatItem({
       {/* Three-dot button */}
       <div ref={menuRef}>
         <button
+          type="button"
           onClick={(e) => {
             e.stopPropagation()
             setMenuOpen(!menuOpen)
@@ -117,6 +101,7 @@ export function ChatItem({
               <div key={item.label}>
                 {item.isDanger && <div className="border-t border-border mx-2 my-1" />}
                 <button
+                  type="button"
                   onClick={(e) => {
                     e.stopPropagation()
                     item.onClick()

@@ -5,6 +5,7 @@ export type JobStatus =
   | 'queued'
   | 'resource_preparing'
   | 'submitting'
+  | 'scheduling'
   | 'validating'
   | 'in_progress'
   | 'finalizing'
