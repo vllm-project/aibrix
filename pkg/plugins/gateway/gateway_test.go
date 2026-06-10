@@ -741,6 +741,83 @@ func TestValidateHTTPRouteStatus_StandaloneModeSkipsValidation(t *testing.T) {
 	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "any-model"))
 }
 
+func TestValidateHTTPRouteStatus_CachesResult(t *testing.T) {
+	mockGW := &MockGatewayClient{}
+	mockGWV1 := &MockGatewayV1Client{}
+	mockHTTP := &MockHTTPRouteClient{}
+
+	route := &gatewayv1.HTTPRoute{
+		Status: gatewayv1.HTTPRouteStatus{
+			RouteStatus: gatewayv1.RouteStatus{
+				Parents: []gatewayv1.RouteParentStatus{{
+					Conditions: []metav1.Condition{{
+						Type:   string(gatewayv1.RouteConditionAccepted),
+						Reason: string(gatewayv1.RouteReasonAccepted),
+					}, {
+						Type:   string(gatewayv1.RouteConditionResolvedRefs),
+						Reason: string(gatewayv1.RouteReasonResolvedRefs),
+					}},
+				}},
+			},
+		},
+	}
+	// Expect only one API call despite two invocations
+	mockGW.On("GatewayV1").Return(mockGWV1).Once()
+	mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP).Once()
+	mockHTTP.On("Get", mock.Anything, "cached-model-router", mock.Anything).Return(route, nil).Once()
+
+	s := &Server{
+		gatewayClient:     mockGW,
+		httprouteCacheTTL: 30 * time.Second,
+	}
+
+	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "cached-model"))
+	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "cached-model"))
+
+	mockGW.AssertExpectations(t)
+	mockGWV1.AssertExpectations(t)
+	mockHTTP.AssertExpectations(t)
+}
+
+func TestValidateHTTPRouteStatus_CacheExpiry(t *testing.T) {
+	mockGW := &MockGatewayClient{}
+	mockGWV1 := &MockGatewayV1Client{}
+	mockHTTP := &MockHTTPRouteClient{}
+
+	route := &gatewayv1.HTTPRoute{
+		Status: gatewayv1.HTTPRouteStatus{
+			RouteStatus: gatewayv1.RouteStatus{
+				Parents: []gatewayv1.RouteParentStatus{{
+					Conditions: []metav1.Condition{{
+						Type:   string(gatewayv1.RouteConditionAccepted),
+						Reason: string(gatewayv1.RouteReasonAccepted),
+					}, {
+						Type:   string(gatewayv1.RouteConditionResolvedRefs),
+						Reason: string(gatewayv1.RouteReasonResolvedRefs),
+					}},
+				}},
+			},
+		},
+	}
+	// Expect two API calls because the TTL is already expired
+	mockGW.On("GatewayV1").Return(mockGWV1).Twice()
+	mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP).Twice()
+	mockHTTP.On("Get", mock.Anything, "expire-model-router", mock.Anything).Return(route, nil).Twice()
+
+	s := &Server{
+		gatewayClient:     mockGW,
+		httprouteCacheTTL: 1 * time.Millisecond,
+	}
+
+	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "expire-model"))
+	time.Sleep(5 * time.Millisecond)
+	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "expire-model"))
+
+	mockGW.AssertExpectations(t)
+	mockGWV1.AssertExpectations(t)
+	mockHTTP.AssertExpectations(t)
+}
+
 func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 	baseResp := &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ResponseHeaders{

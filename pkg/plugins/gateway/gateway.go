@@ -55,12 +55,19 @@ import (
 )
 
 const (
-	defaultAIBrixNamespace = "aibrix-system"
-	metricHeaderErr        = "metric-header-err"
-	gatewayRespBody        = "gateway_rsp_body"
-	gatewayRespHeaders     = "gateway_rsp_headers"
-	gatewayReqBody         = "gateway_req_body"
+	defaultAIBrixNamespace        = "aibrix-system"
+	metricHeaderErr               = "metric-header-err"
+	gatewayRespBody               = "gateway_rsp_body"
+	gatewayRespHeaders            = "gateway_rsp_headers"
+	gatewayReqBody                = "gateway_req_body"
+	defaultHTTPRouteCacheTTL      = 30 * time.Second
+	envHTTPRouteCacheTTL          = "AIBRIX_HTTPROUTE_CACHE_TTL"
 )
+
+type httpRouteCacheEntry struct {
+	err       error
+	expiresAt time.Time
+}
 
 type Server struct {
 	redisClient         *redis.Client
@@ -71,6 +78,8 @@ type Server struct {
 	requestCountTracker map[string]int
 	cache               cache.Cache
 	httpServer          *http.Server
+	httprouteCache      sync.Map
+	httprouteCacheTTL   time.Duration
 	// Broadcast channel for server-initiated shutdown
 	shutdownCh   <-chan struct{}
 	shutdown     chan struct{}
@@ -99,6 +108,15 @@ type processState struct {
 var podName = os.Getenv("POD_NAME")
 var tracer = otel.Tracer("envoy-ext-proc-server")
 
+func httpRouteCacheTTL() time.Duration {
+	if v := os.Getenv(envHTTPRouteCacheTTL); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultHTTPRouteCacheTTL
+}
+
 func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient gatewayapi.Interface) *Server {
 	c, err := cache.Get()
 	if err != nil {
@@ -126,6 +144,7 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		gatewayClient:       gatewayClient,
 		requestCountTracker: map[string]int{},
 		cache:               c,
+		httprouteCacheTTL:   httpRouteCacheTTL(),
 		shutdownCh:          shutdown,
 		shutdown:            shutdown,
 	}
@@ -433,17 +452,27 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	return router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 }
 
-// validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true
+// validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true.
+// Results are cached with a TTL (default 30s, configurable via AIBRIX_HTTPROUTE_CACHE_TTL) to
+// avoid hammering the Kubernetes API on every request.
 func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) error {
 	// Skip validation in standalone mode (no gateway client)
 	if s.gatewayClient == nil {
 		return nil
 	}
 
+	if cached, ok := s.httprouteCache.Load(model); ok {
+		entry := cached.(httpRouteCacheEntry)
+		if time.Now().Before(entry.expiresAt) {
+			return entry.err
+		}
+	}
+
 	errMsg := []string{}
 	name := fmt.Sprintf("%s-router", model)
 	httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
+		s.httprouteCache.Store(model, httpRouteCacheEntry{err: err, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
 		return err
 	}
 
@@ -463,11 +492,12 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		}
 	}
 
-	if len(errMsg) == 0 {
-		return nil
+	var result error
+	if len(errMsg) > 0 {
+		result = errors.New(strings.Join(errMsg, ", "))
 	}
-
-	return errors.New(strings.Join(errMsg, ", "))
+	s.httprouteCache.Store(model, httpRouteCacheEntry{err: result, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
+	return result
 }
 
 // StartHTTPServer starts the gateway's HTTP server with metrics and API handlers.
