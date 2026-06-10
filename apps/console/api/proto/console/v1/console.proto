@@ -445,6 +445,7 @@ message CreateModelRequest {
 //       completion_window="24h",
 //       extra_body={
 //           "aibrix": {
+//               "model": "Qwen/Qwen3.5-32B",       # serving_name; see rules below
 //               "runtime": {
 //                   "target": "Kubernetes",        # registered MDS runtime target
 //                   "options": {"namespace": "default"}  # optional, runtime-owned
@@ -472,6 +473,11 @@ message CreateModelRequest {
 //
 //
 // rules:
+//   - model is the serving identifier (the catalog model's serving_name) that
+//     the batch's body.model carries. MDS echoes it as Batch.model and pins the
+//     engine's --served-model-name to it. Optional; when absent the engine
+//     serves under the template's model_source.uri and Batch.model falls back
+//     to model_template.name.
 //   - runtime.target selects the MDS Runtime. runtime.options is free-form and
 //     owned by the selected runtime; do not introduce runtime.placement.
 //   - resource_allocation carries generic planner / resource-manager output.

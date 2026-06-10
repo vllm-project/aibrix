@@ -334,6 +334,10 @@ class AibrixExtension(BaseModel):
     model_config = {"extra": "forbid"}
 
     job_id: Optional[str] = None
+    model: Optional[str] = Field(
+        default=None,
+        description=("Serving identifier the batch's requests carry in body.model"),
+    )
     resource_allocation: Optional[ResourceAllocationRef] = None
     runtime: Optional[RuntimeRef] = Field(
         default=None,
@@ -402,6 +406,7 @@ class BatchSpec(BaseModel):
         if spec.aibrix is not None:
             aibrix = AibrixMetadata(
                 job_id=spec.aibrix.job_id,
+                model=spec.aibrix.model,
                 resource_allocation=spec.aibrix.resource_allocation,
                 runtime=spec.aibrix.runtime,
                 model_template=spec.aibrix.model_template,

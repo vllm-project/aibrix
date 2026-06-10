@@ -350,3 +350,61 @@ class TestListBatches:
         with TestClient(create_test_app()) as client:
             response = client.get("/v1/batches", params={"limit": limit})
             assert response.status_code == 422
+
+
+class TestAibrixModelField:
+    """The serving identifier rides under ``extra_body.aibrix.model``.
+
+    Regression guard for the 422 ``extra_forbidden`` that fired when the
+    request-entry schema (``AibrixExtension``, ``extra='forbid'``) lacked the
+    ``model`` field that the console BFF started sending. The value must also
+    survive the conversion into the internal job spec so the renderer can pin
+    ``--served-model-name`` and ``BatchResponse.model`` can echo it.
+    """
+
+    def test_entry_schema_accepts_model(self):
+        from aibrix.metadata.api.v1.batch import BatchSpec
+
+        spec = BatchSpec.model_validate(
+            {
+                "input_file_id": "file-1",
+                "endpoint": "/v1/chat/completions",
+                "aibrix": {
+                    "model": "Qwen/Qwen3.5-32B",
+                    "model_template": {"name": "A30-2"},
+                },
+            }
+        )
+        assert spec.aibrix is not None
+        assert spec.aibrix.model == "Qwen/Qwen3.5-32B"
+
+    def test_model_survives_internal_spec_conversion(self):
+        from aibrix.metadata.api.v1.batch import BatchSpec
+
+        spec = BatchSpec.model_validate(
+            {
+                "input_file_id": "file-1",
+                "endpoint": "/v1/chat/completions",
+                "aibrix": {
+                    "model": "Qwen/Qwen3.5-32B",
+                    "model_template": {"name": "A30-2"},
+                },
+            }
+        )
+        job_spec = BatchSpec.newBatchJobSpec(spec)
+        assert job_spec.model == "Qwen/Qwen3.5-32B"
+
+    def test_model_is_optional(self):
+        # The wire schema stays permissive: External / standalone requests may
+        # omit model, and deploy-bound requests fall back to the template name.
+        from aibrix.metadata.api.v1.batch import BatchSpec
+
+        spec = BatchSpec.model_validate(
+            {
+                "input_file_id": "file-1",
+                "endpoint": "/v1/chat/completions",
+                "aibrix": {"model_template": {"name": "A30-2"}},
+            }
+        )
+        assert spec.aibrix.model is None
+        assert BatchSpec.newBatchJobSpec(spec).model is None
