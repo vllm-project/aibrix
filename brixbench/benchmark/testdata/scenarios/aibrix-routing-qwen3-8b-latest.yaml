@@ -20,7 +20,7 @@ Tests:
     manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p4d.yaml
   benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-r8.yaml
   commit: origin/main
-- name: lat-tc-rt-02-pd-conf-rt-04-4p4d-r32
+- name: lat-tc-rt-02-pd-conf-rt-01-4p8d-r8
   provider: aibrix
   fullstack: false
   gateway:
