@@ -52,6 +52,10 @@ type OpenAIResponse struct {
 		PromptTokens     int64 `json:"prompt_tokens"`
 		CompletionTokens int64 `json:"completion_tokens"`
 		TotalTokens      int64 `json:"total_tokens"`
+		// The Responses API (/v1/responses) reports usage with input_tokens/
+		// output_tokens instead of prompt_tokens/completion_tokens.
+		InputTokens  int64 `json:"input_tokens"`
+		OutputTokens int64 `json:"output_tokens"`
 	} `json:"usage"`
 	Code int `json:"code"`
 }
@@ -128,11 +132,24 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 
 					// gjson avoids full deserialization by only extracting the usage field.
 					usageResult := gjson.GetBytes(jsonBytes, "usage")
+					if !usageResult.Exists() {
+						// The Responses API (/v1/responses) emits usage nested inside the
+						// terminal response.completed event under "response.usage".
+						usageResult = gjson.GetBytes(jsonBytes, "response.usage")
+					}
 					if usageResult.Exists() && usageResult.IsObject() {
 						// Assumption: The upstream sends the usage object only in the final chunk
 						// (standard vLLM/OpenAI behavior). We overwrite/set the values here.
+						// The Responses API uses input_tokens/output_tokens instead of
+						// prompt_tokens/completion_tokens, so fall back to those names.
 						promptTokens = usageResult.Get("prompt_tokens").Int()
+						if promptTokens == 0 {
+							promptTokens = usageResult.Get("input_tokens").Int()
+						}
 						completionTokens = usageResult.Get("completion_tokens").Int()
+						if completionTokens == 0 {
+							completionTokens = usageResult.Get("output_tokens").Int()
+						}
 						totalTokens = usageResult.Get("total_tokens").Int()
 					}
 				}
@@ -261,7 +278,13 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 
 	if res.Usage != nil {
 		promptTokens = res.Usage.PromptTokens
+		if promptTokens == 0 {
+			promptTokens = res.Usage.InputTokens
+		}
 		completionTokens = res.Usage.CompletionTokens
+		if completionTokens == 0 {
+			completionTokens = res.Usage.OutputTokens
+		}
 		totalTokens = res.Usage.TotalTokens
 	}
 	return

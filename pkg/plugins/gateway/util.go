@@ -71,6 +71,51 @@ type embeddingReqMinimal struct {
 	Stream json.RawMessage                     `json:"stream"`
 }
 
+// responsesReqMinimal captures the fields needed to route and validate an OpenAI
+// Responses API (/v1/responses) request. Input is kept as raw JSON because it may
+// be either a plain string or an array of input items; it is parsed lazily in
+// parseResponsesInput. Stream uses *bool to distinguish "absent" from "stream: false".
+type responsesReqMinimal struct {
+	Model  string          `json:"model"`
+	Stream *bool           `json:"stream"`
+	Input  json.RawMessage `json:"input"`
+}
+
+// parseResponsesInput extracts a single concatenated text string from a Responses
+// API "input" field for routing purposes. The field is either a plain string or an
+// array of input items whose "content" is itself a string or an array of content
+// parts; in all cases we reuse the same text-extraction strategy as chat messages.
+func parseResponsesInput(requestID string, input json.RawMessage) (string, *extProcPb.ProcessingResponse) {
+	if len(input) == 0 || string(input) == "null" {
+		klog.ErrorS(nil, "no input in the request body", "requestID", requestID)
+		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
+	}
+	// Plain string input: JSON-unquote it directly.
+	if input[0] == '"' {
+		var s string
+		if err := sonic.Unmarshal(input, &s); err != nil {
+			klog.ErrorS(err, "error to unmarshal responses input string", "requestID", requestID)
+			return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		}
+		return s, nil
+	}
+	// Array of input items: each item may carry a "content" field (string or array
+	// of content parts). Items without content (e.g. tool/function outputs) simply
+	// contribute nothing to the routing key.
+	var items []struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := sonic.Unmarshal(input, &items); err != nil {
+		klog.ErrorS(err, "error to unmarshal responses input array", "requestID", requestID)
+		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' must be a string or an array of input items", "", "input", HeaderErrorRequestBodyProcessing, "true")
+	}
+	if len(items) == 0 {
+		klog.ErrorS(nil, "empty input array in the request body", "requestID", requestID)
+		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' array cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
+	}
+	return parseChatMessages(requestID, items)
+}
+
 // parseChatMessages extracts a single concatenated text string from the minimal
 // chat request messages. For simple string content it unquotes the JSON string
 // directly; for array/object content it writes the raw JSON bytes.
@@ -135,6 +180,23 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 					"", "stream_options", HeaderErrorStreamOptionsIncludeUsage, "include usage for stream options not set")
 				return
 			}
+		}
+	case PathResponses:
+		// OpenAI Responses API. Unlike chat completions, the Responses API always
+		// emits usage in the terminal streaming event, so there is no stream_options
+		// .include_usage requirement to enforce for TPM-limited users.
+		var req responsesReqMinimal
+		if err := sonic.Unmarshal(requestBody, &req); err != nil {
+			klog.ErrorS(err, "error to unmarshal responses object", "requestID", requestID, "requestBody", string(requestBody))
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		model = req.Model
+		if message, errRes = parseResponsesInput(requestID, req.Input); errRes != nil {
+			return
+		}
+		if req.Stream != nil {
+			stream = *req.Stream
 		}
 	case PathCompletions:
 		// openai.CompletionsNewParams does not support json unmarshal for CompletionNewParamsPromptUnion in release v0.1.0-beta.10
