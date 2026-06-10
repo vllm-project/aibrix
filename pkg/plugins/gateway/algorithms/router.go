@@ -115,7 +115,7 @@ func ParseMultiRouterConfig(routerStr string) (*MultiRouterConfig, error) {
 	// If multiple exclusive strategies are found, the first one encountered wins
 	for _, item := range items {
 		if item.Name == "pd" || strings.HasPrefix(item.Name, "slo") {
-			klog.Infof("Exclusive routing strategy '%s' found in multi-strategy config. Other strategies will be ignored.", item.Name)
+			klog.V(4).Infof("Exclusive routing strategy '%s' found in multi-strategy config. Other strategies will be ignored.", item.Name)
 			return &MultiRouterConfig{Items: []RouterItem{{Name: item.Name, Coefficient: 1}}}, nil
 		}
 	}
