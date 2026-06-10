@@ -233,6 +233,12 @@ func jobToModel(j *queuedJob) *models.Job {
 		CompletedAt:         utils.TimeToPtr(j.completedAt),
 		ErrorMessage:        j.errMsg,
 	}
+	// Persist frontend-computed RequestCountTotal if provided
+	if j.req.RequestCountTotal > 0 {
+		if data, err := json.Marshal(map[string]int32{"total": j.req.RequestCountTotal}); err == nil {
+			rec.RequestCounts = datatypes.JSON(data)
+		}
+	}
 	if j.req.ModelTemplate != nil {
 		rec.ModelTemplateName = j.req.ModelTemplate.Name
 		rec.ModelTemplateVersion = j.req.ModelTemplate.Version

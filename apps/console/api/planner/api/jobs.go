@@ -47,6 +47,9 @@ type EnqueueRequest struct {
 	// the aibrix.console.* namespace and is the single source of truth
 	// for read-back via GetJob.
 	BatchParams openai.BatchNewParams `json:"batch_params"`
+	// RequestCountTotal is the frontend-computed request count (e.g., JSONL line count).
+	// The planner persists it to the store for display before MDS reports back.
+	RequestCountTotal int32 `json:"request_count_total,omitempty"`
 }
 
 // Job is the planner's JobID-keyed result, returned from Enqueue,
