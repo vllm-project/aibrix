@@ -32,6 +32,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/selector"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -114,6 +116,9 @@ var loadBalancingDecodePolicy = pd.LoadBalancingDecodePolicy{}
 
 func init() {
 	Register(RouterPD, NewPDRouter)
+	// Point the vLLM engine handler at the live connector-type var so that tests
+	// (and runtime config changes via env) are reflected without a second copy.
+	engine.SetConnectorTypeFunc(func() string { return aibrixKVConnectorType })
 }
 
 // pdAlgorithmConfig holds PD-specific algorithm configuration parsed from RoutingConfig.
@@ -202,6 +207,7 @@ type pdRouter struct {
 	prefixUpdateCh        chan prefixUpdateJob
 	countersMu            sync.RWMutex
 	selectionCounts       map[string]int64
+	podSelector           selector.PodSelector
 }
 
 func newPrefixCachePrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable) pd.PrefillScorePolicy {
@@ -256,7 +262,7 @@ func NewPDRouter() (types.Router, error) {
 		},
 	}
 
-	pdRouter := pdRouter{
+	r := &pdRouter{
 		cache:                 c,
 		prefillPolicy:         policy,
 		decodePolicy:          decodePol,
@@ -267,9 +273,10 @@ func NewPDRouter() (types.Router, error) {
 		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
 		selectionCounts:       make(map[string]int64),
 	}
+	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
 
-	pdRouter.startPrefixUpdater()
-	return &pdRouter, nil
+	r.startPrefixUpdater()
+	return r, nil
 }
 
 func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
@@ -282,7 +289,10 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		return "", fmt.Errorf("engine validation failed for request %s: %w", ctx.RequestID, err)
 	}
 
-	prefillPod, decodePod, err := r.filterPrefillDecodePods(ctx, readyPods)
+	if r.podSelector == nil {
+		r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
+	}
+	prefillPod, decodePod, err := r.podSelector.Select(ctx, readyPods)
 	if err != nil {
 		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRouteFilterPrefillDecodePodsFail, "status_code": "400"})

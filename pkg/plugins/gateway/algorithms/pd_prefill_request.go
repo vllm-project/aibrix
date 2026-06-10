@@ -37,13 +37,13 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/transfer"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -116,11 +116,11 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name)
 	routingCtx.PrefillStartTime = time.Now()
 
-	switch llmEngine {
-	case SGLangEngine:
-		// SGLang uses a bootstrap handshake (bootstrap_host/port/room) to
-		// coordinate KV transfer between prefill and decode pods out-of-band,
-		// so we fire the prefill asynchronously and return immediately.
+	handler := engine.Resolve(llmEngine)
+
+	if handler.IsAsync() {
+		// SGLang uses a bootstrap handshake to coordinate KV transfer out-of-band;
+		// fire asynchronously and return immediately.
 		go func() {
 			defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
 
@@ -141,23 +141,10 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 				"outstanding_prefill_requests", r.prefillRequestTracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
 			klog.InfoS("prefill_request_end", fields...)
 		}()
-
-	case VLLMEngine:
-		// vLLM returns kv_transfer_params in the prefill response; inject them
-		// into the decode request body before forwarding to the decode pod.
-		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, r.updateRoutingContextWithKVTransferParams, "KV transfer params")
-
-	case TensorRTLLM:
-		// TensorRT-LLM returns disaggregated_params (including first_gen_tokens
-		// and opaque_state) needed by the decode worker; inject them synchronously.
-		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, r.updateRoutingContextWithTRTDisaggParams, "TRT disagg params")
-
-	default:
-		// Unknown engine: synchronous prefill with no response processing.
-		return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, nil, "")
+		return nil
 	}
 
-	return nil
+	return r.handleSyncPrefill(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, handler.MergePrefillResponse, llmEngine+" response")
 }
 
 // handleSyncPrefill executes a synchronous HTTP prefill request and optionally
@@ -222,40 +209,10 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 		return nil, fmt.Errorf("failed to unmarshal prefill request body: %w", err)
 	}
 
-	if llmEngine == SGLangEngine {
-		completionRequest["bootstrap_host"] = pod.Status.PodIP
-		completionRequest["bootstrap_port"] = getSGLangBootstrapPort(pod)
-		completionRequest["bootstrap_room"] = rand.Int63n(1<<63 - 1)
-
-		// Propagate the bootstrap fields to the decode request body so that
-		// the decode pod can locate the prefill pod's bootstrap server.
-		reqBody, err := sonic.Marshal(completionRequest)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal post prefill request body: %w", err)
-		}
-		bodyCopy := make([]byte, len(reqBody))
-		copy(bodyCopy, reqBody)
-		routingCtx.ReqBody = bodyCopy
-	}
-
-	// For vLLM, delegate connector-specific request augmentation to the transfer agent.
-	// Each agent decides what fields (if any) to add to the prefill request body
-	// (e.g. SHFSAgent adds a kv_transfer_params skeleton; NIXLAgent is a no-op).
-	if llmEngine == VLLMEngine {
-		agent, err := transfer.ResolveAgentForPod(pod, aibrixKVConnectorType)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve KV transfer agent for prefill payload: %w", err)
-		}
-		if err := agent.AugmentPrefillRequest(routingCtx, pod, completionRequest); err != nil {
-			return nil, fmt.Errorf("failed to augment prefill request: %w", err)
-		}
-	}
-
-	if llmEngine == TensorRTLLM {
-		completionRequest["disaggregated_params"] = map[string]any{
-			"request_type":      "context_only",
-			"disagg_request_id": getDisaggRequestID(trtMachineID),
-		}
+	// Delegate all engine-specific request augmentation to the engine handler.
+	handler := engine.Resolve(llmEngine)
+	if err := handler.AugmentPrefillRequest(routingCtx, pod, completionRequest); err != nil {
+		return nil, fmt.Errorf("failed to augment prefill request for %s: %w", llmEngine, err)
 	}
 
 	// Constrain the prefill to a single token so the pod returns immediately
@@ -336,99 +293,16 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 	return responseData, nil
 }
 
-// updateRoutingContextWithKVTransferParams merges vLLM KV-transfer metadata
-// from the prefill response back into routingCtx.ReqBody so the decode pod
-// receives everything it needs to pull KV cache blocks from the prefill pod.
-//
-// The behaviour depends on AIBRIX_KV_CONNECTOR_TYPE:
-//
-//   - NIXL (Neuron): wraps the entire prefill response under
-//     disagg_prefill_resp. NixlConnector on the decode side consumes this
-//     wrapper to locate and pull the KV blocks.
-//   - SHFS (default, GPU): extracts kv_transfer_params from the prefill
-//     response, sets remote_host to the prefill pod's IP, and writes the
-//     merged params into the decode request body.
-//
-// If kv_transfer_params is absent from the SHFS response (e.g. the prefill
-// pod did not fill the field), the function returns nil without modifying
-// the request body, which is a valid no-op for backends that self-coordinate.
+// updateRoutingContextWithKVTransferParams delegates to the vLLM engine handler's
+// MergePrefillResponse so existing tests can call this method directly.
 func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.RoutingContext, responseData map[string]any, prefillPod *v1.Pod) error {
-	agent, err := transfer.ResolveAgentForPod(prefillPod, aibrixKVConnectorType)
-	if err != nil {
-		return fmt.Errorf("failed to resolve KV transfer agent for response merge: %w", err)
-	}
-	return agent.MergePrefillResponse(routingCtx, responseData, prefillPod)
+	return engine.Resolve(VLLMEngine).MergePrefillResponse(routingCtx, responseData, prefillPod)
 }
 
-// updateRoutingContextWithTRTDisaggParams merges TensorRT-LLM disaggregated
-// inference parameters from the prefill response into routingCtx.ReqBody so
-// that the decode pod can resume generation from the pre-filled KV cache.
-//
-// The function looks for disaggregated_params at the top level of the prefill
-// response, then falls back to choices[0] (TRT-LLM serialises handler output
-// as a chat-completion choice). It sets request_type to "generation_only" so
-// the decode pod knows it is continuing a pre-filled context.
-//
-// If the prefill response includes prompt_token_ids, the function routes them
-// into the decode body according to the request path:
-//   - /v1/completions        → "prompt" field (token ID array)
-//   - /v1/chat/completions   → "prompt_token_ids" field
+// updateRoutingContextWithTRTDisaggParams delegates to the TRT-LLM engine handler's
+// MergePrefillResponse so existing tests can call this method directly.
 func (r *pdRouter) updateRoutingContextWithTRTDisaggParams(routingCtx *types.RoutingContext, responseData map[string]any, prefillPod *v1.Pod) error {
-	var originalRequest map[string]any
-	if err := sonicJSONInt64.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
-		return fmt.Errorf("failed to unmarshal original request body: %w", err)
-	}
-
-	// Locate disaggregated_params: top-level first, then choices[0] fallback.
-	var disaggParams any
-	var exists bool
-
-	disaggParams, exists = responseData["disaggregated_params"]
-	if !exists {
-		if choices, ok := responseData["choices"].([]any); ok && len(choices) > 0 {
-			if choice, ok := choices[0].(map[string]any); ok {
-				disaggParams, exists = choice["disaggregated_params"]
-			}
-		}
-	}
-
-	if !exists {
-		klog.InfoS("no disaggregated_params in TRT prefill response", "request_id", routingCtx.RequestID)
-		return nil
-	}
-
-	disaggParamsMap, ok := disaggParams.(map[string]any)
-	if !ok {
-		return fmt.Errorf("disaggregated_params has unexpected type %T, expected map[string]any", disaggParams)
-	}
-
-	disaggParamsMap["request_type"] = "generation_only"
-	originalRequest["disaggregated_params"] = disaggParamsMap
-
-	if pti, ok := responseData["prompt_token_ids"]; ok && pti != nil {
-		if ids, ok := anySliceForJSON(pti); ok {
-			switch routingCtx.ReqPath {
-			case "/v1/completions":
-				originalRequest["prompt"] = ids
-			case "/v1/chat/completions":
-				originalRequest["prompt_token_ids"] = ids
-			}
-		}
-	}
-
-	updatedReqBody, err := sonic.Marshal(originalRequest)
-	if err != nil {
-		return fmt.Errorf("failed to marshal updated request body: %w", err)
-	}
-
-	routingCtx.ReqBody = updatedReqBody
-
-	klog.InfoS("updated routing context with disaggregated_params (TensorRT-LLM)",
-		"request_id", routingCtx.RequestID,
-		"prefill_pod", prefillPod.Name,
-		"prefill_host", prefillPod.Status.PodIP)
-
-	return nil
+	return engine.Resolve(TensorRTLLM).MergePrefillResponse(routingCtx, responseData, prefillPod)
 }
 
 // selectKvConnectorType resolves the KV connector type from a pod label value,
