@@ -289,9 +289,6 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		return "", fmt.Errorf("engine validation failed for request %s: %w", ctx.RequestID, err)
 	}
 
-	if r.podSelector == nil {
-		r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
-	}
 	prefillPod, decodePod, err := r.podSelector.Select(ctx, readyPods)
 	if err != nil {
 		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},

@@ -62,9 +62,7 @@ func (h *SGLangHandler) AugmentPrefillRequest(
 	if err != nil {
 		return fmt.Errorf("failed to marshal SGLang prefill request body: %w", err)
 	}
-	bodyCopy := make([]byte, len(reqBody))
-	copy(bodyCopy, reqBody)
-	routingCtx.ReqBody = bodyCopy
+	routingCtx.ReqBody = reqBody
 	return nil
 }
 

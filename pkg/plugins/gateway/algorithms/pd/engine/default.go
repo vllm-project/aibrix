@@ -26,8 +26,8 @@ import (
 // processing, which matches the original "default" branch behaviour.
 type DefaultHandler struct{}
 
-func (h *DefaultHandler) Name() string    { return "default" }
-func (h *DefaultHandler) IsAsync() bool   { return false }
+func (h *DefaultHandler) Name() string  { return "default" }
+func (h *DefaultHandler) IsAsync() bool { return false }
 func (h *DefaultHandler) AugmentPrefillRequest(_ *types.RoutingContext, _ *v1.Pod, _ map[string]any) error {
 	return nil
 }

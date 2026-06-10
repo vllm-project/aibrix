@@ -178,9 +178,7 @@ func (h *TRTLLMHandler) MergePrefillResponse(
 // anySliceForJSON converts a JSON-decoded array into []any suitable for map[string]any marshaling.
 func anySliceForJSON(v any) ([]any, bool) {
 	if s, ok := v.([]any); ok {
-		out := make([]any, len(s))
-		copy(out, s)
-		return out, true
+		return s, true
 	}
 	val := reflect.ValueOf(v)
 	if val.Kind() != reflect.Slice {
