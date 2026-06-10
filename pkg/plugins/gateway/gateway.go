@@ -36,6 +36,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/client-go/kubernetes"
@@ -55,13 +56,13 @@ import (
 )
 
 const (
-	defaultAIBrixNamespace        = "aibrix-system"
-	metricHeaderErr               = "metric-header-err"
-	gatewayRespBody               = "gateway_rsp_body"
-	gatewayRespHeaders            = "gateway_rsp_headers"
-	gatewayReqBody                = "gateway_req_body"
-	defaultHTTPRouteCacheTTL      = 30 * time.Second
-	envHTTPRouteCacheTTL          = "AIBRIX_HTTPROUTE_CACHE_TTL"
+	defaultAIBrixNamespace   = "aibrix-system"
+	metricHeaderErr          = "metric-header-err"
+	gatewayRespBody          = "gateway_rsp_body"
+	gatewayRespHeaders       = "gateway_rsp_headers"
+	gatewayReqBody           = "gateway_req_body"
+	defaultHTTPRouteCacheTTL = 30 * time.Second
+	envHTTPRouteCacheTTL     = "AIBRIX_HTTPROUTE_CACHE_TTL"
 )
 
 type httpRouteCacheEntry struct {
@@ -80,6 +81,7 @@ type Server struct {
 	httpServer          *http.Server
 	httprouteCache      sync.Map
 	httprouteCacheTTL   time.Duration
+	httprouteSFGroup    singleflight.Group
 	// Broadcast channel for server-initiated shutdown
 	shutdownCh   <-chan struct{}
 	shutdown     chan struct{}
@@ -468,36 +470,60 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		}
 	}
 
-	errMsg := []string{}
-	name := fmt.Sprintf("%s-router", model)
-	httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		s.httprouteCache.Store(model, httpRouteCacheEntry{err: err, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
-		return err
-	}
-
-	for _, status := range httproute.Status.Parents {
-		if len(status.Conditions) == 0 {
-			errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, does not have valid status", defaultAIBrixNamespace, name))
-			break
-		}
-		for _, condition := range status.Conditions {
-			if condition.Type == string(gatewayv1.RouteConditionAccepted) &&
-				condition.Reason != string(gatewayv1.RouteReasonAccepted) {
-				errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route is not accepted: %s.", defaultAIBrixNamespace, name, condition.Reason))
-			} else if condition.Type == string(gatewayv1.RouteConditionResolvedRefs) &&
-				condition.Reason != string(gatewayv1.RouteReasonResolvedRefs) {
-				errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route's object references are not resolved: %s.", defaultAIBrixNamespace, name, condition.Reason))
+	// Use singleflight to collapse concurrent cache-miss requests for the same
+	// model into a single Kubernetes API call, preventing thundering herd on
+	// cache expiry under high load.
+	v, err, _ := s.httprouteSFGroup.Do(model, func() (interface{}, error) {
+		// Re-check cache inside the group: a previous waiter may have already
+		// populated it while we were queued.
+		if cached, ok := s.httprouteCache.Load(model); ok {
+			entry := cached.(httpRouteCacheEntry)
+			if time.Now().Before(entry.expiresAt) {
+				return entry.err, nil
 			}
 		}
-	}
 
-	var result error
-	if len(errMsg) > 0 {
-		result = errors.New(strings.Join(errMsg, ", "))
+		name := fmt.Sprintf("%s-router", model)
+		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(context.Background(), name, metav1.GetOptions{})
+		if err != nil {
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				s.httprouteCache.Store(model, httpRouteCacheEntry{err: err, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
+			}
+			return nil, err
+		}
+
+		errMsg := []string{}
+		for _, status := range httproute.Status.Parents {
+			if len(status.Conditions) == 0 {
+				errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, does not have valid status", defaultAIBrixNamespace, name))
+				break
+			}
+			for _, condition := range status.Conditions {
+				if condition.Type == string(gatewayv1.RouteConditionAccepted) &&
+					condition.Reason != string(gatewayv1.RouteReasonAccepted) {
+					errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route is not accepted: %s.", defaultAIBrixNamespace, name, condition.Reason))
+				} else if condition.Type == string(gatewayv1.RouteConditionResolvedRefs) &&
+					condition.Reason != string(gatewayv1.RouteReasonResolvedRefs) {
+					errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route's object references are not resolved: %s.", defaultAIBrixNamespace, name, condition.Reason))
+				}
+			}
+		}
+
+		var result error
+		if len(errMsg) > 0 {
+			result = errors.New(strings.Join(errMsg, ", "))
+		}
+		s.httprouteCache.Store(model, httpRouteCacheEntry{err: result, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
+		return result, nil
+	})
+
+	if err != nil {
+		return err
 	}
-	s.httprouteCache.Store(model, httpRouteCacheEntry{err: result, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
-	return result
+	if v != nil {
+		return v.(error)
+	}
+	return nil
 }
 
 // StartHTTPServer starts the gateway's HTTP server with metrics and API handlers.
