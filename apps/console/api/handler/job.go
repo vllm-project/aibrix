@@ -251,9 +251,10 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	}
 
 	enqueueReq := &plannerapi.EnqueueRequest{
-		JobID:         jobID,
-		Model:         servingName,
-		ModelTemplate: modelTemplate,
+		JobID:             jobID,
+		Model:             servingName,
+		ModelTemplate:     modelTemplate,
+		RequestCountTotal: req.RequestCountTotal,
 		BatchParams: openai.BatchNewParams{
 			InputFileID:      req.InputDataset,
 			Endpoint:         openai.BatchNewParamsEndpoint(req.Endpoint),
