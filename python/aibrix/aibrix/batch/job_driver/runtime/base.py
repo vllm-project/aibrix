@@ -241,7 +241,9 @@ class RuntimeBase:
                 handle = None
                 await self._sleep_before_session_retry(attempt)
         if not ready:
-            raise RuntimeError("runtime session exhausted retries without becoming ready")
+            raise RuntimeError(
+                "runtime session exhausted retries without becoming ready"
+            )
         try:
             yield await self._connect(handle)
         finally:

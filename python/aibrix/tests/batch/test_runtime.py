@@ -15,8 +15,6 @@
 
 import pytest
 
-from aibrix.batch.job_entity import BatchJobError, BatchJobErrorCode
-from aibrix.batch.job_driver.runtime import base as runtime_base_mod
 from aibrix.batch.job_driver.runtime import (
     Endpoint,
     ExternalRuntime,
@@ -27,6 +25,8 @@ from aibrix.batch.job_driver.runtime import (
     register_runtime,
     registered_runtimes,
 )
+from aibrix.batch.job_driver.runtime import base as runtime_base_mod
+from aibrix.batch.job_entity import BatchJobError, BatchJobErrorCode
 
 
 @pytest.mark.asyncio
@@ -133,6 +133,7 @@ async def test_runtime_base_session_retries_provision_with_exponential_backoff(
         "body",
         ("teardown", "handle-4"),
     ]
+
 
 @pytest.mark.asyncio
 async def test_runtime_base_session_retries_wait_ready_batch_job_not_found(
