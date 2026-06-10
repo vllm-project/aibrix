@@ -253,6 +253,13 @@ var _ = Describe("SLO", func() {
 	It("Queue router should be blocked and released successfully", func() {
 		pods, _ := store.ListPodsByModel(model)
 
+		const (
+			pendingLoadCap      = 1.0
+			pendingLoadEpsilon  = 1e-6
+			fillRequestTimeout  = 100 * time.Millisecond
+			blockRequestTimeout = time.Second
+		)
+
 		makeOneRequest := func(id int, timeout time.Duration) (*types.RoutingContext, float64) {
 			defer GinkgoRecover()
 
@@ -268,12 +275,12 @@ var _ = Describe("SLO", func() {
 
 		// Fill pods just enough.
 		filledPods := make([]*v1.Pod, 0, pods.Len())
-		firstReq, unitPendingLoad := makeOneRequest(1, 10*time.Millisecond)
+		firstReq, unitPendingLoad := makeOneRequest(1, fillRequestTimeout)
 		filledPods = append(filledPods, firstReq.TargetPod())
 		lastPendingLoad := unitPendingLoad
 		id := 2
-		for len(filledPods) < pods.Len() || lastPendingLoad+unitPendingLoad < 1.0 {
-			req, pendingLoad := makeOneRequest(id, 10*time.Millisecond)
+		for len(filledPods) < pods.Len() || lastPendingLoad+unitPendingLoad < pendingLoadCap-pendingLoadEpsilon {
+			req, pendingLoad := makeOneRequest(id, fillRequestTimeout)
 			if req.TargetPod() != filledPods[len(filledPods)-1] {
 				filledPods = append(filledPods, req.TargetPod())
 			}
@@ -284,11 +291,11 @@ var _ = Describe("SLO", func() {
 		// Make the request that should be blocked.
 		var lastReq *types.RoutingContext
 		blockage := shouldBlock(func() {
-			lastReq, _ = makeOneRequest(id, 100*time.Millisecond)
+			lastReq, _ = makeOneRequest(id, blockRequestTimeout)
 		}, 10*time.Millisecond)
 
 		// Release the request.
-		store.DoneRequestCount(firstReq, "request_id_1", firstReq.Model, 1)
+		store.DoneRequestCount(firstReq, firstReq.RequestID, firstReq.Model, firstReq.TraceTerm)
 
 		// Check the blockage is released.
 		Eventually(blockage, 1*time.Second).Should(BeClosed())
