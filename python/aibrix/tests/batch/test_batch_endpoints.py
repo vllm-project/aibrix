@@ -246,6 +246,7 @@ def test_batch_spec_accepts_aibrix_metadata():
             "completion_window": "24h",
             "aibrix": {
                 "job_id": "planner-job-1",
+                "model": "Qwen/Qwen3.5-32B",
                 "runtime": {"target": "Kubernetes"},
                 "resource_allocation": {
                     "provision_id": "reservation-1",
@@ -283,6 +284,7 @@ def test_batch_spec_accepts_aibrix_metadata():
 
     assert batch_job_spec.aibrix is not None
     assert batch_job_spec.aibrix.job_id == "planner-job-1"
+    assert batch_job_spec.aibrix.model == "Qwen/Qwen3.5-32B"
     assert batch_job_spec.aibrix.resource_allocation is not None
     assert batch_job_spec.aibrix.resource_allocation.provision_id == "reservation-1"
     assert batch_job_spec.aibrix.resource_allocation.provision_resource_deadline == 123

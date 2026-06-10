@@ -350,6 +350,7 @@ class AibrixExtension(BaseModel):
         default=None,
         description="BatchProfile reference; falls back to registry default if omitted",
     )
+    model: Optional[str] = None
 
     @field_validator("model_template", mode="before")
     @classmethod
@@ -406,6 +407,7 @@ class BatchSpec(BaseModel):
                 runtime=spec.aibrix.runtime,
                 model_template=spec.aibrix.model_template,
                 profile=spec.aibrix.profile,
+                model=spec.aibrix.model,
             )
         return BatchJobSpec(
             input_file_id=spec.input_file_id,
