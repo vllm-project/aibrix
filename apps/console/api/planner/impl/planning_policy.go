@@ -194,7 +194,7 @@ func (p *SimplePolicy) Plan(ctx context.Context, input PlanningInput[*queuedJob]
 				job.mu.Unlock()
 				return true
 			}
-			spec, _, _, err := input.PlannerBackend.Schedule(ctx, job.req)
+			spec, err := input.PlannerBackend.Schedule(ctx, job.req)
 			if err != nil {
 				job.mu.Unlock()
 				klog.Warningf("[planner] Plan job_id=%q failed: %v", job.req.JobID, err)

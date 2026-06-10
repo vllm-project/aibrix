@@ -38,14 +38,11 @@ import (
 //     serving config onto the MDS RuntimeRef.
 //
 // Accepted-provision logging is opt-in via provisionResponseLogger.
-//
-// TODO: add Plan(ctx, req) before Schedule to fetch RM-catalog capacity
-// (per-accelerator, quotas, etc.) so Schedule can be capacity-aware.
 type plannerBackend interface {
 	ValidateRequest(req *plannerapi.EnqueueRequest) error
-	Schedule(ctx context.Context, req *plannerapi.EnqueueRequest) (spec rmtypes.ResourceProvisionSpec, gpuType string, gpusPerReplica int, err error)
+	Schedule(ctx context.Context, req *plannerapi.EnqueueRequest) (spec rmtypes.ResourceProvisionSpec, err error)
 	BuildRuntime(req *plannerapi.EnqueueRequest, prov *rmtypes.ProvisionResult) (*plannerapi.RuntimeRef, error)
-	BuildResourceAllocation(spec rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult, gpuType string, gpusPerReplica int) plannerclient.ResourceAllocation
+	BuildResourceAllocation(spec rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult) plannerclient.ResourceAllocation
 }
 
 // provisionResponseLogger is an optional capability to log provider-specific
@@ -144,12 +141,12 @@ func (b *defaultPlannerBackend) ValidateRequest(*plannerapi.EnqueueRequest) erro
 	return nil
 }
 
-func (b *defaultPlannerBackend) Schedule(_ context.Context, req *plannerapi.EnqueueRequest) (spec rmtypes.ResourceProvisionSpec, gpuType string, gpusPerReplica int, err error) {
+func (b *defaultPlannerBackend) Schedule(_ context.Context, req *plannerapi.EnqueueRequest) (spec rmtypes.ResourceProvisionSpec, err error) {
 	spec.Credential = rmtypes.ResourceCredential{Provider: b.provider}
 	if req == nil || req.ModelTemplate == nil {
 		return
 	}
-	gpuType, gpusPerReplica, err = decodeAcceleratorFromTemplate(req.ModelTemplate)
+	gpuType, gpusPerReplica, err := decodeAcceleratorFromTemplate(req.ModelTemplate)
 	if err != nil {
 		return
 	}
@@ -168,7 +165,7 @@ func (b *defaultPlannerBackend) BuildRuntime(req *plannerapi.EnqueueRequest, pro
 	return plannerclient.RuntimeForProvisionResult(b.provider, prov, req.Model, image, serveArgs)
 }
 
-func (b *defaultPlannerBackend) BuildResourceAllocation(_ rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult, _ string, _ int) plannerclient.ResourceAllocation {
+func (b *defaultPlannerBackend) BuildResourceAllocation(_ rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult) plannerclient.ResourceAllocation {
 	// Default allocation shape; accelerator scalars are ignored here.
 	return &plannerclient.DefaultResourceAllocation{ProvisionID: prov.ProvisionID}
 }
