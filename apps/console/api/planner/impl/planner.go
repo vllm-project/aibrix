@@ -18,6 +18,7 @@ package impl
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -335,7 +336,12 @@ func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (
 	// Trigger immediate planning cycle
 	q.triggerPlanning()
 
-	klog.Infof("[planner] enqueue job_id=%q", req.JobID)
+	reqJson, err := json.Marshal(req)
+	if err != nil {
+		reqJson = []byte("null")
+	}
+
+	klog.Infof("[planner] enqueue job_id=%q %s", req.JobID, reqJson)
 	return &plannerapi.Job{
 		JobID: req.JobID,
 		Batch: placeholderBatch(req, plannerapi.JobStatusQueued.ToBatchStatus(), now, time.Time{}),

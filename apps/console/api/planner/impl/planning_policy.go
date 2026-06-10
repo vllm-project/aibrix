@@ -18,6 +18,7 @@ package impl
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -169,6 +170,8 @@ func (p *SimplePolicy) Plan(ctx context.Context, input PlanningInput[*queuedJob]
 
 	// advance pending jobs up to the limit
 	remainingSlots := p.cfg.MaxConcurrentProvisioning - activeProvisioningJobs
+	klog.Infof("[planner] Plan maxConcurrentProvisioning=%d, activeProvisioningJobs=%d, remainingSlots=%d", p.cfg.MaxConcurrentProvisioning, activeProvisioningJobs, remainingSlots)
+
 	scheduled := 0
 	input.PendingQueue.ForEach(func(job *queuedJob) bool {
 		if remainingSlots <= 0 {
@@ -204,6 +207,10 @@ func (p *SimplePolicy) Plan(ctx context.Context, input PlanningInput[*queuedJob]
 			job.mu.Unlock()
 			remainingSlots--
 			scheduled++
+
+			if specJson, err := json.Marshal(spec); err == nil {
+				klog.Infof("[planner] provision spec: %s", specJson)
+			}
 		}
 		return true
 	})

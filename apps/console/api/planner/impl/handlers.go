@@ -17,6 +17,7 @@ limitations under the License.
 package impl
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -154,7 +155,6 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 	}
 
 	job.provisionID = provResult.ProvisionID
-	job.allocatedResource = provResult
 	job.resourcePreparingAt = time.Now().UTC()
 	if job.status == plannerapi.JobStatusCancelling {
 		job.mu.Unlock()
@@ -211,6 +211,7 @@ func handleResourcePreparing(p *Planner, job *queuedJob) {
 		// Provision is ready, mark job as ready to submit
 		// The planningLoop will submit to MDS in next iteration
 		job.mu.Lock()
+		job.allocatedResource = provResult
 		if !job.status.IsTerminal() && job.status == plannerapi.JobStatusResourcePreparing {
 			job.readyToSubmit = true
 			klog.Infof("[planner] job_id=%q provision ready, marked readyToSubmit", jobID)
@@ -267,6 +268,14 @@ func submitToMDS(p *Planner, job *queuedJob) {
 		ResourceAllocation: p.backend.BuildResourceAllocation(*spec, alloc),
 		ModelTemplate:      req.ModelTemplate,
 		Model:              req.Model,
+	}
+
+	if batchParamsJson, err := json.Marshal(req.BatchParams); err == nil {
+		klog.Infof("[planner] BatchParams: %s", batchParamsJson)
+	}
+
+	if aibrixBodyJson, err := json.Marshal(aibrix); err == nil {
+		klog.Infof("[planner] AIBrixExtraBody: %s", aibrixBodyJson)
 	}
 
 	batch, err := p.bc.CreateBatch(p.baseCtx, req.BatchParams, aibrix)
