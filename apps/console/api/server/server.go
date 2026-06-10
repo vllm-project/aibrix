@@ -160,7 +160,6 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 		}
 		return metadata.Pairs(
 			middleware.MetadataUserEmail, u.Email,
-			middleware.MetadataUserName, u.Name,
 			middleware.MetadataUserID, u.ID,
 		)
 	}))
