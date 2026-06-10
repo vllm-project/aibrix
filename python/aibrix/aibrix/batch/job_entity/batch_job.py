@@ -73,6 +73,7 @@ class BatchJobErrorCode(str, Enum):
     DRIVER_CONFIGURATION_ERROR = "driver_configuration_error"
     CONNECTION_ERROR = "connection_error"
     RESOURCE_CREATION_ERROR = "resource_creation_failed"
+    RESOURCE_NOTFOUND_ERROR = "resource_not_found"
     RESOURCE_DELETION_ERROR = "resource_deletion_failed"
     INVALID_DRIVER = "invalid_driver"
     UNKNOWN_ERROR = "unknown_error"

@@ -36,6 +36,7 @@ built here.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import (
@@ -50,7 +51,10 @@ from typing import (
 )
 
 from aibrix.batch.client import EndpointSource
-from aibrix.batch.job_entity import BatchJob
+from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobErrorCode
+from aibrix.logger import init_logger
+
+logger = init_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -132,6 +136,8 @@ class RuntimeBase:
     """
 
     provisions: bool = False
+    session_retry_attempts: int = 3
+    session_retry_base_delay_s: float = 2.0
 
     def cancelled(self) -> bool:
         return False
@@ -169,11 +175,82 @@ class RuntimeBase:
             "(Endpoint(source=None) + provisions=True)"
         )
 
+    @staticmethod
+    def _is_not_found_error(exc: Exception) -> bool:
+        # Runtime backends surface "resource disappeared" through a few shapes:
+        # batch-domain errors, HTTP/K8s-style 404s, filesystem not-found, and
+        # provider-specific exception names.
+        if isinstance(exc, BatchJobError):
+            return exc.code == BatchJobErrorCode.RESOURCE_NOTFOUND_ERROR.value
+        status = getattr(exc, "status", None)
+        if status in (404, "404"):
+            return True
+        status_code = getattr(exc, "status_code", None)
+        if status_code in (404, "404"):
+            return True
+        if isinstance(exc, FileNotFoundError):
+            return True
+        name = type(exc).__name__.lower()
+        return "notfound" in name or "not_found" in name
+
+    def _should_retry_wait_ready(self, exc: Exception) -> bool:
+        return self._is_not_found_error(exc)
+
+    def _should_teardown_failed_wait_ready(self, exc: Exception) -> bool:
+        # If readiness proves the resource no longer exists, there is nothing
+        # meaningful left to tear down; retry by provisioning a fresh resource.
+        return not self._is_not_found_error(exc)
+
+    async def _sleep_before_session_retry(self, attempt: int) -> None:
+        await asyncio.sleep(self.session_retry_base_delay_s * (2**attempt))
+
     @asynccontextmanager
     async def session(self, job: BatchJob, job_id: str) -> AsyncIterator[Endpoint]:
-        handle = await self._provision(job, job_id)
+        handle = None
+        max_attempts = self.session_retry_attempts + 1
+        for attempt in range(max_attempts):
+            phase = "provision"
+            try:
+                handle = await self._provision(job, job_id)
+                phase = "wait_ready"
+                await self._wait_ready(handle)
+                # Only yield a connected endpoint after both startup phases
+                # succeed within the same attempt.
+                break
+            except Exception as exc:
+                should_retry = False
+                should_teardown = handle is not None
+
+                if phase == "provision":
+                    # Provision failures are treated as transient until the
+                    # retry budget is exhausted.
+                    should_retry = attempt + 1 < max_attempts
+                elif phase == "wait_ready":
+                    # A not-found during readiness means provisioning looked
+                    # successful but the backend resource vanished before it
+                    # became reachable, so reprovision instead of failing fast.
+                    should_retry = (
+                        self._should_retry_wait_ready(exc)
+                        and attempt + 1 < max_attempts
+                    )
+                    should_teardown = self._should_teardown_failed_wait_ready(exc)
+
+                if should_teardown and handle is not None:
+                    try:
+                        await self._teardown(handle)
+                    except Exception as teardown_exc:
+                        logger.warning(
+                            "Runtime teardown failed during retry recovery; continuing with retry",
+                            job_id=job_id,
+                            phase=phase,
+                            handle=repr(handle),
+                            error=str(teardown_exc),
+                        )  # type: ignore[call-arg]
+                if not should_retry:
+                    raise
+                handle = None
+                await self._sleep_before_session_retry(attempt)
         try:
-            await self._wait_ready(handle)
             yield await self._connect(handle)
         finally:
             await self._teardown(handle)
