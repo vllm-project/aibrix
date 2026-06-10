@@ -1,3 +1,5 @@
+# Benchmarks Qwen3-8B PD routing against the AIBrix v0.6.0 release.
+# Covers 4p4d, 4p8d, 8p4d, and 8p8d deployments across request rates.
 Scenario: aibrix-routing-qwen3-8b-v0.6.0
 Tests:
 - name: v060-tc-rt-02-pd-conf-rt-04-4p4d-r8

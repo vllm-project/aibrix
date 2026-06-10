@@ -1,3 +1,5 @@
+# Benchmarks Qwen3-8B PD routing on the latest AIBrix code path.
+# Covers 4p4d, 4p8d, 8p4d, and 8p8d deployments across request rates.
 Scenario: aibrix-routing-qwen3-8b-latest
 Tests:
 - name: lat-tc-rt-02-pd-conf-rt-04-4p4d-r8
