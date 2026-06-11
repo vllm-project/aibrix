@@ -57,7 +57,7 @@ func NewDefaultExecutor(httpClient *http.Client, tracker *pd.PrefillRequestTrack
 }
 
 // Execute implements PrefillExecutor.
-func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *v1.Pod, llmEngine string) error {
+func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *v1.Pod, llmEngine string, logCtx LogContext) error {
 	handler := engine.Resolve(llmEngine)
 	payload, err := PreparePayload(routingCtx, prefillPod, llmEngine, handler)
 	if err != nil {
@@ -75,6 +75,8 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		"model_name", routingCtx.Model,
 		"prefill_pod", prefillPod.Name,
 		"prefill_url", apiURL,
+		"prefill_score_policy", logCtx.PrefillScorePolicy,
+		"decode_score_policy", logCtx.DecodeScorePolicy,
 		"outstanding_prefill_requests", e.tracker.GetPrefillRequestCountsForPod(prefillPod.Name),
 	}
 	klog.InfoS("prefill_request_start", fields...)
@@ -107,10 +109,10 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 				return
 			}
 
-			prefillEndTime := time.Now()
+			routingCtx.PrefillEndTime = time.Now()
 			completionFields = append(completionFields,
 				"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
-				"prefill_time_taken", prefillEndTime.Sub(routingCtx.PrefillStartTime),
+				"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
 				"outstanding_prefill_requests", e.tracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
 			klog.InfoS("prefill_request_end", completionFields...)
 		}()

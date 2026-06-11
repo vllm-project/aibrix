@@ -21,9 +21,15 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
+// LogContext carries router-resolved metadata included in prefill structured logs.
+type LogContext struct {
+	PrefillScorePolicy string
+	DecodeScorePolicy  string
+}
+
 // PrefillExecutor executes the prefill phase of a disaggregated-inference request.
 // Implementations are responsible for payload preparation, HTTP dispatch (async or
 // sync depending on the engine), and tracker lifecycle.
 type PrefillExecutor interface {
-	Execute(routingCtx *types.RoutingContext, prefillPod *v1.Pod, llmEngine string) error
+	Execute(routingCtx *types.RoutingContext, prefillPod *v1.Pod, llmEngine string, logCtx LogContext) error
 }
