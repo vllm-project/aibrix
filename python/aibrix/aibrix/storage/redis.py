@@ -67,10 +67,8 @@ class RedisStorage(BaseStorage):
         loop_id = id(asyncio.get_running_loop())
         redis_client = self._redis_clients.get(loop_id)
         if redis_client is None:
-            redis_client = redis.get_redis_client(
-                decode_responses=False,  # Keep as bytes
-                **self._kwargs,
-            )
+            client_kwargs = {**self._kwargs, "decode_responses": False}  # Keep as bytes
+            redis_client = redis.get_redis_client(**client_kwargs)
             self._redis_clients[loop_id] = redis_client
         return redis_client
 
