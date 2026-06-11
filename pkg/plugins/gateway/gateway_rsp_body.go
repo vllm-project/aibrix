@@ -223,7 +223,7 @@ func isLanguageRequest(requestPath string) bool {
 	return true
 }
 
-// processLanguageResponse processes output response for /chatcompletions, /completions and /embedding endpoints.
+// processLanguageResponse processes output response for /chatcompletions, /completions, /responses and /embedding endpoints.
 // nolint:nakedret
 func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_ResponseBody) (processingRes *extProcPb.ProcessingResponse, complete bool, promptTokens, completionTokens, totalTokens int64) {
 	var res *OpenAIResponse
