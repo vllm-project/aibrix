@@ -58,9 +58,7 @@ type chatReqMinimal struct {
 	StreamOptions struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options"`
-	Messages []struct {
-		Content json.RawMessage `json:"content"`
-	} `json:"messages"`
+	Messages []contentItem `json:"messages"`
 }
 
 // responsesReqMinimal captures the fields needed to route and validate an OpenAI
@@ -71,6 +69,13 @@ type responsesReqMinimal struct {
 	Model  string          `json:"model"`
 	Stream *bool           `json:"stream"`
 	Input  json.RawMessage `json:"input"`
+}
+
+// contentItem holds the raw JSON "content" field of a chat message or a Responses API
+// input item. It is shared by chatReqMinimal.Messages, parseChatMessages, and
+// parseResponsesInput.
+type contentItem struct {
+	Content json.RawMessage `json:"content"`
 }
 
 // embeddingReqMinimal captures the embedding fields needed for validation in a
@@ -84,9 +89,7 @@ type embeddingReqMinimal struct {
 // parseChatMessages extracts a single concatenated text string from the minimal
 // chat request messages. For simple string content it unquotes the JSON string
 // directly; for array/object content it writes the raw JSON bytes.
-func parseChatMessages(requestID string, msgs []struct {
-	Content json.RawMessage `json:"content"`
-}) (string, *extProcPb.ProcessingResponse) {
+func parseChatMessages(requestID string, msgs []contentItem) (string, *extProcPb.ProcessingResponse) {
 	if len(msgs) == 0 {
 		klog.ErrorS(nil, "no messages in the request body", "requestID", requestID)
 		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", "", "messages", HeaderErrorRequestBodyProcessing, "true")
@@ -138,9 +141,7 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 	// Array of input items: each item may carry a "content" field (string or array
 	// of content parts). Items without content (e.g. tool/function outputs) simply
 	// contribute nothing to the routing key.
-	var items []struct {
-		Content json.RawMessage `json:"content"`
-	}
+	var items []contentItem
 	if err := sonic.Unmarshal(input, &items); err != nil {
 		klog.ErrorS(err, "error to unmarshal responses input array", "requestID", requestID)
 		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' must be a string or an array of input items", "", "input", HeaderErrorRequestBodyProcessing, "true")
@@ -225,6 +226,11 @@ func validateResponsesRequest(requestID string, requestBody []byte) (model, mess
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		klog.ErrorS(err, "error to unmarshal responses object", "requestID", requestID, "requestBody", string(requestBody))
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	// Per the OpenAI Responses API spec, "model" is a required property.
+	if req.Model == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	model = req.Model
