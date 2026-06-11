@@ -38,6 +38,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/prefill"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/selector"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -89,15 +90,18 @@ func TestPDRouter_Route(t *testing.T) {
 		},
 	}
 
+	testTracker := pd.NewPrefillRequestTracker()
+	testClient := &http.Client{}
 	r := pdRouter{
 		cache:                 cache.NewForTest(),
 		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
-		prefillRequestTracker: pd.NewPrefillRequestTracker(),
-		httpClient:            &http.Client{},
+		prefillRequestTracker: testTracker,
+		httpClient:            testClient,
 		selectionCounts:       map[string]int64{},
 	}
 	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
+	r.prefillExecutor = prefill.NewDefaultExecutor(testClient, testTracker, prefillRequestTimeout)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -775,13 +779,17 @@ func TestDoPrefillRequest(t *testing.T) {
 	createRouter := func(pods []*v1.Pod, metricsMap map[string]map[string]metrics.MetricValue) *pdRouter {
 		c := cache.NewWithPodsMetricsForTest(pods, "m1", metricsMap)
 		tbl := prefixcacheindexer.NewPrefixHashTable()
-		return &pdRouter{
+		tracker := pd.NewPrefillRequestTracker()
+		client := &http.Client{}
+		r := &pdRouter{
 			prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), tbl),
 			prefixCacheIndexer:    tbl,
 			cache:                 c,
-			prefillRequestTracker: pd.NewPrefillRequestTracker(),
-			httpClient:            &http.Client{},
+			prefillRequestTracker: tracker,
+			httpClient:            client,
 		}
+		r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
+		return r
 	}
 
 	tests := []struct {
@@ -1340,13 +1348,16 @@ func TestVLLMIntegrationWithTestServer(t *testing.T) {
 		Context:    context.Background(),
 	}
 
+	vllmTracker := pd.NewPrefillRequestTracker()
+	vllmClient := &http.Client{}
 	router := &pdRouter{
 		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		cache:                 cache.NewWithPodsForTest(prefillPods, "test-model"),
-		prefillRequestTracker: pd.NewPrefillRequestTracker(),
-		httpClient:            &http.Client{},
+		prefillRequestTracker: vllmTracker,
+		httpClient:            vllmClient,
 	}
+	router.prefillExecutor = prefill.NewDefaultExecutor(vllmClient, vllmTracker, prefillRequestTimeout)
 
 	err := router.doPrefillRequest(routingCtx, prefillPods[0], VLLMEngine)
 	assert.NoError(t, err)
@@ -1467,13 +1478,16 @@ func TestTensorRTIntegrationWithTestServer(t *testing.T) {
 		Context:    context.Background(),
 	}
 
+	trtTracker := pd.NewPrefillRequestTracker()
+	trtClient := &http.Client{}
 	router := &pdRouter{
 		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		cache:                 cache.NewWithPodsForTest(prefillPods, "test-model"),
-		prefillRequestTracker: pd.NewPrefillRequestTracker(),
-		httpClient:            &http.Client{},
+		prefillRequestTracker: trtTracker,
+		httpClient:            trtClient,
 	}
+	router.prefillExecutor = prefill.NewDefaultExecutor(trtClient, trtTracker, prefillRequestTimeout)
 
 	err := router.doPrefillRequest(routingCtx, prefillPods[0], TensorRTLLM)
 	assert.NoError(t, err)
