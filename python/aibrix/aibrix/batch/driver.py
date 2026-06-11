@@ -58,6 +58,10 @@ class BatchDriver:
         self._context = context
         self._storage = _storage
         self._endpoint_source = endpoint_source
+        # The job entity manager running independently to monitor job states,
+        # generate job change events, and notify the batch manager.
+        self._job_entity_manager = job_entity_manager
+
         # The manager owns the entity manager from construction; the driver does
         # not keep a duplicate reference. Handler registration is deferred to
         # start() (the entity manager captures the running loop at bind time).
@@ -110,8 +114,14 @@ class BatchDriver:
     async def cancel_job(self, job_id: str) -> bool:
         return await self.run_coroutine(self._batch_manager.cancel_job(job_id))
 
-    async def list_jobs(self) -> List[BatchJob]:
-        return await self.run_coroutine(self._batch_manager.list_jobs())
+    async def list_jobs(
+        self,
+        after: Optional[str] = None,
+        limit: int = JobEntityManager.DEFAULT_JOB_PAGE_LIMIT,
+    ) -> List[BatchJob]:
+        return await self.run_coroutine(
+            self._batch_manager.list_jobs(after=after, limit=limit)
+        )
 
     async def job_committed_handler(self, job: BatchJob) -> bool:
         return await self.run_coroutine(self._batch_manager.job_committed_handler(job))
@@ -141,6 +151,10 @@ class BatchDriver:
         # captures the running loop at handler registration.
         await self.run_coroutine(self._batch_manager.bind_entity_manager())
 
+        # Start the job entity manager if it was passed.
+        if self._job_entity_manager is not None:
+            await self.run_coroutine(self._job_entity_manager.start())
+
         if self._scheduler is not None:
             logger.info("starting scheduler")
             # TODO: refactor, job level endpoint source should be removed.
@@ -160,8 +174,15 @@ class BatchDriver:
 
     async def stop(self):
         """Properly shutdown the driver and cancel running tasks"""
+        if self._job_entity_manager is not None:
+            await self.run_coroutine(self._job_entity_manager.stop())
+
         if self._scheduler is not None:
             await self.run_coroutine(self._scheduler.stop())
+            self._scheduler.reset_runtime_state()
+
+        self._batch_manager.reset_runtime_state()
+        
         if self._async_thread_loop is not None:
             self._async_thread_loop.stop()
             self._async_thread_loop = None

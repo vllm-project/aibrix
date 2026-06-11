@@ -684,8 +684,8 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
     )
 
 
-@router.post("/", include_in_schema=False)
-@router.post("")
+@router.post("/", include_in_schema=False, response_model_exclude_none=True)
+@router.post("", response_model_exclude_none=True)
 async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse:
     """Create a new batch.
 
@@ -790,7 +790,7 @@ async def _resolve_batch_job(request: Request, batch_id: str) -> Optional[BatchJ
     return await batch_driver.get_job(batch_id)
 
 
-@router.get("/{batch_id}")
+@router.get("/{batch_id}", response_model_exclude_none=True)
 async def get_batch(request: Request, batch_id: str) -> BatchResponse:
     """Retrieve a batch by ID.
 
@@ -816,7 +816,7 @@ async def get_batch(request: Request, batch_id: str) -> BatchResponse:
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post("/{batch_id}/cancel")
+@router.post("/{batch_id}/cancel", response_model_exclude_none=True)
 async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
     """Cancel a batch.
 
@@ -861,8 +861,8 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/", include_in_schema=False)
-@router.get("")
+@router.get("/", include_in_schema=False, response_model_exclude_none=True)
+@router.get("", response_model_exclude_none=True)
 async def list_batches(
     request: Request,
     after: Optional[str] = Query(None, description="Cursor for pagination"),
@@ -879,31 +879,9 @@ async def list_batches(
 
         logger.debug("Listing batches", after=after, limit=limit)  # type: ignore[call-arg]
 
-        # List still goes through BatchManager. Adding a list_by_prefix to
-        # BatchJobStore would require either an eagerly-maintained index
-        # (Redis ZSET keyed by created_at) or an S3 list-objects walk;
-        # the latter does not fit the current cursor-based pagination
-        # cheaply. Point reads already serve from the store, so the
-        # tradeoff only hurts the rare list call.
-        all_jobs: List[BatchJob] = await batch_driver.list_jobs()
-
-        # Apply cursor-based pagination
-        if after:
-            # Find the index of the job with the 'after' ID
-            after_index = -1
-            for i, job in enumerate(all_jobs):
-                if job.status.job_id == after:
-                    after_index = i
-                    break
-
-            if after_index >= 0:
-                # Start after the found job
-                all_jobs = all_jobs[after_index + 1 :]
-            else:
-                # If 'after' job not found, return empty list
-                all_jobs = []
-
-        # Apply limit
+        all_jobs: List[BatchJob] = await batch_driver.list_jobs(
+            after=after, limit=limit + 1
+        )
         jobs_page = all_jobs[:limit]
 
         # Convert to OpenAI format

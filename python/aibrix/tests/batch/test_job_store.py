@@ -14,121 +14,514 @@
 """JobStore: document CRUD delegates to the metastore (one document store);
 lifecycle events fire on writes; list_jobs is the recovery source."""
 
+import os
+from typing import Optional
+
 import pytest
 
+os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
+
 from aibrix.batch.job_entity import (
+    BatchJob,
     BatchJobEndpoint,
     BatchJobSpec,
+    BatchJobState,
     CompletionWindow,
 )
-from aibrix.batch.state import JobStore
+from aibrix.batch.state import JobEntityManager, JobStore
 from aibrix.batch.storage import batch_metastore
+from aibrix.storage import StorageType
+
+
+class FakeMetastore:
+    def __init__(self, storage_type: StorageType = StorageType.LOCAL) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.storage_type = storage_type
+
+    async def put_object(self, key: str, data, **kwargs) -> bool:
+        del kwargs
+        if isinstance(data, bytes):
+            payload = data
+        else:
+            payload = str(data).encode("utf-8")
+        self.objects[key] = payload
+        return True
+
+    async def get_object(self, key: str) -> bytes:
+        try:
+            return self.objects[key]
+        except KeyError as exc:
+            raise FileNotFoundError(key) from exc
+
+    async def delete_object(self, key: str) -> None:
+        self.objects.pop(key, None)
+
+    async def list_objects(
+        self,
+        prefix: str = "",
+        delimiter: Optional[str] = None,
+        limit: Optional[int] = None,
+        continuation_token: Optional[str] = None,
+        after_key: Optional[str] = None,
+    ) -> tuple[list[str], Optional[str]]:
+        del delimiter
+        keys = sorted(key for key in self.objects if key.startswith(prefix))
+        if continuation_token is not None:
+            offset = int(continuation_token or "0")
+        elif after_key is not None:
+            try:
+                offset = keys.index(after_key) + 1
+            except ValueError:
+                return [], None
+        else:
+            offset = 0
+        remaining_keys = keys[offset:]
+        page = remaining_keys[:limit] if limit is not None else remaining_keys
+        next_token = (
+            str(offset + len(page))
+            if limit is not None and len(remaining_keys) > len(page)
+            else None
+        )
+        return page, next_token
+
+    def get_type(self) -> StorageType:
+        return self.storage_type
 
 
 @pytest.fixture
 def fake_metastore(monkeypatch):
     """In-memory stand-in for the metastore — the single document store the
     JobStore delegates to (keyed ``batchjob:<id>`` like the real one)."""
-    store: dict = {}
+    store = FakeMetastore()
+    calls = []
 
-    async def put(batch_id, job):
-        store[batch_id] = job.copy()
+    def fake_initialize_batch_metastore(storage_type, params=None):
+        calls.append((storage_type, dict(params or {})))
+        module.batch_metastore.p_metastore = store
 
-    async def get(batch_id):
-        return store.get(batch_id)
+    from aibrix.batch.state import job_store as module
 
-    async def delete(batch_id):
-        store.pop(batch_id, None)
-
-    async def list_keys(prefix):
-        return [f"batchjob:{job_id}" for job_id in store]
-
-    monkeypatch.setattr(batch_metastore, "put_batch_job", put)
-    monkeypatch.setattr(batch_metastore, "get_batch_job", get)
-    monkeypatch.setattr(batch_metastore, "delete_batch_job", delete)
-    monkeypatch.setattr(batch_metastore, "list_metastore_keys", list_keys)
-    return store
+    monkeypatch.setattr(
+        module, "initialize_batch_metastore", fake_initialize_batch_metastore
+    )
+    monkeypatch.setattr(module.batch_metastore, "p_metastore", None)
+    return store, calls
 
 
-def _spec():
-    return BatchJobSpec(
-        input_file_id="file-1",
+def _spec(input_file_id: str = "input-1") -> BatchJobSpec:
+    return BatchJobSpec.from_strings(
+        input_file_id=input_file_id,
         endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
-        completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        completion_window=CompletionWindow.TWENTY_FOUR_HOURS,
     )
 
 
 @pytest.mark.asyncio
-async def test_submit_persists_to_metastore_and_fires_committed(fake_metastore):
-    em = JobStore()
-    committed = []
-
-    async def on_committed(job):
-        committed.append(job)
-        return True
-
-    em.on_job_committed(on_committed)
-
-    await em.submit_job("sess-1", _spec(), request_count=3)
-
-    assert len(committed) == 1
-    job_id = committed[0].job_id
-    assert job_id is not None
-    # Persisted to the (one) metastore, readable back, and listed for recovery.
-    assert len(fake_metastore) == 1
-    fetched = await em.get_job(job_id)
-    assert fetched is not None and fetched.job_id == job_id
-    listed = await em.list_jobs()
-    assert [j.job_id for j in listed] == [job_id]
+async def test_job_store_implements_job_entity_manager(fake_metastore):
+    _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+    assert isinstance(store, JobEntityManager)
 
 
 @pytest.mark.asyncio
-async def test_update_persists_and_fires_updated(fake_metastore):
-    em = JobStore()
-    committed = []
-    updated = []
+async def test_job_store_initializes_batch_metastore(fake_metastore):
+    _, calls = fake_metastore
+    JobStore(storage_type=StorageType.REDIS, params={"db": 3})
 
-    async def on_committed(job):
-        committed.append(job)
-        return True
-
-    async def on_updated(old, new):
-        updated.append((old, new))
-        return True
-
-    em.on_job_committed(on_committed)
-    em.on_job_updated(on_updated)
-
-    await em.submit_job("sess-2", _spec())
-    job = committed[0]
-    await em.update_job_status(job)
-
-    assert len(updated) == 1
-    old, new = updated[0]
-    assert old.job_id == job.job_id and new.job_id == job.job_id
+    assert calls == [(StorageType.REDIS, {"db": 3})]
 
 
 @pytest.mark.asyncio
-async def test_delete_removes_from_metastore_and_fires_deleted(fake_metastore):
-    em = JobStore()
-    committed = []
-    deleted = []
+async def test_job_store_submit_persists_to_metastore_and_fires_committed(
+    fake_metastore,
+):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+    committed_jobs = []
 
-    async def on_committed(job):
-        committed.append(job)
+    async def committed_handler(job):
+        committed_jobs.append(job)
         return True
 
-    async def on_deleted(job):
-        deleted.append(job)
+    store.on_job_committed(committed_handler)
+
+    await store.submit_job("session-1", _spec(), request_count=3)
+
+    assert len(committed_jobs) == 1
+    committed_job = committed_jobs[0]
+    assert committed_job.job_id is not None
+    assert committed_job.status.request_counts.total == 3
+
+    persisted_job = await store.get_job(committed_job.job_id, force_reload=True)
+    listed_jobs = await store.list_jobs()
+
+    assert persisted_job is not None
+    assert persisted_job.job_id == committed_job.job_id
+    assert [job.job_id for job in listed_jobs] == [committed_job.job_id]
+
+
+@pytest.mark.asyncio
+async def test_job_store_update_persists_and_fires_updated(fake_metastore):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+    committed_jobs = []
+    updated_jobs = []
+
+    async def committed_handler(job):
+        committed_jobs.append(job)
         return True
 
-    em.on_job_committed(on_committed)
-    em.on_job_deleted(on_deleted)
+    async def updated_handler(old_job, new_job):
+        updated_jobs.append((old_job, new_job))
+        return True
 
-    await em.submit_job("sess-3", _spec())
-    job = committed[0]
-    await em.delete_job(job)
+    store.on_job_committed(committed_handler)
+    store.on_job_updated(updated_handler)
 
-    assert len(deleted) == 1 and deleted[0].job_id == job.job_id
-    assert len(fake_metastore) == 0
-    assert await em.get_job(job.job_id) is None
+    await store.submit_job("session-1", _spec())
+    job = committed_jobs[0].model_copy(deep=True)
+    job.status.temp_output_file_id = "temp-output"
+
+    await store.update_job_status(job)
+
+    assert len(updated_jobs) == 1
+    old_job, new_job = updated_jobs[0]
+    assert old_job.job_id == job.job_id
+    assert new_job.job_id == job.job_id
+    assert old_job.status.temp_output_file_id is None
+    assert new_job.status.temp_output_file_id == "temp-output"
+
+    persisted_job = await store.get_job(job.job_id, force_reload=True)
+    assert persisted_job is not None
+    assert persisted_job.status.temp_output_file_id == "temp-output"
+
+
+@pytest.mark.asyncio
+async def test_job_store_delete_removes_from_metastore_and_fires_deleted(
+    fake_metastore,
+):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+    committed_jobs = []
+    deleted_jobs = []
+
+    async def committed_handler(job):
+        committed_jobs.append(job)
+        return True
+
+    async def deleted_handler(job):
+        deleted_jobs.append(job)
+        return True
+
+    store.on_job_committed(committed_handler)
+    store.on_job_deleted(deleted_handler)
+
+    await store.submit_job("session-1", _spec())
+    job = committed_jobs[0]
+
+    await store.delete_job(job)
+
+    assert len(deleted_jobs) == 1
+    assert deleted_jobs[0].job_id == job.job_id
+    assert await store.get_job(job.job_id, force_reload=True) is None
+    assert await store.list_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_job_store_delete_updates_oldest_unfinished_marker(fake_metastore):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+
+    await store.submit_job("session-1", _spec("input-1"))
+    await store.submit_job("session-2", _spec("input-2"))
+
+    listed_jobs = await store.list_jobs()
+    oldest_job = min(listed_jobs, key=lambda job: job.status.created_at)
+    expected_next_oldest = max(listed_jobs, key=lambda job: job.status.created_at)
+
+    await store.delete_job(oldest_job)
+
+    assert (
+        await batch_metastore.get_oldest_unfinished_job_created_at()
+        == expected_next_oldest.status.created_at
+    )
+
+
+@pytest.mark.asyncio
+async def test_job_store_submit_update_list_and_delete(fake_metastore):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+    committed_jobs = []
+    updated_jobs = []
+    deleted_jobs = []
+
+    async def committed_handler(job):
+        committed_jobs.append(job)
+        return True
+
+    async def updated_handler(old_job, new_job):
+        updated_jobs.append((old_job, new_job))
+        return True
+
+    async def deleted_handler(job):
+        deleted_jobs.append(job)
+        return True
+
+    store.on_job_committed(committed_handler)
+    store.on_job_updated(updated_handler)
+    store.on_job_deleted(deleted_handler)
+
+    older_spec = _spec("input-1")
+    newer_spec = _spec("input-2")
+
+    await store.submit_job("session-1", older_spec)
+    await store.submit_job("session-2", newer_spec)
+
+    first_job = committed_jobs[0]
+    second_job = committed_jobs[1]
+    listed_jobs = await store.list_jobs()
+
+    assert len(committed_jobs) == 2
+    assert {job.session_id for job in listed_jobs} == {"session-1", "session-2"}
+    assert (await store.get_job(first_job.job_id)).session_id == "session-1"
+
+    ready_job = (await store.get_job(first_job.job_id)).model_copy(deep=True)
+    ready_job.status.temp_output_file_id = "temp-output"
+    await store.update_job_ready(ready_job)
+
+    finalized_job = (await store.get_job(first_job.job_id)).model_copy(deep=True)
+    finalized_job.status.state = BatchJobState.FINALIZED
+    await store.update_job_status(finalized_job)
+
+    persisted_job = await store.get_job(first_job.job_id)
+    assert persisted_job.status.temp_output_file_id == "temp-output"
+    assert persisted_job.status.state == BatchJobState.FINALIZED
+    assert persisted_job.metadata.resource_version == "3"
+    assert updated_jobs[-1][0].metadata.resource_version == "2"
+    assert updated_jobs[-1][1].metadata.resource_version == "3"
+
+    await store.delete_job(second_job)
+
+    assert await store.get_job(second_job.job_id) is None
+    assert deleted_jobs[0].job_id == second_job.job_id
+
+
+@pytest.mark.asyncio
+async def test_batch_metastore_list_metastore_keys_supports_pagination(fake_metastore):
+    store, _ = fake_metastore
+    JobStore(storage_type=StorageType.LOCAL)
+
+    for suffix in ("001", "002", "003"):
+        await store.put_object(f"batchjob:{suffix}", "{}")
+
+    first_page, next_token = await batch_metastore.list_metastore_keys(
+        "batchjob:", limit=2
+    )
+    second_page, final_token = await batch_metastore.list_metastore_keys(
+        "batchjob:", limit=2, continuation_token=next_token
+    )
+
+    assert first_page == ["batchjob:001", "batchjob:002"]
+    assert next_token == "2"
+    assert second_page == ["batchjob:003"]
+    assert final_token is None
+
+
+@pytest.mark.asyncio
+async def test_batch_metastore_list_batch_jobs_supports_pagination(fake_metastore):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+
+    for index in range(3):
+        spec = _spec(f"input-{index}")
+        await store.submit_job(f"session-{index}", spec)
+
+    first_page = await batch_metastore.list_batch_jobs(limit=2)
+    second_page = await batch_metastore.list_batch_jobs(
+        after=first_page[-1].job_id,
+        limit=2,
+    )
+
+    combined_ids = {
+        job.job_id for job in first_page + second_page if job.job_id is not None
+    }
+
+    assert len(first_page) == 2
+    assert len(second_page) == 1
+    assert len(combined_ids) == 3
+
+
+@pytest.mark.asyncio
+async def test_batch_metastore_list_batch_jobs_prefers_cached_jobs(fake_metastore):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+
+    await store.submit_job("session-1", _spec())
+    job = (await store.list_jobs())[0]
+
+    cached_job = job.model_copy(deep=True)
+    cached_job.status.temp_output_file_id = "cached-output"
+    store.active_jobs[job.job_id] = cached_job
+
+    jobs = await batch_metastore.list_batch_jobs(
+        limit=1,
+        cached_job_getter=store.active_jobs.get,
+    )
+
+    assert jobs[0].status.temp_output_file_id == "cached-output"
+
+
+@pytest.mark.asyncio
+async def test_job_store_list_jobs_prefers_active_jobs(fake_metastore):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+
+    await store.submit_job("session-1", _spec())
+    job = (await store.list_jobs())[0]
+
+    cached_job = job.model_copy(deep=True)
+    cached_job.status.temp_output_file_id = "cached-output"
+    store.active_jobs[job.job_id] = cached_job
+
+    listed_jobs = await store.list_jobs()
+
+    assert listed_jobs[0].status.temp_output_file_id == "cached-output"
+
+
+@pytest.mark.asyncio
+async def test_job_store_start_bootstraps_unfinished_jobs(fake_metastore):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+    committed_jobs = []
+
+    async def committed_handler(job):
+        committed_jobs.append(job)
+        return True
+
+    store.on_job_committed(committed_handler)
+
+    running_spec = _spec("input-1")
+    finished_spec = _spec("input-2")
+
+    await store.submit_job("session-running", running_spec)
+    running_job = committed_jobs.pop()
+    running_job.status.state = BatchJobState.IN_PROGRESS
+    await store.update_job_status(running_job)
+
+    await store.submit_job("session-finished", finished_spec)
+    finished_job = committed_jobs.pop()
+    finished_job.status.state = BatchJobState.FINALIZED
+    await store.update_job_status(finished_job)
+
+    restarted_store = JobStore(storage_type=StorageType.LOCAL)
+    restarted_commits = []
+
+    async def restarted_committed_handler(job):
+        restarted_commits.append(job)
+        return True
+
+    restarted_store.on_job_committed(restarted_committed_handler)
+    restarted_store._refresh_interval_seconds = 3600
+
+    await restarted_store.start()
+    await restarted_store.stop()
+
+    assert (
+        await batch_metastore.get_oldest_unfinished_job_created_at()
+        == running_job.status.created_at
+    )
+    assert [job.job_id for job in restarted_commits] == [running_job.job_id]
+
+
+@pytest.mark.asyncio
+async def test_job_store_recovery_stops_after_oldest_unfinished_marker(
+    fake_metastore, monkeypatch
+):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+    jobs: list[BatchJob] = []
+    for index in range(25):
+        spec = _spec(f"input-{index}")
+        job = BatchJob.new_local(spec=spec)
+        job.session_id = f"session-{index}"
+        jobs.append(job)
+    jobs.sort(key=lambda job: job.status.created_at, reverse=True)
+    first_page = jobs[:20]
+    second_page = jobs[20:]
+    for job in first_page[3:]:
+        job.status.state = BatchJobState.FINALIZED
+    for job in second_page:
+        job.status.state = BatchJobState.FINALIZED
+    oldest_unfinished = min(job.status.created_at for job in first_page[:3])
+    await batch_metastore.set_oldest_unfinished_job_created_at(oldest_unfinished)
+
+    async def fake_list_jobs(after=None, limit=JobEntityManager.DEFAULT_JOB_PAGE_LIMIT):
+        del limit
+        if after is None:
+            return first_page
+        if after == first_page[-1].job_id:
+            return second_page
+        return []
+
+    monkeypatch.setattr(store, "list_jobs", fake_list_jobs)
+
+    recovered_jobs = await store._list_recovery_jobs()
+
+    assert [job.job_id for job in recovered_jobs] == [
+        job.job_id for job in first_page[:3]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_job_store_recovery_does_not_stop_early_without_time_ordering(
+    fake_metastore, monkeypatch
+):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+    jobs: list[BatchJob] = []
+    for index in range(25):
+        spec = _spec(f"input-{index}")
+        job = BatchJob.new_local(spec=spec)
+        job.session_id = f"session-{index}"
+        jobs.append(job)
+    jobs.sort(key=lambda job: job.status.created_at, reverse=True)
+    unfinished_jobs = jobs[:3]
+    for job in jobs[3:]:
+        job.status.state = BatchJobState.FINALIZED
+    oldest_unfinished = min(job.status.created_at for job in unfinished_jobs)
+
+    first_page = jobs[:2] + jobs[3:20] + [jobs[-1]]
+    second_page = [jobs[2]] + jobs[22:24]
+
+    async def fake_list_jobs(after=None, limit=JobEntityManager.DEFAULT_JOB_PAGE_LIMIT):
+        del limit
+        if after is None:
+            return first_page
+        if after == first_page[-1].job_id:
+            return second_page
+        return []
+
+    monkeypatch.setattr(store, "list_jobs", fake_list_jobs)
+    monkeypatch.setattr(
+        store,
+        "_supports_created_at_desc_recovery_ordering",
+        lambda: False,
+    )
+
+    recovered_jobs = await store._list_jobs_for_recovery(oldest_unfinished)
+
+    assert [job.job_id for job in recovered_jobs] == [job.job_id for job in jobs[:3]]
+
+
+@pytest.mark.asyncio
+async def test_batch_metastore_list_batch_jobs_errors_for_unsupported_ordering_backend(
+    monkeypatch,
+):
+    store = FakeMetastore(storage_type=StorageType.S3)
+    monkeypatch.setattr(batch_metastore, "p_metastore", store)
+
+    with pytest.raises(
+        RuntimeError,
+        match="cannot list batch jobs in descending created_at order",
+    ):
+        await batch_metastore.list_batch_jobs(limit=1)

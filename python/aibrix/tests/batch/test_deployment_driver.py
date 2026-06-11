@@ -61,10 +61,14 @@ class FakeEntityManager(JobEntityManager):
     async def delete_job(self, job: BatchJob):
         return None
 
-    async def get_job(self, job_id: str) -> Optional[BatchJob]:
+    async def get_job(
+        self, job_id: str, force_reload: bool = False
+    ) -> Optional[BatchJob]:
         return None
 
-    async def list_jobs(self) -> list[BatchJob]:
+    async def list_jobs(
+        self, after=None, limit=JobEntityManager.DEFAULT_JOB_PAGE_LIMIT
+    ) -> list[BatchJob]:
         return []
 
 
@@ -73,7 +77,6 @@ class FakeProgressManager:
         self.job = job
         self.failed_messages: list[str] = []
         self.validated_job_ids: list[str] = []
-        self.created_driver = None
 
     async def get_job(self, job_id: str) -> Optional[BatchJob]:
         return self.job if self.job.job_id == job_id else None
@@ -112,6 +115,9 @@ class FakeCoreV1Api:
 
     def create_namespaced_service(self, namespace: str, body: dict):
         self.created.append((namespace, body))
+
+    def read_namespaced_service(self, name: str, namespace: str):
+        return SimpleNamespace(metadata=SimpleNamespace(name=name, namespace=namespace))
 
     def delete_namespaced_service(self, name: str, namespace: str):
         self.deleted.append((namespace, name))

@@ -114,11 +114,6 @@ STORAGE_REDIS_PASSWORD = os.getenv("STORAGE_REDIS_PASSWORD") or os.getenv(
 # Database Redis Envs, other settings simply reuse Storage Redis Envs
 DB_REDIS_PREFIX = os.getenv("DB_REDIS_PREFIX", "")
 
-# Database Mongo Envs
-DB_MONGO_URI = os.getenv("DB_MONGO_URI")
-DB_MONGO_DATABASE = os.getenv("DB_MONGO_DATABASE")
-DB_MONGO_COLLECTION = os.getenv("DB_MONGO_COLLECTION")
-
 # Metric Standardizing Related Config
 # Scrape config
 METRIC_SCRAPE_PATH = os.getenv("METRIC_SCRAPE_PATH", "/metrics")
@@ -138,3 +133,4 @@ INFERENCE_ENGINE_VERSION = os.getenv("INFERENCE_ENGINE_VERSION", "0.6.1")
 INFERENCE_ENGINE_ENDPOINT = os.getenv(
     "INFERENCE_ENGINE_ENDPOINT", "http://localhost:8000"
 )
+INFERENCE_TASK_TIMEOUT = int(os.getenv("INFERENCE_TASK_TIMEOUT", "3600"))
