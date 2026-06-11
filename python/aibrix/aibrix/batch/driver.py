@@ -124,8 +124,12 @@ class BatchDriver:
             self._async_thread_loop.start()
             logger.info("Batch driver stand alone thread started")  # type: ignore[call-arg]
         else:
-            # name the loop
-            asyncio.get_running_loop().name = "default"
+            # name the loop safely
+            loop = asyncio.get_running_loop()
+            try:
+                setattr(loop, "name", "default")
+            except AttributeError:
+                pass
 
         # The batch subsystem runs on the caller's event loop (the metadata
         # service's HTTP loop). Don't set attributes on the loop object — some
