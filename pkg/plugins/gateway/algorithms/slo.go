@@ -80,6 +80,7 @@ func NewSLORouter(modelName string) (types.QueueRouter, error) {
 	rm.RegisterProvider(RouterSLOLeastLoadPulling, defaultProvider)
 	rm.Register(RouterSLOPackLoad, func() (types.Router, error) { return NewPackLoadRouter(loadProvider) })
 	rm.Register(RouterSLOLeastLoad, func() (types.Router, error) { return NewLeastLoadRouter(loadProvider) })
+	rm.Register(RouterLeastRequest, NewLeastRequestRouter)
 	rm.Init()
 
 	sloQueue, err := queue.NewSLOQueue(rm.Select, modelName)
@@ -87,7 +88,7 @@ func NewSLORouter(modelName string) (types.QueueRouter, error) {
 		return nil, err
 	}
 	router := &SLORouter{SLOQueue: sloQueue}
-	if err := SetFallback(router, RouterLeastRequest); err != nil {
+	if err := rm.SetFallback(router, RouterLeastRequest); err != nil {
 		return nil, err
 	}
 	return NewQueueRouter(router, sloQueue)
