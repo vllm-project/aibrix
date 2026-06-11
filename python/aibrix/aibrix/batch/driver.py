@@ -24,7 +24,7 @@ from aibrix.batch.job_entity import BatchJob, BatchJobSpec
 from aibrix.batch.state import JobEntityManager
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
-from aibrix.metadata.core import T
+from aibrix.metadata.core import AsyncLoopThread, T
 from aibrix.storage import StorageType
 
 logger = init_logger(__name__)
@@ -38,12 +38,20 @@ class BatchDriver:
         storage_type: StorageType = StorageType.AUTO,
         metastore_type: StorageType = StorageType.AUTO,
         endpoint_source: Optional[EndpointSource] = None,
+        stand_alone: bool = False,
         params={},
     ):
         """
         This is main entrance to bind all components to serve job requests.
 
+        Args:
+            stand_alone: Set to true to start a new thread for job management.
         """
+        self._stand_alone = stand_alone
+        self._async_thread_loop: Optional[AsyncLoopThread] = None
+        if stand_alone:
+            self._async_thread_loop = AsyncLoopThread("BatchDriver")
+
         # initialize storage and metastore singletons
         _storage.initialize_batch_storage(storage_type, params)
         _storage.initialize_batch_metastore(metastore_type, params)
@@ -109,6 +117,16 @@ class BatchDriver:
         return await self.run_coroutine(self._batch_manager.job_committed_handler(job))
 
     async def start(self):
+        # Start thread
+        if self._stand_alone:
+            if self._async_thread_loop is None:
+                self._async_thread_loop = AsyncLoopThread("BatchDriver")
+            self._async_thread_loop.start()
+            logger.info("Batch driver stand alone thread started")  # type: ignore[call-arg]
+        else:
+            # name the loop
+            asyncio.get_running_loop().name = "default"
+
         # The batch subsystem runs on the caller's event loop (the metadata
         # service's HTTP loop). Don't set attributes on the loop object — some
         # implementations (e.g. uvloop) reject it; just log for diagnostics.
@@ -140,6 +158,10 @@ class BatchDriver:
         """Properly shutdown the driver and cancel running tasks"""
         if self._scheduler is not None:
             await self.run_coroutine(self._scheduler.stop())
+        if self._async_thread_loop is not None:
+            self._async_thread_loop.stop()
+            self._async_thread_loop = None
+            logger.info("Batch driver stand alone thread stopped")  # type: ignore[call-arg]
 
     async def clear_job(self, job_id):
         """Clear job related data for testing"""
@@ -159,8 +181,10 @@ class BatchDriver:
     async def run_coroutine(self, coro: Coroutine[Any, Any, T]) -> T:
         """Await a coroutine on the driver's event loop.
 
-        The batch subsystem now runs on the caller's loop, so this is a direct
-        await. Kept as the single seam the facade/helpers dispatch through (it
-        previously marshaled onto a dedicated thread).
+        Submits a coroutine to the event loop and returns an awaitable Future.
+        This method itself MUST be awaited. (For use from async code)
         """
+        if self._async_thread_loop is not None:
+            return await self._async_thread_loop.run_coroutine(coro)
+
         return await coro
