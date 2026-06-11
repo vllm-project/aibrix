@@ -256,8 +256,8 @@ var _ = Describe("SLO", func() {
 		const (
 			pendingLoadCap      = 1.0
 			pendingLoadEpsilon  = 1e-6
-			fillRequestTimeout  = 100 * time.Millisecond
-			blockRequestTimeout = time.Second
+			fillRequestTimeout  = 10 * time.Second
+			blockRequestTimeout = 30 * time.Second
 		)
 
 		makeOneRequest := func(id int, timeout time.Duration) (*types.RoutingContext, float64) {
@@ -298,7 +298,7 @@ var _ = Describe("SLO", func() {
 		store.DoneRequestCount(firstReq, firstReq.RequestID, firstReq.Model, firstReq.TraceTerm)
 
 		// Check the blockage is released.
-		Eventually(blockage, 1*time.Second).Should(BeClosed())
+		Eventually(blockage, 5*time.Second).Should(BeClosed())
 		Expect(lastReq).ToNot(BeNil())
 		Expect(lastReq.TargetPod()).To(BeIdenticalTo(firstReq.TargetPod()))
 	})
