@@ -73,6 +73,21 @@ func NewSLORouter(modelName string) (types.QueueRouter, error) {
 		return nil, err
 	}
 
+	// Each SLORouter instance owns a private RouterManager for its internal sub-routing.
+	// We intentionally use this local rm — not defaultRM — for SetFallback below.
+	//
+	// Why: NewSLORouter is called per-model from the Kubernetes informer
+	// (cache.addPodAndModelMappingLocked), which can fire before routing.Init() has
+	// been called on defaultRM. The global SetFallback blocks on defaultRM.routerInited
+	// (5 s timeout) and fails with "router did not initialized" if Init() hasn't run yet.
+	// Using the local rm avoids that race; rm.Init() is called synchronously below, so
+	// the fallback lookup succeeds immediately.
+	//
+	// TODO: A cleaner design would either (a) guarantee routing.Init() runs before any
+	// model router is created, or (b) allow fallback routers to reference defaultRM's
+	// already-registered providers without waiting on Init(). Either change would let
+	// this fallback delegate back to defaultRM's shared least-request policy instead of
+	// each SLO router instance carrying its own copy.
 	rm := NewRouterManager()
 	defaultRouter, _ := NewLeastLoadPullingRouter(loadProvider)
 	defaultProvider := func(_ *types.RoutingContext) (types.Router, error) { return defaultRouter, nil }
@@ -80,6 +95,8 @@ func NewSLORouter(modelName string) (types.QueueRouter, error) {
 	rm.RegisterProvider(RouterSLOLeastLoadPulling, defaultProvider)
 	rm.Register(RouterSLOPackLoad, func() (types.Router, error) { return NewPackLoadRouter(loadProvider) })
 	rm.Register(RouterSLOLeastLoad, func() (types.Router, error) { return NewLeastLoadRouter(loadProvider) })
+	// RouterLeastRequest must be registered on the local rm because rm.SetFallback
+	// resolves the provider from rm.routerFactory, populated by rm.Init() below.
 	rm.Register(RouterLeastRequest, NewLeastRequestRouter)
 	rm.Init()
 

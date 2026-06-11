@@ -515,7 +515,7 @@ func (rm *RouterManager) RegisterProvider(algorithm types.RoutingAlgorithm, prov
 	defer rm.routerMu.Unlock()
 	rm.routerFactory[algorithm] = provider
 	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
-	klog.Infof("Registered router for %s", algorithm)
+	klog.V(4).Infof("Registered router for %s", algorithm)
 }
 func RegisterProvider(algorithm types.RoutingAlgorithm, provider types.RouterProviderFunc) {
 	defaultRM.RegisterProvider(algorithm, provider)
@@ -552,7 +552,7 @@ func (rm *RouterManager) Init() {
 	defer rm.routerMu.Unlock()
 	for algorithm, constructor := range rm.routerConstructor {
 		rm.routerFactory[algorithm] = constructor()
-		klog.Infof("Registered router for %s", algorithm)
+		klog.V(4).Infof("Registered router for %s", algorithm)
 	}
 	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
 	rm.routerDoneInit()
