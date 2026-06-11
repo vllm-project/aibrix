@@ -25,7 +25,7 @@ Role split (see ``JobEntityManager``):
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, List, Optional
 
 from aibrix.batch.job_entity import BatchJob, BatchJobSpec
@@ -162,5 +162,4 @@ class JobStore(JobEntityManager):
         created_at = job.status.created_at
         if created_at is not None:
             return created_at
-        payload = job.model_dump(mode="json", by_alias=True)
-        return datetime.fromisoformat(payload["status"]["createdAt"])
+        return datetime.min.replace(tzinfo=timezone.utc)

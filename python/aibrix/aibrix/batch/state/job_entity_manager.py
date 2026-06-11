@@ -120,7 +120,7 @@ class JobEntityManager(ABC):
         """
         # Keeps the loop reference to the first registration.
         # Otherwise, it will be overwritten by the next registration.
-        if self._job_committed_loop is None or update_running_loop:
+        if self._job_updated_loop is None or update_running_loop:
             self._job_updated_loop = asyncio.get_running_loop()
         logger.debug(
             "job updated handler registered",
@@ -160,7 +160,7 @@ class JobEntityManager(ABC):
         """
         # Keeps the loop reference to the first registration.
         # Otherwise, it will be overwritten by the next registration.
-        if self._job_committed_loop is None or update_running_loop:
+        if self._job_deleted_loop is None or update_running_loop:
             self._job_deleted_loop = asyncio.get_running_loop()
         logger.debug(
             "job deleted handler registered",

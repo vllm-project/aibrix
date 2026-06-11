@@ -281,16 +281,10 @@ class RedisStorage(BaseStorage):
                         after_member = after_key[len(f"{prefix}{delimiter}") :]
                     else:
                         after_member = after_key
-                    ranked_members = await redis_client.zrange(
-                        timestamp_key, 0, -1, withscores=False
-                    )
-                    decoded_members = [
-                        member.decode("utf-8") for member in ranked_members
-                    ]
-                    try:
-                        offset = decoded_members.index(after_member) + 1
-                    except ValueError:
+                    rank = await redis_client.zrank(timestamp_key, after_member)
+                    if rank is None:
                         return [], None
+                    offset = rank + 1
                 # Calculate pagination bounds
                 start = offset
                 end = offset + limit - 1 if limit is not None else -1

@@ -16,7 +16,7 @@ import asyncio
 import hashlib
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
@@ -372,7 +372,7 @@ class LocalStorage(BaseStorage):
                     return created_at
             except Exception:
                 pass
-        return datetime.now().isoformat()
+        return datetime.now(timezone.utc).isoformat()
 
     def _read_metadata_created_at(self, metadata_path: Path) -> Optional[datetime]:
         try:
