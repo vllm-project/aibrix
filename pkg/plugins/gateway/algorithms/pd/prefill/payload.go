@@ -38,6 +38,9 @@ func PreparePayload(routingCtx *types.RoutingContext, pod *v1.Pod, llmEngine str
 	if err := sonic.Unmarshal(routingCtx.ReqBody, &completionRequest); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal prefill request body: %w", err)
 	}
+	if completionRequest == nil {
+		completionRequest = make(map[string]any)
+	}
 
 	if err := handler.AugmentPrefillRequest(routingCtx, pod, completionRequest); err != nil {
 		return nil, fmt.Errorf("failed to augment prefill request for %s: %w", llmEngine, err)

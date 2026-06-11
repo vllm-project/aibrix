@@ -78,10 +78,14 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		"outstanding_prefill_requests", e.tracker.GetPrefillRequestCountsForPod(prefillPod.Name),
 	}
 	klog.InfoS("prefill_request_start", fields...)
-	// Drop the last two fields (outstanding count) before passing to the
-	// completion log; the count is re-fetched after the request finishes.
+	// Copy and drop the last two fields (outstanding count) before passing to the
+	// completion log; the count is re-fetched after the request finishes. A copy
+	// avoids aliasing the underlying array when append is called later.
+	var completionFields []interface{}
 	if len(fields) >= 2 {
-		fields = fields[:len(fields)-2]
+		completionFields = append([]interface{}{}, fields[:len(fields)-2]...)
+	} else {
+		completionFields = append([]interface{}{}, fields...)
 	}
 
 	e.tracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name)
@@ -103,17 +107,17 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 				return
 			}
 
-			routingCtx.PrefillEndTime = time.Now()
-			fields = append(fields,
+			prefillEndTime := time.Now()
+			completionFields = append(completionFields,
 				"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
-				"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
+				"prefill_time_taken", prefillEndTime.Sub(routingCtx.PrefillStartTime),
 				"outstanding_prefill_requests", e.tracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
-			klog.InfoS("prefill_request_end", fields...)
+			klog.InfoS("prefill_request_end", completionFields...)
 		}()
 		return nil
 	}
 
-	return e.handleSync(routingCtx, prefillPod, llmEngine, apiURL, payload, fields, handler.MergePrefillResponse, llmEngine+" response")
+	return e.handleSync(routingCtx, prefillPod, llmEngine, apiURL, payload, completionFields, handler.MergePrefillResponse, llmEngine+" response")
 }
 
 // handleSync executes a synchronous HTTP prefill and optionally post-processes
