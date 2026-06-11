@@ -23,12 +23,14 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/packages/respjson"
+	"github.com/vllm-project/aibrix/apps/console/api/common"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	pu "github.com/vllm-project/aibrix/apps/console/api/planner/utils"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 	"github.com/vllm-project/aibrix/apps/console/api/utils"
 	"gorm.io/datatypes"
+	"k8s.io/klog/v2"
 )
 
 // queuedJob is the Planner's in-memory snapshot of a Job.
@@ -63,6 +65,7 @@ type queuedJob struct {
 	// readyToSubmit indicates provision is ready and job can be submitted to MDS
 	// This is a runtime-only flag, not persisted to database
 	readyToSubmit bool
+	extraBody     json.RawMessage
 }
 
 func (j *queuedJob) Key() string {
@@ -178,10 +181,21 @@ func modelToJob(rec *models.Job) *queuedJob {
 			Version: rec.ModelTemplateVersion,
 		}
 	}
+
+	var extraBody json.RawMessage
 	if len(rec.Metadata) > 0 {
 		var m map[string]string
 		if err := json.Unmarshal(rec.Metadata, &m); err == nil {
+			// extraBody is embedded in metadata
+			if extraBodyJson, ok := m[common.BatchExtraBodyField]; ok {
+				if len(extraBodyJson) > 0 {
+					extraBody = json.RawMessage(extraBodyJson)
+				}
+				delete(m, common.BatchExtraBodyField)
+			}
 			req.BatchParams.Metadata = m
+		} else {
+			klog.Errorf("modelToJob: failed to marshal metadata: %v", err)
 		}
 	}
 	// Hydrate batch object from MDS-owned fields stored in DB
@@ -189,6 +203,10 @@ func modelToJob(rec *models.Job) *queuedJob {
 	if batch != nil {
 		batch.Metadata = req.BatchParams.Metadata
 		constructBatchJson(batch)
+		// Inject extraBody into batch's raw JSON so ParseBatchExtraBody can extract it
+		if extraBody != nil {
+			batch = common.InjectExtraBodyToBatch(batch, extraBody)
+		}
 	}
 	return &queuedJob{
 		req:                 req,
@@ -207,6 +225,7 @@ func modelToJob(rec *models.Job) *queuedJob {
 		expiredAt:           utils.TimeOrZero(rec.ExpiredAt),
 		completedAt:         utils.TimeOrZero(rec.CompletedAt),
 		batch:               batch,
+		extraBody:           extraBody,
 	}
 }
 
@@ -238,16 +257,20 @@ func jobToModel(j *queuedJob) *models.Job {
 		rec.ModelTemplateVersion = j.req.ModelTemplate.Version
 	}
 	if md := j.req.BatchParams.Metadata; len(md) > 0 {
+		// extraBody is embedded in metadata
+		if j.extraBody != nil {
+			md[common.BatchExtraBodyField] = string(j.extraBody)
+		}
 		if b, err := json.Marshal(md); err == nil {
 			rec.Metadata = datatypes.JSON(b)
 		}
 		// Handler-packed keys under aibrix.console.* (legacy: bare "display_name").
-		if v := md["aibrix.console.display_name"]; v != "" {
+		if v := md[common.MetadataConsoleDisplayName]; v != "" {
 			rec.Name = v
-		} else if v := md["display_name"]; v != "" {
+		} else if v := md[common.MetadataDisplayName]; v != "" {
 			rec.Name = v
 		}
-		rec.CreatedBy = md["aibrix.console.created_by"]
+		rec.CreatedBy = md[common.MetadataConsoleCreatedBy]
 	}
 	return rec
 }

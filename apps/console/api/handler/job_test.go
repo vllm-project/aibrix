@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/vllm-project/aibrix/apps/console/api/common"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
@@ -82,7 +83,7 @@ func plannerJobWithOwner(jobID, owner string) *plannerapi.Job {
 			CompletionWindow: "24h",
 			Status:           openai.BatchStatusValidating,
 			Metadata: shared.Metadata{
-				metadataConsoleCreatedBy: owner,
+				common.MetadataConsoleCreatedBy: owner,
 			},
 		},
 	}

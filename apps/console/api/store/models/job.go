@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/vllm-project/aibrix/apps/console/api/common"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/utils"
 	"gorm.io/datatypes"
@@ -107,6 +108,12 @@ func (j *Job) FromPB(src *pb.Job) error {
 	}
 	j.Usage = usage
 
+	if len(src.ExtraBody) > 0 && src.ExtraBody[common.AIBrixExtraBodyField] != "" {
+		if src.Metadata == nil {
+			src.Metadata = make(map[string]string)
+		}
+		src.Metadata[common.BatchExtraBodyField] = src.ExtraBody[common.AIBrixExtraBodyField]
+	}
 	metadata, err := jsonMarshalToDatatype(src.Metadata)
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
@@ -148,9 +155,15 @@ func (j *Job) ToPB() (*pb.Job, error) {
 	}
 
 	var metadata map[string]string
+	var extraBody map[string]string
 	if len(j.Metadata) > 0 {
 		if err := json.Unmarshal(j.Metadata, &metadata); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+		}
+		if aibrixExtraBody, ok := metadata[common.BatchExtraBodyField]; ok {
+			extraBody = make(map[string]string)
+			extraBody[common.AIBrixExtraBodyField] = aibrixExtraBody
+			delete(metadata, common.BatchExtraBodyField)
 		}
 	}
 
@@ -189,5 +202,6 @@ func (j *Job) ToPB() (*pb.Job, error) {
 		ResourceFailedAt:     utils.TimeToUnix(j.ResourceFailedAt),
 		SubmitFailedAt:       utils.TimeToUnix(j.SubmitFailedAt),
 		CancelRequestedAt:    utils.TimeToUnix(j.CancelRequestedAt),
+		ExtraBody:            extraBody,
 	}, nil
 }
