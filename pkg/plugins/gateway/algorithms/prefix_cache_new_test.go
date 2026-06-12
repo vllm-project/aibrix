@@ -111,9 +111,9 @@ func TestPrefixCacheRouterConfiguration(t *testing.T) {
 					tokenizer: tok,
 				}
 				kvSyncRouter := &kvSyncPrefixCacheRouter{
-					cache:          c,
-					tokenizerPool:  mockPool,
-					syncIndexer: syncindexer.NewSyncPrefixHashTable(),
+					cache:         c,
+					tokenizerPool: mockPool,
+					syncIndexer:   syncindexer.NewSyncPrefixHashTable(),
 				}
 				router.kvSyncRouter = kvSyncRouter
 			}
@@ -183,9 +183,9 @@ func TestPrefixCacheRouterWithSyncIndexer(t *testing.T) {
 
 	// Create router with sync indexer
 	kvSyncRouter := &kvSyncPrefixCacheRouter{
-		cache:          c,
-		tokenizerPool:  mockPool,
-		syncIndexer: syncindexer.NewSyncPrefixHashTable(),
+		cache:         c,
+		tokenizerPool: mockPool,
+		syncIndexer:   syncindexer.NewSyncPrefixHashTable(),
 	}
 
 	router := prefixCacheRouter{
@@ -317,9 +317,9 @@ func TestPrefixCacheRouterFallback(t *testing.T) {
 
 	// Test with KV sync but no indexer (should cause error)
 	kvSyncRouterNoIndexer := &kvSyncPrefixCacheRouter{
-		cache:          c,
-		tokenizerPool:  mockPool,
-		syncIndexer: nil, // No indexer
+		cache:         c,
+		tokenizerPool: mockPool,
+		syncIndexer:   nil, // No indexer
 	}
 
 	router := prefixCacheRouter{
@@ -644,9 +644,9 @@ func TestPrefixCacheRouterWithRemoteTokenizer(t *testing.T) {
 
 	// Create KV sync router with mock tokenizer pool
 	kvSyncRouter := &kvSyncPrefixCacheRouter{
-		cache:          c,
-		tokenizerPool:  mockPool,
-		syncIndexer: syncIdx,
+		cache:         c,
+		tokenizerPool: mockPool,
+		syncIndexer:   syncIdx,
 	}
 
 	// Create router with remote tokenizer
@@ -737,9 +737,9 @@ func TestPrefixCacheRouterEdgeCases(t *testing.T) {
 					tokenizer: tok,
 				}
 				kvSyncRouter := &kvSyncPrefixCacheRouter{
-					cache:          c,
-					tokenizerPool:  mockPool,
-					syncIndexer: nil, // nil indexer to test error
+					cache:         c,
+					tokenizerPool: mockPool,
+					syncIndexer:   nil, // nil indexer to test error
 				}
 
 				return prefixCacheRouter{
@@ -931,9 +931,9 @@ func TestPrefixCacheRouterConcurrency(t *testing.T) {
 					tokenizer: tok,
 				}
 				kvSyncRouter := &kvSyncPrefixCacheRouter{
-					cache:          c,
-					tokenizerPool:  mockPool,
-					syncIndexer: syncindexer.NewSyncPrefixHashTable(),
+					cache:         c,
+					tokenizerPool: mockPool,
+					syncIndexer:   syncindexer.NewSyncPrefixHashTable(),
 				}
 				router.kvSyncRouter = kvSyncRouter
 			}

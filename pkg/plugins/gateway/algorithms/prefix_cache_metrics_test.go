@@ -41,7 +41,7 @@ func TestPrefixCacheMetricsAlwaysRegistered(t *testing.T) {
 
 	recordRoutingDecision("test-model", 50, false)
 	recordRoutingSelection("test-model", "prefix_match", false)
-	recordRoutingError("test-model", "no_target_pod")
+	recordRoutingError("test-model", "no_target_pod", false)
 	recordLoadImbalance("test-model", false)
 }
 
@@ -49,14 +49,16 @@ func TestPrefixCacheMetricsNoOpWhenNotInitialized(t *testing.T) {
 	prefixCacheMetrics = nil
 	prefixCacheMetricsOnce = sync.Once{}
 
-	if prefixCacheMetrics != nil {
-		t.Fatal("Expected metrics to be nil before initialization")
-	}
-
+	// All record helpers must be no-ops and not panic when metrics are nil.
 	recordRoutingDecision("test-model", 50, false)
 	recordRoutingSelection("test-model", "prefix_match", false)
-	recordRoutingError("test-model", "no_target_pod")
+	recordRoutingError("test-model", "no_target_pod", false)
 	recordLoadImbalance("test-model", false)
+
+	// Confirm that no helper silently initialised the global.
+	if prefixCacheMetrics != nil {
+		t.Fatal("record helpers must not initialize metrics")
+	}
 }
 
 func TestRecordRoutingDecisionBuckets(t *testing.T) {
@@ -104,7 +106,7 @@ func TestConcurrentPrefixCacheMetricsAccess(t *testing.T) {
 			for j := 0; j < 100; j++ {
 				recordRoutingDecision("test-model", j%101, j%2 == 0)
 				recordRoutingSelection("test-model", "prefix_match", j%2 == 0)
-				recordRoutingError("test-model", "no_target_pod")
+				recordRoutingError("test-model", "no_target_pod", j%2 == 0)
 				recordLoadImbalance("test-model", j%2 == 0)
 			}
 			done <- true
