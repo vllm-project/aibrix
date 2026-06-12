@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/status"
 	"k8s.io/utils/lru"
 
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
@@ -39,14 +40,16 @@ const defaultK8sClientsetCacheSize = 128
 type k8sProvisioner struct {
 	clientsetCache *lru.Cache
 	store          store.Store
+	injector       error_injection.Injector
 	mu             sync.RWMutex
 }
 
 // newProvisioner creates a new Kubernetes provisioner.
-func newProvisioner(s store.Store) (provisioner.Provisioner, error) {
+func newProvisioner(s store.Store, injector error_injection.Injector) (provisioner.Provisioner, error) {
 	return &k8sProvisioner{
 		clientsetCache: lru.New(defaultK8sClientsetCacheSize),
 		store:          s,
+		injector:       injector,
 	}, nil
 }
 
@@ -57,6 +60,12 @@ func (p *k8sProvisioner) Type() types.ResourceProvisionType {
 
 // Provision creates a provision result without actually creating pods.
 func (p *k8sProvisioner) Provision(ctx context.Context, req *types.ResourceProvision) (*types.ProvisionResult, error) {
+	if p.injector != nil {
+		if err := p.injector.CheckPoint(ctx, error_injection.POINT_RM_PROVISION); err != nil {
+			return nil, err
+		}
+	}
+
 	if req == nil {
 		return nil, types.ErrInvalidArgs
 	}
@@ -171,6 +180,12 @@ func normalizeK8sCredentialForCache(credential *types.ResourceCredential) (strin
 
 // Release marks the provision as released.
 func (p *k8sProvisioner) Release(ctx context.Context, provisionID string) error {
+	if p.injector != nil {
+		if err := p.injector.CheckPoint(ctx, error_injection.POINT_RM_RELEASE); err != nil {
+			return err
+		}
+	}
+
 	exists, err := p.store.ExistsProvision(ctx, provisionID)
 	if err != nil {
 		return fmt.Errorf("check provision exists: %w", err)
@@ -184,6 +199,12 @@ func (p *k8sProvisioner) Release(ctx context.Context, provisionID string) error 
 
 // List retrieves provisions matching the given criteria.
 func (p *k8sProvisioner) List(ctx context.Context, opts *types.ListOptions) ([]*types.ProvisionResult, error) {
+	if p.injector != nil {
+		if err := p.injector.CheckPoint(ctx, error_injection.POINT_RM_LIST); err != nil {
+			return nil, err
+		}
+	}
+
 	if opts == nil {
 		opts = &types.ListOptions{}
 	}

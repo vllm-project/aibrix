@@ -33,6 +33,8 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 	"github.com/vllm-project/aibrix/apps/console/api/utils"
+
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 )
 
 const (
@@ -69,6 +71,9 @@ type Planner struct {
 
 	mu   sync.RWMutex          // guards jobs
 	jobs map[string]*queuedJob // JobID -> state
+
+	// injector for error injection testing
+	injector error_injection.Injector
 }
 
 // PlannerConfig holds configuration for creating a Planner.
@@ -77,9 +82,10 @@ type PlannerConfig struct {
 	Provisioner            provisioner.Provisioner
 	Store                  store.Store
 	PolicyType             PlanningPolicyType
-	WorkerCount            int           // concurrent job processing, default 10
-	PlanningInterval       time.Duration // planning loop interval, default 60s
-	MaxConcurrentProvision int           // max concurrent provisioning jobs, default 1
+	WorkerCount            int                      // concurrent job processing, default 10
+	PlanningInterval       time.Duration            // planning loop interval, default 60s
+	MaxConcurrentProvision int                      // max concurrent provisioning jobs, default 1
+	Injector               error_injection.Injector // error injection for testing
 }
 
 // DefaultPlannerConfig returns a PlannerConfig with default values.
@@ -128,6 +134,7 @@ func NewPlanner(cfg PlannerConfig) *Planner {
 		runningQueue: pu.NewPriorityQueue[*queuedJob](),
 		jobs:         make(map[string]*queuedJob),
 		isRunning:    atomic.Bool{},
+		injector:     cfg.Injector,
 	}
 
 	// Planning loop
@@ -181,11 +188,11 @@ func (q *Planner) triggerPlanning() {
 // reason string ("wait failure", "CreateBatch failure", "cancel-race",
 // "cancel submitted") appears in the log line so each call site is
 // self-identifying.
-func (q *Planner) releaseAfter(jobID, provisionID, reason string) {
+func (q *Planner) releaseAfter(ctx context.Context, jobID, provisionID, reason string) {
 	if q.prov == nil || provisionID == "" {
 		return
 	}
-	if err := q.prov.Release(q.baseCtx, provisionID); err != nil {
+	if err := q.prov.Release(ctx, provisionID); err != nil {
 		klog.Warningf("[planner] release after %s job_id=%q provision_id=%q: %v",
 			reason, jobID, provisionID, err)
 	} else {
@@ -193,7 +200,7 @@ func (q *Planner) releaseAfter(jobID, provisionID, reason string) {
 	}
 }
 
-func (q *Planner) markFailed(job *queuedJob, status plannerapi.JobStatus, err error) {
+func (q *Planner) markFailed(ctx context.Context, job *queuedJob, status plannerapi.JobStatus, err error) {
 	job.mu.Lock()
 	if job.status == plannerapi.JobStatusCancelling {
 		status = plannerapi.JobStatusCancelled
@@ -216,14 +223,14 @@ func (q *Planner) markFailed(job *queuedJob, status plannerapi.JobStatus, err er
 	}
 	job.mu.Unlock()
 
-	q.persist(job)
+	q.persist(ctx, job)
 
 	if provisionID != "" {
-		q.releaseAfter(jobID, provisionID, err.Error())
+		q.releaseAfter(ctx, jobID, provisionID, err.Error())
 	}
 	if batchID != "" {
 		klog.Infof("[planner] cancel submitted job_id=%q batch_id=%q", jobID, batchID)
-		_, err := q.bc.CancelBatch(q.baseCtx, batchID)
+		_, err := q.bc.CancelBatch(ctx, batchID)
 		if err != nil {
 			klog.Warningf("[planner] CancelBatch failed for job_id=%q: %v", jobID, err)
 		}
@@ -233,16 +240,17 @@ func (q *Planner) markFailed(job *queuedJob, status plannerapi.JobStatus, err er
 }
 
 // persist writes the in-memory queuedJob snapshot to the store.
-func (q *Planner) persist(job *queuedJob) {
+func (q *Planner) persist(ctx context.Context, job *queuedJob) {
 	if q.store == nil {
 		return
 	}
+
 	job.mu.RLock()
 	jobID := job.req.JobID
 	rec := jobToModel(job)
 	job.mu.RUnlock()
 
-	if err := q.store.UpsertJob(q.baseCtx, rec); err != nil {
+	if err := q.store.UpsertJob(ctx, rec); err != nil {
 		klog.Warningf("[planner] persist job_id=%q: %v", jobID, err)
 	}
 }
@@ -254,6 +262,13 @@ func (q *Planner) persist(job *queuedJob) {
 //
 // Recover is supposed to be invoked once at startup. No locks are held.
 func (q *Planner) Recover(ctx context.Context) error {
+	// CheckPoint: planner.recover (for testing recovery behavior)
+	if q.injector != nil {
+		if err := q.injector.CheckPoint(ctx, error_injection.POINT_PLANNER_RECOVER); err != nil {
+			return err
+		}
+	}
+
 	if q.store == nil {
 		return q.Start(ctx)
 	}
@@ -311,6 +326,14 @@ func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (
 		return nil, fmt.Errorf("planner closed: %w", err)
 	}
 
+	// CheckPoint: planner.enqueue
+	if q.injector != nil {
+		ctx = error_injection.WithInjectionContext(ctx, req.InjectionConfig)
+		if err := q.injector.CheckPoint(ctx, error_injection.POINT_PLANNER_ENQUEUE); err != nil {
+			return nil, err
+		}
+	}
+
 	now := time.Now().UTC()
 	q.mu.Lock()
 	if _, exists := q.jobs[req.JobID]; exists {
@@ -333,7 +356,7 @@ func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (
 	q.pendingQueue.Push(job, 0)
 
 	// Persist to store
-	q.persist(job)
+	q.persist(ctx, job)
 
 	// Trigger immediate planning cycle
 	q.triggerPlanning()
@@ -418,6 +441,14 @@ func (q *Planner) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, er
 	if jobID == "" {
 		return nil, fmt.Errorf("%w: empty job_id", plannerapi.ErrInvalidJob)
 	}
+
+	// CheckPoint: planner.cancel
+	if q.injector != nil {
+		if err := q.injector.CheckPoint(ctx, error_injection.POINT_PLANNER_CANCEL); err != nil {
+			return nil, err
+		}
+	}
+
 	q.mu.RLock()
 	job, ok := q.jobs[jobID]
 	if !ok {
@@ -429,6 +460,7 @@ func (q *Planner) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, er
 
 	now := time.Now().UTC()
 	job.mu.Lock()
+	ctx = error_injection.WithInjectionContext(ctx, job.req.InjectionConfig)
 	status := job.status
 	req := job.req
 	queuedAt := job.queuedAt
@@ -448,7 +480,7 @@ func (q *Planner) Cancel(ctx context.Context, jobID string) (*plannerapi.Job, er
 	state := jobStateSnapshot(job)
 	job.mu.Unlock()
 
-	q.persist(job)
+	q.persist(ctx, job)
 	klog.Infof("[planner] cancelling in-progress job_id=%q prior_status=%s", jobID, status)
 
 	// Return with status cancelled

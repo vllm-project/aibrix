@@ -131,6 +131,9 @@ type Config struct {
 	// seeding on startup; future dev-only behaviors should hang off the same
 	// flag so a single switch covers the "I'm running this locally" intent.
 	DevMode bool
+
+	// ErrorInjectionEnabled controls whether error injection is enabled.
+	ErrorInjectionEnabled bool
 }
 
 // Load reads configuration from environment variables and applies sensible defaults.
@@ -187,6 +190,7 @@ func Load() (*Config, error) {
 		StaticFilesDir:                      envOrDefault("STATIC_FILES_DIR", ""),
 		AllowedOrigins:                      envOrDefault("ALLOWED_ORIGINS", ""),
 		DevMode:                             envBool("DEV_MODE", false),
+		ErrorInjectionEnabled:               envBool("ERROR_INJECTION_ENABLED", false),
 	}, nil
 }
 
