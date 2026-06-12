@@ -14,13 +14,15 @@
 
 import copy
 import random
+import subprocess
+import sys
 from typing import Sequence
 
 import pytest
 import torch
 
 from aibrix_kvcache import TokenListView
-from aibrix_kvcache.cache_hashable import BlockHashes
+from aibrix_kvcache.cache_hashable import BlockHashes, KVCacheKey
 from aibrix_kvcache.l1 import L1Cache
 from aibrix_kvcache.memory import (
     ManagedMemoryRegion, MemoryRegion, TensorPoolAllocator
@@ -61,6 +63,36 @@ def test_cache_initialization(cache_conf_fixture):
 
     assert cache.capacity_nbytes == capacity_nbytes
     assert cache.block_shape == tuple(shape)
+
+
+def test_block_hashes_use_full_sequence_for_identity():
+    first = BlockHashes(["hA", "hB", "hC"], 16)
+    second = BlockHashes(["hX", "hY", "hC"], 16)
+
+    assert first != second
+
+
+def test_block_cache_key_includes_prefix():
+    block_ntokens = 16
+    first = BlockHashes(["hA", "hB", "hC"], block_ntokens)
+    second = BlockHashes(["hX", "hY", "hC"], block_ntokens)
+
+    first_key = KVCacheKey(first[:32], first[32:48])
+    second_key = KVCacheKey(second[:32], second[32:48])
+
+    assert first_key != second_key
+    assert {first_key: "first"}.get(second_key) is None
+
+
+def test_block_hashes_hash_is_stable_across_processes():
+    code = (
+        "from aibrix_kvcache.cache_hashable import BlockHashes; "
+        "print(hash(BlockHashes(['hA', 'hB', 'hC'], 16)))"
+    )
+    first = subprocess.check_output([sys.executable, "-c", code], text=True)
+    second = subprocess.check_output([sys.executable, "-c", code], text=True)
+
+    assert first == second
 
 
 def test_put_and_get_aligned(cache_key_fixture, cache_conf_fixture):
