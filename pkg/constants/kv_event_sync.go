@@ -45,10 +45,6 @@ const (
 	// Comma-separated list of ZMQ addresses to subscribe to
 	EnvPrefixCacheKVEventSubscribeAddrs = "AIBRIX_PREFIX_CACHE_KV_EVENT_SUBSCRIBE_ADDRS"
 
-	// EnvPrefixCacheLocalRouterMetricsEnabled enables prefix cache metrics
-	// Added as part of KV Event Sync to control metrics registration
-	EnvPrefixCacheLocalRouterMetricsEnabled = "AIBRIX_PREFIX_CACHE_LOCAL_ROUTER_METRICS_ENABLED"
-
 	// EnvPrefixCacheUseRemoteTokenizer enables remote tokenizer usage
 	// When true, uses remote tokenizer service instead of local tokenization
 	EnvPrefixCacheUseRemoteTokenizer = "AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER"

@@ -19,116 +19,55 @@ package routingalgorithms
 import (
 	"sync"
 	"testing"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
-func TestPrefixCacheMetricsNotRegisteredByDefault(t *testing.T) {
-	// Reset global state for testing
+func TestPrefixCacheMetricsAlwaysRegistered(t *testing.T) {
 	prefixCacheMetrics = nil
 	prefixCacheMetricsOnce = sync.Once{}
 
-	// Ensure metrics are not enabled
-	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "false")
-
-	// Try to initialize metrics
 	err := initializePrefixCacheMetrics()
 	if err != nil {
 		t.Fatalf("Failed to initialize metrics: %v", err)
 	}
 
-	// Verify metrics were NOT created
-	if prefixCacheMetrics != nil {
-		t.Fatal("Expected metrics to be nil when disabled")
-	}
-
-	// Create a new registry to check metrics
-	registry := prometheus.NewRegistry()
-
-	// Gather all metrics
-	metricFamilies, err := registry.Gather()
-	if err != nil {
-		t.Fatalf("Failed to gather metrics: %v", err)
-	}
-
-	// Check that no prefix cache metrics are registered
-	for _, mf := range metricFamilies {
-		name := mf.GetName()
-		if name == "aibrix_prefix_cache_routing_decisions_total" ||
-			name == "aibrix_prefix_cache_indexer_status" ||
-			name == "aibrix_prefix_cache_routing_latency_seconds" {
-			t.Errorf("Found prefix cache metric %s when none should be registered", name)
-		}
-	}
-}
-
-func TestPrefixCacheMetricsRegisteredWhenEnabled(t *testing.T) {
-	// Reset global state for testing
-	prefixCacheMetrics = nil
-	prefixCacheMetricsOnce = sync.Once{}
-
-	// Enable metrics
-	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "true")
-
-	// Initialize metrics
-	err := initializePrefixCacheMetrics()
-	if err != nil {
-		t.Fatalf("Failed to initialize metrics: %v", err)
-	}
-
-	// Verify metrics were created
 	if prefixCacheMetrics == nil {
-		t.Fatal("Expected metrics to be created when enabled")
+		t.Fatal("Expected metrics to be registered")
 	}
 
-	// Verify we can get metrics
 	metrics := getPrefixCacheMetrics()
 	if metrics == nil {
 		t.Fatal("Expected to get metrics after initialization")
 	}
 
-	// Test that metric operations don't panic
 	recordRoutingDecision("test-model", 50, false)
-	recordRoutingDecision("test-model", 100, true)
-	recordRoutingDecision("test-model", 0, false)
+	recordRoutingSelection("test-model", "prefix_match", false)
+	recordRoutingError("test-model", "no_target_pod")
+	recordLoadImbalance("test-model", false)
 }
 
 func TestPrefixCacheMetricsNoOpWhenNotInitialized(t *testing.T) {
-	// Reset global state for testing
 	prefixCacheMetrics = nil
 	prefixCacheMetricsOnce = sync.Once{}
 
-	// Ensure metrics are not enabled
-	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "false")
-
-	// Initialize (should be no-op)
-	err := initializePrefixCacheMetrics()
-	if err != nil {
-		t.Fatalf("Failed to initialize metrics: %v", err)
+	if prefixCacheMetrics != nil {
+		t.Fatal("Expected metrics to be nil before initialization")
 	}
 
-	// All operations should be no-ops and not panic
 	recordRoutingDecision("test-model", 50, false)
-	recordRoutingDecision("test-model", 100, true)
-	recordRoutingDecision("test-model", 0, false)
+	recordRoutingSelection("test-model", "prefix_match", false)
+	recordRoutingError("test-model", "no_target_pod")
+	recordLoadImbalance("test-model", false)
 }
 
 func TestRecordRoutingDecisionBuckets(t *testing.T) {
-	// Reset global state for testing
 	prefixCacheMetrics = nil
 	prefixCacheMetricsOnce = sync.Once{}
 
-	// Enable metrics
-	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "true")
-
-	// Initialize metrics
 	err := initializePrefixCacheMetrics()
 	if err != nil {
 		t.Fatalf("Failed to initialize metrics: %v", err)
 	}
 
-	// Test all bucket ranges
 	testCases := []struct {
 		matchPercent   int
 		expectedBucket string
@@ -147,37 +86,31 @@ func TestRecordRoutingDecisionBuckets(t *testing.T) {
 
 	for _, tc := range testCases {
 		recordRoutingDecision("test-model", tc.matchPercent, false)
-		// Note: In a real test, we would verify the metric was recorded
-		// with the correct bucket label
 	}
 }
 
 func TestConcurrentPrefixCacheMetricsAccess(t *testing.T) {
-	// Reset global state for testing
 	prefixCacheMetrics = nil
 	prefixCacheMetricsOnce = sync.Once{}
 
-	// Enable metrics
-	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "true")
-
-	// Initialize metrics
 	err := initializePrefixCacheMetrics()
 	if err != nil {
 		t.Fatalf("Failed to initialize metrics: %v", err)
 	}
 
-	// Run concurrent operations
 	done := make(chan bool)
 	for i := 0; i < 10; i++ {
 		go func(id int) {
 			for j := 0; j < 100; j++ {
 				recordRoutingDecision("test-model", j%101, j%2 == 0)
+				recordRoutingSelection("test-model", "prefix_match", j%2 == 0)
+				recordRoutingError("test-model", "no_target_pod")
+				recordLoadImbalance("test-model", j%2 == 0)
 			}
 			done <- true
 		}(i)
 	}
 
-	// Wait for all goroutines to complete
 	for i := 0; i < 10; i++ {
 		<-done
 	}
