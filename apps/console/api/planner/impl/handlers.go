@@ -274,7 +274,8 @@ func submitToMDS(p *Planner, job *queuedJob) {
 		klog.Infof("[planner] BatchParams: %s", batchParamsJson)
 	}
 
-	if aibrixBodyJson, err := json.Marshal(aibrix); err == nil {
+	var aibrixBodyJson []byte
+	if aibrixBodyJson, err = json.Marshal(aibrix); err == nil {
 		klog.Infof("[planner] AIBrixExtraBody: %s", aibrixBodyJson)
 	}
 
@@ -297,6 +298,7 @@ func submitToMDS(p *Planner, job *queuedJob) {
 	job.batch = batch
 	job.submittingAt = time.Now().UTC()
 	job.readyToSubmit = false // Clear flag after submission
+	job.extraBody = aibrixBodyJson
 	if job.status == plannerapi.JobStatusCancelling {
 		job.mu.Unlock()
 		handleCleanup(p, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)

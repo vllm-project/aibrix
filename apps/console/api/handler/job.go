@@ -32,7 +32,6 @@ limitations under the License.
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -50,25 +49,17 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/apps/console/api/common"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
+	"github.com/vllm-project/aibrix/apps/console/api/utils"
 )
 
-// Console-owned fields we stash on the OpenAI batch.metadata map. Namespaced
-// to keep them out of user-supplied metadata's key space. The bare
-// "display_name" key is kept for backwards compatibility with batches
-// created by older console builds.
 const (
-	metadataDisplayName            = "display_name" // legacy fallback
-	metadataConsoleDisplayName     = "aibrix.console.display_name"
-	metadataConsoleCreatedBy       = "aibrix.console.created_by"
-	metadataConsoleTemplateName    = "aibrix.console.template_name"
-	metadataConsoleTemplateVersion = "aibrix.console.template_version"
-	defaultListLimit               = 20
-	jsonNullLiteral                = "null"
+	defaultListLimit = 20
 )
 
 // JobHandler implements console.v1.JobService.
@@ -205,17 +196,17 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	// reconcile / annotation work; see job.go:UpsertJob comment.
 	metadata := map[string]string{}
 	if req.Name != "" {
-		metadata[metadataConsoleDisplayName] = req.Name
-		metadata[metadataDisplayName] = req.Name // legacy key, kept for back-compat reads
+		metadata[common.MetadataConsoleDisplayName] = req.Name
+		metadata[common.MetadataDisplayName] = req.Name // legacy key, kept for back-compat reads
 	}
 	if email := currentUserEmail(ctx); email != "" {
-		metadata[metadataConsoleCreatedBy] = email
+		metadata[common.MetadataConsoleCreatedBy] = email
 	}
 	if req.ModelTemplateName != "" {
-		metadata[metadataConsoleTemplateName] = req.ModelTemplateName
+		metadata[common.MetadataConsoleTemplateName] = req.ModelTemplateName
 	}
 	if req.ModelTemplateVersion != "" {
-		metadata[metadataConsoleTemplateVersion] = req.ModelTemplateVersion
+		metadata[common.MetadataConsoleTemplateVersion] = req.ModelTemplateVersion
 	}
 
 	// AIBrix extension fields ride along via OpenAI's `extra_body` channel.
@@ -450,18 +441,18 @@ func mergeJob(v *plannerapi.Job, overlay *pb.Job) *pb.Job {
 				// Console-owned fields. Prefer namespaced keys; fall back to the
 				// legacy bare "display_name" so batches created by older builds
 				// still surface their name.
-				if v := b.Metadata[metadataConsoleDisplayName]; v != "" {
+				if v := b.Metadata[common.MetadataConsoleDisplayName]; v != "" {
 					job.Name = v
-				} else if v := b.Metadata[metadataDisplayName]; v != "" {
+				} else if v := b.Metadata[common.MetadataDisplayName]; v != "" {
 					job.Name = v
 				}
-				if v := b.Metadata[metadataConsoleCreatedBy]; v != "" {
+				if v := b.Metadata[common.MetadataConsoleCreatedBy]; v != "" {
 					job.CreatedBy = v
 				}
-				if v := b.Metadata[metadataConsoleTemplateName]; v != "" {
+				if v := b.Metadata[common.MetadataConsoleTemplateName]; v != "" {
 					job.ModelTemplateName = v
 				}
-				if v := b.Metadata[metadataConsoleTemplateVersion]; v != "" {
+				if v := b.Metadata[common.MetadataConsoleTemplateVersion]; v != "" {
 					job.ModelTemplateVersion = v
 				}
 			}
@@ -489,8 +480,8 @@ func mergeJob(v *plannerapi.Job, overlay *pb.Job) *pb.Job {
 					})
 				}
 			}
-			if extraBody := parseBatchExtraBody(b); len(extraBody) > 0 {
-				job.ExtraBody = compactRawJSONMap(extraBody)
+			if extraBody := common.ParseBatchExtraBody(b); len(extraBody) > 0 {
+				job.ExtraBody = utils.CompactRawJSONMap(extraBody)
 				applyKnownBatchExtensions(job, extraBody)
 			}
 		}
@@ -553,112 +544,41 @@ type rawNamedRefPayload struct {
 	Version string `json:"version"`
 }
 
-var standardBatchResponseFields = map[string]struct{}{
-	"id":                {},
-	"object":            {},
-	"endpoint":          {},
-	"model":             {},
-	"errors":            {},
-	"input_file_id":     {},
-	"completion_window": {},
-	"status":            {},
-	"output_file_id":    {},
-	"error_file_id":     {},
-	"created_at":        {},
-	"in_progress_at":    {},
-	"expires_at":        {},
-	"finalizing_at":     {},
-	"completed_at":      {},
-	"failed_at":         {},
-	"expired_at":        {},
-	"cancelling_at":     {},
-	"cancelled_at":      {},
-	"request_counts":    {},
-	"usage":             {},
-	"metadata":          {},
-}
-
-func parseBatchExtraBody(b *openai.Batch) map[string]json.RawMessage {
-	if b == nil || b.RawJSON() == "" {
-		return nil
-	}
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(b.RawJSON()), &root); err != nil {
-		return nil
-	}
-	out := make(map[string]json.RawMessage)
-	if raw, ok := root["extra_body"]; ok && len(raw) > 0 && string(raw) != jsonNullLiteral {
-		var extra map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &extra); err == nil {
-			for k, v := range extra {
-				if len(v) > 0 && string(v) != jsonNullLiteral {
-					out[k] = v
-				}
-			}
-		}
-	}
-	for k, v := range root {
-		if k == "extra_body" {
-			continue
-		}
-		if _, standard := standardBatchResponseFields[k]; standard {
-			continue
-		}
-		if len(v) > 0 && string(v) != jsonNullLiteral {
-			out[k] = v
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func compactRawJSONMap(in map[string]json.RawMessage) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = compactJSON(v)
-	}
-	return out
-}
-
 func applyKnownBatchExtensions(job *pb.Job, extraBody map[string]json.RawMessage) {
 	if job == nil || len(extraBody) == 0 {
 		return
 	}
-	if raw, ok := extraBody["aibrix"]; ok {
+	if raw, ok := extraBody[common.AIBrixExtraBodyField]; ok {
 		applyAibrixBatchExtension(job, raw)
 	}
 }
 
 func applyAibrixBatchExtension(job *pb.Job, raw json.RawMessage) {
-	if len(raw) == 0 || string(raw) == jsonNullLiteral {
+	if len(raw) == 0 || string(raw) == common.JsonNullLiteral {
 		return
 	}
 	var payload rawBatchExtensionPayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
+		klog.Errorf("failed to unmarshal: %v", err)
 		return
 	}
-	if len(payload.Runtime) > 0 && string(payload.Runtime) != jsonNullLiteral {
+	if len(payload.Runtime) > 0 && string(payload.Runtime) != common.JsonNullLiteral {
 		var runtime rawRuntimePayload
 		if err := json.Unmarshal(payload.Runtime, &runtime); err == nil {
 			job.Runtime = &pb.JobRuntime{
 				Target:  runtime.Target,
 				Options: stringifyMap(runtime.Options),
-				RawJson: compactJSON(payload.Runtime),
+				RawJson: utils.CompactJSON(payload.Runtime),
 			}
 		}
 	}
-	if len(payload.ResourceAllocation) > 0 && string(payload.ResourceAllocation) != jsonNullLiteral {
+	if len(payload.ResourceAllocation) > 0 && string(payload.ResourceAllocation) != common.JsonNullLiteral {
 		var allocation rawResourceAllocationPayload
 		if err := json.Unmarshal(payload.ResourceAllocation, &allocation); err == nil {
 			job.ResourceAllocation = &pb.JobResourceAllocation{
 				ProvisionId:               allocation.ProvisionID,
 				ProvisionResourceDeadline: allocation.ProvisionResourceDeadline,
-				RawJson:                   compactJSON(payload.ResourceAllocation),
+				RawJson:                   utils.CompactJSON(payload.ResourceAllocation),
 			}
 			for _, rawDetail := range allocation.ResourceDetails {
 				detail := parseResourceDetail(rawDetail)
@@ -671,13 +591,13 @@ func applyAibrixBatchExtension(job *pb.Job, raw json.RawMessage) {
 			}
 		}
 	}
-	if len(payload.ModelTemplate) > 0 && string(payload.ModelTemplate) != jsonNullLiteral {
+	if len(payload.ModelTemplate) > 0 && string(payload.ModelTemplate) != common.JsonNullLiteral {
 		var modelTemplate rawNamedRefPayload
 		if err := json.Unmarshal(payload.ModelTemplate, &modelTemplate); err == nil {
 			job.ModelTemplateRef = &pb.JobModelTemplateRef{
 				Name:    modelTemplate.Name,
 				Version: modelTemplate.Version,
-				RawJson: compactJSON(payload.ModelTemplate),
+				RawJson: utils.CompactJSON(payload.ModelTemplate),
 			}
 			if job.ModelTemplateName == "" {
 				job.ModelTemplateName = modelTemplate.Name
@@ -687,12 +607,12 @@ func applyAibrixBatchExtension(job *pb.Job, raw json.RawMessage) {
 			}
 		}
 	}
-	if len(payload.Profile) > 0 && string(payload.Profile) != jsonNullLiteral {
+	if len(payload.Profile) > 0 && string(payload.Profile) != common.JsonNullLiteral {
 		var profile rawNamedRefPayload
 		if err := json.Unmarshal(payload.Profile, &profile); err == nil {
 			job.Profile = &pb.JobProfileRef{
 				Name:    profile.Name,
-				RawJson: compactJSON(payload.Profile),
+				RawJson: utils.CompactJSON(payload.Profile),
 			}
 		}
 	}
@@ -744,14 +664,6 @@ func stringifyJSONValue(v interface{}) string {
 		}
 		return string(b)
 	}
-}
-
-func compactJSON(raw json.RawMessage) string {
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, raw); err != nil {
-		return string(raw)
-	}
-	return buf.String()
 }
 
 func applyPlannerState(job *pb.Job, state *plannerapi.JobState) {

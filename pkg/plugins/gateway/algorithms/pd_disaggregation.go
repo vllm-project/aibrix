@@ -32,6 +32,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/prefill"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/selector"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -200,6 +201,7 @@ type pdRouter struct {
 	countersMu            sync.RWMutex
 	selectionCounts       map[string]int64
 	podSelector           selector.PodSelector
+	prefillExecutor       prefill.PrefillExecutor
 }
 
 func newPrefixCachePrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable) pd.PrefillScorePolicy {
@@ -266,6 +268,7 @@ func NewPDRouter() (types.Router, error) {
 		selectionCounts:       make(map[string]int64),
 	}
 	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
+	r.prefillExecutor = prefill.NewDefaultExecutor(httpClient, r.prefillRequestTracker, prefillRequestTimeout)
 
 	r.startPrefixUpdater()
 	return r, nil

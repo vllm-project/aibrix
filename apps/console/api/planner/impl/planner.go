@@ -188,6 +188,8 @@ func (q *Planner) releaseAfter(jobID, provisionID, reason string) {
 	if err := q.prov.Release(q.baseCtx, provisionID); err != nil {
 		klog.Warningf("[planner] release after %s job_id=%q provision_id=%q: %v",
 			reason, jobID, provisionID, err)
+	} else {
+		klog.Infof("[planner] release %s job_id=%q provision_id=%q", reason, jobID, provisionID)
 	}
 }
 
