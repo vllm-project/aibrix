@@ -98,6 +98,7 @@ const (
 
 	// Request Paths
 	PathChatCompletions     = "/v1/chat/completions"
+	PathResponses           = "/v1/responses"
 	PathMessages            = "/v1/messages"
 	PathCompletions         = "/v1/completions"
 	PathEmbeddings          = "/v1/embeddings"

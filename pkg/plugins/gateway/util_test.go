@@ -1142,6 +1142,105 @@ func Test_ValidateRequestBody_Classify(t *testing.T) {
 	}
 }
 
+func Test_ValidateRequestBody_Responses(t *testing.T) {
+	testCases := []struct {
+		message     string
+		requestPath string
+		requestBody []byte
+		model       string
+		messages    string
+		stream      bool
+		user        utils.User
+		statusCode  envoyTypePb.StatusCode
+	}{
+		{
+			message:     "/v1/responses valid string input",
+			requestPath: "/v1/responses",
+			requestBody: []byte(`{"model": "llama2-7b", "input": "say this is test"}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/responses valid array input with string content",
+			requestPath: "/v1/responses",
+			requestBody: []byte(`{"model": "llama2-7b", "input": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/responses valid array input with content parts",
+			requestPath: "/v1/responses",
+			requestBody: []byte(`{"model": "llama2-7b", "input": [{"role": "user", "content": [{"type": "input_text", "text": "say this is test"}]}]}`),
+			model:       "llama2-7b",
+			messages:    `[{"type": "input_text", "text": "say this is test"}]`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/responses valid streaming request",
+			requestPath: "/v1/responses",
+			user:        utils.User{Tpm: 1},
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "input": "say this is test"}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			stream:      true,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/responses json unmarshal error",
+			requestPath: "/v1/responses",
+			requestBody: []byte("bad_request"),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/responses missing input",
+			requestPath: "/v1/responses",
+			requestBody: []byte(`{"model": "llama2-7b"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/responses null input",
+			requestPath: "/v1/responses",
+			requestBody: []byte(`{"model": "llama2-7b", "input": null}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/responses empty array input",
+			requestPath: "/v1/responses",
+			requestBody: []byte(`{"model": "llama2-7b", "input": []}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/responses invalid input type (number)",
+			requestPath: "/v1/responses",
+			requestBody: []byte(`{"model": "llama2-7b", "input": 123}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		t.Log(tt.message)
+		if tt.statusCode == 200 {
+			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
+		}
+		if tt.statusCode != 200 {
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().Status.Code, tt.message)
+		}
+
+		if tt.model != "" {
+			assert.Equal(t, tt.model, model, tt.message)
+		}
+		if tt.messages != "" {
+			assert.Equal(t, tt.messages, messages, tt.message)
+		}
+		if tt.stream {
+			assert.Equal(t, tt.stream, stream, tt.message)
+		}
+	}
+}
+
 func TestGetTraceID(t *testing.T) {
 	tests := []struct {
 		name        string

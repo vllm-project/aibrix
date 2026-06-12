@@ -48,10 +48,21 @@ var (
 
 type OpenAIResponse struct {
 	Model string `json:"model"`
+	// Usage carries token accounting. The Chat Completions/Completions APIs report
+	// prompt_tokens/completion_tokens, while the Responses API (/v1/responses) reports
+	// the same two semantic values under input_tokens/output_tokens. Both naming pairs
+	// are therefore aliases for the same concepts:
+	//   prompt_tokens     == input_tokens   (tokens in the request)
+	//   completion_tokens == output_tokens  (tokens generated)
+	// Only one pair is populated per response depending on the upstream API. Fields are
+	// pointers so an absent field (nil) is distinguishable from a genuine zero count,
+	// which lets the prompt/input (and completion/output) fallback select the right alias.
 	Usage *struct {
-		PromptTokens     int64 `json:"prompt_tokens"`
-		CompletionTokens int64 `json:"completion_tokens"`
-		TotalTokens      int64 `json:"total_tokens"`
+		PromptTokens     *int64 `json:"prompt_tokens"`
+		CompletionTokens *int64 `json:"completion_tokens"`
+		TotalTokens      *int64 `json:"total_tokens"`
+		InputTokens      *int64 `json:"input_tokens"`
+		OutputTokens     *int64 `json:"output_tokens"`
 	} `json:"usage"`
 	Code int `json:"code"`
 }
@@ -128,11 +139,30 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 
 					// gjson avoids full deserialization by only extracting the usage field.
 					usageResult := gjson.GetBytes(jsonBytes, "usage")
+					if !usageResult.Exists() {
+						// The Responses API (/v1/responses) emits usage nested inside the
+						// terminal "response.completed" SSE event, where the full response
+						// object (including its "usage" field) lives under "response".
+						// Hence the usage path there is "response.usage".
+						usageResult = gjson.GetBytes(jsonBytes, "response.usage")
+					}
 					if usageResult.Exists() && usageResult.IsObject() {
 						// Assumption: The upstream sends the usage object only in the final chunk
 						// (standard vLLM/OpenAI behavior). We overwrite/set the values here.
-						promptTokens = usageResult.Get("prompt_tokens").Int()
-						completionTokens = usageResult.Get("completion_tokens").Int()
+						// The Responses API uses input_tokens/output_tokens instead of
+						// prompt_tokens/completion_tokens, so fall back to those names only when
+						// the primary field is genuinely absent (Exists() == false), since a
+						// zero count is a semantically valid value.
+						if pt := usageResult.Get("prompt_tokens"); pt.Exists() {
+							promptTokens = pt.Int()
+						} else {
+							promptTokens = usageResult.Get("input_tokens").Int()
+						}
+						if ct := usageResult.Get("completion_tokens"); ct.Exists() {
+							completionTokens = ct.Int()
+						} else {
+							completionTokens = usageResult.Get("output_tokens").Int()
+						}
 						totalTokens = usageResult.Get("total_tokens").Int()
 					}
 				}
@@ -206,7 +236,7 @@ func isLanguageRequest(requestPath string) bool {
 	return true
 }
 
-// processLanguageResponse processes output response for /chatcompletions, /completions and /embedding endpoints.
+// processLanguageResponse processes output response for /chatcompletions, /completions, /responses and /embedding endpoints.
 // nolint:nakedret
 func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_ResponseBody) (processingRes *extProcPb.ProcessingResponse, complete bool, promptTokens, completionTokens, totalTokens int64) {
 	var res *OpenAIResponse
@@ -260,9 +290,22 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 	}
 
 	if res.Usage != nil {
-		promptTokens = res.Usage.PromptTokens
-		completionTokens = res.Usage.CompletionTokens
-		totalTokens = res.Usage.TotalTokens
+		// Prefer the prompt/completion names; fall back to the Responses API's
+		// input/output aliases only when the primary field is genuinely absent
+		// (nil), not merely zero.
+		if res.Usage.PromptTokens != nil {
+			promptTokens = *res.Usage.PromptTokens
+		} else if res.Usage.InputTokens != nil {
+			promptTokens = *res.Usage.InputTokens
+		}
+		if res.Usage.CompletionTokens != nil {
+			completionTokens = *res.Usage.CompletionTokens
+		} else if res.Usage.OutputTokens != nil {
+			completionTokens = *res.Usage.OutputTokens
+		}
+		if res.Usage.TotalTokens != nil {
+			totalTokens = *res.Usage.TotalTokens
+		}
 	}
 	return
 }
