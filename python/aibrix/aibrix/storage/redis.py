@@ -16,8 +16,7 @@ import asyncio
 import time
 from typing import BinaryIO, Optional, TextIO, Union
 
-import redis.asyncio as redis
-
+import aibrix.client.redis as redis
 from aibrix.storage.base import (
     BaseStorage,
     PutObjectOptions,
@@ -48,18 +47,12 @@ class RedisStorage(BaseStorage):
 
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 6379,
-        db: int = 0,
-        password: Optional[str] = None,
         config: Optional[StorageConfig] = None,
+        **kwargs,
     ):
         super().__init__(config)
-        self.host = host
-        self.port = port
-        self.db = db
-        self.password = password
-        self._redis_clients: dict[int, redis.Redis] = {}
+        self._redis_clients: dict[int, redis.AsyncRedis] = {}
+        self._kwargs = kwargs
 
     def get_type(self) -> StorageType:
         """Get the type of storage.
@@ -69,18 +62,13 @@ class RedisStorage(BaseStorage):
         """
         return StorageType.REDIS
 
-    async def _get_redis(self) -> redis.Redis:
+    async def _get_redis(self) -> redis.AsyncRedis:
         """Get Redis connection, creating it if necessary."""
         loop_id = id(asyncio.get_running_loop())
         redis_client = self._redis_clients.get(loop_id)
         if redis_client is None:
-            redis_client = redis.Redis(
-                host=self.host,
-                port=self.port,
-                db=self.db,
-                password=self.password,
-                decode_responses=False,  # Keep as bytes
-            )
+            client_kwargs = {**self._kwargs, "decode_responses": False}  # Keep as bytes
+            redis_client = redis.get_redis_client(**client_kwargs)
             self._redis_clients[loop_id] = redis_client
         return redis_client
 
@@ -209,6 +197,8 @@ class RedisStorage(BaseStorage):
         data = await redis_client.get(key)
         if data is None:
             raise FileNotFoundError(f"Object not found: {key}")
+        if isinstance(data, str):
+            data = data.encode()
 
         # Handle range requests
         if range_start is not None:
