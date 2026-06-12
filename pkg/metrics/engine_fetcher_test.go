@@ -71,6 +71,26 @@ vllm_num_requests_waiting{model_name="model-a"} 1.0
 vllm_num_requests_waiting{model_name="model-b"} 7.0
 `
 
+// mockVllmMultiSeriesPerModelMetrics exposes counter and histogram families that carry several
+// instances per model_name, differing only by the non-model finished_reason label. model-a has two
+// instances, model-b has one.
+const mockVllmMultiSeriesPerModelMetrics = `# HELP vllm_request_success_total Count of successfully processed requests.
+# TYPE vllm_request_success_total counter
+vllm_request_success_total{model_name="model-a",finished_reason="stop"} 8.0
+vllm_request_success_total{model_name="model-a",finished_reason="length"} 4.0
+vllm_request_success_total{model_name="model-b",finished_reason="stop"} 1.0
+# HELP vllm_e2e_request_latency_seconds End-to-end request latency in seconds.
+# TYPE vllm_e2e_request_latency_seconds histogram
+vllm_e2e_request_latency_seconds_bucket{model_name="model-a",finished_reason="stop",le="0.5"} 1
+vllm_e2e_request_latency_seconds_bucket{model_name="model-a",finished_reason="stop",le="+Inf"} 2
+vllm_e2e_request_latency_seconds_sum{model_name="model-a",finished_reason="stop"} 1.5
+vllm_e2e_request_latency_seconds_count{model_name="model-a",finished_reason="stop"} 2
+vllm_e2e_request_latency_seconds_bucket{model_name="model-a",finished_reason="length",le="0.5"} 0
+vllm_e2e_request_latency_seconds_bucket{model_name="model-a",finished_reason="length",le="+Inf"} 3
+vllm_e2e_request_latency_seconds_sum{model_name="model-a",finished_reason="length"} 4.5
+vllm_e2e_request_latency_seconds_count{model_name="model-a",finished_reason="length"} 3
+`
+
 func setupMockServer(metrics string, statusCode int, delay time.Duration) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if delay > 0 {
@@ -124,6 +144,26 @@ func setupMockMetrics() {
 			"vllm": "vllm_time_to_first_token_seconds",
 		},
 		Description: "Time to first token histogram",
+		MetricScope: PodModelMetricScope,
+	}
+
+	Metrics["request_success"] = Metric{
+		MetricSource: PodRawMetrics,
+		MetricType:   MetricType{Raw: Counter},
+		EngineMetricsNameMapping: map[string]string{
+			"vllm": "vllm_request_success_total",
+		},
+		Description: "Number of successful requests",
+		MetricScope: PodModelMetricScope,
+	}
+
+	Metrics["e2e_latency"] = Metric{
+		MetricSource: PodRawMetrics,
+		MetricType:   MetricType{Raw: Histogram},
+		EngineMetricsNameMapping: map[string]string{
+			"vllm": "vllm_e2e_request_latency_seconds",
+		},
+		Description: "End-to-end request latency histogram",
 		MetricScope: PodModelMetricScope,
 	}
 }
@@ -335,6 +375,46 @@ func TestEngineMetricsFetcher_FetchAllTypedMetrics(t *testing.T) {
 		waitingB := result.ModelMetrics["model-b/waiting_requests"]
 		require.NotNil(t, waitingB)
 		assert.Equal(t, 7.0, waitingB.GetSimpleValue())
+	})
+
+	t.Run("FetchMultiSeriesPerModelMetrics", func(t *testing.T) {
+		server := setupMockServer(mockVllmMultiSeriesPerModelMetrics, 200, 0)
+		defer server.Close()
+
+		endpoint := strings.TrimPrefix(server.URL, "http://")
+
+		fetcher := NewEngineMetricsFetcher()
+
+		ctx := context.Background()
+		result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "vllm", "test-pod", nil)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+
+		// model-a exposes two counter instances (finished_reason=stop|length) under one model_name.
+		// The per-model value must be their sum, not whichever instance is parsed last.
+		successA := result.ModelMetrics["model-a/request_success"]
+		require.NotNil(t, successA)
+		assert.Equal(t, 12.0, successA.GetSimpleValue())
+		assert.Equal(t, "model-a", successA.GetLabelValues()["model_name"])
+		// The aggregated total is keyed on model_name only; the differentiating label is dropped so
+		// EmitMetricToPrometheus does not attribute the whole total to a single finished_reason.
+		_, hasFinishedReason := successA.GetLabelValues()["finished_reason"]
+		assert.False(t, hasFinishedReason)
+
+		successB := result.ModelMetrics["model-b/request_success"]
+		require.NotNil(t, successB)
+		assert.Equal(t, 1.0, successB.GetSimpleValue())
+
+		// Histogram instances split by the same non-model label merge their sum, count and buckets.
+		latencyA := result.ModelMetrics["model-a/e2e_latency"]
+		require.NotNil(t, latencyA)
+		histA := latencyA.GetHistogramValue()
+		require.NotNil(t, histA)
+		assert.Equal(t, 6.0, histA.Sum)
+		assert.Equal(t, 5.0, histA.Count)
+		_, histHasFinishedReason := latencyA.GetLabelValues()["finished_reason"]
+		assert.False(t, histHasFinishedReason)
 	})
 }
 

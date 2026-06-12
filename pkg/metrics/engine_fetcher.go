@@ -306,7 +306,9 @@ func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto
 
 // parseModelMetricsFromFamily parses one value per model_name present in the family. Each value
 // is parsed from the instance carrying that model_name and gets its own labels map, so models on
-// a multi-model pod no longer alias a single shared MetricValue.
+// a multi-model pod no longer alias a single shared MetricValue. When a family exposes several
+// instances for the same model_name, differing only by a non-model label, they are folded together
+// by aggregateModelMetric rather than overwriting each other.
 func (ef *EngineMetricsFetcher) parseModelMetricsFromFamily(allMetrics map[string]*dto.MetricFamily, rawMetricName string, metric Metric) (map[string]MetricValue, error) {
 	metricFamily, exists := allMetrics[rawMetricName]
 	if !exists {
@@ -329,10 +331,57 @@ func (ef *EngineMetricsFetcher) parseModelMetricsFromFamily(allMetrics map[strin
 		if err != nil {
 			return nil, err
 		}
+
+		if existing, ok := modelMetrics[modelName]; ok {
+			value = aggregateModelMetric(existing, value, modelName, metric.MetricType.Raw)
+		}
 		modelMetrics[modelName] = value
 	}
 
 	return modelMetrics, nil
+}
+
+// aggregateModelMetric folds an additional instance that carries the same model_name into the value
+// already parsed for that model. A model-scoped counter or histogram can appear as several instances
+// that differ only by a non-model label (for example finished_reason on vllm:request_success_total),
+// so the per-model value is their sum rather than whichever instance is parsed last. Gauges hold a
+// single value per model, so the latest instance is kept. The differentiating labels are dropped from
+// an aggregated value because the merged total is no longer specific to any one of them, and
+// EmitMetricToPrometheus forwards the label map to Prometheus, where it would otherwise report the
+// total under a single arbitrary label value.
+func aggregateModelMetric(existing, incoming MetricValue, modelName string, rawType RawMetricType) MetricValue {
+	switch rawType {
+	case Counter:
+		existingVal, ok := existing.(*SimpleMetricValue)
+		if !ok {
+			return incoming
+		}
+		incomingVal, ok := incoming.(*SimpleMetricValue)
+		if !ok {
+			return incoming
+		}
+		existingVal.Value += incomingVal.Value
+		existingVal.Labels = map[string]string{"model_name": modelName}
+		return existingVal
+	case Histogram:
+		existingVal, ok := existing.(*HistogramMetricValue)
+		if !ok {
+			return incoming
+		}
+		incomingVal, ok := incoming.(*HistogramMetricValue)
+		if !ok {
+			return incoming
+		}
+		existingVal.Sum += incomingVal.Sum
+		existingVal.Count += incomingVal.Count
+		for bound, count := range incomingVal.Buckets {
+			existingVal.Buckets[bound] += count
+		}
+		existingVal.Labels = map[string]string{"model_name": modelName}
+		return existingVal
+	default:
+		return incoming
+	}
 }
 
 // parseMetricInstance converts a single Prometheus metric instance into a typed MetricValue
