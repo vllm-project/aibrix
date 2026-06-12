@@ -23,9 +23,10 @@ import (
 	"strconv"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -380,11 +381,11 @@ func createPodsInBatch(ctx context.Context, cli client.Client, podsToCreate []*v
 		pod := podsToCreate[index]
 		err := cli.Create(ctx, pod)
 		if err != nil {
-			if errors.IsAlreadyExists(err) {
+			if apierrors.IsAlreadyExists(err) {
 				klog.V(4).InfoS("Pod already exists, skipping", "pod", pod.Name)
 				return nil
 			}
-			if errors.HasStatusCause(err, v1.NamespaceTerminatingCause) {
+			if apierrors.HasStatusCause(err, v1.NamespaceTerminatingCause) {
 				// if the namespace is being terminated, we don't have to do
 				// anything because any creation will fail
 				return nil
@@ -402,13 +403,99 @@ func deletePodsInBatch(ctx context.Context, cli client.Client, podsToDelete []*v
 		pod := podsToDelete[index]
 		err := cli.Delete(ctx, pod)
 		if err != nil {
-			if errors.IsNotFound(err) {
+			if apierrors.IsNotFound(err) {
 				klog.V(4).InfoS("Pod already deleted, skipping", "pod", pod.Name)
 				return nil
 			}
 		}
 		return err
 	})
+}
+
+// isOwnedByRoleSet checks whether an object's controller OwnerReference points to the given RoleSet.
+func isOwnedByRoleSet(obj client.Object, roleSet *orchestrationv1alpha1.RoleSet) bool {
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.Controller != nil && *ref.Controller &&
+			ref.APIVersion == orchestrationv1alpha1.SchemeGroupVersion.String() &&
+			ref.Kind == orchestrationv1alpha1.RoleSetKind &&
+			ref.UID == roleSet.UID {
+			return true
+		}
+	}
+	return false
+}
+
+// cleanupOrphanPods detects and deletes Pods that were directly created by the old
+// StatefulRoleSyncer/StatelessRoleSyncer (OwnerRef → RoleSet) when podGroupSize switches
+// from <=1 to >1. Returns true if at least one orphan Pod was successfully deleted.
+func cleanupOrphanPods(ctx context.Context, cli client.Client, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+	allPods, err := getRolePods(ctx, cli, roleSet.Namespace, roleSet.Name, role.Name)
+	if err != nil {
+		return false, err
+	}
+
+	var orphanPods []*v1.Pod
+	for _, pod := range allPods {
+		if isOwnedByRoleSet(pod, roleSet) {
+			orphanPods = append(orphanPods, pod)
+		}
+	}
+
+	if len(orphanPods) == 0 {
+		return false, nil
+	}
+
+	klog.V(4).Infof("[cleanupOrphanPods] found %d orphan pods for roleset %s/%s role %s, cleaning up",
+		len(orphanPods), roleSet.Namespace, roleSet.Name, role.Name)
+	cleaned := false
+	var errs []error
+	for _, pod := range orphanPods {
+		if err := cli.Delete(ctx, pod); err != nil {
+			if !apierrors.IsNotFound(err) {
+				errs = append(errs, err)
+			}
+		} else {
+			cleaned = true
+		}
+	}
+	return cleaned, utilerrors.NewAggregate(errs)
+}
+
+// cleanupOrphanPodSets detects and deletes PodSets that were created by the old
+// PodSetRoleSyncer when podGroupSize switches from >1 to <=1.
+// Returns true if at least one orphan PodSet was successfully deleted.
+func cleanupOrphanPodSets(ctx context.Context, cli client.Client, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+	allPodSets, err := getRolePodSets(ctx, cli, roleSet.Namespace, roleSet.Name, role.Name)
+	if err != nil {
+		return false, err
+	}
+
+	var orphanPodSets []*orchestrationv1alpha1.PodSet
+	for _, podSet := range allPodSets {
+		if isOwnedByRoleSet(podSet, roleSet) {
+			orphanPodSets = append(orphanPodSets, podSet)
+		}
+	}
+
+	if len(orphanPodSets) == 0 {
+		return false, nil
+	}
+
+	klog.V(4).Infof("[cleanupOrphanPodSets] found %d orphan podsets for roleset %s/%s role %s, cleaning up",
+		len(orphanPodSets), roleSet.Namespace, roleSet.Name, role.Name)
+	cleaned := false
+	var errs []error
+	for _, podSet := range orphanPodSets {
+		// Child Pods will be garbage collected via OwnerReferences by the Kubernetes GC.
+		if err := cli.Delete(ctx, podSet); err != nil {
+			if !apierrors.IsNotFound(err) {
+				errs = append(errs, err)
+			}
+		} else {
+			cleaned = true
+		}
+	}
+	return cleaned, utilerrors.NewAggregate(errs)
 }
 
 func sortRolesByUpgradeOrder(roles []orchestrationv1alpha1.RoleSpec) []orchestrationv1alpha1.RoleSpec {
