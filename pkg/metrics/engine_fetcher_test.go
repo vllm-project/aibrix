@@ -61,6 +61,16 @@ sglang_waiting_requests{model_name="meta-llama/Llama-2-7b-chat-hf"} 2.0
 sglang_cache_usage 0.65
 `
 
+const mockVllmMultiModelMetrics = `# HELP vllm_num_requests_running Number of requests currently running on GPU.
+# TYPE vllm_num_requests_running gauge
+vllm_num_requests_running{model_name="model-a"} 3.0
+vllm_num_requests_running{model_name="model-b"} 5.0
+# HELP vllm_num_requests_waiting Number of requests waiting to be processed.
+# TYPE vllm_num_requests_waiting gauge
+vllm_num_requests_waiting{model_name="model-a"} 1.0
+vllm_num_requests_waiting{model_name="model-b"} 7.0
+`
+
 func setupMockServer(metrics string, statusCode int, delay time.Duration) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if delay > 0 {
@@ -290,6 +300,41 @@ func TestEngineMetricsFetcher_FetchAllTypedMetrics(t *testing.T) {
 
 		// Should not have unrequested metrics
 		assert.NotContains(t, result.ModelMetrics, "meta-llama/Llama-2-7b-chat-hf/waiting_requests")
+	})
+
+	t.Run("FetchMultiModelMetrics", func(t *testing.T) {
+		server := setupMockServer(mockVllmMultiModelMetrics, 200, 0)
+		defer server.Close()
+
+		endpoint := strings.TrimPrefix(server.URL, "http://")
+
+		fetcher := NewEngineMetricsFetcher()
+
+		ctx := context.Background()
+		result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "vllm", "test-pod", nil)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+
+		// Each model on the pod must carry its own value and its own model_name label,
+		// not a single shared instance taken from metricFamily.Metric[0].
+		runningA := result.ModelMetrics["model-a/running_requests"]
+		require.NotNil(t, runningA)
+		assert.Equal(t, 3.0, runningA.GetSimpleValue())
+		assert.Equal(t, "model-a", runningA.GetLabelValues()["model_name"])
+
+		runningB := result.ModelMetrics["model-b/running_requests"]
+		require.NotNil(t, runningB)
+		assert.Equal(t, 5.0, runningB.GetSimpleValue())
+		assert.Equal(t, "model-b", runningB.GetLabelValues()["model_name"])
+
+		waitingA := result.ModelMetrics["model-a/waiting_requests"]
+		require.NotNil(t, waitingA)
+		assert.Equal(t, 1.0, waitingA.GetSimpleValue())
+
+		waitingB := result.ModelMetrics["model-b/waiting_requests"]
+		require.NotNil(t, waitingB)
+		assert.Equal(t, 7.0, waitingB.GetSimpleValue())
 	})
 }
 
