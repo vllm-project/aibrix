@@ -162,3 +162,29 @@ async def test_execute_worker_reconciles_storage_done_requests(monkeypatch):
 
     assert result.status.state == BatchJobState.FINALIZING
     assert result.status.request_counts.completed == 2
+
+
+@pytest.mark.asyncio
+async def test_reconcile_storage_done_checks_are_parallel(monkeypatch):
+    job = _make_job(total=4)
+    driver, _ = _driver(job, capacity=2)
+    inflight = 0
+    peak = 0
+
+    async def is_request_done(_job, request_index):
+        nonlocal inflight, peak
+        inflight += 1
+        peak = max(peak, inflight)
+        await asyncio.sleep(0)
+        inflight -= 1
+        return request_index in {0, 1, 2, 3}
+
+    from aibrix.batch.job_driver import base as base_module
+
+    monkeypatch.setattr(base_module.storage, "is_request_done", is_request_done)
+
+    result = await driver._sync_completed_requests_from_storage(job.job_id, job)
+
+    assert peak > 1
+    assert result.status.state == BatchJobState.FINALIZING
+    assert result.status.request_counts.completed == 4

@@ -970,6 +970,48 @@ async def test_endpoint_slice_discovery_returns_ready_endpoint_urls():
 
 
 @pytest.mark.asyncio
+async def test_endpoint_slice_discovery_prefers_service_port_when_multiple_ports():
+    from types import SimpleNamespace
+
+    from aibrix.batch.client.sources import kubernetes as k8s_src
+
+    class _FakeDiscoveryV1Api:
+        def list_namespaced_endpoint_slice(self, namespace, label_selector):
+            return SimpleNamespace(
+                items=[
+                    SimpleNamespace(
+                        metadata=SimpleNamespace(
+                            name="slice-a", resource_version="101"
+                        ),
+                        ports=[
+                            SimpleNamespace(port=9090),
+                            SimpleNamespace(port=8000),
+                        ],
+                        endpoints=[
+                            SimpleNamespace(
+                                addresses=["10.244.0.11"],
+                                conditions=SimpleNamespace(ready=True),
+                            ),
+                        ],
+                    )
+                ]
+            )
+
+    discovery = k8s_src.K8sEndpointSliceDiscovery(
+        _FakeDiscoveryV1Api(),
+        namespace="default",
+        service_name="svc",
+        service_port=8000,
+    )
+
+    snapshot = await discovery.discover_model_endpoints("unused-model")
+
+    assert [endpoint.base_url for endpoint in snapshot.endpoints] == [
+        "http://10.244.0.11:8000",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_discovery_source_uses_cache_until_refresh_interval():
     from aibrix.batch.client.sources import DiscoveryEndpointSource
 

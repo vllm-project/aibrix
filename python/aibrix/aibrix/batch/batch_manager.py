@@ -846,15 +846,15 @@ class BatchManager(RunningJobs, SchedulableJobs):
             )
         )
         job.status.errors = [ex]
-        has_output_artifacts_prepared = (
+        has_any_output_artifact_prepared = (
             meta_data.status.output_file_id is not None
-            and meta_data.status.error_file_id is not None
-            and meta_data.status.temp_output_file_id is not None
-            and meta_data.status.temp_error_file_id is not None
+            or meta_data.status.error_file_id is not None
+            or meta_data.status.temp_output_file_id is not None
+            or meta_data.status.temp_error_file_id is not None
         )
         if (
             meta_data.status.state == BatchJobState.IN_PROGRESS
-            and has_output_artifacts_prepared
+            and has_any_output_artifact_prepared
         ):
             job.status.finalizing_at = datetime.now(timezone.utc)
             job.status.state = BatchJobState.FINALIZING

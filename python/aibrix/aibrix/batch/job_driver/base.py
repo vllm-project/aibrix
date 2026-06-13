@@ -72,6 +72,7 @@ _DEFAULT_ADAPTIVE_MAX_FACTOR = 8.0
 _DEFAULT_TELEMETRY_INTERVAL_SECONDS = 5.0
 _DEFAULT_INFERENCE_MAX_RETRIES = 120
 _DEFAULT_NO_ENDPOINT_MAX_RETRIES = 120
+_DONE_RECONCILE_CHUNK_SIZE = 256
 
 
 def _adaptive_max_factor() -> float:
@@ -773,11 +774,20 @@ class BaseJobDriver:
         """
         latest_job = job
         total = job.status.request_counts.total
-        for request_id in range(total):
-            counts = latest_job.status.request_counts
-            if counts.completed + counts.failed == counts.total:
-                break
-            if await storage.is_request_done(job, request_id):
+        for start in range(0, total, _DONE_RECONCILE_CHUNK_SIZE):
+            request_ids = range(start, min(start + _DONE_RECONCILE_CHUNK_SIZE, total))
+            done_flags = await asyncio.gather(
+                *[
+                    storage.is_request_done(job, request_id)
+                    for request_id in request_ids
+                ]
+            )
+            for request_id, done in zip(request_ids, done_flags):
+                counts = latest_job.status.request_counts
+                if counts.completed + counts.failed == counts.total:
+                    return latest_job
+                if not done:
+                    continue
                 latest_job = await self._progress_manager.complete_job_request(
                     job_id, request_id
                 )

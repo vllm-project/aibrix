@@ -94,6 +94,29 @@ def test_llm_controller_recovers_after_healthy_window():
     assert controller.limit() == 3
 
 
+def test_llm_controller_waits_for_warmup_before_relative_slowdown():
+    settings = LLMAdaptiveConcurrencySettings(
+        relative_slowdown_warmup=2,
+        relative_slowdown_factor=1.5,
+    )
+    controller = LLMAdaptiveConcurrencyController(
+        initial_limit=8, max_limit=8, settings=settings
+    )
+
+    controller.on_complete(
+        ConcurrencyOutcome(success=True, output_tokens=10, e2e_tpot_seconds=0.01)
+    )
+    controller.on_complete(
+        ConcurrencyOutcome(success=True, output_tokens=10, e2e_tpot_seconds=0.10)
+    )
+    assert controller.limit() == 8
+
+    controller.on_complete(
+        ConcurrencyOutcome(success=True, output_tokens=10, e2e_tpot_seconds=0.10)
+    )
+    assert controller.limit() == 6
+
+
 def test_llm_controller_adds_backoff_after_consecutive_capacity_errors():
     settings = LLMAdaptiveConcurrencySettings(
         failure_backoff_after=2,

@@ -203,7 +203,7 @@ async def test_validate_job_finalizes_worker_style_validation_failure(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_mark_job_failed_only_finalizes_when_all_output_artifacts_prepared():
+async def test_mark_job_failed_finalizes_when_any_output_artifact_prepared():
     job_manager = _job_manager()
     batch_job = BatchJob(
         typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
@@ -235,9 +235,9 @@ async def test_mark_job_failed_only_finalizes_when_all_output_artifacts_prepared
         BatchJobError(code=BatchJobErrorCode.UNKNOWN_ERROR, message="boom"),
     )
 
-    assert result.status.state == BatchJobState.FINALIZED
-    assert result.status.finalized_at is not None
-    assert result.status.finalizing_at is None
+    assert result.status.state == BatchJobState.FINALIZING
+    assert result.status.finalized_at is None
+    assert result.status.finalizing_at is not None
 
 
 @pytest.mark.asyncio
