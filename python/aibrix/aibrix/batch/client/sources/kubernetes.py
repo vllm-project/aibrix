@@ -113,7 +113,12 @@ class K8sEndpointSliceDiscovery:
         return K8sEndpointSliceSnapshot(version=version, endpoints=endpoints)
 
     def _endpoint_port(self, endpoint_slice: Any) -> int:
-        for port in getattr(endpoint_slice, "ports", []) or []:
+        ports = getattr(endpoint_slice, "ports", []) or []
+        for port in ports:
+            value = getattr(port, "port", None)
+            if value is not None and int(value) == self._service_port:
+                return int(value)
+        for port in ports:
             value = getattr(port, "port", None)
             if value is not None:
                 return int(value)

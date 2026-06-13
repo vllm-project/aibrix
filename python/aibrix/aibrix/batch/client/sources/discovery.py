@@ -137,6 +137,7 @@ class DiscoveryEndpointSource:
                 channel_id=channel_id,
                 error=str(exc),
             )  # type: ignore[call-arg]
+        # A stale discovery snapshot may re-add the failed endpoint during refresh.
         await self._remove_channel(channel_id)
 
     async def _remove_channel(self, channel_id: str) -> None:

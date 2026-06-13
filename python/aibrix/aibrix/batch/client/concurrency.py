@@ -92,6 +92,7 @@ class LLMAdaptiveConcurrencySettings:
     slow_ttft_factor: float = 1.5
     slow_tpot_factor: float = 1.3
     relative_slowdown_factor: float = 1.75
+    relative_slowdown_warmup: int = 8
     ewma_alpha: float = 0.2
     min_output_tokens_for_e2e_tpot: int = 4
     failure_backoff_after: int = 2
@@ -111,6 +112,8 @@ class LLMAdaptiveConcurrencySettings:
             raise ValueError("slow_decrease_factor must be in (0, 1]")
         if not 0 < self.ewma_alpha <= 1:
             raise ValueError("ewma_alpha must be in (0, 1]")
+        if self.relative_slowdown_warmup < 0:
+            raise ValueError("relative_slowdown_warmup must be >= 0")
         if self.failure_backoff_after < 1:
             raise ValueError("failure_backoff_after must be >= 1")
         if self.failure_backoff_base_seconds < 0:
@@ -138,6 +141,9 @@ class LLMAdaptiveConcurrencyController:
         self._ttft_ewma: Optional[float] = None
         self._tpot_ewma: Optional[float] = None
         self._e2e_tpot_ewma: Optional[float] = None
+        self._ttft_samples = 0
+        self._tpot_samples = 0
+        self._e2e_tpot_samples = 0
         self._consecutive_capacity_errors = 0
         self._backoff_until = 0.0
 
@@ -192,12 +198,14 @@ class LLMAdaptiveConcurrencyController:
                 target=self._settings.target_ttft_seconds,
                 target_factor=self._settings.slow_ttft_factor,
                 ewma=self._ttft_ewma,
+                samples=self._ttft_samples,
             )
             or self._metric_slow(
                 outcome.tpot_seconds,
                 target=self._settings.target_tpot_seconds,
                 target_factor=self._settings.slow_tpot_factor,
                 ewma=self._tpot_ewma,
+                samples=self._tpot_samples,
             )
             or self._metric_slow(
                 (
@@ -212,6 +220,7 @@ class LLMAdaptiveConcurrencyController:
                 target=self._settings.target_e2e_tpot_seconds,
                 target_factor=self._settings.slow_tpot_factor,
                 ewma=self._e2e_tpot_ewma,
+                samples=self._e2e_tpot_samples,
             )
         )
 
@@ -222,19 +231,25 @@ class LLMAdaptiveConcurrencyController:
         target: Optional[float],
         target_factor: float,
         ewma: Optional[float],
+        samples: int,
     ) -> bool:
         if value is None:
             return False
         if target is not None and value > target * target_factor:
             return True
         return (
-            ewma is not None and value > ewma * self._settings.relative_slowdown_factor
+            ewma is not None
+            and samples >= self._settings.relative_slowdown_warmup
+            and value > ewma * self._settings.relative_slowdown_factor
         )
 
     def _update_ewmas(self, outcome: ConcurrencyOutcome) -> None:
         self._ttft_ewma = self._ewma(self._ttft_ewma, outcome.ttft_seconds)
         self._tpot_ewma = self._ewma(self._tpot_ewma, outcome.tpot_seconds)
         self._e2e_tpot_ewma = self._ewma(self._e2e_tpot_ewma, outcome.e2e_tpot_seconds)
+        self._ttft_samples += int(outcome.ttft_seconds is not None)
+        self._tpot_samples += int(outcome.tpot_seconds is not None)
+        self._e2e_tpot_samples += int(outcome.e2e_tpot_seconds is not None)
 
     def _ewma(
         self, current: Optional[float], value: Optional[float]
