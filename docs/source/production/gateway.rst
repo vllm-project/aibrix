@@ -1,4 +1,4 @@
-.. _gateway:
+.. _deploying-gateway:
 
 ===================
 Deploying Gateway
