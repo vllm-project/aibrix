@@ -182,7 +182,7 @@ class BatchDriver:
             self._scheduler.reset_runtime_state()
 
         self._batch_manager.reset_runtime_state()
-        
+
         if self._async_thread_loop is not None:
             self._async_thread_loop.stop()
             self._async_thread_loop = None

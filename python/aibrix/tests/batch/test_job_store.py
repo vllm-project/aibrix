@@ -513,15 +513,17 @@ async def test_job_store_recovery_does_not_stop_early_without_time_ordering(
     assert [job.job_id for job in recovered_jobs] == [job.job_id for job in jobs[:3]]
 
 
-@pytest.mark.asyncio
-async def test_batch_metastore_list_batch_jobs_errors_for_unsupported_ordering_backend(
-    monkeypatch,
-):
-    store = FakeMetastore(storage_type=StorageType.S3)
-    monkeypatch.setattr(batch_metastore, "p_metastore", store)
-
+def test_batch_metastore_initialize_errors_for_unsupported_ordering_backend():
     with pytest.raises(
         RuntimeError,
         match="cannot list batch jobs in descending created_at order",
     ):
-        await batch_metastore.list_batch_jobs(limit=1)
+        batch_metastore.initialize_batch_metastore(StorageType.S3)
+
+
+def test_batch_metastore_supports_desc_listing_for_local_and_redis():
+    assert batch_metastore.supports_created_at_desc_batch_job_listing(StorageType.LOCAL)
+    assert batch_metastore.supports_created_at_desc_batch_job_listing(StorageType.REDIS)
+    assert not batch_metastore.supports_created_at_desc_batch_job_listing(
+        StorageType.S3
+    )

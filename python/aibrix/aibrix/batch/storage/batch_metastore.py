@@ -41,7 +41,7 @@ OLDEST_UNFINISHED_JOB_CREATED_AT_KEY = "batchjob_meta:oldest_unfinished_created_
 
 
 def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
-    """Initialize storage type. Now it supports local files, S3, and TOS.
+    """Initialize the batch metastore. Supported backends are LOCAL and REDIS.
 
     For some storage type, user needs to pass in other parameters to params.
 
@@ -51,8 +51,14 @@ def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
     """
     global p_metastore
 
-    if storage_type == StorageType.AUTO and envs.STORAGE_REDIS_HOST:
+    if storage_type == StorageType.AUTO and envs.STORAGE_REDIS_AVAILABLE:
         storage_type = StorageType.REDIS
+
+    if not supports_created_at_desc_batch_job_listing(storage_type):
+        raise RuntimeError(
+            f"Metastore backend {storage_type.value} cannot list batch jobs "
+            "in descending created_at order."
+        )
 
     # The LOCAL metastore lives under the configured storage root, so a dev/test
     # run that isolates STORAGE_LOCAL_PATH isolates the metastore too (rather
@@ -303,11 +309,6 @@ async def list_batch_jobs(
     cached_job_getter: Optional[Callable[[str], Optional[BatchJob]]] = None,
 ) -> list[BatchJob]:
     """List BatchJob documents using backend-native created-time ordering."""
-    if not supports_created_at_desc_batch_job_listing():
-        raise RuntimeError(
-            f"Metastore backend {get_metastore_type().value} cannot list batch jobs "
-            "in descending created_at order."
-        )
     keys, _ = await list_metastore_keys(
         JOB_KEY_PREFIX,
         after_key=f"{JOB_KEY_PREFIX}{after}" if after is not None else None,
@@ -336,8 +337,11 @@ async def list_batch_jobs(
     return [job for job in jobs if job is not None]
 
 
-def supports_created_at_desc_batch_job_listing() -> bool:
-    return get_metastore_type() == StorageType.LOCAL
+def supports_created_at_desc_batch_job_listing(
+    storage_type: Optional[StorageType] = None,
+) -> bool:
+    metastore_type = storage_type or get_metastore_type()
+    return metastore_type in {StorageType.LOCAL, StorageType.REDIS}
 
 
 async def list_metastore_keys(
