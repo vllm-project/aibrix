@@ -72,10 +72,16 @@ Documentation
 
 .. toctree::
    :maxdepth: 1
-   :caption: Batch & Testing
+   :caption: Batch Inference
 
    features/batch-api.rst
-   features/batch-templates.rst
+   features/batch-model-deployment-templates.rst
+   features/batch-resource-manager.rst
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Benchmark
+
    features/benchmark-and-generator.rst
 
 .. toctree::
