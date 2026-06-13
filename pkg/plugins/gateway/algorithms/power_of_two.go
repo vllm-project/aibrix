@@ -302,6 +302,11 @@ func (p *PowerOfTwoRouter) getRequestCountRedisKey(ctx *types.RoutingContext) st
 
 // AddRequestCount implements [cache.RequestTracker].
 func (p *PowerOfTwoRouter) AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64) {
+	// Defensive check: ctx can be nil when request is cancelled before routing completes
+	if ctx == nil {
+		return 0
+	}
+
 	// Check whether routing is done and target pod is set
 	if !ctx.HasRouted() {
 		return 0
@@ -355,6 +360,11 @@ func (p *PowerOfTwoRouter) AddRequestCount(ctx *types.RoutingContext, requestID 
 
 // DoneRequestCount implements [cache.RequestTracker].
 func (p *PowerOfTwoRouter) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
+	// Defensive check: ctx can be nil when request is cancelled before routing completes
+	if ctx == nil {
+		return
+	}
+
 	// Check whether target pod is set
 	if !ctx.HasRouted() {
 		return
@@ -392,6 +402,11 @@ func (p *PowerOfTwoRouter) DoneRequestCount(ctx *types.RoutingContext, requestID
 
 // DoneRequestTrace implements [cache.RequestTracker].
 func (p *PowerOfTwoRouter) DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens int64, outputTokens int64, traceTerm int64) {
+	// Defensive check: ctx can be nil when request is cancelled before routing completes
+	if ctx == nil {
+		return
+	}
+
 	// For power of two router, we only track request count, not detailed trace
 	// Just call DoneRequestCount
 	p.DoneRequestCount(ctx, requestID, modelName, traceTerm)

@@ -323,3 +323,190 @@ func TestPowerOfTwoRouter_Integration(t *testing.T) {
 	count = router.getRequestCount(context.Background(), "test-model", server, testTime)
 	assert.Equal(t, int64(0), count)
 }
+
+// TestPowerOfTwoRouter_NilContextHandling tests that DoneRequestCount and DoneRequestTrace
+// handle nil context gracefully without panicking.
+// This scenario occurs when the request context is cancelled before routing completes.
+func TestPowerOfTwoRouter_NilContextHandling(t *testing.T) {
+	// Note: We cannot use cache.InitForTest() here as it modifies global state
+	// which causes race conditions when tests run in parallel with -race flag.
+	// Instead, we create router with nil redis client which still allows us to test
+	// the nil context handling logic without touching shared global cache state.
+	router := &PowerOfTwoRouter{
+		redisClient:           nil,
+		keyRotationSec:        3600,
+		requestTrackerTimeout: 30 * time.Second,
+		lastRoutingTime:       make(map[string]time.Time),
+	}
+
+	t.Run("DoneRequestCount with nil context should not panic", func(t *testing.T) {
+		// This should not panic
+		assert.NotPanics(t, func() {
+			router.DoneRequestCount(nil, "test-request", "test-model", 0)
+		})
+	})
+
+	t.Run("DoneRequestTrace with nil context should not panic", func(t *testing.T) {
+		// This should not panic
+		assert.NotPanics(t, func() {
+			router.DoneRequestTrace(nil, "test-request", "test-model", 100, 50, 0)
+		})
+	})
+
+	t.Run("AddRequestCount with nil context should not panic", func(t *testing.T) {
+		// AddRequestCount checks HasRouted() which requires non-nil context
+		// But it should handle nil gracefully
+		assert.NotPanics(t, func() {
+			traceTerm := router.AddRequestCount(nil, "test-request", "test-model")
+			assert.Equal(t, int64(0), traceTerm)
+		})
+	})
+}
+
+// TestPowerOfTwoRouter_ContextCancelledScenario simulates the real-world scenario
+// where context is cancelled after routing begins but before completion.
+func TestPowerOfTwoRouter_ContextCancelledScenario(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	client := setupTestRedis(t)
+	defer func() { _ = client.Close() }()
+
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		t.Skip("Redis not available, skipping test")
+	}
+
+	// Create router without initializing global cache to avoid race conditions
+	router := &PowerOfTwoRouter{
+		redisClient:           client,
+		keyRotationSec:        3600,
+		requestTrackerTimeout: 30 * time.Second,
+		lastRoutingTime:       make(map[string]time.Time),
+	}
+
+	t.Run("cancelled context before routing completes", func(t *testing.T) {
+		// Create a cancellable context
+		ctx, cancel := context.WithCancel(context.Background())
+		routingCtx := types.NewRoutingContext(ctx, RouterPowerOfTwo, "test-model", "", "test-request-cancelled", "")
+
+		// Cancel the context immediately (simulating early cancellation)
+		cancel()
+
+		// Attempt to call DoneRequestCount with cancelled context
+		// This should not panic even though routingCtx.Context is cancelled
+		// and targetPod might not be set
+		assert.NotPanics(t, func() {
+			router.DoneRequestCount(routingCtx, "test-request-cancelled", "test-model", 0)
+		})
+	})
+
+	t.Run("context cancelled after routing but before response", func(t *testing.T) {
+		// Create a cancellable context
+		ctx, cancel := context.WithCancel(context.Background())
+		routingCtx := types.NewRoutingContext(ctx, RouterPowerOfTwo, "test-model", "", "test-request-partial", "")
+
+		pod1 := createTestPodForPowerOfTwo("pod1", "10.0.0.1", 8000)
+		routingCtx.SetTargetPod(pod1)
+
+		// Seed lastRoutingTime
+		router.lastRoutingTimeMu.Lock()
+		router.lastRoutingTime["test-model"] = time.Now()
+		router.lastRoutingTimeMu.Unlock()
+
+		// Add request count
+		traceTerm := router.AddRequestCount(routingCtx, "test-request-partial", "test-model")
+
+		// Cancel context (simulating client disconnect)
+		cancel()
+
+		// Cleanup should work even with cancelled context
+		assert.NotPanics(t, func() {
+			router.DoneRequestCount(routingCtx, "test-request-partial", "test-model", traceTerm)
+		})
+
+		// Verify count was decremented
+		server := podServerKey{pod: pod1, port: 0}
+		count := router.getRequestCount(context.Background(), "test-model", server, routingCtx.RequestTime)
+		assert.Equal(t, int64(0), count, "count should be decremented even with cancelled context")
+	})
+}
+
+// TestPowerOfTwoRouter_HasRoutedWithNilContext tests that HasRouted() is never called
+// on nil RoutingContext, which was the root cause of the panic.
+func TestPowerOfTwoRouter_HasRoutedWithNilContext(t *testing.T) {
+	// Create router without initializing global cache to avoid race conditions
+	router := &PowerOfTwoRouter{
+		redisClient:           nil,
+		keyRotationSec:        3600,
+		requestTrackerTimeout: 30 * time.Second,
+		lastRoutingTime:       make(map[string]time.Time),
+	}
+
+	// Verify that calling DoneRequestCount with nil doesn't try to call HasRouted()
+	// which would panic with nil pointer dereference
+	assert.NotPanics(t, func() {
+		router.DoneRequestCount(nil, "test-request", "test-model", 0)
+	}, "DoneRequestCount should handle nil context without calling HasRouted()")
+}
+
+// TestPowerOfTwoRouter_NormalFlowUnaffected ensures that the nil checks don't
+// break the normal routing flow.
+func TestPowerOfTwoRouter_NormalFlowUnaffected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test")
+	}
+
+	client := setupTestRedis(t)
+	defer func() { _ = client.Close() }()
+
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		t.Skip("Redis not available, skipping test")
+	}
+
+	// Create router without initializing global cache to avoid race conditions
+	router := &PowerOfTwoRouter{
+		redisClient:           client,
+		keyRotationSec:        3600,
+		requestTrackerTimeout: 30 * time.Second,
+		lastRoutingTime:       make(map[string]time.Time),
+	}
+
+	pod1 := createTestPodForPowerOfTwo("pod1", "10.0.0.1", 8000)
+	pod2 := createTestPodForPowerOfTwo("pod2", "10.0.0.2", 8000)
+
+	ctx := types.NewRoutingContext(context.Background(), RouterPowerOfTwo, "test-model", "", "test-request-normal", "")
+	ctx.SetTargetPod(pod1)
+
+	// Seed lastRoutingTime
+	router.lastRoutingTimeMu.Lock()
+	router.lastRoutingTime["test-model"] = time.Now()
+	router.lastRoutingTimeMu.Unlock()
+
+	// Normal flow: AddRequestCount -> DoneRequestCount
+	traceTerm := router.AddRequestCount(ctx, "test-request-normal", "test-model")
+	assert.Greater(t, traceTerm, int64(0), "traceTerm should be positive")
+
+	server := podServerKey{pod: pod1, port: 0}
+	count := router.getRequestCount(context.Background(), "test-model", server, ctx.RequestTime)
+	assert.Equal(t, int64(1), count, "count should be incremented")
+
+	router.DoneRequestCount(ctx, "test-request-normal", "test-model", traceTerm)
+	count = router.getRequestCount(context.Background(), "test-model", server, ctx.RequestTime)
+	assert.Equal(t, int64(0), count, "count should be decremented")
+
+	// Test with another pod to ensure routing selection still works
+	ctx2 := types.NewRoutingContext(context.Background(), RouterPowerOfTwo, "test-model", "", "test-request-normal-2", "")
+	ctx2.SetTargetPod(pod2)
+
+	traceTerm2 := router.AddRequestCount(ctx2, "test-request-normal-2", "test-model")
+	assert.Greater(t, traceTerm2, int64(0), "traceTerm2 should be positive")
+
+	server2 := podServerKey{pod: pod2, port: 0}
+	count2 := router.getRequestCount(context.Background(), "test-model", server2, ctx2.RequestTime)
+	assert.Equal(t, int64(1), count2, "count2 should be incremented")
+
+	router.DoneRequestCount(ctx2, "test-request-normal-2", "test-model", traceTerm2)
+	count2 = router.getRequestCount(context.Background(), "test-model", server2, ctx2.RequestTime)
+	assert.Equal(t, int64(0), count2, "count2 should be decremented")
+}
