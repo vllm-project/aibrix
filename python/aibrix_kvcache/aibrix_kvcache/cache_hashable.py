@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 from abc import ABC, abstractmethod
 from typing import List, Sequence, TypeAlias
 
@@ -19,7 +20,6 @@ import numpy as np
 from farmhash import FarmHash32
 
 from .common import CachedPyObjectBase
-from .utils import hash_combine_128
 
 
 class KVCacheHashable(ABC):
@@ -230,6 +230,22 @@ class TokenListView(CachedPyObjectBase, KVCacheIds):
 BlockHashList: TypeAlias = List[str]
 
 
+def _digest_block_hashes(data: BlockHashList, block_ntokens: int) -> bytes:
+    hasher = hashlib.blake2b(digest_size=16)
+    hasher.update(block_ntokens.to_bytes(8, "little", signed=False))
+    hasher.update(len(data).to_bytes(8, "little", signed=False))
+    for block_hash in data:
+        encoded = block_hash.encode("utf-8")
+        hasher.update(len(encoded).to_bytes(8, "little", signed=False))
+        hasher.update(encoded)
+    return hasher.digest()
+
+
+def _hash_block_hashes(data: BlockHashList, block_ntokens: int) -> int:
+    digest = _digest_block_hashes(data, block_ntokens)
+    return int.from_bytes(digest[:8], "little", signed=False)
+
+
 def is_block_hash_list_type(data) -> bool:
     if not isinstance(data, List):
         return False
@@ -306,20 +322,19 @@ class BlockHashes(CachedPyObjectBase, KVCacheIds):
     def __eq__(self, other):
         if not isinstance(other, BlockHashes):
             return False
-        # we assume a block hash includes the information of both position and
-        # all tokens belonging to this block, therefore, we only need to check
-        # the last block hash and num of blocks to see if two BlockHashes are
-        # the same
-        return self._data[-1] == other._data[-1] and len(self._data) == len(
-            other._data
+        return (
+            self.block_ntokens == other.block_ntokens
+            and self._data == other._data
         )
 
     def __ne__(self, value):
         return not self.__eq__(value)
 
     def __hash__(self) -> int:
-        # use the last block hash and num of blocks for calculating the hash
-        return hash_combine_128(hash(self._data[-1]), len(self._data))
+        return _hash_block_hashes(self._data, self.block_ntokens)
+
+    def to_bytes(self) -> bytes:
+        return _digest_block_hashes(self._data, self.block_ntokens)
 
 
 class TokenCacheKey(KVCacheHashable, CachedPyObjectBase):
@@ -387,6 +402,11 @@ class BlockCacheKey(KVCacheHashable, CachedPyObjectBase):
         else:
             self._query = BlockHashes(query, block_ntokens)
 
+        if self._prefix is not None:
+            self._all_blocks = self._prefix + self._query
+        else:
+            self._all_blocks = self._query
+
     @property
     def prefix(self):
         return self._prefix
@@ -396,12 +416,12 @@ class BlockCacheKey(KVCacheHashable, CachedPyObjectBase):
         return self._query
 
     def __hash__(self) -> int:
-        return hash(self.query)
+        return hash(self._all_blocks)
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, BlockCacheKey):
             return False
-        return self.query == other.query
+        return self._all_blocks == other._all_blocks
 
     def __len__(self) -> int:
         prefix_len = len(self._prefix) if self._prefix is not None else 0

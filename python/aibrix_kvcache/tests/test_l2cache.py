@@ -20,7 +20,11 @@ from typing import List
 import pytest
 import torch
 
-from aibrix_kvcache.cache_hashable import KVCacheKeyTypes, TokenListView
+from aibrix_kvcache.cache_hashable import (
+    BlockHashes,
+    KVCacheKeyTypes,
+    TokenListView,
+)
 from aibrix_kvcache.l2 import KeyBuilder, L2Cache
 from aibrix_kvcache.l2.key_builders import Hasher
 from aibrix_kvcache.memory import (
@@ -318,6 +322,28 @@ async def test_conflicted_puts(compact_layout_enabled, l2cache_fixture, mocker):
         assert get_status.is_not_found()
     release_mrs(put_mrs)
     release_mrs(get_mrs)
+
+
+def test_block_hash_l2_keys_include_prefix(l2cache_fixture):
+    _, spec, l2cache = l2cache_fixture
+    block_ntokens = spec.block_ntokens
+    first = BlockHashes(["hA", "hB", "hC"], block_ntokens)
+    second = BlockHashes(["hX", "hY", "hC"], block_ntokens)
+
+    first_key = tuple(
+        l2cache._cache_block_keys(
+            first[: 2 * block_ntokens], first[2 * block_ntokens :]
+        )
+    )[0]
+    second_key = tuple(
+        l2cache._cache_block_keys(
+            second[: 2 * block_ntokens], second[2 * block_ntokens :]
+        )
+    )[0]
+
+    assert first_key[0] == first
+    assert second_key[0] == second
+    assert first_key[1] != second_key[1]
 
 
 @pytest.mark.asyncio

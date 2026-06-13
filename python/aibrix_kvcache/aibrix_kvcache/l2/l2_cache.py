@@ -886,13 +886,21 @@ class L2Cache(MeasurableBase):
             The cache block keys of the kv tensors.
         """
         if isinstance(query, BlockHashes):
+            assert prefix is None or isinstance(prefix, BlockHashes)
+            if prefix is not None:
+                assert prefix.block_ntokens == query.block_ntokens
+                all = prefix + query
+                prefix_len = len(prefix)
+            else:
+                all = query
+                prefix_len = 0
             for i in range(0, len(query), self.block_ntokens):
+                end = prefix_len + i + self.block_ntokens
+                real_key = all[:end]
                 yield tuple(
                     (
-                        query[i : i + self.block_ntokens],
-                        "".join(query[i : i + self.block_ntokens]).encode(
-                            "utf-8"
-                        ),
+                        real_key,
+                        real_key.to_bytes(),
                     )
                 )
         else:
