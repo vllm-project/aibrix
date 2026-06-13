@@ -65,9 +65,6 @@ Environment Variables
    * - ``AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT``
      - -
      - vLLM service endpoint
-   * - ``AIBRIX_PREFIX_CACHE_LOCAL_ROUTER_METRICS_ENABLED``
-     - ``false``
-     - Enable prefix cache metrics
 
 Pod Labels
 ~~~~~~~~~~
@@ -128,11 +125,6 @@ Quick Start
 
       kubectl set env deployment/aibrix-gateway-plugins -n aibrix-system \
         AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true
-
-3. **Enable Prefix Cache Metrics** (optional but recommended)::
-
-      kubectl set env deployment/aibrix-gateway-plugins -n aibrix-system \
-        AIBRIX_PREFIX_CACHE_LOCAL_ROUTER_METRICS_ENABLED=true
 
 3. **Deploy vLLM with KV Events**:
 
