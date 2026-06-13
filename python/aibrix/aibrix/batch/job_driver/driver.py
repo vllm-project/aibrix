@@ -12,10 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional, Protocol, runtime_checkable
 
 from aibrix.batch.job_driver.runtime import Endpoint
 from aibrix.batch.job_entity import BatchJob
+
+
+class DriverReconnectState(str, Enum):
+    ATTACHED = "attached"
+    RESCHEDULE = "reschedule"
+    UNSUPPORTED = "unsupported"
+    INVALID = "invalid"
+
+
+@dataclass
+class DriverReconnectResult:
+    state: DriverReconnectState
+    reason: Optional[str] = None
 
 
 @runtime_checkable
@@ -71,4 +86,8 @@ class JobDriver(Protocol):
             RuntimeError: If something prevents all jobs from executing.
             BatchJobError: If something prevents one job from executing.
         """
+        ...
+
+    async def terminate(self, deleted_job: BatchJob) -> bool:
+        """Handle deletion for the bound job."""
         ...

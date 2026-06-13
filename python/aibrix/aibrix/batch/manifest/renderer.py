@@ -726,8 +726,9 @@ class JobManifestRenderer(_RendererSupport):
             for k, v in spec.metadata.items():
                 pod_annotations[f"{JobAnnotationKey.METADATA_PREFIX.value}{k}"] = v
         if spec.opts:
-            for k, v in spec.opts.items():
-                pod_annotations[f"{JobAnnotationKey.OPTS_PREFIX.value}{k}"] = v
+            pod_annotations[JobAnnotationKey.OPTS.value] = json.dumps(
+                spec.opts, sort_keys=True
+            )
 
         # File IDs from prepared_job (output / temp_output / error / temp_error).
         # Suspend=True keeps the Job from creating Pods (per K8s semantics).
@@ -832,9 +833,7 @@ _BASE_WORKER_ENV: List[Dict[str, Any]] = [
         "valueFrom": _ann_field_ref(JobAnnotationKey.TEMP_ERROR_FILE_ID.value),
     },
     {
-        "name": "BATCH_OPTS_FAIL_AFTER_N_REQUESTS",
-        "valueFrom": _ann_field_ref(
-            f"{JobAnnotationKey.OPTS_PREFIX.value}fail_after_n_requests"
-        ),
+        "name": "BATCH_OPTS",
+        "valueFrom": _ann_field_ref(JobAnnotationKey.OPTS.value),
     },
 ]

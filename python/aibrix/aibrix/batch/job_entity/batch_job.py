@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_core import core_schema
 
 from aibrix.batch.job_entity.aibrix_metadata import AibrixMetadata
@@ -71,6 +71,7 @@ class BatchJobErrorCode(str, Enum):
     """Error codes for batch job."""
 
     INVALID_INPUT_FILE = "invalid_input_file"
+    EMPTY_INPUT_FILE = "empty_input_file"
     INVALID_ENDPOINT = "invalid_endpoint"
     INVALID_COMPLETION_WINDOW = "invalid_completion_window"
     INVALID_METADATA = "invalid_metadata"
@@ -351,6 +352,17 @@ class BatchUsage(_Strict):
     )
 
 
+class JobRuntimeRef(_Strict):
+    driver_type: str = Field(alias="driverType")
+    attempt: int = Field(default=0, ge=0)
+    owner_ref: Optional[str] = Field(default=None, alias="ownerRef")
+    reconnect_payload: Optional[Dict[str, Any]] = Field(
+        default=None, alias="reconnectPayload"
+    )
+    connected_at: Optional[datetime] = Field(default=None, alias="connectedAt")
+    heartbeat_at: Optional[datetime] = Field(default=None, alias="heartbeatAt")
+
+
 class BatchJobStatusCopy(_Strict):
     """A job driver local copy of the BatchJobStatus, with all fields copied.
 
@@ -536,6 +548,10 @@ class BatchJobStatus(_Strict):
             "requests; absent until the first progress flush."
         ),
     )
+    execution: Optional[Dict[str, JobRuntimeRef]] = Field(
+        default=None,
+        description="Durable execution metadata used to reconnect or reschedule work",
+    )
     status_copies: Optional[Dict[str, BatchJobStatusCopy]] = Field(
         default=None,
         alias="statusCopies",
@@ -591,6 +607,22 @@ class BatchJobStatus(_Strict):
         default=None,
         description="Conditions represent the latest available observations of the batch job's state",
     )
+
+    @field_validator("execution", mode="before")
+    @classmethod
+    def _normalize_execution(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, JobRuntimeRef):
+            return {value.driver_type: value}
+        if isinstance(value, dict):
+            if "driverType" in value or "driver_type" in value:
+                driver_type = value.get("driverType") or value.get("driver_type")
+                if driver_type is None:
+                    raise ValueError("execution driver type is required")
+                return {driver_type: value}
+            return value
+        raise ValueError("execution must be a mapping keyed by driver type")
 
     @property
     def finished(self) -> bool:
@@ -657,6 +689,31 @@ class BatchJobStatus(_Strict):
             self.conditions = []
         self.conditions.append(condition)
 
+    def get_runtime_ref(self, type: str) -> Optional[JobRuntimeRef]:
+        if self.execution is None:
+            return None
+        return self.execution.get(type)
+
+    def set_runtime_ref(self, type: str, execution_ref: JobRuntimeRef):
+        if self.execution is None:
+            self.execution = {}
+        self.execution[type] = execution_ref
+
+    def remove_runtime_ref(self, type: str) -> None:
+        if self.execution is None:
+            return
+        self.execution.pop(type, None)
+        if len(self.execution) == 0:
+            self.execution = None
+
+    def is_finalizing_required(self) -> bool:
+        return not self.finished and self.condition in [
+            ConditionType.COMPLETED,
+            ConditionType.EXPIRED,
+            ConditionType.FAILED,
+            ConditionType.CANCELLED,
+        ]
+
 
 class BatchJob(_Strict):
     """Schema for the BatchJob API - Kubernetes Custom Resource equivalent."""
@@ -671,13 +728,14 @@ class BatchJob(_Strict):
     spec: BatchJobSpec = Field(description="Desired state of the batch job")
     status: BatchJobStatus = Field(description="Observed state of the batch job")
 
-    def copy(self):
+    def copy(self, status: Optional[BatchJobStatus] = None):  # type: ignore[override]
+        """Get a new BatchJob with original fields and copied status"""
         return BatchJob(
             sessionID=self.session_id,
             typeMeta=self.type_meta,
             metadata=self.metadata,
             spec=self.spec,
-            status=copy.deepcopy(self.status),
+            status=status if status is not None else copy.deepcopy(self.status),
         )
 
     @classmethod

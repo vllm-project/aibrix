@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import (
     Any,
     AsyncIterator,
@@ -51,7 +52,14 @@ from typing import (
 )
 
 from aibrix.batch.client import EndpointSource
-from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobErrorCode
+from aibrix.batch.job_driver.running_jobs import RunningJobs
+from aibrix.batch.job_entity import (
+    BatchJob,
+    BatchJobError,
+    BatchJobErrorCode,
+    JobRuntimeRef,
+)
+from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -99,7 +107,14 @@ class Runtime(Protocol):
         swallows the resulting CancelledError instead of failing the job)."""
         ...
 
-    def session(self, job: BatchJob, job_id: str) -> "AsyncRuntimeSession":
+    def session(
+        self,
+        job: BatchJob,
+        job_id: str,
+        *,
+        progress_manager: Optional[RunningJobs] = None,
+        worker_id_generator: Optional[Callable[[str], str]] = None,
+    ) -> "AsyncRuntimeSession":
         """Async context manager: provision -> yield Endpoint -> teardown."""
         ...
 
@@ -114,6 +129,10 @@ class Runtime(Protocol):
         shape (``Endpoint(source=None)`` + ``provisions``). The base driver
         calls this instead of dispatching; non-self-hosting runtimes need not
         implement it."""
+        ...
+
+    async def terminate(self, deleted_job: BatchJob) -> bool:
+        """Terminate a job execution, no more job_entity_manager hijacks."""
         ...
 
 
@@ -139,8 +158,26 @@ class RuntimeBase:
     session_retry_attempts: int = 3
     session_retry_base_delay_s: float = 2.0
 
+    def __init__(
+        self,
+        context: InfrastructureContext,
+        ready_timeout_seconds: int = 300,
+    ) -> None:
+        self._context = context
+        self._ready_timeout_seconds = ready_timeout_seconds
+        self._active_job_id: Optional[str] = None
+        self._active_task: Optional[asyncio.Task[None]] = None
+        self._active_runtime: Any | None = None
+        self._delete_requested = asyncio.Event()
+
     def cancelled(self) -> bool:
         return False
+
+    async def _reconnect(
+        self, job: BatchJob, job_id: str, runtimeRef: JobRuntimeRef
+    ) -> Any | None:
+        del job, job_id, runtimeRef
+        return None
 
     async def _provision(self, job: BatchJob, job_id: str) -> Any:
         """Create/lease/launch compute. Returns an opaque handle. NOOP default."""
@@ -175,6 +212,83 @@ class RuntimeBase:
             "(Endpoint(source=None) + provisions=True)"
         )
 
+    async def terminate(self, deleted_job: BatchJob) -> bool:
+        """Handle job deletion events, no more job_entity_manager hijacks."""
+        deleted_job_id = deleted_job.job_id
+        if deleted_job_id and deleted_job_id == self._active_job_id:
+            self._delete_requested.set()
+            if self._active_task is not None and not self._active_task.done():
+                self._active_task.cancel()
+        return True
+
+    def _get_runtime_key(self, job: BatchJob) -> str:
+        """Execution-key to locate execution ref."""
+        del job
+        return "base"
+
+    def _get_runtime_owner_ref(self, job: BatchJob) -> Optional[str]:
+        """Get runtime owner id to identify the runtime provisioning."""
+        return self._get_runtime_key(job)
+
+    def _get_runtime_reconnect_payload(
+        self,
+        job: BatchJob,
+    ) -> Optional[Dict[str, Any]]:
+        del job
+        return None
+
+    def _build_runtime_ref(
+        self,
+        job: BatchJob,
+    ) -> Optional[JobRuntimeRef]:
+        if not self.provisions:
+            return None
+
+        existing = self._load_runtime_ref(job)
+        owner_ref = self._get_runtime_owner_ref(job)
+        reconnect_payload = self._get_runtime_reconnect_payload(job)
+        if owner_ref is None or reconnect_payload is None:
+            raise ValueError("owner_ref and reconnect_payload must be provided")
+
+        now = datetime.now(timezone.utc)
+        return JobRuntimeRef(
+            driverType=self._get_runtime_key(job),
+            attempt=existing.attempt if existing is not None else 1,
+            ownerRef=owner_ref,
+            reconnectPayload=reconnect_payload,
+            connectedAt=existing.connected_at if existing is not None else now,
+            heartbeatAt=now,
+        )
+
+    def _load_runtime_ref(self, job: BatchJob) -> Optional[JobRuntimeRef]:
+        return job.status.get_runtime_ref(self._get_runtime_key(job))
+
+    async def _persist_runtime_ref(
+        self,
+        job: BatchJob,
+        *,
+        progress_manager: Optional[RunningJobs],
+        worker_id_generator: Optional[Callable[[str], str]],
+    ) -> BatchJob:
+        execution_ref = self._build_runtime_ref(job)
+        if execution_ref is None:
+            return job
+        if progress_manager is None or worker_id_generator is None:
+            raise RuntimeError(
+                "Execution tracking is not configured for session(); provide "
+                "progress_manager and worker_id_generator when starting a runtime session "
+                "for a batch job"
+            )
+        status = job.status.model_copy(deep=True)
+        status.set_runtime_ref(
+            self._get_runtime_key(job),
+            execution_ref,
+        )
+        worker_id = worker_id_generator(execution_ref.owner_ref)
+        return await progress_manager.update_job_local_status(
+            job.job_id, worker_id, status
+        )
+
     @staticmethod
     def _is_not_found_error(exc: Exception) -> bool:
         # Runtime backends surface "resource disappeared" through a few shapes:
@@ -205,55 +319,83 @@ class RuntimeBase:
         await asyncio.sleep(self.session_retry_base_delay_s * (2**attempt))
 
     @asynccontextmanager
-    async def session(self, job: BatchJob, job_id: str) -> AsyncIterator[Endpoint]:
+    async def session(
+        self,
+        job: BatchJob,
+        job_id: str,
+        *,
+        progress_manager: Optional[RunningJobs] = None,
+        worker_id_generator: Optional[Callable[[str], str]] = None,
+    ) -> AsyncIterator[Endpoint]:
+        runtimeRef = self._load_runtime_ref(job)
         handle = None
         max_attempts = self.session_retry_attempts + 1
-        for attempt in range(max_attempts):
-            phase = "provision"
-            try:
-                handle = await self._provision(job, job_id)
-                phase = "wait_ready"
-                await self._wait_ready(handle)
-                # Only yield a connected endpoint after both startup phases
-                # succeed within the same attempt.
-                break
-            except Exception as exc:
-                should_retry = False
-                should_teardown = handle is not None
-
-                if phase == "provision":
-                    # Provision failures are treated as transient until the
-                    # retry budget is exhausted.
-                    should_retry = attempt + 1 < max_attempts
-                elif phase == "wait_ready":
-                    # A not-found during readiness means provisioning looked
-                    # successful but the backend resource vanished before it
-                    # became reachable, so reprovision instead of failing fast.
-                    should_retry = (
-                        self._should_retry_wait_ready(exc)
-                        and attempt + 1 < max_attempts
-                    )
-                    should_teardown = self._should_teardown_failed_wait_ready(exc)
-
-                if should_teardown and handle is not None:
-                    try:
-                        await self._teardown(handle)
-                    except Exception as teardown_exc:
-                        logger.warning(
-                            "Runtime teardown failed during retry recovery; continuing with retry",
-                            job_id=job_id,
-                            phase=phase,
-                            handle=repr(handle),
-                            error=str(teardown_exc),
-                        )  # type: ignore[call-arg]
-                if not should_retry:
-                    raise
-                handle = None
-                await self._sleep_before_session_retry(attempt)
         try:
+            for attempt in range(max_attempts):
+                try:
+                    phase = (
+                        "reconnect"
+                        if attempt == 0 and runtimeRef is not None
+                        else "provision"
+                    )
+                    if phase == "reconnect":
+                        assert runtimeRef is not None
+                        handle = await self._reconnect(job, job_id, runtimeRef)
+                        if handle is None:
+                            phase = "provision"
+                    if handle is None:
+                        handle = await self._provision(job, job_id)
+                    job = await self._persist_runtime_ref(
+                        job,
+                        progress_manager=progress_manager,
+                        worker_id_generator=worker_id_generator,
+                    )
+                    phase = "wait_ready"
+                    await self._wait_ready(handle)
+                    # Only yield a connected endpoint after both startup phases
+                    # succeed within the same attempt.
+                    break
+                except Exception as exc:
+                    should_retry = False
+                    should_teardown = handle is not None
+
+                    if phase in {"reconnect", "provision"}:
+                        # Reconnect is treated as the first startup attempt. Any
+                        # startup failure before readiness consumes an attempt and
+                        # falls back to provisioning fresh compute on retry.
+                        should_retry = attempt + 1 < max_attempts
+                    elif phase == "wait_ready":
+                        # A not-found during readiness means provisioning looked
+                        # successful but the backend resource vanished before it
+                        # became reachable, so reprovision instead of failing fast.
+                        should_retry = (
+                            self._should_retry_wait_ready(exc)
+                            and attempt + 1 < max_attempts
+                        )
+                        should_teardown = self._should_teardown_failed_wait_ready(exc)
+
+                    if should_teardown and handle is not None:
+                        try:
+                            await self._teardown(handle)
+                        except Exception as teardown_exc:
+                            logger.warning(
+                                "Runtime teardown failed during retry recovery; continuing with retry",
+                                job_id=job_id,
+                                phase=phase,
+                                handle=repr(handle),
+                                error=str(teardown_exc),
+                            )  # type: ignore[call-arg]
+                    elif not should_retry:
+                        handle = None
+                    if not should_retry:
+                        raise
+                    handle = None
+                    runtimeRef = None
+                    await self._sleep_before_session_retry(attempt)
             yield await self._connect(handle)
         finally:
-            await self._teardown(handle)
+            if handle is not None:
+                await self._teardown(handle)
 
 
 class ExternalRuntime(RuntimeBase):
@@ -265,7 +407,12 @@ class ExternalRuntime(RuntimeBase):
 
     provisions = False
 
-    def __init__(self, source: Optional[EndpointSource]) -> None:
+    def __init__(
+        self,
+        source: Optional[EndpointSource],
+        context: Optional[InfrastructureContext] = None,
+    ) -> None:
+        super().__init__(context or InfrastructureContext())
         self._source = source
 
     async def _connect(self, handle: Any) -> Endpoint:
@@ -278,6 +425,9 @@ class NoopRuntime(RuntimeBase):
     inherits the base NOOP that yields ``Endpoint(source=None)``."""
 
     provisions = False
+
+    def __init__(self, context: Optional[InfrastructureContext] = None) -> None:
+        super().__init__(context or InfrastructureContext())
 
 
 # --- Registry (downstream extension point) -------------------------------
@@ -316,6 +466,10 @@ def registered_runtimes() -> List[str]:
 # modules, which pull in kubernetes / cloud SDKs. Keys match RuntimeTarget.
 # Factories take a uniform keyword bag and pick what they need.
 register_runtime(
-    "External", lambda *, endpoint_source=None, **_: ExternalRuntime(endpoint_source)
+    "External",
+    lambda *, endpoint_source=None, context=None, **_: ExternalRuntime(
+        endpoint_source,
+        context=context,
+    ),
 )
-register_runtime("noop", lambda **_: NoopRuntime())
+register_runtime("noop", lambda *, context=None, **_: NoopRuntime(context=context))

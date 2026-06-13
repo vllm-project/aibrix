@@ -115,6 +115,8 @@ STORAGE_REDIS_PASSWORD = os.getenv("STORAGE_REDIS_PASSWORD") or os.getenv(
 # Database Redis Envs, other settings simply reuse Storage Redis Envs
 DB_REDIS_PREFIX = os.getenv("DB_REDIS_PREFIX", "")
 
+BATCH_JOB_POOL_SIZE = int(os.getenv("AIBRIX_BATCH_JOB_POOL_SIZE", "10"))
+
 # Metric Standardizing Related Config
 # Scrape config
 METRIC_SCRAPE_PATH = os.getenv("METRIC_SCRAPE_PATH", "/metrics")

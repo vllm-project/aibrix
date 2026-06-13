@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from kubernetes import client as k8s_client
 from kubernetes.client.rest import ApiException
@@ -48,7 +48,6 @@ from aibrix.batch.job_driver.runtime import (
 )
 from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobErrorCode
 from aibrix.batch.manifest import JobManifestRenderer
-from aibrix.batch.state import JobEntityManager
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
 
@@ -87,20 +86,11 @@ class K8sJobRuntime(RuntimeBase):
     def __init__(
         self,
         context: InfrastructureContext,
-        entity_manager: JobEntityManager,
         renderer: Optional[JobManifestRenderer] = None,
         done_timeout_seconds: float = 24 * 3600,
         poll_interval_seconds: float = 5.0,
     ) -> None:
-        if entity_manager is None:
-            # See DeploymentRuntime: a provisioning runtime needs the entity
-            # manager for delete-driven cancellation. Fail clearly.
-            raise BatchJobError(
-                BatchJobErrorCode.INVALID_DRIVER,
-                "KubernetesJob provider requires a job entity manager",
-            )
-        self._context = context
-        self._entity_manager = entity_manager
+        super().__init__(context)
         self._renderer = renderer or JobManifestRenderer(
             context.template_registry, context.profile_registry
         )
@@ -109,13 +99,7 @@ class K8sJobRuntime(RuntimeBase):
         )
         self._done_timeout = done_timeout_seconds
         self._poll_interval = poll_interval_seconds
-        # Cancellation: a job deletion while this runtime owns the job.
-        self._mgr_deleted_handler = entity_manager.on_job_deleted(
-            self._job_deleted_handler
-        )
-        self._active_job_id: Optional[str] = None
         self._active_handle: Optional[K8sJobHandle] = None
-        self._delete_requested = asyncio.Event()
 
     def cancelled(self) -> bool:
         return self._delete_requested.is_set()
@@ -125,12 +109,32 @@ class K8sJobRuntime(RuntimeBase):
         """The currently-provisioned job's handle, used by the self-hosting hooks."""
         return self._active_handle
 
-    async def _job_deleted_handler(self, deleted_job: BatchJob) -> bool:
+    def _get_runtime_key(self, job: BatchJob) -> str:
+        del job
+        return "k8s-job"
+
+    def _get_runtime_owner_ref(self, job: BatchJob) -> Optional[str]:
+        del job
+        if self._active_handle is None:
+            return None
+        return f"{self._active_handle.namespace}/{self._active_handle.job_name}"
+
+    def _get_runtime_reconnect_payload(
+        self,
+        job: BatchJob,
+    ) -> Optional[Dict[str, Any]]:
+        del job
+        if self._active_handle is None:
+            return None
+        return {
+            "namespace": self._active_handle.namespace,
+            "jobName": self._active_handle.job_name,
+        }
+
+    async def terminate(self, deleted_job: BatchJob) -> bool:
         if deleted_job.job_id and deleted_job.job_id == self._active_job_id:
             self._delete_requested.set()
-        if self._mgr_deleted_handler is None:
-            return True
-        return await self._mgr_deleted_handler(deleted_job)
+        return True
 
     # ── Runtime phases ───────────────────────────────────────────────────
 
@@ -250,7 +254,7 @@ class K8sJobRuntime(RuntimeBase):
 
 register_runtime(
     "KubernetesJob",
-    lambda *, context, entity_manager, **_: K8sJobRuntime(context, entity_manager),
+    lambda *, context, **_: K8sJobRuntime(context),
 )
 
 

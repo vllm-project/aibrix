@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import asyncio
-import json
 import traceback
 import uuid
 from datetime import datetime, timedelta
@@ -48,185 +47,10 @@ from aibrix.batch.template import (
     TemplateRegistry,
 )
 from aibrix.logger import init_logger
-from aibrix.storage.base import BaseStorage
 
 logger = init_logger(__name__)
 
 router = APIRouter()
-
-# Batch input limits
-MAX_BATCH_REQUESTS = 50000  # Maximum number of requests per batch
-
-# Constants for validation (defined outside loop for efficiency)
-REQUIRED_FIELDS = ["custom_id", "method", "url", "body"]
-VALID_HTTP_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH"}
-
-# Endpoint-specific required body fields
-# These define the minimum required fields in the request body for each endpoint type
-ENDPOINT_REQUIRED_BODY_FIELDS: dict[str, list[str]] = {
-    BatchJobEndpoint.CHAT_COMPLETIONS.value: ["model", "messages"],
-    BatchJobEndpoint.COMPLETIONS.value: ["model", "prompt"],
-    BatchJobEndpoint.EMBEDDINGS.value: ["model", "input"],
-    BatchJobEndpoint.RERANK.value: ["model", "query", "documents"],
-}
-
-
-def _validate_request_body_for_endpoint(
-    body: dict, endpoint: str, line_num: int
-) -> Optional[str]:
-    """Validate request body fields are appropriate for the given endpoint.
-
-    Args:
-        body: The request body dictionary
-        endpoint: The API endpoint string (e.g., "/v1/chat/completions")
-        line_num: Line number for error reporting
-
-    Returns:
-        Error message string if validation fails, None if valid
-    """
-    required_fields = ENDPOINT_REQUIRED_BODY_FIELDS.get(endpoint)
-    if required_fields is None:
-        # Unknown endpoint, skip body validation
-        return None
-
-    for field in required_fields:
-        if field not in body:
-            return (
-                f"Line {line_num}: Request body for endpoint '{endpoint}' "
-                f"is missing required field '{field}'"
-            )
-
-    # Endpoint-specific type validation
-    if endpoint == BatchJobEndpoint.CHAT_COMPLETIONS.value:
-        if not isinstance(body.get("messages"), list):
-            return f"Line {line_num}: 'messages' must be a list for {endpoint}"
-    elif endpoint == BatchJobEndpoint.COMPLETIONS.value:
-        prompt = body.get("prompt")
-        if not isinstance(prompt, (str, list)):
-            return f"Line {line_num}: 'prompt' must be a string or list for {endpoint}"
-    elif endpoint == BatchJobEndpoint.EMBEDDINGS.value:
-        input_val = body.get("input")
-        if not isinstance(input_val, (str, list)):
-            return f"Line {line_num}: 'input' must be a string or list for {endpoint}"
-    elif endpoint == BatchJobEndpoint.RERANK.value:
-        if not isinstance(body.get("query"), str):
-            return f"Line {line_num}: 'query' must be a string for {endpoint}"
-        if not isinstance(body.get("documents"), list):
-            return f"Line {line_num}: 'documents' must be a list for {endpoint}"
-
-    return None
-
-
-async def _validate_batch_input_file(
-    storage: BaseStorage, file_id: str, endpoint: str
-) -> tuple[int, Optional[str]]:
-    """Validate batch input file format and content.
-
-    Args:
-        storage: Storage backend instance
-        file_id: ID of the input file to validate
-        endpoint: Expected endpoint for requests (validated against request URLs)
-
-    Returns:
-        Tuple of (request_count, error_message)
-        - request_count: Number of valid non-empty requests
-        - error_message: None if validation passes, error string otherwise
-
-    Validates:
-        - File exists and is readable
-        - JSONL format (valid JSON on each line)
-        - Required fields present: custom_id, method, url, body
-        - Field types are correct
-        - HTTP methods are valid
-        - Request count doesn't exceed MAX_BATCH_REQUESTS
-        - Endpoint matches the batch endpoint (if provided)
-
-    Note:
-        Uses streaming to avoid loading entire file into memory.
-        Only counts non-empty lines toward the request limit.
-    """
-    try:
-        request_count = 0
-        line_num = 0
-
-        # Stream file line by line to avoid memory issues with large files
-        async for line in storage.readline_iter(file_id):
-            line_num += 1
-            line_stripped = line.strip()
-
-            # Skip empty lines (don't count toward request limit)
-            if not line_stripped:
-                continue
-
-            request_count += 1
-
-            # Check request limit before processing
-            if request_count > MAX_BATCH_REQUESTS:
-                return (
-                    request_count,
-                    f"Batch input contains more than {MAX_BATCH_REQUESTS} requests",
-                )
-
-            # Validate JSON format
-            try:
-                request = json.loads(line_stripped)
-            except json.JSONDecodeError as e:
-                return 0, f"Line {line_num}: Invalid JSON - {str(e)}"
-
-            # Validate required fields
-            for field in REQUIRED_FIELDS:
-                if field not in request:
-                    return 0, f"Line {line_num}: Missing required field '{field}'"
-
-            # Validate field types
-            if not isinstance(request.get("custom_id"), str):
-                return 0, f"Line {line_num}: 'custom_id' must be a string"
-
-            if not isinstance(request.get("method"), str):
-                return 0, f"Line {line_num}: 'method' must be a string"
-
-            if not isinstance(request.get("url"), str):
-                return 0, f"Line {line_num}: 'url' must be a string"
-
-            if not isinstance(request.get("body"), dict):
-                return 0, f"Line {line_num}: 'body' must be an object"
-
-            # Validate HTTP method
-            if request["method"].upper() not in VALID_HTTP_METHODS:
-                return (
-                    0,
-                    f"Line {line_num}: Invalid HTTP method '{request['method']}'",
-                )
-
-            # Validate endpoint matches if provided
-            request_url = request["url"]
-            if endpoint and not request_url.endswith(endpoint):
-                return (
-                    0,
-                    f"Line {line_num}: Request URL '{request_url}' does not match "
-                    f"batch endpoint '{endpoint}'",
-                )
-
-            # Validate request body has required fields for the endpoint
-            # Use the canonical `endpoint` (not the per-line `request_url`)
-            # to ensure validation always matches a known endpoint key.
-            body_error = _validate_request_body_for_endpoint(
-                request["body"], endpoint, line_num
-            )
-            if body_error:
-                return 0, body_error
-
-        # Check if file was empty
-        if request_count == 0:
-            return 0, "Batch input file is empty or contains only empty lines"
-
-        return request_count, None
-
-    except FileNotFoundError:
-        return 0, f"Input file '{file_id}' not found"
-    except Exception as e:
-        logger.error("Error validating batch input", file_id=file_id, error=str(e))  # type: ignore[call-arg]
-        return 0, f"Failed to validate input file: {str(e)}"
 
 
 # OpenAI Batch API request/response models
@@ -732,34 +556,9 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
             completion_window=batch_request.completion_window,
             session_id=session_id,
         )  # type: ignore[call-arg]
-
-        # Validate input file format
-        storage = request.app.state.storage
-        request_count, validation_error = await _validate_batch_input_file(
-            storage, batch_request.input_file_id, batch_request.endpoint
-        )
-
-        if validation_error:
-            logger.error(
-                "Batch input validation failed",
-                input_file_id=batch_request.input_file_id,
-                error=validation_error,
-            )  # type: ignore[call-arg]
-            raise HTTPException(status_code=400, detail=validation_error)
-
-        logger.info(
-            "Batch input validated",
-            input_file_id=batch_request.input_file_id,
-            request_count=request_count,
-        )  # type: ignore[call-arg]
-
-        # Create the job through the driver facade. Pass the validated input
-        # line count so request_counts.total is fixed at creation, matching
-        # OpenAI Batch API semantics.
         job_id = await batch_driver.create_job(
             session_id=session_id,
             job_spec=batch_request,
-            request_count=request_count,
         )
 
         # Retrieve the created job

@@ -27,6 +27,7 @@ import httpx
 import aibrix.batch.constant as constant
 from aibrix.batch.client import GatewayEndpointSource
 from aibrix.batch.job_driver.base import BaseJobDriver
+from aibrix.batch.job_driver.running_jobs import RunningJobs
 from aibrix.batch.job_driver.runtime import ExternalRuntime
 from aibrix.batch.job_entity import (
     AibrixMetadata,
@@ -84,7 +85,7 @@ class LLMHealthChecker:
         return False
 
 
-class SingleJobRunner:
+class SingleJobRunner(RunningJobs):
     """A minimal ``RunningJobs`` for executing ONE batch job in-process (the
     batch worker pod).
 
@@ -163,6 +164,28 @@ class SingleJobRunner:
             )
         job.status.state = BatchJobState.FINALIZED
         return job
+
+    async def mark_job_validated(self, job_id: str, status: BatchJobStatus) -> BatchJob:
+        del job_id
+        self._meta.status = status
+        return self._meta
+
+    async def update_job_status(self, job_id: str, status: BatchJobStatus) -> BatchJob:
+        del job_id
+        self._meta.status = status
+        return self._meta
+
+    async def update_job_local_status(
+        self, job_id: str, worker_id: str, status: BatchJobStatus
+    ) -> BatchJob:
+        del job_id, worker_id
+        self._meta.status = status
+        return self._meta
+
+    async def mark_job_finalizing(self, job_id: str) -> BatchJob:
+        del job_id
+        self._meta.status.state = BatchJobState.FINALIZING
+        return self._meta
 
     async def mark_job_failed(self, job_id: str, ex: BatchJobError) -> BatchJob:
         job = self._meta

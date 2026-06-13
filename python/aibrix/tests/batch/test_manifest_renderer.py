@@ -481,6 +481,7 @@ class TestRendererRoundtrip:
             profile_overrides={"scheduling": {"max_concurrency": 16}},
         )
         spec.metadata = {"team": "x"}
+        spec.opts = {"priority": "high", "max_retries": "3"}
         m = r.render(session_id="s1", spec=spec)
         extracted = BatchJobTransformer._extract_batch_job_spec(
             m["spec"]["template"]["metadata"]["annotations"], m["spec"]
@@ -493,6 +494,7 @@ class TestRendererRoundtrip:
         assert extracted.model_template_version == "v1"
         assert extracted.profile_name == "vllm-profile"
         assert extracted.metadata == {"team": "x"}
+        assert extracted.opts == {"priority": "high", "max_retries": "3"}
         assert extracted.template_overrides == {"engine_args": {"max_num_seqs": 512}}
         assert extracted.profile_overrides == {"scheduling": {"max_concurrency": 16}}
 

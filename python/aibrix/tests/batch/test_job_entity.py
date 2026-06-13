@@ -11,10 +11,13 @@ from aibrix.batch.job_entity import (
     BatchJobError,
     BatchJobErrorCode,
     BatchJobSpec,
+    BatchJobState,
+    BatchJobStatus,
     BatchProfileRef,
     ClientConfig,
     CompletionWindow,
     JobAnnotationKey,
+    JobRuntimeRef,
     ModelTemplateRef,
     ResourceAllocation,
     ResourceDetail,
@@ -247,6 +250,76 @@ class TestBatchJobEntityCreation:
         assert restored.client is not None
         assert restored.client.retry_policy is not None
         assert restored.client.retry_policy.base_delay_seconds == 2
+
+    def test_batch_job_status_execution_accepts_legacy_single_ref(self):
+        status = BatchJobStatus.model_validate(
+            {
+                "jobID": "job-123",
+                "state": BatchJobState.IN_PROGRESS,
+                "createdAt": "2026-05-24T00:00:00Z",
+                "execution": {
+                    "driverType": "local",
+                    "attempt": 2,
+                    "ownerRef": "worker-1",
+                },
+            }
+        )
+
+        execution = status.get_runtime_ref("local")
+
+        assert execution is not None
+        assert execution.attempt == 2
+        assert execution.owner_ref == "worker-1"
+
+    def test_batch_job_status_execution_is_keyed_by_driver_type(self):
+        status = BatchJobStatus(
+            jobID="job-123",
+            state=BatchJobState.IN_PROGRESS,
+            createdAt="2026-05-24T00:00:00Z",
+        )
+
+        status.set_runtime_ref(
+            "deployment",
+            JobRuntimeRef(
+                driverType="deployment",
+                attempt=1,
+                ownerRef="deploy-1",
+            ),
+        )
+        status.set_runtime_ref(
+            "local",
+            JobRuntimeRef(
+                driverType="local",
+                attempt=3,
+                ownerRef="worker-2",
+            ),
+        )
+
+        assert status.get_runtime_ref("deployment").owner_ref == "deploy-1"
+        assert status.get_runtime_ref("local").attempt == 3
+
+    def test_resource_allocations_wraps_non_list_resource_detail(self):
+        allocation = ResourceAllocation.model_validate(
+            {
+                "provision_id": "reservation-1",
+                "resource_details": {"endpoint_cluster": "cluster-a"},
+            }
+        )
+
+        assert allocation.resource_details is not None
+        assert len(allocation.resource_details) == 1
+        assert allocation.resource_details[0].endpoint_cluster == "cluster-a"
+
+    def test_resource_allocations_allows_extra_fields(self):
+        allocation = ResourceAllocation.model_validate(
+            {
+                "provision_id": "reservation-1",
+                "future_field": {"phase": "queued"},
+            }
+        )
+
+        assert allocation.provision_id == "reservation-1"
+        assert getattr(allocation, "future_field") == {"phase": "queued"}
 
     def test_resource_detail_allows_extra_fields(self):
         detail = ResourceDetail.model_validate(

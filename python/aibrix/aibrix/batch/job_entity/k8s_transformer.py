@@ -37,7 +37,7 @@ class JobAnnotationKey(str, Enum):
     INPUT_FILE_ID = f"{JOB_ANNOTATION_PREFIX}input-file-id"
     ENDPOINT = f"{JOB_ANNOTATION_PREFIX}endpoint"
     METADATA_PREFIX = f"{JOB_ANNOTATION_PREFIX}metadata."
-    OPTS_PREFIX = f"{JOB_ANNOTATION_PREFIX}opts."
+    OPTS = f"{JOB_ANNOTATION_PREFIX}opts"
     AIBRIX = f"{JOB_ANNOTATION_PREFIX}aibrix"
     OUTPUT_FILE_ID = f"{JOB_ANNOTATION_PREFIX}output-file-id"
     TEMP_OUTPUT_FILE_ID = f"{JOB_ANNOTATION_PREFIX}temp-output-file-id"
@@ -76,15 +76,37 @@ class BatchJobTransformer:
         # Extract batch metadata (key-value pairs with prefix)
         batch_metadata = {}
         batch_opts = {}
+        opts_prefix = f"{JobAnnotationKey.OPTS.value}."
         for key, value in annotations.items():
             if key.startswith(JobAnnotationKey.METADATA_PREFIX.value):
                 # Remove prefix to get the actual metadata key
                 metadata_key = key[len(JobAnnotationKey.METADATA_PREFIX.value) :]
                 batch_metadata[metadata_key] = value
-            elif key.startswith(JobAnnotationKey.OPTS_PREFIX.value):
-                # Remove prefix to get the actual opts key
-                opts_key = key[len(JobAnnotationKey.OPTS_PREFIX.value) :]
+            elif key.startswith(opts_prefix):
+                # Backward compatibility for older per-key opts annotations.
+                opts_key = key[len(opts_prefix) :]
                 batch_opts[opts_key] = value
+
+        raw_opts = annotations.get(JobAnnotationKey.OPTS.value)
+        if raw_opts:
+            try:
+                decoded_opts = json.loads(raw_opts)
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    "Failed to parse opts annotation; keeping legacy opts only",
+                    annotation_key=JobAnnotationKey.OPTS.value,
+                    error=str(e),
+                    annotation_value=raw_opts,
+                )  # type: ignore[call-arg]
+            else:
+                if isinstance(decoded_opts, dict):
+                    batch_opts = decoded_opts
+                else:
+                    logger.warning(
+                        "Ignoring opts annotation because it is not a JSON object",
+                        annotation_key=JobAnnotationKey.OPTS.value,
+                        annotation_value=raw_opts,
+                    )  # type: ignore[call-arg]
 
         # Template / profile selection. All optional;
         # absence means batch was created before the template feature

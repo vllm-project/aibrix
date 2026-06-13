@@ -26,7 +26,7 @@ each job's tracker. A driver never touches a tracker directly.
 
 from typing import List, Optional, Protocol, Tuple, runtime_checkable
 
-from aibrix.batch.job_entity import BatchJob, BatchJobError
+from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobStatus
 
 
 @runtime_checkable
@@ -90,6 +90,32 @@ class RunningJobs(Protocol):
         Raises:
             JobUnexpectedStateError: If job is not in progress.
         """
+        ...
+
+    async def mark_job_validated(self, job_id: str, status: BatchJobStatus) -> BatchJob:
+        """Persist validated job status changes for a job before execution.
+
+        Args:
+            job_id: Job identifier
+            status: BatchJob with status updated
+
+        Return:
+            Updated BatchJob
+        """
+        ...
+
+    async def update_job_status(self, job_id: str, status: BatchJobStatus) -> BatchJob:
+        """Persist non-local job status changes without overwriting newer lifecycle transitions."""
+        ...
+
+    async def update_job_local_status(
+        self, job_id: str, worker_id: str, status: BatchJobStatus
+    ) -> BatchJob:
+        """Persist a worker-local status snapshot for aggregation. This operation is thread-safe."""
+        ...
+
+    async def mark_job_finalizing(self, job_id: str) -> BatchJob:
+        """Transition a running job into finalizing."""
         ...
 
     async def mark_job_done(self, job_id: str) -> BatchJob:

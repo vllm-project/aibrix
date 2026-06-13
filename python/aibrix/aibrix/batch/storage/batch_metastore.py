@@ -19,11 +19,11 @@ from typing import Callable, Optional, Tuple
 
 from aibrix import envs
 from aibrix.batch.job_entity import (
+    BatchJob,
     BatchJobState,
     BatchJobStatusCopy,
     aggregate_batch_job_status,
 )
-from aibrix.batch.job_entity.batch_job import BatchJob
 from aibrix.logger import init_logger
 from aibrix.storage import BaseStorage, StorageType, create_storage
 from aibrix.storage.base import PutObjectOptionsBuilder
@@ -226,7 +226,20 @@ async def put_batch_job(batch_id: str, job: BatchJob) -> None:
     Last-writer-wins. When the metastore is Redis-backed this is a
     single SET; on file-backed metastores it is a small object write.
     """
-    payload = job.model_dump_json(by_alias=True, exclude_none=True)
+    job_to_store = job.copy()
+    status_copies = job_to_store.status.status_copies or {}
+    job_to_store.status.status_copies = None
+    # Store updated status copies
+    for worker_id, status_copy in status_copies.items():
+        if not status_copy.updated:
+            continue
+
+        status_json = status_copy.model_dump_json(by_alias=True, exclude_none=True)
+        await set_metadata(
+            f"{JOB_STATUS_COPIES_PREFIX}{batch_id}:{worker_id}", status_json
+        )
+    # Store the main status document
+    payload = job_to_store.model_dump_json(by_alias=True, exclude_none=True)
     await set_metadata(f"{JOB_KEY_PREFIX}{batch_id}", payload)
 
 

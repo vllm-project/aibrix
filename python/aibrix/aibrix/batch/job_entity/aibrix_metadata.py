@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from aibrix.batch.job_entity.base import _Lenient, _Strict
 
@@ -58,6 +58,15 @@ class ResourceAllocation(_Lenient):
     provision_id: Optional[str] = None
     provision_resource_deadline: Optional[int] = None
     resource_details: Optional[List[ResourceDetail]] = None
+
+    @field_validator("resource_details", mode="before")
+    @classmethod
+    def normalize_resource_details(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return value
+        return [value]
 
 
 class ClientRetryPolicy(_Strict):

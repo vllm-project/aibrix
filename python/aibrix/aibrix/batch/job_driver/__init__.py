@@ -13,8 +13,13 @@
 # limitations under the License.
 
 from aibrix.batch.job_driver.base import BaseJobDriver
-from aibrix.batch.job_driver.driver import JobDriver
+from aibrix.batch.job_driver.driver import (
+    DriverReconnectResult,
+    DriverReconnectState,
+    JobDriver,
+)
 from aibrix.batch.job_driver.driver_factory import create_job_driver
+from aibrix.batch.job_driver.running_jobs import RunningJobs
 from aibrix.batch.job_driver.runtime import (
     Completion,
     Endpoint,
@@ -30,6 +35,8 @@ from aibrix.batch.job_driver.runtime.runpod import RunPodRuntime
 
 __all__ = [
     "create_job_driver",
+    "DriverReconnectResult",
+    "DriverReconnectState",
     "JobDriver",
     "BaseJobDriver",
     "DeploymentRuntime",
@@ -42,4 +49,5 @@ __all__ = [
     "NoopRuntime",
     "Completion",
     "Endpoint",
+    "RunningJobs",
 ]

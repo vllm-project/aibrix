@@ -13,126 +13,34 @@
 # limitations under the License.
 
 import asyncio
-import copy
 import json
-import os
-import uuid
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from aibrix.batch.state.redis_job_store import RedisJobStore
 from fastapi.testclient import TestClient
 from kubernetes import client as k8s_client
 
-from aibrix.batch.state import JobStore
+import aibrix.batch.constant as batch_constant
+import aibrix.batch.driver as batch_driver_module
+from aibrix import envs
+from aibrix.batch.client.engine import DispatchEngine
 from aibrix.storage import StorageType
-from tests.batch.conftest import create_test_app
+from tests.batch.conftest import (
+    MockMetadataStore,
+    build_batch_request,
+    build_e2e_test_app,
+    create_test_app,
+    e2e_batch_request_kwargs,
+    select_e2e_backends,
+    upload_batch_input_file,
+)
 
-# ---- Multi-endpoint input data generators ----
-
-# Sample request bodies for each supported batch endpoint
-ENDPOINT_SAMPLE_BODIES = {
-    "/v1/chat/completions": {
-        "model": "gpt-3.5-turbo-0125",
-        "messages": [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Hello world!"},
-        ],
-        "max_tokens": 1000,
-    },
-    "/v1/completions": {
-        "model": "gpt-3.5-turbo-0125",
-        "prompt": "Once upon a time",
-        "max_tokens": 100,
-    },
-    "/v1/embeddings": {
-        "model": "text-embedding-ada-002",
-        "input": "The food was delicious and the waiter was friendly.",
-    },
-    "/v1/rerank": {
-        "model": "reranker-v1",
-        "query": "What is deep learning?",
-        "documents": [
-            "Deep learning is a subset of machine learning.",
-            "The weather is nice today.",
-            "Neural networks are inspired by the brain.",
-        ],
-    },
-}
-
-
-def generate_batch_input_data(
-    num_requests: int = 3, endpoint: str = "/v1/chat/completions"
-) -> str:
-    """Generate test batch input data for any supported endpoint.
-
-    Args:
-        num_requests: Number of requests to generate
-        endpoint: The API endpoint path (e.g., "/v1/chat/completions")
-
-    Returns:
-        JSONL string with batch requests
-    """
-    sample_body = ENDPOINT_SAMPLE_BODIES.get(endpoint)
-    if sample_body is None:
-        raise ValueError(
-            f"No sample body defined for endpoint '{endpoint}'. "
-            f"Supported: {list(ENDPOINT_SAMPLE_BODIES.keys())}"
-        )
-
-    lines = []
-    for i in range(num_requests):
-        request = {
-            "custom_id": f"request-{i + 1}",
-            "method": "POST",
-            "url": endpoint,
-            "body": copy.deepcopy(sample_body),
-        }
-        lines.append(json.dumps(request))
-
-    return "\n".join(lines)
-
-
-def build_batch_request(
-    input_file_id: str,
-    endpoint: str,
-    *,
-    aibrix_template: str | None = None,
-    aibrix_profile: str | None = None,
-    runtime_target: str | None = None,
-    provider: str | None = None,
-) -> dict[str, Any]:
-    request: dict[str, Any] = {
-        "input_file_id": input_file_id,
-        "endpoint": endpoint,
-        "completion_window": "24h",
-    }
-    aibrix: dict[str, Any] = {}
-    if aibrix_template:
-        aibrix["model_template"] = {"name": aibrix_template}
-    if aibrix_profile:
-        aibrix["profile"] = {"name": aibrix_profile}
-    if runtime_target:
-        aibrix["runtime"] = {"target": runtime_target}
-    if provider:
-        aibrix["resource_allocation"] = {
-            "provision_id": "reservation-1",
-            "provision_resource_deadline": 3600,
-            "resource_details": [
-                {
-                    "provider": provider,
-                    "endpoint_cluster": "cluster-a",
-                    "gpu_type": "H100",
-                    "replica": 1,
-                }
-            ],
-        }
-    if aibrix:
-        request["aibrix"] = aibrix
-    return request
+_ORIGINAL_DISPATCH_SEND_ONE: Any = None
+_PATCHED_DISPATCH_DELAY_SECONDS = 0.0
 
 
 def verify_batch_output_content(output_content: str, expected_requests: int) -> bool:
-    """Verify that batch output content has the expected structure."""
     lines = output_content.strip().split("\n")
 
     if len(lines) != expected_requests:
@@ -143,14 +51,11 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
         try:
             output = json.loads(line)
 
-            # Check required fields in OpenAI batch response format
-            required_fields = ["id", "custom_id", "response"]
-            for field in required_fields:
+            for field in ["id", "custom_id", "response"]:
                 if field not in output:
                     print(f"Missing required field '{field}' in response {i + 1}")
                     return False
 
-            # Verify custom_id matches expected pattern
             expected_custom_id = f"request-{i + 1}"
             if output["custom_id"] != expected_custom_id:
                 print(
@@ -159,8 +64,7 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
                 return False
 
             response = output["response"]
-            required_fields = ["status_code", "request_id", "body"]
-            for field in required_fields:
+            for field in ["status_code", "request_id", "body"]:
                 if field not in response:
                     print(
                         f"Missing required field 'response.{field}' in response {i + 1}"
@@ -168,13 +72,11 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
                     return False
 
             body = response["body"]
-            required_fields = ["model"]  # For now, just check model
-            for field in required_fields:
-                if field not in body:
-                    print(
-                        f"Missing required field 'response.body.{field}' in response {i + 1}"
-                    )
-                    return False
+            if "model" not in body:
+                print(
+                    f"Missing required field 'response.body.model' in response {i + 1}"
+                )
+                return False
 
         except json.JSONDecodeError as e:
             print(f"Invalid JSON in output line {i + 1}: {e}")
@@ -183,462 +85,264 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
     return True
 
 
-@pytest.fixture(scope="function")
-def redis_deployment_test_app(
-    test_s3_bucket,
-    redis_config_available,
-    ensure_job_rbac,
-    template_configmaps,
-    monkeypatch,
-):
-    monkeypatch.setattr(
-        "aibrix.metadata.app.envs.STORAGE_REDIS_HOST",
-        os.environ["REDIS_HOST"],
+def pytest_generate_tests(metafunc):
+    select_e2e_backends(
+        metafunc,
+        [
+            "local_job_using_deployment",
+            "redis_job_using_deployment",
+            "redis_job",
+        ],
     )
-    monkeypatch.setattr(
-        "aibrix.metadata.app.envs.STORAGE_REDIS_PORT",
-        int(os.environ.get("REDIS_PORT", "6379")),
+
+
+def backend_batch_request(
+    test_backend: str,
+    input_file_id: str,
+    endpoint: str = "/v1/chat/completions",
+) -> dict[str, Any]:
+    request = build_batch_request(
+        input_file_id,
+        endpoint,
+        **e2e_batch_request_kwargs(test_backend),
     )
-    monkeypatch.setattr(
-        "aibrix.metadata.app.envs.STORAGE_REDIS_DB",
-        int(os.environ.get("REDIS_DB", "0")),
+    aibrix = cast(dict[str, Any] | None, request.get("aibrix"))
+    if aibrix is not None and "planner_decision" in aibrix:
+        planner_decision = cast(dict[str, Any], aibrix.pop("planner_decision"))
+        aibrix["runtime"] = {"target": "Kubernetes"}
+        aibrix["resource_allocation"] = {
+            "provision_id": planner_decision["provision_id"],
+            "provision_resource_deadline": planner_decision[
+                "provision_resource_deadline"
+            ],
+            "resource_details": [
+                {
+                    "endpoint_cluster": "cluster-a",
+                    "gpu_type": "H100",
+                    "replica": 1,
+                }
+            ],
+        }
+    return request
+
+
+def backend_request_count(test_backend: str) -> int:
+    return 10 if test_backend == "k8s_job" else 3
+
+
+def backend_max_polls(test_backend: str) -> int:
+    return 120 if test_backend in {"k8s_job", "redis_job_using_deployment"} else 20
+
+
+async def wait_for_completed_batch(
+    client: TestClient,
+    batch_id: str,
+    *,
+    max_polls: int,
+    poll_interval: float = 1.0,
+    inspect_status=None,
+) -> dict[str, Any]:
+    for _ in range(max_polls):
+        status_response = client.get(f"/v1/batches/{batch_id}")
+        assert status_response.status_code == 200, status_response.text
+        status_result = status_response.json()
+        if inspect_status is not None:
+            inspect_status(status_result)
+        if status_result["status"] == "completed":
+            return status_result
+        if status_result["status"] in {"failed", "cancelled", "expired"}:
+            raise AssertionError(
+                f"Batch job {status_result['status']}: {status_result}"
+            )
+        await asyncio.sleep(poll_interval)
+    raise AssertionError(f"Batch job {batch_id} did not complete within polling budget")
+
+
+async def wait_for_batch_status(
+    client: TestClient,
+    batch_id: str,
+    *,
+    expected_statuses: set[str],
+    max_polls: int,
+    poll_interval: float = 0.5,
+) -> dict[str, Any]:
+    last_status: dict[str, Any] | None = None
+    for _ in range(max_polls):
+        status_response = client.get(f"/v1/batches/{batch_id}")
+        assert status_response.status_code == 200, status_response.text
+        current_status = cast(dict[str, Any], status_response.json())
+        last_status = current_status
+        if current_status["status"] in expected_statuses:
+            return current_status
+        if current_status["status"] in {"failed", "cancelled", "expired"}:
+            raise AssertionError(
+                f"Batch job {current_status['status']}: {current_status}"
+            )
+        await asyncio.sleep(poll_interval)
+    assert last_status is not None
+    raise AssertionError(
+        f"Batch job {batch_id} did not reach one of {sorted(expected_statuses)}; "
+        f"last status: {last_status}"
     )
-    monkeypatch.setattr(
-        "aibrix.metadata.app.envs.STORAGE_REDIS_PASSWORD",
-        os.environ.get("REDIS_PASSWORD", "unused-for-local-redis-test"),
-    )
-    monkeypatch.setattr(
-        "aibrix.metadata.app.envs.DB_REDIS_PREFIX",
-        f"batch-jobs-deployment-{uuid.uuid4().hex}",
-    )
-    monkeypatch.setenv("INFERENCE_ENGINE_ENDPOINT", "http://127.0.0.1:8000")
-    return create_test_app(
-        enable_redis_job=True,
-        storage_type=StorageType.S3,
-        metastore_type=StorageType.LOCAL,
-        params={"bucket_name": test_s3_bucket},
-        dry_run=False,
-    )
+
+
+def assert_completed_batch(
+    status_result: dict[str, Any], expected_requests: int
+) -> str:
+    assert status_result["status"] == "completed"
+    output_file_id = status_result["output_file_id"]
+    assert output_file_id is not None
+    request_counts = status_result.get("request_counts")
+    assert request_counts is not None
+    assert request_counts["total"] == expected_requests
+    assert request_counts["completed"] == expected_requests
+    assert request_counts["failed"] == 0
+    return output_file_id
+
+
+async def download_and_verify_output(
+    client: TestClient, output_file_id: str, expected_requests: int
+) -> str:
+    output_response = client.get(f"/v1/files/{output_file_id}/content")
+    assert output_response.status_code == 200, output_response.text
+    output_content = output_response.content.decode("utf-8")
+    assert output_content
+    assert verify_batch_output_content(output_content, expected_requests)
+    return output_content
+
+
+def set_dispatch_delay(e2e_test_app, delay_seconds: float) -> float:
+    global _ORIGINAL_DISPATCH_SEND_ONE, _PATCHED_DISPATCH_DELAY_SECONDS
+
+    values = e2e_test_app.state.batch_driver._context.values
+    original_delay = values.get("endpoint_source_delay_seconds", 0.0)
+    values["endpoint_source_delay_seconds"] = delay_seconds
+
+    original_send_one = _ORIGINAL_DISPATCH_SEND_ONE
+    if original_send_one is None:
+        _ORIGINAL_DISPATCH_SEND_ONE = DispatchEngine.send_one
+        original_send_one = _ORIGINAL_DISPATCH_SEND_ONE
+
+    if delay_seconds > 0:
+        _PATCHED_DISPATCH_DELAY_SECONDS = delay_seconds
+        if DispatchEngine.send_one is original_send_one:
+
+            async def delayed_send_one(self, request):
+                await asyncio.sleep(_PATCHED_DISPATCH_DELAY_SECONDS)
+                return await original_send_one(self, request)
+
+            cast(Any, DispatchEngine).send_one = delayed_send_one
+    else:
+        _PATCHED_DISPATCH_DELAY_SECONDS = 0.0
+        cast(Any, DispatchEngine).send_one = original_send_one
+
+    for owner in (
+        e2e_test_app.state.batch_driver,
+        getattr(e2e_test_app.state.batch_driver, "_batch_manager", None),
+    ):
+        if owner is None:
+            continue
+        endpoint_source = getattr(owner, "_endpoint_source", None)
+        if endpoint_source is not None:
+            channel = getattr(endpoint_source, "_channel", None)
+            if channel is not None and hasattr(channel, "_delay"):
+                channel._delay = delay_seconds
+    return original_delay
 
 
 @pytest.mark.asyncio
-async def test_openai_batch_api_e2e():
-    """
-    End-to-end test for OpenAI Batch API:
-    1. Upload sample input file via Files API
-    2. Create batch job via Batch API
-    3. Poll job status until completion
-    4. Download and verify output via Files API
-    """
-    app = create_test_app(enable_k8s_support=False, dry_run=True)
+async def test_openai_batch_api_success_workflow(e2e_test_app, test_backend):
+    app = e2e_test_app
+    expected_requests = backend_request_count(test_backend)
+    endpoint = "/v1/chat/completions"
+
+    infrastructure_context = getattr(app.state.batch_driver, "_context", None)
+    apps_v1_api = None
+    core_v1_api = None
+    if test_backend == "redis_job_using_deployment":
+        assert isinstance(app.state.batch_driver._job_entity_manager, RedisJobStore)
+        assert infrastructure_context is not None
+        apps_v1_api = infrastructure_context.apps_v1_api
+        core_v1_api = infrastructure_context.core_v1_api
+        assert apps_v1_api is not None
+        assert core_v1_api is not None
 
     with TestClient(app) as client:
-        # Step 1: Upload sample input file via Files API
-        print("Step 1: Uploading batch input file...")
-
-        input_data = generate_batch_input_data(3)
-        files = {"file": ("batch_input.jsonl", input_data, "application/jsonl")}
-        data = {"purpose": "batch"}
-
-        upload_response = client.post("/v1/files", files=files, data=data)
-        assert upload_response.status_code == 200, (
-            f"File upload failed: {upload_response.text}"
+        input_file_id = upload_batch_input_file(
+            client,
+            num_requests=expected_requests,
+            endpoint=endpoint,
+            filename=f"{test_backend}-input.jsonl",
         )
-
-        upload_result = upload_response.json()
-        assert upload_result["object"] == "file"
-        assert upload_result["purpose"] == "batch"
-        assert upload_result["status"] == "uploaded"
-
-        input_file_id = upload_result["id"]
-        print(f"✅ File uploaded successfully with ID: {input_file_id}")
-
-        # Step 2: Create batch job via Batch API
-        print("Step 2: Creating batch job...")
-
-        batch_request = build_batch_request(input_file_id, "/v1/chat/completions")
-
-        batch_response = client.post("/v1/batches", json=batch_request)
-        assert batch_response.status_code == 200, (
-            f"Batch creation failed: {batch_response.text}"
+        create_response = client.post(
+            "/v1/batches",
+            json=backend_batch_request(test_backend, input_file_id, endpoint),
         )
-
-        batch_result = batch_response.json()
-        assert batch_result["object"] == "batch"
+        assert create_response.status_code == 200, create_response.text
+        batch_result = create_response.json()
         assert batch_result["input_file_id"] == input_file_id
-        assert batch_result["endpoint"] == "/v1/chat/completions"
-
+        assert batch_result["endpoint"] == endpoint
         batch_id = batch_result["id"]
-        print(f"✅ Batch created successfully with ID: {batch_id}")
-
-        # Step 3: Poll job status until completion
-        print("Step 3: Polling job status until completion...")
-
-        max_polls = 10  # Maximum number of polling attempts
-        poll_interval = 1  # seconds
-
-        for attempt in range(max_polls):
-            status_response = client.get(f"/v1/batches/{batch_id}")
-            assert status_response.status_code == 200, (
-                f"Status check failed: {status_response.text}"
-            )
-
-            status_result = status_response.json()
-            current_status = status_result["status"]
-
-            print(f"  Attempt {attempt + 1}: Status = {current_status}")
-
-            if current_status == "completed":
-                print("✅ Batch job completed successfully!")
-                output_file_id = status_result["output_file_id"]
-                assert output_file_id is not None, (
-                    "Expected output_file_id for completed batch"
-                )
-
-                request_counts = status_result.get("request_counts")
-                assert request_counts is not None
-                assert request_counts["total"] == 3
-                assert request_counts["completed"] == 3
-                assert request_counts["failed"] == 0
-
-                break
-            elif current_status == "failed":
-                pytest.fail(
-                    f"Batch job failed: {status_result.get('errors', 'Unknown error')}"
-                )
-            elif current_status in ["cancelled", "expired"]:
-                pytest.fail(f"Batch job was {current_status}")
-
-            # Wait before next poll
-            await asyncio.sleep(poll_interval)
-        else:
-            pytest.fail(
-                f"Batch job did not complete within {max_polls * poll_interval} seconds"
-            )
-
-        # Step 4: Download and verify output via Files API
-        print("Step 4: Downloading and verifying output...")
-
-        output_response = client.get(f"/v1/files/{output_file_id}/content")
-        assert output_response.status_code == 200, (
-            f"Output download failed: {output_response.text}"
+        template_name = e2e_batch_request_kwargs(test_backend).get("aibrix_template")
+        deployment_name = (
+            f"batch-{template_name}-{batch_id[:8]}" if template_name is not None else ""
         )
-
-        output_content = output_response.content.decode("utf-8")
-        assert output_content, "Output file is empty"
-
-        # Verify output content structure
-        is_valid = verify_batch_output_content(output_content, 3)
-        assert is_valid, (
-            f"Output content verification failed. Content:\n{output_content}"
-        )
-
-        print("✅ Output downloaded and verified successfully!")
-        print(f"Output content preview:\n{output_content[:200]}...")
-
-        # Step 5: Verify batch list API works
-        print("Step 5: Testing batch list API...")
-
-        list_response = client.get("/v1/batches")
-        assert list_response.status_code == 200, (
-            f"Batch list failed: {list_response.text}"
-        )
-
-        list_result = list_response.json()
-        assert list_result["object"] == "list"
-        assert len(list_result["data"]) >= 1, "Expected at least one batch in the list"
-
-        # Find our batch in the list
-        our_batch = None
-        for batch in list_result["data"]:
-            if batch["id"] == batch_id:
-                our_batch = batch
-                break
-
-        assert our_batch is not None, f"Batch {batch_id} not found in list"
-        assert our_batch["status"] == "completed"
-
-        print("✅ Batch list API verified successfully!")
-
-        print(
-            "\n🎉 E2E test completed successfully! All OpenAI Batch API endpoints working correctly."
-        )
-        await app.state.batch_driver.clear_job(batch_id)
-
-
-@pytest.mark.asyncio
-async def test_openai_batch_api_metadata_server_workflow(test_app):
-    """
-    End-to-end test for OpenAI Batch API with metadata server workflow:
-    1. Upload sample input file via Files API
-    2. Create batch job via Batch API (using metadata server mode)
-    3. Verify metadata server prepares job output files
-    4. Simulate worker execution by checking IN_PROGRESS state
-    5. Poll job status until completion
-    6. Download and verify output via Files API
-    """
-    with TestClient(test_app) as client:
-        # Step 1: Upload sample input file via Files API
-        print("Step 1: Uploading batch input file...")
-
-        input_data = generate_batch_input_data(10)
-        files = {
-            "file": ("metadata_batch_input.jsonl", input_data, "application/jsonl")
-        }
-        data = {"purpose": "batch"}
-
-        upload_response = client.post("/v1/files", files=files, data=data)
-        assert upload_response.status_code == 200, (
-            f"File upload failed: {upload_response.text}"
-        )
-
-        upload_result = upload_response.json()
-        input_file_id = upload_result["id"]
-        print(f"✅ File uploaded successfully with ID: {input_file_id}")
-
-        # Step 2: Create batch job via Batch API (metadata server mode)
-        print("Step 2: Creating batch job with metadata server workflow...")
-
-        batch_request = build_batch_request(
-            input_file_id,
-            "/v1/chat/completions",
-            aibrix_template="mock-vllm",
-            aibrix_profile="unittest",
-        )
-
-        batch_response = client.post("/v1/batches", json=batch_request)
-        assert batch_response.status_code == 200, (
-            f"Batch creation failed: {batch_response.text}"
-        )
-
-        batch_result = batch_response.json()
-        assert "id" in batch_result
-        assert batch_result["object"] == "batch"
-        assert batch_result["input_file_id"] == input_file_id
-        assert batch_result["endpoint"] == "/v1/chat/completions"
-        assert batch_result["completion_window"] == "24h"
-        assert isinstance(batch_result["created_at"], int)
-
-        batch_id = batch_result["id"]
-        print(f"✅ Batch created successfully with ID: {batch_id}")
-
-        # Step 3: Verify metadata server prepared job output files
-        print("Step 3: Checking if job output files are prepared...")
-
-        # Poll for a short time to see if job moves through states
-        preparation_polls = 5
-        for attempt in range(preparation_polls):
-            status_response = client.get(f"/v1/batches/{batch_id}")
-            assert status_response.status_code == 200, (
-                f"Status check failed: {status_response.text}"
-            )
-
-            status_result = status_response.json()
-            current_status = status_result["status"]
-            print(f"  Preparation check {attempt + 1}: Status = {current_status}")
-
-            # Check if we have output file IDs which indicates preparation is done
-            output_file_id = status_result.get("output_file_id")
-            error_file_id = status_result.get("error_file_id")
-
-            if output_file_id and error_file_id:
-                print("✅ Job output files prepared by metadata server!")
-                break
-            elif current_status in ["failed", "cancelled", "expired"]:
-                pytest.fail(f"Job failed during preparation: {current_status}")
-
-            await asyncio.sleep(0.5)
-
-        # Step 4: Simulate worker workflow - wait for IN_PROGRESS
-        print("Step 4: Waiting for job to reach IN_PROGRESS state...")
-
-        in_progress_polls = 3
-        for attempt in range(in_progress_polls):
-            status_response = client.get(f"/v1/batches/{batch_id}")
-            status_result = status_response.json()
-            print(status_result)
-            current_status = status_result["status"]
-
-            print(f"  IN_PROGRESS check {attempt + 1}: Status = {current_status}")
-
-            if current_status == "in_progress":
-                print("✅ Job reached IN_PROGRESS state - worker can start execution!")
-
-                # Verify status_result
-                assert isinstance(status_result["in_progress_at"], int)
-
-                break
-            elif current_status in ["failed", "cancelled", "expired"]:
-                pytest.fail(f"Job failed before reaching IN_PROGRESS: {current_status}")
-
-            await asyncio.sleep(1)
-
-        # Step 5: Poll job status until completion (metadata server should finalize)
-        print("Step 5: Polling job status until completion...")
-
-        max_polls = 20  # Extended for metadata server workflow
-        poll_interval = 1
-
-        for attempt in range(max_polls):
-            status_response = client.get(f"/v1/batches/{batch_id}")
-            status_result = status_response.json()
-            print(status_result)
-            current_status = status_result["status"]
-
-            print(f"  Completion check {attempt + 1}: Status = {current_status}")
-
-            if current_status == "completed":
-                print(
-                    "✅ Batch job completed successfully with metadata server workflow!"
-                )
-
-                # Verify status_result
-                output_file_id = status_result["output_file_id"]
-                assert output_file_id is not None, (
-                    "Expected output_file_id for completed batch"
-                )
-
-                request_counts = status_result.get("request_counts")
-                assert request_counts is not None
-                assert request_counts["total"] == 10
-                assert request_counts["completed"] == 10
-                assert request_counts["failed"] == 0
-
-                assert isinstance(status_result["finalizing_at"], int)
-                assert isinstance(status_result["completed_at"], int)
-
-                break
-            elif current_status == "failed":
-                pytest.fail(
-                    f"Batch job failed: {status_result.get('errors', 'Unknown error')}"
-                )
-            elif current_status in ["cancelled", "expired"]:
-                pytest.fail(f"Batch job was {current_status}")
-
-            await asyncio.sleep(poll_interval)
-        else:
-            pytest.fail(
-                f"Batch job did not complete within {max_polls * poll_interval} seconds"
-            )
-
-        # Step 6: Download and verify output via Files API
-        print("Step 6: Downloading and verifying output...")
-
-        output_response = client.get(f"/v1/files/{output_file_id}/content")
-        assert output_response.status_code == 200, (
-            f"Output download failed: {output_response.text}"
-        )
-
-        output_content = output_response.content.decode("utf-8")
-        assert output_content, "Output file is empty"
-
-        # Verify output content structure
-        is_valid = verify_batch_output_content(output_content, 10)
-        assert is_valid, (
-            f"Output content verification failed. Content:\n{output_content}"
-        )
-
-        print("✅ Output downloaded and verified successfully!")
-        print(f"Output content preview:\n{output_content[:200]}...")
-
-        print(
-            "\n🎉 Metadata server workflow E2E test completed successfully! "
-            "Job preparation, worker coordination, and finalization working correctly."
-        )
-        await test_app.state.batch_driver.clear_job(batch_id)
-
-
-@pytest.mark.asyncio
-async def test_openai_batch_api_metadata_server_workflow_with_redis_cache_and_deployment_driver(
-    redis_deployment_test_app,
-):
-    app = redis_deployment_test_app
-    assert isinstance(app.state.batch_driver.job_manager._job_entity_manager, JobStore)
-    infrastructure_context = app.state.batch_driver._context
-    assert infrastructure_context is not None
-
-    apps_v1_api = infrastructure_context.apps_v1_api
-    core_v1_api = infrastructure_context.core_v1_api
-    assert apps_v1_api is not None
-    assert core_v1_api is not None
-
-    with TestClient(app) as client:
-        input_data = generate_batch_input_data(3)
-        files = {
-            "file": ("deployment-input.jsonl", input_data, "application/jsonl"),
-            "purpose": (None, "batch"),
-        }
-
-        upload_response = client.post("/v1/files", files=files)
-        assert upload_response.status_code == 200
-        input_file_id = upload_response.json()["id"]
-
-        batch_request = build_batch_request(
-            input_file_id,
-            "/v1/chat/completions",
-            aibrix_template="mock-vllm",
-            aibrix_profile="unittest",
-            runtime_target="Kubernetes",
-            provider="deployment",
-        )
-        create_response = client.post("/v1/batches", json=batch_request)
-        assert create_response.status_code == 200
-        batch_id = create_response.json()["id"]
-        deployment_name = f"batch-mock-vllm-{batch_id[:8]}"
         service_name = deployment_name
-        model_name = deployment_name
         saw_deployment = False
         saw_ready_deployment = False
         saw_service = False
-        cleanup_runtime = False
+
+        def inspect_status(_status_result: dict[str, Any]) -> None:
+            nonlocal saw_deployment, saw_ready_deployment, saw_service
+            if test_backend != "redis_job_using_deployment":
+                return
+            try:
+                deployment = apps_v1_api.read_namespaced_deployment_status(
+                    name=deployment_name,
+                    namespace="default",
+                )
+                saw_deployment = True
+                if (deployment.status.available_replicas or 0) >= 1:
+                    saw_ready_deployment = True
+            except k8s_client.ApiException as ex:
+                if ex.status != 404:
+                    raise
+            try:
+                service = core_v1_api.read_namespaced_service(
+                    name=service_name,
+                    namespace="default",
+                )
+                if service.metadata.name == service_name:
+                    saw_service = True
+            except k8s_client.ApiException as ex:
+                if ex.status != 404:
+                    raise
 
         try:
-            terminal_batch = None
-            for _ in range(120):
-                status_response = client.get(f"/v1/batches/{batch_id}")
-                assert status_response.status_code == 200
-                terminal_batch = status_response.json()
-                try:
-                    deployment = apps_v1_api.read_namespaced_deployment_status(
-                        name=deployment_name,
-                        namespace="default",
-                    )
-                    saw_deployment = True
-                    available = deployment.status.available_replicas or 0
-                    if available >= 1:
-                        saw_ready_deployment = True
-                except k8s_client.ApiException as ex:
-                    if ex.status != 404:
-                        raise
-                try:
-                    service = core_v1_api.read_namespaced_service(
-                        name=service_name,
-                        namespace="default",
-                    )
-                    if service.metadata.name == service_name:
-                        saw_service = True
-                except k8s_client.ApiException as ex:
-                    if ex.status != 404:
-                        raise
-                if terminal_batch["status"] in {"completed", "failed", "cancelled"}:
-                    break
-                await asyncio.sleep(1)
+            completed_batch = await wait_for_completed_batch(
+                client,
+                batch_id,
+                max_polls=backend_max_polls(test_backend),
+                inspect_status=inspect_status,
+            )
+            output_file_id = assert_completed_batch(completed_batch, expected_requests)
+            output_content = await download_and_verify_output(
+                client, output_file_id, expected_requests
+            )
 
-            assert terminal_batch is not None
-            assert terminal_batch["status"] == "completed"
-            assert saw_deployment
-            assert saw_ready_deployment
-            assert saw_service
+            if test_backend in {"k8s_job", "redis_job_using_deployment"}:
+                assert isinstance(completed_batch["in_progress_at"], int)
+                assert isinstance(completed_batch["finalizing_at"], int)
+                assert isinstance(completed_batch["completed_at"], int)
 
-            output_file_id = terminal_batch["output_file_id"]
-            output_response = client.get(f"/v1/files/{output_file_id}/content")
-            assert output_response.status_code == 200
-            assert verify_batch_output_content(output_response.text, 3)
-            first_line = json.loads(output_response.text.splitlines()[0])
-            assert first_line["response"]["body"]["model"] == model_name
-            cleanup_runtime = True
+            if test_backend == "redis_job_using_deployment":
+                assert saw_deployment
+                assert saw_ready_deployment
+                assert saw_service
+                first_line = json.loads(output_content.splitlines()[0])
+                assert first_line["response"]["body"]["model"] == service_name
         finally:
-            if cleanup_runtime:
+            if test_backend == "redis_job_using_deployment":
                 try:
                     core_v1_api.delete_namespaced_service(
                         name=service_name,
@@ -658,9 +362,6 @@ async def test_openai_batch_api_metadata_server_workflow_with_redis_cache_and_de
             await app.state.batch_driver.clear_job(batch_id)
 
 
-# ---- Multi-endpoint parametrized tests ----
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "endpoint",
@@ -672,131 +373,228 @@ async def test_openai_batch_api_metadata_server_workflow_with_redis_cache_and_de
     ],
     ids=["chat_completions", "completions", "embeddings", "rerank"],
 )
-async def test_openai_batch_api_multi_endpoint(endpoint: str):
-    """
-    Test batch API workflow for each supported endpoint type.
+async def test_openai_batch_api_multi_endpoint(
+    e2e_test_app, test_backend, endpoint: str
+):
+    if test_backend not in {"local_metastore_job", "redis_job"}:
+        pytest.skip("Multi-endpoint coverage only applies to echo-backed workflows")
 
-    Validates that the batch system correctly accepts, processes,
-    and returns results for all supported OpenAI-compatible endpoints:
-    - /v1/chat/completions
-    - /v1/completions
-    - /v1/embeddings
-    - /v1/rerank
-    """
-    app = create_test_app(enable_k8s_support=False, dry_run=True)
-    num_requests = 3
+    app = e2e_test_app
+    expected_requests = 3
 
     with TestClient(app) as client:
-        # Step 1: Upload batch input file for this endpoint
-        input_data = generate_batch_input_data(num_requests, endpoint=endpoint)
-        files = {
-            "file": (
-                f"batch_input_{endpoint.split('/')[-1]}.jsonl",
-                input_data,
-                "application/jsonl",
+        input_file_id = upload_batch_input_file(
+            client,
+            num_requests=expected_requests,
+            endpoint=endpoint,
+            filename=f"{test_backend}-{endpoint.split('/')[-1]}.jsonl",
+        )
+        create_response = client.post(
+            "/v1/batches",
+            json=backend_batch_request(test_backend, input_file_id, endpoint),
+        )
+        assert create_response.status_code == 200, create_response.text
+        batch_id = create_response.json()["id"]
+
+        try:
+            completed_batch = await wait_for_completed_batch(
+                client,
+                batch_id,
+                max_polls=backend_max_polls(test_backend),
             )
-        }
-        data = {"purpose": "batch"}
-
-        upload_response = client.post("/v1/files", files=files, data=data)
-        assert upload_response.status_code == 200, (
-            f"[{endpoint}] File upload failed: {upload_response.text}"
-        )
-
-        input_file_id = upload_response.json()["id"]
-
-        # Step 2: Create batch job for this endpoint
-        batch_request = {
-            "input_file_id": input_file_id,
-            "endpoint": endpoint,
-            "completion_window": "24h",
-        }
-
-        batch_response = client.post("/v1/batches", json=batch_request)
-        assert batch_response.status_code == 200, (
-            f"[{endpoint}] Batch creation failed: {batch_response.text}"
-        )
-
-        batch_result = batch_response.json()
-        assert batch_result["endpoint"] == endpoint
-        batch_id = batch_result["id"]
-
-        # Step 3: Poll until completion
-        max_polls = 10
-        poll_interval = 1
-
-        for attempt in range(max_polls):
-            status_response = client.get(f"/v1/batches/{batch_id}")
-            assert status_response.status_code == 200
-            status_result = status_response.json()
-            current_status = status_result["status"]
-
-            if current_status == "completed":
-                output_file_id = status_result["output_file_id"]
-                assert output_file_id is not None
-                request_counts = status_result.get("request_counts")
-                assert request_counts is not None
-                assert request_counts["total"] == num_requests
-                assert request_counts["completed"] == num_requests
-                break
-            elif current_status in ("failed", "cancelled", "expired"):
-                pytest.fail(f"[{endpoint}] Batch job {current_status}")
-
-            await asyncio.sleep(poll_interval)
-        else:
-            pytest.fail(
-                f"[{endpoint}] Batch job did not complete within "
-                f"{max_polls * poll_interval}s"
-            )
-
-        # Step 4: Download and verify output
-        output_response = client.get(f"/v1/files/{output_file_id}/content")
-        assert output_response.status_code == 200
-
-        output_content = output_response.content.decode("utf-8")
-        assert output_content, f"[{endpoint}] Output file is empty"
-        assert verify_batch_output_content(output_content, num_requests), (
-            f"[{endpoint}] Output verification failed"
-        )
-
-        await app.state.batch_driver.clear_job(batch_id)
+            output_file_id = assert_completed_batch(completed_batch, expected_requests)
+            await download_and_verify_output(client, output_file_id, expected_requests)
+        finally:
+            await app.state.batch_driver.clear_job(batch_id)
 
 
 @pytest.mark.asyncio
-async def test_batch_api_error_handling():
-    """Test error handling in batch API."""
-    app = create_test_app(enable_k8s_support=False)
+async def test_openai_batch_api_respects_default_job_pool_size(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AIBRIX_BATCH_JOB_POOL_SIZE", "3")
+    monkeypatch.setattr(envs, "BATCH_JOB_POOL_SIZE", 3)
+    monkeypatch.setattr(batch_constant, "DEFAULT_JOB_POOL_SIZE", 3)
+    monkeypatch.setattr(batch_driver_module, "DEFAULT_JOB_POOL_SIZE", 3)
 
+    app = create_test_app(
+        storage_type=StorageType.LOCAL,
+        metastore_type=StorageType.LOCAL,
+        dry_run=True,
+    )
+    app.state.metadata_store = MockMetadataStore()
+    app.state.redis_client = None
+
+    scheduler = app.state.batch_driver._scheduler
+    assert scheduler is not None
+    assert scheduler._pool_size == 3
+
+    batch_ids: list[str] = []
+    original_delay = set_dispatch_delay(app, 0.5)
     with TestClient(app) as client:
-        # Test creating batch with non-existent file ID
-        batch_request = {
-            "input_file_id": "non-existent-file-id",
-            "endpoint": "/v1/chat/completions",
-            "completion_window": "24h",
-        }
+        try:
+            for index in range(4):
+                input_file_id = upload_batch_input_file(
+                    client,
+                    num_requests=2,
+                    endpoint="/v1/chat/completions",
+                    filename=f"pool-size-{index}.jsonl",
+                )
+                create_response = client.post(
+                    "/v1/batches",
+                    json=backend_batch_request(
+                        "local_metastore_job",
+                        input_file_id,
+                        "/v1/chat/completions",
+                    ),
+                )
+                assert create_response.status_code == 200, create_response.text
+                batch_ids.append(create_response.json()["id"])
 
-        response = client.post("/v1/batches", json=batch_request)
-        # This should either succeed (if validation is async) or fail with proper error
-        # The actual behavior depends on when file validation occurs
-        print(
-            f"Batch creation with invalid file ID returned status: {response.status_code}"
-        )
+            observed_running_pool = 0
+            for _ in range(40):
+                running_pool_size = len(scheduler._job_execution_tasks)
+                observed_running_pool = max(observed_running_pool, running_pool_size)
+                if observed_running_pool >= 3:
+                    break
+                await asyncio.sleep(0.2)
 
-        # Test getting non-existent batch
-        response = client.get("/v1/non-existent-batch-id")
-        assert response.status_code == 404
+            assert observed_running_pool >= 3
 
-        # Test invalid file upload
-        files = {
-            "file": ("invalid.txt", "This is not a valid batch file", "text/plain")
-        }
-        data = {"purpose": "batch"}
+            for batch_id in batch_ids:
+                completed_batch = await wait_for_completed_batch(
+                    client,
+                    batch_id,
+                    max_polls=40,
+                    poll_interval=0.5,
+                )
+                output_file_id = assert_completed_batch(completed_batch, 2)
+                await download_and_verify_output(client, output_file_id, 2)
+        finally:
+            set_dispatch_delay(app, original_delay)
+            for batch_id in batch_ids:
+                await app.state.batch_driver.clear_job(batch_id)
 
-        response = client.post("/v1/files/", files=files, data=data)
-        assert response.status_code == 400  # Should fail due to invalid file extension
 
+@pytest.mark.asyncio
+async def test_openai_batch_api_second_job_does_not_stay_validating_when_pool_has_capacity(
+    request, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AIBRIX_BATCH_JOB_POOL_SIZE", "2")
+    monkeypatch.setattr(envs, "BATCH_JOB_POOL_SIZE", 2)
+    monkeypatch.setattr(batch_constant, "DEFAULT_JOB_POOL_SIZE", 2)
+    monkeypatch.setattr(batch_driver_module, "DEFAULT_JOB_POOL_SIZE", 2)
 
-if __name__ == "__main__":
-    # Allow running the test directly
-    test_openai_batch_api_e2e()
-    test_batch_api_error_handling()
+    app = build_e2e_test_app(
+        request,
+        "local_metastore_job",
+        tmp_path,
+        monkeypatch,
+    )
+
+    scheduler = app.state.batch_driver._scheduler
+    assert scheduler is not None
+    assert scheduler._pool_size == 2
+
+    batch_ids: list[str] = []
+    original_delay = set_dispatch_delay(app, 0.5)
+    with TestClient(app) as client:
+        try:
+            first_input_file_id = upload_batch_input_file(
+                client,
+                num_requests=2,
+                endpoint="/v1/chat/completions",
+                filename="pool-capacity-0.jsonl",
+            )
+            first_create_response = client.post(
+                "/v1/batches",
+                json=backend_batch_request(
+                    "local_metastore_job",
+                    first_input_file_id,
+                    "/v1/chat/completions",
+                ),
+            )
+            assert first_create_response.status_code == 200, first_create_response.text
+            first_batch_id = first_create_response.json()["id"]
+            batch_ids.append(first_batch_id)
+
+            first_status = await wait_for_batch_status(
+                client,
+                first_batch_id,
+                expected_statuses={"in_progress"},
+                max_polls=30,
+                poll_interval=0.2,
+            )
+            assert first_status["status"] == "in_progress"
+
+            second_input_file_id = upload_batch_input_file(
+                client,
+                num_requests=2,
+                endpoint="/v1/chat/completions",
+                filename="pool-capacity-1.jsonl",
+            )
+            second_create_response = client.post(
+                "/v1/batches",
+                json=backend_batch_request(
+                    "local_metastore_job",
+                    second_input_file_id,
+                    "/v1/chat/completions",
+                ),
+            )
+            assert second_create_response.status_code == 200, (
+                second_create_response.text
+            )
+            second_batch_id = second_create_response.json()["id"]
+            batch_ids.append(second_batch_id)
+
+            second_status: dict[str, Any] | None = None
+            first_status_when_second_progresses: dict[str, Any] | None = None
+            for _ in range(30):
+                second_response = client.get(f"/v1/batches/{second_batch_id}")
+                assert second_response.status_code == 200, second_response.text
+                second_status = second_response.json()
+
+                if second_status["status"] in {
+                    "in_progress",
+                    "finalizing",
+                    "completed",
+                }:
+                    first_response = client.get(f"/v1/batches/{first_batch_id}")
+                    assert first_response.status_code == 200, first_response.text
+                    first_status_when_second_progresses = first_response.json()
+                    break
+                assert second_status["status"] == "validating", second_status
+                await asyncio.sleep(0.2)
+
+            assert second_status is not None
+            assert second_status["status"] in {
+                "in_progress",
+                "finalizing",
+                "completed",
+            }, second_status
+            assert first_status_when_second_progresses is not None
+            assert first_status_when_second_progresses["status"] == "in_progress", (
+                first_status_when_second_progresses
+            )
+
+            for batch_id in batch_ids:
+                completed_batch = await wait_for_completed_batch(
+                    client,
+                    batch_id,
+                    max_polls=60,
+                    poll_interval=0.5,
+                )
+                output_file_id = assert_completed_batch(completed_batch, 2)
+                output_response = client.get(f"/v1/files/{output_file_id}/content")
+                assert output_response.status_code == 200, output_response.text
+                output_lines = (
+                    output_response.content.decode("utf-8").strip().splitlines()
+                )
+                assert len(output_lines) == 2
+                for line in output_lines:
+                    payload = json.loads(line)
+                    assert payload["custom_id"].startswith("request-")
+                    assert payload["response"]["status_code"] == 200
+        finally:
+            set_dispatch_delay(app, original_delay)
+            for batch_id in batch_ids:
+                await app.state.batch_driver.clear_job(batch_id)
