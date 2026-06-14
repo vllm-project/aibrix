@@ -80,8 +80,7 @@ this:
    models:
      - name: Qwen/Qwen2.5-1.5B-Instruct
        endpoints:
-         - address: 127.0.0.1
-           port: 8000
+         - "127.0.0.1:8000"
 
 The request model name must match the configured model name.
 
@@ -90,15 +89,15 @@ prefill/decode disaggregation testing:
 
 .. code-block:: yaml
 
-   rolesets:
-     - name: qwen-pd
-       roles:
-         prefill:
-           - address: 127.0.0.1
-             port: 8100
-         decode:
-           - address: 127.0.0.1
-             port: 8200
+   models:
+     - name: Qwen/Qwen2.5-72B
+       engine: vllm
+       rolesets:
+         - name: qwen-pd
+           prefill:
+             - "127.0.0.1:8100"
+           decode:
+             - "127.0.0.1:8200"
 
 Run local mode
 --------------
@@ -182,7 +181,7 @@ Ports and logs
      - ``localhost:9901``
      - Envoy admin and diagnostics.
    * - Gateway plugin metrics
-     - ``localhost:8080``
+     - ``localhost:8080/metrics``
      - Gateway plugin metrics endpoint.
    * - Health check
      - ``localhost:10080/healthz``
