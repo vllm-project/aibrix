@@ -97,6 +97,7 @@ Documentation
 
    production/gateway.rst
    production/model-deployment.rst
+   production/console.rst
    production/observability.rst
 
 .. toctree::
