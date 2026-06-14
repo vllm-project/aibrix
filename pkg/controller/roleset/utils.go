@@ -24,6 +24,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -162,6 +163,9 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 	pod.Spec.Hostname = pod.Name
 	pod.Spec.Subdomain = roleSet.Labels[constants.StormServiceNameLabelKey]
 
+	// inject colocation affinity if requested
+	injectColocationAffinity(pod, roleSet)
+
 	// inject container env
 	for i := range pod.Spec.Containers {
 		injectContainerEnvVars(
@@ -172,6 +176,37 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 			templateHash,
 		)
 	}
+}
+
+// injectColocationAffinity adds a preferred same-host pod affinity rule when the RoleSet carries
+// the model.aibrix.ai/colocation: "preferred" annotation. The rule selects all pods in the same
+// RoleSet so that prefill and decode workers prefer to land on the same node.
+// Existing affinity rules on the pod template are preserved.
+func injectColocationAffinity(pod *v1.Pod, roleSet *orchestrationv1alpha1.RoleSet) {
+	if roleSet.Annotations[constants.ColocationAnnotationKey] != constants.ColocationPreferredValue {
+		return
+	}
+	term := v1.WeightedPodAffinityTerm{
+		Weight: 100,
+		PodAffinityTerm: v1.PodAffinityTerm{
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					constants.RoleSetNameLabelKey: roleSet.Name,
+				},
+			},
+			TopologyKey: constants.ColocationTopologyKey,
+		},
+	}
+	if pod.Spec.Affinity == nil {
+		pod.Spec.Affinity = &v1.Affinity{}
+	}
+	if pod.Spec.Affinity.PodAffinity == nil {
+		pod.Spec.Affinity.PodAffinity = &v1.PodAffinity{}
+	}
+	pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution = append(
+		pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
+		term,
+	)
 }
 
 // injectContainerEnvVars injects env variables into container.
