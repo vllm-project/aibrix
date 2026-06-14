@@ -62,6 +62,11 @@ Build the frontend assets and serve them from the Go backend:
    STATIC_FILES_DIR=apps/console/web/dist \
    STORE_URI=mysql://aibrix:password@mysql:3306/aibrix \
    AUTH_MODE=oidc \
+   OIDC_ISSUER_URL=https://issuer.example.com \
+   OIDC_CLIENT_ID=aibrix-console \
+   OIDC_REDIRECT_URL=https://console.example.com/api/v1/auth/callback \
+   SESSION_SECRET=your-session-secret \
+   SECRETS_ENCRYPTION_KEY=your-secrets-encryption-key \
    ./bin/console --http-addr :8080
 
 Use a stable ``STORE_URI``, ``SESSION_SECRET``, and ``SECRETS_ENCRYPTION_KEY``
