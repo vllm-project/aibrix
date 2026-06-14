@@ -14,6 +14,8 @@ spec:
     metadata:
       labels:
         app: vllm-1p1d
+      annotations:
+        model.aibrix.ai/colocation: "preferred"
     spec:
       roles:
         - name: prefill

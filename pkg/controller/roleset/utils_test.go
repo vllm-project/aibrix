@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -352,6 +353,108 @@ func TestRenderStormServicePod_MultipleContainers(t *testing.T) {
 	for _, c := range pod.Spec.Containers {
 		assert.Len(t, c.Env, 5)
 	}
+}
+
+func TestInjectColocationAffinity_Preferred(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pd-roleset",
+			Annotations: map[string]string{
+				constants.ColocationAnnotationKey: constants.ColocationPreferredValue,
+			},
+		},
+	}
+	pod := &corev1.Pod{}
+	injectColocationAffinity(pod, roleSet)
+
+	require.NotNil(t, pod.Spec.Affinity)
+	require.NotNil(t, pod.Spec.Affinity.PodAffinity)
+	preferred := pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	require.Len(t, preferred, 1)
+	assert.Equal(t, int32(100), preferred[0].Weight)
+	assert.Equal(t, constants.ColocationTopologyKey, preferred[0].PodAffinityTerm.TopologyKey)
+	assert.Equal(t, "pd-roleset", preferred[0].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
+}
+
+func TestInjectColocationAffinity_NoAnnotation(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "pd-roleset"},
+	}
+	pod := &corev1.Pod{}
+	injectColocationAffinity(pod, roleSet)
+	assert.Nil(t, pod.Spec.Affinity)
+}
+
+func TestInjectColocationAffinity_PreservesExistingAffinity(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pd-roleset",
+			Annotations: map[string]string{
+				constants.ColocationAnnotationKey: constants.ColocationPreferredValue,
+			},
+		},
+	}
+	existingTerm := corev1.WeightedPodAffinityTerm{
+		Weight: 50,
+		PodAffinityTerm: corev1.PodAffinityTerm{
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "existing"},
+			},
+			TopologyKey: "kubernetes.io/zone",
+		},
+	}
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Affinity: &corev1.Affinity{
+				PodAffinity: &corev1.PodAffinity{
+					PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{existingTerm},
+				},
+			},
+		},
+	}
+	injectColocationAffinity(pod, roleSet)
+
+	preferred := pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	require.Len(t, preferred, 2)
+	assert.Equal(t, int32(50), preferred[0].Weight)
+	assert.Equal(t, int32(100), preferred[1].Weight)
+}
+
+func TestRenderStormServicePod_ColocationPreferred(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pd-roleset",
+			Namespace: "default",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+			Annotations: map[string]string{
+				constants.ColocationAnnotationKey: constants.ColocationPreferredValue,
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "prefill",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Name: "vllm"}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	roleIndex := 0
+	pod := &corev1.Pod{Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy()}
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, &roleIndex)
+
+	require.NotNil(t, pod.Spec.Affinity)
+	preferred := pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	require.Len(t, preferred, 1)
+	assert.Equal(t, constants.ColocationTopologyKey, preferred[0].PodAffinityTerm.TopologyKey)
+	assert.Equal(t, "pd-roleset", preferred[0].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
 }
 
 func makeReadyPod(name string) *corev1.Pod {
