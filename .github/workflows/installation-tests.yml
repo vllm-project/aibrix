@@ -53,13 +53,13 @@ jobs:
             context: development/app
     steps:
       - name: Check out code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
       - name: Build ${{ matrix.image }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -73,7 +73,7 @@ jobs:
           docker save aibrix/${{ matrix.image }}:${{ github.sha }} > ${{ matrix.image }}.tar
 
       - name: Upload image artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.image }}-image
           path: ${{ matrix.image }}.tar
@@ -84,15 +84,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v6
         with:
           go-version: '1.22'
 
       - name: Download image artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           # Only the matrix image tarballs (e.g. controller-manager-image). Do not
           # download Docker buildx cache artifacts (vllm-project~aibrix~*.dockerbuild),
@@ -146,7 +146,7 @@ jobs:
 
       - name: Cache kind
         id: cache-kind
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /tmp/tools/kind
           key: kind-v0.24.0-${{ runner.os }}-${{ runner.arch }}
@@ -163,7 +163,7 @@ jobs:
 
       - name: Cache kustomize
         id: cache-kustomize
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /tmp/tools/kustomize
           key: kustomize-v5.4.3-${{ runner.os }}-${{ runner.arch }}
