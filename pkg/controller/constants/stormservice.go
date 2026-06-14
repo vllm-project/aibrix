@@ -43,6 +43,12 @@ const (
 	RoleRevisionAnnotationPrefix     = "stormservice.orchestration.aibrix.ai/role-revision"
 	RoleRevisionNameAnnotationPrefix = "stormservice.orchestration.aibrix.ai/role-revision-name"
 
+	// ColocationAnnotationKey is the annotation on a RoleSet that opts all its pods into
+	// same-host pod affinity. Supported values: "preferred".
+	ColocationAnnotationKey    = "model.aibrix.ai/colocation"
+	ColocationPreferredValue   = "preferred"
+	ColocationTopologyKey      = "kubernetes.io/hostname"
+
 	StormServiceNameEnvKey = "STORM_SERVICE_NAME"
 	RoleSetNameEnvKey      = "ROLESET_NAME"
 	RoleSetIndexEnvKey     = "ROLESET_INDEX"

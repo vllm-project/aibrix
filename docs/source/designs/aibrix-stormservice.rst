@@ -177,3 +177,58 @@ In the Kubernetes ecosystem, `ControllerRevision` is a crucial resource object u
     NAME                  CONTROLLER                                      REVISION   AGE
     llm-xpyd-69df6b87d8   stormservice.orchestration.aibrix.ai/llm-xpyd   1          73s
     llm-xpyd-75ddc56d8c   stormservice.orchestration.aibrix.ai/llm-xpyd   2          3s
+
+Colocation
+----------
+
+In P/D disaggregated deployments, especially for small models, placing prefill and decode pods on the
+same physical host enables communication via shared memory or IPC rather than the network, reducing
+latency and improving resource utilization.
+
+StormService supports opt-in same-host colocation through the ``model.aibrix.ai/colocation``
+annotation on the RoleSet template. The annotation is scheduler-agnostic: the RoleSet controller
+injects a standard Kubernetes ``podAffinity`` rule into every pod it creates, so it works with the
+default scheduler as well as Volcano, Godel, and coscheduling.
+
+**Supported values**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 80
+
+   * - Value
+     - Behavior
+   * - ``preferred``
+     - Adds a ``preferredDuringSchedulingIgnoredDuringExecution`` rule (weight 100, ``topologyKey: kubernetes.io/hostname``). The scheduler places all pods in the same RoleSet on one node when resources allow, but continues scheduling on separate nodes if not.
+
+**Configuration**
+
+Add the annotation to the RoleSet template metadata inside the StormService spec:
+
+.. code-block:: yaml
+
+    apiVersion: orchestration.aibrix.ai/v1alpha1
+    kind: StormService
+    metadata:
+      name: vllm-1p1d
+    spec:
+      replicas: 1
+      template:
+        metadata:
+          annotations:
+            model.aibrix.ai/colocation: "preferred"   # inject same-host pod affinity
+        spec:
+          roles:
+            - name: prefill
+              ...
+            - name: decode
+              ...
+
+The annotation is inherited by every RoleSet the StormService creates. The controller reads it at
+pod-creation time and appends the affinity term to each pod's ``spec.affinity.podAffinity``
+without overwriting affinity rules already present in the pod template.
+
+.. note::
+   Colocation is a scheduling *hint*, not a hard guarantee. To enforce strict co-placement use a
+   gang scheduler (Godel, Volcano) together with this annotation, or switch the annotation value
+   to a ``required`` mode once it is introduced in a future release.
