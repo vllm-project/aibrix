@@ -191,7 +191,7 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 				// TODO: use non-empty key if we have output prediction to decide buckets early.
 				if traceTerm, success = trace.AddRequest(requestID, ""); success {
 					if ctx != nil {
-						ctx.TraceTerm = traceTerm
+						atomic.StoreInt64(&ctx.TraceTerm, traceTerm)
 					}
 					break
 				}
@@ -210,9 +210,9 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 	if ctx == nil {
 		return traceTerm
 	} else if !ctx.HasRouted() || !ctx.CanAddStats() {
-		return ctx.TraceTerm
+		return atomic.LoadInt64(&ctx.TraceTerm)
 	} else {
-		traceTerm = ctx.TraceTerm
+		traceTerm = atomic.LoadInt64(&ctx.TraceTerm)
 		c.addPodStats(ctx, requestID)
 	}
 	return traceTerm
