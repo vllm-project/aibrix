@@ -138,6 +138,7 @@ Install AIBrix in testing Environments
    :maxdepth: 1
    :caption: Getting Started
 
+   local-mode.rst
    lambda.rst
    mac-for-desktop.rst
    aws.rst
