@@ -309,6 +309,12 @@ certmanager:
 
 openTelemetry:
   enable: false
+  # serviceName/namespace takes precedence over host.
+  # If serviceName is provided, it will be used directly in backendRefs.
+  # The 'host' field below will be ignored.
+  serviceName: ""
+  namespace: ""
+  # Only takes effect if serviceName is empty.
   host: ""
   port: 4317
   # -- (Envoy-side only) The sampling rate for distributed tracing.
