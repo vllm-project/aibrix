@@ -4111,7 +4111,6 @@ spec:
                             - StormService
                             - RoleSet
                             - Role
-                            minLength: 1
                             type: string
                         required:
                         - key

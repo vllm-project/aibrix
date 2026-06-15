@@ -154,7 +154,6 @@ type TopologyPolicy struct {
 	// - "Role": All Pods of the same role (across all RoleSets) share the same topology value.
 	// +kubebuilder:validation:Enum=StormService;RoleSet;Role
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
 	Scope TopologyScope `json:"scope"`
 
 	// Mode defines whether topology co-location is a soft preference or a hard requirement.
