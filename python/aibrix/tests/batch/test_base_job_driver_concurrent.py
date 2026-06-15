@@ -18,7 +18,12 @@ from typing import Optional
 
 import pytest
 
-from aibrix.batch.client import CapacitySignal, DispatchEngine
+from aibrix.batch.client import (
+    CapacitySignal,
+    DispatchEngine,
+    InferenceError,
+    InferenceErrorCode,
+)
 from aibrix.batch.job_driver import BaseJobDriver, ExternalRuntime
 from aibrix.batch.job_entity import (
     BatchJob,
@@ -55,7 +60,8 @@ def _make_job(total: int) -> BatchJob:
 
 
 class _SlowChannel:
-    def __init__(self):
+    def __init__(self, fail_indices: Optional[set[int]] = None):
+        self._fail_indices = fail_indices or set()
         self.inflight = 0
         self.peak = 0
 
@@ -68,6 +74,12 @@ class _SlowChannel:
         self.peak = max(self.peak, self.inflight)
         await asyncio.sleep(0.01)
         self.inflight -= 1
+        if request.ref[0] in self._fail_indices:
+            raise InferenceError(
+                InferenceErrorCode.TRANSPORT_ERROR,
+                "injected failure",
+                retryable=False,
+            )
         return {
             "echo": request.payload,
             "usage": {"prompt_tokens": 1, "completion_tokens": 2},
@@ -96,8 +108,13 @@ class _Source:
         await self._channel.aclose()
 
 
-def _driver(job: BatchJob, *, capacity: int = 2):
-    channel = _SlowChannel()
+def _driver(
+    job: BatchJob,
+    *,
+    capacity: int = 2,
+    fail_indices: Optional[set[int]] = None,
+):
+    channel = _SlowChannel(fail_indices=fail_indices)
     driver = BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
     driver._engine = DispatchEngine(_Source(channel, capacity), max_retries=0)
     return driver, channel
@@ -162,6 +179,28 @@ async def test_execute_worker_reconciles_storage_done_requests(monkeypatch):
 
     assert result.status.state == BatchJobState.FINALIZING
     assert result.status.request_counts.completed == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_worker_stats_fallback_preserves_failed_count(monkeypatch):
+    job = _make_job(total=3)
+    driver, _ = _driver(job, capacity=2, fail_indices={1})
+    requests = [
+        {"_request_index": i, "custom_id": f"req-{i}", "body": {"i": i}}
+        for i in range(3)
+    ]
+    _patch_storage(monkeypatch, requests)
+
+    async def complete_without_progress(job_id, req_id, failed=False):
+        return job
+
+    driver._progress_manager.complete_job_request = complete_without_progress
+
+    result = await driver.execute_worker(job.job_id)
+
+    assert result.status.state == BatchJobState.FINALIZING
+    assert result.status.request_counts.completed == 2
+    assert result.status.request_counts.failed == 1
 
 
 @pytest.mark.asyncio

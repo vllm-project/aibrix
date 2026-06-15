@@ -221,6 +221,7 @@ class LLMAdaptiveConcurrencyController:
                 target_factor=self._settings.slow_tpot_factor,
                 ewma=self._e2e_tpot_ewma,
                 samples=self._e2e_tpot_samples,
+                relative=False,
             )
         )
 
@@ -232,13 +233,15 @@ class LLMAdaptiveConcurrencyController:
         target_factor: float,
         ewma: Optional[float],
         samples: int,
+        relative: bool = True,
     ) -> bool:
         if value is None:
             return False
         if target is not None and value > target * target_factor:
             return True
         return (
-            ewma is not None
+            relative
+            and ewma is not None
             and samples >= self._settings.relative_slowdown_warmup
             and value > ewma * self._settings.relative_slowdown_factor
         )

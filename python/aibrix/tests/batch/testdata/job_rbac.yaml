@@ -1,6 +1,6 @@
 # RBAC resources for api-extension testing
 # This file contains the necessary Kubernetes RBAC resources for tests that depend on create_test_app
-# with enable_k8s_job=True
+# with enable_k8s_support=True
 
 ---
 # Test ServiceAccount for job reader

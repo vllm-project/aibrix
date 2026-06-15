@@ -103,17 +103,11 @@ def test_llm_controller_waits_for_warmup_before_relative_slowdown():
         initial_limit=8, max_limit=8, settings=settings
     )
 
-    controller.on_complete(
-        ConcurrencyOutcome(success=True, output_tokens=10, e2e_tpot_seconds=0.01)
-    )
-    controller.on_complete(
-        ConcurrencyOutcome(success=True, output_tokens=10, e2e_tpot_seconds=0.10)
-    )
+    controller.on_complete(ConcurrencyOutcome(success=True, tpot_seconds=0.01))
+    controller.on_complete(ConcurrencyOutcome(success=True, tpot_seconds=0.10))
     assert controller.limit() == 8
 
-    controller.on_complete(
-        ConcurrencyOutcome(success=True, output_tokens=10, e2e_tpot_seconds=0.10)
-    )
+    controller.on_complete(ConcurrencyOutcome(success=True, tpot_seconds=0.10))
     assert controller.limit() == 6
 
 
