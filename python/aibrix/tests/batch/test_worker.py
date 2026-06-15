@@ -19,7 +19,7 @@ from aibrix.batch.worker import BatchWorker, SingleJobRunner, worker_main
 
 
 def _make_job(state: BatchJobState) -> BatchJob:
-    return BatchJob(
+    job = BatchJob(
         typeMeta=TypeMeta(apiVersion="v1", kind="BatchJob"),
         metadata=ObjectMeta(
             resourceVersion="1",
@@ -33,6 +33,7 @@ def _make_job(state: BatchJobState) -> BatchJob:
         ),
         status=BatchJobStatus(jobID="job-1", state=state, createdAt=datetime.now()),
     )
+    return job
 
 
 @pytest.mark.asyncio
@@ -53,6 +54,18 @@ async def test_single_job_runner_marks_failed_and_done():
     # get_job resolves by id only.
     assert (await runner2.get_job("job-1")) is not None
     assert (await runner2.get_job("missing")) is None
+
+
+@pytest.mark.asyncio
+async def test_single_job_runner_completes_out_of_order():
+    job = _make_job(BatchJobState.IN_PROGRESS)
+    job.status.request_counts.total = 2
+    runner = SingleJobRunner(job)
+
+    await runner.complete_job_request("job-1", 1)
+    assert job.status.state == BatchJobState.IN_PROGRESS
+    await runner.complete_job_request("job-1", 0)
+    assert job.status.state == BatchJobState.FINALIZING
 
 
 @pytest.mark.asyncio

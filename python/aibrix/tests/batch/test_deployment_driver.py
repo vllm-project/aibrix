@@ -22,8 +22,14 @@ import pytest
 
 from aibrix.batch.batch_manager import BatchManager
 from aibrix.batch.batch_scheduler import BatchScheduler
+from aibrix.batch.client.sources import (
+    DiscoveryEndpointSource,
+    InClusterEndpointSource,
+    PortForwardEndpointSource,
+)
 from aibrix.batch.job_driver import BaseJobDriver, DeploymentRuntime, ExternalRuntime
 from aibrix.batch.job_driver.driver_factory import create_job_driver
+from aibrix.batch.job_driver.runtime.k8s_deployment import DeploymentHandle
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobEndpoint,
@@ -231,6 +237,16 @@ def _make_infrastructure_context(
     )
 
 
+class FakeDiscoveryV1Api:
+    def __init__(self, slices=None):
+        self.slices = slices or []
+        self.calls = []
+
+    def list_namespaced_endpoint_slice(self, namespace: str, label_selector: str):
+        self.calls.append((namespace, label_selector))
+        return SimpleNamespace(items=self.slices)
+
+
 def _make_deployment_driver(
     context, progress_manager, entity_manager, renderer=None
 ) -> BaseJobDriver:
@@ -239,6 +255,18 @@ def _make_deployment_driver(
     default failure) are derived from DeploymentRuntime.provisions=True."""
     runtime = DeploymentRuntime(context, entity_manager, renderer)
     return BaseJobDriver(progress_manager, runtime)
+
+
+def _make_deployment_handle(replicas: int = 1) -> DeploymentHandle:
+    return DeploymentHandle(
+        namespace="default",
+        deployment_name="rendered-deployment",
+        service_name="rendered-service",
+        model_name="rendered-model",
+        base_url="http://rendered-service.default.svc.cluster.local:8000",
+        service_port=8000,
+        replicas=replicas,
+    )
 
 
 @pytest.mark.asyncio
@@ -392,6 +420,73 @@ async def test_create_job_driver_uses_deployment_runtime_for_kubernetes_target()
 
     assert isinstance(driver, BaseJobDriver)
     assert isinstance(driver._runtime, DeploymentRuntime)
+
+
+@pytest.mark.asyncio
+async def test_deployment_runtime_uses_replica_capacity_for_in_cluster_service(
+    monkeypatch,
+):
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    runtime = DeploymentRuntime(_make_infrastructure_context(), FakeEntityManager())
+
+    source = runtime._build_endpoint_source(_make_deployment_handle(replicas=3))
+    try:
+        assert isinstance(source, InClusterEndpointSource)
+        assert len(await source.channels()) == 1
+        assert (await source.capacity()).count == 3
+    finally:
+        await source.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deployment_runtime_keeps_port_forward_capacity_as_single_tunnel(
+    monkeypatch,
+):
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    runtime = DeploymentRuntime(_make_infrastructure_context(), FakeEntityManager())
+
+    source = runtime._build_endpoint_source(_make_deployment_handle(replicas=3))
+    try:
+        assert isinstance(source, PortForwardEndpointSource)
+        assert (await source.capacity()).count == 1
+    finally:
+        await source.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deployment_runtime_can_use_endpoint_slice_discovery_in_cluster(
+    monkeypatch,
+):
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    monkeypatch.setenv("AIBRIX_BATCH_K8S_ENDPOINT_SOURCE", "endpointslice")
+    endpoint_slice = SimpleNamespace(
+        metadata=SimpleNamespace(name="slice-a", resource_version="10"),
+        ports=[SimpleNamespace(port=8000)],
+        endpoints=[
+            SimpleNamespace(
+                addresses=["10.244.0.11"],
+                conditions=SimpleNamespace(ready=True),
+            ),
+            SimpleNamespace(
+                addresses=["10.244.0.12"],
+                conditions=SimpleNamespace(ready=True),
+            ),
+        ],
+    )
+    discovery_api = FakeDiscoveryV1Api([endpoint_slice])
+    context = _make_infrastructure_context()
+    context.values["discovery_v1_api"] = discovery_api
+    runtime = DeploymentRuntime(context, FakeEntityManager())
+
+    source = runtime._build_endpoint_source(_make_deployment_handle(replicas=3))
+    try:
+        assert isinstance(source, DiscoveryEndpointSource)
+        assert (await source.capacity()).count == 2
+        assert discovery_api.calls == [
+            ("default", "kubernetes.io/service-name=rendered-service")
+        ]
+    finally:
+        await source.aclose()
 
 
 @pytest.mark.asyncio
