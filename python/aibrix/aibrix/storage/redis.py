@@ -198,7 +198,7 @@ class RedisStorage(BaseStorage):
         if data is None:
             raise FileNotFoundError(f"Object not found: {key}")
         if isinstance(data, str):
-            data = data.encode()
+            data = data.encode("utf-8")
 
         # Handle range requests
         if range_start is not None:
@@ -239,6 +239,7 @@ class RedisStorage(BaseStorage):
         delimiter: Optional[str] = None,
         limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
+        after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
         """List objects with given prefix ordered by creation timestamp.
 
@@ -273,7 +274,17 @@ class RedisStorage(BaseStorage):
         if await redis_client.exists(list_key):
             # Get members ordered by timestamp from the sorted set
             timestamp_key = f"timestamps:{prefix}"
+            members: list[str]
             if await redis_client.exists(timestamp_key):
+                if continuation_token is None and after_key:
+                    if delimiter and after_key.startswith(f"{prefix}{delimiter}"):
+                        after_member = after_key[len(f"{prefix}{delimiter}") :]
+                    else:
+                        after_member = after_key
+                    rank = await redis_client.zrank(timestamp_key, after_member)
+                    if rank is None:
+                        return [], None
+                    offset = rank + 1
                 # Calculate pagination bounds
                 start = offset
                 end = offset + limit - 1 if limit is not None else -1
@@ -295,7 +306,19 @@ class RedisStorage(BaseStorage):
             else:
                 # Fallback to unordered members if no timestamps
                 members_raw = await redis_client.smembers(list_key)
-                all_members = [member.decode("utf-8") for member in members_raw]
+                all_members: list[str] = [
+                    member.decode("utf-8") for member in members_raw
+                ]
+
+                if continuation_token is None and after_key:
+                    if delimiter and after_key.startswith(f"{prefix}{delimiter}"):
+                        after_member = after_key[len(f"{prefix}{delimiter}") :]
+                    else:
+                        after_member = after_key
+                    try:
+                        offset = all_members.index(after_member) + 1
+                    except ValueError:
+                        return [], None
 
                 # Apply pagination to unordered list
                 if offset > 0:
@@ -333,6 +356,12 @@ class RedisStorage(BaseStorage):
                 ):
                     filtered_keys.append(key_str)
 
+            if continuation_token is None and after_key:
+                try:
+                    offset = filtered_keys.index(after_key) + 1
+                except ValueError:
+                    return [], None
+
             # Apply pagination after filtering
             if offset > 0:
                 filtered_keys = filtered_keys[offset:]
@@ -353,6 +382,12 @@ class RedisStorage(BaseStorage):
                     "timestamps:"
                 ):
                     all_user_keys.append(key_str)
+
+            if continuation_token is None and after_key:
+                try:
+                    offset = all_user_keys.index(after_key) + 1
+                except ValueError:
+                    return [], None
 
             # Apply pagination to filtered keys
             paginated_keys = all_user_keys[offset:]

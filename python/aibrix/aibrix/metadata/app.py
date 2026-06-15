@@ -49,12 +49,6 @@ _LOG_HTTP_BODIES = os.getenv("AIBRIX_MDS_HTTP_BODY_LOG", "").lower() in (
 )
 
 
-def _require_setting(name: str, value: Any) -> Any:
-    if value is None or value == "":
-        raise RuntimeError(f"{name} environment variable is required")
-    return value
-
-
 def _load_batch_k8s_context(
     args, context: Optional[InfrastructureContext] = None
 ) -> InfrastructureContext:

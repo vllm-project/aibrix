@@ -150,6 +150,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
 
         self._creation_timeouts: Dict[str, asyncio.Task] = {}
         self._session_metadata: Dict[str, Dict[str, Any]] = {}
+        self._pending_deleted_jobs: set[str] = set()
 
     # The three pools live in the BatchRegistry; these proxies keep the existing
     # by-pool access (orchestration logic + tests) working unchanged while the
@@ -193,6 +194,12 @@ class BatchManager(RunningJobs, SchedulableJobs):
             self.job_updated_handler,
             self.job_deleted_handler,
         )
+
+    def reset_runtime_state(self) -> None:
+        self._registry.reset_runtime_state()
+        self._pending_deleted_jobs.clear()
+        self._creation_timeouts.clear()
+        self._session_metadata.clear()
 
     async def create_job(
         self,
@@ -583,24 +590,37 @@ class BatchManager(RunningJobs, SchedulableJobs):
         job = await self.get_job(job_id)
         return job.status if job else None
 
-    async def list_jobs(self) -> List[BatchJob]:
+    async def list_jobs(
+        self,
+        after: Optional[str] = None,
+        limit: int = JobEntityManager.DEFAULT_JOB_PAGE_LIMIT,
+    ) -> List[BatchJob]:
         """List all jobs."""
-        # [TODO][NEXT Load all jobs from persistent store
-        all_jobs: Optional[List[BatchJob]] = None
         if self._job_entity_manager:
-            all_jobs = await self._job_entity_manager.list_jobs()
-        else:
-            # Collect jobs from all states
-            all_jobs = []
-            all_jobs.extend(self._pending_jobs.values())
-            all_jobs.extend(self._in_progress_jobs.values())
-            all_jobs.extend(self._done_jobs.values())
+            return await self._job_entity_manager.list_jobs(after=after, limit=limit)
+
+        # Collect jobs from all states
+        all_jobs: List[BatchJob] = []
+        all_jobs.extend(self._pending_jobs.values())
+        all_jobs.extend(self._in_progress_jobs.values())
+        all_jobs.extend(self._done_jobs.values())
 
         # Sort by creation time (newest first)
         assert all_jobs is not None
         all_jobs.sort(key=lambda job: job.status.created_at, reverse=True)
-
-        return all_jobs
+        if after:
+            after_index = next(
+                (
+                    index
+                    for index, job in enumerate(all_jobs)
+                    if job.job_id == after or job.status.job_id == after
+                ),
+                -1,
+            )
+            if after_index < 0:
+                return []
+            all_jobs = all_jobs[after_index + 1 :]
+        return all_jobs[:limit]
 
     async def admit(self, job_id: str) -> Optional[JobDriver]:
         """Admit a pending job: validate it, promote pending -> in-progress, and

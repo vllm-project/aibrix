@@ -310,14 +310,11 @@ def ensure_job_rbac(job_rbac):
 
 
 def create_test_app(
-    enable_k8s_job: bool = False,
-    enable_redis_job: bool = False,
-    enable_mongo_job: bool = False,
     enable_k8s_support: bool = True,
     storage_type: StorageType = StorageType.LOCAL,
     metastore_type: StorageType = StorageType.LOCAL,
     params: Optional[Dict[str, Any]] = None,
-    dry_run: Optional[bool] = None,
+    dry_run: bool = False,
 ):
     """Create a FastAPI app configured for e2e testing.
 
@@ -328,8 +325,6 @@ def create_test_app(
     """
     if params is None:
         params = {}
-    if dry_run is None:
-        dry_run = not (enable_k8s_job or enable_redis_job or enable_mongo_job)
 
     # Save old settings
     oldStorage, oldMetaStore = settings.STORAGE_TYPE, settings.METASTORE_TYPE
