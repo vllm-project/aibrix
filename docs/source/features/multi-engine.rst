@@ -151,7 +151,7 @@ We only support limited number of metrics from different engines and we will con
 TRT-LLM Quickstart
 ------------------
 
-To use TRT-LLM as the inference engine, set the ``model.aibrix.ai/engine: trtllm`` label on your deployment. TRT-LLM must be configured to expose performance metrics by enabling ``return_perf_metrics: true`` and ``enable_iter_perf_stats: true`` in its server config.
+To use TRT-LLM as the inference engine, set the ``model.aibrix.ai/engine: trtllm`` label on your deployment. TRT-LLM must be configured to expose performance metrics by enabling ``return_perf_metrics: true``, ``enable_iter_perf_stats: true``, and ``enable_iter_req_stats: true`` in its server config.
 
 Sample configurations are available at:
 
