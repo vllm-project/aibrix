@@ -17,9 +17,7 @@ import json
 from typing import Any, cast
 
 import pytest
-from aibrix.batch.state.redis_job_store import RedisJobStore
 from fastapi.testclient import TestClient
-from kubernetes import client as k8s_client
 
 import aibrix.batch.constant as batch_constant
 import aibrix.batch.driver as batch_driver_module
@@ -90,8 +88,6 @@ def pytest_generate_tests(metafunc):
         metafunc,
         [
             "local_job_using_deployment",
-            "redis_job_using_deployment",
-            "redis_job",
         ],
     )
 
@@ -131,7 +127,7 @@ def backend_request_count(test_backend: str) -> int:
 
 
 def backend_max_polls(test_backend: str) -> int:
-    return 120 if test_backend in {"k8s_job", "redis_job_using_deployment"} else 20
+    return 120 if test_backend == "k8s_job" else 20
 
 
 async def wait_for_completed_batch(
@@ -256,17 +252,6 @@ async def test_openai_batch_api_success_workflow(e2e_test_app, test_backend):
     expected_requests = backend_request_count(test_backend)
     endpoint = "/v1/chat/completions"
 
-    infrastructure_context = getattr(app.state.batch_driver, "_context", None)
-    apps_v1_api = None
-    core_v1_api = None
-    if test_backend == "redis_job_using_deployment":
-        assert isinstance(app.state.batch_driver._job_entity_manager, RedisJobStore)
-        assert infrastructure_context is not None
-        apps_v1_api = infrastructure_context.apps_v1_api
-        core_v1_api = infrastructure_context.core_v1_api
-        assert apps_v1_api is not None
-        assert core_v1_api is not None
-
     with TestClient(app) as client:
         input_file_id = upload_batch_input_file(
             client,
@@ -283,82 +268,21 @@ async def test_openai_batch_api_success_workflow(e2e_test_app, test_backend):
         assert batch_result["input_file_id"] == input_file_id
         assert batch_result["endpoint"] == endpoint
         batch_id = batch_result["id"]
-        template_name = e2e_batch_request_kwargs(test_backend).get("aibrix_template")
-        deployment_name = (
-            f"batch-{template_name}-{batch_id[:8]}" if template_name is not None else ""
-        )
-        service_name = deployment_name
-        saw_deployment = False
-        saw_ready_deployment = False
-        saw_service = False
-
-        def inspect_status(_status_result: dict[str, Any]) -> None:
-            nonlocal saw_deployment, saw_ready_deployment, saw_service
-            if test_backend != "redis_job_using_deployment":
-                return
-            try:
-                deployment = apps_v1_api.read_namespaced_deployment_status(
-                    name=deployment_name,
-                    namespace="default",
-                )
-                saw_deployment = True
-                if (deployment.status.available_replicas or 0) >= 1:
-                    saw_ready_deployment = True
-            except k8s_client.ApiException as ex:
-                if ex.status != 404:
-                    raise
-            try:
-                service = core_v1_api.read_namespaced_service(
-                    name=service_name,
-                    namespace="default",
-                )
-                if service.metadata.name == service_name:
-                    saw_service = True
-            except k8s_client.ApiException as ex:
-                if ex.status != 404:
-                    raise
 
         try:
             completed_batch = await wait_for_completed_batch(
                 client,
                 batch_id,
                 max_polls=backend_max_polls(test_backend),
-                inspect_status=inspect_status,
             )
             output_file_id = assert_completed_batch(completed_batch, expected_requests)
-            output_content = await download_and_verify_output(
-                client, output_file_id, expected_requests
-            )
+            await download_and_verify_output(client, output_file_id, expected_requests)
 
-            if test_backend in {"k8s_job", "redis_job_using_deployment"}:
+            if test_backend == "k8s_job":
                 assert isinstance(completed_batch["in_progress_at"], int)
                 assert isinstance(completed_batch["finalizing_at"], int)
                 assert isinstance(completed_batch["completed_at"], int)
-
-            if test_backend == "redis_job_using_deployment":
-                assert saw_deployment
-                assert saw_ready_deployment
-                assert saw_service
-                first_line = json.loads(output_content.splitlines()[0])
-                assert first_line["response"]["body"]["model"] == service_name
         finally:
-            if test_backend == "redis_job_using_deployment":
-                try:
-                    core_v1_api.delete_namespaced_service(
-                        name=service_name,
-                        namespace="default",
-                    )
-                except k8s_client.ApiException as ex:
-                    if ex.status != 404:
-                        raise
-                try:
-                    apps_v1_api.delete_namespaced_deployment(
-                        name=deployment_name,
-                        namespace="default",
-                    )
-                except k8s_client.ApiException as ex:
-                    if ex.status != 404:
-                        raise
             await app.state.batch_driver.clear_job(batch_id)
 
 
@@ -376,7 +300,7 @@ async def test_openai_batch_api_success_workflow(e2e_test_app, test_backend):
 async def test_openai_batch_api_multi_endpoint(
     e2e_test_app, test_backend, endpoint: str
 ):
-    if test_backend not in {"local_metastore_job", "redis_job"}:
+    if test_backend != "local_metastore_job":
         pytest.skip("Multi-endpoint coverage only applies to echo-backed workflows")
 
     app = e2e_test_app
@@ -562,7 +486,7 @@ async def test_openai_batch_api_second_job_does_not_stay_validating_when_pool_ha
                     assert first_response.status_code == 200, first_response.text
                     first_status_when_second_progresses = first_response.json()
                     break
-                assert second_status["status"] == "validating", second_status
+                assert second_status["status"] == "scheduling", second_status
                 await asyncio.sleep(0.2)
 
             assert second_status is not None

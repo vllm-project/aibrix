@@ -767,6 +767,7 @@ class BaseJobDriver:
         Subclasses override this when finalizing requires runtime-specific
         reattachment or cleanup before delegating to the normal finalize path.
         """
+        await self._runtime.cleanup(job)
         job = await self.finalize_job(job)
         logger.info(
             "Runtime-backed job resumed directly into finalization.",

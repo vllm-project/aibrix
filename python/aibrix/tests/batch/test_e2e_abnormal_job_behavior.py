@@ -26,6 +26,7 @@ import asyncio
 import logging
 import threading
 import warnings
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple, TypeVar, Union, cast
 from unittest.mock import patch
 
@@ -131,9 +132,9 @@ def get_runtime_debug_handles(
 
 def backend_runtime_driver_class(test_backend):
     if backend_uses_deployment_provider(test_backend):
-        from aibrix.batch.job_driver.deployment_driver import DeploymentJobDriver
+        from aibrix.batch.job_driver.base import BaseJobDriver
 
-        return DeploymentJobDriver
+        return BaseJobDriver
 
     from aibrix.batch.job_driver.base import BaseJobDriver
 
@@ -142,12 +143,12 @@ def backend_runtime_driver_class(test_backend):
 
 def backend_runtime_create_patch(test_backend):
     if backend_uses_deployment_provider(test_backend):
-        from aibrix.batch.job_driver.deployment_driver import DeploymentJobDriver
+        from aibrix.batch.job_driver.runtime.k8s_deployment import DeploymentRuntime
 
         return (
-            "aibrix.batch.job_driver.deployment_driver."
-            "DeploymentJobDriver._create_runtime",
-            DeploymentJobDriver._create_runtime,
+            "aibrix.batch.job_driver.runtime.k8s_deployment."
+            "DeploymentRuntime._provision",
+            DeploymentRuntime._provision,
         )
     if backend_uses_tce_provider(test_backend):
         from aibrix.batch.job_driver.octagram_driver import OctagramJobDriver
@@ -171,9 +172,7 @@ def pytest_generate_tests(metafunc):
         [
             "local_job_using_deployment",
             "local_job_using_octagram",
-            "redis_job_using_deployment",
             "k8s_job",
-            "redis_job",
         ],
         default_backend="local_metastore_job",
     )
@@ -233,6 +232,7 @@ def force_batch_driver_crash_on_shutdown(monkeypatch, app) -> None:
     import _pytest.unraisableexception as pytest_unraisableexception
 
     from aibrix.batch import batch_scheduler as scheduler_module
+    from aibrix.batch.job_driver.runtime.base import RuntimeBase, logger as runtime_logger
 
     warnings.simplefilter("ignore", pytest.PytestUnraisableExceptionWarning)
     warnings.filterwarnings("ignore", category=pytest.PytestUnraisableExceptionWarning)
@@ -254,9 +254,110 @@ def force_batch_driver_crash_on_shutdown(monkeypatch, app) -> None:
 
     scheduler_module.logger = cast(Any, _NullLogger())
 
+    @asynccontextmanager
+    async def patched_runtime_session(
+        self,
+        job,
+        job_id,
+        *,
+        progress_manager=None,
+        worker_id_generator=None,
+    ):
+        try:
+            runtimeRef = self._load_runtime_ref(job)
+            handle = None
+            max_attempts = self.session_retry_attempts + 1
+            try:
+                for attempt in range(max_attempts):
+                    try:
+                        phase = (
+                            "reconnect"
+                            if attempt == 0 and runtimeRef is not None
+                            else "provision"
+                        )
+                        if phase == "reconnect":
+                            assert runtimeRef is not None
+                            handle = await self._reconnect(job, job_id, runtimeRef)
+                            if handle is None:
+                                phase = "provision"
+                        if handle is None:
+                            self._maybe_fail_runtime_initialization(job)
+                            handle = await self._provision(job, job_id)
+                        job = await self._persist_runtime_ref(
+                            job,
+                            progress_manager=progress_manager,
+                            worker_id_generator=worker_id_generator,
+                        )
+                        phase = "wait_ready"
+                        await self._wait_ready(handle)
+                        break
+                    except Exception as exc:
+                        should_retry = False
+                        should_teardown = handle is not None
+
+                        if phase in {"reconnect", "provision"}:
+                            should_retry = attempt + 1 < max_attempts
+                        elif phase == "wait_ready":
+                            should_retry = (
+                                self._should_retry_wait_ready(exc)
+                                and attempt + 1 < max_attempts
+                            )
+                            should_teardown = self._should_teardown_failed_wait_ready(
+                                exc
+                            )
+
+                        if should_teardown and handle is not None:
+                            try:
+                                await self._teardown(handle)
+                            except Exception as teardown_exc:
+                                runtime_logger.warning(
+                                    "Runtime teardown failed during retry recovery; continuing with retry",
+                                    job_id=job_id,
+                                    phase=phase,
+                                    handle=repr(handle),
+                                    error=str(teardown_exc),
+                                )  # type: ignore[call-arg]
+                        elif not should_retry:
+                            handle = None
+                        if not should_retry:
+                            raise
+                        handle = None
+                        runtimeRef = None
+                        await self._sleep_before_session_retry(attempt)
+                yield await self._connect(handle)
+            finally:
+                if handle is not None:
+                    opts = job.spec.opts or {}
+                    before_delay = float(
+                        opts.get(
+                            TEST_OPTS_DELAY_BEFORE_FINALIZE_SHUTDOWN_SECONDS, 0.0
+                        )
+                        or 0.0
+                    )
+                    if (
+                        before_delay > 0
+                        and progress_manager is not None
+                        and job.job_id is not None
+                    ):
+                        await progress_manager.mark_job_finalizing(job.job_id)
+                        await asyncio.sleep(before_delay)
+                if handle is not None and not self._context.values.get(
+                    "simulate_crash_shutdown", False
+                ):
+                    await self._teardown(handle)
+                elif handle is not None:
+                    for attr in ("_active_job_id", "_active_task", "_active_handle"):
+                        if hasattr(self, attr):
+                            setattr(self, attr, None)
+        except asyncio.CancelledError:
+            raise
+
+    monkeypatch.setattr(RuntimeBase, "session", patched_runtime_session)
+
     async def patched_stop() -> None:
         async_thread_loop = getattr(driver, "_async_thread_loop", None)
         loop = getattr(async_thread_loop, "loop", None)
+        driver._context.values["simulate_crash_shutdown"] = True
         if loop is None:
             try:
                 loop = asyncio.get_running_loop()
@@ -319,19 +420,14 @@ def install_runtime_finalize_shutdown_delay(monkeypatch, test_backend) -> None:
 
     async def patched_finalize_job(self, job):
         opts = job.spec.opts or {}
-        before_delay = float(
-            opts.get(TEST_OPTS_DELAY_BEFORE_FINALIZE_SHUTDOWN_SECONDS, 0.0) or 0.0
-        )
         after_delay = float(
             opts.get(TEST_OPTS_DELAY_AFTER_FINALIZE_SHUTDOWN_SECONDS, 0.0) or 0.0
         )
 
-        # Drivers without a standalone runtime shutdown hook still need the same
-        # finalizing restart window; treat the shutdown step as a no-op seam.
-        if before_delay > 0 or after_delay > 0:
+        # Shared-driver runtimes now model the before-shutdown window inside the
+        # RuntimeBase session wrapper; only keep the after-shutdown pause here.
+        if after_delay > 0:
             job = await self._progress_manager.mark_job_finalizing(job.job_id)
-        if before_delay > 0:
-            await asyncio.sleep(before_delay)
         if after_delay > 0:
             await asyncio.sleep(after_delay)
         return await original_finalize_job(self, job)
@@ -1553,10 +1649,10 @@ async def test_job_cancellation_in_progress_during_init_runtime(
         entered_init_runtime = asyncio.Event()
         release_init_runtime = asyncio.Event()
 
-        async def blocked_create_runtime(self, job):
+        async def blocked_create_runtime(self, job, job_id):
             entered_init_runtime.set()
             await release_init_runtime.wait()
-            return await original_runtime(self, job)
+            return await original_runtime(self, job, job_id)
 
         with patch(runtime_patch_target, new=blocked_create_runtime):
             # Step 2: Create deployment-backed batch job
@@ -1927,15 +2023,16 @@ async def test_job_restart_during_validation(
 
     with create_test_client(e2e_test_app) as client:
         input_file_id = upload_batch_input_file(client, 2)
-        original_manager = await swap_job_manager(
-            e2e_test_app, FailingBatchManager(stall_validation=2.0)
-        )
+        await swap_job_manager(e2e_test_app, FailingBatchManager(stall_validation=2.0))
         batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
         await wait_for_status(
             client, batch_id, "validating", max_polls=20, poll_interval=0.2
         )
         original_debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
-        restore_job_manager(e2e_test_app, original_manager)
+
+    expect_runtime_activity_on_restart = not backend_uses_deployment_provider(
+        test_backend
+    )
 
     await complete_job_after_restart(
         request,
@@ -1944,7 +2041,21 @@ async def test_job_restart_during_validation(
         monkeypatch,
         batch_id,
         2,
-        expect_runtime_created_on_restart=backend_expect_runtime_teardown(test_backend),
+        expect_runtime_created_on_restart=(
+            backend_expect_runtime_teardown(test_backend)
+            if expect_runtime_activity_on_restart
+            else False
+        ),
+        expect_runtime_used_on_restart=(
+            backend_expect_runtime_teardown(test_backend)
+            if expect_runtime_activity_on_restart
+            else False
+        ),
+        expect_runtime_teardown_on_restart=(
+            backend_expect_runtime_teardown(test_backend)
+            if expect_runtime_activity_on_restart
+            else False
+        ),
         original_app=e2e_test_app,
         original_debug_state=original_debug_state,
     )

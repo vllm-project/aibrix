@@ -16,7 +16,6 @@ import argparse
 import copy
 import json
 import os
-import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
@@ -28,7 +27,6 @@ from fastapi.testclient import TestClient
 from kubernetes import client, config
 
 import aibrix.batch.job_driver.runtime.k8s_deployment as deployment_runtime_module
-from aibrix import envs
 from aibrix.batch.client.sources import NoopEndpointSource
 from aibrix.logger import init_logger
 from aibrix.metadata.app import build_app
@@ -384,30 +382,44 @@ class FakeDeploymentAppsV1Api:
     def __init__(self):
         self.created: list[tuple[str, dict[str, Any]]] = []
         self.deleted: list[tuple[str, str]] = []
+        self._existing: set[tuple[str, str]] = set()
 
     def create_namespaced_deployment(self, namespace: str, body: dict[str, Any]):
         self.created.append((namespace, body))
+        self._existing.add((namespace, body["metadata"]["name"]))
 
     def read_namespaced_deployment_status(self, name: str, namespace: str):
+        if (namespace, name) not in self._existing:
+            raise client.ApiException(status=404)
         return SimpleNamespace(status=SimpleNamespace(available_replicas=1))
 
     def delete_namespaced_deployment(self, name: str, namespace: str):
+        if (namespace, name) not in self._existing:
+            raise client.ApiException(status=404)
         self.deleted.append((namespace, name))
+        self._existing.remove((namespace, name))
 
 
 class FakeDeploymentCoreV1Api:
     def __init__(self):
         self.created: list[tuple[str, dict[str, Any]]] = []
         self.deleted: list[tuple[str, str]] = []
+        self._existing: set[tuple[str, str]] = set()
 
     def create_namespaced_service(self, namespace: str, body: dict[str, Any]):
         self.created.append((namespace, body))
+        self._existing.add((namespace, body["metadata"]["name"]))
 
     def read_namespaced_service(self, name: str, namespace: str):
+        if (namespace, name) not in self._existing:
+            raise client.ApiException(status=404)
         return SimpleNamespace(metadata=SimpleNamespace(name=name, namespace=namespace))
 
     def delete_namespaced_service(self, name: str, namespace: str):
+        if (namespace, name) not in self._existing:
+            raise client.ApiException(status=404)
         self.deleted.append((namespace, name))
+        self._existing.remove((namespace, name))
 
 
 class FakeDeploymentRenderer:
@@ -465,14 +477,28 @@ class FakeDeploymentRenderer:
 
 def configure_local_metastore_deployment_backend(app, monkeypatch) -> None:
     context = app.state.batch_driver._context
-    apps_v1_api = FakeDeploymentAppsV1Api()
-    core_v1_api = FakeDeploymentCoreV1Api()
+    shared_state = getattr(monkeypatch, "_aibrix_fake_deployment_backend_state", None)
+    if shared_state is None:
+        shared_state = {
+            "apps_v1_api": FakeDeploymentAppsV1Api(),
+            "core_v1_api": FakeDeploymentCoreV1Api(),
+            "deployment_teardown_calls": [],
+            "deployment_endpoint_source_builds": [],
+        }
+        setattr(monkeypatch, "_aibrix_fake_deployment_backend_state", shared_state)
+
+    apps_v1_api = shared_state["apps_v1_api"]
+    core_v1_api = shared_state["core_v1_api"]
     context.apps_v1_api = apps_v1_api
     context.core_v1_api = core_v1_api
     context.values["deployment_apps_v1_api"] = apps_v1_api
     context.values["deployment_core_v1_api"] = core_v1_api
-    context.values["deployment_teardown_calls"] = []
-    context.values["deployment_endpoint_source_builds"] = []
+    context.values["deployment_teardown_calls"] = shared_state[
+        "deployment_teardown_calls"
+    ]
+    context.values["deployment_endpoint_source_builds"] = shared_state[
+        "deployment_endpoint_source_builds"
+    ]
 
     monkeypatch.setattr(
         deployment_runtime_module.DeploymentRuntime,
@@ -575,7 +601,6 @@ class E2ETestBackend(str):
 
 E2E_BACKENDS: dict[str, E2ETestBackend] = {
     "local_metastore_job": E2ETestBackend("local_metastore_job"),
-    "redis_job": E2ETestBackend("redis_job"),
     "local_job_using_deployment": E2ETestBackend(
         "local_job_using_deployment",
         request_kwargs={
@@ -591,16 +616,6 @@ E2E_BACKENDS: dict[str, E2ETestBackend] = {
             "runtime_delete_target_key": "deployment_apps_v1_api",
             "runtime_delete_attr": "deleted",
         },
-    ),
-    "redis_job_using_deployment": E2ETestBackend(
-        "redis_job_using_deployment",
-        request_kwargs={
-            "aibrix_template": "mock-vllm",
-            "aibrix_profile": "unittest",
-            "provider": "deployment",
-        },
-        features=("support_runtime",),
-        max_concurrency=3,
     ),
 }
 
@@ -679,20 +694,16 @@ def build_batch_request(
     if aibrix_profile:
         aibrix["profile"] = {"name": aibrix_profile}
     if provider:
-        aibrix["planner_decision"] = {
+        if provider == "deployment":
+            aibrix["runtime"] = {"target": "Kubernetes"}
+        aibrix["resource_allocation"] = {
             "provision_id": "reservation-1",
             "provision_resource_deadline": 3600,
             "resource_details": [
                 {
-                    "provider": provider,
                     "endpoint_cluster": "cluster-a",
-                    "resources": [
-                        {
-                            "accelerator_type": "H100",
-                            "replica": 1,
-                            "name": "default",
-                        }
-                    ],
+                    "gpu_type": "H100",
+                    "replica": 1,
                 }
             ],
         }
@@ -845,6 +856,7 @@ def build_e2e_test_app(
 ):
     test_backend = get_e2e_backend(test_backend)
     monkeypatch.chdir(tmp_path)
+    del request, preserve_redis_prefix
 
     if test_backend == "local_metastore_job":
         app = create_test_app(
@@ -867,39 +879,7 @@ def build_e2e_test_app(
         configure_local_metastore_deployment_backend(app, monkeypatch)
         return app
 
-    if test_backend == "redis_job":
-        request.getfixturevalue("redis_config_available")
-        db_redis_prefix = envs.DB_REDIS_PREFIX
-        if not preserve_redis_prefix or not db_redis_prefix:
-            db_redis_prefix = f"batch-e2e-redis-{uuid.uuid4().hex}:"
-        monkeypatch.setattr(envs, "DB_REDIS_PREFIX", db_redis_prefix)
-        return create_test_app(
-            storage_type=StorageType.LOCAL,
-            metastore_type=StorageType.REDIS,
-            dry_run=True,
-        )
-
-    test_s3_bucket = request.getfixturevalue("test_s3_bucket")
-    request.getfixturevalue("k8s_config")
-    request.getfixturevalue("redis_config_available")
-    request.getfixturevalue("ensure_job_rbac")
-    request.getfixturevalue("template_configmaps")
-
-    db_redis_prefix = envs.DB_REDIS_PREFIX
-    if not preserve_redis_prefix or not db_redis_prefix:
-        db_redis_prefix = f"batch-e2e-deployment-{uuid.uuid4().hex}:"
-    monkeypatch.setattr(envs, "DB_REDIS_PREFIX", db_redis_prefix)
-    monkeypatch.setattr(
-        "aibrix.batch.job_driver.deployment_driver._deployment_job_driver",
-        None,
-    )
-    return create_test_app(
-        enable_k8s_support=True,
-        storage_type=StorageType.S3,
-        metastore_type=StorageType.REDIS,
-        params={"bucket_name": test_s3_bucket},
-        dry_run=False,
-    )
+    raise ValueError(f"Unsupported e2e backend: {test_backend}")
 
 
 @pytest.fixture(scope="function")

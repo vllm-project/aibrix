@@ -52,6 +52,7 @@ from typing import (
 )
 
 from aibrix.batch.client import EndpointSource
+import aibrix.batch.constant as constant
 from aibrix.batch.job_driver.running_jobs import RunningJobs
 from aibrix.batch.job_entity import (
     BatchJob,
@@ -133,6 +134,10 @@ class Runtime(Protocol):
 
     async def terminate(self, deleted_job: BatchJob) -> bool:
         """Terminate a job execution, no more job_entity_manager hijacks."""
+        ...
+
+    async def cleanup(self, job: BatchJob) -> None:
+        """Best-effort cleanup for a recovered job before finalization."""
         ...
 
 
@@ -221,6 +226,12 @@ class RuntimeBase:
                 self._active_task.cancel()
         return True
 
+    def _reset_runtime_state(self) -> None:
+        self._active_job_id = None
+        self._active_task = None
+        self._active_runtime = None
+        self._delete_requested.clear()
+
     def _get_runtime_key(self, job: BatchJob) -> str:
         """Execution-key to locate execution ref."""
         del job
@@ -263,6 +274,43 @@ class RuntimeBase:
     def _load_runtime_ref(self, job: BatchJob) -> Optional[JobRuntimeRef]:
         return job.status.get_runtime_ref(self._get_runtime_key(job))
 
+    async def cleanup(self, job: BatchJob) -> None:
+        """Best-effort cleanup for restart recovery before finalization.
+
+        This is needed for the crash window where the driver has already moved
+        the job into ``FINALIZING`` but the runtime teardown has not finished
+        yet. If the system restarts in that gap, the recovered driver should
+        reconnect to any still-live provisioned runtime and tear it down before
+        aggregating outputs. If teardown already completed before restart, this
+        method should fall through quickly and let finalization continue.
+        """
+        if not self.provisions or job.job_id is None:
+            return
+
+        runtime_ref = self._load_runtime_ref(job)
+        if runtime_ref is None:
+            return
+
+        handle = await self._reconnect(job, job.job_id, runtime_ref)
+        if handle is None:
+            return
+
+        try:
+            try:
+                # Recovered FINALIZING cleanup only needs a quick liveness probe.
+                # If the runtime was already deleted before restart, avoid the
+                # full readiness wait loop and let finalization continue.
+                await asyncio.wait_for(self._wait_ready(handle), timeout=1.0)
+            except TimeoutError:
+                return
+            except Exception as exc:
+                if self._is_not_found_error(exc):
+                    return
+                raise
+            await self._teardown(handle)
+        finally:
+            self._reset_runtime_state()
+
     async def _persist_runtime_ref(
         self,
         job: BatchJob,
@@ -287,6 +335,25 @@ class RuntimeBase:
         worker_id = worker_id_generator(execution_ref.owner_ref)
         return await progress_manager.update_job_local_status(
             job.job_id, worker_id, status
+        )
+
+    @staticmethod
+    def _opt_enabled(job: BatchJob, opt_key: str) -> bool:
+        if not job.spec.opts or opt_key not in job.spec.opts:
+            return False
+        value = job.spec.opts[opt_key]
+        normalized = str(value).strip().lower()
+        return normalized not in {"", "0", "false", "no", "off"}
+
+    def _maybe_fail_runtime_initialization(self, job: BatchJob) -> None:
+        if not self._opt_enabled(job, constant.BATCH_OPTS_FAIL_INIT_RUNTIME):
+            return
+        raise BatchJobError(
+            code=BatchJobErrorCode.RESOURCE_CREATION_ERROR,
+            message=(
+                "Artificial runtime initialization failure triggered "
+                f"({constant.BATCH_OPTS_FAIL_INIT_RUNTIME})"
+            ),
         )
 
     @staticmethod
@@ -344,6 +411,7 @@ class RuntimeBase:
                         if handle is None:
                             phase = "provision"
                     if handle is None:
+                        self._maybe_fail_runtime_initialization(job)
                         handle = await self._provision(job, job_id)
                     job = await self._persist_runtime_ref(
                         job,
