@@ -32,6 +32,7 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	"github.com/vllm-project/aibrix/apps/console/api/utils"
 )
 
@@ -103,14 +104,15 @@ var ErrMDSSubmitFailed = errors.New("planner/client: submit failed")
 // fields ride along under the SDK's extra_body channel via
 // option.WithJSONSet.
 type OpenAIBatchClient struct {
-	client openai.Client
+	client   openai.Client
+	injector error_injection.Injector
 }
 
 // NewOpenAIBatchClient constructs a BatchClient pointed at the metadata
 // service's base URL (without the trailing /v1). The HTTP transport is
 // wrapped with a shared logging transport so BFF↔MDS request/response bodies
 // surface at klog -v=2 (4xx/5xx always log at info).
-func NewOpenAIBatchClient(metadataServiceURL string) *OpenAIBatchClient {
+func NewOpenAIBatchClient(metadataServiceURL string, injector error_injection.Injector) *OpenAIBatchClient {
 	baseURL := strings.TrimRight(metadataServiceURL, "/") + "/v1"
 	httpClient := &http.Client{Transport: &utils.LoggingTransport{
 		Base:  http.DefaultTransport,
@@ -121,12 +123,19 @@ func NewOpenAIBatchClient(metadataServiceURL string) *OpenAIBatchClient {
 		option.WithAPIKey("aibrix-console"),
 		option.WithHTTPClient(httpClient),
 	)
-	return &OpenAIBatchClient{client: c}
+	return &OpenAIBatchClient{client: c, injector: injector}
 }
 
 var _ BatchClient = (*OpenAIBatchClient)(nil)
 
 func (c *OpenAIBatchClient) CreateBatch(ctx context.Context, params openai.BatchNewParams, aibrix AIBrixExtraBody) (*openai.Batch, error) {
+	// CheckPoint: batch_client.create_batch
+	if c.injector != nil {
+		if err := c.injector.CheckPoint(ctx, error_injection.POINT_BATCH_CLIENT_CREATE_BATCH); err != nil {
+			return nil, err
+		}
+	}
+
 	opts := buildExtraBodyOptions(aibrix)
 	batch, err := c.client.Batches.New(ctx, params, opts...)
 	if err != nil {
@@ -142,6 +151,13 @@ func (c *OpenAIBatchClient) GetBatch(ctx context.Context, batchID string) (*open
 	if batchID == "" {
 		return nil, fmt.Errorf("openai batch client: empty batch ID")
 	}
+	// CheckPoint: batch_client.get_batch
+	if c.injector != nil {
+		if err := c.injector.CheckPoint(ctx, error_injection.POINT_BATCH_CLIENT_GET_BATCH); err != nil {
+			return nil, err
+		}
+	}
+
 	return c.client.Batches.Get(ctx, batchID)
 }
 
@@ -149,10 +165,22 @@ func (c *OpenAIBatchClient) CancelBatch(ctx context.Context, batchID string) (*o
 	if batchID == "" {
 		return nil, fmt.Errorf("openai batch client: empty batch ID")
 	}
+	// CheckPoint: batch_client.cancel_batch
+	if c.injector != nil {
+		if err := c.injector.CheckPoint(ctx, error_injection.POINT_BATCH_CLIENT_CANCEL_BATCH); err != nil {
+			return nil, err
+		}
+	}
 	return c.client.Batches.Cancel(ctx, batchID)
 }
 
 func (c *OpenAIBatchClient) ListBatches(ctx context.Context, req *ListBatchesRequest) (*ListBatchesResponse, error) {
+	// CheckPoint: batch_client.list_batches
+	if c.injector != nil {
+		if err := c.injector.CheckPoint(ctx, error_injection.POINT_BATCH_CLIENT_LIST_BATCHES); err != nil {
+			return nil, err
+		}
+	}
 	params := openai.BatchListParams{}
 	if req != nil {
 		if req.After != "" {

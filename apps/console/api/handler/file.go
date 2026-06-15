@@ -29,6 +29,8 @@ import (
 
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
+
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 )
 
 // fileHTTPClientTimeout bounds proxy requests to the metadata service so a slow
@@ -40,10 +42,11 @@ type FileHandler struct {
 	metadataServiceURL string
 	httpClient         *http.Client
 	store              store.Store
+	injector           error_injection.Injector
 }
 
 // NewFileHandler creates a new file proxy handler.
-func NewFileHandler(metadataServiceURL string, stores ...store.Store) *FileHandler {
+func NewFileHandler(metadataServiceURL string, injector error_injection.Injector, stores ...store.Store) *FileHandler {
 	var st store.Store
 	if len(stores) > 0 {
 		st = stores[0]
@@ -52,6 +55,7 @@ func NewFileHandler(metadataServiceURL string, stores ...store.Store) *FileHandl
 		metadataServiceURL: strings.TrimRight(metadataServiceURL, "/"),
 		httpClient:         &http.Client{Timeout: fileHTTPClientTimeout},
 		store:              st,
+		injector:           injector,
 	}
 }
 
@@ -73,6 +77,12 @@ func (h *FileHandler) RegisterRoutes(mux *runtime.ServeMux) {
 
 // handleUpload proxies multipart file uploads to POST {metadataServiceURL}/v1/files.
 func (h *FileHandler) handleUpload(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	if h.injector != nil {
+		if err := h.injector.CheckPoint(r.Context(), error_injection.POINT_CONSOLE_UPLOAD_FILE); err != nil {
+			http.Error(w, err.Error(), convertInjectedErrorToHttpCode(err))
+			return
+		}
+	}
 	targetURL := h.metadataServiceURL + "/v1/files"
 	h.proxyRequest(w, r, "POST", targetURL)
 }
@@ -98,6 +108,12 @@ func (h *FileHandler) handleGetMetadata(w http.ResponseWriter, r *http.Request, 
 
 // handleDownloadContent proxies file content download to GET {metadataServiceURL}/v1/files/{file_id}/content.
 func (h *FileHandler) handleDownloadContent(w http.ResponseWriter, r *http.Request, pathParams map[string]string) {
+	if h.injector != nil {
+		if err := h.injector.CheckPoint(r.Context(), error_injection.POINT_CONSOLE_DOWNLOAD_FILE); err != nil {
+			http.Error(w, err.Error(), convertInjectedErrorToHttpCode(err))
+			return
+		}
+	}
 	fileID := pathParams["file_id"]
 	if err := h.authorizeFileDownload(r.Context(), fileID); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.message), err.status)

@@ -17,6 +17,7 @@ limitations under the License.
 package provisioner
 
 import (
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
@@ -27,7 +28,7 @@ import (
 // resource_manager/provider/*), so adding a provider requires no edits to this
 // package or the factory — the dependency points provider -> provisioner only,
 // never the reverse.
-type Factory func(s store.Store) (Provisioner, error)
+type Factory func(s store.Store, injector error_injection.Injector) (Provisioner, error)
 
 var registry = map[types.ResourceProvisionType]Factory{}
 

@@ -43,6 +43,7 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 
 	"github.com/vllm-project/aibrix/apps/console/api/config"
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 )
 
 // Server holds the gRPC and HTTP servers for the console backend.
@@ -53,11 +54,26 @@ type Server struct {
 	cfg        *config.Config
 	auth       *middleware.AuthMiddleware
 	planner    plannerapi.Planner
+	injector   error_injection.Injector
 }
 
 // New creates a new console Server from configuration.
 func New(cfg *config.Config) *Server {
-	s, err := store.NewFromURI(cfg.StoreURI, cfg.SecretsEncryptionKey)
+	// Initialize error injector first as it's needed by store and other components
+	var injector error_injection.Injector
+	var err error
+	if cfg.ErrorInjectionEnabled {
+		injector, err = error_injection.NewInjector()
+		if err != nil {
+			klog.Fatalf("Failed to construct error injector: %v", err)
+		}
+	}
+
+	if injector != nil {
+		klog.Info("Error injection enabled")
+	}
+
+	s, err := store.NewFromURI(cfg.StoreURI, cfg.SecretsEncryptionKey, injector)
 	if err != nil {
 		klog.Fatalf("Failed to construct store: %v", err)
 	}
@@ -99,9 +115,10 @@ func New(cfg *config.Config) *Server {
 	}
 
 	return &Server{
-		store: s,
-		cfg:   cfg,
-		auth:  auth,
+		store:    s,
+		cfg:      cfg,
+		auth:     auth,
+		injector: injector,
 	}
 }
 
@@ -114,8 +131,8 @@ func (s *Server) StartGRPC(addr string) error {
 
 	s.grpcServer = grpc.NewServer()
 
-	batchClient := plannerclient.NewOpenAIBatchClient(s.cfg.MetadataServiceURL)
-	rm, err := resource_manager.NewResourceManager(rmtypes.ResourceProvisionType(s.cfg.Provisioner), s.store)
+	batchClient := plannerclient.NewOpenAIBatchClient(s.cfg.MetadataServiceURL, s.injector)
+	rm, err := resource_manager.NewResourceManager(rmtypes.ResourceProvisionType(s.cfg.Provisioner), s.store, s.injector)
 	if err != nil {
 		return fmt.Errorf("resource manager init: %w", err)
 	}
@@ -125,6 +142,7 @@ func (s *Server) StartGRPC(addr string) error {
 		Store:       s.store,
 		PolicyType:  plannerimpl.PlanningPolicyType(s.cfg.PlanningPolicy),
 		WorkerCount: s.cfg.PlannerWorkerCount,
+		Injector:    s.injector,
 	})
 	if err := s.planner.Recover(context.Background()); err != nil {
 		klog.Warningf("planner recovery failed (continuing without recovered jobs): %v", err)
@@ -132,12 +150,15 @@ func (s *Server) StartGRPC(addr string) error {
 
 	// Register all service handlers
 	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
-	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.planner, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode))
+	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.planner, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode, s.injector))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
 	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))
 	pb.RegisterAPIKeyServiceServer(s.grpcServer, handler.NewAPIKeyHandler(s.store))
 	pb.RegisterSecretServiceServer(s.grpcServer, handler.NewSecretHandler(s.store))
 	pb.RegisterQuotaServiceServer(s.grpcServer, handler.NewQuotaHandler(s.store))
+	if s.injector != nil {
+		pb.RegisterInjectionServiceServer(s.grpcServer, handler.NewInjectionHandler(s.injector, s.planner))
+	}
 
 	// Enable gRPC reflection for debugging
 	reflection.Register(s.grpcServer)
@@ -166,7 +187,7 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
 	// Register all gRPC-gateway handlers
-	for _, registerFn := range []func(context.Context, *runtime.ServeMux, string, []grpc.DialOption) error{
+	registerFns := []func(context.Context, *runtime.ServeMux, string, []grpc.DialOption) error{
 		pb.RegisterDeploymentServiceHandlerFromEndpoint,
 		pb.RegisterJobServiceHandlerFromEndpoint,
 		pb.RegisterModelServiceHandlerFromEndpoint,
@@ -174,7 +195,11 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 		pb.RegisterAPIKeyServiceHandlerFromEndpoint,
 		pb.RegisterSecretServiceHandlerFromEndpoint,
 		pb.RegisterQuotaServiceHandlerFromEndpoint,
-	} {
+	}
+	if s.injector != nil {
+		registerFns = append(registerFns, pb.RegisterInjectionServiceHandlerFromEndpoint)
+	}
+	for _, registerFn := range registerFns {
 		if err := registerFn(ctx, mux, grpcAddr, opts); err != nil {
 			return err
 		}
@@ -187,7 +212,7 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	}
 
 	// Register file proxy routes
-	fileHandler := handler.NewFileHandler(s.cfg.MetadataServiceURL, s.store)
+	fileHandler := handler.NewFileHandler(s.cfg.MetadataServiceURL, s.injector, s.store)
 	fileHandler.RegisterRoutes(mux)
 
 	// Register auth routes

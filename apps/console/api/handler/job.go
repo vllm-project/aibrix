@@ -56,6 +56,8 @@ import (
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 	"github.com/vllm-project/aibrix/apps/console/api/utils"
+
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 )
 
 const (
@@ -70,21 +72,28 @@ type JobHandler struct {
 	planner                        plannerapi.Planner
 	defaultModelDeploymentTemplate string
 	devMode                        bool
+	injector                       error_injection.Injector
 }
 
 // NewJobHandler creates a JobHandler.
-func NewJobHandler(s store.Store, planner plannerapi.Planner, defaultModelDeploymentTemplate string, devMode bool) *JobHandler {
+func NewJobHandler(s store.Store, planner plannerapi.Planner, defaultModelDeploymentTemplate string, devMode bool, injector error_injection.Injector) *JobHandler {
 	return &JobHandler{
 		store:                          s,
 		planner:                        planner,
 		defaultModelDeploymentTemplate: defaultModelDeploymentTemplate,
 		devMode:                        devMode,
+		injector:                       injector,
 	}
 }
 
 // ListJobs proxies to GET /v1/batches. Console-owned fields ride on
 // batch.metadata; the store overlay path is parked (see CreateJob).
 func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb.ListJobsResponse, error) {
+	if h.injector != nil {
+		if err := h.injector.CheckPoint(ctx, error_injection.POINT_CONSOLE_LIST_JOBS); err != nil {
+			return nil, err
+		}
+	}
 	limit := defaultListLimit
 	if req.Limit > 0 {
 		limit = int(req.Limit)
@@ -131,6 +140,14 @@ func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
+
+	// Create injection context for tracking this job's operations
+	if h.injector != nil {
+		if err := h.injector.CheckPoint(ctx, error_injection.POINT_CONSOLE_GET_JOB); err != nil {
+			return nil, err
+		}
+	}
+
 	job, err := h.planner.GetJob(ctx, req.Id)
 	if err != nil {
 		// Dev fallback: return the demo job if MDS is unreachable.
@@ -174,6 +191,11 @@ func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job
 // into the JSONL by the console wizard before upload, so they don't appear
 // on this request. The OpenAI SDK path can still POST them to MDS directly.
 func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*pb.Job, error) {
+	if h.injector != nil {
+		if err := h.injector.CheckPoint(ctx, error_injection.POINT_CONSOLE_CREATE_JOB); err != nil {
+			return nil, err
+		}
+	}
 	if req.InputDataset == "" {
 		return nil, status.Error(codes.InvalidArgument, "input_dataset is required")
 	}
@@ -189,6 +211,17 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	// Console-generated JobID. The async Scheduler will own a durable
 	// JobID -> BatchID map; until then the planner keeps it in-memory.
 	jobID := "job_" + uuid.NewString()
+
+	// Create injection context for this job to enable error injection tracking
+	// across the entire job lifecycle (console -> planner -> store -> rm)
+	var injectionConfig *error_injection.InjectionConfig
+	if h.injector != nil && req.InjectionConfig != nil && req.InjectionConfig.Enabled {
+		injectionConfig = convertPBToInjectionConfig(req.InjectionConfig)
+		injectionConfig.JobID = jobID
+		ctx = error_injection.WithInjectionContext(ctx, injectionConfig)
+		injectionConfigJson, _ := json.Marshal(injectionConfig)
+		klog.Infof("injection config: %s", injectionConfigJson)
+	}
 
 	// Pack console-owned fields into batch.Metadata under the aibrix.console.*
 	// namespace. This keeps a single source of truth (MDS) for the e2e demo
@@ -252,6 +285,7 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 			CompletionWindow: openai.BatchNewParamsCompletionWindow(completionWindow),
 			Metadata:         metadata,
 		},
+		InjectionConfig: injectionConfig,
 	}
 
 	job, err := h.planner.Enqueue(ctx, enqueueReq)
@@ -267,6 +301,14 @@ func (h *JobHandler) CancelJob(ctx context.Context, req *pb.CancelJobRequest) (*
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
+
+	// Create injection context for tracking this job's operations
+	if h.injector != nil {
+		if err := h.injector.CheckPoint(ctx, error_injection.POINT_CONSOLE_CANCEL_JOB); err != nil {
+			return nil, err
+		}
+	}
+
 	existing, err := h.planner.GetJob(ctx, req.Id)
 	if err != nil {
 		return nil, mapPlannerError(err, "cancel batch")
