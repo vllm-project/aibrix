@@ -304,11 +304,9 @@ func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto
 	return ef.parseMetricInstance(metricFamily.Metric[0], metricFamily, metric, rawMetricName)
 }
 
-// parseModelMetricsFromFamily parses one value per model_name present in the family. Each value
-// is parsed from the instance carrying that model_name and gets its own labels map, so models on
-// a multi-model pod no longer alias a single shared MetricValue. When a family exposes several
-// instances for the same model_name, differing only by a non-model label, they are folded together
-// by aggregateModelMetric rather than overwriting each other.
+// parseModelMetricsFromFamily returns one MetricValue per model_name in the family, so models on a
+// multi-model pod no longer share a single instance. Instances that repeat a model_name (differing
+// only by a non-model label) are folded together by aggregateModelMetric.
 func (ef *EngineMetricsFetcher) parseModelMetricsFromFamily(allMetrics map[string]*dto.MetricFamily, rawMetricName string, metric Metric) (map[string]MetricValue, error) {
 	metricFamily, exists := allMetrics[rawMetricName]
 	if !exists {
@@ -321,7 +319,6 @@ func (ef *EngineMetricsFetcher) parseModelMetricsFromFamily(allMetrics map[strin
 
 	modelMetrics := make(map[string]MetricValue)
 	for _, familyMetric := range metricFamily.Metric {
-		// TODO: confirm whether vLLM/SGLang uses the same label_key.
 		modelName, err := GetLabelValueForKey(familyMetric, "model_name")
 		if err != nil || modelName == "" {
 			continue
@@ -329,7 +326,10 @@ func (ef *EngineMetricsFetcher) parseModelMetricsFromFamily(allMetrics map[strin
 
 		value, err := ef.parseMetricInstance(familyMetric, metricFamily, metric, rawMetricName)
 		if err != nil {
-			return nil, err
+			// Skip the malformed instance rather than dropping every model in the family.
+			klog.V(4).InfoS("skipping metric instance that failed to parse",
+				"metric", rawMetricName, "model", modelName, "err", err)
+			continue
 		}
 
 		if existing, ok := modelMetrics[modelName]; ok {
@@ -338,17 +338,19 @@ func (ef *EngineMetricsFetcher) parseModelMetricsFromFamily(allMetrics map[strin
 		modelMetrics[modelName] = value
 	}
 
+	if len(modelMetrics) == 0 {
+		klog.V(4).InfoS("metric family has no model_name-labeled instances", "metric", rawMetricName)
+	}
+
 	return modelMetrics, nil
 }
 
-// aggregateModelMetric folds an additional instance that carries the same model_name into the value
-// already parsed for that model. A model-scoped counter or histogram can appear as several instances
-// that differ only by a non-model label (for example finished_reason on vllm:request_success_total),
-// so the per-model value is their sum rather than whichever instance is parsed last. Gauges hold a
-// single value per model, so the latest instance is kept. The differentiating labels are dropped from
-// an aggregated value because the merged total is no longer specific to any one of them, and
-// EmitMetricToPrometheus forwards the label map to Prometheus, where it would otherwise report the
-// total under a single arbitrary label value.
+// aggregateModelMetric folds incoming into the value already parsed for modelName and returns it.
+// Counters and histograms that repeat a model_name (differing only by a non-model label such as
+// finished_reason on vllm:request_success_total) are summed; gauges keep the latest instance. The
+// differentiating labels are reset to model_name only so EmitMetricToPrometheus does not report the
+// merged total under a single arbitrary label value. It mutates and returns existing in place; the
+// sole caller reassigns the map entry.
 func aggregateModelMetric(existing, incoming MetricValue, modelName string, rawType RawMetricType) MetricValue {
 	switch rawType {
 	case Counter:
@@ -379,7 +381,11 @@ func aggregateModelMetric(existing, incoming MetricValue, modelName string, rawT
 		}
 		existingVal.Labels = map[string]string{"model_name": modelName}
 		return existingVal
+	case Gauge:
+		// A gauge is a single value per model, so keep the latest instance.
+		return incoming
 	default:
+		// Only raw Gauge/Counter/Histogram metrics reach this path.
 		return incoming
 	}
 }
