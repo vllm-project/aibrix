@@ -17,13 +17,14 @@ limitations under the License.
 package provisioner
 
 import (
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
 
-func NewProvisioner(provider types.ResourceProvisionType, s store.Store) (Provisioner, error) {
+func NewProvisioner(provider types.ResourceProvisionType, s store.Store, injector error_injection.Injector) (Provisioner, error) {
 	if f, ok := lookup(provider); ok {
-		return f(s)
+		return f(s, injector)
 	}
 	return nil, types.ErrUnsupportedProvisioner
 }

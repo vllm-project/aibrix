@@ -34,7 +34,7 @@ func requestWithUserEmail(r *http.Request, email string) *http.Request {
 }
 
 func TestFileDownloadRejectsKnownNonOwner(t *testing.T) {
-	s := store.NewMemoryStore()
+	s := store.NewMemoryStore(nil)
 	t.Cleanup(func() { _ = s.Close() })
 	fileID := "file-owner-only"
 	if err := s.UpsertJob(context.Background(), &models.Job{
@@ -45,7 +45,7 @@ func TestFileDownloadRejectsKnownNonOwner(t *testing.T) {
 		t.Fatalf("UpsertJob failed: %v", err)
 	}
 
-	handler := NewFileHandler("http://metadata.invalid", s)
+	handler := NewFileHandler("http://metadata.invalid", nil, s)
 	req := requestWithUserEmail(httptest.NewRequest(http.MethodGet, "/api/v1/files/"+fileID+"/content", nil), "other@example.com")
 	rec := httptest.NewRecorder()
 
@@ -57,7 +57,7 @@ func TestFileDownloadRejectsKnownNonOwner(t *testing.T) {
 }
 
 func TestFileDownloadRejectsNonOwnerWhenFileAlsoHasUnownedJob(t *testing.T) {
-	s := store.NewMemoryStore()
+	s := store.NewMemoryStore(nil)
 	t.Cleanup(func() { _ = s.Close() })
 	fileID := "file-mixed-owner"
 	for _, job := range []*models.Job{
@@ -69,7 +69,7 @@ func TestFileDownloadRejectsNonOwnerWhenFileAlsoHasUnownedJob(t *testing.T) {
 		}
 	}
 
-	handler := NewFileHandler("http://metadata.invalid", s)
+	handler := NewFileHandler("http://metadata.invalid", nil, s)
 	req := requestWithUserEmail(httptest.NewRequest(http.MethodGet, "/api/v1/files/"+fileID+"/content", nil), "other@example.com")
 	rec := httptest.NewRecorder()
 
@@ -81,7 +81,7 @@ func TestFileDownloadRejectsNonOwnerWhenFileAlsoHasUnownedJob(t *testing.T) {
 }
 
 func TestFileDownloadAllowsOwner(t *testing.T) {
-	s := store.NewMemoryStore()
+	s := store.NewMemoryStore(nil)
 	t.Cleanup(func() { _ = s.Close() })
 	fileID := "file-owner-download"
 	if err := s.UpsertJob(context.Background(), &models.Job{
@@ -100,7 +100,7 @@ func TestFileDownloadAllowsOwner(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	handler := NewFileHandler(upstream.URL, s)
+	handler := NewFileHandler(upstream.URL, nil, s)
 	req := requestWithUserEmail(httptest.NewRequest(http.MethodGet, "/api/v1/files/"+fileID+"/content", nil), "owner@example.com")
 	rec := httptest.NewRecorder()
 

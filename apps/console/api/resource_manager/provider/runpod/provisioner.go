@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
@@ -35,14 +36,15 @@ import (
 // delete) and runs on a single service-level account. RunPod is not a built-in
 // type, so its pod details ride in ExtensionProvisionResultDetails.
 type runpodProvisioner struct {
-	store  store.Store
-	cfg    *Config
-	client *Client
+	store    store.Store
+	cfg      *Config
+	client   *Client
+	injector error_injection.Injector
 }
 
 // newProvisioner builds a RunPod provisioner. A configured API key is required;
 // selecting RunPod without one is an error rather than a silent degradation.
-func newProvisioner(s store.Store, cfg *Config) (*runpodProvisioner, error) {
+func newProvisioner(s store.Store, cfg *Config, injector error_injection.Injector) (*runpodProvisioner, error) {
 	if cfg == nil || cfg.APIKey == "" {
 		return nil, &types.ProvisionerError{
 			Message: "runpod provisioner selected but RUNPOD_API_KEY is not set",
@@ -55,7 +57,7 @@ func newProvisioner(s store.Store, cfg *Config) (*runpodProvisioner, error) {
 			Code:    "MissingCredential",
 		}
 	}
-	return &runpodProvisioner{store: s, cfg: cfg, client: NewClient(cfg)}, nil
+	return &runpodProvisioner{store: s, cfg: cfg, client: NewClient(cfg), injector: injector}, nil
 }
 
 // Type returns the provisioner type.

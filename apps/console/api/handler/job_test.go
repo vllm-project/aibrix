@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/vllm-project/aibrix/apps/console/api/common"
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
@@ -66,6 +67,8 @@ func (p *fakeJobPlanner) Recover(context.Context) error { return nil }
 
 func (p *fakeJobPlanner) Close() error { return nil }
 
+func (p *fakeJobPlanner) GetInjectionTrace(jobID string) *error_injection.ExecutionTrace { return nil }
+
 func contextWithUserEmail(email string) context.Context {
 	return metadata.NewIncomingContext(
 		context.Background(),
@@ -91,7 +94,7 @@ func plannerJobWithOwner(jobID, owner string) *plannerapi.Job {
 
 func TestCancelJobRejectsNonOwner(t *testing.T) {
 	planner := &fakeJobPlanner{job: plannerJobWithOwner("job-console-1", "owner@example.com")}
-	handler := NewJobHandler(nil, planner, "", false)
+	handler := NewJobHandler(nil, planner, "", false, nil)
 
 	_, err := handler.CancelJob(contextWithUserEmail("other@example.com"), &pb.CancelJobRequest{
 		Id: "job-console-1",
@@ -107,7 +110,7 @@ func TestCancelJobRejectsNonOwner(t *testing.T) {
 
 func TestCancelJobRejectsMissingViewerForOwnedJob(t *testing.T) {
 	planner := &fakeJobPlanner{job: plannerJobWithOwner("job-console-1", "owner@example.com")}
-	handler := NewJobHandler(nil, planner, "", false)
+	handler := NewJobHandler(nil, planner, "", false, nil)
 
 	_, err := handler.CancelJob(context.Background(), &pb.CancelJobRequest{
 		Id: "job-console-1",
@@ -123,7 +126,7 @@ func TestCancelJobRejectsMissingViewerForOwnedJob(t *testing.T) {
 
 func TestCancelJobAllowsOwner(t *testing.T) {
 	planner := &fakeJobPlanner{job: plannerJobWithOwner("job-console-1", "owner@example.com")}
-	handler := NewJobHandler(nil, planner, "", false)
+	handler := NewJobHandler(nil, planner, "", false, nil)
 
 	job, err := handler.CancelJob(contextWithUserEmail("owner@example.com"), &pb.CancelJobRequest{
 		Id: "job-console-1",
@@ -144,7 +147,7 @@ func TestGetJobMapsPlannerNotFound(t *testing.T) {
 	planner := &fakeJobPlanner{
 		getErr: fmt.Errorf("%w: job-console-missing", plannerapi.ErrJobNotFound),
 	}
-	handler := NewJobHandler(nil, planner, "", false)
+	handler := NewJobHandler(nil, planner, "", false, nil)
 
 	_, err := handler.GetJob(context.Background(), &pb.GetJobRequest{Id: "job-console-missing"})
 
@@ -336,7 +339,7 @@ func TestBuildJobEventsBreaksSameSecondTiesByLifecycle(t *testing.T) {
 // console-internal model id or the template name.
 func TestResolveTemplateAndServingNameScopedByModel(t *testing.T) {
 	ctx := context.Background()
-	s := store.NewMemoryStore()
+	s := store.NewMemoryStore(nil)
 	t.Cleanup(func() { _ = s.Close() })
 
 	seed := []struct {
@@ -363,7 +366,7 @@ func TestResolveTemplateAndServingNameScopedByModel(t *testing.T) {
 		}
 	}
 
-	h := NewJobHandler(s, &fakeJobPlanner{}, "", false)
+	h := NewJobHandler(s, &fakeJobPlanner{}, "", false, nil)
 
 	tpl := h.resolveTemplate(ctx, "model-b", "default", "")
 	if tpl == nil {

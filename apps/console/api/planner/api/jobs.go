@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/openai/openai-go/v3"
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 )
 
 // =============================================================================
@@ -50,6 +51,8 @@ type EnqueueRequest struct {
 	// RequestCountTotal is the frontend-computed request count (e.g., JSONL line count).
 	// The planner persists it to the store for display before MDS reports back.
 	RequestCountTotal int32 `json:"request_count_total,omitempty"`
+	// InjectionConfig is the error injection configuration for this job.
+	InjectionConfig *error_injection.InjectionConfig `json:"injection_config,omitempty"`
 }
 
 // Job is the planner's JobID-keyed result, returned from Enqueue,

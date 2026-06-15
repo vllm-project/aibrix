@@ -21,11 +21,13 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
+
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 )
 
 func init() {
-	provisioner.Register(types.ResourceProvisionTypeRunPod, func(s store.Store) (provisioner.Provisioner, error) {
-		return newProvisioner(s, ConfigFromEnv())
+	provisioner.Register(types.ResourceProvisionTypeRunPod, func(s store.Store, injector error_injection.Injector) (provisioner.Provisioner, error) {
+		return newProvisioner(s, ConfigFromEnv(), injector)
 	})
 	catalog.Register(types.ResourceProvisionTypeRunPod, func() (catalog.Catalog, error) {
 		return newCatalog()
