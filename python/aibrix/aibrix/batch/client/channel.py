@@ -33,6 +33,7 @@ from aibrix.logger import init_logger
 logger = init_logger(__name__)
 
 Response = Dict[str, Any]
+_MAX_ERROR_BODY_CHARS = 4096
 
 
 @dataclass(slots=True)
@@ -88,11 +89,38 @@ class HttpChannel:
             response = await client.post(
                 url, json=request.payload, timeout=self._timeout
             )
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPError as ex:
+        except httpx.TimeoutException as ex:
             raise InferenceError(
-                InferenceErrorCode.TRANSPORT_ERROR, f"{self._base_url}: {ex}"
+                InferenceErrorCode.TRANSPORT_ERROR,
+                f"{self._base_url}: {ex}",
+                retryable=True,
+            ) from ex
+        except httpx.TransportError as ex:
+            raise InferenceError(
+                InferenceErrorCode.TRANSPORT_ERROR,
+                f"{self._base_url}: {ex}",
+                retryable=True,
+            ) from ex
+
+        if response.status_code >= 400:
+            body = _response_body(response)
+            raise InferenceError(
+                InferenceErrorCode.HTTP_ERROR,
+                f"{self._base_url}: HTTP {response.status_code}",
+                status_code=response.status_code,
+                response_body=body,
+                retryable=_is_retryable_status(response.status_code),
+            )
+
+        try:
+            return response.json()
+        except ValueError as ex:
+            raise InferenceError(
+                InferenceErrorCode.RESPONSE_ERROR,
+                f"{self._base_url}: invalid JSON response",
+                status_code=response.status_code,
+                response_body=_truncate_text(response.text),
+                retryable=False,
             ) from ex
 
     def _ensure_client(self) -> httpx.AsyncClient:
@@ -128,3 +156,23 @@ class EchoChannel:
 
     async def aclose(self) -> None:
         return None
+
+
+def _is_retryable_status(status_code: int) -> bool:
+    return status_code in {408, 429, 500, 502, 503, 504}
+
+
+def _response_body(response: httpx.Response) -> Any:
+    text = _truncate_text(response.text)
+    if text != response.text:
+        return text
+    try:
+        return response.json()
+    except ValueError:
+        return text
+
+
+def _truncate_text(text: str) -> str:
+    if len(text) <= _MAX_ERROR_BODY_CHARS:
+        return text
+    return text[:_MAX_ERROR_BODY_CHARS] + "...<truncated>"

@@ -15,6 +15,7 @@
 from aibrix.batch.client.sources.discovery import DiscoveryEndpointSource
 from aibrix.batch.client.sources.kubernetes import (
     InClusterEndpointSource,
+    K8sEndpointSliceDiscovery,
     PortForwardEndpointSource,
 )
 from aibrix.batch.client.sources.static import (
@@ -28,6 +29,7 @@ __all__ = [
     "GatewayEndpointSource",
     "NoopEndpointSource",
     "InClusterEndpointSource",
+    "K8sEndpointSliceDiscovery",
     "PortForwardEndpointSource",
     "DiscoveryEndpointSource",
 ]

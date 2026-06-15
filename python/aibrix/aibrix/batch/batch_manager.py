@@ -752,6 +752,17 @@ class BatchManager(RunningJobs, SchedulableJobs):
         meta_data = await self._meta_from_in_progress_job(job_id)
         return meta_data, meta_data.next_request_id()
 
+    async def complete_job_request(
+        self, job_id: str, req_id: int, failed: bool = False
+    ) -> BatchJob:
+        """Mark a request completed without advancing the serial cursor."""
+        meta_data = await self._meta_from_in_progress_job(job_id)
+        async with meta_data._async_lock:
+            if req_id < 0 or req_id >= meta_data.status.request_counts.total:
+                raise ValueError(f"invalid request_id: {req_id}")
+            meta_data.complete_one_request(req_id, failed=failed)
+            return meta_data
+
     async def mark_job_progress_and_get_next_request(
         self, job_id: str, req_id: int
     ) -> Tuple[BatchJob, int]:
@@ -855,11 +866,16 @@ class BatchManager(RunningJobs, SchedulableJobs):
             )
         )
         job.status.errors = [ex]
-        has_partial_output = (
-            meta_data.status.temp_output_file_id is not None
+        has_any_output_artifact_prepared = (
+            meta_data.status.output_file_id is not None
+            or meta_data.status.error_file_id is not None
+            or meta_data.status.temp_output_file_id is not None
             or meta_data.status.temp_error_file_id is not None
         )
-        if meta_data.status.state == BatchJobState.IN_PROGRESS and has_partial_output:
+        if (
+            meta_data.status.state == BatchJobState.IN_PROGRESS
+            and has_any_output_artifact_prepared
+        ):
             job.status.finalizing_at = datetime.now(timezone.utc)
             job.status.state = BatchJobState.FINALIZING
         else:

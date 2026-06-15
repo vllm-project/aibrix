@@ -32,7 +32,21 @@ from aibrix.batch.client.channel import (
     InferenceRequest,
     Response,
 )
-from aibrix.batch.client.engine import DispatchEngine, OnResult
+from aibrix.batch.client.concurrency import (
+    ConcurrencyController,
+    ConcurrencyOutcome,
+    FixedConcurrencyController,
+    LLMAdaptiveConcurrencyController,
+    LLMAdaptiveConcurrencySettings,
+    concurrency_outcome_from_result,
+)
+from aibrix.batch.client.engine import (
+    DispatchEngine,
+    DispatchStats,
+    DispatchStatsSnapshot,
+    OnResult,
+    RetryConfig,
+)
 from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
 from aibrix.batch.client.policy import FIFO, RoundRobin, Router, Scheduler
 from aibrix.batch.client.source import CapacitySignal, EndpointSource
@@ -52,6 +66,13 @@ __all__ = [
     "EchoChannel",
     "InferenceRequest",
     "Response",
+    # concurrency
+    "ConcurrencyController",
+    "ConcurrencyOutcome",
+    "FixedConcurrencyController",
+    "LLMAdaptiveConcurrencyController",
+    "LLMAdaptiveConcurrencySettings",
+    "concurrency_outcome_from_result",
     # source
     "EndpointSource",
     "CapacitySignal",
@@ -63,7 +84,10 @@ __all__ = [
     "DiscoveryEndpointSource",
     # engine + policy
     "DispatchEngine",
+    "DispatchStats",
+    "DispatchStatsSnapshot",
     "OnResult",
+    "RetryConfig",
     "Router",
     "Scheduler",
     "RoundRobin",
