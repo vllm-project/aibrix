@@ -124,7 +124,7 @@ async def test_finalize_job_output_data_corrects_counts_from_metastore(mock_stor
                 "aibrix.batch.storage.adapter.delete_metadata", new_callable=AsyncMock
             ) as mock_delete_metadata:
                 # Setup mocks
-                mock_list_keys.return_value = expected_keys
+                mock_list_keys.return_value = (expected_keys, None)
 
                 # Mock metadata responses: idx 0 and 2 are outputs, idx 4 is error
                 mock_get_metadata.side_effect = [
@@ -141,7 +141,9 @@ async def test_finalize_job_output_data_corrects_counts_from_metastore(mock_stor
 
                 # Verify list_metastore_keys was called with correct prefix
                 mock_list_keys.assert_called_once_with(
-                    f"batch:{batch_job.job_id}:done/"
+                    f"batch:{batch_job.job_id}:done/",
+                    limit=1000,
+                    continuation_token=None,
                 )
 
                 # Verify get_metadata was called for each found index
@@ -200,7 +202,7 @@ async def test_finalize_job_output_data_handles_missing_metadata(mock_storage):
             with patch(
                 "aibrix.batch.storage.adapter.delete_metadata", new_callable=AsyncMock
             ) as mock_delete_metadata:
-                mock_list_keys.return_value = expected_keys
+                mock_list_keys.return_value = (expected_keys, None)
 
                 # Mock metadata: idx 0 exists, idx 1 missing, idx 2 exists
                 mock_get_metadata.side_effect = [
@@ -247,7 +249,7 @@ async def test_finalize_job_output_data_handles_empty_metastore(mock_storage):
                 "aibrix.batch.storage.adapter.delete_metadata", new_callable=AsyncMock
             ) as mock_delete_metadata:
                 # No keys found in metastore
-                mock_list_keys.return_value = []
+                mock_list_keys.return_value = ([], None)
 
                 mock_storage.complete_multipart_upload.return_value = None
 
@@ -267,6 +269,80 @@ async def test_finalize_job_output_data_handles_empty_metastore(mock_storage):
 
                 # Storage operations should still be called with empty lists
                 assert mock_storage.complete_multipart_upload.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_finalize_job_output_data_handles_paginated_key_batches(mock_storage):
+    adapter = BatchStorageAdapter(mock_storage)
+    batch_job = create_test_batch_job(job_id="job-paginated")
+
+    page_one = [
+        f"batch:{batch_job.job_id}:done/10",
+        f"batch:{batch_job.job_id}:done/2",
+    ]
+    page_two = [
+        f"batch:{batch_job.job_id}:done/5",
+        f"batch:{batch_job.job_id}:done/11",
+    ]
+
+    with patch(
+        "aibrix.batch.storage.adapter.list_metastore_keys", new_callable=AsyncMock
+    ) as mock_list_keys:
+        with patch(
+            "aibrix.batch.storage.adapter.get_metadata", new_callable=AsyncMock
+        ) as mock_get_metadata:
+            with patch(
+                "aibrix.batch.storage.adapter.delete_metadata", new_callable=AsyncMock
+            ) as mock_delete_metadata:
+                mock_list_keys.side_effect = [
+                    (page_one, "page-2"),
+                    (page_two, None),
+                ]
+                mock_get_metadata.side_effect = [
+                    ("output:etag2", True),
+                    ("error:etag10", True),
+                    ("output:etag5", True),
+                    ("output:etag11", True),
+                ]
+                mock_storage.complete_multipart_upload.return_value = None
+
+                await adapter.finalize_job_output_data(batch_job)
+
+                assert len(mock_list_keys.await_args_list) == 2
+                assert mock_list_keys.await_args_list[0].args == (
+                    f"batch:{batch_job.job_id}:done/",
+                )
+                assert mock_list_keys.await_args_list[1].args == (
+                    f"batch:{batch_job.job_id}:done/",
+                )
+                assert mock_list_keys.await_args_list[0].kwargs == {
+                    "limit": 1000,
+                    "continuation_token": None,
+                }
+                assert mock_list_keys.await_args_list[1].kwargs == {
+                    "limit": 1000,
+                    "continuation_token": "page-2",
+                }
+
+                assert batch_job.status.request_counts.total == 12
+                assert batch_job.status.request_counts.launched == 4
+                assert batch_job.status.request_counts.completed == 3
+                assert batch_job.status.request_counts.failed == 1
+
+                output_call = mock_storage.complete_multipart_upload.call_args_list[0]
+                output_parts = sorted(
+                    output_call[0][2], key=lambda part: part["part_number"]
+                )
+                assert output_parts == [
+                    {"etag": "etag2", "part_number": 2},
+                    {"etag": "etag5", "part_number": 5},
+                    {"etag": "etag11", "part_number": 11},
+                ]
+
+                error_call = mock_storage.complete_multipart_upload.call_args_list[1]
+                error_parts = error_call[0][2]
+                assert error_parts == [{"etag": "etag10", "part_number": 10}]
+                assert mock_delete_metadata.call_count == 4
 
 
 @pytest.mark.asyncio
@@ -293,7 +369,7 @@ async def test_finalize_job_output_data_handles_invalid_key_formats(mock_storage
             with patch(
                 "aibrix.batch.storage.adapter.delete_metadata", new_callable=AsyncMock
             ) as mock_delete_metadata:
-                mock_list_keys.return_value = keys_with_invalid
+                mock_list_keys.return_value = (keys_with_invalid, None)
 
                 # Only valid keys should get metadata calls
                 mock_get_metadata.side_effect = [
@@ -348,7 +424,7 @@ async def test_finalize_job_output_data_no_update_when_counts_match(mock_storage
             with patch(
                 "aibrix.batch.storage.adapter.delete_metadata", new_callable=AsyncMock
             ):
-                mock_list_keys.return_value = expected_keys
+                mock_list_keys.return_value = (expected_keys, None)
                 mock_get_metadata.side_effect = [
                     ("output:etag123", True),  # idx 0: success
                     ("error:etag456", True),  # idx 1: error
@@ -404,7 +480,7 @@ async def test_finalize_job_output_data_sequential_indices_calculation(mock_stor
             with patch(
                 "aibrix.batch.storage.adapter.delete_metadata", new_callable=AsyncMock
             ):
-                mock_list_keys.return_value = expected_keys
+                mock_list_keys.return_value = (expected_keys, None)
                 mock_get_metadata.side_effect = [
                     ("output:etag0", True),
                     ("output:etag1", True),
@@ -446,7 +522,7 @@ async def test_finalize_job_output_data_single_request(mock_storage):
             with patch(
                 "aibrix.batch.storage.adapter.delete_metadata", new_callable=AsyncMock
             ):
-                mock_list_keys.return_value = expected_keys
+                mock_list_keys.return_value = (expected_keys, None)
                 mock_get_metadata.side_effect = [("output:etag0", True)]
                 mock_storage.complete_multipart_upload.return_value = None
 
@@ -481,7 +557,7 @@ async def test_finalize_job_output_data_preserves_part_numbers(mock_storage):
             with patch(
                 "aibrix.batch.storage.adapter.delete_metadata", new_callable=AsyncMock
             ):
-                mock_list_keys.return_value = expected_keys
+                mock_list_keys.return_value = (expected_keys, None)
                 mock_get_metadata.side_effect = [
                     ("output:etag5", True),  # idx 5
                     ("output:etag10", True),  # idx 10
