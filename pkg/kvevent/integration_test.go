@@ -19,6 +19,7 @@ package kvevent_test
 
 import (
 	"context"
+	"encoding/binary"
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
@@ -30,6 +31,15 @@ import (
 	"github.com/vllm-project/aibrix/pkg/kvevent"
 	syncindexer "github.com/vllm-project/aibrix/pkg/utils/syncprefixcacheindexer"
 )
+
+// Helper function to convert int32 slice to bytes (big-endian)
+func int32SliceToBytes(tokens []int32) []byte {
+	result := make([]byte, len(tokens)*4)
+	for i, token := range tokens {
+		binary.BigEndian.PutUint32(result[i*4:], uint32(token))
+	}
+	return result
+}
 
 // TestIntegrationEventHandlerWithRealComponents tests event handling with real components
 // This ensures we're not just testing mocks but actual integration between components
@@ -79,7 +89,11 @@ func TestIntegrationEventHandlerWithRealComponents(t *testing.T) {
 	storedEvent := &kvcache.BlockStoredEvent{
 		BlockHashes:     []int64{1001, 1002, 1003},
 		ParentBlockHash: &[]int64{1000}[0],
-		TokenIDs:        [][]int32{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}},
+		TokenIDs: [][]byte{
+			int32SliceToBytes([]int32{1, 2, 3}),
+			int32SliceToBytes([]int32{4, 5, 6}),
+			int32SliceToBytes([]int32{7, 8, 9}),
+		},
 	}
 
 	err := handler.HandleEvent(storedEvent)

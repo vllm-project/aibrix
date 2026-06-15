@@ -18,6 +18,7 @@ package cache
 
 import (
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -25,6 +26,7 @@ import (
 // TODO: add performance benchmark tests
 func TestLRUStore_PutAndGet(t *testing.T) {
 	store := NewLRUStore[string, string](2, 5*time.Second, 1*time.Second, DefaultGetCurrentTime)
+	t.Cleanup(func() { store.Close() })
 
 	// Test adding and retrieving items
 	store.Put("key1", "value1")
@@ -49,19 +51,29 @@ func TestLRUStore_PutAndGet(t *testing.T) {
 }
 
 func TestLRUStore_TTL(t *testing.T) {
-	store := NewLRUStore[string, string](2, 2*time.Second, 1*time.Second, DefaultGetCurrentTime)
+	// Use a fake clock so the test doesn't depend on wall time.
+	var unixNano atomic.Int64
+	unixNano.Store(time.Now().UnixNano())
+	fakeClock := func() time.Time { return time.Unix(0, unixNano.Load()) }
 
-	// Test TTL expiration
+	ttl := 2 * time.Second
+	store := NewLRUStore[string, string](2, ttl, time.Hour, fakeClock)
+	t.Cleanup(func() { store.Close() })
+
 	store.Put("key1", "value1")
-	time.Sleep(3 * time.Second) // Wait for TTL to expire
+
+	// Advance fake time past the TTL and trigger eviction manually.
+	unixNano.Add(int64(ttl + time.Millisecond))
+	store.evict(fakeClock())
 
 	if _, ok := store.Get("key1"); ok {
-		t.Errorf("expected key1 to be expired")
+		t.Error("expected key1 to be expired after TTL")
 	}
 }
 
 func TestLRUStore_UpdateExistingKey(t *testing.T) {
 	store := NewLRUStore[string, string](2, 5*time.Second, 1*time.Second, DefaultGetCurrentTime)
+	t.Cleanup(func() { store.Close() })
 
 	// Test updating an existing key
 	store.Put("key1", "value1")
@@ -73,7 +85,9 @@ func TestLRUStore_UpdateExistingKey(t *testing.T) {
 }
 
 func TestLRUStore_ConcurrentEvictions(t *testing.T) {
-	store := NewLRUStore[string, string](5, 5*time.Second, 1*time.Second, DefaultGetCurrentTime) // Small capacity to force evictions
+	const cap = 5
+	store := NewLRUStore[string, string](cap, 5*time.Second, 1*time.Second, DefaultGetCurrentTime)
+	t.Cleanup(func() { store.Close() })
 
 	const numGoroutines = 10
 	const numOperations = 20
@@ -88,9 +102,9 @@ func TestLRUStore_ConcurrentEvictions(t *testing.T) {
 
 				store.Put(key, value)
 
-				if store.Len() > store.cap {
-					done <- fmt.Errorf("store exceeded capacity: expected at most %d, got %d", store.cap, len(store.freeTable))
-					break
+				if n := store.Len(); n > cap {
+					done <- fmt.Errorf("store exceeded capacity: expected at most %d, got %d", cap, n)
+					return
 				}
 			}
 			done <- nil

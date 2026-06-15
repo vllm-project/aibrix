@@ -17,6 +17,7 @@ from .connector import (
     ConnectorConfig,
     ConnectorFeature,
     ConnectorRegisterDescriptor,
+    ConnectorZeroCopyMemoryRegion,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "ConnectorConfig",
     "ConnectorFeature",
     "ConnectorRegisterDescriptor",
+    "ConnectorZeroCopyMemoryRegion",
 ]

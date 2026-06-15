@@ -92,7 +92,7 @@ type MetricValue interface {
 	GetSimpleValue() float64
 	GetHistogramValue() *HistogramMetricValue
 	GetPrometheusResult() *model.Value
-	GetLabelValue() string
+	GetLabelValues() map[string]string
 }
 
 var _ MetricValue = (*SimpleMetricValue)(nil)
@@ -102,7 +102,8 @@ var _ MetricValue = (*LabelValueMetricValue)(nil)
 
 // SimpleMetricValue represents simple metrics (e.g., gauge or counter).
 type SimpleMetricValue struct {
-	Value float64
+	Value  float64
+	Labels map[string]string // Optional: Additional labels for the metric.
 }
 
 func (s *SimpleMetricValue) GetSimpleValue() float64 {
@@ -117,8 +118,8 @@ func (s *SimpleMetricValue) GetPrometheusResult() *model.Value {
 	return nil
 }
 
-func (s *SimpleMetricValue) GetLabelValue() string {
-	return ""
+func (s *SimpleMetricValue) GetLabelValues() map[string]string {
+	return s.Labels
 }
 
 // HistogramMetricValue represents a detailed histogram metric.
@@ -126,6 +127,7 @@ type HistogramMetricValue struct {
 	Sum     float64
 	Count   float64
 	Buckets map[string]float64 // e.g., {"0.1": 5, "0.5": 3, "1.0": 2}
+	Labels  map[string]string  // Optional: Additional labels for the histogram.
 }
 
 func (h *HistogramMetricValue) GetSimpleValue() float64 {
@@ -230,8 +232,8 @@ func (h *HistogramMetricValue) GetPercentile(percentile float64) (float64, error
 	return 0, fmt.Errorf("percentile not found")
 }
 
-func (s *HistogramMetricValue) GetLabelValue() string {
-	return ""
+func (h *HistogramMetricValue) GetLabelValues() map[string]string {
+	return h.Labels
 }
 
 // PrometheusMetricValue represents Prometheus query results.
@@ -251,8 +253,8 @@ func (p *PrometheusMetricValue) GetPrometheusResult() *model.Value {
 	return p.Result
 }
 
-func (s *PrometheusMetricValue) GetLabelValue() string {
-	return ""
+func (s *PrometheusMetricValue) GetLabelValues() map[string]string {
+	return map[string]string{}
 }
 
 // PrometheusMetricValue represents Prometheus query results.
@@ -272,8 +274,8 @@ func (l *LabelValueMetricValue) GetPrometheusResult() *model.Value {
 	return nil
 }
 
-func (l *LabelValueMetricValue) GetLabelValue() string {
-	return l.Value
+func (l *LabelValueMetricValue) GetLabelValues() map[string]string {
+	return map[string]string{"value": l.Value}
 }
 
 func ExtractNumericFromPromResult(r *model.Value) (float64, error) {

@@ -25,7 +25,13 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// calculatePodScoreBasedOffRequestRate calculates the score of a pod based off the ratio of requests waiting vs requests draining.
+// calculatePodScoreBasedOffRequestRate returns the pod's queue-drain ratio:
+//
+//	(waitingReqs + prefillPreallocQueue + decodePreallocQueue) / drainRate1m
+//
+// A lower score means the pod is draining its queue faster relative to its
+// backlog. Missing metrics are treated as 0; a zero drainRate1m yields +Inf,
+// which naturally sorts last.
 func calculatePodScoreBasedOffRequestRate(routingCtx *types.RoutingContext, cache cache.Cache, pod *v1.Pod) float64 {
 	modelName := pod.Labels[constants.ModelLabelName]
 	waitingReqs := GetPodModelMetricsSimpleValue(cache, pod.Name, pod.Namespace, modelName, metrics.NumRequestsWaiting)

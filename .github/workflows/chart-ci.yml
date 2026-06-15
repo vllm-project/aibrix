@@ -1,23 +1,67 @@
 name: Test Helm Chart
 
 on:
+  workflow_dispatch:  # Allows manual trigger
   pull_request:
     paths:
       - 'dist/chart/**'
 
 jobs:
+  build-images:
+    name: Build image (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - image: controller-manager
+            dockerfile: build/container/Dockerfile
+            context: .
+          - image: gateway-plugins
+            dockerfile: build/container/Dockerfile.gateway
+            context: .
+          - image: metadata-service
+            dockerfile: build/container/Dockerfile.python
+            context: .
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build ${{ matrix.image }}
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          tags: aibrix/${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=gha,scope=chart-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=chart-${{ matrix.image }}
+          load: true
+
+      - name: Save image
+        run: docker save aibrix/${{ matrix.image }}:${{ github.sha }} > ${{ matrix.image }}.tar
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.image }}-image
+          path: ${{ matrix.image }}.tar
+          retention-days: 1
+
   test:
+    needs: [build-images]
     runs-on: ubuntu-latest
     steps:
       - name: Check out source repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       
       - name: Set up Helm
         uses: azure/setup-helm@v4.2.0
         with:
           version: v3.17.0
       
-      - uses: actions/setup-python@v5.3.0
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
           check-latest: true
@@ -30,6 +74,26 @@ jobs:
       
       - name: Create kind cluster
         uses: helm/kind-action@v1.12.0
+
+      - name: Download image artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: '*-image'
+          merge-multiple: false
+
+      - name: Load images into kind
+        run: |
+          set -euo pipefail
+          sha="${{ github.sha }}"
+          for image in controller-manager gateway-plugins metadata-service; do
+            docker load < "${image}-image/${image}.tar"
+            docker tag "aibrix/${image}:${sha}" "aibrix/${image}:nightly"
+          done
+          kind load docker-image \
+            "aibrix/controller-manager:${sha}" "aibrix/controller-manager:nightly" \
+            "aibrix/gateway-plugins:${sha}" "aibrix/gateway-plugins:nightly" \
+            "aibrix/metadata-service:${sha}" "aibrix/metadata-service:nightly" \
+            --name chart-testing
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
@@ -60,4 +124,5 @@ jobs:
         working-directory: ./dist/chart
         run: |
           kubectl create namespace aibrix-system
-          ct install --chart-dirs . --charts . --namespace aibrix-system
+          ct install --chart-dirs . --charts . --namespace aibrix-system \
+            --helm-extra-args '--timeout 15m0s'

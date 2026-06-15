@@ -53,24 +53,24 @@ func TestThroughput(t *testing.T) {
 			},
 			podMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 1},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 2},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 1},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 2},
 				},
 				"p2": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 2},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 1},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 2},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 1},
 				},
 				"p3": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 3},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 3},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 3},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 3},
 				},
 				"p4": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 4},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 4},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 4},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 4},
 				},
 			},
 			expectErr:  false,
-			expectMsgs: []string{"1.1.1.1:8000"},
+			expectMsgs: []string{"1.1.1.1:8000"}, // p1 has lowest throughput: 2*1+2=4
 		},
 		{
 			name:       "no ready pods",
@@ -93,20 +93,20 @@ func TestThroughput(t *testing.T) {
 			},
 			podMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 1},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 4},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 1},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 4},
 				},
 				"p2": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 5},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 5},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 5},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 5},
 				},
 				"p3": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 2},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 2},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 2},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 2},
 				},
 			},
 			expectErr:  false,
-			expectMsgs: []string{"1.1.1.1:8000", "3.3.3.3:8000"},
+			expectMsgs: []string{"1.1.1.1:8000", "3.3.3.3:8000"}, // both p1 and p3 have lowest throughput: 6
 		},
 		{
 			name: "one pod has no metrics",
@@ -120,12 +120,12 @@ func TestThroughput(t *testing.T) {
 			},
 			podMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {
-					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 1},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 2},
+					metrics.AvgPromptToksPerReq:     &metrics.SimpleMetricValue{Value: 1},
+					metrics.AvgGenerationToksPerReq: &metrics.SimpleMetricValue{Value: 2},
 				},
 			},
 			expectErr:  false,
-			expectMsgs: []string{"1.1.1.1:8000"},
+			expectMsgs: []string{"1.1.1.1:8000"}, // p1 is the only one with metrics
 		},
 		{
 			name: "all pods have no metrics",
@@ -139,7 +139,7 @@ func TestThroughput(t *testing.T) {
 			},
 			podMetrics: map[string]map[string]metrics.MetricValue{},
 			expectErr:  false,
-			expectMsgs: []string{"1.1.1.1:8000", "2.2.2.2:8000"},
+			expectMsgs: []string{"1.1.1.1:8000", "2.2.2.2:8000"}, // falls back to random
 		},
 	}
 

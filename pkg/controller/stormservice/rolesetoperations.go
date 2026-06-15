@@ -19,6 +19,7 @@ package stormservice
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	apps "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -92,7 +93,7 @@ func (r *StormServiceReconciler) renderRoleSet(stormService *orchestrationv1alph
 		if cr != nil {
 			// Store revision number for this role in annotation
 			roleRevKey := fmt.Sprintf("%s.%s", constants.RoleRevisionAnnotationPrefix, roleName)
-			roleSet.Annotations[roleRevKey] = fmt.Sprintf("%d", cr.Revision)
+			roleSet.Annotations[roleRevKey] = strconv.FormatInt(cr.Revision, 10)
 
 			// Store revision name for this role (for debugging)
 			roleRevNameKey := fmt.Sprintf("%s.%s", constants.RoleRevisionNameAnnotationPrefix, roleName)
@@ -101,7 +102,7 @@ func (r *StormServiceReconciler) renderRoleSet(stormService *orchestrationv1alph
 	}
 
 	if index != nil {
-		roleSet.Annotations[constants.RoleSetIndexAnnotationKey] = fmt.Sprintf("%d", *index)
+		roleSet.Annotations[constants.RoleSetIndexAnnotationKey] = strconv.Itoa(*index)
 	}
 	return roleSet, nil
 }

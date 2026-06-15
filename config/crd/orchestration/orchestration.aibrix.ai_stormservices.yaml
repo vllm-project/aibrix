@@ -4098,13 +4098,24 @@ spec:
                       topologyPolicy:
                         properties:
                           key:
+                            minLength: 1
+                            type: string
+                          mode:
+                            default: Preferred
+                            enum:
+                            - Preferred
+                            - Required
                             type: string
                           scope:
                             enum:
                             - StormService
                             - RoleSet
                             - Role
+                            minLength: 1
                             type: string
+                        required:
+                        - key
+                        - scope
                         type: object
                       updateStrategy:
                         default: Sequential

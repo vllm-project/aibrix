@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import time
 from typing import BinaryIO, Optional, TextIO, Union
 
-import redis.asyncio as redis
-
+import aibrix.client.redis as redis
 from aibrix.storage.base import (
     BaseStorage,
     PutObjectOptions,
@@ -47,18 +47,12 @@ class RedisStorage(BaseStorage):
 
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 6379,
-        db: int = 0,
-        password: Optional[str] = None,
         config: Optional[StorageConfig] = None,
+        **kwargs,
     ):
         super().__init__(config)
-        self.host = host
-        self.port = port
-        self.db = db
-        self.password = password
-        self._redis: Optional[redis.Redis] = None
+        self._redis_clients: dict[int, redis.AsyncRedis] = {}
+        self._kwargs = kwargs
 
     def get_type(self) -> StorageType:
         """Get the type of storage.
@@ -68,23 +62,21 @@ class RedisStorage(BaseStorage):
         """
         return StorageType.REDIS
 
-    async def _get_redis(self) -> redis.Redis:
+    async def _get_redis(self) -> redis.AsyncRedis:
         """Get Redis connection, creating it if necessary."""
-        if self._redis is None:
-            self._redis = redis.Redis(
-                host=self.host,
-                port=self.port,
-                db=self.db,
-                password=self.password,
-                decode_responses=False,  # Keep as bytes
-            )
-        return self._redis
+        loop_id = id(asyncio.get_running_loop())
+        redis_client = self._redis_clients.get(loop_id)
+        if redis_client is None:
+            client_kwargs = {**self._kwargs, "decode_responses": False}  # Keep as bytes
+            redis_client = redis.get_redis_client(**client_kwargs)
+            self._redis_clients[loop_id] = redis_client
+        return redis_client
 
     async def close(self):
         """Close Redis connection."""
-        if self._redis:
-            await self._redis.aclose()
-            self._redis = None
+        for redis_client in self._redis_clients.values():
+            await redis_client.aclose()
+        self._redis_clients.clear()
 
     def _parse_hierarchical_key(self, key: str) -> tuple[Optional[str], str]:
         """Parse hierarchical key into parent and item.
@@ -205,6 +197,8 @@ class RedisStorage(BaseStorage):
         data = await redis_client.get(key)
         if data is None:
             raise FileNotFoundError(f"Object not found: {key}")
+        if isinstance(data, str):
+            data = data.encode()
 
         # Handle range requests
         if range_start is not None:

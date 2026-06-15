@@ -11,8 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from .asyncio_thread import AsyncLoopThread, T
 from .httpx_client import HTTPXClientWrapper
-from .kopf_operator import KopfOperatorWrapper
 
-__all__ = ["AsyncLoopThread", "HTTPXClientWrapper", "KopfOperatorWrapper", "T"]
+__all__ = ["AsyncLoopThread", "HTTPXClientWrapper", "T"]

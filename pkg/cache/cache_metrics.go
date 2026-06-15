@@ -17,33 +17,37 @@ package cache
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
-	dto "github.com/prometheus/client_model/go"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 const (
 	// When the engine's HTTP proxy is separated from the engine itself,
 	// the request port and metrics port may differ, so a dedicated metrics port is required.
-	MetricPortLabel                       = constants.ModelLabelMetricPort
-	engineLabel                           = constants.ModelLabelEngine
-	portLabel                             = constants.ModelLabelPort
-	modelLabel                            = constants.ModelLabelName
-	modelRoleNameLabel                    = "role-name"
-	defaultMetricPort                     = 8000
-	defaultEngineLabelValue               = "vllm"
-	defaultPodMetricRefreshIntervalInMS   = 50
-	defaultModelMetricRefreshIntervalInMS = 10000
-	defaultPodMetricsWorkerCount          = 10
-	aggregatedLogInterval                 = 60 * time.Second
+	MetricPortLabel                     = constants.ModelLabelMetricPort
+	engineLabel                         = constants.ModelLabelEngine
+	modelLabel                          = constants.ModelLabelName
+	defaultMetricPort                   = 8000
+	defaultEngineLabelValue             = "vllm"
+	defaultPodMetricRefreshIntervalInMS = 50
+	defaultPodMetricsWorkerCount        = 10
+	defaultPromQueryIntervalInMS        = 200
+	defaultPromQueryTimeoutInMS         = 2000
+	undefinedMetricLabelValue           = "undefined"
 )
 
 var (
@@ -84,6 +88,7 @@ var (
 		metrics.RequestDecodeTimeSeconds,
 		metrics.RequestPrefillTimeSeconds,
 		metrics.HTTPRequestDurationSeconds,
+		metrics.PerStageReqLatencySeconds,
 		metrics.HTTPRequestDurationHighRSeconds,
 		metrics.RequestPromptTokens,
 		metrics.RequestGenerationTokens,
@@ -114,11 +119,9 @@ var (
 		metrics.WaitingLoraAdapters,
 		metrics.RunningLoraAdapters,
 	}
-	podMetricRefreshInterval   = time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
-	modelMetricRefreshInterval = time.Duration(utils.LoadEnvInt("AIBRIX_MODEL_METRIC_REFRESH_INTERVAL_MS", defaultModelMetricRefreshIntervalInMS)) * time.Millisecond
-
-	aggregatedLogLast sync.Map
-	lastCounterValues sync.Map
+	podMetricRefreshInterval = time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
+	promQueryInterval        = time.Duration(utils.LoadEnvInt("AIBRIX_PROMETHEUS_QUERY_INTERVAL_MS", defaultPromQueryIntervalInMS)) * time.Millisecond
+	promQueryTimeout         = time.Duration(utils.LoadEnvInt("AIBRIX_PROMETHEUS_QUERY_TIMEOUT_MS", defaultPromQueryTimeoutInMS)) * time.Millisecond
 )
 
 // MetricSnapshot represents a metric value at a specific timestamp
@@ -135,6 +138,19 @@ type RateCalculator struct {
 	maxCount int                         // Maximum number of snapshots to keep
 }
 
+// PurgeEntriesForPod removes all history entries whose key starts with podName/.
+// Call this when a pod is deleted to prevent unbounded map growth in high-churn clusters.
+func (r *RateCalculator) PurgeEntriesForPod(podName string) {
+	prefix := podName + "/"
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k := range r.history {
+		if strings.HasPrefix(k, prefix) {
+			delete(r.history, k)
+		}
+	}
+}
+
 var (
 	// Global rate calculator instance
 	rateCalculator = &RateCalculator{
@@ -142,18 +158,20 @@ var (
 		maxAge:   5 * time.Minute, // Keep 5 minutes of history
 		maxCount: 20,              // Keep max 20 snapshots per metric
 	}
+
+	prometheusBasicAuthOnce sync.Once
+	prometheusBasicAuthUser string
+	prometheusBasicAuthPass string
 )
 
-func initPrometheusAPI() prometheusv1.API {
-	// Load environment variables
+func initPrometheusAPI(kubeConfig *rest.Config) prometheusv1.API {
 	prometheusEndpoint := utils.LoadEnv("PROMETHEUS_ENDPOINT", "")
-	prometheusBasicAuthUsername := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_USERNAME", "")
-	prometheusBasicAuthPassword := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_PASSWORD", "")
+	loadPrometheusBasicAuth(kubeConfig)
 
 	// Initialize Prometheus API
 	var prometheusApi prometheusv1.API
 	if prometheusEndpoint != "" {
-		api, err := metrics.InitializePrometheusAPI(prometheusEndpoint, prometheusBasicAuthUsername, prometheusBasicAuthPassword)
+		api, err := metrics.InitializePrometheusAPI(prometheusEndpoint, prometheusBasicAuthUser, prometheusBasicAuthPass)
 		if err != nil {
 			klog.Errorf("Error initializing Prometheus API: %v", err)
 		} else {
@@ -162,6 +180,47 @@ func initPrometheusAPI() prometheusv1.API {
 		}
 	}
 	return prometheusApi
+}
+
+// loadPrometheusBasicAuth initializes Prometheus basic auth credentials exactly once (via sync.Once).
+// It loads from a Kubernetes Secret when PROMETHEUS_BASIC_AUTH_SECRET_NAME is set; otherwise it falls back to env vars.
+// The resulting values are stored in package-level variables prometheusBasicAuthUser/prometheusBasicAuthPass.
+func loadPrometheusBasicAuth(kubeConfig *rest.Config) {
+	prometheusBasicAuthOnce.Do(func() {
+		secretName := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_SECRET_NAME", "")
+		if secretName == "" {
+			prometheusBasicAuthUser = utils.LoadEnv("PROMETHEUS_BASIC_AUTH_USERNAME", "")
+			prometheusBasicAuthPass = utils.LoadEnv("PROMETHEUS_BASIC_AUTH_PASSWORD", "")
+			return
+		}
+
+		secretNamespace := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE", utils.NAMESPACE)
+		// Default to "username" and "password" if keys are not specified
+		usernameKey := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_USERNAME_KEY", "username")
+		passwordKey := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_PASSWORD_KEY", "password")
+
+		if kubeConfig == nil {
+			klog.Warningf("Prometheus basic auth secret %s/%s is not loaded due to nil kubeConfig", secretNamespace, secretName)
+			return
+		}
+		clientset, err := kubernetes.NewForConfig(kubeConfig)
+		if err != nil {
+			klog.ErrorS(err, "Failed to create Kubernetes client for Prometheus basic auth secret")
+			return
+		}
+
+		secret, err := clientset.CoreV1().Secrets(secretNamespace).Get(context.Background(), secretName, metav1.GetOptions{})
+		if err != nil {
+			klog.ErrorS(err, "Failed to read Prometheus basic auth secret", "namespace", secretNamespace, "name", secretName)
+			return
+		}
+		if b, ok := secret.Data[usernameKey]; ok {
+			prometheusBasicAuthUser = strings.TrimSpace(string(b))
+		}
+		if b, ok := secret.Data[passwordKey]; ok {
+			prometheusBasicAuthPass = strings.TrimSpace(string(b))
+		}
+	})
 }
 
 func (c *Store) getPodMetricImpl(podName string, metricStore *utils.SyncMap[string, metrics.MetricValue], metricName string) (metrics.MetricValue, error) {
@@ -187,7 +246,17 @@ func (c *Store) updatePodMetrics() {
 			// Skip unready pod
 			return true
 		}
-		c.podMetricsJobs <- metaPod // Send the job to the worker pool
+		// Non-blocking send: if the worker pool is saturated (all workers busy
+		// and channel buffer full), skip this pod. It will be retried on the
+		// next refresh cycle (every 50ms). This prevents the metrics refresh
+		// goroutine from blocking indefinitely when workers are stuck on slow
+		// or unreachable engine pods.
+		select {
+		case c.podMetricsJobs <- metaPod:
+		default:
+			klog.V(4).InfoS("Metrics worker pool saturated, skipping pod metrics update",
+				"pod", metaPod.Name)
+		}
 		return true
 	})
 }
@@ -210,15 +279,16 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			continue
 		}
 
-		podLabelNames, podLabelValues := buildMetricLabels(pod, engineType, "")
 		for metricName, metricValue := range result.Metrics {
+			sanitizeMetricValueLabels(pod, metricValue)
 			if shouldSkipMetric(pod.Name, metricName) {
 				continue
 			}
-			metrics.EmitMetricToPrometheus(metricName, metricValue, podLabelNames, podLabelValues)
+			metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod.Pod, metricName, metricValue, metricValue.GetLabelValues())
 		}
 
 		for metricName, metricValue := range result.ModelMetrics {
+			sanitizeMetricValueLabels(pod, metricValue)
 			parts := strings.SplitN(metricName, "/", 2)
 			if len(parts) != 2 {
 				continue
@@ -226,42 +296,25 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			model := parts[0]
 			metric := parts[1]
 
+			model = resolveMetricModelName(pod, model)
+
 			if shouldSkipMetric(pod.Name, metric) {
 				continue
 			}
 
-			labelNames, labelValues := buildMetricLabels(pod, engineType, model)
-
-			if strings.Contains(pod.Name, "prefill") && metric == metrics.PromptTokenTotal {
-				perSecRate := c.calculatePerSecondRate(pod, model, metric, metricValue.GetSimpleValue())
-				if perSecRate >= 0 {
-					rateMetricName := metrics.AvgPromptThroughputToksPerS
-					rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
-					metrics.SetGaugeMetric(rateMetricName, metrics.GetMetricHelp(rateMetricName), rateValue.GetSimpleValue(), labelNames, labelValues...)
-					_ = c.updatePodRecord(pod, model, rateMetricName, metrics.PodModelMetricScope, rateValue)
-					klog.V(4).InfoS("get metric per sec rate", "metric", rateMetricName, "raw_value", metricValue.GetSimpleValue(), "per_sec_rate", rateValue.GetSimpleValue())
-				}
-			}
-
-			if strings.Contains(pod.Name, "decode") && metric == metrics.GenerationTokenTotal {
-				perSecRate := c.calculatePerSecondRate(pod, model, metric, metricValue.GetSimpleValue())
-				if perSecRate >= 0 {
-					rateMetricName := metrics.AvgGenerationThroughputToksPerS
-					rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
-					metrics.SetGaugeMetric(rateMetricName, metrics.GetMetricHelp(rateMetricName), rateValue.GetSimpleValue(), labelNames, labelValues...)
-					_ = c.updatePodRecord(pod, model, rateMetricName, metrics.PodModelMetricScope, rateValue)
-					klog.V(4).InfoS("get metric per sec rate", "metric", rateMetricName, "raw_value", metricValue.GetSimpleValue(), "per_sec_rate", rateValue.GetSimpleValue())
-				}
-			}
-
-			metrics.EmitMetricToPrometheus(metric, metricValue, labelNames, labelValues)
+			c.updateThroughputToksPerS(pod, model, metric, metricValue)
+			metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, metric, metricValue, metricValue.GetLabelValues())
 		}
 		// Update pod metrics using typed results
 		c.updatePodMetricsFromTypedResult(pod, result)
 
+		c.syncRunningRequestsGlobally(pod)
+
+		c.updateRealtimeRunningRequestsDrainRate1m(pod)
+
 		// Handle Prometheus-based metrics separately (these require PromQL queries)
 		if c.prometheusApi != nil {
-			c.updateMetricFromPromQL(ctx, pod)
+			c.enqueuePromQL(pod)
 		} else {
 			klog.V(4).InfoS("Prometheus API not initialized, skipping PromQL metrics", "pod", pod.Name)
 		}
@@ -277,112 +330,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 	}
 }
 
-func isPrefillOnlyMetric(metricName string) bool {
-	switch metricName {
-	case metrics.TimeToFirstTokenSeconds,
-		metrics.RequestPrefillTimeSeconds,
-		metrics.RequestPromptTokens:
-		return true
-	default:
-		return false
-	}
-}
-
-func isDecodeOnlyMetric(metricName string) bool {
-	switch metricName {
-	case metrics.TimePerOutputTokenSeconds,
-		metrics.RequestTimePerOutputTokenSeconds,
-		metrics.RequestDecodeTimeSeconds,
-		metrics.IterationTokensTotal,
-		metrics.RequestGenerationTokens,
-		metrics.RequestMaxNumGenerationTokens:
-		return true
-	default:
-		return false
-	}
-}
-
-// Deprecated: updateSimpleMetricFromRawMetrics is kept for backward compatibility.
-// Use updatePodMetricsFromTypedResult instead.
-func (c *Store) updateSimpleMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
-	podName := pod.Name
-	podMetricPort := getPodMetricPort(pod)
-	for _, metricName := range counterGaugeMetricNames {
-		metric, exists := metrics.Metrics[metricName]
-		if !exists {
-			klog.V(4).Infof("Cannot find %v in the metric list", metricName)
-			continue
-		}
-
-		// TODO: we should refact metricName to fit other engine
-		metricFamily, exists := c.fetchMetrics(pod, allMetrics, metricName)
-		if !exists {
-			klog.V(4).Infof("Cannot find %v in the pod metrics", metricName)
-			continue
-		}
-		scope := metric.MetricScope
-		for _, familyMetric := range metricFamily.Metric {
-			modelName, _ := metrics.GetLabelValueForKey(familyMetric, "model_name")
-
-			metricValue, err := metrics.GetCounterGaugeValue(familyMetric, metricFamily.GetType())
-			if err != nil {
-				klog.V(4).Infof("failed to parse metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podMetricPort, err)
-				continue
-			}
-
-			err = c.updatePodRecord(pod, modelName, metricName, scope, &metrics.SimpleMetricValue{Value: metricValue})
-			if err != nil {
-				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podMetricPort, err)
-				continue
-			}
-
-			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podMetricPort, "metricValue", metricValue)
-		}
-	}
-}
-
-// Deprecated: updateHistogramMetricFromRawMetrics is kept for backward compatibility.
-// Use updatePodMetricsFromTypedResult instead.
-func (c *Store) updateHistogramMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
-	podName := pod.Name
-	podMetricPort := getPodMetricPort(pod)
-	for _, metricName := range histogramMetricNames {
-		metric, exists := metrics.Metrics[metricName]
-		if !exists {
-			klog.V(4).Infof("Cannot find %v in the metric list", metricName)
-			continue
-		}
-		metricFamily, exists := c.fetchMetrics(pod, allMetrics, metricName)
-		if !exists {
-			klog.V(4).Infof("Cannot find %v in the pod metrics", metricName)
-			continue
-		}
-		scope := metric.MetricScope
-		for _, familyMetric := range metricFamily.Metric {
-			modelName, _ := metrics.GetLabelValueForKey(familyMetric, "model_name")
-			metricValue, err := metrics.GetHistogramValue(familyMetric)
-			if err != nil {
-				klog.V(4).Infof("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podMetricPort, err)
-				continue
-			}
-
-			histogramValue := &metrics.HistogramMetricValue{
-				Sum:     metricValue.Sum,
-				Count:   metricValue.Count,
-				Buckets: metricValue.Buckets,
-			}
-			err = c.updatePodRecord(pod, modelName, metricName, scope, histogramValue)
-			if err != nil {
-				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podMetricPort, err)
-				continue
-			}
-
-			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podMetricPort, "metricValue", metricValue)
-		}
-	}
-}
-
-func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
+func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) (queryErr error) {
 	podName := pod.Name
 	podMetricPort := getPodMetricPort(pod)
 	for _, metricName := range prometheusMetricNames {
@@ -399,6 +347,9 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 			err := c.queryUpdatePromQLMetrics(ctx, metric, queryLabels, pod, "", metricName, podMetricPort)
 			if err != nil {
 				klog.V(4).Infof("Failed to query and update PromQL metrics: %v", err)
+				if queryErr == nil {
+					queryErr = err
+				}
 				continue
 			}
 		} else if scope == metrics.PodModelMetricScope {
@@ -408,6 +359,9 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 					err := c.queryUpdatePromQLMetrics(ctx, metric, queryLabels, pod, modelName, metricName, podMetricPort)
 					if err != nil {
 						klog.V(4).Infof("Failed to query and update PromQL metrics: %v", err)
+						if queryErr == nil {
+							queryErr = err
+						}
 						continue
 					}
 				}
@@ -418,6 +372,7 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 			klog.V(4).Infof("Scope %v is not supported", scope)
 		}
 	}
+	return queryErr
 }
 
 func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Metric, queryLabels map[string]string, pod *Pod, modelName string, metricName string, podMetricPort int) error {
@@ -426,6 +381,7 @@ func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Met
 	// Querying metrics
 	result, warnings, err := c.prometheusApi.Query(ctx, query, time.Now())
 	if err != nil {
+		metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: modelName}, pod.Pod, metrics.PrometheusQueryFail, &metrics.SimpleMetricValue{Value: 1.0}, nil)
 		// Skip this model fetching if an error is thrown
 		return fmt.Errorf("error executing query: %v", err)
 	}
@@ -441,30 +397,6 @@ func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Met
 	}
 	klog.V(5).InfoS("Successfully parsed metrics from prometheus", "metric", metricName, "model", modelName, "PodName", pod.Name, "Port", podMetricPort, "metricValue", metricValue)
 	return nil
-}
-
-func (c *Store) fetchMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily, labelMetricName string) (*dto.MetricFamily, bool) {
-	metric, exists := metrics.Metrics[labelMetricName]
-	if !exists {
-		klog.V(4).Infof("Cannot find labelMetricName %v in collected metrics names", labelMetricName)
-		return nil, false
-	}
-	engineType, err := getPodLabel(pod, engineLabel)
-	if engineType == "" {
-		klog.V(4).Infof(err.Error())
-		engineType = defaultEngineLabelValue
-	}
-	rawMetricName, ok := metric.EngineMetricsNameMapping[engineType]
-	if !ok {
-		klog.V(4).Infof("Cannot find engine type %v mapping for metrics %v", engineType, labelMetricName)
-		return nil, false
-	}
-	metricFamily, exists := allMetrics[rawMetricName]
-	if !exists {
-		klog.V(4).Infof("Cannot find raw metrics %v, engine type %v", rawMetricName, engineType)
-		return nil, false
-	}
-	return metricFamily, true
 }
 
 // Update `PodMetrics` and `PodModelMetrics` according to the metric scope
@@ -508,8 +440,6 @@ func (c *Store) aggregateMetrics() {
 	}
 }
 
-// Helper methods for centralized typed metrics processing
-
 // getAllAvailableMetrics returns all metrics that can be fetched from engine pods
 func (c *Store) getAllAvailableMetrics() []string {
 	var allMetrics []string
@@ -522,7 +452,85 @@ func (c *Store) getAllAvailableMetrics() []string {
 	return allMetrics
 }
 
-// updatePodMetricsFromTypedResult processes the typed metrics result and updates pod storage
+// updateThroughputToksPerS derives a per-second token throughput rate from a cumulative token counter
+// and stores it under AvgPromptThroughputToksPerS (prefill pods) or AvgGenerationThroughputToksPerS
+// (decode pods). No-ops for pods that don't match either role or metric name.
+func (c *Store) updateThroughputToksPerS(pod *Pod, model, metric string, metricValue metrics.MetricValue) {
+	var rateMetricName string
+	if strings.Contains(pod.Name, "prefill") && metric == metrics.PromptTokenTotal {
+		rateMetricName = metrics.AvgPromptThroughputToksPerS
+	} else if strings.Contains(pod.Name, "decode") && metric == metrics.GenerationTokenTotal {
+		rateMetricName = metrics.AvgGenerationThroughputToksPerS
+	}
+	if rateMetricName == "" {
+		return
+	}
+	perSecRate := c.calculatePerSecondRate(pod, model, metric, metricValue.GetSimpleValue())
+	if perSecRate >= 0 {
+		rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
+		metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, rateMetricName, rateValue, metricValue.GetLabelValues())
+		_ = c.updatePodRecord(pod, model, rateMetricName, metrics.PodModelMetricScope, rateValue)
+		klog.V(4).InfoS("get metric per sec rate", "metric", rateMetricName, "raw_value", metricValue.GetSimpleValue(), "per_sec_rate", rateValue.GetSimpleValue())
+	}
+}
+
+// syncRunningRequestsGlobally computes the cross-gateway running request count for a pod and
+// stores it so GetMetricValueByPod returns the global total. It reads the in-memory snapshot
+// cache (populated every 100ms by initGatewaySnapshotSync — no Redis call here), sums
+// requests_running from all other gateway instances, then adds this gateway's own local
+// atomic counter (always fresher than the Redis snapshot for the local instance).
+func (c *Store) syncRunningRequestsGlobally(pod *Pod) {
+	raw := c.gatewaySnapshotCache.Load()
+	if raw == nil {
+		return
+	}
+	snapshotCache := raw.(map[string][]map[string]string)
+
+	var remoteRunning float64
+	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+	for _, fields := range snapshotCache[podKey] {
+		if fields["gateway_instance_id"] == gatewayPodName {
+			continue
+		}
+		running, _ := strconv.ParseFloat(fields["requests_running"], 64)
+		remoteRunning += running
+	}
+
+	localRunning := float64(atomic.LoadInt32(&pod.runningRequests))
+	total := localRunning + remoteRunning
+	klog.V(5).InfoS("running requests aggregation", "pod", pod.Name, "local", localRunning, "remote", remoteRunning, "total", total)
+
+	totalValue := &metrics.SimpleMetricValue{Value: total}
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{}, pod.Pod, metrics.RealtimeNumRequestsRunning, totalValue, nil)
+	if err := c.updatePodRecord(pod, "", metrics.RealtimeNumRequestsRunning,
+		metrics.PodMetricScope, totalValue); err != nil {
+		klog.V(4).ErrorS(err, "failed to update global running requests", "pod", pod.Name)
+	}
+}
+
+// updateRealtimeRunningRequestsDrainRate1m computes the 1-minute rolling rate at which completed
+// requests are draining on decode pods and stores it under RealtimeRunningRequestsDrainRate1m.
+// Only applies to decode pods; no-ops for all others.
+func (c *Store) updateRealtimeRunningRequestsDrainRate1m(pod *Pod) {
+	if !strings.Contains(pod.Name, "decode") {
+		return
+	}
+	completed := float64(atomic.LoadInt64(&pod.completedRequests))
+	drainRate := c.calculateRate1m(pod, "completed_requests", completed)
+	if drainRate >= 0 {
+		rateValue := &metrics.SimpleMetricValue{Value: drainRate}
+		metrics.EmitMetricToPrometheus(&types.RoutingContext{}, pod.Pod, metrics.RealtimeRunningRequestsDrainRate1m, rateValue, nil)
+		_ = c.updatePodRecord(pod, "", metrics.RealtimeRunningRequestsDrainRate1m, metrics.PodMetricScope, rateValue)
+		klog.V(4).InfoS("Updating drain rate metric", "pod", pod.Name,
+			"completed_requests", completed, metrics.RealtimeRunningRequestsDrainRate1m, drainRate)
+	}
+}
+
+// updatePodMetricsFromTypedResult processes the typed metrics result and updates pod storage.
+// Precondition: labels in result must already be sanitized via sanitizeMetricValueLabels.
+// The production caller worker() sanitizes every MetricValue in result before invoking this
+// function, so labels stored in pod.Metrics / pod.ModelMetrics carry resolved model_name /
+// engine_type values rather than the "undefined" sentinel emitted by some engines (e.g. trtllm).
 func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.EngineMetricsResult) {
 	// Process pod-scoped metrics
 	for metricName, metricValue := range result.Metrics {
@@ -540,20 +548,7 @@ func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.Engine
 		// modelMetricKey format: "model/metric"
 		modelName, metricName := parseModelMetricKey(modelMetricKey)
 
-		// Calculate per-second rate for token metrics, only for decode pods generation tokens
-		if strings.Contains(pod.Name, "decode") && metricName == metrics.GenerationTokenTotal {
-			if simpleValue, ok := metricValue.(*metrics.SimpleMetricValue); ok {
-				perSecRate := c.calculatePerSecondRate(pod, modelName, metricName, simpleValue.Value)
-				if perSecRate >= 0 { // Only store valid rates (negative means insufficient data)
-					rateMetricName := metrics.AvgGenerationThroughputToksPerS
-					rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
-					_ = c.updatePodRecord(pod, modelName, rateMetricName, metrics.PodModelMetricScope, rateValue)
-					klog.V(4).InfoS("Updating model metric", "pod", pod.Name, "model", modelName,
-						"generation_token_total", metricValue,
-						"avg_generation_throughput_toks_per_s", rateValue)
-				}
-			}
-		}
+		modelName = resolveMetricModelName(pod, modelName)
 
 		if metricDef, exists := metrics.Metrics[metricName]; exists {
 			err := c.updatePodRecord(pod, modelName, metricName, metricDef.MetricScope, metricValue)
@@ -579,71 +574,73 @@ func parseModelMetricKey(key string) (modelName, metricName string) {
 	return modelName, metricName
 }
 
-// calculatePerSecondRate calculates the per-second rate for a given metric
-// Returns the rate in units per second, or -1 if insufficient data
-func (c *Store) calculatePerSecondRate(pod *Pod, modelName, metricName string, currentValue float64) float64 {
-	key := fmt.Sprintf("%s/%s/%s", pod.Name, modelName, metricName)
-	now := time.Now()
-
-	rateCalculator.mu.Lock()
-	defer rateCalculator.mu.Unlock()
-
-	// Get or create history for this metric
-	history := rateCalculator.history[key]
-
-	// Add current snapshot
-	snapshot := MetricSnapshot{
-		Value:     currentValue,
-		Timestamp: now,
-	}
-	history = append(history, snapshot)
-
-	// Clean up old snapshots
-	history = cleanupOldSnapshots(history, now, rateCalculator.maxAge, rateCalculator.maxCount)
-	rateCalculator.history[key] = history
-
-	// Calculate rate if we have enough data
-	if len(history) < 2 {
-		return -1 // Not enough data points
+func resolveMetricModelName(pod *Pod, modelName string) string {
+	if !isUndefinedMetricLabelValue(modelName) {
+		return modelName
 	}
 
-	// Use the previous snapshot for per-second calculation
-	baseSnapshot := &history[len(history)-2]
-
-	// Calculate rate
-	timeDiff := now.Sub(baseSnapshot.Timestamp).Seconds()
-	if timeDiff <= 0 {
-		return -1
+	if podModel, err := getPodLabel(pod, modelLabel); err == nil && podModel != "" {
+		klog.V(4).InfoS("Using pod label as model name fallback",
+			"pod", pod.Name, "originalModel", modelName, "resolvedModel", podModel)
+		return podModel
 	}
 
-	valueDiff := currentValue - baseSnapshot.Value
-	if valueDiff < 0 {
-		// Handle counter reset - assume it started from 0
-		valueDiff = currentValue
-	}
-
-	// Return per-second rate
-	ratePerSecond := valueDiff / timeDiff
-
-	return ratePerSecond
+	return modelName
 }
 
-// cleanupOldSnapshots removes snapshots that are too old or exceed the maximum count
-func cleanupOldSnapshots(history []MetricSnapshot, now time.Time, maxAge time.Duration, maxCount int) []MetricSnapshot {
-	cutoffTime := now.Add(-maxAge)
-
-	// Remove snapshots older than maxAge
-	var filtered []MetricSnapshot
-	for _, snapshot := range history {
-		if snapshot.Timestamp.After(cutoffTime) {
-			filtered = append(filtered, snapshot)
-		}
+func resolveMetricEngineType(pod *Pod, engineType string) string {
+	if !isUndefinedMetricLabelValue(engineType) {
+		return engineType
 	}
 
-	// Keep only the most recent maxCount snapshots
-	if len(filtered) > maxCount {
-		filtered = filtered[len(filtered)-maxCount:]
+	if podEngine, err := getPodLabel(pod, engineLabel); err == nil && podEngine != "" {
+		klog.V(4).InfoS("Using pod label as engine type fallback",
+			"pod", pod.Name, "originalEngineType", engineType, "resolvedEngineType", podEngine)
+		return podEngine
 	}
 
-	return filtered
+	return engineType
+}
+
+func sanitizeMetricValueLabels(pod *Pod, metricValue metrics.MetricValue) {
+	switch value := metricValue.(type) {
+	case *metrics.SimpleMetricValue:
+		value.Labels = sanitizeMetricLabels(pod, value.Labels)
+	case *metrics.HistogramMetricValue:
+		value.Labels = sanitizeMetricLabels(pod, value.Labels)
+	}
+}
+
+func sanitizeMetricLabels(pod *Pod, labelValues map[string]string) map[string]string {
+	if len(labelValues) == 0 {
+		return labelValues
+	}
+
+	// Key-existence check is required: isUndefinedMetricLabelValue("") is true, so a missing
+	// key would otherwise falsely trigger the alloc path even though we never add it back.
+	modelVal, hasModel := labelValues["model_name"]
+	engineVal, hasEngine := labelValues["engine_type"]
+	modelNeedsFix := hasModel && isUndefinedMetricLabelValue(modelVal)
+	engineNeedsFix := hasEngine && isUndefinedMetricLabelValue(engineVal)
+
+	if !modelNeedsFix && !engineNeedsFix {
+		return labelValues
+	}
+
+	sanitized := make(map[string]string, len(labelValues))
+	for key, value := range labelValues {
+		sanitized[key] = value
+	}
+	if modelNeedsFix {
+		sanitized["model_name"] = resolveMetricModelName(pod, modelVal)
+	}
+	if engineNeedsFix {
+		sanitized["engine_type"] = resolveMetricEngineType(pod, engineVal)
+	}
+
+	return sanitized
+}
+
+func isUndefinedMetricLabelValue(value string) bool {
+	return value == "" || value == undefinedMetricLabelValue
 }

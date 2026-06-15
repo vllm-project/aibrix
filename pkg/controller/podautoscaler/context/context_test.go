@@ -136,3 +136,45 @@ func TestUpdateByPaTypes_Annotations(t *testing.T) {
 	assert.Equal(t, expectedScaleDownCooldownWindow, ctx.ScaleDownCooldownWindow)
 	assert.True(t, ctx.ScaleToZero)
 }
+
+func TestUpdateByPaTypes_InvalidTargetValue(t *testing.T) {
+	tests := []struct {
+		name        string
+		targetValue string
+	}{
+		{
+			name:        "Zero Target Value",
+			targetValue: "0",
+		},
+		{
+			name:        "Negative Target Value",
+			targetValue: "-10",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pa := &autoscalingv1alpha1.PodAutoscaler{
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-llm-pa",
+					Namespace: "default",
+				},
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.POD,
+							TargetMetric:     "gpu_cache_usage_perc",
+							TargetValue:      tt.targetValue,
+						},
+					},
+				},
+			}
+
+			ctx := NewBaseScalingContext()
+			err := ctx.UpdateByPaTypes(pa)
+
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "must be greater than 0")
+		})
+	}
+}

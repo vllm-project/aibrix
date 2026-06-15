@@ -79,6 +79,9 @@ class LoadLoraAdapterRuntimeRequest(NoExtraBaseModel):
     credentials_secret: Optional[str] = Field(
         default=None, description="Kubernetes secret name containing credentials"
     )
+    credentials: Optional[Dict[str, str]] = Field(
+        default=None, description="Direct credentials for artifact download"
+    )
     additional_config: Optional[Dict[str, str]] = Field(
         default=None, description="Additional configuration for artifact download"
     )

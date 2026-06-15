@@ -18,6 +18,7 @@ package types
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -41,26 +42,62 @@ const (
 
 type RequestFeatures []float64
 
+// ResolvedConfigProfile holds the resolved model config profile for a request.
+// Populated from model.aibrix.ai/config annotation based on config-profile header or defaultProfile.
+// Nil when no config is present;
+type ResolvedConfigProfile struct {
+	RoutingStrategy   string
+	RoutingConfig     json.RawMessage
+	RequestsPerSecond int64
+}
+
 // RoutingAlgorithm defines the routing algorithms
 type RoutingAlgorithm string
+
+// Polarity indicates whether a higher or lower score is better for a routing strategy
+type Polarity int
+
+const (
+	PolarityLeast Polarity = iota // Lower score is better
+	PolarityMost                  // Higher score is better
+)
+
+// PodScorer defines the interface for strategies that support batch soft-scoring
+type PodScorer interface {
+	ScoreAll(ctx *RoutingContext, readyPodList PodList) (scores []float64, scored []bool, err error)
+	Polarity() Polarity
+}
+
+// PostRouteUpdater defines the interface for strategies that need to update
+// internal state after a target pod has been selected.
+type PostRouteUpdater interface {
+	PostRouteUpdate(ctx *RoutingContext, readyPodList PodList, targetPod *v1.Pod) error
+}
 
 // RoutingContext encapsulates the context information required for routing.
 // It can be extended with more fields as needed in the future.
 type RoutingContext struct {
 	context.Context
-	Algorithm   RoutingAlgorithm
-	Model       string
-	Message     string
-	RequestID   string
-	User        *string
-	RequestTime time.Time // Time when the routing context is created.
-	PendingLoad float64   // Normalized pending load of request, available after AddRequestCount call. See cache.PendingLoadProvider
-	TraceTerm   int64     // Trace term identifier, available after AddRequestCount call.
-	RoutedTime  time.Time // Time consumed during routing.
+	Algorithm      RoutingAlgorithm
+	Model          string
+	Engine         string
+	Stream         bool
+	Message        string
+	RequestID      string
+	User           *string
+	RequestTime    time.Time // Time when the routing context is created.
+	RequestEndTime time.Time // Time when the routing is done and sent to inference engine.
+	PendingLoad    float64   // Normalized pending load of request, available after AddRequestCount call. See cache.PendingLoadProvider
+	TraceTerm      int64     // Trace term identifier, available after AddRequestCount call.
+	RoutedTime     time.Time // Time consumed during routing.
 
-	ReqHeaders map[string]string
-	ReqBody    []byte
-	ReqPath    string
+	ReqHeaders       map[string]string
+	ReqBody          []byte
+	ReqPath          string
+	ReqConfigProfile string
+
+	PrefillStartTime time.Time // Time when prefill request is started.
+	PrefillEndTime   time.Time // Time consumed during prefill.
 
 	// RespHeaders holds response headers that the router intends to set.
 	// These are typically used to propagate control information back to the client,
@@ -68,6 +105,11 @@ type RoutingContext struct {
 	// The router implementation (e.g., sessionAffinityRouter) may populate this field
 	// during the Route() call.
 	RespHeaders map[string]string
+
+	// ConfigProfile holds the resolved model config profile for this request.
+	// Set in HandleRequestBody from model.aibrix.ai/config (annotation)
+	// based on config-profile header. Nil when no config is present.
+	ConfigProfile *ResolvedConfigProfile
 
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
@@ -262,7 +304,11 @@ func (r *RoutingContext) CanAddTrace() bool {
 }
 
 // GetRoutingDelay returns the time duration used for routing the request.
+// Returns 0 if routing did not complete (e.g., prefill failure before SetTargetPod was called).
 func (r *RoutingContext) GetRoutingDelay() time.Duration {
+	if r.RoutedTime.IsZero() {
+		return 0
+	}
 	return r.RoutedTime.Sub(r.RequestTime)
 }
 
@@ -286,6 +332,8 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Context = ctx
 	r.Algorithm = algorithms
 	r.Model = model
+	r.Engine = ""
+	r.Stream = false
 	r.Message = message
 	r.RequestID = requestID
 	if user != "" {
@@ -294,17 +342,23 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 		r.User = nil
 	}
 	r.RequestTime = time.Now()
+	r.RequestEndTime = time.Time{}
 	r.PendingLoad = 0
 	r.TraceTerm = 0
 
 	r.ReqHeaders = map[string]string{}
 	r.ReqPath = ""
+	r.ReqConfigProfile = ""
 	r.ReqBody = []byte{}
+	r.PrefillStartTime = time.Time{}
+	r.PrefillEndTime = time.Time{}
 	// RoutedTime will not be reset, it must before ReqeustTime at this time.
 
 	r.RespHeaders = map[string]string{}
+	r.ConfigProfile = nil
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
+	r.targetPort.Store(0)
 	r.lastError.Store(nil)
 	// debugDelay will be reset by tests.
 	r.tokens = nil

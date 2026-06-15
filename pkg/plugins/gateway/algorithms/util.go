@@ -55,8 +55,6 @@ func standardDeviation(numbers []float64) float64 {
 
 // SelectRandomPodAsFallback selects a pod randomly as a fallback.
 // This method should only be used when all other selection mechanisms have failed.
-// For example, if no pods meet the required criteria (e.g., valid metrics or specific conditions),
-// this method can be called to randomly select a pod from the provided list.
 func SelectRandomPodAsFallback(ctx *types.RoutingContext, pods []*v1.Pod, randomFunc func(int) int) (*v1.Pod, error) {
 	klog.Warningf("No suitable pods found; selecting a pod randomly as fallback, requestID: %s", ctx.RequestID)
 	targetPod, err := utils.SelectRandomPod(pods, randomFunc)

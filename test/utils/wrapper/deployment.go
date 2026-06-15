@@ -23,11 +23,33 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+
+	"github.com/vllm-project/aibrix/pkg/webhook"
 )
 
 // DeploymentWrapper wraps core Deployment types to provide a fluent API for test construction.
 type DeploymentWrapper struct {
 	deployment appsv1.Deployment
+}
+
+func (w *DeploymentWrapper) ensureAdapterStorageVolume() {
+	podSpec := &w.deployment.Spec.Template.Spec
+	for i := range podSpec.Volumes {
+		if podSpec.Volumes[i].Name == webhook.DefaultAdapterVolumeName {
+			if podSpec.Volumes[i].EmptyDir == nil {
+				podSpec.Volumes[i].VolumeSource = corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				}
+			}
+			return
+		}
+	}
+	podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
+		Name: webhook.DefaultAdapterVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	})
 }
 
 // Obj returns the pointer to the underlying Deployment object.
@@ -103,12 +125,19 @@ func (w *DeploymentWrapper) AddContainer(container corev1.Container) *Deployment
 
 // AddRuntimeContainer adds a runtime container to the pod template.
 func (w *DeploymentWrapper) AddRuntimeContainer(name, image string, command []string) *DeploymentWrapper {
+	w.ensureAdapterStorageVolume()
 	w.AddContainer(
 		corev1.Container{
 			Name:            name,
 			Image:           image,
 			Command:         command,
 			ImagePullPolicy: "IfNotPresent",
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      webhook.DefaultAdapterVolumeName,
+					MountPath: webhook.DefaultAdapterMountPath,
+				},
+			},
 			Ports: []corev1.ContainerPort{
 				{
 					Name:          "metrics",
@@ -171,11 +200,18 @@ func (w *DeploymentWrapper) AddRuntimeContainer(name, image string, command []st
 
 // AddModelContainer adds a model container to the pod template.
 func (w *DeploymentWrapper) AddModelContainer(name, image string, args []string) *DeploymentWrapper {
+	w.ensureAdapterStorageVolume()
 	w.AddContainer(
 		corev1.Container{
 			Name:  name,
 			Image: image,
 			Args:  args,
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      webhook.DefaultAdapterVolumeName,
+					MountPath: webhook.DefaultAdapterMountPath,
+				},
+			},
 			Ports: []corev1.ContainerPort{
 				{
 					ContainerPort: 8000,

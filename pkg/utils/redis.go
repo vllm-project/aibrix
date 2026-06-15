@@ -36,7 +36,11 @@ func GetRedisClient() *redis.Client {
 	})
 	pong, err := client.Ping(context.Background()).Result()
 	if err != nil {
-		klog.Fatalf("Error connecting to Redis: %v", err)
+		klog.Warningf("Redis not available: %v", err)
+		if closeErr := client.Close(); closeErr != nil {
+			klog.Warningf("Error closing Redis client: %v", closeErr)
+		}
+		return nil
 	}
 	klog.Infof("Connected to Redis: %s", pong)
 	return client

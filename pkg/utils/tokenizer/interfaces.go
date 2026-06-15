@@ -23,7 +23,7 @@ type Tokenizer interface {
 	TokenizeInputText(string) ([]byte, error)
 }
 
-// extendedTokenizer represents an extended tokenizer interface with advanced features
+// ExtendedTokenizer represents an extended tokenizer interface with advanced features
 // Advanced features include:
 //   - Context-aware tokenization with cancellation support
 //   - Tokenization with custom options (special tokens, generation prompts)
@@ -31,7 +31,7 @@ type Tokenizer interface {
 //
 // TODO: Consider simplifying the interface hierarchy by removing this intermediate layer
 // if only remoteTokenizer needs these advanced features
-type extendedTokenizer interface {
+type ExtendedTokenizer interface {
 	Tokenizer // Embed existing interface for backward compatibility
 
 	// TokenizeWithOptions performs tokenization with advanced options
@@ -41,9 +41,9 @@ type extendedTokenizer interface {
 	Detokenize(ctx context.Context, tokens []int) (string, error)
 }
 
-// remoteTokenizer interface extends extendedTokenizer with remote-specific methods
+// remoteTokenizer interface extends ExtendedTokenizer with remote-specific methods
 type remoteTokenizer interface {
-	extendedTokenizer
+	ExtendedTokenizer
 	GetEndpoint() string
 	IsHealthy(ctx context.Context) bool
 	Close() error

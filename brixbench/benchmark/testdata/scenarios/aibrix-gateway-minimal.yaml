@@ -1,0 +1,19 @@
+Scenario: aibrix-gateway-minimal
+Tests:
+  - name: aibrix-main-d41653b
+    provider: aibrix
+    commit: d41653b26cf1257157e34ff35ee5f028644473a8
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke.yaml
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/vllm-pd/resources.yaml
+
+# random, least-request, prefix-cache, pd, and vtc-basic.

@@ -28,6 +28,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/webhook"
 )
 
@@ -261,11 +262,53 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 			InitialDelaySeconds: 5,
 			PeriodSeconds:       10,
 		},
+		VolumeMounts: []v1.VolumeMount{
+			{
+				Name:      webhook.DefaultAdapterVolumeName,
+				MountPath: webhook.DefaultAdapterMountPath,
+			},
+		},
 	}
 
 	// Add sidecar to all roles
 	for i := range w.stormService.Spec.Template.Spec.Roles {
 		role := &w.stormService.Spec.Template.Spec.Roles[i]
+
+		foundEmptyDirVolume := false
+		for vi := range role.Template.Spec.Volumes {
+			v := &role.Template.Spec.Volumes[vi]
+			if v.Name == webhook.DefaultAdapterVolumeName {
+				if v.EmptyDir == nil {
+					v.VolumeSource = v1.VolumeSource{
+						EmptyDir: &v1.EmptyDirVolumeSource{},
+					}
+				}
+				foundEmptyDirVolume = true
+				break
+			}
+		}
+		if !foundEmptyDirVolume {
+			role.Template.Spec.Volumes = append(role.Template.Spec.Volumes, v1.Volume{
+				Name: webhook.DefaultAdapterVolumeName,
+				VolumeSource: v1.VolumeSource{
+					EmptyDir: &v1.EmptyDirVolumeSource{},
+				},
+			})
+		}
+
+		for ci := range role.Template.Spec.Containers {
+			container := &role.Template.Spec.Containers[ci]
+			if container.Name == webhook.SidecarName {
+				continue
+			}
+			if !utils.HasVolumeMount(container.VolumeMounts, webhook.DefaultAdapterVolumeName, webhook.DefaultAdapterMountPath) {
+				container.VolumeMounts = append(container.VolumeMounts, v1.VolumeMount{
+					Name:      webhook.DefaultAdapterVolumeName,
+					MountPath: webhook.DefaultAdapterMountPath,
+				})
+			}
+		}
+
 		// Check if sidecar already exists to ensure idempotency.
 		var exists bool
 		for _, c := range role.Template.Spec.Containers {

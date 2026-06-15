@@ -51,7 +51,7 @@ spec:
                   command: ["sh", "-c"]
                   args:
                     - |
-                      python3 -m vllm.entrypoints.openai.api_server \
+                      vllm serve \
                         --host "0.0.0.0" \
                         --port "8000" \
                         --uvicorn-log-level warning \
@@ -131,7 +131,7 @@ spec:
                   command: ["sh", "-c"]
                   args:
                     - |
-                      python3 -m vllm.entrypoints.openai.api_server \
+                      vllm serve \
                         --host "0.0.0.0" \
                         --port "8000" \
                         --uvicorn-log-level warning \

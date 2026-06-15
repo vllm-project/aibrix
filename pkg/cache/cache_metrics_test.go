@@ -15,14 +15,21 @@ limitations under the License.
 package cache
 
 import (
+	"encoding/base64"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 )
 
 func TestCleanupOldSnapshots(t *testing.T) {
@@ -68,6 +75,118 @@ func TestUpdatePodRecord(t *testing.T) {
 	require.NoError(t, err)
 	_, ok = pod.ModelMetrics.Load(c.getPodModelMetricName("m2", metrics.NumRequestsWaiting))
 	require.True(t, ok)
+}
+
+func TestUpdatePodMetricsFromTypedResultModelFallback(t *testing.T) {
+	tests := []struct {
+		name      string
+		rawModel  string
+		wantModel string
+	}{
+		{
+			name:      "keeps valid model name",
+			rawModel:  "raw-model",
+			wantModel: "raw-model",
+		},
+		{
+			name:      "falls back for empty model name",
+			rawModel:  "",
+			wantModel: "pod-model",
+		},
+		{
+			name:      "falls back for undefined model name",
+			rawModel:  undefinedMetricLabelValue,
+			wantModel: "pod-model",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &Store{}
+			pod := &Pod{
+				Pod: &v1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "p1",
+						Namespace: "default",
+						Labels: map[string]string{
+							modelLabel: "pod-model",
+						},
+					},
+				},
+			}
+			result := &metrics.EngineMetricsResult{
+				ModelMetrics: map[string]metrics.MetricValue{
+					store.getPodModelMetricName(tt.rawModel, metrics.NumRequestsWaiting): &metrics.SimpleMetricValue{Value: 1},
+				},
+			}
+
+			store.updatePodMetricsFromTypedResult(pod, result)
+
+			_, ok := pod.ModelMetrics.Load(store.getPodModelMetricName(tt.wantModel, metrics.NumRequestsWaiting))
+			require.True(t, ok)
+		})
+	}
+}
+
+func TestSanitizeMetricLabelsFallback(t *testing.T) {
+	pod := &Pod{
+		Pod: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "p1",
+				Namespace: "default",
+				Labels: map[string]string{
+					modelLabel:  "pod-model",
+					engineLabel: "trtllm",
+				},
+			},
+		},
+	}
+
+	sanitized := sanitizeMetricLabels(pod, map[string]string{
+		"model_name":  undefinedMetricLabelValue,
+		"engine_type": "",
+		"instance":    "pod:8000",
+	})
+
+	require.Equal(t, "pod-model", sanitized["model_name"])
+	require.Equal(t, "trtllm", sanitized["engine_type"])
+	require.Equal(t, "pod:8000", sanitized["instance"])
+}
+
+func TestSanitizeMetricLabels_ReturnsSameMapWhenClean(t *testing.T) {
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "default"}}}
+
+	in := map[string]string{
+		"model_name":  "raw-model",
+		"engine_type": "vllm",
+		"instance":    "pod:8000",
+	}
+	out := sanitizeMetricLabels(pod, in)
+
+	// Mutating in must show up in out — proves early-return returned the same underlying map
+	// (i.e. no alloc + copy happened).
+	in["__canary"] = "x"
+	require.Equal(t, "x", out["__canary"], "expected early-return to return same map when labels are clean")
+}
+
+func TestSanitizeMetricLabels_NoFalsePositiveWhenKeyMissing(t *testing.T) {
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "default"}}}
+
+	in := map[string]string{"instance": "pod:8000"}
+	out := sanitizeMetricLabels(pod, in)
+
+	in["__canary"] = "x"
+	require.Equal(t, "x", out["__canary"], "missing model_name / engine_type keys must not trigger alloc path")
+}
+
+func TestSanitizeMetricLabels_EmptyMap(t *testing.T) {
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "default"}}}
+
+	in := map[string]string{}
+	out := sanitizeMetricLabels(pod, in)
+
+	in["__canary"] = "x"
+	require.Equal(t, "x", out["__canary"], "empty map must short-circuit to same map")
 }
 
 func TestMetricRoleFilters(t *testing.T) {
@@ -147,10 +266,13 @@ func TestEmitMetricToPrometheus_GaugeAndCounter(t *testing.T) {
 		}{name: name, value: value})
 	}
 
-	labels := []string{"pod"}
-	values := []string{"p1"}
-
-	metrics.EmitMetricToPrometheus(metrics.NumRequestsRunning, &metrics.SimpleMetricValue{Value: 3}, labels, values)
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "p1",
+			Namespace: "ns1",
+		},
+	}
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod, metrics.NumRequestsRunning, &metrics.SimpleMetricValue{Value: 3}, nil)
 	require.Len(t, gaugeCalls, 1)
 	require.Equal(t, metrics.NumRequestsRunning, gaugeCalls[0].name)
 	require.Equal(t, 3.0, gaugeCalls[0].value)
@@ -183,7 +305,13 @@ func TestEmitMetricToPrometheus_HistogramAlsoEmitsQuantiles(t *testing.T) {
 			"+Inf":     2,
 		},
 	}
-	metrics.EmitMetricToPrometheus(metrics.TimeToFirstTokenSeconds, hv, []string{"pod"}, []string{"p1"})
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "p1",
+			Namespace: "ns1",
+		},
+	}
+	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: ""}, pod, metrics.TimeToFirstTokenSeconds, hv, nil)
 
 	require.Contains(t, gaugeMetricNames, metrics.TimeToFirstTokenSeconds+"_p50")
 	require.Contains(t, gaugeMetricNames, metrics.TimeToFirstTokenSeconds+"_p90")
@@ -199,4 +327,137 @@ func TestEmitMetricToPrometheus_HistogramAlsoEmitsQuantiles(t *testing.T) {
 		}
 	}
 	require.True(t, found)
+}
+
+func TestLoadPrometheusBasicAuth_FromEnv(t *testing.T) {
+	prometheusBasicAuthOnce = sync.Once{}
+	prometheusBasicAuthUser = ""
+	prometheusBasicAuthPass = ""
+
+	t.Setenv("PROMETHEUS_BASIC_AUTH_SECRET_NAME", "")
+	t.Setenv("PROMETHEUS_BASIC_AUTH_USERNAME", "u1")
+	t.Setenv("PROMETHEUS_BASIC_AUTH_PASSWORD", "p1")
+
+	loadPrometheusBasicAuth(nil)
+	require.Equal(t, "u1", prometheusBasicAuthUser)
+	require.Equal(t, "p1", prometheusBasicAuthPass)
+}
+
+func TestLoadPrometheusBasicAuth_FromSecretNilKubeConfig(t *testing.T) {
+	prometheusBasicAuthOnce = sync.Once{}
+	prometheusBasicAuthUser = ""
+	prometheusBasicAuthPass = ""
+
+	t.Setenv("PROMETHEUS_BASIC_AUTH_SECRET_NAME", "prom-basic-auth")
+	t.Setenv("PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE", "ns1")
+
+	loadPrometheusBasicAuth(nil)
+	require.Equal(t, "", prometheusBasicAuthUser)
+	require.Equal(t, "", prometheusBasicAuthPass)
+}
+
+func TestLoadPrometheusBasicAuth_FromSecret(t *testing.T) {
+	prometheusBasicAuthOnce = sync.Once{}
+	prometheusBasicAuthUser = ""
+	prometheusBasicAuthPass = ""
+
+	ns := "ns1"
+	name := "prom-basic-auth"
+	usernameKey := "username"
+	passwordKey := "password"
+	username := "u2"
+	password := "p2"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expectedPath := fmt.Sprintf("/api/v1/namespaces/%s/secrets/%s", ns, name)
+		if r.Method != http.MethodGet || r.URL.Path != expectedPath {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"apiVersion":"v1","kind":"Secret","metadata":{"name":%q,"namespace":%q},"data":{%q:%q,%q:%q}}`,
+			name, ns,
+			usernameKey, base64.StdEncoding.EncodeToString([]byte(username)),
+			passwordKey, base64.StdEncoding.EncodeToString([]byte(password)),
+		)
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv("PROMETHEUS_BASIC_AUTH_SECRET_NAME", name)
+	t.Setenv("PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE", ns)
+	t.Setenv("PROMETHEUS_BASIC_AUTH_USERNAME_KEY", usernameKey)
+	t.Setenv("PROMETHEUS_BASIC_AUTH_PASSWORD_KEY", passwordKey)
+
+	loadPrometheusBasicAuth(&rest.Config{Host: server.URL})
+	require.Equal(t, username, prometheusBasicAuthUser)
+	require.Equal(t, password, prometheusBasicAuthPass)
+}
+
+func TestInitPrometheusAPI_EndpointEmpty(t *testing.T) {
+	prometheusBasicAuthOnce = sync.Once{}
+	prometheusBasicAuthUser = ""
+	prometheusBasicAuthPass = ""
+
+	t.Setenv("PROMETHEUS_ENDPOINT", "")
+	api := initPrometheusAPI(nil)
+	require.Nil(t, api)
+}
+
+func TestInitPrometheusAPI_EndpointSet(t *testing.T) {
+	prometheusBasicAuthOnce = sync.Once{}
+	prometheusBasicAuthUser = ""
+	prometheusBasicAuthPass = ""
+
+	t.Setenv("PROMETHEUS_ENDPOINT", "http://example.com")
+	t.Setenv("PROMETHEUS_BASIC_AUTH_SECRET_NAME", "")
+	t.Setenv("PROMETHEUS_BASIC_AUTH_USERNAME", "u3")
+	t.Setenv("PROMETHEUS_BASIC_AUTH_PASSWORD", "p3")
+
+	api := initPrometheusAPI(nil)
+	require.NotNil(t, api)
+}
+
+// TestUpdatePodMetricsNonBlocking verifies that updatePodMetrics does not block
+// when the worker pool is saturated (channel buffer full). This prevents the
+// metrics refresh goroutine from stalling when workers are stuck on slow pods.
+func TestUpdatePodMetricsNonBlocking(t *testing.T) {
+	// Create a store with a tiny channel buffer and NO workers draining it
+	store := &Store{
+		podMetricsJobs: make(chan *Pod, 2),
+	}
+
+	// Add 5 ready pods — more than the channel buffer can hold
+	for i := range 5 {
+		name := fmt.Sprintf("pod-%d", i)
+		store.metaPods.Store(name, &Pod{
+			Pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Status: v1.PodStatus{
+					Phase: v1.PodRunning,
+					PodIP: fmt.Sprintf("10.0.0.%d", i+1),
+					Conditions: []v1.PodCondition{
+						{Type: v1.PodReady, Status: v1.ConditionTrue},
+					},
+				},
+			},
+		})
+	}
+
+	// updatePodMetrics must return promptly without blocking.
+	// With the old blocking send, this would deadlock since no worker is reading.
+	done := make(chan struct{})
+	go func() {
+		store.updatePodMetrics()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success: updatePodMetrics returned without blocking
+	case <-time.After(2 * time.Second):
+		t.Fatal("updatePodMetrics blocked — channel send is not non-blocking")
+	}
+
+	// Exactly 2 pods should have been enqueued (channel buffer size)
+	require.Equal(t, 2, len(store.podMetricsJobs))
 }

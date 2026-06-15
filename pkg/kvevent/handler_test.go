@@ -26,6 +26,15 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache/kvcache"
 )
 
+// Helper function to convert int32 slice to bytes (big-endian)
+func int32SliceToBytes(tokens []int32) []byte {
+	result := make([]byte, len(tokens)*4)
+	for i, token := range tokens {
+		binary.BigEndian.PutUint32(result[i*4:], uint32(token))
+	}
+	return result
+}
+
 // mockSyncIndexerWithErrors allows simulating errors
 type mockSyncIndexerWithErrors struct {
 	blockStoredErr  error
@@ -62,86 +71,6 @@ func (m *mockSyncProvider) GetSyncIndexer(ctx context.Context) (SyncIndexer, err
 	return m.indexer, nil
 }
 
-// Test tokenIDsToBytes conversion
-func TestTokenIDsToBytes(t *testing.T) {
-	tests := []struct {
-		name     string
-		tokenIDs []int32
-		expected []byte
-	}{
-		{
-			name:     "empty tokens",
-			tokenIDs: []int32{},
-			expected: []byte{},
-		},
-		{
-			name:     "single token",
-			tokenIDs: []int32{12345},
-			expected: []byte{0, 0, 48, 57}, // 12345 in big-endian
-		},
-		{
-			name:     "multiple tokens",
-			tokenIDs: []int32{1, 256, 65535},
-			expected: []byte{
-				0, 0, 0, 1, // 1
-				0, 0, 1, 0, // 256
-				0, 0, 255, 255, // 65535
-			},
-		},
-		{
-			name:     "negative token",
-			tokenIDs: []int32{-1},
-			expected: []byte{255, 255, 255, 255}, // -1 in two's complement
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := tokenIDsToBytes(tt.tokenIDs)
-			if len(result) != len(tt.expected) {
-				t.Fatalf("Expected length %d, got %d", len(tt.expected), len(result))
-			}
-			for i := range result {
-				if result[i] != tt.expected[i] {
-					t.Errorf("Byte %d: expected %d, got %d", i, tt.expected[i], result[i])
-				}
-			}
-		})
-	}
-}
-
-// Test convertTokenIDs
-func TestConvertTokenIDs(t *testing.T) {
-	input := [][]int32{
-		{1, 2, 3},
-		{},
-		{12345},
-	}
-
-	result := convertTokenIDs(input)
-
-	if len(result) != 3 {
-		t.Fatalf("Expected 3 results, got %d", len(result))
-	}
-
-	// Check first array
-	expected0 := []byte{0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3}
-	if len(result[0]) != len(expected0) {
-		t.Errorf("Result[0] length mismatch")
-	}
-
-	// Check second array (empty)
-	if len(result[1]) != 0 {
-		t.Errorf("Result[1] should be empty")
-	}
-
-	// Check third array
-	expected2 := []byte{0, 0, 48, 57}
-	if len(result[2]) != len(expected2) {
-		t.Errorf("Result[2] length mismatch")
-	}
-}
-
 // Test HandleEvent with BlockStoredEvent
 func TestHandleBlockStoredEvent(t *testing.T) {
 	syncIndexer := &mockSyncIndexerWithErrors{}
@@ -165,7 +94,10 @@ func TestHandleBlockStoredEvent(t *testing.T) {
 	event := &kvcache.BlockStoredEvent{
 		BlockHashes:     []int64{1001, 1002, 1003},
 		ParentBlockHash: &[]int64{1000}[0],
-		TokenIDs:        [][]int32{{1, 2, 3}, {4, 5, 6}},
+		TokenIDs: [][]byte{
+			int32SliceToBytes([]int32{1, 2, 3}),
+			int32SliceToBytes([]int32{4, 5, 6}),
+		},
 	}
 
 	err := handler.HandleEvent(event)

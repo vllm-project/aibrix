@@ -16,15 +16,13 @@ import asyncio
 from typing import Any, Coroutine, Dict, List, Optional
 
 import aibrix.batch.storage as _storage
+from aibrix.batch.batch_manager import BatchManager
+from aibrix.batch.batch_scheduler import BatchScheduler
+from aibrix.batch.client import EndpointSource
 from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE
-from aibrix.batch.job_driver import InferenceEngineClient, ProxyInferenceEngineClient
-from aibrix.batch.job_entity import JobEntityManager
-from aibrix.batch.job_manager import JobManager
-from aibrix.batch.scheduler import JobScheduler
-from aibrix.batch.storage.batch_metastore import (
-    get_metastore_type,
-    initialize_batch_metastore,
-)
+from aibrix.batch.job_entity import BatchJob, BatchJobSpec
+from aibrix.batch.state import JobEntityManager
+from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
 from aibrix.metadata.core import AsyncLoopThread, T
 from aibrix.storage import StorageType
@@ -35,10 +33,11 @@ logger = init_logger(__name__)
 class BatchDriver:
     def __init__(
         self,
+        context: InfrastructureContext,
         job_entity_manager: Optional[JobEntityManager] = None,
         storage_type: StorageType = StorageType.AUTO,
         metastore_type: StorageType = StorageType.AUTO,
-        llm_engine_endpoint: Optional[str] = None,
+        endpoint_source: Optional[EndpointSource] = None,
         stand_alone: bool = False,
         params={},
     ):
@@ -48,27 +47,30 @@ class BatchDriver:
         Args:
             stand_alone: Set to true to start a new thread for job management.
         """
-        _storage.initialize_storage(storage_type, params)
-        initialize_batch_metastore(metastore_type, params)
+        self._stand_alone = stand_alone
         self._async_thread_loop: Optional[AsyncLoopThread] = None
         if stand_alone:
             self._async_thread_loop = AsyncLoopThread("BatchDriver")
-        self._storage = _storage
-        self._job_entity_manager: Optional[JobEntityManager] = job_entity_manager
-        self._job_manager: JobManager = JobManager()
-        self._scheduler: Optional[JobScheduler] = None
-        # Only initiate scheduler if JobEntityManager does not have its own sched
-        if (
-            not self._job_entity_manager
-            or not self._job_entity_manager.is_scheduler_enabled()
-        ):
-            self._scheduler = JobScheduler(self._job_manager, DEFAULT_JOB_POOL_SIZE)
-            self._job_manager.set_scheduler(self._scheduler)
 
-        # Initialize inference client with optional LLM engine endpoint
-        self._inference_client: Optional[InferenceEngineClient] = None
-        if llm_engine_endpoint is not None:
-            self._inference_client = ProxyInferenceEngineClient(llm_engine_endpoint)
+        # initialize storage and metastore singletons
+        _storage.initialize_batch_storage(storage_type, params)
+        _storage.initialize_batch_metastore(metastore_type, params)
+        self._context = context
+        self._storage = _storage
+        self._endpoint_source = endpoint_source
+        # The manager owns the entity manager from construction; the driver does
+        # not keep a duplicate reference. Handler registration is deferred to
+        # start() (the entity manager captures the running loop at bind time).
+        self._batch_manager: BatchManager = BatchManager(
+            self._context, job_entity_manager
+        )
+
+        self._scheduler: Optional[BatchScheduler] = BatchScheduler(
+            self._context,
+            self._batch_manager,
+            DEFAULT_JOB_POOL_SIZE,
+        )
+        self._batch_manager.set_scheduler(self._scheduler)
 
         # Track jobs with fail_after_n_requests for stop() validation
         self._jobs_with_fail_after: set[str] = set()
@@ -78,31 +80,75 @@ class BatchDriver:
             job_entity_manager=True if job_entity_manager else False,
             job_scheduler=True if self._scheduler else False,
             storage=_storage.get_storage_type().value,
-            metastore=get_metastore_type().value,
+            metastore=_storage.get_metastore_type().value,
         )  # type: ignore[call-arg]
 
     @property
-    def job_manager(self) -> JobManager:
-        return self._job_manager
+    def job_manager(self) -> BatchManager:
+        return self._batch_manager
+
+    # Job operations: the public facade. Each dispatches the BatchManager call
+    # via run_coroutine so callers never reach through .job_manager.
+    async def create_job(
+        # TODO: request_count needs some refactor? should not be here?
+        self,
+        session_id: str,
+        job_spec: BatchJobSpec,
+        request_count: int = 0,
+    ) -> str:
+        return await self.run_coroutine(
+            self._batch_manager.create_job_with_spec(
+                session_id=session_id,
+                job_spec=job_spec,
+                request_count=request_count,
+            )
+        )
+
+    async def get_job(self, job_id: str) -> Optional[BatchJob]:
+        return await self.run_coroutine(self._batch_manager.get_job(job_id))
+
+    async def cancel_job(self, job_id: str) -> bool:
+        return await self.run_coroutine(self._batch_manager.cancel_job(job_id))
+
+    async def list_jobs(self) -> List[BatchJob]:
+        return await self.run_coroutine(self._batch_manager.list_jobs())
+
+    async def job_committed_handler(self, job: BatchJob) -> bool:
+        return await self.run_coroutine(self._batch_manager.job_committed_handler(job))
 
     async def start(self):
         # Start thread
-        if self._async_thread_loop is not None:
+        if self._stand_alone:
+            if self._async_thread_loop is None:
+                self._async_thread_loop = AsyncLoopThread("BatchDriver")
             self._async_thread_loop.start()
             logger.info("Batch driver stand alone thread started")  # type: ignore[call-arg]
         else:
-            # name the loop
-            asyncio.get_running_loop().name = "default"
+            # name the loop safely
+            loop = asyncio.get_running_loop()
+            try:
+                setattr(loop, "name", "default")
+            except AttributeError:
+                pass
 
-        if self._job_entity_manager is not None:
-            logger.info("Registering job entity manager handlers")
-            await self.run_coroutine(
-                self.job_manager.set_job_entity_manager(self._job_entity_manager)
-            )
+        # The batch subsystem runs on the caller's event loop (the metadata
+        # service's HTTP loop). Don't set attributes on the loop object — some
+        # implementations (e.g. uvloop) reject it; just log for diagnostics.
+        logger.info("Starting BatchDriver on the current event loop")
+
+        # Register the entity manager's lifecycle handlers on this loop (no-op
+        # if none was configured). Deferred here because the entity manager
+        # captures the running loop at handler registration.
+        await self.run_coroutine(self._batch_manager.bind_entity_manager())
 
         if self._scheduler is not None:
             logger.info("starting scheduler")
-            await self.run_coroutine(self._scheduler.start(self._inference_client))
+            # TODO: refactor, job level endpoint source should be removed.
+            # The driver dispatches against this endpoint source; inject it into
+            # the manager (which builds the driver on admission) rather than
+            # threading it through the scheduler.
+            self._batch_manager.set_endpoint_source(self._endpoint_source)
+            await self.run_coroutine(self._scheduler.start())
 
     async def upload_job_data(self, input_file_name) -> str:
         return await self.run_coroutine(
@@ -116,24 +162,18 @@ class BatchDriver:
         """Properly shutdown the driver and cancel running tasks"""
         if self._scheduler is not None:
             await self.run_coroutine(self._scheduler.stop())
-
         if self._async_thread_loop is not None:
             self._async_thread_loop.stop()
+            self._async_thread_loop = None
             logger.info("Batch driver stand alone thread stopped")  # type: ignore[call-arg]
 
     async def clear_job(self, job_id):
         """Clear job related data for testing"""
-        if (
-            self._async_thread_loop is not None
-            and self._async_thread_loop.loop != asyncio.get_running_loop()
-        ):
-            return await self._async_thread_loop.run_coroutine(self.clear_job(job_id))
-
-        job = await self._job_manager.get_job(job_id)
+        job = await self._batch_manager.get_job(job_id)
         if job is None:
             return
 
-        if await self._job_manager.delete_job(job_id):
+        if await self._batch_manager.delete_job(job_id):
             tasks = [self._storage.remove_job_data(job.spec.input_file_id)]
             if job.status.output_file_id is not None:
                 tasks.append(self._storage.remove_job_data(job.status.output_file_id))
@@ -143,7 +183,8 @@ class BatchDriver:
             await asyncio.gather(*tasks)
 
     async def run_coroutine(self, coro: Coroutine[Any, Any, T]) -> T:
-        """
+        """Await a coroutine on the driver's event loop.
+
         Submits a coroutine to the event loop and returns an awaitable Future.
         This method itself MUST be awaited. (For use from async code)
         """

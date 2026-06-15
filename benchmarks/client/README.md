@@ -7,7 +7,7 @@ Starting vllm server:
 
 ```shell
 export API_KEY=${API_KEY}
-python -m vllm.entrypoints.openai.api_server --host 0.0.0.0 \
+vllm serve --host 0.0.0.0 \
 --port "8000" \
 --model /root/models/deepseek-llm-7b-chat \
 --trust-remote-code \

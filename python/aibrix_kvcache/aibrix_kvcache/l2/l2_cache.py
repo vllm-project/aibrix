@@ -15,7 +15,7 @@
 import asyncio
 import logging
 from concurrent.futures import Executor
-from typing import Any, Iterator, List, Sequence, Tuple, cast
+from typing import Any, Callable, Iterator, List, Sequence, Tuple, cast
 
 import torch
 from more_itertools import batched
@@ -23,13 +23,19 @@ from more_itertools import batched
 from ..cache_handle import KVCacheHandle
 from ..cache_hashable import BlockHashes, KVCacheKeyTypes, TokenListView
 from ..common.absl_logging import getLogger, log_every_n_seconds
-from ..memory import ManagedMemoryRegion, MemoryRegion
+from ..memory import ExternalMemoryRegion, ManagedMemoryRegion, MemoryRegion
 from ..meta_service import MetaService
 from ..metrics import L2CacheMetrics, MeasurableBase, MetricRecorder
 from ..profiling import nvtx_range
 from ..spec import KVCacheBlockLayout, KVCacheBlockSpec
 from ..status import Status, StatusCodes
-from .connectors import Connector, ConnectorConfig
+from ..utils import buffer_to_tensor
+from .connectors import (
+    Connector,
+    ConnectorConfig,
+    ConnectorFeature,
+    ConnectorZeroCopyMemoryRegion,
+)
 from .key_builders import KeyBuilder, RawKeyBuilder
 from .placement import Placement, PlacementConfig
 
@@ -77,6 +83,10 @@ class L2Cache(MeasurableBase):
         self.op_batch: int = op_batch
         self._executor: Executor = executor
         self._backend: Connector = None  # type: ignore
+        self._use_compact_layout: bool = MemoryRegion.use_compact_layout()
+        self._mr_ops_queue: asyncio.Queue | None = None
+        self._mr_ops_task: asyncio.Task | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
         cat_head_ids = "_".join(
             [
@@ -93,7 +103,7 @@ class L2Cache(MeasurableBase):
         partition_id = f"h{cat_head_ids}_l{cat_layer_ids}"
         block_spec_signature = self.block_spec.signature
         key_builder_signature = self.key_builder.signature
-        layout_signature = "c" if MemoryRegion.use_compact_layout() else "ex"
+        layout_signature = "c" if self._use_compact_layout else "ex"
         backend_config = ConnectorConfig(
             backend_name=backend_name,
             namespace=namespace,
@@ -132,9 +142,51 @@ class L2Cache(MeasurableBase):
         self.close()
         logger.info("%s is closed.", str(self))
 
+    async def _ensure_mr_ops_worker(self) -> None:
+        if self._mr_ops_queue is None:
+            self._loop = asyncio.get_running_loop()
+            self._mr_ops_queue = asyncio.Queue()
+            self._mr_ops_task = asyncio.create_task(self._mr_ops_worker())
+
+    async def _mr_ops_worker(self) -> None:
+        assert self._mr_ops_queue is not None
+        while True:
+            item = await self._mr_ops_queue.get()
+            if item is None:
+                self._mr_ops_queue.task_done()
+                break
+
+            mr, func, kwargs = item
+            try:
+                await func(mr, **kwargs)
+            except Exception as e:
+                logger.warning("MR op failed: %s", e)
+            finally:
+                self._mr_ops_queue.task_done()
+
+    def _enqueue_mr_op(
+        self,
+        mr: ConnectorZeroCopyMemoryRegion,
+        func: Callable,
+        **kwargs,
+    ) -> None:
+        assert self._loop is not None
+        try:
+            self._loop.call_soon_threadsafe(
+                self._mr_ops_queue.put_nowait,  # type: ignore
+                (mr, func, kwargs),
+            )
+            return
+        except Exception:
+            pass
+
+    @property
+    def feature(self) -> ConnectorFeature:
+        return self._backend.feature
+
     def open(self) -> Status:
         """Open the cache."""
-        if not MemoryRegion.use_compact_layout() and (
+        if not self._use_compact_layout and (
             self._backend.feature.gdr_get or self._backend.feature.gdr_put
         ):
             return Status(
@@ -147,6 +199,13 @@ class L2Cache(MeasurableBase):
     def close(self) -> Status:
         """Close the cache."""
         if self._backend is not None:
+            try:
+                if self._mr_ops_queue is not None and self._loop is not None:
+                    self._loop.call_soon_threadsafe(
+                        self._mr_ops_queue.put_nowait, None
+                    )  # type: ignore
+            except Exception:
+                pass
             return self._backend.close()
         return Status.ok()
 
@@ -258,6 +317,23 @@ class L2Cache(MeasurableBase):
         if len(query) // self.block_ntokens == 0:
             return Status.ok(0)
 
+        if self._backend.feature.zero_copy:
+            if isinstance(kv_tensors, KVCacheHandle):
+                ret = len(kv_tensors)
+                # Seal all the MRs
+                for mr in kv_tensors.memory_regions:
+                    ext_mr = cast(ExternalMemoryRegion, mr)
+                    ext_mr._on_release = None
+                    connector_mr = ext_mr.depends_on
+                    if connector_mr is None:
+                        continue
+                    self._enqueue_mr_op(connector_mr, self._backend.seal)
+                return Status.ok(ret)
+            else:
+                raise ValueError(
+                    "kv_tensors must be KVCacheHandle when zero_copy isenabled."
+                )
+
         if isinstance(kv_tensors, MemoryRegion):
             # `kv_tensors` comes from L1Cache and should be only one block
             assert len(query) // self.block_ntokens == 1, (
@@ -307,7 +383,7 @@ class L2Cache(MeasurableBase):
             for i, mr in enumerate(mrs):
                 if isinstance(mr, ManagedMemoryRegion):
                     if not mr.is_sealed:
-                        if not MemoryRegion.use_compact_layout():
+                        if not self._use_compact_layout:
                             mr.pack_tokens(
                                 prefix=real_keys[i][: -self.block_ntokens],
                                 query=real_keys[i][-self.block_ntokens :],
@@ -401,7 +477,7 @@ class L2Cache(MeasurableBase):
         """
         real_key, cache_key = key_pair
         if isinstance(mr, ManagedMemoryRegion) and not mr.is_sealed:
-            if not MemoryRegion.use_compact_layout():
+            if not self._use_compact_layout:
                 mr.pack_tokens(
                     prefix=real_key[: -self.block_ntokens],
                     query=real_key[-self.block_ntokens :],
@@ -501,7 +577,7 @@ class L2Cache(MeasurableBase):
             if not status.is_ok():
                 continue
             # Bypass token validation if MR is using compact layout
-            if is_managed_mr and not MemoryRegion.use_compact_layout():
+            if is_managed_mr and not self._use_compact_layout:
                 mr = mrs[i]
                 mr.block_nbytes = self.block_nbytes  # type: ignore
                 prefix_in_mr, query_in_mr = mr.unpack_tokens()  # type: ignore
@@ -548,6 +624,24 @@ class L2Cache(MeasurableBase):
 
         return Status.ok(nr)
 
+    @nvtx_range("flush", "kv_cache_ol.L2Cache")
+    def flush(self) -> Status:
+        """Synchronously wait until all queued MR ops are processed."""
+        if self._mr_ops_queue is None:
+            return Status.ok()
+        try:
+            assert self._loop is not None
+            fut = asyncio.run_coroutine_threadsafe(
+                self._mr_ops_queue.join(), self._loop
+            )
+            fut.result(timeout=60)
+        except TimeoutError:
+            # timed out
+            return Status(StatusCodes.TIMEOUT)
+        except Exception as e:
+            return Status(StatusCodes.ERROR, value=e)
+        return Status.ok()
+
     async def _backend_get_impl(
         self,
         key_pair: Tuple[KVCacheKeyTypes, bytes],
@@ -568,10 +662,7 @@ class L2Cache(MeasurableBase):
             return status
 
         # Bypass token validation if MR is using compact layout
-        if (
-            isinstance(mr, ManagedMemoryRegion)
-            and not MemoryRegion.use_compact_layout()
-        ):
+        if isinstance(mr, ManagedMemoryRegion) and not self._use_compact_layout:
             # check if tokens match
             mr.block_nbytes = self.block_nbytes
             prefix_in_mr, query_in_mr = mr.unpack_tokens()
@@ -610,6 +701,161 @@ class L2Cache(MeasurableBase):
                 return False
         except Exception:
             return False
+
+    @nvtx_range("allocate", "kv_cache_ol.L2Cache")
+    @MeasurableBase.measure(MetricRecorder.OP.ALLOCATE)
+    async def allocate(
+        self,
+        prefix: KVCacheKeyTypes | None,
+        query: KVCacheKeyTypes,
+        sizes: Sequence[int],
+    ) -> Status[Sequence[MemoryRegion]]:
+        """Allocate pinned memory regions to store the kv tensors.
+        Args:
+            prefix: The prefix tokens of the kv tensors.
+            query: The query tokens of the kv tensors.
+            sizes: The sizes of the memory regions.
+        Returns:
+            The memory regions to store the kv tensors.
+        """
+        if prefix is not None and len(prefix) % self.block_ntokens != 0:
+            return Status(StatusCodes.INVALID)
+
+        if len(query) % self.block_ntokens != 0:
+            return Status(StatusCodes.INVALID)
+
+        # If it is not a full block, we don't need to cache it.
+        if len(query) // self.block_ntokens == 0 or len(sizes) == 0:
+            return Status(StatusCodes.INVALID)
+
+        await self._ensure_mr_ops_worker()
+
+        mrs: List[MemoryRegion] = []
+        si = 0
+        for key_batch in self._cache_block_key_batches(prefix, query):
+            tasks = []
+            async with asyncio.TaskGroup() as tg:
+                for _, key_str in key_batch:
+                    if si >= len(sizes):
+                        break
+                    tasks.append(
+                        tg.create_task(
+                            self._backend.allocate(key_str, sizes[si])
+                        )
+                    )
+                    si += 1
+
+            if len(tasks) == 0:
+                break
+
+            i = 0
+            for i in range(len(tasks)):
+                if not tasks[i].done() or not tasks[i].result().is_ok():
+                    break
+                connector_mr: ConnectorZeroCopyMemoryRegion = (
+                    tasks[i].result().get()
+                )
+                slab = buffer_to_tensor(connector_mr.addr, connector_mr.length)
+
+                def on_release(
+                    x: torch.Tensor, y: int, z: int, _mr=connector_mr
+                ) -> None:
+                    # We drop the MR by default. Only seal it if it is put into
+                    # the cache. Therefore, the actual seal op is done in the
+                    # put operation.
+                    self._enqueue_mr_op(_mr, self._backend.drop)
+
+                mr = ExternalMemoryRegion(
+                    slab,
+                    0,
+                    connector_mr.length,
+                    on_release,
+                    depends_on=connector_mr,
+                )
+                mrs.append(mr)
+
+            if i + 1 < len(tasks):
+                # release any mrs that are not returned
+                for j in range(i, len(tasks)):
+                    if not tasks[j].done() or not tasks[j].result().is_ok():
+                        continue
+                    mr_to_drop = tasks[j].result().get()
+                    self._enqueue_mr_op(mr_to_drop, self._backend.drop)
+                break
+
+        return Status.ok(mrs)
+
+    @nvtx_range("acquire", "kv_cache_ol.L2Cache")
+    @MeasurableBase.measure(MetricRecorder.OP.ACQUIRE)
+    async def acquire(
+        self,
+        prefix: KVCacheKeyTypes | None,
+        query: KVCacheKeyTypes,
+    ) -> Status[Sequence[MemoryRegion]]:
+        """Acquire pinned memory regions that store the kv tensors.
+        Args:
+            prefix: The prefix tokens of the kv tensors.
+            query: The query tokens of the kv tensors.
+        Returns:
+            The memory regions that store the kv tensors.
+        """
+        if prefix is not None and len(prefix) % self.block_ntokens != 0:
+            return Status(StatusCodes.INVALID)
+
+        await self._ensure_mr_ops_worker()
+
+        mrs: List[MemoryRegion] = []
+        for key_batch in self._cache_block_key_batches(prefix, query):
+            tasks = []
+            async with asyncio.TaskGroup() as tg:
+                for _, key_str in key_batch:
+                    tasks.append(tg.create_task(self._backend.acquire(key_str)))
+
+            if len(tasks) == 0:
+                break
+
+            i = 0
+            for i in range(len(tasks)):
+                if not tasks[i].done() or not tasks[i].result().is_ok():
+                    break
+                connector_mr: ConnectorZeroCopyMemoryRegion = (
+                    tasks[i].result().get()
+                )
+                slab = buffer_to_tensor(connector_mr.addr, connector_mr.length)
+
+                def on_release(
+                    x: torch.Tensor,
+                    y: int,
+                    z: int,
+                    _mr=connector_mr,
+                ) -> None:
+                    self._enqueue_mr_op(_mr, self._backend.release)
+
+                mr = ExternalMemoryRegion(
+                    slab,
+                    0,
+                    connector_mr.length,
+                    on_release=on_release,
+                    depends_on=connector_mr,
+                )
+                mrs.append(mr)
+
+            if i + 1 < len(tasks):
+                # release any mrs that are not returned
+                for j in range(i, len(tasks)):
+                    if not tasks[j].done() or not tasks[j].result().is_ok():
+                        continue
+                    mr_to_release = tasks[j].result().get()
+                    self._enqueue_mr_op(
+                        mr_to_release,
+                        self._backend.release,
+                    )
+                break
+
+        if len(mrs) == 0:
+            return Status(StatusCodes.NOT_FOUND)
+
+        return Status.ok(mrs)
 
     @nvtx_range("delete", "kv_cache_ol.L2Cache")
     async def delete(

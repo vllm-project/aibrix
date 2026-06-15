@@ -26,9 +26,11 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
-func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, model string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, bool, int) {
+func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.RoutingContext, requestID string, model string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, bool, int) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseHeaders)
-	routerCtx, _ := ctx.(*types.RoutingContext)
+
+	_, span := tracer.Start(ctx, "HandleResponseHeaders")
+	defer span.End()
 
 	var isProcessingError bool
 	var processingErrorCode int
@@ -44,7 +46,10 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, mo
 	headers := []*configPb.HeaderValueOption{}
 	headers = buildEnvoyProxyHeaders(headers, HeaderWentIntoReqHeaders, "true", HeaderRequestID, requestID)
 	if routerCtx != nil && routerCtx.HasRouted() {
-		headers = buildEnvoyProxyHeaders(headers, HeaderTargetPod, routerCtx.TargetAddress())
+		headers = buildEnvoyProxyHeaders(headers,
+			HeaderRoutingStrategy, string(routerCtx.Algorithm),
+			HeaderTargetPod, routerCtx.TargetPod().Name,
+			HeaderTargetPodIP, routerCtx.TargetAddress())
 	}
 
 	if routerCtx != nil && routerCtx.RespHeaders != nil {
@@ -64,7 +69,12 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, mo
 
 	for _, headerValue := range b.ResponseHeaders.Headers.Headers {
 		if headerValue.Key == ":status" {
-			code, _ := strconv.Atoi(string(headerValue.RawValue))
+			code, err := strconv.Atoi(string(headerValue.RawValue))
+			if err != nil {
+				isProcessingError = true
+				processingErrorCode = 500
+				break
+			}
 			if code != 200 {
 				isProcessingError = true
 				processingErrorCode = code

@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from typing import Optional, Tuple
 
 from aibrix import envs
+from aibrix.batch.job_entity.batch_job import BatchJob
 from aibrix.logger import init_logger
 from aibrix.storage import BaseStorage, StorageType, create_storage
 from aibrix.storage.base import PutObjectOptionsBuilder
+from aibrix.storage.local import LOCAL_STORAGE_PATH_VAR
 
 logger = init_logger(__name__)
 
@@ -40,12 +43,19 @@ def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
     if storage_type == StorageType.AUTO and envs.STORAGE_REDIS_HOST:
         storage_type = StorageType.REDIS
 
+    # The LOCAL metastore lives under the configured storage root, so a dev/test
+    # run that isolates STORAGE_LOCAL_PATH isolates the metastore too (rather
+    # than sharing one cwd-relative ``.metastore``). Other substrates (redis /
+    # s3 / tos) ignore base_path.
+    local_root = os.environ.get(LOCAL_STORAGE_PATH_VAR)
+    base_path = os.path.join(local_root, ".metastore") if local_root else ".metastore"
+
     # Create new storage instance and wrap with adapter
     try:
         logger.info(
             "Initializing batch metastore", storage_type=storage_type, params=params
         )  # type: ignore[call-arg]
-        p_metastore = create_storage(storage_type, base_path=".metastore", **params)
+        p_metastore = create_storage(storage_type, base_path=base_path, **params)
     except Exception as e:
         logger.error("Failed to initialize metastore", error=str(e))  # type: ignore[call-arg]
         raise
@@ -191,6 +201,32 @@ async def unlock_request(key: str, status: str) -> bool:
         True if status was set successfully
     """
     return await set_metadata(key, status)
+
+
+async def put_batch_job(batch_id: str, job: BatchJob) -> None:
+    """Persist a BatchJob document under ``batchjob:<id>``.
+
+    Last-writer-wins. When the metastore is Redis-backed this is a
+    single SET; on file-backed metastores it is a small object write.
+    """
+    payload = job.model_dump_json(by_alias=True, exclude_none=True)
+    await set_metadata(f"batchjob:{batch_id}", payload)
+
+
+async def get_batch_job(batch_id: str) -> Optional[BatchJob]:
+    """Fetch a BatchJob document or ``None`` if absent."""
+    raw, exists = await get_metadata(f"batchjob:{batch_id}")
+    if not exists:
+        return None
+    return BatchJob.model_validate_json(raw)
+
+
+async def delete_batch_job(batch_id: str) -> None:
+    """Remove the BatchJob document. Silent no-op if absent."""
+    try:
+        await delete_metadata(f"batchjob:{batch_id}")
+    except FileNotFoundError:
+        return
 
 
 async def list_metastore_keys(prefix: str) -> list[str]:

@@ -607,3 +607,243 @@ func TestGetTopologyMatchLabels(t *testing.T) {
 		})
 	}
 }
+
+func TestInjectTopologyAffinityForPod_DefaultsToPreferred(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-roleset",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+		},
+	}
+	pod := &corev1.Pod{}
+	tp := &orchestrationv1alpha1.TopologyPolicy{
+		Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+		Key:   "kubernetes.io/hostname",
+	}
+
+	injectTopologyAffinityForPod(pod, roleSet, "prefill", tp)
+
+	assert.Len(t, pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, 0)
+	preferred := pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	assert.Len(t, preferred, 1)
+	assert.Equal(t, int32(100), preferred[0].Weight)
+	assert.Equal(t, "kubernetes.io/hostname", preferred[0].PodAffinityTerm.TopologyKey)
+	assert.Equal(t, "test-roleset", preferred[0].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
+}
+
+func TestInjectTopologyAffinityForPod_SkipsEmptyTopologyKey(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-roleset",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+		},
+	}
+	pod := &corev1.Pod{}
+	tp := &orchestrationv1alpha1.TopologyPolicy{
+		Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+	}
+
+	injectTopologyAffinityForPod(pod, roleSet, "prefill", tp)
+
+	assert.Nil(t, pod.Spec.Affinity)
+}
+
+func TestInjectTopologyAffinityForPod_Required(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-roleset",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+		},
+	}
+	pod := &corev1.Pod{}
+	tp := &orchestrationv1alpha1.TopologyPolicy{
+		Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+		Key:   "kubernetes.io/hostname",
+		Mode:  orchestrationv1alpha1.TopologyPolicyRequired,
+	}
+
+	injectTopologyAffinityForPod(pod, roleSet, "prefill", tp)
+
+	assert.Len(t, pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution, 0)
+	required := pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	assert.Len(t, required, 1)
+	assert.Equal(t, "kubernetes.io/hostname", required[0].TopologyKey)
+	assert.Equal(t, "test-roleset", required[0].LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
+}
+
+func TestInjectTopologyAffinityForPodTemplate_Preferred(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-roleset",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+		},
+	}
+	template := &corev1.PodTemplateSpec{}
+	tp := &orchestrationv1alpha1.TopologyPolicy{
+		Scope: orchestrationv1alpha1.TopologyRoleScope,
+		Key:   "topology.kubernetes.io/zone",
+		Mode:  orchestrationv1alpha1.TopologyPolicyPreferred,
+	}
+
+	injectTopologyAffinityForPodTemplate(template, roleSet, "decode", tp)
+
+	assert.Len(t, template.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, 0)
+	preferred := template.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	assert.Len(t, preferred, 1)
+	assert.Equal(t, int32(100), preferred[0].Weight)
+	assert.Equal(t, "topology.kubernetes.io/zone", preferred[0].PodAffinityTerm.TopologyKey)
+	assert.Equal(t, "decode", preferred[0].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleNameLabelKey])
+}
+
+func TestCreatePodSetForRole_TopologyPolicyDefaultsToPreferred(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-roleset",
+			Namespace: "test-ns",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+			Annotations: map[string]string{
+				constants.RoleSetIndexAnnotationKey: "0",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			TopologyPolicy: &orchestrationv1alpha1.TopologyPolicy{
+				Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+				Key:   "kubernetes.io/hostname",
+			},
+		},
+	}
+	podGroupSize := int32(2)
+	roleIndex := 0
+	role := &orchestrationv1alpha1.RoleSpec{
+		Name:         "prefill",
+		PodGroupSize: &podGroupSize,
+		Template: corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "prefill"}},
+			},
+		},
+	}
+	syncer := &PodSetRoleSyncer{
+		computeHashFunc: fakeComputeHashFunc,
+	}
+
+	podSet := syncer.createPodSetForRole(roleSet, role, &roleIndex)
+
+	assert.Len(t, podSet.Spec.Template.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, 0)
+	preferred := podSet.Spec.Template.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	assert.Len(t, preferred, 1)
+	assert.Equal(t, int32(100), preferred[0].Weight)
+	assert.Equal(t, "kubernetes.io/hostname", preferred[0].PodAffinityTerm.TopologyKey)
+	assert.Equal(t, "test-roleset", preferred[0].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
+}
+
+func TestInjectContainerEnvVars(t *testing.T) {
+	// Setup test data
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-role-set",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+			Annotations: map[string]string{
+				constants.RoleSetIndexAnnotationKey: "1",
+			},
+		},
+	}
+
+	role := &orchestrationv1alpha1.RoleSpec{
+		Name: "test-role",
+	}
+
+	roleIndex := 0
+	templateHash := "test-hash"
+
+	// Create container with:
+	// 1. Some user-defined env vars in reverse alphabetical order
+	// 2. A env var with same name as built-in env var
+	container := &corev1.Container{
+		Name: "test-container",
+		Env: []corev1.EnvVar{
+			{Name: "USER_VAR_Z", Value: "value-z"},                       // Last in alphabetical order
+			{Name: "USER_VAR_M", Value: "value-m"},                       // Middle in alphabetical order
+			{Name: constants.RoleSetNameEnvKey, Value: "override-value"}, // Same name as built-in
+			{Name: "USER_VAR_A", Value: "value-a"},                       // First in alphabetical order
+		},
+	}
+
+	// Call the function under test
+	injectContainerEnvVars(container, roleSet, role, &roleIndex, templateHash)
+
+	// Verify the result
+	// Check that built-in env vars are not overridden
+	builtInEnvNames := []string{
+		constants.StormServiceNameEnvKey,
+		constants.RoleSetNameEnvKey,
+		constants.RoleSetIndexEnvKey,
+		constants.RoleNameEnvKey,
+		constants.RoleTemplateHashEnvKey,
+		constants.RoleReplicaIndexEnvKey,
+	}
+
+	assert.GreaterOrEqual(t, len(container.Env), len(builtInEnvNames), "Should have at least all built-in env vars")
+
+	// Track built-in env vars found
+	foundBuiltInEnvs := make(map[string]bool)
+
+	// Check the order and values
+	// Verify built-in env vars are present at the beginning
+	for i, env := range container.Env {
+		if i < len(builtInEnvNames) {
+			// First N env vars should be built-in
+			assert.Contains(t, builtInEnvNames, env.Name, "Built-in env var should be at the beginning")
+			foundBuiltInEnvs[env.Name] = true
+
+			// Check built-in env var values
+			switch env.Name {
+			case constants.StormServiceNameEnvKey:
+				assert.Equal(t, "test-service", env.Value)
+			case constants.RoleSetNameEnvKey:
+				assert.Equal(t, "test-role-set", env.Value) // Should not be overridden
+			case constants.RoleSetIndexEnvKey:
+				assert.Equal(t, "1", env.Value)
+			case constants.RoleNameEnvKey:
+				assert.Equal(t, "test-role", env.Value)
+			case constants.RoleTemplateHashEnvKey:
+				assert.Equal(t, "test-hash", env.Value)
+			case constants.RoleReplicaIndexEnvKey:
+				assert.Equal(t, "0", env.Value)
+			}
+		} else {
+			// User-defined env vars should come after built-in ones
+			assert.NotContains(t, builtInEnvNames, env.Name, "User-defined env var should not be a built-in name")
+		}
+	}
+
+	// 3. Check that all built-in env vars are present
+	for _, envName := range builtInEnvNames {
+		assert.True(t, foundBuiltInEnvs[envName], "Built-in env var %s should be present", envName)
+	}
+
+	// 4. Check that user-defined env vars maintain their original order
+	// Find the start index of user-defined env vars
+	userEnvStartIndex := len(builtInEnvNames)
+	assert.Less(t, userEnvStartIndex, len(container.Env), "Should have user-defined env vars")
+
+	// Check user-defined env vars order
+	expectedUserEnvOrder := []string{"USER_VAR_Z", "USER_VAR_M", "USER_VAR_A"}
+	for i, expectedName := range expectedUserEnvOrder {
+		actualIndex := userEnvStartIndex + i
+		assert.Less(t, actualIndex, len(container.Env), "Should have enough user-defined env vars")
+		assert.Equal(t, expectedName, container.Env[actualIndex].Name, "User-defined env var should maintain original order")
+	}
+}

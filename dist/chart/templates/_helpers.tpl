@@ -125,3 +125,99 @@ Create the name of the metadata service service account
 {{- .Values.metadata.serviceAccount.name | default "default" -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "aibrix.validateValues" -}}
+{{- if and .Values.gateway.enable .Values.gateway.envoyAsSideCar -}}
+{{- fail "gateway.enable and gateway.envoyAsSideCar are mutually exclusive and cannot both be true." -}}
+{{- end -}}
+
+{{- $builtInRedisEnabled := dig "redis" "enabled" true .Values.metadata -}}
+{{- $sharedEnablePassword := dig "redis" "enablePassword" false .Values.metadata -}}
+{{- $sharedPassword := dig "redis" "password" "" .Values.metadata -}}
+
+{{- /* Shared Redis password must be non-empty when enablePassword is true */ -}}
+{{- if and $sharedEnablePassword (empty (trim $sharedPassword)) -}}
+{{- fail "metadata.redis.enablePassword=true requires a non-empty metadata.redis.password." -}}
+{{- end -}}
+
+{{- /* When builtIn Redis is disabled, all components must declare an external Redis host */ -}}
+{{- if not $builtInRedisEnabled -}}
+{{- $missingHosts := list -}}
+{{- if empty (trim (dig "service" "redis" "host" "" .Values.metadata)) -}}
+  {{- $missingHosts = append $missingHosts "metadata.service.redis.host" -}}
+{{- end -}}
+{{- if empty (trim (dig "dependencies" "redis" "host" "" .Values.gatewayPlugin)) -}}
+  {{- $missingHosts = append $missingHosts "gatewayPlugin.dependencies.redis.host" -}}
+{{- end -}}
+{{- if empty (trim (dig "dependencies" "redis" "host" "" .Values.gpuOptimizer)) -}}
+  {{- $missingHosts = append $missingHosts "gpuOptimizer.dependencies.redis.host" -}}
+{{- end -}}
+
+{{- if gt (len $missingHosts) 0 -}}
+{{- fail (printf "metadata.redis.enabled=false requires non-empty values for %s." (join ", " $missingHosts)) -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
+  Prevent the use of component-specific Redis passwords when the shared builtIn Redis is enabled.
+  This OR block checks whether any custom password is set across the three components.
+*/ -}}
+{{- if and $builtInRedisEnabled (or
+  (dig "service" "redis" "password" "" .Values.metadata)
+  (dig "dependencies" "redis" "password" "" .Values.gatewayPlugin)
+  (dig "dependencies" "redis" "password" "" .Values.gpuOptimizer)) -}}
+{{- fail "built-in Redis does not support component-specific passwords; use metadata.redis.enablePassword/password for shared built-in Redis auth or disable built-in Redis for external Redis passwords." -}}
+{{- end -}}
+
+{{- end -}}
+
+{{/*
+Return whether the shared Redis password config is enabled.
+*/}}
+{{- define "aibrix.redis.sharedHasPassword" -}}
+{{- if or (dig "redis" "enablePassword" false .Values.metadata) (dig "redis" "password" "" .Values.metadata) -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Return whether a component Redis connection should use password auth.
+Supported components: metadataService, gatewayPlugin, gpuOptimizer.
+*/}}
+{{- define "aibrix.redis.connectionHasPassword" -}}
+{{- $sharedEnabled := dig "redis" "enablePassword" false .Values.metadata -}}
+{{- $sharedPassword := dig "redis" "password" "" .Values.metadata -}}
+
+{{- $componentPassword := "" -}}
+{{- if eq .component "metadataService" -}}
+  {{- $componentPassword = dig "service" "redis" "password" "" .Values.metadata -}}
+{{- else if eq .component "gatewayPlugin" -}}
+  {{- $componentPassword = dig "dependencies" "redis" "password" "" .Values.gatewayPlugin -}}
+{{- else if eq .component "gpuOptimizer" -}}
+  {{- $componentPassword = dig "dependencies" "redis" "password" "" .Values.gpuOptimizer -}}
+{{- end -}}
+
+{{- if or $sharedEnabled $sharedPassword $componentPassword -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Return whether the Redis Secret should be rendered.
+*/}}
+{{- define "aibrix.redis.anyPasswordsConfigured" -}}
+{{- if or
+  (include "aibrix.redis.sharedHasPassword" .)
+  (include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "metadataService"))
+  (include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "gatewayPlugin"))
+  (include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "gpuOptimizer")) -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Return the Redis password Secret key name for a component.
+*/}}
+{{- define "aibrix.redis.connectionPasswordKey" -}}
+{{- if eq .component "metadataService" -}}metadata-service-redis-password
+{{- else if eq .component "gatewayPlugin" -}}gateway-plugin-redis-password
+{{- else if eq .component "gpuOptimizer" -}}gpu-optimizer-redis-password
+{{- else if eq .component "redis" -}}redis-password
+{{- else -}}
+{{- fail (printf "aibrix.redis.connectionPasswordKey: unknown component %q" .component) -}}
+{{- end -}}
+{{- end -}}

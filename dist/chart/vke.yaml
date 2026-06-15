@@ -8,7 +8,7 @@ controllerManager:
   container:
     image:
       repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/controller-manager
-      tag: v0.5.0
+      tag: v0.7.0-rc.2
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -35,7 +35,7 @@ controllerManager:
   affinity: {}
 
 gatewayPlugin:
-  replicaCount: 1
+  replicaCount: 3
   imagePullSecrets: []
   initContainer:
     image:
@@ -44,15 +44,15 @@ gatewayPlugin:
   container:
     image:
       repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
-      tag: v0.5.0
+      tag: v0.7.0-rc.2
       imagePullPolicy: IfNotPresent
     resources:
       limits:
-        cpu: "1"
-        memory: 1Gi
+        cpu: "4"
+        memory: 8Gi
       requests:
-        cpu: "1"
-        memory: 1Gi
+        cpu: "4"
+        memory: 8Gi
     envs:
       AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"
       AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE: "character"
@@ -65,6 +65,19 @@ gatewayPlugin:
       host: aibrix-redis-master
       port: 6379
   messageTimeout: "60s"
+  extProc:
+    backendSettings:
+      circuitBreaker:
+        # The maximum number of connections that Envoy will establish to the external processing service.
+        maxConnections: 1024
+        # The maximum number of parallel requests that Envoy will make to the external processing service.
+        maxParallelRequests: 1024
+        # The maximum number of pending requests that Envoy will allow to the external processing service.
+        maxPendingRequests: 1024
+        # The maximum number of parallel retries that Envoy will allow to the external processing service.
+        maxParallelRetries: 1024
+        # The maximum number of requests that can be served through one connection to the external processing service.
+        maxRequestsPerConnection: 1024
   tolerations: []
 
 gpuOptimizer:
@@ -73,7 +86,7 @@ gpuOptimizer:
   container:
     image:
       repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/runtime
-      tag: v0.5.0
+      tag: v0.7.0-rc.2
     resources:
       limits:
         cpu: 500m
@@ -89,8 +102,20 @@ gpuOptimizer:
   affinity: {}
 
 gateway:
+  # Mode Selection (mutually exclusive; values must be opposite)
+  # | gateway.enable | envoyAsSideCar | Notes |
+  # | -------------- | ------------------- | ----- |
+  # | true           | false               | Envoy managed by Envoy Gateway (data plane). Installs Gateway, GatewayClass, EnvoyProxy, and gateway-plugins. |
+  # | false          | true                | Envoy runs as a sidecar with aibrix-gateway within your workload (no Gateway data plane). Renders only the sidecar Envoy ConfigMap. |
+  # | false          | false               | Disables both. No gateway and no sidecar. Useful when using an external gateway or for CRD-only installs. |
+  # | true           | true                | INVALID: Do not enable both. Values must be opposite. |
+  enable: true
+  envoyAsSideCar: false
+  envoySideCar:
+    ports:
+      http: 10080
   envoyProxy:
-    replicas: 1
+    replicas: 2
     imagePullSecrets: []
     tolerations: []
     affinity:
@@ -119,11 +144,11 @@ gateway:
         image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/envoy:v1.33.2
         resources:
           requests:
-            cpu: "1"
-            memory: 1Gi
+            cpu: "4"
+            memory: 8Gi
           limits:
-            cpu: "1"
-            memory: 1Gi
+            cpu: "4"
+            memory: 8Gi
       shutdownManager:
         image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway:v1.2.8
         resources:
@@ -133,10 +158,36 @@ gateway:
   clientTrafficPolicy:
     connection:
       bufferLimit: 4194304  # 4MiB
+      connectionLimit:
+        value: 1024
+    http2:
+      maxConcurrentStreams: 1024
+  backendTrafficPolicy:
+    circuitBreaker:
+      # The maximum number of connections to a backend pod.
+      maxConnections: 1024
+      # The maximum number of parallel requests to a backend pod.
+      maxParallelRequests: 1024
+      # The maximum number of parallel retries to a backend pod.
+      maxParallelRetries: 1024
+      # The maximum number of pending requests to a backend pod.
+      maxPendingRequests: 1024
+      # The maximum number of requests that can be served through one connection to a backend pod.
+      maxRequestsPerConnection: 1024
+    http2:
+      # The maximum number of concurrent streams for an HTTP/2 connection to a backend pod.
+      maxConcurrentStreams: 1024
   envoyPatchPolicy:
     route:
       timeout: 120s          # e.g., "120s" or "2m"
       connectTimeout: 6s     # e.g., "6s"
+    circuitBreakers:
+      # The maximum number of connections for the original destination cluster.
+      maxConnections: 1024
+      # The maximum number of requests that can be outstanding to the original destination cluster.
+      maxRequests: 1024
+      # The maximum number of pending requests to the original destination cluster.
+      maxPendingRequests: 1024
 
 
 metadata:
@@ -150,7 +201,7 @@ metadata:
     container:
       image:
         repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/metadata-service
-        tag: v0.5.0
+        tag: v0.7.0-rc.2
         imagePullPolicy: IfNotPresent
       resources:
         limits:

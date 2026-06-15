@@ -12,7 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .batch_job import (
+from aibrix.batch.job_entity.aibrix_metadata import (
+    AibrixMetadata,
+    BatchProfileRef,
+    ModelTemplateRef,
+    ResolvedModelTemplate,
+    ResourceAllocation,
+    ResourceDetail,
+    RuntimeSpec,
+    RuntimeTarget,
+)
+from aibrix.batch.job_entity.batch_job import (
     BatchJob,
     BatchJobEndpoint,
     BatchJobError,
@@ -20,34 +30,50 @@ from .batch_job import (
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    BatchUsage,
     CompletionWindow,
     Condition,
     ConditionStatus,
     ConditionType,
+    InputTokensDetails,
     ObjectMeta,
+    OutputTokensDetails,
     RequestCountStats,
     TypeMeta,
+    ensure_batch_job_error,
 )
-from .job_entity_manager import JobEntityManager
-from .k8s_transformer import BatchJobTransformer, JobAnnotationKey, k8s_job_to_batch_job
+from aibrix.batch.job_entity.k8s_transformer import (
+    BatchJobTransformer,
+    JobAnnotationKey,
+)
 
 __all__ = [
+    "AibrixMetadata",
+    "ModelTemplateRef",
+    "ResourceAllocation",
+    "RuntimeSpec",
+    "RuntimeTarget",
+    "BatchProfileRef",
+    "ResolvedModelTemplate",
+    "ResourceDetail",
     "BatchJob",
     "BatchJobEndpoint",
     "BatchJobSpec",
     "BatchJobState",
     "BatchJobErrorCode",
     "BatchJobError",
+    "ensure_batch_job_error",
     "BatchJobStatus",
+    "BatchUsage",
     "CompletionWindow",
     "Condition",
     "ConditionStatus",
     "ConditionType",
-    "JobEntityManager",
+    "InputTokensDetails",
     "ObjectMeta",
+    "OutputTokensDetails",
     "RequestCountStats",
     "TypeMeta",
     "BatchJobTransformer",
     "JobAnnotationKey",
-    "k8s_job_to_batch_job",
 ]

@@ -62,9 +62,8 @@ spec:
           image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai-aibrix-kvcache:v0.10.2-20251022
           imagePullPolicy: Always
           command:
-            - python3
-            - -m
-            - vllm.entrypoints.openai.api_server
+            - vllm
+            - serve
             - --port
             - "8000"
             - --uvicorn-log-level
@@ -111,6 +110,33 @@ spec:
               nvidia.com/gpu: "1"
               cpu: "10"
               memory: "120G"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 3
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 5
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 30
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
       volumes:
         - name: model-hostpath
           hostPath:

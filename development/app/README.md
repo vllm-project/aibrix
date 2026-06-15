@@ -143,12 +143,19 @@ curl http://localhost:8000/v1/chat/completions \
 - `/v1/chat/completions` - Chat completions (streaming supported)
 - `/v1/completions` - Text completions (streaming supported)
 - `/v1/embeddings` - Text embeddings
-- `/v1/images/generations` - Image generation
-- `/v1/video/generations` - Video generation
+- `/v1/images/generations` - Image generation (OpenAI format)
+- `/v1/video/generations` - Video generation (OpenAI/Sora format)
 - `/v1/rerank` - Document reranking
-- `/v1/audio/speech` - Text-to-speech
+- `/v1/audio/speech` - Text-to-speech (OpenAI + vLLM-Omni voices)
 - `/v1/audio/transcriptions` - Audio transcription
 - `/v1/audio/translations` - Audio translation
+
+### vLLM-Omni Endpoints
+- `/v1/chat/completions` - Image generation/editing (returns base64 image in content array when model name contains image keywords or diffusion params are present)
+- `/v1/chat/completions` - Chat with `modalities: ["text", "audio"]` returns mock audio in response
+- `/v1/audio/speech` - TTS with vLLM-Omni params (`language`, `instructions`, `task_type`, `ref_audio`, `ref_text`)
+- `/v1/audio/voices` - List available TTS voices
+- `/v1/videos` - Video generation (vLLM-Omni/Wan2.2 format, multipart/form-data, synchronous `b64_json` response, supports `input_reference` for I2V)
 
 ### vLLM-Specific Endpoints
 - `/v1/load_lora_adapter` - Load a LoRA adapter

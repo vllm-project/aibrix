@@ -74,6 +74,10 @@ func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 		klog.ErrorS(errors.New("get no TargetValueForMetric"), "APA Details", "metricsName", metricsName)
 		return int32(currentPodCount)
 	}
+	if expectedUse <= 0 {
+		klog.ErrorS(errors.New("expectedUse (TargetValue) must be > 0"), "APA Details", "metricsName", metricsName, "value", expectedUse)
+		return int32(currentPodCount)
+	}
 	upTolerance := context.GetUpFluctuationTolerance()
 	downTolerance := context.GetDownFluctuationTolerance()
 	currentUsePerPod := context.GetCurrentUsePerPod()

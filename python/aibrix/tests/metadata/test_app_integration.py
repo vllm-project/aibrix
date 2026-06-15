@@ -16,140 +16,176 @@ import argparse
 import os
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 # Set required environment variable before importing
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
+from aibrix.batch.state import JobStore
 from aibrix.metadata.app import build_app
+from aibrix.metadata.setting import settings
+from aibrix.storage import StorageType
 
 
-def test_build_app_without_k8s_job():
-    """Test building app without K8s job support."""
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
+def _args(**overrides):
+    defaults = {
+        "enable_fastapi_docs": False,
+        "enable_k8s_support": True,
+        "disable_batch_api": True,
+        "disable_file_api": True,
+        "job_store_provider": None,
+        "dry_run": False,
+    }
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+@pytest.fixture(autouse=True)
+def _local_storage_settings():
+    old_storage = settings.STORAGE_TYPE
+    old_metastore = settings.METASTORE_TYPE
+    settings.STORAGE_TYPE = StorageType.LOCAL
+    settings.METASTORE_TYPE = StorageType.LOCAL
+    try:
+        yield
+    finally:
+        settings.STORAGE_TYPE = old_storage
+        settings.METASTORE_TYPE = old_metastore
+
+
+@pytest.fixture
+def _mock_k8s_config_loading():
+    with (
+        patch("aibrix.metadata.app.config.load_incluster_config") as load_incluster,
+        patch("aibrix.metadata.app.config.load_kube_config") as load_kube,
+    ):
+        yield load_incluster, load_kube
+
+
+@pytest.fixture
+def _mock_k8s_runtime():
+    with (
+        patch("aibrix.metadata.app.k8s_client.CoreV1Api") as core_api,
+        patch("aibrix.metadata.app.k8s_client.AppsV1Api") as apps_api,
+    ):
+        yield core_api, apps_api
+
+
+def test_build_app_without_batch(_mock_k8s_config_loading):
+    """Building the app with batch + k8s disabled wires only the HTTP layer."""
+    args = _args(
         disable_batch_api=True,
         disable_file_api=True,
-        enable_k8s_job=False,
-        e2e_test=False,
+        enable_k8s_support=False,
     )
+    load_incluster, load_kube = _mock_k8s_config_loading
 
     app = build_app(args)
 
-    # App should not have kopf operator wrapper
-    assert not hasattr(app.state, "kopf_operator_wrapper")
+    # App should not load k8s config
+    load_incluster.assert_not_called()
+    load_kube.assert_not_called()
+
     assert hasattr(app.state, "httpx_client_wrapper")
+    assert not hasattr(app.state, "batch_driver")
 
 
-def test_build_app_with_k8s_job():
-    """Test building app with K8s job support."""
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
-        disable_batch_api=False,
-        disable_file_api=True,
-        enable_k8s_job=True,
-        k8s_namespace="test-namespace",
-        k8s_job_patch=None,
-        kopf_startup_timeout=5.0,
-        kopf_shutdown_timeout=2.0,
-        e2e_test=False,
-    )
+def test_build_app_batch_no_global_inference_endpoint(
+    _mock_k8s_config_loading, monkeypatch
+):
+    """With the batch API enabled, build_app succeeds without any global
+    inference endpoint: jobs carry their own aibrix.runtime.target and the
+    per-job runtime builds its own EndpointSource. The default entity manager
+    is the metastore-backed JobStore."""
+    monkeypatch.delenv("INFERENCE_ENGINE_ENDPOINT", raising=False)
+    args = _args(disable_batch_api=False)
 
-    with patch("aibrix.metadata.app.JobCache"):
-        app = build_app(args)
+    app = build_app(args)
 
-    # App should have kopf operator wrapper
-    assert hasattr(app.state, "kopf_operator_wrapper")
-    assert hasattr(app.state, "httpx_client_wrapper")
+    assert hasattr(app.state, "batch_driver")
+    assert isinstance(app.state.batch_driver.job_manager._job_entity_manager, JobStore)
+
+
+def test_build_app_creates_k8s_clients_when_enabled(
+    _mock_k8s_runtime, _mock_k8s_config_loading
+):
+    """--enable-k8s-support loads kube config and creates the CoreV1/AppsV1
+    clients used for per-job k8s execution. The ConfigMap-driven template/
+    profile registries were removed, so they stay None."""
+    args = _args(disable_batch_api=False, enable_k8s_support=True)
+    load_incluster, load_kube = _mock_k8s_config_loading
+    core_api, apps_api = _mock_k8s_runtime
+
+    app = build_app(args)
+
+    load_incluster.assert_called_once_with()
+    load_kube.assert_not_called()
+    core_api.assert_called_once_with()  # in _load_batch_k8s_context
+    apps_api.assert_called_once_with()  # in _load_batch_k8s_context
+    assert app.state.template_registry is None
+    assert app.state.profile_registry is None
+    assert isinstance(app.state.batch_driver.job_manager._job_entity_manager, JobStore)
+
+
+def test_build_app_skips_k8s_clients_when_disabled(
+    _mock_k8s_runtime, _mock_k8s_config_loading
+):
+    """Without --enable-k8s-support (the default), build_app neither loads kube
+    config nor creates k8s clients, even with the batch API enabled."""
+    args = _args(disable_batch_api=False, enable_k8s_support=False)
+    load_incluster, load_kube = _mock_k8s_config_loading
+    core_api, apps_api = _mock_k8s_runtime
+
+    app = build_app(args)
+
+    load_incluster.assert_not_called()
+    load_kube.assert_not_called()
+    core_api.assert_not_called()
+    apps_api.assert_not_called()
     assert hasattr(app.state, "batch_driver")
 
-    # Check kopf operator wrapper configuration
-    kopf_wrapper = app.state.kopf_operator_wrapper
-    assert kopf_wrapper.namespace == "test-namespace"
-    assert kopf_wrapper.startup_timeout == 5.0
-    assert kopf_wrapper.shutdown_timeout == 2.0
 
-
-def test_status_endpoint_without_k8s():
+def test_status_endpoint_without_k8s(_mock_k8s_config_loading):
     """Test /status endpoint without K8s support."""
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
+    args = _args(
+        enable_k8s_support=False,
         disable_batch_api=True,
         disable_file_api=True,
-        enable_k8s_job=False,
-        e2e_test=False,
     )
+    load_incluster, load_kube = _mock_k8s_config_loading
 
     app = build_app(args)
-    client = TestClient(app)
 
-    response = client.get("/status")
+    load_incluster.assert_not_called()
+    load_kube.assert_not_called()
+
+    test_client = TestClient(app)
+
+    response = test_client.get("/status")
     assert response.status_code == 200
 
     data = response.json()
     assert "httpx_client" in data
-    assert "kopf_operator" in data
     assert "batch_driver" in data
+    assert "kopf_operator" not in data
 
     assert data["httpx_client"]["available"] is True
-    assert data["kopf_operator"]["available"] is False
     assert data["batch_driver"]["available"] is False
-
-
-def test_status_endpoint_with_k8s():
-    """Test /status endpoint with K8s support."""
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
-        disable_batch_api=False,
-        disable_file_api=True,
-        enable_k8s_job=True,
-        k8s_job_patch=None,
-        k8s_namespace="test-namespace",
-        kopf_startup_timeout=5.0,
-        kopf_shutdown_timeout=2.0,
-        e2e_test=False,
-    )
-
-    with patch("aibrix.metadata.app.JobCache"):
-        app = build_app(args)
-
-    client = TestClient(app)
-
-    response = client.get("/status")
-    assert response.status_code == 200
-
-    data = response.json()
-    assert "httpx_client" in data
-    assert "kopf_operator" in data
-    assert "batch_driver" in data
-
-    assert data["httpx_client"]["available"] is True
-    assert data["kopf_operator"]["available"] is True
-    assert data["batch_driver"]["available"] is True
-
-    # Check kopf operator status details
-    kopf_status = data["kopf_operator"]
-    assert "is_running" in kopf_status
-    assert "namespace" in kopf_status
-    assert kopf_status["namespace"] == "test-namespace"
-    assert kopf_status["startup_timeout"] == 5.0
-    assert kopf_status["shutdown_timeout"] == 2.0
 
 
 def test_healthz_endpoint():
     """Test /healthz endpoint."""
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
+    args = _args(
+        enable_k8s_support=False,
         disable_batch_api=True,
         disable_file_api=True,
-        enable_k8s_job=False,
-        e2e_test=False,
     )
 
     app = build_app(args)
-    client = TestClient(app)
+    test_client = TestClient(app)
 
-    response = client.get("/healthz")
+    response = test_client.get("/healthz")
     assert response.status_code == 200
 
     data = response.json()
@@ -158,18 +194,16 @@ def test_healthz_endpoint():
 
 def test_ready_endpoint():
     """Test /readyz endpoint."""
-    args = argparse.Namespace(
-        enable_fastapi_docs=False,
+    args = _args(
+        enable_k8s_support=False,
         disable_batch_api=True,
         disable_file_api=True,
-        enable_k8s_job=False,
-        e2e_test=False,
     )
 
     app = build_app(args)
-    client = TestClient(app)
+    test_client = TestClient(app)
 
-    response = client.get("/readyz")
+    response = test_client.get("/readyz")
     assert response.status_code == 200
 
     data = response.json()

@@ -28,6 +28,7 @@ type Cache interface {
 	ModelCache
 	MetricCache
 	RequestTracker
+	RequestTrackerRegistry
 	ProfileCache
 	types.OutputPredictorProvider
 	types.RouterProvider
@@ -108,6 +109,10 @@ type MetricCache interface {
 }
 
 // RequestTracker defines operations for track workload statistics
+//
+// Contract: ctx may be nil (e.g. a request cancelled before routing completes).
+// The registry passes ctx through to every tracker unfiltered, so all
+// implementations MUST guard against a nil ctx (and a cancelled ctx.Context).
 type RequestTracker interface {
 	// AddRequestCount tracks the start of a request after routing.
 	// To support realtime statistics update and access, AddRequestCount can be called multiple times for a request.
@@ -141,6 +146,15 @@ type RequestTracker interface {
 	//   outputTokens: Number of output tokens
 	//   traceTerm: Trace term identifier
 	DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens, outputTokens, traceTerm int64)
+}
+
+// RequestTrackerRegistry can register multiple RequestTracker implementations
+// When Track operations are called, it will be passed to the registered RequestTracker
+type RequestTrackerRegistry interface {
+	RequestTracker
+	// the registered trackers are called before main tracker
+	// Notice that the operations may be called multiple times for the same request, and the registered trackers are called in the order they are registered
+	RegisterRequestTracker(tracker RequestTracker)
 }
 
 // ProfileCache defines operations for model profiles

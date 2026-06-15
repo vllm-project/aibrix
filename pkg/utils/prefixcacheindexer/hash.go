@@ -19,6 +19,7 @@ package prefixcacheindexer
 import (
 	"encoding/binary"
 	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 
@@ -33,6 +34,9 @@ const (
 	defaultPrefixCacheBlockSize              = 4
 	defaultPrefixCacheEvictionInternalInSec  = 1  // 1 second
 	defaultPrefixCacheEvictionDurationInMins = 20 // 20 minutes
+	defaultPrefixCacheHashSeed               = uint64(0)
+	envPrefixCacheHashSeed                   = "AIBRIX_PREFIX_CACHE_HASH_SEED"
+	envStateSyncEnabled                      = "AIBRIX_STATESYNC_ENABLED"
 )
 
 var (
@@ -42,32 +46,82 @@ var (
 	prefixCacheEvictionDuration = time.Duration(utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS", defaultPrefixCacheEvictionDurationInMins)) * time.Minute
 )
 
+var (
+	sharedOnce     sync.Once
+	sharedInstance *PrefixHashTable
+)
+
+func GetSharedPrefixHashTable() *PrefixHashTable {
+	sharedOnce.Do(func() {
+		sharedInstance = NewPrefixHashTable()
+	})
+	return sharedInstance
+}
+
 type PrefixHashTable struct {
-	mu    sync.RWMutex
-	seed  uint64
-	store lrustore.Store[uint64, Block]
+	mu       sync.RWMutex
+	seed     uint64
+	store    lrustore.Store[uint64, Block]
+	dirtyIds map[string]struct{} // block hash as string, for delta sync
 }
 
 type Block struct {
 	modelToPods map[string]map[string]time.Time // model_name: map[pod_name]pod_last_access_time
 }
 
+func randomPrefixCacheHashSeed() uint64 {
+	return rand.New(rand.NewSource(time.Now().UnixNano())).Uint64()
+}
+
+func prefixCacheHashSeed() uint64 {
+	stateSyncEnabled := utils.LoadEnvBool(envStateSyncEnabled, false)
+
+	seedStr, ok := utils.LookupEnv(envPrefixCacheHashSeed)
+	if ok && seedStr != "" {
+		seed, err := strconv.ParseUint(seedStr, 10, 64)
+		if err != nil {
+			if stateSyncEnabled {
+				klog.Warningf("invalid %s=%q with %s=true, using default %d: %v",
+					envPrefixCacheHashSeed, seedStr, envStateSyncEnabled, defaultPrefixCacheHashSeed, err)
+				return defaultPrefixCacheHashSeed
+			}
+			klog.Warningf("invalid %s=%q, using random seed: %v", envPrefixCacheHashSeed, seedStr, err)
+			return randomPrefixCacheHashSeed()
+		}
+		return seed
+	}
+
+	if stateSyncEnabled {
+		return defaultPrefixCacheHashSeed
+	}
+	return randomPrefixCacheHashSeed()
+}
+
 func NewPrefixHashTable() *PrefixHashTable {
-	r := rand.New(rand.NewSource(time.Now().Unix()))
-	seed := r.Uint64()
+	seed := prefixCacheHashSeed()
 	klog.InfoS("prefix_cache_hash_table_configurations",
+		"prefix_cache_hash_seed", seed,
+		"statesync_enabled", utils.LoadEnvBool(envStateSyncEnabled, false),
 		"prefix_cache_block_number", prefixCacheBlockNumber,
 		"prefix_cache_block_size", prefixCacheBlockSize,
 		"prefix_cache_block_eviction_interval_seconds", prefixCacheEvictionInterval,
 		"prefix_cache_block_eviction_duration_minutes", prefixCacheEvictionDuration)
 	instance := &PrefixHashTable{
-		seed: seed,
-		store: lrustore.NewLRUStore[uint64, Block](prefixCacheBlockNumber,
-			prefixCacheEvictionDuration,
-			prefixCacheEvictionInterval,
-			func() time.Time { return time.Now() }),
+		seed:  seed,
+		store: lrustore.NewLRUStore[uint64, Block](prefixCacheBlockNumber, prefixCacheEvictionDuration, prefixCacheEvictionInterval, func() time.Time { return time.Now() }),
 	}
 	return instance
+}
+
+// EnableDeltaSync initializes dirty-set tracking so GetDeltaForSync/ClearDirtyForSync
+// can be used. Call this once before registering with statesync.Manager. It is safe
+// to call multiple times; subsequent calls are no-ops.
+func (c *PrefixHashTable) EnableDeltaSync() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dirtyIds == nil {
+		c.dirtyIds = make(map[string]struct{})
+	}
 }
 
 // MatchPrefix matches the input token prefix's if already cached
@@ -82,14 +136,21 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 	defer c.mu.RUnlock()
 
 	// podname -> %prefixmatch
-	prefixMatchPods := map[string]int{}
+	prefixMatchPods := make(map[string]int, len(readyPods))
 	for i := 0; i < len(prefixHashes); i++ {
 		prefixHash := prefixHashes[i]
-		prefixMatchPercent := (i + 1) * 100 / len(prefixHashes)
-
 		block, ok := c.store.Get(prefixHash)
-		if !ok || len(block.modelToPods[model]) == 0 ||
-			!matchPods(block.modelToPods[model], readyPods, prefixMatchPods, prefixMatchPercent) {
+		if !ok {
+			break
+		}
+
+		blockPods := block.modelToPods[model]
+		if len(blockPods) == 0 {
+			break
+		}
+
+		prefixMatchPercent := (i + 1) * 100 / len(prefixHashes)
+		if !matchPods(blockPods, readyPods, prefixMatchPods, prefixMatchPercent) {
 			break
 		}
 	}
@@ -101,6 +162,7 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	now := time.Now()
 	for i := 0; i < len(prefixHashes); i++ {
 		prefixHash := prefixHashes[i]
 
@@ -108,9 +170,7 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 		if !ok {
 			block = Block{
 				modelToPods: map[string]map[string]time.Time{
-					model: {
-						pod: time.Now(),
-					},
+					model: {pod: now},
 				},
 			}
 		} else {
@@ -118,11 +178,14 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 			if !ok {
 				blockPods = map[string]time.Time{}
 			}
-			blockPods[pod] = time.Now()
+			blockPods[pod] = now
 			block.modelToPods[model] = blockPods
 		}
 
 		c.store.Put(prefixHash, block)
+		if c.dirtyIds != nil {
+			c.dirtyIds[strconv.FormatUint(prefixHash, 10)] = struct{}{}
+		}
 	}
 }
 

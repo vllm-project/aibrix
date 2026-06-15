@@ -17,6 +17,7 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -61,6 +62,9 @@ type PrefixCacheMetrics struct {
 	prefixCacheRoutingDecisions *prometheus.CounterVec
 	prefixCacheIndexerStatus    *prometheus.GaugeVec
 	prefixCacheRoutingLatency   *prometheus.HistogramVec
+	prefixCacheRoutingSelection *prometheus.CounterVec
+	prefixCacheRoutingErrors    *prometheus.CounterVec
+	prefixCacheLoadImbalance    *prometheus.CounterVec
 }
 
 // Global metrics instance
@@ -98,6 +102,30 @@ func createPrefixCacheMetrics() *PrefixCacheMetrics {
 			},
 			[]string{"model", "using_kv_sync"},
 		),
+		prefixCacheRoutingSelection: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "prefix_cache_routing_selection_total",
+				Help:      "Total number of prefix cache routing pod selections by method",
+			},
+			[]string{"model", "selection", "using_kv_sync"},
+		),
+		prefixCacheRoutingErrors: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "prefix_cache_routing_errors_total",
+				Help:      "Total number of prefix cache routing failures by reason",
+			},
+			[]string{"model", "reason", "using_kv_sync"},
+		),
+		prefixCacheLoadImbalance: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "prefix_cache_load_imbalance_total",
+				Help:      "Total number of requests where pod load was imbalanced",
+			},
+			[]string{"model", "using_kv_sync"},
+		),
 	}
 }
 
@@ -107,6 +135,9 @@ func (m *PrefixCacheMetrics) register() error {
 		m.prefixCacheRoutingDecisions,
 		m.prefixCacheIndexerStatus,
 		m.prefixCacheRoutingLatency,
+		m.prefixCacheRoutingSelection,
+		m.prefixCacheRoutingErrors,
+		m.prefixCacheLoadImbalance,
 	}
 
 	for _, collector := range collectors {
@@ -121,14 +152,8 @@ func (m *PrefixCacheMetrics) register() error {
 	return nil
 }
 
-// initializePrefixCacheMetrics initializes prefix cache metrics if enabled
+// initializePrefixCacheMetrics initializes and registers prefix cache metrics
 func initializePrefixCacheMetrics() error {
-	// Check if metrics are enabled
-	metricsEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheLocalRouterMetricsEnabled, false)
-	if !metricsEnabled {
-		return nil
-	}
-
 	var err error
 	prefixCacheMetricsOnce.Do(func() {
 		prefixCacheMetricsMu.Lock()
@@ -159,10 +184,9 @@ func init() {
 
 // kvSyncPrefixCacheRouter handles routing when KV sync is enabled
 type kvSyncPrefixCacheRouter struct {
-	cache          cache.Cache
-	tokenizerPool  TokenizerPoolInterface // Add TokenizerPool reference
-	syncIndexer    *syncindexer.SyncPrefixHashTable
-	metricsEnabled bool
+	cache         cache.Cache
+	tokenizerPool TokenizerPoolInterface
+	syncIndexer   *syncindexer.SyncPrefixHashTable
 }
 
 type prefixCacheRouter struct {
@@ -285,7 +309,7 @@ func NewPrefixCacheRouter() (types.Router, error) {
 	router := prefixCacheRouter{
 		cache:              c,
 		tokenizer:          tokenizerObj,
-		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+		prefixCacheIndexer: prefixcacheindexer.GetSharedPrefixHashTable(),
 		// Only assign tokenizerPool if it's not nil to avoid interface nil issues
 	}
 
@@ -297,28 +321,20 @@ func NewPrefixCacheRouter() (types.Router, error) {
 	// Only create KV sync router if enabled
 	if kvSyncEnabled && useRemoteTokenizer && tokenizerPool != nil {
 		kvSyncRouter := &kvSyncPrefixCacheRouter{
-			cache:          c,
-			tokenizerPool:  tokenizerPool, // Pass the pool reference
-			syncIndexer:    syncindexer.NewSyncPrefixHashTable(),
-			metricsEnabled: true,
+			cache:         c,
+			tokenizerPool: tokenizerPool,
+			syncIndexer:   syncindexer.GetSharedSyncPrefixHashTable(),
 		}
 
 		router.kvSyncRouter = kvSyncRouter
 
-		// Set initial metrics only if KV sync is enabled
 		if metrics := getPrefixCacheMetrics(); metrics != nil {
 			metrics.prefixCacheIndexerStatus.WithLabelValues("", "sync").Set(1)
 			metrics.prefixCacheIndexerStatus.WithLabelValues("", "local").Set(0)
 		}
-	} else {
-		// Set local indexer metrics only if metrics are enabled
-		metricsEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheLocalRouterMetricsEnabled, false)
-		if metricsEnabled {
-			if metrics := getPrefixCacheMetrics(); metrics != nil {
-				metrics.prefixCacheIndexerStatus.WithLabelValues("", "local").Set(1)
-				metrics.prefixCacheIndexerStatus.WithLabelValues("", "sync").Set(0)
-			}
-		}
+	} else if metrics := getPrefixCacheMetrics(); metrics != nil {
+		metrics.prefixCacheIndexerStatus.WithLabelValues("", "local").Set(1)
+		metrics.prefixCacheIndexerStatus.WithLabelValues("", "sync").Set(0)
 	}
 
 	return router, nil
@@ -358,14 +374,23 @@ func (p prefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.P
 
 // routeOriginal preserves the exact original implementation for backward compatibility
 func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	startTime := time.Now()
+	defer func() {
+		if metrics := getPrefixCacheMetrics(); metrics != nil {
+			metrics.prefixCacheRoutingLatency.WithLabelValues(ctx.Model, "false").Observe(time.Since(startTime).Seconds())
+		}
+	}()
+
 	var prefixHashes []uint64
 	var matchedPods map[string]int
 	var targetPod *v1.Pod
+	var selection string
 
 	// Use helper method to get the appropriate tokenizer
 	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
 	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
 	if err != nil {
+		recordRoutingError(ctx.Model, "tokenize_failed", false)
 		return "", err
 	}
 
@@ -377,10 +402,12 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 
 	leastReqPodList, isLoadImbalanced := getTargetPodListOnLoadImbalance(p.cache, readyPods)
 	if isLoadImbalanced {
+		recordLoadImbalance(ctx.Model, false)
 		if len(leastReqPodList) == 0 {
-			klog.InfoS("prefix_cache_load_imbalanced_no_target",
+			klog.V(4).InfoS("prefix_cache_load_imbalanced_no_target",
 				"request_id", ctx.RequestID,
 				"pod_request_count", getRequestCounts(p.cache, readyPods))
+			recordRoutingError(ctx.Model, "load_imbalance_no_target", false)
 			return "", errors.New("no target pod found when load imbalanced")
 		}
 		readyPodsMap = map[string]struct{}{}
@@ -388,26 +415,27 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 		for _, pod := range leastReqPodList {
 			readyPodsMap[pod.Name] = struct{}{}
 		}
-		klog.InfoS("prefix_cache_load_imbalanced",
+		klog.V(4).InfoS("prefix_cache_load_imbalanced",
 			"request_id", ctx.RequestID,
 			"pod_request_count", getRequestCounts(p.cache, readyPods),
 			"target_pod_list", readyPodsMap)
 	}
 	// handle request with readyPodsMap from balanced or imbalanced filter
 	matchedPods, prefixHashes = p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
-	klog.InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
+	klog.V(4).InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
 
 	if len(matchedPods) > 0 {
 		targetPod = getTargetPodFromMatchedPods(p.cache, readyPods, matchedPods)
 		if targetPod != nil {
-			klog.InfoS("prefix_cache_matched_pods",
+			selection = "prefix_match"
+			klog.V(4).InfoS("prefix_cache_matched_pods",
 				"request_id", ctx.RequestID,
 				"target_pod", targetPod.Name,
 				"target_pod_ip", targetPod.Status.PodIP,
 				"matched_pods", matchedPods,
 				"pod_request_count", getRequestCounts(p.cache, readyPods))
 		} else {
-			klog.InfoS("prefix_cache_skip_matched_pods",
+			klog.V(4).InfoS("prefix_cache_skip_matched_pods",
 				"request_id", ctx.RequestID,
 				"matched_pods", matchedPods,
 				"pod_request_count", getRequestCounts(p.cache, readyPods))
@@ -416,31 +444,182 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 
 	// no pod with prefix match, as a fallback select pod with least request count
 	if len(matchedPods) == 0 || targetPod == nil {
-		targetPod = selectTargetPodWithLeastRequestCount(p.cache, readyPods)
-		if targetPod != nil {
-			klog.InfoS("prefix_cache_fallback_least_request_count",
+		fallbackPod := selectTargetPodWithLeastRequestCount(p.cache, readyPods)
+		if fallbackPod != nil {
+			targetPod = fallbackPod
+			if len(matchedPods) > 0 {
+				selection = "prefix_match_skipped"
+			} else {
+				selection = "least_request_fallback"
+			}
+			klog.V(4).InfoS("prefix_cache_fallback_least_request_count",
 				"request_id", ctx.RequestID,
 				"target_pod", targetPod.Name,
 				"target_pod_ip", targetPod.Status.PodIP,
 				"matched_pods", matchedPods,
 				"pod_request_count", getRequestCounts(p.cache, readyPods))
 		} else {
-			klog.InfoS("prefix_cache_no_pods_available",
+			klog.V(4).InfoS("prefix_cache_no_pods_available",
 				"request_id", ctx.RequestID,
 				"matched_pods", matchedPods,
 				"pod_request_count", getRequestCounts(p.cache, readyPods))
 		}
 	}
 	if targetPod == nil {
+		recordRoutingError(ctx.Model, "no_target_pod", false)
 		return "", errors.New("no target pod found")
 	}
 
-	if len(prefixHashes) > 0 {
-		p.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Name)
+	if err := p.PostRouteUpdate(ctx, readyPodList, targetPod); err != nil {
+		recordRoutingError(ctx.Model, "post_route_update_failed", false)
+		return "", err
+	}
+
+	matchPercent := 0
+	if len(matchedPods) > 0 {
+		if percent, exists := matchedPods[targetPod.Name]; exists {
+			matchPercent = percent
+		}
+	}
+	recordRoutingDecision(ctx.Model, matchPercent, false)
+	if selection != "" {
+		recordRoutingSelection(ctx.Model, selection, false)
 	}
 
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
+}
+
+func (p prefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) error {
+	if p.kvSyncRouter != nil {
+		return p.kvSyncRouter.PostRouteUpdate(ctx, readyPodList, targetPod)
+	}
+
+	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return err
+	}
+
+	prefixHashes := p.prefixCacheIndexer.GetPrefixHashes(tokens)
+	if len(prefixHashes) > 0 {
+		p.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Name)
+	}
+
+	return nil
+}
+
+func (k *kvSyncPrefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) error {
+	pods := readyPodList.All()
+	modelName := ctx.Model
+	if modelName == "" && len(pods) > 0 {
+		modelName = pods[0].Labels[constants.ModelLabelName]
+	}
+
+	tokenizerToUse := k.getTokenizerForRequest(ctx, readyPodList)
+	if tokenizerToUse == nil {
+		return fmt.Errorf("TokenizerPool not initialized for KV sync router")
+	}
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return err
+	}
+
+	readyPodsMap := map[string]struct{}{}
+	for _, pod := range pods {
+		readyPodsMap[fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)] = struct{}{}
+	}
+	if k.syncIndexer == nil {
+		return fmt.Errorf("sync indexer not available for KV sync routing")
+	}
+	_, prefixHashes := k.syncIndexer.MatchPrefix(modelName, int64(-1), tokens, readyPodsMap)
+	if len(prefixHashes) == 0 {
+		return nil
+	}
+	selectedPodKey := fmt.Sprintf("%s/%s", targetPod.Namespace, targetPod.Name)
+	return k.syncIndexer.AddPrefix(modelName, int64(-1), selectedPodKey, prefixHashes)
+}
+
+// ScoreAll traverses the Radix Tree to calculate the prefix match ratio (matched tokens / total tokens) for all ready pods.
+// Unlike simple metric fetching, this dynamically calculates the score based on the specific request's input tokens.
+func (p prefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	pods := readyPodList.All()
+	scores := make([]float64, len(pods))
+	scored := make([]bool, len(pods))
+
+	if p.kvSyncRouter != nil {
+		return p.kvSyncRouter.ScoreAll(ctx, readyPodList)
+	}
+
+	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	readyPodsMap := map[string]struct{}{}
+	for _, pod := range pods {
+		readyPodsMap[pod.Name] = struct{}{}
+	}
+
+	matchedPods, _ := p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
+
+	for i, pod := range pods {
+		matchPercent := matchedPods[pod.Name]
+		scores[i] = float64(matchPercent)
+		scored[i] = true
+	}
+
+	return scores, scored, nil
+}
+
+// Polarity returns whether higher or lower score is better.
+func (p prefixCacheRouter) Polarity() types.Polarity {
+	return types.PolarityMost
+}
+
+// ScoreAll computes the scores for all ready pods in a single batch operation for KV sync router.
+func (k *kvSyncPrefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	pods := readyPodList.All()
+	scores := make([]float64, len(pods))
+	scored := make([]bool, len(pods))
+
+	modelName := ctx.Model
+	if modelName == "" && len(pods) > 0 {
+		modelName = pods[0].Labels[constants.ModelLabelName]
+	}
+
+	loraID := int64(-1)
+
+	tokenizerToUse := k.getTokenizerForRequest(ctx, readyPodList)
+	if tokenizerToUse == nil {
+		return nil, nil, fmt.Errorf("TokenizerPool not initialized for KV sync router")
+	}
+
+	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	readyPodsMap := map[string]struct{}{}
+	for _, pod := range pods {
+		podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+		readyPodsMap[podKey] = struct{}{}
+	}
+
+	if k.syncIndexer == nil {
+		return nil, nil, fmt.Errorf("sync indexer not available for KV sync routing")
+	}
+	matchedPods, _ := k.syncIndexer.MatchPrefix(modelName, loraID, tokens, readyPodsMap)
+
+	for i, pod := range pods {
+		podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+		matchPercent := matchedPods[podKey]
+		scores[i] = float64(matchPercent)
+		scored[i] = true
+	}
+
+	return scores, scored, nil
 }
 
 // Cleanup gracefully shuts down the TokenizerPool if it exists
@@ -455,22 +634,125 @@ func (p *prefixCacheRouter) Cleanup() error {
 	return nil
 }
 
-// Route handles KV sync routing with clean implementation
-func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
-	// Start timing for latency metric if metrics are enabled
-	var startTime time.Time
-	if k.metricsEnabled {
-		startTime = time.Now()
-		defer func() {
-			if metrics := getPrefixCacheMetrics(); metrics != nil {
-				metrics.prefixCacheRoutingLatency.WithLabelValues(ctx.Model, "true").Observe(time.Since(startTime).Seconds())
-			}
-		}()
+// buildTokenizeInputFromChatRequest converts ChatCompletionRequest to TokenizeInput
+// preserving multimodal content and vLLM-specific parameters
+func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest) (*tokenizer.TokenizeInput, error) {
+	if len(chatReq.Messages) == 0 {
+		return nil, fmt.Errorf("no messages in chat completion request")
 	}
 
+	// Convert OpenAI messages to tokenizer messages, preserving content structure
+	messages := make([]tokenizer.ChatMessage, len(chatReq.Messages))
+	for i, msg := range chatReq.Messages {
+		role := msg.GetRole()
+		if role == nil {
+			return nil, fmt.Errorf("message at index %d has no role", i)
+		}
+
+		// Directly marshal the content to preserve its structure
+		content := msg.GetContent()
+		contentAny := content.AsAny()
+		if contentAny == nil {
+			return nil, fmt.Errorf("message at index %d has nil content", i)
+		}
+		contentJSON, err := json.Marshal(contentAny)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal message content at index %d: %w", i, err)
+		}
+
+		messages[i] = tokenizer.ChatMessage{
+			Role:    *role,
+			Content: contentJSON,
+		}
+	}
+
+	// Extract vLLM-specific parameters with defaults matching vLLM behavior
+	addSpecialTokens := false
+	if chatReq.AddSpecialTokens != nil {
+		addSpecialTokens = *chatReq.AddSpecialTokens
+	}
+
+	addGenerationPrompt := true
+	if chatReq.AddGenerationPrompt != nil {
+		addGenerationPrompt = *chatReq.AddGenerationPrompt
+	}
+
+	returnTokenStrings := false
+	if chatReq.ReturnTokenStrings != nil {
+		returnTokenStrings = *chatReq.ReturnTokenStrings
+	}
+
+	return &tokenizer.TokenizeInput{
+		Type:                tokenizer.ChatInput,
+		Messages:            messages,
+		AddSpecialTokens:    addSpecialTokens,
+		AddGenerationPrompt: addGenerationPrompt,
+		ReturnTokenStrings:  returnTokenStrings,
+	}, nil
+}
+
+// tokenizeChatRequest attempts to tokenize a chat completion request using chat template.
+// Returns the tokenized bytes on success, or nil if tokenization should fall back to text mode.
+// All errors are logged internally at V(4) level.
+func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext, tokenizerToUse tokenizer.Tokenizer) []byte {
+	// Check if tokenizer supports extended features
+	extTokenizer, ok := tokenizerToUse.(tokenizer.ExtendedTokenizer)
+	if !ok {
+		klog.V(4).InfoS("tokenizer does not support ExtendedTokenizer, using text tokenization",
+			"request_id", ctx.RequestID)
+		return nil
+	}
+
+	// Parse request body as ChatCompletionRequest
+	var chatReq types.ChatCompletionRequest
+	if err := json.Unmarshal(ctx.ReqBody, &chatReq); err != nil {
+		klog.V(4).InfoS("failed to parse chat request, falling back to text",
+			"request_id", ctx.RequestID,
+			"error", err)
+		return nil
+	}
+
+	if len(chatReq.Messages) == 0 {
+		klog.V(4).InfoS("no messages in chat request, falling back to text",
+			"request_id", ctx.RequestID)
+		return nil
+	}
+
+	// Build TokenizeInput from request
+	input, err := buildTokenizeInputFromChatRequest(&chatReq)
+	if err != nil {
+		klog.V(4).InfoS("failed to build tokenize input, falling back to text",
+			"request_id", ctx.RequestID,
+			"error", err)
+		return nil
+	}
+
+	// Perform tokenization with chat template
+	result, err := extTokenizer.TokenizeWithOptions(ctx.Context, *input)
+	if err != nil {
+		klog.V(4).InfoS("chat tokenization failed, falling back to text",
+			"request_id", ctx.RequestID,
+			"error", err)
+		return nil
+	}
+
+	// Success - log and return tokens
+	tokens := tokenizer.IntToByteArray(result.Tokens)
+	klog.V(4).InfoS("tokenized using chat template",
+		"request_id", ctx.RequestID,
+		"message_count", len(input.Messages),
+		"token_count", len(result.Tokens),
+		"add_generation_prompt", input.AddGenerationPrompt,
+		"add_special_tokens", input.AddSpecialTokens)
+	return tokens
+}
+
+// Route handles KV sync routing with clean implementation
+func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	var prefixHashes []uint64
 	var matchedPods map[string]int
 	var targetPod *v1.Pod
+	var selection string
 
 	// Get model information from context
 	modelName := ctx.Model
@@ -478,6 +760,13 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	if modelName == "" && len(allPods) > 0 {
 		modelName = allPods[0].Labels[constants.ModelLabelName]
 	}
+
+	startTime := time.Now()
+	defer func() {
+		if metrics := getPrefixCacheMetrics(); metrics != nil {
+			metrics.prefixCacheRoutingLatency.WithLabelValues(modelName, "true").Observe(time.Since(startTime).Seconds())
+		}
+	}()
 
 	loraID := int64(-1) // TODO: Extract from context when available
 
@@ -487,10 +776,20 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 		return "", fmt.Errorf("TokenizerPool not initialized for KV sync router")
 	}
 
-	// Tokenize the input
-	tokens, err := tokenizerToUse.TokenizeInputText(ctx.Message)
-	if err != nil {
-		return "", err
+	// Tokenize the input based on endpoint type
+	var tokens []byte
+	if ctx.ReqPath == "/v1/chat/completions" {
+		tokens = k.tokenizeChatRequest(ctx, tokenizerToUse)
+	}
+
+	// Fallback to text tokenization if chat tokenization wasn't used or failed
+	if tokens == nil {
+		var err error
+		tokens, err = tokenizerToUse.TokenizeInputText(ctx.Message)
+		if err != nil {
+			recordRoutingError(modelName, "tokenize_failed", true)
+			return "", err
+		}
 	}
 
 	readyPods := readyPodList.All()
@@ -505,10 +804,12 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	// Check for load imbalance first
 	leastReqPodList, isLoadImbalanced := getTargetPodListOnLoadImbalance(k.cache, readyPods)
 	if isLoadImbalanced {
+		recordLoadImbalance(modelName, true)
 		if len(leastReqPodList) == 0 {
 			klog.InfoS("prefix_cache_load_imbalanced_no_target",
 				"request_id", ctx.RequestID,
 				"pod_request_count", getRequestCounts(k.cache, readyPods))
+			recordRoutingError(modelName, "load_imbalance_no_target", true)
 			return "", errors.New("no target pod found when load imbalanced")
 		}
 		readyPodsMap = map[string]struct{}{}
@@ -525,7 +826,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 
 	// Match prefixes using sync indexer
 	if k.syncIndexer == nil {
-		// Return error if sync indexer is not available
+		recordRoutingError(modelName, "sync_indexer_unavailable", true)
 		return "", fmt.Errorf("sync indexer not available for KV sync routing")
 	}
 	matchedPods, prefixHashes = k.syncIndexer.MatchPrefix(modelName, loraID, tokens, readyPodsMap)
@@ -540,6 +841,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	if len(matchedPods) > 0 {
 		targetPod = getTargetPodFromMatchedPodsWithKeys(k.cache, readyPods, matchedPods)
 		if targetPod != nil {
+			selection = "prefix_match"
 			klog.InfoS("prefix_cache_matched_pods",
 				"request_id", ctx.RequestID,
 				"target_pod", targetPod.Name,
@@ -558,6 +860,11 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	if len(matchedPods) == 0 || targetPod == nil {
 		targetPod = selectTargetPodWithLeastRequestCount(k.cache, readyPods)
 		if targetPod != nil {
+			if len(matchedPods) > 0 {
+				selection = "prefix_match_skipped"
+			} else {
+				selection = "least_request_fallback"
+			}
 			klog.InfoS("prefix_cache_fallback_least_request_count",
 				"request_id", ctx.RequestID,
 				"target_pod", targetPod.Name,
@@ -569,6 +876,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 
 	// Handle case where no pods are available
 	if targetPod == nil {
+		recordRoutingError(modelName, "no_target_pod", true)
 		return "", fmt.Errorf("no ready pods available for routing")
 	}
 
@@ -579,15 +887,15 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 		_ = k.syncIndexer.AddPrefix(modelName, loraID, selectedPodKey, prefixHashes)
 	}
 
-	// Record routing decision metric if metrics are enabled
-	if k.metricsEnabled {
-		matchPercent := 0
-		if len(matchedPods) > 0 {
-			if percent, exists := matchedPods[selectedPodKey]; exists {
-				matchPercent = percent
-			}
+	matchPercent := 0
+	if len(matchedPods) > 0 {
+		if percent, exists := matchedPods[selectedPodKey]; exists {
+			matchPercent = percent
 		}
-		recordRoutingDecision(modelName, matchPercent, true)
+	}
+	recordRoutingDecision(modelName, matchPercent, true)
+	if selection != "" {
+		recordRoutingSelection(modelName, selection, true)
 	}
 
 	ctx.SetTargetPod(targetPod)
@@ -777,4 +1085,28 @@ func recordRoutingDecision(model string, matchPercent int, usingKVSync bool) {
 	}
 
 	metrics.prefixCacheRoutingDecisions.WithLabelValues(model, bucket, strconv.FormatBool(usingKVSync)).Inc()
+}
+
+func recordRoutingSelection(model, selection string, usingKVSync bool) {
+	metrics := getPrefixCacheMetrics()
+	if metrics == nil {
+		return
+	}
+	metrics.prefixCacheRoutingSelection.WithLabelValues(model, selection, strconv.FormatBool(usingKVSync)).Inc()
+}
+
+func recordRoutingError(model, reason string, usingKVSync bool) {
+	metrics := getPrefixCacheMetrics()
+	if metrics == nil {
+		return
+	}
+	metrics.prefixCacheRoutingErrors.WithLabelValues(model, reason, strconv.FormatBool(usingKVSync)).Inc()
+}
+
+func recordLoadImbalance(model string, usingKVSync bool) {
+	metrics := getPrefixCacheMetrics()
+	if metrics == nil {
+		return
+	}
+	metrics.prefixCacheLoadImbalance.WithLabelValues(model, strconv.FormatBool(usingKVSync)).Inc()
 }

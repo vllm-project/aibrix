@@ -14,7 +14,9 @@
 
 """Artifact delegation service for LoRA adapters."""
 
+import asyncio
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Dict, Optional
@@ -32,6 +34,9 @@ from aibrix.openapi.protocol import (
 from aibrix.runtime.downloaders import get_downloader
 
 logger = init_logger(__name__)
+
+
+_SAFE_LORA_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class ArtifactDelegationService:
@@ -117,9 +122,25 @@ class ArtifactDelegationService:
         logger.info(f"Loaded {len(credentials)} credential keys from {secret_path}")
         return credentials
 
+    def _validate_lora_name(self, lora_name: str) -> None:
+        """Reject lora_name values that could escape self.local_dir."""
+        if not isinstance(lora_name, str) or not _SAFE_LORA_NAME.match(lora_name):
+            raise ValueError(
+                "Invalid lora_name: must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            )
+
     def _get_local_path_for_adapter(self, lora_name: str) -> str:
-        """Get local path for storing adapter artifacts."""
-        return os.path.join(self.local_dir, lora_name)
+        """Get local path for storing adapter artifacts.
+
+        Validates lora_name and enforces that the resolved path stays inside
+        self.local_dir. Raises ValueError on attempted traversal.
+        """
+        self._validate_lora_name(lora_name)
+        base = Path(self.local_dir).resolve()
+        candidate = (base / lora_name).resolve()
+        if base not in candidate.parents:
+            raise ValueError("lora_name resolves outside local_dir")
+        return str(candidate)
 
     async def download_artifact(
         self,
@@ -131,7 +152,7 @@ class ArtifactDelegationService:
         Download artifact from remote location.
 
         Args:
-            artifact_url: Source URL (s3://, gs://, huggingface://, etc.)
+            artifact_url: Source URL (s3://, gs://, huggingface://, tos://, etc.)
             lora_name: Name of the LoRA adapter
             credentials: Optional credentials dict
 
@@ -159,8 +180,9 @@ class ArtifactDelegationService:
             downloader = get_downloader(artifact_url)
 
             # Download artifact
+            credentials_copy = dict(credentials) if credentials else None
             downloaded_path = await downloader.download(
-                artifact_url, local_path, credentials
+                artifact_url, local_path, credentials_copy
             )
 
             logger.info(
@@ -206,7 +228,14 @@ class ArtifactDelegationService:
         try:
             # Load credentials if specified
             credentials = None
-            if request.credentials_secret:
+            if hasattr(request, "credentials") and request.credentials:
+                # Use credentials directly from request if provided
+                credentials = request.credentials
+                logger.info(
+                    f"Using direct credentials from request with keys: {list(credentials.keys())}"
+                )
+            elif request.credentials_secret:
+                # Fallback to loading from secret file
                 credentials = self._load_credentials(request.credentials_secret)
 
             # Merge additional config into credentials
@@ -313,7 +342,8 @@ class ArtifactDelegationService:
                 local_path = self._get_local_path_for_adapter(lora_name)
                 if os.path.exists(local_path):
                     try:
-                        shutil.rmtree(local_path)
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, shutil.rmtree, local_path)
                         logger.info(f"Cleaned up local artifacts for {lora_name}")
                     except Exception as e:
                         logger.warning(
@@ -337,7 +367,8 @@ class ArtifactDelegationService:
 
         if os.path.exists(local_path):
             try:
-                shutil.rmtree(local_path)
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, shutil.rmtree, local_path)
                 logger.info(f"Cleaned up artifacts for {lora_name}")
             except Exception as e:
                 logger.warning(f"Failed to clean up artifacts for {lora_name}: {e}")

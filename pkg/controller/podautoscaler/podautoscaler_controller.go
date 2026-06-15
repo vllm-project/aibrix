@@ -35,7 +35,6 @@ import (
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
-	"github.com/vllm-project/aibrix/pkg/controller/constants"
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/monitor"
@@ -210,15 +209,19 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	klog.InfoS("Added AIBrix pod-autoscaler-controller successfully")
 
-	errChan := make(chan error)
-	go reconciler.Run(context.Background(), errChan)
-	klog.InfoS("Run pod-autoscaler-controller periodical syncs successfully")
-
-	go func() {
-		for err := range errChan {
-			klog.ErrorS(err, "Run function returned an error")
-		}
-	}()
+	// Register the periodical sync loop as a manager Runnable so that it shares
+	// the manager's lifecycle: controller-runtime supplies a context that is
+	// cancelled on shutdown, and the manager waits for this goroutine to exit
+	// before returning from Start. This avoids leaking the previously used
+	// errChan + background goroutine pair that could block forever if the
+	// channel was never closed.
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		klog.InfoS("Run pod-autoscaler-controller periodical syncs successfully")
+		reconciler.Run(ctx)
+		return nil
+	})); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -542,7 +545,11 @@ func (r *PodAutoscalerReconciler) setInvalidSpecStatus(
 	return r.updateStatusIfNeeded(ctx, st, pa)
 }
 
-func (r *PodAutoscalerReconciler) Run(ctx context.Context, errChan chan<- error) {
+// Run periodically enqueues all PodAutoscaler objects until ctx is cancelled.
+// It is expected to be invoked by the controller-runtime manager via
+// manager.RunnableFunc, so that ctx is tied to the manager lifecycle and the
+// manager will wait for this function to return during shutdown.
+func (r *PodAutoscalerReconciler) Run(ctx context.Context) {
 	ticker := time.NewTicker(r.resyncInterval)
 	defer ticker.Stop()
 	defer close(r.eventCh)
@@ -554,11 +561,9 @@ func (r *PodAutoscalerReconciler) Run(ctx context.Context, errChan chan<- error)
 			// periodically sync all autoscaling objects
 			if err := r.enqueuePodAutoscalers(ctx); err != nil {
 				klog.ErrorS(err, "Failed to enqueue pod autoscaler objects")
-				errChan <- err
 			}
 		case <-ctx.Done():
 			klog.Info("context done, stopping running the loop")
-			errChan <- ctx.Err()
 			return
 		}
 	}
@@ -569,12 +574,19 @@ func (r *PodAutoscalerReconciler) enqueuePodAutoscalers(ctx context.Context) err
 	if err := r.List(ctx, podAutoscalerLists); err != nil {
 		return err
 	}
-	for _, pa := range podAutoscalerLists.Items {
-		// Let's operate the queue and just enqueue the object, that should be ok.
+	for i := range podAutoscalerLists.Items {
+		// Take the address of the slice element rather than the loop variable
+		// so each enqueued event references a distinct object. Guard the send
+		// with ctx.Done() so we cannot block forever during shutdown if the
+		// source.Channel consumer has already stopped.
 		e := event.GenericEvent{
-			Object: &pa,
+			Object: &podAutoscalerLists.Items[i],
 		}
-		r.eventCh <- e
+		select {
+		case r.eventCh <- e:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 
 	return nil
@@ -1082,17 +1094,6 @@ func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(
 	labelsSelector, err := r.workloadScaleClient.GetPodSelectorFromScale(ctx, &pa, scaleObject)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod selector: %w", err)
-	}
-	// Stormservice only fetch metrics from pod group index 0 (rank 0)
-	if scaleObject.GetAPIVersion() == orchestrationv1alpha1.GroupVersion.String() && scaleObject.GetKind() == StormService {
-		requirement, err := labels.NewRequirement(constants.PodGroupIndexLabelKey, selection.Equals, []string{"0"})
-		if err != nil {
-			return nil, fmt.Errorf(
-				"failed to add %s=0 requirement to label selector: %w",
-				constants.PodGroupIndexLabelKey, err,
-			)
-		}
-		labelsSelector = labelsSelector.Add(*requirement)
 	}
 
 	// Append ray head worker requirement for label selector if needed

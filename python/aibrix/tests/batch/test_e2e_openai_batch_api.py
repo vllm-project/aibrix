@@ -13,37 +13,122 @@
 # limitations under the License.
 
 import asyncio
+import copy
 import json
+import os
+import uuid
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from kubernetes import client as k8s_client
 
+from aibrix.batch.state import JobStore
+from aibrix.storage import StorageType
 from tests.batch.conftest import create_test_app
 
+# ---- Multi-endpoint input data generators ----
 
-def generate_batch_input_data(num_requests: int = 3) -> str:
-    """Generate test batch input data and return the content as string."""
-    base_request = {
-        "custom_id": "request-1",
-        "method": "POST",
-        "url": "/v1/chat/completions",
-        "body": {
-            "model": "gpt-3.5-turbo-0125",
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": "Hello world!"},
-            ],
-            "max_tokens": 1000,
-        },
-    }
+# Sample request bodies for each supported batch endpoint
+ENDPOINT_SAMPLE_BODIES = {
+    "/v1/chat/completions": {
+        "model": "gpt-3.5-turbo-0125",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello world!"},
+        ],
+        "max_tokens": 1000,
+    },
+    "/v1/completions": {
+        "model": "gpt-3.5-turbo-0125",
+        "prompt": "Once upon a time",
+        "max_tokens": 100,
+    },
+    "/v1/embeddings": {
+        "model": "text-embedding-ada-002",
+        "input": "The food was delicious and the waiter was friendly.",
+    },
+    "/v1/rerank": {
+        "model": "reranker-v1",
+        "query": "What is deep learning?",
+        "documents": [
+            "Deep learning is a subset of machine learning.",
+            "The weather is nice today.",
+            "Neural networks are inspired by the brain.",
+        ],
+    },
+}
+
+
+def generate_batch_input_data(
+    num_requests: int = 3, endpoint: str = "/v1/chat/completions"
+) -> str:
+    """Generate test batch input data for any supported endpoint.
+
+    Args:
+        num_requests: Number of requests to generate
+        endpoint: The API endpoint path (e.g., "/v1/chat/completions")
+
+    Returns:
+        JSONL string with batch requests
+    """
+    sample_body = ENDPOINT_SAMPLE_BODIES.get(endpoint)
+    if sample_body is None:
+        raise ValueError(
+            f"No sample body defined for endpoint '{endpoint}'. "
+            f"Supported: {list(ENDPOINT_SAMPLE_BODIES.keys())}"
+        )
 
     lines = []
     for i in range(num_requests):
-        request = base_request.copy()
-        request["custom_id"] = f"request-{i+1}"
+        request = {
+            "custom_id": f"request-{i + 1}",
+            "method": "POST",
+            "url": endpoint,
+            "body": copy.deepcopy(sample_body),
+        }
         lines.append(json.dumps(request))
 
     return "\n".join(lines)
+
+
+def build_batch_request(
+    input_file_id: str,
+    endpoint: str,
+    *,
+    aibrix_template: str | None = None,
+    aibrix_profile: str | None = None,
+    runtime_target: str | None = None,
+    provider: str | None = None,
+) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "input_file_id": input_file_id,
+        "endpoint": endpoint,
+        "completion_window": "24h",
+    }
+    aibrix: dict[str, Any] = {}
+    if aibrix_template:
+        aibrix["model_template"] = {"name": aibrix_template}
+    if aibrix_profile:
+        aibrix["profile"] = {"name": aibrix_profile}
+    if runtime_target:
+        aibrix["runtime"] = {"target": runtime_target}
+    if provider:
+        aibrix["resource_allocation"] = {
+            "provision_id": "reservation-1",
+            "provision_resource_deadline": 3600,
+            "resource_details": [
+                {
+                    "provider": provider,
+                    "endpoint_cluster": "cluster-a",
+                    "gpu_type": "H100",
+                    "replica": 1,
+                }
+            ],
+        }
+    if aibrix:
+        request["aibrix"] = aibrix
+    return request
 
 
 def verify_batch_output_content(output_content: str, expected_requests: int) -> bool:
@@ -62,11 +147,11 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
             required_fields = ["id", "custom_id", "response"]
             for field in required_fields:
                 if field not in output:
-                    print(f"Missing required field '{field}' in response {i+1}")
+                    print(f"Missing required field '{field}' in response {i + 1}")
                     return False
 
             # Verify custom_id matches expected pattern
-            expected_custom_id = f"request-{i+1}"
+            expected_custom_id = f"request-{i + 1}"
             if output["custom_id"] != expected_custom_id:
                 print(
                     f"Expected custom_id '{expected_custom_id}', got '{output['custom_id']}'"
@@ -78,7 +163,7 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
             for field in required_fields:
                 if field not in response:
                     print(
-                        f"Missing required field 'response.{field}' in response {i+1}"
+                        f"Missing required field 'response.{field}' in response {i + 1}"
                     )
                     return False
 
@@ -87,15 +172,53 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
             for field in required_fields:
                 if field not in body:
                     print(
-                        f"Missing required field 'response.body.{field}' in response {i+1}"
+                        f"Missing required field 'response.body.{field}' in response {i + 1}"
                     )
                     return False
 
         except json.JSONDecodeError as e:
-            print(f"Invalid JSON in output line {i+1}: {e}")
+            print(f"Invalid JSON in output line {i + 1}: {e}")
             return False
 
     return True
+
+
+@pytest.fixture(scope="function")
+def redis_deployment_test_app(
+    test_s3_bucket,
+    redis_config_available,
+    ensure_job_rbac,
+    template_configmaps,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "aibrix.metadata.app.envs.STORAGE_REDIS_HOST",
+        os.environ["REDIS_HOST"],
+    )
+    monkeypatch.setattr(
+        "aibrix.metadata.app.envs.STORAGE_REDIS_PORT",
+        int(os.environ.get("REDIS_PORT", "6379")),
+    )
+    monkeypatch.setattr(
+        "aibrix.metadata.app.envs.STORAGE_REDIS_DB",
+        int(os.environ.get("REDIS_DB", "0")),
+    )
+    monkeypatch.setattr(
+        "aibrix.metadata.app.envs.STORAGE_REDIS_PASSWORD",
+        os.environ.get("REDIS_PASSWORD", "unused-for-local-redis-test"),
+    )
+    monkeypatch.setattr(
+        "aibrix.metadata.app.envs.DB_REDIS_PREFIX",
+        f"batch-jobs-deployment-{uuid.uuid4().hex}",
+    )
+    monkeypatch.setenv("INFERENCE_ENGINE_ENDPOINT", "http://127.0.0.1:8000")
+    return create_test_app(
+        enable_redis_job=True,
+        storage_type=StorageType.S3,
+        metastore_type=StorageType.LOCAL,
+        params={"bucket_name": test_s3_bucket},
+        dry_run=False,
+    )
 
 
 @pytest.mark.asyncio
@@ -107,7 +230,7 @@ async def test_openai_batch_api_e2e():
     3. Poll job status until completion
     4. Download and verify output via Files API
     """
-    app = create_test_app()
+    app = create_test_app(enable_k8s_support=False)
 
     with TestClient(app) as client:
         # Step 1: Upload sample input file via Files API
@@ -118,9 +241,9 @@ async def test_openai_batch_api_e2e():
         data = {"purpose": "batch"}
 
         upload_response = client.post("/v1/files", files=files, data=data)
-        assert (
-            upload_response.status_code == 200
-        ), f"File upload failed: {upload_response.text}"
+        assert upload_response.status_code == 200, (
+            f"File upload failed: {upload_response.text}"
+        )
 
         upload_result = upload_response.json()
         assert upload_result["object"] == "file"
@@ -133,16 +256,12 @@ async def test_openai_batch_api_e2e():
         # Step 2: Create batch job via Batch API
         print("Step 2: Creating batch job...")
 
-        batch_request = {
-            "input_file_id": input_file_id,
-            "endpoint": "/v1/chat/completions",
-            "completion_window": "24h",
-        }
+        batch_request = build_batch_request(input_file_id, "/v1/chat/completions")
 
         batch_response = client.post("/v1/batches", json=batch_request)
-        assert (
-            batch_response.status_code == 200
-        ), f"Batch creation failed: {batch_response.text}"
+        assert batch_response.status_code == 200, (
+            f"Batch creation failed: {batch_response.text}"
+        )
 
         batch_result = batch_response.json()
         assert batch_result["object"] == "batch"
@@ -160,9 +279,9 @@ async def test_openai_batch_api_e2e():
 
         for attempt in range(max_polls):
             status_response = client.get(f"/v1/batches/{batch_id}")
-            assert (
-                status_response.status_code == 200
-            ), f"Status check failed: {status_response.text}"
+            assert status_response.status_code == 200, (
+                f"Status check failed: {status_response.text}"
+            )
 
             status_result = status_response.json()
             current_status = status_result["status"]
@@ -172,9 +291,9 @@ async def test_openai_batch_api_e2e():
             if current_status == "completed":
                 print("✅ Batch job completed successfully!")
                 output_file_id = status_result["output_file_id"]
-                assert (
-                    output_file_id is not None
-                ), "Expected output_file_id for completed batch"
+                assert output_file_id is not None, (
+                    "Expected output_file_id for completed batch"
+                )
 
                 request_counts = status_result.get("request_counts")
                 assert request_counts is not None
@@ -201,18 +320,18 @@ async def test_openai_batch_api_e2e():
         print("Step 4: Downloading and verifying output...")
 
         output_response = client.get(f"/v1/files/{output_file_id}/content")
-        assert (
-            output_response.status_code == 200
-        ), f"Output download failed: {output_response.text}"
+        assert output_response.status_code == 200, (
+            f"Output download failed: {output_response.text}"
+        )
 
         output_content = output_response.content.decode("utf-8")
         assert output_content, "Output file is empty"
 
         # Verify output content structure
         is_valid = verify_batch_output_content(output_content, 3)
-        assert (
-            is_valid
-        ), f"Output content verification failed. Content:\n{output_content}"
+        assert is_valid, (
+            f"Output content verification failed. Content:\n{output_content}"
+        )
 
         print("✅ Output downloaded and verified successfully!")
         print(f"Output content preview:\n{output_content[:200]}...")
@@ -221,9 +340,9 @@ async def test_openai_batch_api_e2e():
         print("Step 5: Testing batch list API...")
 
         list_response = client.get("/v1/batches")
-        assert (
-            list_response.status_code == 200
-        ), f"Batch list failed: {list_response.text}"
+        assert list_response.status_code == 200, (
+            f"Batch list failed: {list_response.text}"
+        )
 
         list_result = list_response.json()
         assert list_result["object"] == "list"
@@ -269,9 +388,9 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
         data = {"purpose": "batch"}
 
         upload_response = client.post("/v1/files", files=files, data=data)
-        assert (
-            upload_response.status_code == 200
-        ), f"File upload failed: {upload_response.text}"
+        assert upload_response.status_code == 200, (
+            f"File upload failed: {upload_response.text}"
+        )
 
         upload_result = upload_response.json()
         input_file_id = upload_result["id"]
@@ -280,16 +399,17 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
         # Step 2: Create batch job via Batch API (metadata server mode)
         print("Step 2: Creating batch job with metadata server workflow...")
 
-        batch_request = {
-            "input_file_id": input_file_id,
-            "endpoint": "/v1/chat/completions",
-            "completion_window": "24h",
-        }
+        batch_request = build_batch_request(
+            input_file_id,
+            "/v1/chat/completions",
+            aibrix_template="mock-vllm",
+            aibrix_profile="unittest",
+        )
 
         batch_response = client.post("/v1/batches", json=batch_request)
-        assert (
-            batch_response.status_code == 200
-        ), f"Batch creation failed: {batch_response.text}"
+        assert batch_response.status_code == 200, (
+            f"Batch creation failed: {batch_response.text}"
+        )
 
         batch_result = batch_response.json()
         assert "id" in batch_result
@@ -309,9 +429,9 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
         preparation_polls = 5
         for attempt in range(preparation_polls):
             status_response = client.get(f"/v1/batches/{batch_id}")
-            assert (
-                status_response.status_code == 200
-            ), f"Status check failed: {status_response.text}"
+            assert status_response.status_code == 200, (
+                f"Status check failed: {status_response.text}"
+            )
 
             status_result = status_response.json()
             current_status = status_result["status"]
@@ -374,9 +494,9 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
 
                 # Verify status_result
                 output_file_id = status_result["output_file_id"]
-                assert (
-                    output_file_id is not None
-                ), "Expected output_file_id for completed batch"
+                assert output_file_id is not None, (
+                    "Expected output_file_id for completed batch"
+                )
 
                 request_counts = status_result.get("request_counts")
                 assert request_counts is not None
@@ -405,18 +525,18 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
         print("Step 6: Downloading and verifying output...")
 
         output_response = client.get(f"/v1/files/{output_file_id}/content")
-        assert (
-            output_response.status_code == 200
-        ), f"Output download failed: {output_response.text}"
+        assert output_response.status_code == 200, (
+            f"Output download failed: {output_response.text}"
+        )
 
         output_content = output_response.content.decode("utf-8")
         assert output_content, "Output file is empty"
 
         # Verify output content structure
         is_valid = verify_batch_output_content(output_content, 10)
-        assert (
-            is_valid
-        ), f"Output content verification failed. Content:\n{output_content}"
+        assert is_valid, (
+            f"Output content verification failed. Content:\n{output_content}"
+        )
 
         print("✅ Output downloaded and verified successfully!")
         print(f"Output content preview:\n{output_content[:200]}...")
@@ -429,9 +549,223 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
 
 
 @pytest.mark.asyncio
+async def test_openai_batch_api_metadata_server_workflow_with_redis_cache_and_deployment_driver(
+    redis_deployment_test_app,
+):
+    app = redis_deployment_test_app
+    assert isinstance(app.state.batch_driver.job_manager._job_entity_manager, JobStore)
+    infrastructure_context = app.state.batch_driver._context
+    assert infrastructure_context is not None
+
+    apps_v1_api = infrastructure_context.apps_v1_api
+    core_v1_api = infrastructure_context.core_v1_api
+    assert apps_v1_api is not None
+    assert core_v1_api is not None
+
+    with TestClient(app) as client:
+        input_data = generate_batch_input_data(3)
+        files = {
+            "file": ("deployment-input.jsonl", input_data, "application/jsonl"),
+            "purpose": (None, "batch"),
+        }
+
+        upload_response = client.post("/v1/files", files=files)
+        assert upload_response.status_code == 200
+        input_file_id = upload_response.json()["id"]
+
+        batch_request = build_batch_request(
+            input_file_id,
+            "/v1/chat/completions",
+            aibrix_template="mock-vllm",
+            aibrix_profile="unittest",
+            runtime_target="Kubernetes",
+            provider="deployment",
+        )
+        create_response = client.post("/v1/batches", json=batch_request)
+        assert create_response.status_code == 200
+        batch_id = create_response.json()["id"]
+        deployment_name = f"batch-mock-vllm-{batch_id[:8]}"
+        service_name = deployment_name
+        model_name = deployment_name
+        saw_deployment = False
+        saw_ready_deployment = False
+        saw_service = False
+        cleanup_runtime = False
+
+        try:
+            terminal_batch = None
+            for _ in range(120):
+                status_response = client.get(f"/v1/batches/{batch_id}")
+                assert status_response.status_code == 200
+                terminal_batch = status_response.json()
+                try:
+                    deployment = apps_v1_api.read_namespaced_deployment_status(
+                        name=deployment_name,
+                        namespace="default",
+                    )
+                    saw_deployment = True
+                    available = deployment.status.available_replicas or 0
+                    if available >= 1:
+                        saw_ready_deployment = True
+                except k8s_client.ApiException as ex:
+                    if ex.status != 404:
+                        raise
+                try:
+                    service = core_v1_api.read_namespaced_service(
+                        name=service_name,
+                        namespace="default",
+                    )
+                    if service.metadata.name == service_name:
+                        saw_service = True
+                except k8s_client.ApiException as ex:
+                    if ex.status != 404:
+                        raise
+                if terminal_batch["status"] in {"completed", "failed", "cancelled"}:
+                    break
+                await asyncio.sleep(1)
+
+            assert terminal_batch is not None
+            assert terminal_batch["status"] == "completed"
+            assert saw_deployment
+            assert saw_ready_deployment
+            assert saw_service
+
+            output_file_id = terminal_batch["output_file_id"]
+            output_response = client.get(f"/v1/files/{output_file_id}/content")
+            assert output_response.status_code == 200
+            assert verify_batch_output_content(output_response.text, 3)
+            first_line = json.loads(output_response.text.splitlines()[0])
+            assert first_line["response"]["body"]["model"] == model_name
+            cleanup_runtime = True
+        finally:
+            if cleanup_runtime:
+                try:
+                    core_v1_api.delete_namespaced_service(
+                        name=service_name,
+                        namespace="default",
+                    )
+                except k8s_client.ApiException as ex:
+                    if ex.status != 404:
+                        raise
+                try:
+                    apps_v1_api.delete_namespaced_deployment(
+                        name=deployment_name,
+                        namespace="default",
+                    )
+                except k8s_client.ApiException as ex:
+                    if ex.status != 404:
+                        raise
+            await app.state.batch_driver.clear_job(batch_id)
+
+
+# ---- Multi-endpoint parametrized tests ----
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/embeddings",
+        "/v1/rerank",
+    ],
+    ids=["chat_completions", "completions", "embeddings", "rerank"],
+)
+async def test_openai_batch_api_multi_endpoint(endpoint: str):
+    """
+    Test batch API workflow for each supported endpoint type.
+
+    Validates that the batch system correctly accepts, processes,
+    and returns results for all supported OpenAI-compatible endpoints:
+    - /v1/chat/completions
+    - /v1/completions
+    - /v1/embeddings
+    - /v1/rerank
+    """
+    app = create_test_app(enable_k8s_support=False)
+    num_requests = 3
+
+    with TestClient(app) as client:
+        # Step 1: Upload batch input file for this endpoint
+        input_data = generate_batch_input_data(num_requests, endpoint=endpoint)
+        files = {
+            "file": (
+                f"batch_input_{endpoint.split('/')[-1]}.jsonl",
+                input_data,
+                "application/jsonl",
+            )
+        }
+        data = {"purpose": "batch"}
+
+        upload_response = client.post("/v1/files", files=files, data=data)
+        assert upload_response.status_code == 200, (
+            f"[{endpoint}] File upload failed: {upload_response.text}"
+        )
+
+        input_file_id = upload_response.json()["id"]
+
+        # Step 2: Create batch job for this endpoint
+        batch_request = {
+            "input_file_id": input_file_id,
+            "endpoint": endpoint,
+            "completion_window": "24h",
+        }
+
+        batch_response = client.post("/v1/batches", json=batch_request)
+        assert batch_response.status_code == 200, (
+            f"[{endpoint}] Batch creation failed: {batch_response.text}"
+        )
+
+        batch_result = batch_response.json()
+        assert batch_result["endpoint"] == endpoint
+        batch_id = batch_result["id"]
+
+        # Step 3: Poll until completion
+        max_polls = 10
+        poll_interval = 1
+
+        for attempt in range(max_polls):
+            status_response = client.get(f"/v1/batches/{batch_id}")
+            assert status_response.status_code == 200
+            status_result = status_response.json()
+            current_status = status_result["status"]
+
+            if current_status == "completed":
+                output_file_id = status_result["output_file_id"]
+                assert output_file_id is not None
+                request_counts = status_result.get("request_counts")
+                assert request_counts is not None
+                assert request_counts["total"] == num_requests
+                assert request_counts["completed"] == num_requests
+                break
+            elif current_status in ("failed", "cancelled", "expired"):
+                pytest.fail(f"[{endpoint}] Batch job {current_status}")
+
+            await asyncio.sleep(poll_interval)
+        else:
+            pytest.fail(
+                f"[{endpoint}] Batch job did not complete within "
+                f"{max_polls * poll_interval}s"
+            )
+
+        # Step 4: Download and verify output
+        output_response = client.get(f"/v1/files/{output_file_id}/content")
+        assert output_response.status_code == 200
+
+        output_content = output_response.content.decode("utf-8")
+        assert output_content, f"[{endpoint}] Output file is empty"
+        assert verify_batch_output_content(output_content, num_requests), (
+            f"[{endpoint}] Output verification failed"
+        )
+
+        await app.state.batch_driver.clear_job(batch_id)
+
+
+@pytest.mark.asyncio
 async def test_batch_api_error_handling():
     """Test error handling in batch API."""
-    app = create_test_app()
+    app = create_test_app(enable_k8s_support=False)
 
     with TestClient(app) as client:
         # Test creating batch with non-existent file ID

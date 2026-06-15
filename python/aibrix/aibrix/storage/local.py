@@ -29,7 +29,7 @@ from aibrix.storage.base import (
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata, _sanitize_key, generate_filename
 
-LOCAL_STORAGE_PATH_VAR = "LOCAL_STORAGE_PATH"
+LOCAL_STORAGE_PATH_VAR = "STORAGE_LOCAL_PATH"
 
 
 class LocalStorage(BaseStorage):
@@ -269,8 +269,17 @@ class LocalStorage(BaseStorage):
         limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
-        """List objects with given prefix."""
-        prefix_path = self.base_path / prefix if prefix else self.base_path
+        """List objects with given prefix.
+
+        We enumerate sidecar ``.metadata`` files rather than the data
+        files themselves, then strip the suffix to recover the original
+        key. This is necessary because ``put_object`` may append a
+        content-type-derived extension to the on-disk filename (see
+        ``generate_filename``); listing the data files would return the
+        mangled name, breaking the put → list → head_object round-trip
+        for keys that were stored without an extension.
+        """
+        _METADATA_SUFFIX = ".metadata"
 
         def _list_files():
             # Parse continuation token as offset (default to 0)
@@ -281,48 +290,47 @@ class LocalStorage(BaseStorage):
                 except (ValueError, TypeError):
                     offset = 0
 
-            files = []
-            if prefix_path.is_dir():
+            # Recover every stored key by enumerating the sidecar ``.metadata``
+            # files anywhere under base_path. ``prefix`` is matched as an
+            # S3-style string prefix (``key.startswith(prefix)``), NOT as a
+            # directory path — so flat keys like ``batchjob:<id>`` are found by
+            # a partial prefix such as ``batchjob:`` (directory descent missed
+            # them, returning nothing for any non-directory prefix).
+            entries: list[str] = []
+            seen: set[str] = set()
+            for item in self.base_path.rglob("*" + _METADATA_SUFFIX):
+                if not item.is_file():
+                    continue
+                key = item.relative_to(self.base_path).as_posix()[
+                    : -len(_METADATA_SUFFIX)
+                ]
+                if not key.startswith(prefix):
+                    continue
                 if delimiter:
-                    # List immediate children only
-                    for item in prefix_path.iterdir():
-                        if item.is_file():
-                            relative_path = str(item.relative_to(self.base_path))
-                            # Filter out metadata files
-                            if not relative_path.endswith(".metadata"):
-                                files.append(relative_path)
-                        elif item.is_dir():
-                            files.append(
-                                str(item.relative_to(self.base_path)) + delimiter
-                            )
+                    # Roll keys with a delimiter after the prefix up into a
+                    # single common-prefix entry (S3 CommonPrefixes).
+                    remainder = key[len(prefix) :]
+                    idx = remainder.find(delimiter)
+                    entry = (
+                        prefix + remainder[: idx + len(delimiter)] if idx != -1 else key
+                    )
                 else:
-                    # Recursive listing
-                    for item in prefix_path.rglob("*"):
-                        if item.is_file():
-                            relative_path = str(item.relative_to(self.base_path))
-                            # Filter out metadata files
-                            if not relative_path.endswith(".metadata"):
-                                files.append(relative_path)
-            elif prefix_path.is_file():
-                relative_path = str(prefix_path.relative_to(self.base_path))
-                # Filter out metadata files
-                if not relative_path.endswith(".metadata"):
-                    files.append(relative_path)
+                    entry = key
+                if entry not in seen:
+                    seen.add(entry)
+                    entries.append(entry)
 
-            # Sort files for consistent pagination (by filename)
-            files.sort()
+            # Sort for consistent pagination
+            entries.sort()
 
             # Apply pagination
-            remaining_files = files[offset:] if offset > 0 else files
-            paginated_files = (
-                remaining_files[:limit] if limit is not None else remaining_files
-            )
+            remaining = entries[offset:] if offset > 0 else entries
+            paginated = remaining[:limit] if limit is not None else remaining
 
-            # Check if there are more files for next page
-            has_more = limit is not None and len(remaining_files) > limit
-            next_token = str(offset + len(paginated_files)) if has_more else None
+            has_more = limit is not None and len(remaining) > limit
+            next_token = str(offset + len(paginated)) if has_more else None
 
-            return paginated_files, next_token
+            return paginated, next_token
 
         return await asyncio.get_event_loop().run_in_executor(None, _list_files)
 

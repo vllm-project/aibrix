@@ -28,6 +28,7 @@ import (
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 // SetupStormServiceWebhookWithManager registers the webhook for StormService in the manager.
@@ -104,6 +105,42 @@ func (r *StormServiceCustomDefaulter) injectAIBrixRuntime(stormService *orchestr
 		if currentEngineType == "" {
 			// fallback：get inference engine from primary containers
 			currentEngineType = inferEngineType(role.Template.Spec.Containers)
+		}
+
+		// Ensure the artifacts download path is shared with the sidecar container
+		foundEmptyDirVolume := false
+		for i := range role.Template.Spec.Volumes {
+			v := &role.Template.Spec.Volumes[i]
+			if v.Name == DefaultAdapterVolumeName {
+				if v.EmptyDir == nil {
+					// Volume with same name exists but is not EmptyDir. Overwrite to ensure correct type.
+					v.VolumeSource = corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					}
+				}
+				foundEmptyDirVolume = true
+				break
+			}
+		}
+		if !foundEmptyDirVolume {
+			role.Template.Spec.Volumes = append(role.Template.Spec.Volumes, corev1.Volume{
+				Name: DefaultAdapterVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			})
+		}
+		for ci := range role.Template.Spec.Containers {
+			container := &role.Template.Spec.Containers[ci]
+			if container.Name == SidecarName {
+				continue
+			}
+			if !utils.HasVolumeMount(container.VolumeMounts, DefaultAdapterVolumeName, DefaultAdapterMountPath) {
+				container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+					Name:      DefaultAdapterVolumeName,
+					MountPath: DefaultAdapterMountPath,
+				})
+			}
 		}
 
 		// Build the sidecar container using shared logic

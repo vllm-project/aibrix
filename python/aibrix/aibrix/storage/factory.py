@@ -12,15 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from typing import Dict, Optional, Union
 
 from aibrix import envs
 from aibrix.storage.base import BaseStorage, StorageConfig
 from aibrix.storage.local import LocalStorage
-from aibrix.storage.redis import RedisStorage
-from aibrix.storage.s3 import S3Storage
-from aibrix.storage.tos import TOSStorage
 from aibrix.storage.types import StorageType
+
+# NOTE: remote backends (redis/s3/tos) are imported lazily inside
+# ``create_storage`` so that ``import aibrix.storage`` does not eagerly pull in
+# their optional dependencies (e.g. ``redis.asyncio``, ``boto3``, ``tos``).
 
 
 def create_storage(
@@ -42,8 +44,9 @@ def create_storage(
         ValueError: If storage type is not supported or required parameters are missing
     """
     if isinstance(storage_type, str):
+        normalized_storage_type = storage_type.lower()
         try:
-            storage_type = StorageType(storage_type.lower())
+            storage_type = StorageType(normalized_storage_type)
         except ValueError:
             raise ValueError(f"Unsupported storage type: {storage_type}")
 
@@ -54,10 +57,20 @@ def create_storage(
         return create_storage_from_env()
 
     if storage_type == StorageType.LOCAL:
-        base_path = kwargs.get("base_path") or ".storage"
+        # Honor STORAGE_LOCAL_PATH from the environment when no explicit
+        # ``base_path`` kwarg is provided. LocalStorage itself only reads
+        # the env when constructed with ``base_path=None``, so without
+        # this fallback the env var never reaches it via the factory.
+        base_path = (
+            kwargs.get("base_path")
+            or os.environ.get("STORAGE_LOCAL_PATH")
+            or ".storage"
+        )
         return LocalStorage(base_path=base_path, config=config)
 
     elif storage_type == StorageType.S3:
+        from aibrix.storage.s3 import S3Storage
+
         bucket_name = kwargs.get("bucket_name") or envs.STORAGE_AWS_BUCKET
         if not bucket_name:
             raise ValueError("bucket_name is required for S3 storage")
@@ -74,6 +87,8 @@ def create_storage(
         )
 
     elif storage_type == StorageType.TOS:
+        from aibrix.storage.tos import TOSStorage
+
         bucket_name = kwargs.get("bucket_name") or envs.STORAGE_TOS_BUCKET
         access_key = kwargs.get("access_key") or envs.STORAGE_TOS_ACCESS_KEY
         secret_key = kwargs.get("secret_key") or envs.STORAGE_TOS_SECRET_KEY
@@ -101,6 +116,8 @@ def create_storage(
         )
 
     elif storage_type == StorageType.REDIS:
+        from aibrix.storage.redis import RedisStorage
+
         host = kwargs.get("host") or envs.STORAGE_REDIS_HOST or "localhost"
         port = kwargs.get("port") or envs.STORAGE_REDIS_PORT or 6379
         db = kwargs.get("db", 0) or envs.STORAGE_REDIS_DB
@@ -130,9 +147,23 @@ def create_storage_from_env() -> BaseStorage:
     Returns:
         Storage instance
     """
-    # Default to local storage with .storage folder
+    explicit_storage_type = os.environ.get("STORAGE_TYPE")
+    if (
+        explicit_storage_type
+        and explicit_storage_type.lower() != StorageType.AUTO.value
+    ):
+        normalized_type = explicit_storage_type.lower()
+        if normalized_type == "minio":
+            normalized_type = StorageType.S3.value
+        kwargs: Dict[str, str] = {}
+        if normalized_type == StorageType.LOCAL.value:
+            kwargs["base_path"] = os.environ.get("STORAGE_LOCAL_PATH") or ".storage"
+        return create_storage(normalized_type, config=None, **kwargs)
+
+    # Default to local storage; honor STORAGE_LOCAL_PATH if set, else
+    # fall back to a cwd-relative ``.storage`` folder.
     storage_type = StorageType.LOCAL
-    kwargs: Dict[str, str] = {"base_path": ".storage"}
+    kwargs = {"base_path": os.environ.get("STORAGE_LOCAL_PATH") or ".storage"}
 
     # Check if S3 credentials are available
     if envs.STORAGE_AWS_ACCESS_KEY_ID and envs.STORAGE_AWS_SECRET_ACCESS_KEY:

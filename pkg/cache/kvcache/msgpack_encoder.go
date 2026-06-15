@@ -75,7 +75,7 @@ func encodeEvent(event KVEvent) ([]interface{}, error) {
 		arr := []interface{}{
 			string(e.Type),    // tag
 			e.BlockHashes,     // block_hashes
-			e.ParentBlockHash, // parent_block_hash (nullable)
+			e.ParentBlockHash, // parent_block_hash (nullable *[]byte)
 			tokenIDs,          // flat token IDs
 			blockSize,         // block_size
 		}

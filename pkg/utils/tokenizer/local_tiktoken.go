@@ -53,7 +53,7 @@ func (s *tiktokenTokenizer) TokenizeInputText(text string) ([]byte, error) {
 
 	// encode
 	token := tke.Encode(text, nil, nil)
-	return intToByteArray(token), nil
+	return IntToByteArray(token), nil
 }
 
 // NewTiktokenTokenizer creates a new tiktoken tokenizer instance

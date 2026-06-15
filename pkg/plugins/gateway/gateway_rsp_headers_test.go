@@ -84,7 +84,9 @@ func Test_HandleResponseHeaders(t *testing.T) {
 				headers: []*configPb.HeaderValueOption{
 					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
 					{Header: &configPb.HeaderValue{Key: HeaderRequestID, RawValue: []byte("test-req-id")}},
-					{Header: &configPb.HeaderValue{Key: HeaderTargetPod, RawValue: []byte("10.0.0.1:8000")}},
+					{Header: &configPb.HeaderValue{Key: "routing-strategy", RawValue: []byte("random")}},
+					{Header: &configPb.HeaderValue{Key: HeaderTargetPod, RawValue: []byte("test-pod")}},
+					{Header: &configPb.HeaderValue{Key: HeaderTargetPodIP, RawValue: []byte("10.0.0.1:8000")}},
 					{Header: &configPb.HeaderValue{Key: "X-Custom", RawValue: []byte("value")}},
 					{Header: &configPb.HeaderValue{Key: ":status", RawValue: []byte("200")}},
 				},
@@ -100,7 +102,9 @@ func Test_HandleResponseHeaders(t *testing.T) {
 				headers: []*configPb.HeaderValueOption{
 					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
 					{Header: &configPb.HeaderValue{Key: HeaderRequestID, RawValue: []byte("test-req-id")}},
-					{Header: &configPb.HeaderValue{Key: HeaderTargetPod, RawValue: []byte("10.0.0.1:8000")}},
+					{Header: &configPb.HeaderValue{Key: "routing-strategy", RawValue: []byte("random")}},
+					{Header: &configPb.HeaderValue{Key: HeaderTargetPod, RawValue: []byte("test-pod")}},
+					{Header: &configPb.HeaderValue{Key: HeaderTargetPodIP, RawValue: []byte("10.0.0.1:8000")}},
 					{Header: &configPb.HeaderValue{Key: ":status", RawValue: []byte("500")}},
 				},
 			},
@@ -139,12 +143,7 @@ func Test_HandleResponseHeaders(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
-			var ctx context.Context
-			if tt.routingCtx != nil {
-				ctx = tt.routingCtx
-			} else {
-				ctx = context.Background()
-			}
+			ctx := context.Background()
 
 			if tt.expected.isProcessingError {
 				mockCache.On("DoneRequestCount",
@@ -167,7 +166,7 @@ func Test_HandleResponseHeaders(t *testing.T) {
 				},
 			}
 
-			resp, isErr, isErrCode := server.HandleResponseHeaders(ctx, "test-req-id", "test-model", req)
+			resp, isErr, isErrCode := server.HandleResponseHeaders(ctx, tt.routingCtx, "test-req-id", "test-model", req)
 
 			// Validate status code from :status
 			assert.Equal(t, tt.expected.processingErrorCode, isErrCode)

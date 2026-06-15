@@ -1,0 +1,7 @@
+web/node_modules
+web/dist
+api/__pycache__
+api/.venv
+.env
+deploy/
+*.md

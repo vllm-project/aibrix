@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Callable
+from typing import Any, Callable
 
 import torch
 
@@ -27,9 +27,11 @@ class ExternalMemoryRegion(MemoryRegion):
         addr: int,
         length: int,
         on_release: Callable[[torch.Tensor, int, int], None] | None = None,
+        depends_on: Any | None = None,
     ) -> None:
         super().__init__(slab, addr, length)
         self._on_release = on_release
+        self.depends_on = depends_on
 
     def __repr__(self) -> str:
         return (

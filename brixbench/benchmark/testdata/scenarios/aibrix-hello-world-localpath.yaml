@@ -1,0 +1,14 @@
+Scenario: aibrix-hello-world-localpath
+Tests:
+  - name: aibrix-localpath
+    provider: aibrix
+    fullstack: false
+    localPath: ~/aibrix
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke.yaml

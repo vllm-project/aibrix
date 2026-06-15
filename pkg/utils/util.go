@@ -37,7 +37,10 @@ import (
 )
 
 // https://cookbook.openai.com/examples/how_to_count_tokens_with_tiktoken
-const encoding = "cl100k_base"
+const (
+	encoding         = "cl100k_base"
+	DefaultLLMEngine = "vllm"
+)
 
 var tke *tiktoken.Tiktoken
 
@@ -161,6 +164,14 @@ func LoadEnvDuration(key string, defaultValue time.Duration) time.Duration {
 	}
 	klog.Infof("set %s: %v, using default value", key, defaultValue)
 	return defaultValue
+}
+
+func GetLLMEngine(pod *v1.Pod, labelName string, defaultValue string) string {
+	labelTarget, ok := pod.Labels[labelName]
+	if !ok {
+		return defaultValue
+	}
+	return labelTarget
 }
 
 // GetPortsForPod returns all ports for a pod based on its configuration.
@@ -299,4 +310,21 @@ func CryptoShuffle[T any](slice []T) {
 		j := int(jBig.Int64())
 		slice[i], slice[j] = slice[j], slice[i]
 	}
+}
+
+func HasVolume(vols []v1.Volume, name string) bool {
+	for _, v := range vols {
+		if v.Name == name {
+			return true
+		}
+	}
+	return false
+}
+func HasVolumeMount(mounts []v1.VolumeMount, name, path string) bool {
+	for _, m := range mounts {
+		if m.Name == name && m.MountPath == path {
+			return true
+		}
+	}
+	return false
 }

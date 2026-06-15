@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from aibrix.storage import LocalStorage
+from aibrix.storage.factory import create_storage_from_env
 
 
 class TestLocalStorage:
@@ -41,11 +42,11 @@ class TestLocalStorage:
 
     @pytest.mark.asyncio
     async def test_environment_variable_override(self):
-        """Test that LOCAL_STORAGE_PATH environment variable is respected."""
+        """Test that STORAGE_LOCAL_PATH environment variable is respected."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             # Set environment variable
-            original_value = os.environ.get("LOCAL_STORAGE_PATH")
-            os.environ["LOCAL_STORAGE_PATH"] = tmp_dir
+            original_value = os.environ.get("STORAGE_LOCAL_PATH")
+            os.environ["STORAGE_LOCAL_PATH"] = tmp_dir
 
             try:
                 # Create storage without base_path - should use env var
@@ -54,9 +55,18 @@ class TestLocalStorage:
             finally:
                 # Restore original environment
                 if original_value is not None:
-                    os.environ["LOCAL_STORAGE_PATH"] = original_value
+                    os.environ["STORAGE_LOCAL_PATH"] = original_value
                 else:
-                    os.environ.pop("LOCAL_STORAGE_PATH", None)
+                    os.environ.pop("STORAGE_LOCAL_PATH", None)
+
+    @pytest.mark.asyncio
+    async def test_factory_uses_explicit_local_storage_type(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            monkeypatch.setenv("STORAGE_TYPE", "local")
+            monkeypatch.setenv("STORAGE_LOCAL_PATH", tmp_dir)
+            storage = create_storage_from_env()
+            assert isinstance(storage, LocalStorage)
+            assert str(storage.base_path) == tmp_dir
 
     @pytest.mark.asyncio
     async def test_directory_creation(self, local_storage: LocalStorage):
@@ -128,6 +138,29 @@ class TestLocalStorage:
 
         # Cleanup
         for key in test_files:
+            await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_list_with_flat_string_prefix(self, local_storage: LocalStorage):
+        """list_objects matches a STRING prefix, not just a directory path.
+
+        Flat root-level keys like ``batchjob:<id>`` (no '/') must be found by a
+        partial prefix such as ``batchjob:`` — this is the JobStore.list_jobs
+        recovery contract on a LOCAL metastore. The old directory-descent
+        implementation returned nothing for any non-directory prefix.
+        """
+        await local_storage.put_object("batchjob:abc", b"a")
+        await local_storage.put_object("batchjob:def", b"b")
+        await local_storage.put_object("other:zzz", b"c")
+
+        keys, _ = await local_storage.list_objects(prefix="batchjob:")
+        assert sorted(keys) == ["batchjob:abc", "batchjob:def"]
+
+        # A delimiter must not break flat-prefix matching.
+        keys2, _ = await local_storage.list_objects(prefix="batchjob:", delimiter=":")
+        assert sorted(keys2) == ["batchjob:abc", "batchjob:def"]
+
+        for key in ("batchjob:abc", "batchjob:def", "other:zzz"):
             await local_storage.delete_object(key)
 
     @pytest.mark.asyncio
@@ -226,13 +259,15 @@ class TestLocalStorage:
             assert (
                 local_storage.base_path in full_path.parents
                 or full_path == local_storage.base_path
-            ), f"Path {full_path} should be within base directory {local_storage.base_path}"
+            ), (
+                f"Path {full_path} should be within base directory {local_storage.base_path}"
+            )
 
             # Verify the path doesn't contain traversal patterns
             relative_path = full_path.relative_to(local_storage.base_path)
-            assert ".." not in str(
-                relative_path
-            ), f"Sanitized path should not contain '..' but got: {relative_path}"
+            assert ".." not in str(relative_path), (
+                f"Sanitized path should not contain '..' but got: {relative_path}"
+            )
 
             # Should be retrievable with the original key
             result = await local_storage.get_object(key)
@@ -240,11 +275,11 @@ class TestLocalStorage:
 
             # Verify the actual stored filename matches expected sanitized version
             expected_sanitized = expected_sanitized_keys[i]
-            assert str(
-                relative_path
-            ).startswith(
+            assert str(relative_path).startswith(
                 expected_sanitized.replace("/", os.sep)
-            ), f"Expected sanitized key '{expected_sanitized}' but got '{relative_path}'"
+            ), (
+                f"Expected sanitized key '{expected_sanitized}' but got '{relative_path}'"
+            )
 
             # Cleanup
             await local_storage.delete_object(key)

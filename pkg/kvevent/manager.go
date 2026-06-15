@@ -274,7 +274,7 @@ func isPodSubscribable(pod *v1.Pod) bool {
 
 func isSamePod(pod1 *v1.Pod, pod2 *v1.Pod) bool {
 	// For now, we just check if PodIP is the same. Other conditions may be added if needed.
-	return pod1.Status.PodIP != pod2.Status.PodIP
+	return pod1.Status.PodIP == pod2.Status.PodIP
 }
 
 func (m *Manager) subscribeToPod(ctx context.Context, podKey string, podInfo *PodInfo) error {

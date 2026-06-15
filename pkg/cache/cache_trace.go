@@ -104,6 +104,7 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 
 	// Update running requests
 	requests := atomic.AddInt32(&metaPod.runningRequests, -1)
+	atomic.AddInt64(&metaPod.completedRequests, 1)
 	metricName := metrics.RealtimeNumRequestsRunning
 	if port > 0 {
 		metricName = metricName + "/" + strconv.Itoa(port)

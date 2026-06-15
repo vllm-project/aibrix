@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -135,9 +136,9 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 	// inject pod annotations
 	pod.Annotations[constants.RoleSetIndexAnnotationKey] = roleSet.Annotations[constants.RoleSetIndexAnnotationKey]
 	if roleIndex != nil {
-		pod.Annotations[constants.RoleReplicaIndexAnnotationKey] = fmt.Sprintf("%d", *roleIndex)
+		pod.Annotations[constants.RoleReplicaIndexAnnotationKey] = strconv.Itoa(*roleIndex)
 		// inject to label as well for routing service discovery (some engines use label selector to find pods only)
-		pod.Labels[constants.RoleReplicaIndexLabelKey] = fmt.Sprintf("%d", *roleIndex)
+		pod.Labels[constants.RoleReplicaIndexLabelKey] = strconv.Itoa(*roleIndex)
 	}
 	if roleSet.Spec.SchedulingStrategy != nil {
 		if roleSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy != nil {
@@ -184,6 +185,11 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 }
 
 // injectContainerEnvVars injects env variables into container.
+// Note: Built-in env variables are added first to ensure they're available for expansion
+// in user-defined env variables. User-defined env variables maintain their original order
+// from the container spec, which should be stable across reconcile loops if the upstream
+// RoleSpec preserves order (e.g., through YAML unmarshalling). Otherwise, unnecessary pod
+// updates may occur.
 func injectContainerEnvVars(
 	container *v1.Container,
 	roleSet *orchestrationv1alpha1.RoleSet,
@@ -191,66 +197,56 @@ func injectContainerEnvVars(
 	roleIndex *int,
 	templateHash string,
 ) {
-	envMap := make(map[string]v1.EnvVar, len(container.Env)+6)
-
-	// copy existing env
-	for _, e := range container.Env {
-		if !ContainerInjectEnv.Has(e.Name) {
-			envMap[e.Name] = e
-		}
-	}
-
-	envMap[constants.StormServiceNameEnvKey] = v1.EnvVar{
-		Name:  constants.StormServiceNameEnvKey,
-		Value: roleSet.Labels[constants.StormServiceNameLabelKey],
-	}
-
-	envMap[constants.RoleSetNameEnvKey] = v1.EnvVar{
-		Name:  constants.RoleSetNameEnvKey,
-		Value: roleSet.Name,
-	}
-
-	envMap[constants.RoleSetIndexEnvKey] = v1.EnvVar{
-		Name:  constants.RoleSetIndexEnvKey,
-		Value: roleSet.Annotations[constants.RoleSetIndexAnnotationKey],
-	}
-
-	envMap[constants.RoleNameEnvKey] = v1.EnvVar{
-		Name:  constants.RoleNameEnvKey,
-		Value: role.Name,
-	}
-
-	envMap[constants.RoleTemplateHashEnvKey] = v1.EnvVar{
-		Name:  constants.RoleTemplateHashEnvKey,
-		Value: templateHash,
+	// Use slice to maintain env variable order
+	envs := make([]v1.EnvVar, 0, len(container.Env)+6)
+	builtInEnvs := []v1.EnvVar{
+		{
+			Name:  constants.StormServiceNameEnvKey,
+			Value: roleSet.Labels[constants.StormServiceNameLabelKey],
+		},
+		{
+			Name:  constants.RoleSetNameEnvKey,
+			Value: roleSet.Name,
+		},
+		{
+			Name:  constants.RoleSetIndexEnvKey,
+			Value: roleSet.Annotations[constants.RoleSetIndexAnnotationKey],
+		},
+		{
+			Name:  constants.RoleNameEnvKey,
+			Value: role.Name,
+		},
+		{
+			Name:  constants.RoleTemplateHashEnvKey,
+			Value: templateHash,
+		},
 	}
 
 	if roleIndex != nil {
-		envMap[constants.RoleReplicaIndexEnvKey] = v1.EnvVar{
+		builtInEnvs = append(builtInEnvs, v1.EnvVar{
 			Name:  constants.RoleReplicaIndexEnvKey,
-			Value: fmt.Sprintf("%d", *roleIndex),
+			Value: strconv.Itoa(*roleIndex),
+		})
+	}
+	envs = append(envs, builtInEnvs...)
+
+	// Add original container env variables, skipping built-in envs
+	for _, env := range container.Env {
+		if !ContainerInjectEnv.Has(env.Name) {
+			envs = append(envs, env)
 		}
 	}
-	keys := make([]string, 0, len(envMap))
-	for k := range envMap {
-		keys = append(keys, k)
-	}
-	// sort the env by name before adding them to the container spec
-	// to ensure deterministic output and prevent unnecessary pod updates
-	sort.Strings(keys)
 
-	container.Env = make([]v1.EnvVar, 0, len(envMap))
-	for _, k := range keys {
-		container.Env = append(container.Env, envMap[k])
-	}
+	container.Env = envs
 }
 
-// injectTopologyAffinityToPodSpec injects required pod affinity into the given PodSpec
+// injectTopologyAffinityToPodSpec injects pod affinity into the given PodSpec
 // based on the TopologyPolicy and provided matching labels.
 func injectTopologyAffinityToPodSpec(
 	spec *v1.PodSpec,
 	matchLabels map[string]string,
 	topologyKey string,
+	mode orchestrationv1alpha1.TopologyPolicyMode,
 ) {
 	affinityTerm := v1.PodAffinityTerm{
 		TopologyKey: topologyKey,
@@ -266,15 +262,35 @@ func injectTopologyAffinityToPodSpec(
 		spec.Affinity.PodAffinity = &v1.PodAffinity{}
 	}
 
-	// avoid duplicate terms
-	for _, term := range spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
-		if term.TopologyKey == topologyKey &&
-			reflect.DeepEqual(term.LabelSelector.MatchLabels, matchLabels) {
-			return
-		}
+	if mode == "" {
+		mode = orchestrationv1alpha1.TopologyPolicyPreferred
 	}
-	spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution =
-		append(spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, affinityTerm)
+	switch mode {
+	case orchestrationv1alpha1.TopologyPolicyRequired:
+		// avoid duplicate terms
+		for _, term := range spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+			if term.TopologyKey == topologyKey &&
+				reflect.DeepEqual(term.LabelSelector.MatchLabels, matchLabels) {
+				return
+			}
+		}
+		spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution =
+			append(spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, affinityTerm)
+	default:
+		weightedTerm := v1.WeightedPodAffinityTerm{
+			Weight:          100,
+			PodAffinityTerm: affinityTerm,
+		}
+		for _, term := range spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
+			if term.Weight == weightedTerm.Weight &&
+				term.PodAffinityTerm.TopologyKey == topologyKey &&
+				reflect.DeepEqual(term.PodAffinityTerm.LabelSelector.MatchLabels, matchLabels) {
+				return
+			}
+		}
+		spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution =
+			append(spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution, weightedTerm)
+	}
 }
 
 func filterRolePods(role *orchestrationv1alpha1.RoleSpec, pods []*v1.Pod) []*v1.Pod {
@@ -334,12 +350,16 @@ func injectTopologyAffinityForPod(
 	roleName string,
 	tp *orchestrationv1alpha1.TopologyPolicy,
 ) {
+	if !hasTopologyKey(roleSet, tp) {
+		return
+	}
+
 	matchLabels, ok := getTopologyMatchLabels(roleSet, roleName, tp)
 	if !ok {
 		return
 	}
 
-	injectTopologyAffinityToPodSpec(&pod.Spec, matchLabels, tp.Key)
+	injectTopologyAffinityToPodSpec(&pod.Spec, matchLabels, tp.Key, tp.Mode)
 }
 
 func injectTopologyAffinityForPodTemplate(
@@ -348,12 +368,26 @@ func injectTopologyAffinityForPodTemplate(
 	roleName string,
 	tp *orchestrationv1alpha1.TopologyPolicy,
 ) {
+	if !hasTopologyKey(roleSet, tp) {
+		return
+	}
+
 	matchLabels, ok := getTopologyMatchLabels(roleSet, roleName, tp)
 	if !ok {
 		return
 	}
 
-	injectTopologyAffinityToPodSpec(&template.Spec, matchLabels, tp.Key)
+	injectTopologyAffinityToPodSpec(&template.Spec, matchLabels, tp.Key, tp.Mode)
+}
+
+func hasTopologyKey(roleSet *orchestrationv1alpha1.RoleSet, tp *orchestrationv1alpha1.TopologyPolicy) bool {
+	if tp.Key != "" {
+		return true
+	}
+
+	klog.Warningf("RoleSet %s/%s has empty TopologyPolicy.Key; skipping topology policy enforcement",
+		roleSet.Namespace, roleSet.Name)
+	return false
 }
 
 func filterActivePods(pods []*v1.Pod) (active []*v1.Pod, inactive []*v1.Pod) {
@@ -380,7 +414,7 @@ func filterTerminatingPods(pods []*v1.Pod) (terminating []*v1.Pod, notTerminatin
 
 func filterPodsByIndex(pods []*v1.Pod, index int) (result []*v1.Pod) {
 	for i := range pods {
-		if pods[i].Annotations[constants.RoleReplicaIndexAnnotationKey] == fmt.Sprintf("%d", index) {
+		if pods[i].Annotations[constants.RoleReplicaIndexAnnotationKey] == strconv.Itoa(index) {
 			result = append(result, pods[i])
 		}
 	}

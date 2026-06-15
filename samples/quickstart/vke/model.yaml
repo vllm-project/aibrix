@@ -19,6 +19,7 @@ spec:
     metadata:
       labels:
         model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+        model.aibrix.ai/port: "8000"
       annotations:
         prometheus.io/path: "/metrics"
         prometheus.io/port: "8000"
@@ -62,15 +63,13 @@ spec:
           image: aibrix-public-release-cn-beijing.cr.volces.com/vllm/vllm-openai:0.11.0
           imagePullPolicy: Always
           command:
-            - python3
-            - -m
-            - vllm.entrypoints.openai.api_server
+            - vllm
+            - serve
+            - /models/DeepSeek-R1-Distill-Llama-8B/
             - --port
             - "8000"
             - --uvicorn-log-level
             - warning
-            - --model
-            - /models/DeepSeek-R1-Distill-Llama-8B/
             - --trust-remote-code
             - --served-model-name
             - deepseek-r1-distill-llama-8b
@@ -87,10 +86,37 @@ spec:
               nvidia.com/gpu: "1"
               cpu: "12"
               memory: "48G"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 3
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 5
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 30
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
       volumes:
         - name: model-hostpath
           hostPath:
-            path: /root/models
+            path: /data01/models/
             type: DirectoryOrCreate
 
 ---

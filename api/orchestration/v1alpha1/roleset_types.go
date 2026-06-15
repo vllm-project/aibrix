@@ -138,6 +138,13 @@ const (
 	TopologyRoleScope         TopologyScope = "Role"
 )
 
+type TopologyPolicyMode string
+
+const (
+	TopologyPolicyPreferred TopologyPolicyMode = "Preferred"
+	TopologyPolicyRequired  TopologyPolicyMode = "Required"
+)
+
 // TopologyPolicy specifies how Pods are co-located based on Kubernetes topology keys.
 type TopologyPolicy struct {
 	// Scope defines the granularity of co-location.
@@ -146,17 +153,24 @@ type TopologyPolicy struct {
 	// - "RoleSet": All Pods within each RoleSet share the same topology value (different RoleSets may be on different domains).
 	// - "Role": All Pods of the same role (across all RoleSets) share the same topology value.
 	// +kubebuilder:validation:Enum=StormService;RoleSet;Role
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Scope TopologyScope `json:"scope"`
+
+	// Mode defines whether topology co-location is a soft preference or a hard requirement.
+	// Defaults to Preferred to avoid blocking scheduling when the topology domain lacks resources.
+	// +kubebuilder:validation:Enum=Preferred;Required
+	// +kubebuilder:default=Preferred
 	// +optional
-	Scope TopologyScope `json:"scope,omitempty"`
+	Mode TopologyPolicyMode `json:"mode,omitempty"`
 
 	// Key is the Kubernetes topology label key to enforce co-location on.
 	// Common values include:
 	//   - "kubernetes.io/hostname" (node-level)
 	//   - "topology.kubernetes.io/zone" (zone-level)
-	// Required when Scope is set.
-	// TODO: validate that Key is not empty when Scope is set in webhook.
-	// +optional
-	Key string `json:"key,omitempty"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Key string `json:"key"`
 }
 
 // +enum

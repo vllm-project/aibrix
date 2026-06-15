@@ -24,12 +24,16 @@ go.work.sum
 .idea
 .vscode
 .go-version
+.worklog/
 
 .DS_Store
 __pycache__
 *.xml
 .*.pid
 
+# Node.js
+node_modules/
+dist/
 # Python virtual environment directory
 .venv
 

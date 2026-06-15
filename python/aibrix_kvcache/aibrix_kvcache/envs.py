@@ -132,6 +132,7 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_ADDR: str = "127.0.0.1"
     AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_PORT: int = 6379
     AIBRIX_KV_CACHE_OL_PRISKV_USE_MPUT_MGET: bool = False
+    AIBRIX_KV_CACHE_OL_PRISKV_USE_ZERO_COPY: bool = False
     AIBRIX_KV_CACHE_OL_PRISKV_PASSWORD: str = ""
 
     # RDMA Auto-Detection Env Vars
@@ -150,6 +151,9 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_SHFS_ROOT: str = os.path.expanduser(
         os.path.join(os.path.expanduser("~"), ".kv_cache_ol", "shfs")
     )
+
+    # vLLM Integration Env Vars
+    VLLM_AIBRIX_SYNC_GRANULARITY: str = "PER_OP"
 
 # The begin-* and end* here are used by the documentation generator
 # to extract the used env vars.
@@ -412,6 +416,15 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
             os.getenv("AIBRIX_KV_CACHE_OL_PRIS_PASSWORD", ""),
         ).strip()
     ),
+    "AIBRIX_KV_CACHE_OL_PRISKV_USE_ZERO_COPY": lambda: (
+        os.getenv(
+            "AIBRIX_KV_CACHE_OL_PRISKV_USE_ZERO_COPY",
+            os.getenv("AIBRIX_KV_CACHE_OL_PRIS_USE_ZERO_COPY", "0"),
+        )
+        .strip()
+        .lower()
+        in ("1", "true")
+    ),
     # ================== RDMA Auto-Detection Env Vars ==================
     "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE": lambda: (
         os.getenv(
@@ -439,6 +452,11 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
             os.path.join(os.path.expanduser("~"), ".kv_cache_ol", "shfs"),
         )
     ),
+    # Specify the sync granularity used by AIBrix connectors. Please refer to
+    # AIBrixOffloadingConnectorSyncGranularity for more details.
+    "VLLM_AIBRIX_SYNC_GRANULARITY": lambda: os.environ.get(
+        "VLLM_AIBRIX_SYNC_GRANULARITY", "PER_OP"
+    ).upper(),
 }
 
 # end-env-vars-definition

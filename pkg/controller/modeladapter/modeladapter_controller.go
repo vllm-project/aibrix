@@ -36,6 +36,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	toolscache "k8s.io/client-go/tools/cache"
@@ -168,6 +169,11 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		return nil, err
 	}
 
+	k8sClientset, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		return nil, err
+	}
+
 	reconciler := &ModelAdapterReconciler{
 		Client:              mgr.GetClient(),
 		Scheme:              mgr.GetScheme(),
@@ -179,7 +185,7 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		RuntimeConfig:       runtimeConfig,
 		resyncInterval:      DefaultResyncInterval,
 		eventCh:             make(chan event.GenericEvent),
-		loraClient:          NewLoraClient(runtimeConfig),
+		loraClient:          NewLoraClientWithK8sClient(runtimeConfig, k8sClientset),
 	}
 	return reconciler, nil
 }
@@ -253,15 +259,19 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	klog.InfoS("Finished to add model-adapter-controller")
 
-	errChan := make(chan error)
-	go reconciler.Run(context.Background(), errChan)
-	klog.InfoS("Run model-adapter-reconciler periodical sync started successfully")
-
-	go func() {
-		for err := range errChan {
-			klog.ErrorS(err, "Run model-adapter-reconciler periodical sync returned an error")
-		}
-	}()
+	// Register the periodical sync loop as a manager Runnable so that it shares
+	// the manager's lifecycle: controller-runtime supplies a context that is
+	// cancelled on shutdown, and the manager waits for this goroutine to exit
+	// before returning from Start. This avoids leaking the previously used
+	// errChan + background goroutine pair that could block forever if the
+	// channel was never closed.
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		klog.InfoS("Run model-adapter-reconciler periodical sync started successfully")
+		reconciler.Run(ctx)
+		return nil
+	})); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -358,7 +368,11 @@ func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return r.DoReconcile(ctx, req, modelAdapter)
 }
 
-func (r *ModelAdapterReconciler) Run(ctx context.Context, errChan chan<- error) {
+// Run periodically enqueues all ModelAdapter objects until ctx is cancelled.
+// It is expected to be invoked by the controller-runtime manager via
+// manager.RunnableFunc, so that ctx is tied to the manager lifecycle and the
+// manager will wait for this function to return during shutdown.
+func (r *ModelAdapterReconciler) Run(ctx context.Context) {
 	ticker := time.NewTicker(r.resyncInterval)
 	defer ticker.Stop()
 	defer close(r.eventCh)
@@ -370,11 +384,9 @@ func (r *ModelAdapterReconciler) Run(ctx context.Context, errChan chan<- error) 
 			klog.V(4).Info("enqueue all modeladapter objects")
 			if err := r.enqueueModelAdapters(ctx); err != nil {
 				klog.ErrorS(err, "Failed to enqueue modeladapter objects")
-				errChan <- err
 			}
 		case <-ctx.Done():
 			klog.Info("context done, stopping running periodically sync modeladapter")
-			errChan <- ctx.Err()
 			return
 		}
 	}
@@ -385,12 +397,19 @@ func (r *ModelAdapterReconciler) enqueueModelAdapters(ctx context.Context) error
 	if err := r.List(ctx, modelAdapterList); err != nil {
 		return err
 	}
-	for _, ma := range modelAdapterList.Items {
-		// Let's operate the queue and just enqueue the object, that should be ok.
+	for i := range modelAdapterList.Items {
+		// Take the address of the slice element rather than the loop variable
+		// so each enqueued event references a distinct object. Guard the send
+		// with ctx.Done() so we cannot block forever during shutdown if the
+		// source.Channel consumer has already stopped.
 		e := event.GenericEvent{
-			Object: &ma,
+			Object: &modelAdapterList.Items[i],
 		}
-		r.eventCh <- e
+		select {
+		case r.eventCh <- e:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return nil
 }
@@ -1054,7 +1073,7 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 	// Update retry info
 	r.updateRetryInfo(instance, pod.Name, retryCount+1)
 
-	_, exists, err := r.loraClient.LoadAdapter(instance, pod)
+	_, exists, err := r.loraClient.LoadAdapter(ctx, instance, pod)
 
 	if err != nil {
 		if r.isRetriableError(err) {

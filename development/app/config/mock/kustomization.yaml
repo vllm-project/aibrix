@@ -1,6 +1,10 @@
 resources:
   - ../templates/deployment
   - components.yaml
+  - config-profile.yaml
+  - vllm-pd-config.yaml
+  - sglang-pd-config.yaml
+  - trtllm-pd-config.yaml
 
 # enable following patch when we test lora + api-key
 patches:

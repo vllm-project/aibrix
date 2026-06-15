@@ -144,4 +144,11 @@ spec:
         connect_timeout: 6s
         lb_policy: CLUSTER_PROVIDED
         dns_lookup_family: V4_ONLY
+  - type: type.googleapis.com/envoy.config.listener.v3.Listener
+    name: aibrix-system/aibrix-eg/http
+    operation:
+      op: add
+      path: /default_filter_chain/filters/0/typed_config/preserve_external_request_id
+      value: false
+
   

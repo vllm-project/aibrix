@@ -101,7 +101,7 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 									Image:   "vllm-openai:v0.10.0-cu128-nixl-v0.4.1-lmcache-0.3.2",
 									Command: []string{"sh", "-c"},
 									Args: []string{
-										`python3 -m vllm.entrypoints.openai.api_server \
+										`vllm serve \
 --host "0.0.0.0" \
 --port "8000" \
 --uvicorn-log-level warning \

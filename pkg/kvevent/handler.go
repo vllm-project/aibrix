@@ -77,6 +77,7 @@ func (h *eventHandler) handleBlockStored(ctx context.Context, event *kvcache.Blo
 	}
 
 	// Convert to sync event
+	// Note: BlockHashes are already []int64 after msgpack decoding
 	syncEvent := BlockStoredEvent{
 		BlockHashes:     event.BlockHashes,
 		ModelName:       h.modelName,
@@ -110,6 +111,7 @@ func (h *eventHandler) handleBlockRemoved(ctx context.Context, event *kvcache.Bl
 	}
 
 	// Convert to sync event
+	// Note: BlockHashes are already []int64 after msgpack decoding
 	syncEvent := BlockRemovedEvent{
 		BlockHashes: event.BlockHashes,
 		ModelName:   h.modelName,

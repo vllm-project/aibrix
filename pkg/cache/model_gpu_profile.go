@@ -104,6 +104,9 @@ func (pf *ModelGPUProfile) GetSignature(features ...float64) ([]int, error) {
 
 	formalizedVals := make([]float64, len(features))
 	for i, val := range features {
+		if val < 0 {
+			return nil, fmt.Errorf("feature value must be positive, got %f", val)
+		}
 		formalizedVals[i] = math.Log2(val)
 	}
 
@@ -135,8 +138,8 @@ func (pf *ModelGPUProfile) GetSignature(features ...float64) ([]int, error) {
 				} else {
 					ret[i] = mid
 					found = true
+					break
 				}
-				break
 			}
 			if !found {
 				if value < indexes[i][left]+(indexes[i][right]-indexes[i][left])*SignatureTolerance {

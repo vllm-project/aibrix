@@ -295,22 +295,32 @@ class BasePlacement(Placement[K, V]):
             )
         return Status.ok()
 
-    async def prefetch(self, keys: Sequence[K]) -> None:
-        """Prefetch a list of keys.
-        Args:
-            keys: The keys of the kv tensors.
-        """
-        pass
-
-    async def exists(self, key: K) -> Status:
-        """Check if key is in the store."""
+    async def _forward(self, method: str, key: K, *args, **kwargs) -> Any:
+        """Generic forwarder: select member by key and call connector.method."""
         status = self.select(key)
         if not status.is_ok():
             return Status(status)
         member = status.get()
         if member.conn is None:
             return Status(StatusCodes.ERROR, "Connection not established")
-        return await member.conn.exists(key)
+        fn = getattr(member.conn, method, None)
+        if fn is None:
+            return Status(
+                StatusCodes.INVALID, f"Connector has no method '{method}'"
+            )
+        return await fn(key, *args, **kwargs)
+
+    def __getattr__(self, name: str):
+        async def _wrapper(key, *args, **kwargs):
+            return await self._forward(name, key, *args, **kwargs)
+
+        if not name.startswith("_"):
+            return _wrapper
+        raise AttributeError(name)
+
+    async def exists(self, key: K) -> Status:
+        """Check if key is in the store."""
+        return await self._forward("exists", key)
 
     async def get(
         self, key: K, mr: MemoryRegion | Sequence[MemoryRegion]
@@ -322,13 +332,7 @@ class BasePlacement(Placement[K, V]):
         Returns:
             The status of the get operation.
         """
-        status = self.select(key)
-        if not status.is_ok():
-            return Status(status)
-        member = status.get()
-        if member.conn is None:
-            return Status(StatusCodes.ERROR, "Connection not established")
-        return await member.conn.get(key, mr)
+        return await self._forward("get", key, mr)
 
     async def put(
         self, key: K, mr: MemoryRegion | Sequence[MemoryRegion]
@@ -340,13 +344,7 @@ class BasePlacement(Placement[K, V]):
         Returns:
             The status of the put operation.
         """
-        status = self.select(key)
-        if not status.is_ok():
-            return Status(status)
-        member = status.get()
-        if member.conn is None:
-            return Status(StatusCodes.ERROR, "Connection not established")
-        return await member.conn.put(key, mr)
+        return await self._forward("put", key, mr)
 
     def register_slabs(self, slabs: List[torch.Tensor]) -> Status:
         """Register slabs with backend-specific register function.
@@ -427,10 +425,4 @@ class BasePlacement(Placement[K, V]):
         Returns:
             The status of the delete operation.
         """
-        status = self.select(key)
-        if not status.is_ok():
-            return Status(status)
-        member = status.get()
-        if member.conn is None:
-            return Status(StatusCodes.ERROR, "Connection not established")
-        return await member.conn.delete(key)
+        return await self._forward("delete", key)

@@ -1,5 +1,5 @@
 # templates/envoy-extension-policy.yaml
-{{- if .Values.gateway.enable }}
+{{- if and .Values.gateway.enable (not .Values.gateway.envoyAsSideCar) }}
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
 metadata:
@@ -14,7 +14,9 @@ spec:
     name: {{ include "aibrix.fullname" . }}-reserved-router
   extProc:
     - backendRefs:
-        - name: {{ include "aibrix.fullname" . }}-gateway-plugins
+        - group: ''
+          kind: Service
+          name: {{ include "aibrix.fullname" . }}-gateway-plugins
           port: 50052
       processingMode:
         request:
@@ -22,6 +24,14 @@ spec:
         response:
           body: Streamed
       messageTimeout: {{ .Values.gatewayPlugin.messageTimeout }}
+      failOpen: {{ .Values.gatewayPlugin.failOpen }}
+      backendSettings:
+        circuitBreaker:
+          maxConnections: {{ .Values.gatewayPlugin.extProc.backendSettings.circuitBreaker.maxConnections }}
+          maxParallelRequests: {{ .Values.gatewayPlugin.extProc.backendSettings.circuitBreaker.maxParallelRequests }}
+          maxPendingRequests: {{ .Values.gatewayPlugin.extProc.backendSettings.circuitBreaker.maxPendingRequests }}
+          maxParallelRetries: {{ .Values.gatewayPlugin.extProc.backendSettings.circuitBreaker.maxParallelRetries }}
+          maxRequestsPerConnection: {{ .Values.gatewayPlugin.extProc.backendSettings.circuitBreaker.maxRequestsPerConnection }}
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy

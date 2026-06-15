@@ -43,28 +43,64 @@ from typing import Any, Dict
 import httpx
 import pytest
 
+# Sample request bodies for each supported batch endpoint
+ENDPOINT_SAMPLE_BODIES: Dict[str, Dict[str, Any]] = {
+    "/v1/chat/completions": {
+        "model": "gpt-3.5-turbo-0125",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello world!"},
+        ],
+        "max_tokens": 1000,
+    },
+    "/v1/completions": {
+        "model": "gpt-3.5-turbo-0125",
+        "prompt": "Once upon a time",
+        "max_tokens": 100,
+    },
+    "/v1/embeddings": {
+        "model": "text-embedding-ada-002",
+        "input": "The food was delicious and the waiter was friendly.",
+    },
+    "/v1/rerank": {
+        "model": "reranker-v1",
+        "query": "What is deep learning?",
+        "documents": [
+            "Deep learning is a subset of machine learning.",
+            "The weather is nice today.",
+            "Neural networks are inspired by the brain.",
+        ],
+    },
+}
 
-def generate_batch_input_data(num_requests: int = 3) -> str:
-    """Generate test batch input data and return the content as string."""
-    base_request: Dict[str, Any] = {
-        "custom_id": "request-1",
-        "method": "POST",
-        "url": "/v1/chat/completions",
-        "body": {
-            "model": "gpt-3.5-turbo-0125",
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": "Hello world!"},
-            ],
-            "max_tokens": 1000,
-        },
-    }
+
+def generate_batch_input_data(
+    num_requests: int = 3, endpoint: str = "/v1/chat/completions"
+) -> str:
+    """Generate test batch input data for any supported endpoint.
+
+    Args:
+        num_requests: Number of requests to generate
+        endpoint: The API endpoint path (e.g., "/v1/chat/completions")
+
+    Returns:
+        JSONL string with batch requests
+    """
+    sample_body = ENDPOINT_SAMPLE_BODIES.get(endpoint)
+    if sample_body is None:
+        raise ValueError(
+            f"No sample body defined for endpoint '{endpoint}'. "
+            f"Supported: {list(ENDPOINT_SAMPLE_BODIES.keys())}"
+        )
 
     lines = []
     for i in range(num_requests):
-        request = copy.deepcopy(base_request)
-        request["custom_id"] = f"request-{i+1}"
-        request["body"]["messages"][1]["content"] = f"Hello from request {i+1}!"
+        request: Dict[str, Any] = {
+            "custom_id": f"request-{i + 1}",
+            "method": "POST",
+            "url": endpoint,
+            "body": copy.deepcopy(sample_body),
+        }
         lines.append(json.dumps(request))
 
     return "\n".join(lines)
@@ -86,11 +122,11 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
             required_fields = ["id", "custom_id", "response"]
             for field in required_fields:
                 if field not in output:
-                    print(f"Missing required field '{field}' in response {i+1}")
+                    print(f"Missing required field '{field}' in response {i + 1}")
                     return False
 
             # Verify custom_id matches expected pattern
-            expected_custom_id = f"request-{i+1}"
+            expected_custom_id = f"request-{i + 1}"
             if output["custom_id"] != expected_custom_id:
                 print(
                     f"Expected custom_id '{expected_custom_id}', got '{output['custom_id']}'"
@@ -102,7 +138,7 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
             for field in required_fields:
                 if field not in response:
                     print(
-                        f"Missing required field 'response.{field}' in response {i+1}"
+                        f"Missing required field 'response.{field}' in response {i + 1}"
                     )
                     return False
 
@@ -116,12 +152,12 @@ def verify_batch_output_content(output_content: str, expected_requests: int) -> 
             for field in required_fields:
                 if field not in body:
                     print(
-                        f"Missing required field 'response.body.{field}' in response {i+1}"
+                        f"Missing required field 'response.body.{field}' in response {i + 1}"
                     )
                     return False
 
         except json.JSONDecodeError as e:
-            print(f"Invalid JSON in output line {i+1}: {e}")
+            print(f"Invalid JSON in output line {i + 1}: {e}")
             return False
 
     return True
@@ -133,9 +169,9 @@ async def check_service_health(base_url: str) -> bool:
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Check general health endpoint
             health_response = await client.get(f"{base_url}/v1/batches")
-            assert (
-                health_response.status_code == 200
-            ), f"Health check response: {health_response}"
+            assert health_response.status_code == 200, (
+                f"Health check response: {health_response}"
+            )
             return True
     except Exception as e:
         print(f"Health check failed: {e}")
@@ -181,9 +217,9 @@ async def test_batch_api_e2e_real_service(service_health):
         upload_response = await client.post(
             f"{base_url}/v1/files", files=files, data=data
         )
-        assert (
-            upload_response.status_code == 200
-        ), f"File upload failed: {upload_response.text}"
+        assert upload_response.status_code == 200, (
+            f"File upload failed: {upload_response.text}"
+        )
 
         upload_result = upload_response.json()
         assert upload_result["object"] == "file"
@@ -203,9 +239,9 @@ async def test_batch_api_e2e_real_service(service_health):
         }
 
         batch_response = await client.post(f"{base_url}/v1/batches", json=batch_request)
-        assert (
-            batch_response.status_code == 200
-        ), f"Batch creation failed: {batch_response.text}"
+        assert batch_response.status_code == 200, (
+            f"Batch creation failed: {batch_response.text}"
+        )
 
         batch_result = batch_response.json()
         assert batch_result["object"] == "batch"
@@ -225,9 +261,9 @@ async def test_batch_api_e2e_real_service(service_health):
 
         for attempt in range(max_polls):
             status_response = await client.get(f"{base_url}/v1/batches/{batch_id}")
-            assert (
-                status_response.status_code == 200
-            ), f"Status check failed: {status_response.text}"
+            assert status_response.status_code == 200, (
+                f"Status check failed: {status_response.text}"
+            )
 
             status_result = status_response.json()
             current_status = status_result["status"]
@@ -237,9 +273,9 @@ async def test_batch_api_e2e_real_service(service_health):
             if current_status == "completed":
                 print("✅ Batch job completed successfully!")
                 output_file_id = status_result["output_file_id"]
-                assert (
-                    output_file_id is not None
-                ), "Expected output_file_id for completed batch"
+                assert output_file_id is not None, (
+                    "Expected output_file_id for completed batch"
+                )
 
                 request_counts = status_result.get("request_counts")
                 if request_counts:
@@ -254,7 +290,12 @@ async def test_batch_api_e2e_real_service(service_health):
                 pytest.fail(f"Batch job failed: {error_info}")
             elif current_status in ["cancelled", "expired"]:
                 pytest.fail(f"Batch job was {current_status}")
-            elif current_status in ["validating", "in_progress", "finalizing"]:
+            elif current_status in [
+                "scheduling",
+                "validating",
+                "in_progress",
+                "finalizing",
+            ]:
                 # These are expected intermediate states
                 pass
             else:
@@ -273,18 +314,18 @@ async def test_batch_api_e2e_real_service(service_health):
         output_response = await client.get(
             f"{base_url}/v1/files/{output_file_id}/content"
         )
-        assert (
-            output_response.status_code == 200
-        ), f"Output download failed: {output_response.text}"
+        assert output_response.status_code == 200, (
+            f"Output download failed: {output_response.text}"
+        )
 
         output_content = output_response.content.decode("utf-8")
         assert output_content, "Output file is empty"
 
         # Verify output content structure
         is_valid = verify_batch_output_content(output_content, 3)
-        assert (
-            is_valid
-        ), f"Output content verification failed. Content:\n{output_content}"
+        assert is_valid, (
+            f"Output content verification failed. Content:\n{output_content}"
+        )
 
         print("✅ Output downloaded and verified successfully!")
         print(f"Output content preview:\n{output_content[:500]}...")
@@ -293,9 +334,9 @@ async def test_batch_api_e2e_real_service(service_health):
         print("Step 5: Testing batch list API...")
 
         list_response = await client.get(f"{base_url}/v1/batches")
-        assert (
-            list_response.status_code == 200
-        ), f"Batch list failed: {list_response.text}"
+        assert list_response.status_code == 200, (
+            f"Batch list failed: {list_response.text}"
+        )
 
         list_result = list_response.json()
         assert list_result["object"] == "list"
@@ -382,9 +423,9 @@ async def test_openai_batch_api(service_health):
             if current_status == "completed":
                 print("✅ Batch job completed successfully!")
                 output_file_id = status_result.output_file_id
-                assert (
-                    output_file_id is not None
-                ), "Expected output_file_id for completed batch"
+                assert output_file_id is not None, (
+                    "Expected output_file_id for completed batch"
+                )
 
                 request_counts = status_result.request_counts
                 if request_counts:
@@ -399,7 +440,12 @@ async def test_openai_batch_api(service_health):
                 pytest.fail(f"Batch job failed: {error_info}")
             elif current_status in ["cancelled", "expired"]:
                 pytest.fail(f"Batch job was {current_status}")
-            elif current_status in ["validating", "in_progress", "finalizing"]:
+            elif current_status in [
+                "scheduling",
+                "validating",
+                "in_progress",
+                "finalizing",
+            ]:
                 # These are expected intermediate states
                 pass
             else:
@@ -422,9 +468,9 @@ async def test_openai_batch_api(service_health):
 
         # Verify output content structure
         is_valid = verify_batch_output_content(output_content, 3)
-        assert (
-            is_valid
-        ), f"Output content verification failed. Content:\n{output_content}"
+        assert is_valid, (
+            f"Output content verification failed. Content:\n{output_content}"
+        )
 
         print("✅ Output downloaded and verified successfully!")
         print(f"Output content preview:\n{output_content[:500]}...")

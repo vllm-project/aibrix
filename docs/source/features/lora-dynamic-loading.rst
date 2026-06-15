@@ -476,7 +476,7 @@ User may pass in the argument ``--api-key`` or environment variable ``VLLM_API_K
 
 .. code-block:: bash
 
-    python3 -m vllm.entrypoints.openai.api_server --api-key sk-kFJ12nKsFakefVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BFake
+    vllm serve --api-key sk-kFJ12nKsFakefVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BFake
 
 We already have an example and you can ``kubectl apply -f samples/adapter/adapter-with-key.yaml``.
 
@@ -560,6 +560,13 @@ The runtime sidecar:
 2. Controller flag ``--enable-runtime-sidecar=true`` enabled
 3. Kubernetes secrets configured with storage credentials
 4. Shared volume between runtime and engine containers
+
+.. note::
+
+    When the AIBrix sidecar injection webhook is enabled, AIBrix injects a shared volume named
+    ``adapter-storage`` mounted at ``/tmp/aibrix/adapters`` into both the runtime and engine containers.
+    The runtime downloads LoRA adapter artifacts into this directory by default. See
+    ``DefaultAdapterVolumeName`` and ``DefaultAdapterMountPath`` in ``pkg/webhook/sidecar_injection.go``.
 
 Setup: AWS S3 Storage
 """"""""""""""""""""""

@@ -227,6 +227,14 @@ build-gateway-plugins: manifests generate fmt vet ## Build gateway-plugins binar
 build-gateway-plugins-nozmq: manifests generate fmt vet ## Build gateway-plugins binary without ZMQ (for standalone mode).
 	CGO_ENABLED=0 go build -tags="nozmq" -o bin/gateway-plugins cmd/plugins/main.go
 
+.PHONY: build-console
+build-console: ## Build console API server binary.
+	CGO_ENABLED=0 go build -tags="nozmq" -o bin/console ./cmd/console
+
+.PHONY: generate-console-proto
+generate-console-proto: ## Generate Go code from console proto files.
+	cd apps/console/api && buf generate
+
 .PHONY: build-metadata-service
 build-metadata-service: ## Metadata service is now Python-based, use docker-build-metadata-service instead.
 	@echo "Metadata service is now Python-based. Use 'make docker-build-metadata-service' to build the Docker image."
@@ -318,9 +326,10 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	rm Dockerfile.cross
 
 .PHONY: build-installer
-build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
+build-installer: manifests generate kustomize ## Generate consolidated YAMLs: dist/install-crds.yaml (CRDs) and dist/install.yaml (operator + deployment).
 	mkdir -p dist
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	$(KUSTOMIZE) build config/crd     > dist/install-crds.yaml
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
 .PHONY: docker-buildx-runtime
@@ -414,6 +423,7 @@ dev-stop-port-forward:
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
     ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization
 	$(KUBECTL) apply -k config/dependency --server-side
+	$(KUBECTL) apply -k config/crd --server-side
 
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
@@ -421,6 +431,7 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply --server-side -f -
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
@@ -429,12 +440,14 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 
 .PHONY: deploy-release
 deploy-release: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply --server-side -f -
 	$(KUSTOMIZE) build config/overlays/release | $(KUBECTL) apply -f -
 
 .PHONY: install-vke
 install-vke: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
     ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization
 	$(KUBECTL) apply -k config/overlays/vke/dependency --server-side
+	$(KUBECTL) apply -k config/crd --server-side
 
 .PHONY: uninstall-vke
 uninstall-vke: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
@@ -442,6 +455,7 @@ uninstall-vke: manifests kustomize ## Uninstall CRDs from the K8s cluster specif
 
 .PHONY: deploy-vke
 deploy-vke: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply --server-side -f -
 	$(KUSTOMIZE) build config/overlays/vke/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy-vke
@@ -450,6 +464,7 @@ undeploy-vke: kustomize ## Undeploy controller from the K8s cluster specified in
 
 .PHONY: deploy-vke-ipv4
 deploy-vke-ipv4: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply --server-side -f -
 	$(KUSTOMIZE) build config/overlays/vke-ipv4 | $(KUBECTL) apply -f -
 
 .PHONY: undeploy-vke-ipv4
@@ -474,7 +489,7 @@ GO_TEST_COVERAGE = $(LOCALBIN)/go-test-coverage-$(GO_TEST_COVERAGE_VERSION)
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.3.0
 CONTROLLER_TOOLS_VERSION ?= v0.16.1
-ENVTEST_VERSION ?= release-0.17
+ENVTEST_VERSION ?= release-0.19
 GOLANGCI_LINT_VERSION ?= v1.57.2
 GO_TEST_COVERAGE_VERSION ?= v2.14.3
 

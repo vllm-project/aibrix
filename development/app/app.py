@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from random import randint
 import os
+import uuid
 import json
 from typing import Optional
 
@@ -61,7 +62,12 @@ if SIMULATION != "disabled":
         sys.argv.append(modelMaps.get(MODEL_NAME, MODEL_NAME))
 
 tokenizer = None
+tiktoken_encoding = None
 simulator = None  # Optional[Simulator] when simulation is enabled
+MAX_LOGGED_BODY_CHARS = int(os.getenv("MAX_LOGGED_BODY_CHARS", "4096"))
+MOCK_REQUEST_DURATION_SECONDS = float(
+    os.getenv("MOCK_REQUEST_DURATION_SECONDS", "0.2")
+)
 
 # Extract the api_key argument and prepare for authentication
 api_key = None
@@ -100,6 +106,13 @@ def auth_error(status):
 
 
 logger = logging.getLogger(__name__)
+
+try:
+    import tiktoken
+
+    tiktoken_encoding = tiktoken.get_encoding("cl100k_base")
+except Exception as e:
+    logger.warning(f"Failed to initialize tiktoken fallback tokenizer: {e}")
 
 
 # =============================================================================
@@ -158,6 +171,34 @@ def create_vllm_error(message, error_type, status_code):
     )
 
 
+def _json_for_log(value, max_chars=MAX_LOGGED_BODY_CHARS):
+    text = json.dumps(value, ensure_ascii=False, default=str)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "...(truncated)"
+
+
+def _log_mock_exchange(endpoint, payload, response):
+    logger.info(
+        "%s mock exchange\nrequest=%s\nresponse=%s",
+        endpoint,
+        _json_for_log(payload),
+        _json_for_log(response),
+    )
+
+
+def _sleep_for_request_latency(started_at, simulated_latency):
+    overhead = datetime.now().timestamp() - started_at
+    if simulated_latency > overhead:
+        time.sleep(simulated_latency - overhead)
+    elif simulated_latency > 0.0:
+        logger.warning(
+            f"Latency is less than overhead: L{simulated_latency} - O{overhead}"
+        )
+    elif MOCK_REQUEST_DURATION_SECONDS > overhead:
+        time.sleep(MOCK_REQUEST_DURATION_SECONDS - overhead)
+
+
 def read_configs(file_path):
     """
     Reads a JSON file that store sensitive information.
@@ -176,18 +217,121 @@ def read_configs(file_path):
 configs = read_configs("config.json")
 HUGGINGFACE_TOKEN = configs.get("huggingface_token", "your huggingface token")
 
+# Minimal 1x1 red PNG for mock image responses (89 bytes)
+MOCK_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
+    "2mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+# Image model name patterns (case-insensitive)
+_IMAGE_MODEL_KEYWORDS = {"image", "edit", "diffusion", "qwen-image", "z-image"}
+
+
+# =============================================================================
+# PD DISAGGREGATION HELPERS (vLLM SHFS mode)
+# =============================================================================
+
+def _is_prefill_request(data: dict) -> bool:
+    """Detect a vLLM PD prefill request (gateway sets do_remote_decode=true)."""
+    kv = data.get("kv_transfer_params")
+    return isinstance(kv, dict) and kv.get("do_remote_decode") is True
+
+
+def _mock_prefill_kv_transfer_params() -> dict:
+    """Return mock kv_transfer_params as a real vLLM prefill pod would include in its response."""
+    return {
+        "do_remote_decode": False,
+        "do_remote_prefill": True,
+        "remote_engine_id": "mock-engine-" + uuid.uuid4().hex[:8],
+        "remote_block_ids": list(range(random.randint(1, 8))),
+        "remote_host": None,   # gateway will fill this in with prefill pod IP
+        "remote_port": 8200,
+    }
+
+
+# =============================================================================
+# PD DISAGGREGATION HELPERS (TensorRT-LLM)
+# =============================================================================
+
+def _is_trtllm_prefill_request(data: dict) -> bool:
+    """Detect a TRT-LLM PD prefill request (disaggregated_params.request_type == context_only)."""
+    disagg = data.get("disaggregated_params")
+    return isinstance(disagg, dict) and disagg.get("request_type") == "context_only"
+
+
+def _mock_trtllm_prefill_disaggregated_params(data: dict) -> dict:
+    """Return mock disaggregated_params as a real TRT-LLM prefill pod would include in its response.
+
+    The gateway reads this, changes request_type to generation_only, and forwards
+    it (along with prompt_token_ids) to the decode pod.
+    """
+    disagg_request_id = data.get("disaggregated_params", {}).get("disagg_request_id", 0)
+    return {
+        "request_type": "context_only",  # gateway overrides this to generation_only for decode
+        "disagg_request_id": disagg_request_id,
+        "first_gen_tokens": [random.randint(100, 32000)],
+        "opaque_state": base64.b64encode(bytes(random.randint(8, 32))).decode(),
+    }
+
+
+def _apply_pd_prefill_fields(response: dict, payload: dict, input_tokens: int) -> None:
+    """Add engine-specific fields to a non-streaming completion response for PD prefill probes.
+
+    vLLM (SHFS): prefill returns kv_transfer_params.
+    TRT-LLM: prefill returns disaggregated_params and prompt_token_ids for the decode request.
+    SGLang: the gateway issues prefill asynchronously and does not rely on this body, so we add nothing.
+    """
+    if _is_prefill_request(payload):
+        response["kv_transfer_params"] = _mock_prefill_kv_transfer_params()
+    elif _is_trtllm_prefill_request(payload):
+        response["disaggregated_params"] = _mock_trtllm_prefill_disaggregated_params(payload)
+        response["prompt_token_ids"] = list(range(input_tokens))
+
+
+def _is_image_request(data: dict) -> bool:
+    """Detect if a /v1/chat/completions request is for image gen/edit (vLLM-Omni)."""
+    model = (data.get("model") or "").lower()
+    if any(kw in model for kw in _IMAGE_MODEL_KEYWORDS):
+        return True
+    # Also detect by presence of diffusion params
+    if data.get("height") or data.get("width") or data.get("num_inference_steps"):
+        return True
+    return False
+
+
+def _has_input_images(messages: list) -> bool:
+    """Check if any message contains image_url content (image edit request)."""
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            for block in content:
+                if block.get("type") == "image_url":
+                    return True
+    return False
+
 
 def get_token_count(text):
-    try:
-        # Encode the text
-        encoded_input = tokenizer(text)
+    if text is None:
+        return 0
 
-        # Get the number of tokens
-        return len(encoded_input["input_ids"])
-    except Exception as e:
-        logger.error(f"Failed to get number of tokens: {e}")
+    text = str(text)
+    if not text:
+        return 0
 
-    return 1
+    if tokenizer is not None:
+        try:
+            encoded_input = tokenizer(text)
+            return len(encoded_input["input_ids"])
+        except Exception as e:
+            logger.warning(f"Failed to use model tokenizer, fallback to tiktoken: {e}")
+
+    if tiktoken_encoding is not None:
+        try:
+            return len(tiktoken_encoding.encode(text))
+        except Exception as e:
+            logger.warning(f"Failed to use tiktoken, fallback to heuristic: {e}")
+
+    return max(1, len(text.split()))
 
 
 models = [
@@ -406,11 +550,7 @@ def completion():
                 )
             )
 
-        overhead = datetime.now().timestamp() - start
-        if latency > overhead:
-            time.sleep(latency - overhead)
-        elif latency > 0.0:
-            logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
+        _sleep_for_request_latency(start, latency)
 
         if stream:
 
@@ -469,6 +609,21 @@ def completion():
             response = Response(generate(), mimetype="text/event-stream")
             response.headers['Cache-Control'] = 'no-cache'
             response.headers['X-Accel-Buffering'] = 'no'
+            _log_mock_exchange(
+                "/v1/completions",
+                request.json,
+                {
+                    "object": "text_completion",
+                    "model": model,
+                    "stream": True,
+                    "content_preview": f"This is simulated message from {model}!",
+                    "usage": {
+                        "prompt_tokens": input_tokens,
+                        "completion_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                    },
+                },
+            )
             return response
         else:
             response = {
@@ -491,6 +646,10 @@ def completion():
                     "total_tokens": input_tokens + output_tokens,
                 },
             }
+
+            _apply_pd_prefill_fields(response, request.json, input_tokens)
+
+            _log_mock_exchange("/v1/completions", request.json, response)
             return jsonify(response), 200
     except Exception as e:
         err = {
@@ -530,7 +689,21 @@ def chat_completions():
             )
 
         arrived_at = datetime.now().timestamp()
-        input_tokens = sum(get_token_count(message["content"]) for message in messages)
+        modalities = request.json.get("modalities", ["text"])
+
+        # Token count: handle both string and list content (multimodal)
+        def _msg_tokens(msg):
+            c = msg.get("content", "")
+            if isinstance(c, str):
+                return get_token_count(c)
+            if isinstance(c, list):
+                return sum(
+                    get_token_count(b.get("text", ""))
+                    for b in c if b.get("type") == "text"
+                )
+            return 1
+
+        input_tokens = sum(_msg_tokens(m) for m in messages)
         output_tokens = max_tokens if max_tokens else randint(10, 500)
         arrived_next = request.json.get("next_in")
         if not arrived_next:
@@ -547,11 +720,7 @@ def chat_completions():
                 )
             )
 
-        overhead = datetime.now().timestamp() - start
-        if latency > overhead:
-            time.sleep(latency - overhead)
-        else:
-            logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
+        _sleep_for_request_latency(start, latency)
 
         if stream:
 
@@ -648,8 +817,71 @@ def chat_completions():
             response = Response(generate(), mimetype="text/event-stream")
             response.headers['Cache-Control'] = 'no-cache'
             response.headers['X-Accel-Buffering'] = 'no'
+            _log_mock_exchange(
+                "/v1/chat/completions",
+                request.json,
+                {
+                    "object": "chat.completion.chunk",
+                    "model": model,
+                    "stream": True,
+                    "content_preview": f"This is simulated message from {model}!",
+                    "usage": {
+                        "prompt_tokens": input_tokens,
+                        "completion_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                    },
+                },
+            )
             return response
         else:
+            # --- vLLM-Omni: image gen/edit via /v1/chat/completions ---
+            if _is_image_request(request.json):
+                time.sleep(0.2)  # simulate diffusion time
+                is_edit = _has_input_images(messages)
+                response = {
+                    "id": "chatcmpl-img-" + "".join(
+                        random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8)
+                    ),
+                    "object": "chat.completion",
+                    "created": int(arrived_at),
+                    "model": model,
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": [{
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{MOCK_PNG_B64}"
+                                },
+                            }],
+                        },
+                        "finish_reason": "stop",
+                    }],
+                    "usage": {
+                        "prompt_tokens": input_tokens,
+                        "completion_tokens": 0,
+                        "total_tokens": input_tokens,
+                    },
+                }
+                _log_mock_exchange("/v1/chat/completions", request.json, response)
+                return jsonify(response), 200
+
+            # --- Standard text response (with optional audio) ---
+            text_content = f"\n\nThis is simulated message from {model}!"
+            message_body = {
+                "role": "assistant",
+                "content": text_content,
+            }
+            # vLLM-Omni: include mock audio when modalities has "audio"
+            if "audio" in modalities:
+                # 16 bytes of mock WAV data
+                mock_wav = base64.b64encode(bytes(16)).decode()
+                message_body["audio"] = {
+                    "data": mock_wav,
+                    "format": "wav",
+                }
+
             response = {
                 "id": "chatcmpl-abc123",
                 "object": "chat.completion",
@@ -662,16 +894,17 @@ def chat_completions():
                 },
                 "choices": [
                     {
-                        "message": {
-                            "role": "assistant",
-                            "content": f"\n\nThis is simulated message from {model}!",
-                        },
+                        "message": message_body,
                         "logprobs": None,
                         "finish_reason": "stop",
                         "index": 0,
                     }
                 ],
             }
+
+            _apply_pd_prefill_fields(response, request.json, input_tokens)
+
+            _log_mock_exchange("/v1/chat/completions", request.json, response)
             return jsonify(response), 200
     except Exception as e:
         err = {
@@ -698,12 +931,23 @@ def audio_speech():
         voice = request.json.get("voice", "alloy")
         response_format = request.json.get("response_format", "mp3")
         speed = request.json.get("speed", 1.0)
+        # vLLM-Omni TTS params (accepted but not validated strictly)
+        language = request.json.get("language", "Auto")
+        instructions = request.json.get("instructions", "")
+        task_type = request.json.get("task_type", "CustomVoice")
+        ref_audio = request.json.get("ref_audio")
+        ref_text = request.json.get("ref_text")
 
         if not input_text:
             return create_error_response("'input' is a required parameter", param="input")
 
-        # Validate voice
-        valid_voices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+        # Validate voice — accept both OpenAI and vLLM-Omni voices
+        openai_voices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+        vllm_omni_voices = [
+            "aiden", "dylan", "eric", "one_anna", "ryan",
+            "serena", "sohee", "uncle_fu", "vivian",
+        ]
+        valid_voices = openai_voices + vllm_omni_voices
         if voice not in valid_voices:
             return create_error_response(
                 f"Invalid voice '{voice}'. Must be one of: {', '.join(valid_voices)}",
@@ -721,14 +965,22 @@ def audio_speech():
         # Simulate processing time based on text length
         time.sleep(0.1 + len(input_text) * 0.001)
 
-        # Generate mock audio data (minimal valid audio bytes)
-        # This is a minimal MP3 frame header for testing purposes
-        mock_audio = bytes([
-            0xFF, 0xFB, 0x90, 0x00,  # MP3 frame header
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-        ])
+        # Generate mock audio data
+        if response_format == "wav":
+            # Minimal WAV header (44 bytes) with 0 data
+            mock_audio = (
+                b"RIFF" + struct.pack("<I", 36) + b"WAVE"
+                + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, 24000, 48000, 2, 16)
+                + b"data" + struct.pack("<I", 0)
+            )
+        else:
+            # Minimal MP3 frame header for other formats
+            mock_audio = bytes([
+                0xFF, 0xFB, 0x90, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ])
 
         # Set content type based on format
         content_types = {
@@ -755,6 +1007,20 @@ def audio_speech():
             error_type="api_error",
             status_code=500
         )
+
+
+@app.route("/v1/audio/voices", methods=["GET"])
+@auth.login_required
+def audio_voices():
+    """
+    Returns available TTS voices (vLLM-Omni compatible).
+    """
+    return jsonify({
+        "voices": [
+            "aiden", "dylan", "eric", "one_anna", "ryan",
+            "serena", "sohee", "uncle_fu", "vivian",
+        ]
+    })
 
 
 @app.route("/v1/audio/transcriptions", methods=["POST"])
@@ -1236,6 +1502,57 @@ def video_generations():
         )
 
 
+@app.route("/v1/videos", methods=["POST"])
+@auth.login_required
+def vllm_omni_videos():
+    """
+    Simulates the vLLM-Omni /v1/videos endpoint (Wan2.2).
+    Accepts multipart/form-data. Returns synchronous response with base64 MP4.
+    Supports text-to-video and image-to-video (input_reference).
+    """
+    try:
+        prompt = request.form.get("prompt")
+        width = request.form.get("width", "832")
+        height = request.form.get("height", "480")
+        num_frames = request.form.get("num_frames", "33")
+        fps = request.form.get("fps", "16")
+        seed = request.form.get("seed")
+        negative_prompt = request.form.get("negative_prompt")
+        input_reference = request.files.get("input_reference")
+
+        if not prompt:
+            return create_error_response(
+                "'prompt' is a required parameter", param="prompt"
+            )
+
+        # Simulate processing time
+        time.sleep(0.3)
+
+        # Mock base64 MP4 (minimal ftyp box)
+        mock_mp4 = base64.b64encode(
+            b"\x00\x00\x00\x1c"  # box size
+            b"ftypisom"  # major brand
+            b"\x00\x00\x02\x00"  # minor version
+            b"isomiso2mp41"  # compatible brands
+        ).decode()
+
+        response = {
+            "data": [{
+                "b64_json": mock_mp4,
+                "revised_prompt": prompt[:100],
+            }]
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in vLLM-Omni videos endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request.",
+            error_type="api_error",
+            status_code=500,
+        )
+
+
 @app.route("/v1/rerank", methods=["POST"])
 @auth.login_required
 def rerank():
@@ -1598,6 +1915,7 @@ def metrics():
     gpu_cache_usage_perc = overrides.get(
         "gpu_cache_usage_perc", min(100.0, (running / max_running_capacity) * 100)
     )
+    kv_cache_usage_perc = gpu_cache_usage_perc
     cpu_cache_usage_perc = overrides.get(
         "cpu_cache_usage_perc", min(100.0, (cpu_running / max_running_capacity) * 100)
     )
@@ -1659,6 +1977,12 @@ def metrics():
             "type": "gauge",
             "description": "GPU KV-cache usage. 1 means 100 percent usage.",
             "value": overrides.get("gpu_cache_usage_perc", gpu_cache_usage_perc),
+        },
+        {
+            "name": "kv_cache_usage_perc",
+            "type": "gauge",
+            "description": "KV-cache usage. 1 means 100 percent usage.",
+            "value": overrides.get("kv_cache_usage_perc", kv_cache_usage_perc),
         },
         {
             "name": "cpu_cache_usage_perc",

@@ -186,5 +186,31 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 			},
 			failed: true,
 		}),
+		ginkgo.Entry("invalid quantity format", &testValidatingCase{
+			podautoscaler: func() *autoscalingapi.PodAutoscaler {
+				return wrapper.MakePodAutoscaler("invalid-quantity").
+					Namespace(ns.Name).
+					ScalingStrategy(autoscalingapi.HPA).
+					MinReplicas(1).
+					MaxReplicas(5).
+					MetricSource(wrapper.MakeMetricSourceResource("cpu", "not-a-number")).
+					ScaleTargetRefWithKind("Deployment", "apps/v1", "test-deploy").
+					Obj()
+			},
+			failed: true,
+		}),
+		ginkgo.Entry("negative quantity", &testValidatingCase{
+			podautoscaler: func() *autoscalingapi.PodAutoscaler {
+				return wrapper.MakePodAutoscaler("negative-quantity").
+					Namespace(ns.Name).
+					ScalingStrategy(autoscalingapi.HPA).
+					MinReplicas(1).
+					MaxReplicas(5).
+					MetricSource(wrapper.MakeMetricSourceResource("cpu", "-100m")).
+					ScaleTargetRefWithKind("Deployment", "apps/v1", "test-deploy").
+					Obj()
+			},
+			failed: true,
+		}),
 	)
 })

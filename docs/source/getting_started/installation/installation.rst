@@ -25,9 +25,9 @@ Stable Version
 .. code:: bash
 
     # Install component dependencies
-    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.5.0/aibrix-dependency-v0.5.0.yaml --server-side
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.6.0/aibrix-dependency-v0.6.0.yaml --server-side
     # Install aibrix components
-    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.5.0/aibrix-core-v0.5.0.yaml
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.6.0/aibrix-core-v0.6.0.yaml
 
 
 Stable Version Using Helm
@@ -126,6 +126,8 @@ Nightly Version
     cd aibrix
     # Install component dependencies
     kubectl apply -k config/dependency --server-side
+    # Install AIBrix CRDs (separate from the operator so uninstalls don't wipe user CRs)
+    kubectl apply -k config/crd --server-side
     kubectl apply -k config/default
 
 
@@ -136,6 +138,7 @@ Install AIBrix in testing Environments
    :maxdepth: 1
    :caption: Getting Started
 
+   local-mode.rst
    lambda.rst
    mac-for-desktop.rst
    aws.rst

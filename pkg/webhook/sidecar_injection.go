@@ -17,7 +17,7 @@ limitations under the License.
 package webhook
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -38,6 +38,8 @@ const (
 	SidecarHealthPath                      = "/healthz"
 	SidecarReadyPath                       = "/ready"
 	DefaultEngineEndpoint                  = "http://localhost:8000"
+	DefaultAdapterVolumeName               = "adapter-storage"
+	DefaultAdapterMountPath                = "/tmp/aibrix/adapters"
 )
 
 // buildRuntimeSidecarContainer creates a runtime sidecar container with the given image and engine type
@@ -47,7 +49,7 @@ func buildRuntimeSidecarContainer(sidecarImage, engineType string) corev1.Contai
 		Image: sidecarImage,
 		Command: []string{
 			SidecarCommand,
-			"--port", fmt.Sprintf("%d", SidecarPort),
+			"--port", strconv.Itoa(SidecarPort),
 		},
 		Env: []corev1.EnvVar{
 			{
@@ -57,6 +59,12 @@ func buildRuntimeSidecarContainer(sidecarImage, engineType string) corev1.Contai
 			{
 				Name:  "INFERENCE_ENGINE_ENDPOINT",
 				Value: DefaultEngineEndpoint,
+			},
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      DefaultAdapterVolumeName,
+				MountPath: DefaultAdapterMountPath,
 			},
 		},
 		Ports: []corev1.ContainerPort{

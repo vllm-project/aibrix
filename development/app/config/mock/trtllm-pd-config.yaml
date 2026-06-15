@@ -1,0 +1,114 @@
+# TensorRT-LLM PD (Prefill-Decode) disaggregation mock StormService for e2e tests.
+#
+# A single StormService replica with two roles ("prefill" and "decode") backed
+# by the vllm-mock image.  The gateway PD router pairs pods from the same
+# roleset (auto-assigned by the StormService controller as "roleset-name") and
+# routes the prefill request synchronously to the prefill pod (which returns
+# disaggregated_params + prompt_token_ids), then forwards those params to the
+# decode pod for generation.
+#
+# Apply alongside components.yaml (provides mocked-app-sa and RBAC).
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: mock-llama2-7b-pd-trtllm
+  namespace: default
+  labels:
+    model.aibrix.ai/name: "llama2-7b-trtllm"
+    model.aibrix.ai/port: "8000"
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: "mock-llama2-7b-pd-trtllm"
+  template:
+    metadata:
+      labels:
+        app: "mock-llama2-7b-pd-trtllm"
+      annotations:
+        model.aibrix.ai/config: |
+          {
+            "defaultProfile": "pd",
+            "profiles": {
+              "pd": {
+                "routingStrategy": "pd"
+              }
+            }
+          }
+    spec:
+      roles:
+        - name: prefill
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: "llama2-7b-trtllm"
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: trtllm
+                adapter.model.aibrix.ai/enabled: "true"
+            spec:
+              serviceAccountName: mocked-app-sa
+              containers:
+                - name: llm-engine
+                  image: aibrix/vllm-mock:nightly
+                  ports:
+                    - containerPort: 8000
+                  env:
+                    - name: LLM_ENGINE
+                      value: trtllm
+                    - name: DEPLOYMENT_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.labels['app']
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: MY_POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+        - name: decode
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: "llama2-7b-trtllm"
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: trtllm
+                adapter.model.aibrix.ai/enabled: "true"
+            spec:
+              serviceAccountName: mocked-app-sa
+              containers:
+                - name: llm-engine
+                  image: aibrix/vllm-mock:nightly
+                  ports:
+                    - containerPort: 8000
+                  env:
+                    - name: LLM_ENGINE
+                      value: trtllm
+                    - name: DEPLOYMENT_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.labels['app']
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: MY_POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP

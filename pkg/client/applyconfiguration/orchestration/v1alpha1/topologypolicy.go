@@ -24,8 +24,9 @@ import (
 // TopologyPolicyApplyConfiguration represents a declarative configuration of the TopologyPolicy type for use
 // with apply.
 type TopologyPolicyApplyConfiguration struct {
-	Scope *v1alpha1.TopologyScope `json:"scope,omitempty"`
-	Key   *string                 `json:"key,omitempty"`
+	Scope *v1alpha1.TopologyScope      `json:"scope,omitempty"`
+	Mode  *v1alpha1.TopologyPolicyMode `json:"mode,omitempty"`
+	Key   *string                      `json:"key,omitempty"`
 }
 
 // TopologyPolicyApplyConfiguration constructs a declarative configuration of the TopologyPolicy type for use with
@@ -39,6 +40,14 @@ func TopologyPolicy() *TopologyPolicyApplyConfiguration {
 // If called multiple times, the Scope field is set to the value of the last call.
 func (b *TopologyPolicyApplyConfiguration) WithScope(value v1alpha1.TopologyScope) *TopologyPolicyApplyConfiguration {
 	b.Scope = &value
+	return b
+}
+
+// WithMode sets the Mode field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Mode field is set to the value of the last call.
+func (b *TopologyPolicyApplyConfiguration) WithMode(value v1alpha1.TopologyPolicyMode) *TopologyPolicyApplyConfiguration {
+	b.Mode = &value
 	return b
 }
 

@@ -1,0 +1,121 @@
+# SGLang PD (Prefill-Decode) disaggregation mock StormService for e2e tests.
+#
+# A single StormService replica with two roles ("prefill" and "decode") backed
+# by the vllm-mock image.  The gateway PD router pairs pods from the same
+# roleset (auto-assigned by the StormService controller as "roleset-name") and
+# fires an async prefill request to the prefill pod (SGLang uses the bootstrap
+# mechanism to coordinate KV transfer) before sending the full request to the
+# decode pod.
+#
+# The prefill pod carries the model.aibrix.ai/sglang-bootstrap-port annotation
+# so the gateway knows which port the SGLang bootstrap server listens on.
+#
+# Apply alongside components.yaml (provides mocked-app-sa and RBAC).
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: mock-llama2-7b-pd-sglang
+  namespace: default
+  labels:
+    model.aibrix.ai/name: "llama2-7b-sglang"
+    model.aibrix.ai/port: "8000"
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: "mock-llama2-7b-pd-sglang"
+  template:
+    metadata:
+      labels:
+        app: "mock-llama2-7b-pd-sglang"
+      annotations:
+        model.aibrix.ai/config: |
+          {
+            "defaultProfile": "pd",
+            "profiles": {
+              "pd": {
+                "routingStrategy": "pd"
+              }
+            }
+          }
+    spec:
+      roles:
+        - name: prefill
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: "llama2-7b-sglang"
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: sglang
+                adapter.model.aibrix.ai/enabled: "true"
+              annotations:
+                # Port of the SGLang bootstrap server used to coordinate KV transfer
+                # between prefill and decode pods. Defaults to 8998 if omitted.
+                model.aibrix.ai/sglang-bootstrap-port: "8998"
+            spec:
+              serviceAccountName: mocked-app-sa
+              containers:
+                - name: llm-engine
+                  image: aibrix/vllm-mock:nightly
+                  ports:
+                    - containerPort: 8000
+                  env:
+                    - name: LLM_ENGINE
+                      value: sglang
+                    - name: DEPLOYMENT_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.labels['app']
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: MY_POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+        - name: decode
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: "llama2-7b-sglang"
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: sglang
+                adapter.model.aibrix.ai/enabled: "true"
+            spec:
+              serviceAccountName: mocked-app-sa
+              containers:
+                - name: llm-engine
+                  image: aibrix/vllm-mock:nightly
+                  ports:
+                    - containerPort: 8000
+                  env:
+                    - name: LLM_ENGINE
+                      value: sglang
+                    - name: DEPLOYMENT_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.labels['app']
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: MY_POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP

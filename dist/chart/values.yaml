@@ -33,6 +33,12 @@ controllerManager:
           port: 8081
         initialDelaySeconds: 5
         periodSeconds: 10
+    envs: {}
+      # AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"  # Uncomment to tune for high-latency or low-traffic environments
+  # Sets the AIBRIX_GATEWAY_TIMEOUT_SECONDS environment variable.
+  # NOTE: This is managed exclusively via this field. Do NOT add
+  # AIBRIX_GATEWAY_TIMEOUT_SECONDS to the 'envs' map below,
+  # as it will result in duplicate environment variables in the manifest.
   gatewayTimeoutSeconds: 120
   serviceAccount:
     create: true
@@ -82,11 +88,29 @@ gatewayPlugin:
       AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT: "16"
       AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: "2"
       AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
+      AIBRIX_STATESYNC_ENABLED: "false"
   dependencies:
     redis:
       host: "" # aibrix-redis-master
       port: 6379
+      password: ""
+  service:
+    type: ClusterIP
   messageTimeout: "60s"
+  failOpen: false
+  extProc:
+    backendSettings:
+      circuitBreaker:
+        # The maximum number of connections that Envoy will establish to the external processing service.
+        maxConnections: 1024
+        # The maximum number of parallel requests that Envoy will make to the external processing service.
+        maxParallelRequests: 1024
+        # The maximum number of pending requests that Envoy will allow to the external processing service.
+        maxPendingRequests: 1024
+        # The maximum number of parallel retries that Envoy will allow to the external processing service.
+        maxParallelRetries: 1024
+        # The maximum number of requests that can be served through one connection to the external processing service.
+        maxRequestsPerConnection: 1024
   serviceAccount:
     create: true
     annotations: {}
@@ -111,6 +135,7 @@ gpuOptimizer:
     redis:
       host: ""  # aibrix-redis-master
       port: 6379
+      password: ""
   tolerations: []
   serviceAccount:
     create: true
@@ -119,7 +144,18 @@ gpuOptimizer:
   affinity: {}
 
 gateway:
+  # Mode Selection (mutually exclusive; values must be opposite)
+  # | gateway.enable | envoyAsSideCar | Notes |
+  # | -------------- | ------------------- | ----- |
+  # | true           | false               | Envoy managed by Envoy Gateway (data plane). Installs Gateway, GatewayClass, EnvoyProxy, and gateway-plugins. |
+  # | false          | true                | Envoy runs as a sidecar with aibrix-gateway within your workload (no Gateway data plane). Renders only the sidecar Envoy ConfigMap. |
+  # | false          | false               | Disables both. No gateway and no sidecar. Useful when using an external gateway or for CRD-only installs. |
+  # | true           | true                | INVALID: Do not enable both. Values must be opposite. |
   enable: true
+  envoyAsSideCar: false
+  envoySideCar:
+    ports:
+      http: 10080
   envoyProxy:
     replicas: 1
     imagePullSecrets: []
@@ -164,10 +200,38 @@ gateway:
   clientTrafficPolicy:
     connection:
       bufferLimit: 4194304  # 4MiB
+      connectionLimit:
+        value: 1024
+    http2:
+      maxConcurrentStreams: 1024
+  backendTrafficPolicy:
+    circuitBreaker:
+      # The maximum number of connections to a backend pod.
+      maxConnections: 1024
+      # The maximum number of parallel requests to a backend pod.
+      maxParallelRequests: 1024
+      # The maximum number of parallel retries to a backend pod.
+      maxParallelRetries: 1024
+      # The maximum number of pending requests to a backend pod.
+      maxPendingRequests: 1024
+      # The maximum number of requests that can be served through one connection to a backend pod.
+      maxRequestsPerConnection: 1024
+    http2:
+      # The maximum number of concurrent streams for an HTTP/2 connection to a backend pod.
+      maxConcurrentStreams: 1024
   envoyPatchPolicy:
     route:
       timeout: 120s          # e.g., "120s" or "2m"
       connectTimeout: 6s     # e.g., "6s"
+      idleTimeout: 300s      # e.g., "300s" or "5m"
+    circuitBreakers:
+      # The maximum number of connections for the original destination cluster.
+      maxConnections: 1024
+      # The maximum number of requests that can be outstanding to the original destination cluster.
+      maxRequests: 1024
+      # The maximum number of pending requests to the original destination cluster.
+      maxPendingRequests: 1024
+    preserveExternalRequestID: false
 
 metadata:
   serviceAccount:
@@ -198,7 +262,9 @@ metadata:
     redis:
       host: "" # aibrix-redis-master
       port: 6379
+      password: ""
   redis:
+    enabled: true
     replicas: 1
     imagePullSecrets: []
     container:
@@ -241,6 +307,16 @@ prometheus:
 certmanager:
   enable: false
 
+openTelemetry:
+  enable: false
+  host: ""
+  port: 4317
+  # -- (Envoy-side only) The sampling rate for distributed tracing.
+  # Note: This configuration currently only applies to Envoy's internal tracing.
+  # The external authorization/processing plugin (Go service) currently uses a
+  # default always-on sampler (100%). If you set this to a low value (e.g., 10),
+  # be aware that the Go plugin will still export spans for all requests it processes.
+  samplingRate: 100
 
 # TODO: manage common labels
 # app.kubernetes.io/component: aibrix-controller-manager

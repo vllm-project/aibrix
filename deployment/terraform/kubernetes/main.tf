@@ -80,9 +80,8 @@ spec:
     spec:
       containers:
         - command:
-            - python3
-            - -m
-            - vllm.entrypoints.openai.api_server
+            - vllm
+            - serve
             - --host
             - "0.0.0.0"
             - --port

@@ -82,11 +82,16 @@ type KVEvent interface {
 // ------------------------------------------------------------
 //
 // lora_id and medium are unused for now.
+//
+// Note: BlockHashes are converted at decode time:
+// - vLLM legacy format (int64) → stored as-is
+// - vLLM new format (32-byte SHA-256 from PR #23673) → first 8 bytes converted to int64
+// This ensures internal consistency and compatibility with existing code.
 type BlockStoredEvent struct {
 	_               struct{}  `msgpack:",array"` // msgspec array encoding
 	Type            EventType `msgpack:"-"`
-	BlockHashes     []int64
-	ParentBlockHash *int64
+	BlockHashes     []int64   // Decoded from vLLM, supports both old and new formats
+	ParentBlockHash *int64    // Decoded from vLLM, supports both old and new formats
 	TokenIDs        [][]byte
 
 	// NOTE: These are NOT part of msgpack
@@ -110,10 +115,14 @@ func (e *BlockStoredEvent) setPodName(name string)    { e.PodName = name }
 // ------------------------------------------------------------
 //
 // lora_id is unused for now.
+//
+// Note: BlockHashes are converted at decode time:
+// - vLLM legacy format (int64) → stored as-is
+// - vLLM new format (32-byte SHA-256 from PR #23673) → first 8 bytes converted to int64
 type BlockRemovedEvent struct {
 	_           struct{}  `msgpack:",array"`
 	Type        EventType `msgpack:"-"`
-	BlockHashes []int64
+	BlockHashes []int64   // Decoded from vLLM, supports both old and new formats
 
 	// NOTE: These are NOT part of msgpack
 	Timestamp time.Time `msgpack:"-"`

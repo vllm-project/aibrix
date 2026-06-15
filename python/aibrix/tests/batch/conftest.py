@@ -14,40 +14,20 @@
 
 import argparse
 import os
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import boto3
-import kopf
 import pytest
 import yaml
 from kubernetes import client, config
 
 from aibrix.logger import init_logger
 from aibrix.metadata.app import build_app
-from aibrix.metadata.cache.job import JobCache
 from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
 
 logger = init_logger(__name__)
-
-# Use a threading.Event to signal when the operator is ready
-OPERATOR_READY = threading.Event()
-
-
-def run_operator_in_thread(stop_flag: threading.Event):
-    """The target function for the operator thread."""
-    # The 'ready_flag' is a special kopf argument that gets set
-    # when the operator has started and is ready to handle events.
-    kopf.run(
-        standalone=True,
-        ready_flag=OPERATOR_READY,
-        namespace="default",  # Monitor default namespace for tests
-        stop_flag=stop_flag,
-    )
 
 
 @pytest.fixture(scope="session")
@@ -65,7 +45,7 @@ def k8s_config():
             except config.ConfigException as e:
                 pytest.skip(f"Kubernetes configuration not available: {e}")
 
-        # Test API server accessibility with reliable timeout
+        # Test API server accessibility with client-side request timeout.
         try:
             v1 = client.CoreV1Api()
             api_host = v1.api_client.configuration.host
@@ -75,25 +55,8 @@ def k8s_config():
                 )
 
             logger.info(f"Testing Kubernetes API accessibility: {api_host}")
-
-            def test_api_call():
-                """Make a simple API call to test connectivity."""
-                # Use a simple API call that exists on CoreV1Api
-                return v1.list_namespace(limit=1)
-
-            # Use ThreadPoolExecutor with timeout to prevent hanging
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(test_api_call)
-                try:
-                    # Wait maximum 10 seconds for the API call
-                    future.result(timeout=10)
-                    logger.info("Kubernetes API server accessibility verified")
-                except FutureTimeoutError:
-                    pytest.skip(
-                        f"Kubernetes API server timeout after 10 seconds: {api_host}"
-                    )
-                except Exception as e:
-                    pytest.skip(f"Kubernetes API server not accessible: {e}")
+            v1.list_namespace(limit=1, _request_timeout=(1, 2))
+            logger.info("Kubernetes API server accessibility verified")
 
         except Exception as e:
             pytest.skip(f"Failed to create Kubernetes API client: {e}")
@@ -102,52 +65,10 @@ def k8s_config():
         pytest.skip(f"Failed to initialize Kubernetes client: {e}")
 
 
-@pytest.fixture
-def kopf_operator(scope="function"):
-    """
-    A session-scoped fixture to run the kopf operator in a background thread.
-    This ensures JobCache handlers are properly triggered during tests.
-    """
-    from aibrix.metadata.core import KopfOperatorWrapper
-
-    operator = KopfOperatorWrapper(
-        namespace="default",
-        startup_timeout=30,
-        shutdown_timeout=10,
-    )
-    try:
-        # Start the kopf operator in a daemon thread
-        print("--- Starting kopf operator in background thread ---")
-        operator.start()
-        print("--- Kopf operator is ready, yielding to tests ---")
-        yield  # Tests run here
-
-    finally:
-        print("\n--- Kopf operator test session finished ---")
-        operator.stop()
-
-
 @pytest.fixture(scope="session")
 def test_namespace():
     """Use default namespace for testing."""
     return "default"
-
-
-@pytest.fixture(scope="function")
-def job_cache(kopf_operator, ensure_job_rbac):
-    """
-    Function-scoped fixture that provides a JobCache instance.
-    The kopf_operator fixture ensures the operator is running.
-    Uses the unittest job template with the correct service account.
-    """
-    from pathlib import Path
-
-    # Always create a new JobCache with the custom template for this test
-    # Don't reuse global cache as it may have different configuration
-    template_patch_path = (
-        Path(__file__).parent / "testdata" / "k8s_job_patch_unittest.yaml"
-    )
-    return JobCache(template_patch_path=template_patch_path)
 
 
 @pytest.fixture(scope="session")
@@ -191,8 +112,7 @@ def redis_config_available():
 
     import redis
 
-    def test_connection():
-        # Try to connect to Redis with a short timeout
+    try:
         client = redis.Redis(
             host=os.environ.get("REDIS_HOST", "localhost"),
             port=int(os.environ.get("REDIS_PORT", "6379")),
@@ -202,16 +122,9 @@ def redis_config_available():
             socket_timeout=2,
             decode_responses=True,
         )
-        # Test with a simple ping
-        return client.ping()
-
-    # Use ThreadPoolExecutor to enforce timeout
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(test_connection)
-        try:
-            future.result(timeout=5)  # 5 second timeout
-        except Exception as e:
-            pytest.skip(f"Redis access not available: {e}")
+        client.ping()
+    except Exception as e:
+        pytest.skip(f"Redis access not available: {e}")
 
 
 @pytest.fixture(scope="session")
@@ -398,14 +311,25 @@ def ensure_job_rbac(job_rbac):
 
 def create_test_app(
     enable_k8s_job: bool = False,
-    k8s_job_patch: Optional[Path] = None,
+    enable_redis_job: bool = False,
+    enable_mongo_job: bool = False,
+    enable_k8s_support: bool = True,
     storage_type: StorageType = StorageType.LOCAL,
     metastore_type: StorageType = StorageType.LOCAL,
     params: Optional[Dict[str, Any]] = None,
+    dry_run: Optional[bool] = None,
 ):
-    """Create a FastAPI app configured for e2e testing."""
+    """Create a FastAPI app configured for e2e testing.
+
+    The legacy k8s-job-patch parameter was removed when manifests
+    became driven by ConfigMaps. Tests should ensure the
+    template/profile ConfigMaps exist in the cluster (see
+    ``template_configmaps`` fixture).
+    """
     if params is None:
         params = {}
+    if dry_run is None:
+        dry_run = not (enable_k8s_job or enable_redis_job or enable_mongo_job)
 
     # Save old settings
     oldStorage, oldMetaStore = settings.STORAGE_TYPE, settings.METASTORE_TYPE
@@ -418,15 +342,89 @@ def create_test_app(
             port=8090,
             enable_fastapi_docs=False,
             disable_batch_api=False,
-            enable_k8s_job=enable_k8s_job,
-            k8s_job_patch=k8s_job_patch,
-            e2e_test=True,
+            disable_file_api=False,
+            enable_k8s_support=enable_k8s_support,
+            dry_run=dry_run,
         ),
         params,
     )
     # RESTORE settings
     settings.STORAGE_TYPE, settings.METASTORE_TYPE = oldStorage, oldMetaStore
     return app
+
+
+@pytest.fixture(scope="session")
+def template_configmaps(
+    k8s_config, test_namespace, s3_credentials_secret, test_s3_bucket
+):
+    """Apply the unittest ModelDeploymentTemplate / BatchProfile ConfigMaps
+    to the test cluster.
+
+    The metadata service registries query the 'aibrix-system' namespace
+    by default. We ensure that namespace exists in the test cluster and
+    apply the fixture there so build_app() loads the test data through
+    the same code path as production.
+    """
+    from aibrix.batch.template.registry import DEFAULT_NAMESPACE
+
+    fixture_path = (
+        Path(__file__).parent / "testdata" / "template_configmaps_unittest.yaml"
+    )
+    core_v1 = client.CoreV1Api()
+
+    # Ensure aibrix-system namespace exists in the test cluster.
+    try:
+        core_v1.read_namespace(name=DEFAULT_NAMESPACE)
+    except client.ApiException as e:
+        if e.status != 404:
+            raise
+        core_v1.create_namespace(
+            body=client.V1Namespace(
+                metadata=client.V1ObjectMeta(name=DEFAULT_NAMESPACE)
+            )
+        )
+        logger.info(f"Created namespace: {DEFAULT_NAMESPACE}")
+
+    applied: list[str] = []
+    with open(fixture_path) as f:
+        for doc in yaml.safe_load_all(f):
+            if not isinstance(doc, dict) or doc.get("kind") != "ConfigMap":
+                continue
+            name = doc["metadata"]["name"]
+            data = doc.get("data", {})
+            if name == "aibrix-batch-profiles" and "profiles.yaml" in data:
+                profiles = yaml.safe_load(data["profiles.yaml"])
+                for item in profiles.get("items", []):
+                    if item.get("name") == "unittest":
+                        item.setdefault("spec", {})["storage"] = {
+                            "backend": "s3",
+                            "bucket": test_s3_bucket,
+                            "credentials_secret_ref": s3_credentials_secret,
+                        }
+                data["profiles.yaml"] = yaml.safe_dump(profiles, sort_keys=False)
+            cm = client.V1ConfigMap(
+                metadata=client.V1ObjectMeta(name=name, namespace=DEFAULT_NAMESPACE),
+                data=data,
+            )
+            try:
+                core_v1.delete_namespaced_config_map(
+                    name=name, namespace=DEFAULT_NAMESPACE
+                )
+            except client.ApiException as e:
+                if e.status != 404:
+                    raise
+            core_v1.create_namespaced_config_map(namespace=DEFAULT_NAMESPACE, body=cm)
+            applied.append(name)
+            logger.info(f"Applied test ConfigMap: {name}")
+
+    yield applied
+
+    for name in applied:
+        try:
+            core_v1.delete_namespaced_config_map(name=name, namespace=DEFAULT_NAMESPACE)
+        except client.ApiException as e:
+            if e.status != 404:
+                raise
 
 
 @pytest.fixture(scope="function")
@@ -436,12 +434,15 @@ def test_app(
     s3_credentials_secret,
     redis_config_available,
     ensure_job_rbac,
+    template_configmaps,
+    monkeypatch,
 ):
-    # Get the path to the unittest job template
-    patch_path = Path(__file__).parent / "testdata" / "k8s_job_patch_unittest.yaml"
+    monkeypatch.setenv(
+        "WORKER_REDIS_HOST", "aibrix-redis-master.aibrix-system.svc.cluster.local"
+    )
+    monkeypatch.setenv("WORKER_REDIS_PORT", os.environ.get("REDIS_PORT", "6379"))
     return create_test_app(
         enable_k8s_job=True,
-        k8s_job_patch=patch_path,
         storage_type=StorageType.S3,
         metastore_type=StorageType.REDIS,
         params={"bucket_name": test_s3_bucket},

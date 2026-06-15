@@ -18,18 +18,25 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"testing"
+	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -72,70 +79,6 @@ func Test_ValidateRoutingStrategy(t *testing.T) {
 	for _, tt := range tests {
 		_, currentValidation := routing.Validate(tt.routingStrategy)
 		assert.Equal(t, tt.expectedValidation, currentValidation, tt.message)
-	}
-}
-
-func TestGetRoutingStrategy(t *testing.T) {
-	var tests = []struct {
-		headers               []*configPb.HeaderValue
-		setEnvRoutingStrategy bool
-		envRoutingStrategy    string
-		expectedStrategy      string
-		expectedEnabled       bool
-		message               string
-	}{
-		{
-			headers:               []*configPb.HeaderValue{},
-			setEnvRoutingStrategy: false,
-			expectedStrategy:      "",
-			expectedEnabled:       false,
-			message:               "no routing strategy in headers or environment variable",
-		},
-		{
-			headers: []*configPb.HeaderValue{
-				{Key: "routing-strategy", RawValue: []byte("random")},
-			},
-			setEnvRoutingStrategy: false,
-			expectedStrategy:      "random",
-			expectedEnabled:       true,
-			message:               "routing strategy from headers",
-		},
-		{
-			headers:               []*configPb.HeaderValue{},
-			setEnvRoutingStrategy: true,
-			envRoutingStrategy:    "random",
-			expectedStrategy:      "random",
-			expectedEnabled:       true,
-			message:               "routing strategy from environment variable",
-		},
-		{
-			headers: []*configPb.HeaderValue{
-				{Key: "routing-strategy", RawValue: []byte("random")},
-			},
-			setEnvRoutingStrategy: true,
-			envRoutingStrategy:    "least-request",
-			expectedStrategy:      "random",
-			expectedEnabled:       true,
-			message:               "header routing strategy takes priority over environment variable",
-		},
-	}
-
-	for _, tt := range tests {
-		if tt.setEnvRoutingStrategy {
-			_ = os.Setenv("ROUTING_ALGORITHM", tt.envRoutingStrategy)
-		} else {
-			_ = os.Unsetenv("ROUTING_ALGORITHM")
-		}
-
-		// refresh default values, the process won't modify this environment variable during normal running
-		defaultRoutingStrategy, defaultRoutingStrategyEnabled = utils.LookupEnv(EnvRoutingAlgorithm)
-
-		routingStrategy, enabled := getRoutingStrategy(tt.headers)
-		assert.Equal(t, tt.expectedStrategy, routingStrategy, tt.message)
-		assert.Equal(t, tt.expectedEnabled, enabled, tt.message)
-
-		// Cleanup environment variable for next test
-		_ = os.Unsetenv("ROUTING_ALGORITHM")
 	}
 }
 
@@ -622,10 +565,10 @@ func Test_selectTargetPod(t *testing.T) {
 			routing.Init()
 
 			server := &Server{}
-			ctx := types.NewRoutingContext(context.Background(), routingAlgo, "test-model", "test-message", "test-request", "test-user")
+			routeCtx := types.NewRoutingContext(context.Background(), routingAlgo, "test-model", "test-message", "test-request", "test-user")
 
 			// Call selectTargetPod and check the result
-			podIP, err := server.selectTargetPod(ctx, tt.pods, tt.externalFilter)
+			podIP, err := server.selectTargetPod(context.Background(), routeCtx, tt.pods, tt.externalFilter)
 
 			if tt.expectedError {
 				assert.Error(subtest, err)
@@ -675,6 +618,65 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 				http.On("Get", mock.Anything, "test-model-router", mock.Anything).Return(route, nil)
 			},
 			wantErr: false,
+		},
+		{
+			name:  "httproute get returns error",
+			model: "get-failed",
+			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
+				gw.On("GatewayV1").Return(gwv1)
+				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				http.On("Get", mock.Anything, "get-failed-router", mock.Anything).Return((*gatewayv1.HTTPRoute)(nil), errors.New("boom"))
+			},
+			wantErr:     true,
+			errContains: "boom",
+		},
+		{
+			name:  "no valid status conditions",
+			model: "no-conditions",
+			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
+				gw.On("GatewayV1").Return(gwv1)
+				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				route := &gatewayv1.HTTPRoute{
+					Status: gatewayv1.HTTPRouteStatus{
+						RouteStatus: gatewayv1.RouteStatus{
+							Parents: []gatewayv1.RouteParentStatus{{
+								Conditions: []metav1.Condition{},
+							}},
+						},
+					},
+				}
+				http.On("Get", mock.Anything, "no-conditions-router", mock.Anything).Return(route, nil)
+			},
+			wantErr:     true,
+			errContains: "does not have valid status",
+		},
+		{
+			name:  "resolved refs not resolved",
+			model: "refs-not-resolved",
+			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
+				gw.On("GatewayV1").Return(gwv1)
+				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				route := &gatewayv1.HTTPRoute{
+					Status: gatewayv1.HTTPRouteStatus{
+						RouteStatus: gatewayv1.RouteStatus{
+							Parents: []gatewayv1.RouteParentStatus{{
+								Conditions: []metav1.Condition{{
+									Type:   string(gatewayv1.RouteConditionAccepted),
+									Reason: string(gatewayv1.RouteReasonAccepted),
+									Status: metav1.ConditionTrue,
+								}, {
+									Type:   string(gatewayv1.RouteConditionResolvedRefs),
+									Reason: "InvalidRef",
+									Status: metav1.ConditionFalse,
+								}},
+							}},
+						},
+					},
+				}
+				http.On("Get", mock.Anything, "refs-not-resolved-router", mock.Anything).Return(route, nil)
+			},
+			wantErr:     true,
+			errContains: "object references are not resolved",
 		},
 		{
 			name:  "invalid route status",
@@ -732,4 +734,850 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 			mockHTTP.AssertExpectations(t)
 		})
 	}
+}
+
+func TestValidateHTTPRouteStatus_StandaloneModeSkipsValidation(t *testing.T) {
+	s := &Server{gatewayClient: nil}
+	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "any-model"))
+}
+
+func TestValidateHTTPRouteStatus_CachesResult(t *testing.T) {
+	mockGW := &MockGatewayClient{}
+	mockGWV1 := &MockGatewayV1Client{}
+	mockHTTP := &MockHTTPRouteClient{}
+
+	route := &gatewayv1.HTTPRoute{
+		Status: gatewayv1.HTTPRouteStatus{
+			RouteStatus: gatewayv1.RouteStatus{
+				Parents: []gatewayv1.RouteParentStatus{{
+					Conditions: []metav1.Condition{{
+						Type:   string(gatewayv1.RouteConditionAccepted),
+						Reason: string(gatewayv1.RouteReasonAccepted),
+					}, {
+						Type:   string(gatewayv1.RouteConditionResolvedRefs),
+						Reason: string(gatewayv1.RouteReasonResolvedRefs),
+					}},
+				}},
+			},
+		},
+	}
+	// Expect only one API call despite two invocations
+	mockGW.On("GatewayV1").Return(mockGWV1).Once()
+	mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP).Once()
+	mockHTTP.On("Get", mock.Anything, "cached-model-router", mock.Anything).Return(route, nil).Once()
+
+	s := &Server{
+		gatewayClient:     mockGW,
+		httprouteCacheTTL: 30 * time.Second,
+	}
+
+	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "cached-model"))
+	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "cached-model"))
+
+	mockGW.AssertExpectations(t)
+	mockGWV1.AssertExpectations(t)
+	mockHTTP.AssertExpectations(t)
+}
+
+func TestValidateHTTPRouteStatus_CacheExpiry(t *testing.T) {
+	mockGW := &MockGatewayClient{}
+	mockGWV1 := &MockGatewayV1Client{}
+	mockHTTP := &MockHTTPRouteClient{}
+
+	route := &gatewayv1.HTTPRoute{
+		Status: gatewayv1.HTTPRouteStatus{
+			RouteStatus: gatewayv1.RouteStatus{
+				Parents: []gatewayv1.RouteParentStatus{{
+					Conditions: []metav1.Condition{{
+						Type:   string(gatewayv1.RouteConditionAccepted),
+						Reason: string(gatewayv1.RouteReasonAccepted),
+					}, {
+						Type:   string(gatewayv1.RouteConditionResolvedRefs),
+						Reason: string(gatewayv1.RouteReasonResolvedRefs),
+					}},
+				}},
+			},
+		},
+	}
+	// Expect two API calls because the TTL is already expired
+	mockGW.On("GatewayV1").Return(mockGWV1).Twice()
+	mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP).Twice()
+	mockHTTP.On("Get", mock.Anything, "expire-model-router", mock.Anything).Return(route, nil).Twice()
+
+	s := &Server{
+		gatewayClient:     mockGW,
+		httprouteCacheTTL: 1 * time.Millisecond,
+	}
+
+	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "expire-model"))
+	time.Sleep(5 * time.Millisecond)
+	assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "expire-model"))
+
+	mockGW.AssertExpectations(t)
+	mockGWV1.AssertExpectations(t)
+	mockHTTP.AssertExpectations(t)
+}
+
+func TestValidateHTTPRouteStatus_ContextErrorNotCached(t *testing.T) {
+	for _, ctxErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(ctxErr.Error(), func(t *testing.T) {
+			mockGW := &MockGatewayClient{}
+			mockGWV1 := &MockGatewayV1Client{}
+			mockHTTP := &MockHTTPRouteClient{}
+
+			// First call returns a context error; second call succeeds.
+			// Both must hit the API — the context error must not be cached.
+			mockGW.On("GatewayV1").Return(mockGWV1).Twice()
+			mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP).Twice()
+			mockHTTP.On("Get", mock.Anything, "ctx-err-model-router", mock.Anything).
+				Return((*gatewayv1.HTTPRoute)(nil), ctxErr).Once()
+
+			route := &gatewayv1.HTTPRoute{
+				Status: gatewayv1.HTTPRouteStatus{
+					RouteStatus: gatewayv1.RouteStatus{
+						Parents: []gatewayv1.RouteParentStatus{{
+							Conditions: []metav1.Condition{{
+								Type:   string(gatewayv1.RouteConditionAccepted),
+								Reason: string(gatewayv1.RouteReasonAccepted),
+							}, {
+								Type:   string(gatewayv1.RouteConditionResolvedRefs),
+								Reason: string(gatewayv1.RouteReasonResolvedRefs),
+							}},
+						}},
+					},
+				},
+			}
+			mockHTTP.On("Get", mock.Anything, "ctx-err-model-router", mock.Anything).
+				Return(route, nil).Once()
+
+			s := &Server{
+				gatewayClient:     mockGW,
+				httprouteCacheTTL: 30 * time.Second,
+			}
+
+			assert.ErrorIs(t, s.validateHTTPRouteStatus(context.Background(), "ctx-err-model"), ctxErr)
+			assert.NoError(t, s.validateHTTPRouteStatus(context.Background(), "ctx-err-model"))
+
+			mockGW.AssertExpectations(t)
+			mockGWV1.AssertExpectations(t)
+			mockHTTP.AssertExpectations(t)
+		})
+	}
+}
+
+func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
+	baseResp := &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_ResponseHeaders{
+			ResponseHeaders: &extProcPb.HeadersResponse{
+				Response: &extProcPb.CommonResponse{
+					HeaderMutation: &extProcPb.HeaderMutation{
+						SetHeaders: []*configPb.HeaderValueOption{
+							{Header: &configPb.HeaderValue{Key: "x-test", RawValue: []byte("1")}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	t.Run("401 maps to invalid_api_key and appends httproute error", func(t *testing.T) {
+		mockGW := &MockGatewayClient{}
+		mockGWV1 := &MockGatewayV1Client{}
+		mockHTTP := &MockHTTPRouteClient{}
+		mockGW.On("GatewayV1").Return(mockGWV1)
+		mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP)
+		mockHTTP.On("Get", mock.Anything, "m-router", mock.Anything).Return((*gatewayv1.HTTPRoute)(nil), errors.New("httproute boom"))
+
+		s := &Server{gatewayClient: mockGW}
+		out := s.responseErrorProcessing(context.Background(), nil, baseResp, 401, "m", "rid", "Incorrect API key provided")
+		ir := out.GetImmediateResponse()
+		if assert.NotNil(t, ir) {
+			assert.Equal(t, envoyTypePb.StatusCode(401), ir.GetStatus().GetCode())
+			var parsed map[string]any
+			assert.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
+			errObj := parsed["error"].(map[string]any)
+			assert.Equal(t, ErrorTypeAuthentication, errObj["type"])
+			assert.Equal(t, ErrorCodeInvalidAPIKey, errObj["code"])
+			assert.Contains(t, errObj["message"].(string), "Incorrect API key provided")
+			assert.Contains(t, errObj["message"].(string), "httproute boom")
+			assert.Len(t, ir.GetHeaders().GetSetHeaders(), 2)
+		}
+
+		mockGW.AssertExpectations(t)
+		mockGWV1.AssertExpectations(t)
+		mockHTTP.AssertExpectations(t)
+	})
+
+	t.Run("503 maps to service_unavailable", func(t *testing.T) {
+		s := &Server{gatewayClient: nil}
+		out := s.responseErrorProcessing(context.Background(), nil, baseResp, 503, "m", "rid", "server shutdown")
+		ir := out.GetImmediateResponse()
+		if assert.NotNil(t, ir) {
+			assert.Equal(t, envoyTypePb.StatusCode(503), ir.GetStatus().GetCode())
+			var parsed map[string]any
+			assert.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
+			errObj := parsed["error"].(map[string]any)
+			assert.Equal(t, ErrorTypeOverloaded, errObj["type"])
+			assert.Equal(t, ErrorCodeServiceUnavailable, errObj["code"])
+		}
+	})
+
+	t.Run("500 keeps code null", func(t *testing.T) {
+		s := &Server{gatewayClient: nil}
+		out := s.responseErrorProcessing(context.Background(), nil, baseResp, 500, "m", "rid", "internal error")
+		ir := out.GetImmediateResponse()
+		if assert.NotNil(t, ir) {
+			assert.Equal(t, envoyTypePb.StatusCode(500), ir.GetStatus().GetCode())
+			var parsed map[string]any
+			assert.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
+			errObj := parsed["error"].(map[string]any)
+			_, hasCode := errObj["code"]
+			assert.True(t, hasCode)
+			assert.Nil(t, errObj["code"])
+		}
+	})
+}
+
+func Test_getMetricErr(t *testing.T) {
+	t.Run("uses Header.Value when present", func(t *testing.T) {
+		ir := &extProcPb.ImmediateResponse{
+			Headers: &extProcPb.HeaderMutation{
+				SetHeaders: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: metricHeaderErr, Value: "bad"}},
+				},
+			},
+		}
+		assert.Equal(t, "gateway_req_headers_bad", getMetricErr(ir, "gateway_req_headers"))
+	})
+
+	t.Run("uses Header.RawValue when Value empty", func(t *testing.T) {
+		ir := &extProcPb.ImmediateResponse{
+			Headers: &extProcPb.HeaderMutation{
+				SetHeaders: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: metricHeaderErr, RawValue: []byte("oops")}},
+				},
+			},
+		}
+		assert.Equal(t, "gateway_rsp_headers_oops", getMetricErr(ir, "gateway_rsp_headers"))
+	})
+
+	t.Run("returns label underscore when header missing", func(t *testing.T) {
+		ir := &extProcPb.ImmediateResponse{
+			Headers: &extProcPb.HeaderMutation{
+				SetHeaders: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: "x-other", RawValue: []byte("1")}},
+				},
+			},
+		}
+		assert.Equal(t, "gateway_rsp_body", getMetricErr(ir, "gateway_rsp_body"))
+	})
+}
+
+func TestHandleProcessingRequest_RequestHeaders_SetsRoutingContext(t *testing.T) {
+	s := &Server{}
+	st := &processState{
+		ctx:       context.Background(),
+		requestID: "test-req-id",
+	}
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extProcPb.HttpHeaders{
+				Headers: &configPb.HeaderMap{
+					Headers: []*configPb.HeaderValue{},
+				},
+			},
+		},
+	}
+
+	resp, err := s.handleProcessingRequest(st, req)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, "gateway_req_headers", st.metricLabel)
+	if assert.NotNil(t, st.routerCtx) {
+		assert.NotEqual(t, st.routerCtx, st.ctx)
+	}
+	assert.Equal(t, "", st.model)
+}
+
+func TestHandleProcessingRequest_NoResponseGenerated_ReturnsInternalErrorAndCleansUp(t *testing.T) {
+	mc := &MockCache{}
+	// routerCtx is nil in this scenario; traceTerm defaults to 0.
+	mc.On("DoneRequestCount", (*types.RoutingContext)(nil), "rid", "m", int64(0)).Return()
+
+	s := &Server{
+		cache: mc,
+	}
+	st := &processState{
+		ctx:       context.Background(),
+		requestID: "rid",
+		model:     "m",
+	}
+
+	// ProcessingRequest with no concrete oneof set => default branch, no resp produced.
+	req := &extProcPb.ProcessingRequest{}
+
+	resp, err := s.handleProcessingRequest(st, req)
+
+	assert.Nil(t, resp)
+	assert.Error(t, err)
+	stErr, ok := status.FromError(err)
+	assert.True(t, ok)
+	assert.Equal(t, codes.Internal, stErr.Code())
+	assert.Contains(t, stErr.Message(), "no response generated")
+
+	mc.AssertExpectations(t)
+}
+
+func TestHandleProcessingRequest_ResponseBody_ErrorFromPreviousStage_UsesErrorProcessor(t *testing.T) {
+	s := &Server{} // standalone mode; validateHTTPRouteStatus is skipped in error processor
+
+	st := &processState{
+		ctx:           context.Background(),
+		requestID:     "rid",
+		model:         "m",
+		isRespError:   true,
+		respErrorCode: 401,
+		lastRespHeaders: []*configPb.HeaderValueOption{
+			{Header: &configPb.HeaderValue{Key: "x-test", RawValue: []byte("1")}},
+		},
+	}
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"error":"boom"}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, err := s.handleProcessingRequest(st, req)
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, resp) {
+		imm := resp.GetImmediateResponse()
+		assert.NotNil(t, imm, "expected ImmediateResponse for error path")
+		assert.Equal(t, envoyTypePb.StatusCode(401), imm.GetStatus().GetCode())
+	}
+	// metricLabel should be set for response body processing
+	assert.Equal(t, gatewayRespBody, st.metricLabel)
+}
+
+func TestHandleProcessingRequest_ResponseBody_SuccessMarksCompletionAndEmitsSuccessMetric(t *testing.T) {
+	// Use real in-memory cache for underlying HandleResponseBody logic.
+	// Register a pod for "test-model" so DoneRequestTrace finds a non-nil OutputPredictor.
+	testPod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+		Status: v1.PodStatus{
+			PodIP:      "1.2.3.4",
+			Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+		},
+	}
+	testCache := cache.NewWithPodsForTest([]*v1.Pod{testPod}, "test-model")
+	s := &Server{
+		cache: testCache,
+	}
+
+	requestID := "test-req-id"
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	st := &processState{
+		ctx:       context.Background(),
+		routerCtx: routerCtx,
+		requestID: requestID,
+		model:     "test-model",
+		stream:    false,
+	}
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, err := s.handleProcessingRequest(st, req)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.NotNil(t, resp.GetResponseBody())
+	assert.True(t, st.completed, "expected processState.completed to be true")
+	assert.True(t, st.isGatewayRspDone, "expected gateway response to be marked done exactly once")
+	assert.Equal(t, gatewayRespBody, st.metricLabel)
+}
+
+// TestHandleProcessingRequest_RequestBody_ModelNotFound covers the RequestBody switch case
+// when the model extracted from the body does not exist in the cache. The handler returns an
+// immediate 400 response and sets metricLabel to gatewayReqBody.
+func TestHandleProcessingRequest_RequestBody_ModelNotFound(t *testing.T) {
+	mc := &MockCache{}
+	mc.On("HasModel", "no-such-model").Return(false)
+
+	s := &Server{cache: mc}
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "", "", "req-rb-1", "")
+	routerCtx.ReqPath = PathChatCompletions
+
+	st := &processState{
+		ctx:       context.Background(),
+		routerCtx: routerCtx,
+		requestID: "req-rb-1",
+		model:     "",
+	}
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{
+				Body: []byte(`{"model":"no-such-model","messages":[{"role":"user","content":"hi"}]}`),
+			},
+		},
+	}
+
+	resp, err := s.handleProcessingRequest(st, req)
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, resp) {
+		assert.NotNil(t, resp.GetImmediateResponse(), "expected 400 ImmediateResponse for missing model")
+		assert.Equal(t, envoyTypePb.StatusCode(400), resp.GetImmediateResponse().GetStatus().GetCode())
+	}
+	assert.Equal(t, gatewayReqBody, st.metricLabel)
+	assert.Equal(t, "no-such-model", st.model)
+
+	mc.AssertExpectations(t)
+}
+
+// TestHandleProcessingRequest_ResponseHeaders_200 covers the ResponseHeaders switch case
+// when the upstream returns 200 OK. No error is raised and isRespError stays false.
+func TestHandleProcessingRequest_ResponseHeaders_200(t *testing.T) {
+	s := &Server{} // no cache needed — DoneRequestCount is only called on non-200
+
+	st := &processState{
+		ctx:       context.Background(),
+		requestID: "req-rh-200",
+		model:     "test-model",
+	}
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseHeaders{
+			ResponseHeaders: &extProcPb.HttpHeaders{
+				Headers: &configPb.HeaderMap{
+					Headers: []*configPb.HeaderValue{
+						{Key: ":status", RawValue: []byte("200")},
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := s.handleProcessingRequest(st, req)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Nil(t, resp.GetImmediateResponse(), "expected no ImmediateResponse for 200 OK")
+	assert.False(t, st.isRespError)
+	assert.Equal(t, gatewayRespHeaders, st.metricLabel)
+}
+
+// TestHandleProcessingRequest_ResponseHeaders_NonOK covers the ResponseHeaders switch case
+// when the upstream returns a non-200 status. HandleResponseHeaders calls DoneRequestCount
+// and handleProcessingRequest transforms the response into an ImmediateResponse.
+func TestHandleProcessingRequest_ResponseHeaders_NonOK(t *testing.T) {
+	mc := &MockCache{}
+	mc.On("DoneRequestCount", (*types.RoutingContext)(nil), "req-rh-401", "m", int64(0)).Return()
+
+	s := &Server{
+		cache:         mc,
+		gatewayClient: nil, // standalone — validateHTTPRouteStatus skipped
+	}
+
+	st := &processState{
+		ctx:       context.Background(),
+		requestID: "req-rh-401",
+		model:     "m",
+	}
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseHeaders{
+			ResponseHeaders: &extProcPb.HttpHeaders{
+				Headers: &configPb.HeaderMap{
+					Headers: []*configPb.HeaderValue{
+						{Key: ":status", RawValue: []byte("401")},
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := s.handleProcessingRequest(st, req)
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, resp) {
+		imm := resp.GetImmediateResponse()
+		assert.NotNil(t, imm, "expected ImmediateResponse for non-200 response header")
+		assert.Equal(t, envoyTypePb.StatusCode(401), imm.GetStatus().GetCode())
+	}
+	assert.True(t, st.isRespError)
+	assert.Equal(t, 401, st.respErrorCode)
+	assert.Equal(t, gatewayRespHeaders, st.metricLabel)
+
+	mc.AssertExpectations(t)
+}
+
+// TestHandleProcessingRequest_ResponseBody_NotYetCompleted covers the ResponseBody switch
+// case when the stream is still in progress (EndOfStream=false). The response is returned
+// but completed stays false and the success metric is not emitted yet.
+func TestHandleProcessingRequest_ResponseBody_NotYetCompleted(t *testing.T) {
+	// No cache interaction expected: DoneRequestTrace is only called when complete transitions to true.
+	s := &Server{}
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "req-rb-partial", "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	st := &processState{
+		ctx:       context.Background(),
+		routerCtx: routerCtx,
+		requestID: "req-rb-partial",
+		model:     "test-model",
+		stream:    false,
+		completed: false,
+	}
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"id":"chunk-1"}`),
+				EndOfStream: false,
+			},
+		},
+	}
+
+	resp, err := s.handleProcessingRequest(st, req)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.NotNil(t, resp.GetResponseBody(), "expected a body response for partial data")
+	assert.False(t, st.completed, "stream should not be marked complete before EndOfStream")
+	assert.False(t, st.isGatewayRspDone)
+	assert.Equal(t, gatewayRespBody, st.metricLabel)
+}
+
+// mockProcessServer implements extProcPb.ExternalProcessor_ProcessServer for testing.
+type mockProcessServer struct {
+	mock.Mock
+	ctx context.Context
+}
+
+func (m *mockProcessServer) Send(resp *extProcPb.ProcessingResponse) error {
+	args := m.Called(resp)
+	return args.Error(0)
+}
+
+func (m *mockProcessServer) Recv() (*extProcPb.ProcessingRequest, error) {
+	args := m.Called()
+	req, _ := args.Get(0).(*extProcPb.ProcessingRequest)
+	return req, args.Error(1)
+}
+
+func (m *mockProcessServer) Context() context.Context     { return m.ctx }
+func (m *mockProcessServer) SetHeader(metadata.MD) error  { return nil }
+func (m *mockProcessServer) SendHeader(metadata.MD) error { return nil }
+func (m *mockProcessServer) SetTrailer(metadata.MD)       {}
+func (m *mockProcessServer) SendMsg(interface{}) error    { return nil }
+func (m *mockProcessServer) RecvMsg(interface{}) error    { return nil }
+
+// newProcessTestServer creates a minimal Server for Process tests.
+func newProcessTestServer(shutdownCh <-chan struct{}, c *MockCache) *Server {
+	return &Server{
+		shutdownCh:          shutdownCh,
+		cache:               c,
+		requestCountTracker: map[string]int{},
+	}
+}
+
+func closedShutdownCh() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
+func openShutdownCh() <-chan struct{} {
+	return make(chan struct{})
+}
+
+// TestProcess_ServerShutdown verifies that Process exits immediately when the
+// shutdown channel is closed before any message is received.
+func TestProcess_ServerShutdown(t *testing.T) {
+	mc := &MockCache{}
+	// st.model is empty (idle stream); DoneRequestCount must not be called.
+
+	srv := &mockProcessServer{ctx: context.Background()}
+	s := newProcessTestServer(closedShutdownCh(), mc)
+
+	err := s.Process(srv)
+
+	assert.Error(t, err)
+	st, ok := status.FromError(err)
+	assert.True(t, ok)
+	assert.Equal(t, codes.Unavailable, st.Code())
+	assert.Contains(t, st.Message(), "server shutdown in progress")
+
+	mc.AssertExpectations(t)
+	srv.AssertExpectations(t)
+}
+
+// TestProcess_ContextCancelled verifies that Process exits when the client
+// context is cancelled before any message is received.
+func TestProcess_ContextCancelled(t *testing.T) {
+	mc := &MockCache{}
+	// st.model is empty (idle stream); DoneRequestCount must not be called.
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	srv := &mockProcessServer{ctx: ctx}
+	s := newProcessTestServer(openShutdownCh(), mc)
+
+	err := s.Process(srv)
+
+	assert.ErrorIs(t, err, context.Canceled)
+
+	mc.AssertExpectations(t)
+	srv.AssertExpectations(t)
+}
+
+// TestProcess_RecvEOF_NotCompleted verifies that an EOF received before the
+// request completes is surfaced as io.EOF (client closed stream prematurely).
+func TestProcess_RecvEOF_NotCompleted(t *testing.T) {
+	mc := &MockCache{}
+	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+
+	srv := &mockProcessServer{ctx: context.Background()}
+	srv.On("Recv").Return((*extProcPb.ProcessingRequest)(nil), io.EOF).Once()
+
+	s := newProcessTestServer(openShutdownCh(), mc)
+
+	err := s.Process(srv)
+
+	assert.Equal(t, io.EOF, err)
+
+	srv.AssertExpectations(t)
+	mc.AssertExpectations(t)
+}
+
+// TestProcess_RecvGRPCCanceled verifies that a gRPC Canceled error from Recv
+// is treated as a normal stream closure and returned as codes.Canceled.
+func TestProcess_RecvGRPCCanceled(t *testing.T) {
+	mc := &MockCache{}
+	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+
+	srv := &mockProcessServer{ctx: context.Background()}
+	srv.On("Recv").Return((*extProcPb.ProcessingRequest)(nil), status.Error(codes.Canceled, "client disconnected")).Once()
+
+	s := newProcessTestServer(openShutdownCh(), mc)
+
+	err := s.Process(srv)
+
+	assert.Error(t, err)
+	st, ok := status.FromError(err)
+	assert.True(t, ok)
+	assert.Equal(t, codes.Canceled, st.Code())
+
+	srv.AssertExpectations(t)
+	mc.AssertExpectations(t)
+}
+
+// TestProcess_RecvGRPCError verifies that an unexpected gRPC error from Recv
+// is propagated back to the caller.
+func TestProcess_RecvGRPCError(t *testing.T) {
+	mc := &MockCache{}
+	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+
+	srv := &mockProcessServer{ctx: context.Background()}
+	srv.On("Recv").Return((*extProcPb.ProcessingRequest)(nil), status.Error(codes.Internal, "something broke")).Once()
+
+	s := newProcessTestServer(openShutdownCh(), mc)
+
+	err := s.Process(srv)
+
+	assert.Error(t, err)
+	st, ok := status.FromError(err)
+	assert.True(t, ok)
+	assert.Equal(t, codes.Internal, st.Code())
+
+	srv.AssertExpectations(t)
+	mc.AssertExpectations(t)
+}
+
+// TestProcess_RecvNonGRPCError verifies that a non-gRPC error from Recv is
+// wrapped and returned as a codes.Unknown gRPC error.
+func TestProcess_RecvNonGRPCError(t *testing.T) {
+	mc := &MockCache{}
+	// DoneRequestCount is NOT called for non-gRPC recv errors.
+
+	srv := &mockProcessServer{ctx: context.Background()}
+	srv.On("Recv").Return((*extProcPb.ProcessingRequest)(nil), errors.New("transport error")).Once()
+
+	s := newProcessTestServer(openShutdownCh(), mc)
+
+	err := s.Process(srv)
+
+	assert.Error(t, err)
+	st, ok := status.FromError(err)
+	assert.True(t, ok)
+	assert.Equal(t, codes.Unknown, st.Code())
+	assert.Contains(t, st.Message(), "recv stream error")
+
+	srv.AssertExpectations(t)
+	mc.AssertExpectations(t)
+}
+
+// TestProcess_RecvEOF_DuringShutdown verifies that an EOF received while a
+// server shutdown is in progress results in a codes.Unavailable error.
+func TestProcess_RecvEOF_DuringShutdown(t *testing.T) {
+	mc := &MockCache{}
+	// st.model is empty (idle stream); DoneRequestCount must not be called.
+
+	shutdownCh := make(chan struct{})
+
+	srv := &mockProcessServer{ctx: context.Background()}
+	// Close the shutdown channel when Recv is called so that handleRecvError
+	// picks it up (preRecvCheck already passed via the default branch).
+	srv.On("Recv").Return((*extProcPb.ProcessingRequest)(nil), io.EOF).Once().
+		Run(func(args mock.Arguments) { close(shutdownCh) })
+
+	s := newProcessTestServer(shutdownCh, mc)
+
+	err := s.Process(srv)
+
+	assert.Error(t, err)
+	st, ok := status.FromError(err)
+	assert.True(t, ok)
+	assert.Equal(t, codes.Unavailable, st.Code())
+	assert.Contains(t, st.Message(), "server shutdown in progress")
+
+	srv.AssertExpectations(t)
+	mc.AssertExpectations(t)
+}
+
+// TestProcess_CompletedExitsLoop verifies that if a request completes successfully
+// (which sets st.completed = true), the loop exits gracefully returning nil,
+// even if the client context is cancelled concurrently.
+func TestProcess_CompletedExitsLoop(t *testing.T) {
+	mc := &MockCache{}
+	// mock all funcs we need
+	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mc.On("AddRequestCount", mock.Anything, mock.Anything, mock.Anything).Return(int64(0))
+	mc.On("DoneRequestTrace", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mc.On("HasModel", mock.Anything).Return(true)
+	pods := &utils.PodArray{Pods: []*v1.Pod{
+		{
+			Status: v1.PodStatus{
+				PodIP:      "1.2.3.4",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+	}}
+	mc.On("ListPodsByModel", mock.Anything).Return(pods, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv := &mockProcessServer{ctx: ctx}
+
+	req := &extProcPb.ProcessingRequest{}
+	recvCount := 0
+	// we need to fully test s.Process, so we mock a full stream request with header body and resp
+	srv.On("Recv").Return(req, nil).Run(func(args mock.Arguments) {
+		switch recvCount {
+		case 0:
+			// mock on RequestHeaders
+			req.Request = &extProcPb.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extProcPb.HttpHeaders{
+					Headers: &configPb.HeaderMap{
+						Headers: []*configPb.HeaderValue{
+							{Key: ":routing-strategy", Value: "random", RawValue: []byte("random")},
+							{Key: ":path", Value: "/v1/chat/completions", RawValue: []byte("/v1/chat/completions")},
+						},
+					},
+				},
+			}
+		case 1:
+			// mock on RequestBody，contains stream=true
+			req.Request = &extProcPb.ProcessingRequest_RequestBody{
+				RequestBody: &extProcPb.HttpBody{
+					Body: []byte(`{"model": "test", "messages": [{"role": "user", "content": "hello"}], "stream": true}`),
+				},
+			}
+		case 2:
+			// mock on ResponseBody，with [DONE]
+			req.Request = &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        []byte("data: [DONE]\n\n"),
+					EndOfStream: true, // if we get [Done], completed == True
+				},
+			}
+			cancel()
+		}
+		recvCount++
+	})
+
+	srv.On("Send", mock.Anything).Return(nil).Run(nil)
+
+	s := newProcessTestServer(openShutdownCh(), mc)
+
+	err := s.Process(srv)
+
+	// Core assertion: Since st.completed has already been set to true,
+	// even if ctx has been canceled, Process should exit gracefully (return nil) instead of throwing a context.Canceled error.
+	assert.NoError(t, err)
+
+	srv.AssertExpectations(t)
+	mc.AssertExpectations(t)
+}
+
+// TestProcess_ShutdownWhileRecvBlocked verifies that Process exits promptly when
+// shutdownCh is closed while srv.Recv() is blocking (the idle-stream case that
+// previously caused GracefulStop to hang until SIGKILL).
+func TestProcess_ShutdownWhileRecvBlocked(t *testing.T) {
+	mc := &MockCache{}
+	// st.model is empty (idle stream); DoneRequestCount must not be called.
+
+	shutdownCh := make(chan struct{})
+
+	srv := &mockProcessServer{ctx: context.Background()}
+	// Recv blocks until shutdownCh is closed, then returns an error.
+	srv.On("Recv").Return((*extProcPb.ProcessingRequest)(nil), status.Error(codes.Unavailable, "stream closed")).
+		Run(func(args mock.Arguments) {
+			// Simulate Envoy holding an idle stream open; close shutdown concurrently.
+			close(shutdownCh)
+			// Recv itself returns after shutdown (as it would when the gRPC server
+			// eventually tears down the connection), but the select should have
+			// already fired the shutdownCh case and returned before this matters.
+			time.Sleep(10 * time.Millisecond)
+		})
+
+	s := newProcessTestServer(shutdownCh, mc)
+
+	done := make(chan error, 1)
+	go func() { done <- s.Process(srv) }()
+
+	select {
+	case err := <-done:
+		assert.Error(t, err)
+		st, ok := status.FromError(err)
+		assert.True(t, ok)
+		assert.Equal(t, codes.Unavailable, st.Code())
+		assert.Contains(t, st.Message(), "server shutdown in progress")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Process did not exit within 2s after shutdownCh was closed (would have hung GracefulStop)")
+	}
+
+	mc.AssertExpectations(t)
 }

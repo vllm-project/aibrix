@@ -48,6 +48,32 @@ func NewLeastBusyTimeRouter() (types.Router, error) {
 	}, nil
 }
 
+// ScoreAll fetches the GPU busy time ratio for all ready pods in a single batch operation.
+// This provides the multi-strategy aggregator with a quantifiable metric representing the recent compute load on each pod.
+func (r leastBusyTimeRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	pods := readyPodList.All()
+	scores := make([]float64, len(pods))
+	scored := make([]bool, len(pods))
+
+	for i, pod := range pods {
+		metricVal, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.GPUBusyTimeRatio)
+		if err != nil {
+			klog.V(4).ErrorS(err, "failed to get metrics for pod")
+			continue
+		}
+		scores[i] = metricVal.GetSimpleValue()
+		scored[i] = true
+		klog.V(4).Infof("pod: %v, podIP: %v, gpu busy time ratio: %v", pod.Name, pod.Status.PodIP, scores[i])
+	}
+
+	return scores, scored, nil
+}
+
+// Polarity returns whether higher or lower score is better.
+func (r leastBusyTimeRouter) Polarity() types.Polarity {
+	return types.PolarityLeast
+}
+
 func (r leastBusyTimeRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	var targetPod *v1.Pod
 	minBusyTimeRatio := math.MaxFloat64 // <= 1 in general

@@ -395,9 +395,9 @@ func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.Ro
 	// inject pod annotations
 	podSet.Annotations[constants.RoleSetIndexAnnotationKey] = roleSet.Annotations[constants.RoleSetIndexAnnotationKey]
 	if roleIndex != nil {
-		podSet.Annotations[constants.RoleReplicaIndexAnnotationKey] = fmt.Sprintf("%d", *roleIndex)
+		podSet.Annotations[constants.RoleReplicaIndexAnnotationKey] = strconv.Itoa(*roleIndex)
 		// inject to label as well for routing service discovery (some engines use label selector to find pods only)
-		podSet.Labels[constants.RoleReplicaIndexLabelKey] = fmt.Sprintf("%d", *roleIndex)
+		podSet.Labels[constants.RoleReplicaIndexLabelKey] = strconv.Itoa(*roleIndex)
 	}
 
 	if roleSet.Spec.SchedulingStrategy != nil {

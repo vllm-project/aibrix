@@ -22,12 +22,19 @@ import (
 	"math/rand"
 	"net/http"
 	"testing"
+	"time"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// prefixCacheWarmUpDelay must exceed two full statesync periods so that all
+// gateway replicas have had time to push and pull prefix-cache state via Redis.
+// The default sync period is 10s; worst-case propagation is push (≤10s) +
+// pull on the peer (≤10s) = 20s, so 30s gives a comfortable 10s buffer.
+const prefixCacheWarmUpDelay = 30 * time.Second
 
 func TestStrategyRequiresCache(t *testing.T) {
 	req := "this is test message"
@@ -36,65 +43,114 @@ func TestStrategyRequiresCache(t *testing.T) {
 }
 
 func TestRandomRouting(t *testing.T) {
-	histogram := make(map[string]int)
-	iterration := 100
+	// Retry up to 3 times to tolerate statistical flakiness in the chi-squared test.
+	// Even with a correct random router, the test has a ~1% false-negative rate per run.
+	maxAttempts := 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if lastErr = runRandomRoutingCheck(); lastErr == nil {
+			return
+		}
+		t.Logf("Attempt %d/%d failed: %v", attempt, maxAttempts, lastErr)
+	}
+	t.Fatalf("TestRandomRouting failed after %d attempts: %v", maxAttempts, lastErr)
+}
 
-	for i := 0; i < iterration; i++ {
-		req := "hello test"
-		targetPod := getTargetPodFromChatCompletion(t, req, "random")
-		assert.NotEmpty(t, targetPod, "target pod should not be empty")
+// chiSquaredCriticalValues contains critical values at 0.01 significance level
+// for varying degrees of freedom, used to dynamically validate chi-squared results
+// regardless of the number of pods in the environment.
+var chiSquaredCriticalValues = map[int]float64{
+	1: 6.635, 2: 9.210, 3: 11.345, 4: 13.277, 5: 15.086,
+}
+
+func runRandomRoutingCheck() error {
+	histogram := make(map[string]int)
+	iteration := 100
+
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "random", option.WithResponseInto(&dst))
+
+	for i := 0; i < iteration; i++ {
+		_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+			Messages: []openai.ChatCompletionMessageParamUnion{
+				openai.UserMessage("hello test"),
+			},
+			Model: modelName,
+		})
+		if err != nil {
+			return fmt.Errorf("chat completion request %d failed: %w", i, err)
+		}
+		targetPod := dst.Header.Get("target-pod")
+		if targetPod == "" {
+			return fmt.Errorf("request %d: target pod should not be empty", i)
+		}
 		histogram[targetPod]++
 	}
 
-	assert.True(t, len(histogram) > 1, "target pod distribution should be more than 1")
+	if len(histogram) <= 1 {
+		return fmt.Errorf("target pod distribution should be more than 1, got %d", len(histogram))
+	}
 
-	// Collective the occurrence of each pod
+	// Collect the occurrence of each pod
 	occurrence := make([]float64, 0, len(histogram))
 	for _, count := range histogram {
 		occurrence = append(occurrence, float64(count))
 	}
 
-	// Perform the Chi-Squared test
-	chi2Stat, df, err := chiSquaredGoodnessOfFit(occurrence, float64(iterration/len(occurrence)))
-	assert.NoError(t, err, "chi-squared test failed %v", err)
-	assert.Equal(t, 2, df, "degrees of freedom should be 2")
+	// Perform the Chi-Squared test using floating-point division for accurate expected frequency
+	chi2Stat, df, err := chiSquaredGoodnessOfFit(occurrence, float64(iteration)/float64(len(occurrence)))
+	if err != nil {
+		return fmt.Errorf("chi-squared test failed: %w", err)
+	}
+
+	// Validate degrees of freedom matches observed pod count
+	expectedDf := len(occurrence) - 1
+	if df != expectedDf {
+		return fmt.Errorf("degrees of freedom should be %d, got %d", expectedDf, df)
+	}
 
 	// Using a lower 1% significance level to make sure the null hypothesis is not rejected incorrectly
-	significanceLevel := 0.01
+	criticalValue, ok := chiSquaredCriticalValues[df]
+	if !ok {
+		return fmt.Errorf("no chi-squared critical value configured for df=%d, "+
+			"pod count %d is unexpected", df, len(histogram))
+	}
 
-	// We need to find the critical value for customed degrees of freedom (df)
-	// and significance level (alpha) from a Chi-Squared distribution table
-	// or a statistical calculator.
-	// For df = 2 ,
-	// common critical values are:
-	// Alpha = 0.10, Critical Value ≈ 4.605
-	// Alpha = 0.05, Critical Value ≈ 5.991
-	// Alpha = 0.01, Critical Value ≈ 9.210
-	assert.True(t, chi2Stat < 9.210,
-		`The observed frequencies (chiSquare: %.3f) are significantly different from the expected 
-		frequencies at the %.2f significance level. Suggesting the selection process is likely NOT random according 
-		to the expected distribution.`,
-		chi2Stat, significanceLevel)
+	if chi2Stat >= criticalValue {
+		return fmt.Errorf(
+			"the observed frequencies (chiSquare: %.3f, df: %d) are significantly different from the expected "+
+				"frequencies at the 0.01 significance level (critical value: %.3f), suggesting the selection "+
+				"process is likely NOT random", chi2Stat, df, criticalValue)
+	}
+
+	return nil
 }
 
-// nolint:lll
+// TestPrefixCacheRouting verifies that an identical prompt reuses the warm-up pod and
+// that a novel prefix tends to route elsewhere (best-effort; may retry up to 5 times).
+//
+//nolint:lll // long test prompts exceed line-length limit
 func TestPrefixCacheRouting(t *testing.T) {
-	// #1 request - cache first time request
+	// First request: populate the prefix cache on the selected pod (>128 bytes).
 	req := "prefix-cache routing algorithm test message, ensure test message is longer than 128 bytes!! this is first message! 这是测试消息！"
 	targetPod := getTargetPodFromChatCompletion(t, req, "prefix-cache")
 	t.Logf("req: %s, target pod: %v\n", req, targetPod)
 
-	// #2 request - reuse target pod from first time
+	// Brief pause so the gateway can record the cache entry before the repeat request.
+	time.Sleep(2 * time.Second)
+
+	// Repeat the same prompt; routing should hit the same pod as the warm-up.
 	targetPod2 := getTargetPodFromChatCompletion(t, req, "prefix-cache")
 	t.Logf("req: %s, target pod: %v\n", req, targetPod2)
 	assert.Equal(t, targetPod, targetPod2)
 
-	// #3 request - new request, match to random pod
+	// Novel prefix: prefer a different pod (probabilistic; retry if it matches by chance).
 	var count int
 	for count < 5 {
-		generateMessage := fmt.Sprintf("prefix-cache routing algorithm test message, ensure test message is longer than 128 bytes!! this is %v message! 这是测试消息！", rand.Intn(1000))
+		generateMessage := fmt.Sprintf("%d: completely different request prefix to avoid cache hits between "+
+			"iterations, and padding to exceed 128 bytes for prefix cache routing test!!", rand.Intn(1000))
 		targetPod3 := getTargetPodFromChatCompletion(t, generateMessage, "prefix-cache")
-		t.Logf("req: %s, target pod from #3 request: %v\n", generateMessage, targetPod3)
+		t.Logf("req: %s, target pod (novel prefix): %v\n", generateMessage, targetPod3)
 		if targetPod != targetPod3 {
 			break
 		}
@@ -104,12 +160,19 @@ func TestPrefixCacheRouting(t *testing.T) {
 	assert.NotEqual(t, 5, count)
 }
 
-// nolint:lll
+// TestMultiTurnConversation verifies that a growing multi-turn context keeps routing
+// to the anchor pod chosen on turn 1. After turn 1 it waits prefixCacheWarmUpDelay so
+// all gateway replicas can sync prefix-cache state before asserting turns 2–5.
+//
+//nolint:lll // long test prompts exceed line-length limit
 func TestMultiTurnConversation(t *testing.T) {
 	var dst *http.Response
 	var targetPod string
 	messages := []openai.ChatCompletionMessageParamUnion{}
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "prefix-cache", option.WithResponseInto(&dst))
+
+	t.Logf("starting multi-turn prefix-cache test (%d turns, warm-up delay %s — waiting for all gateway replicas to sync)", 5, prefixCacheWarmUpDelay)
+	t.Logf("debug gateway logs: kubectl logs -n aibrix-system -l app=gateway-plugins --prefix -f | grep -E 'prefixcache|statesync'")
 
 	for i := 1; i <= 5; i++ {
 		input := fmt.Sprintf("Ensure test message is longer than 128 bytes!! This is test %d for multiturn conversation!! 这是多轮对话测试!! Have a good day!!", i)
@@ -124,11 +187,59 @@ func TestMultiTurnConversation(t *testing.T) {
 		assert.NotEmpty(t, chatCompletion.Choices[0].Message.Content)
 
 		messages = append(messages, openai.AssistantMessage(chatCompletion.Choices[0].Message.Content))
+
+		pod := dst.Header.Get("target-pod")
+		require.NotEmpty(t, pod, "turn %d: target-pod header missing", i)
+
 		if i == 1 {
-			targetPod = dst.Header.Get("target-pod")
+			targetPod = pod
+			t.Logf("turn %d: routed to %s (anchor pod); %d messages in context; waiting %s for prefix cache sync",
+				i, targetPod, len(messages), prefixCacheWarmUpDelay)
+			time.Sleep(prefixCacheWarmUpDelay)
+		} else {
+			t.Logf("turn %d: routed to %s (expected %s); %d messages in context; prompt_tokens=%d completion_tokens=%d",
+				i, pod, targetPod, len(messages),
+				chatCompletion.Usage.PromptTokens, chatCompletion.Usage.CompletionTokens)
 		}
 
-		assert.Equal(t, targetPod, dst.Header.Get("target-pod"), "each multiturn conversation must route to same target pod")
+		assert.Equal(t, targetPod, pod, "turn %d: each multiturn conversation must route to same target pod", i)
+	}
+
+	t.Logf("multi-turn test finished: all %d turns stayed on pod %s", 5, targetPod)
+}
+
+// TestPrefixCacheRoutingConsistency sends a warm-up request, waits for all gateway
+// replicas to sync prefix-cache state via Redis, confirms convergence with
+// require.Eventually, then sends 10 identical prompts and asserts they all route to
+// the same pod.
+//
+//nolint:lll // long test prompts exceed line-length limit
+func TestPrefixCacheRoutingConsistency(t *testing.T) {
+	// Message must exceed the prefix cache block threshold (>128 bytes) so that
+	// at least one full block is hashed and stored in the prefix cache.
+	const msg = "prefix-cache consistency test: this message is intentionally long to exceed the " +
+		"128-byte block threshold required for prefix cache routing to engage. 这是前缀缓存路由一致性测试消息！"
+
+	// Warm up: populate the prefix cache for this prompt on the target pod.
+	warmPod := getTargetPodFromChatCompletion(t, msg, "prefix-cache")
+	require.NotEmpty(t, warmPod, "warm-up request returned no target-pod header")
+	t.Logf("warm-up routed to: %s", warmPod)
+
+	time.Sleep(prefixCacheWarmUpDelay)
+
+	// Confirm routing has converged on all gateway replicas before asserting
+	// strict consistency. With multiple gateway pods each pulling state on their
+	// own 10s cycle, the warm-up delay should be sufficient, but we add an
+	// extra Eventually check as a safety net.
+	require.Eventually(t, func() bool {
+		return getTargetPodFromChatCompletion(t, msg, "prefix-cache") == warmPod
+	}, 30*time.Second, 2*time.Second, "routing did not converge to warm pod %s within 30s after warm-up", warmPod)
+
+	// All 10 subsequent requests with the same prefix must route to the same pod.
+	for i := 0; i < 10; i++ {
+		pod := getTargetPodFromChatCompletion(t, msg, "prefix-cache")
+		assert.Equal(t, warmPod, pod, "request %d: expected pod %s, got %s", i+1, warmPod, pod)
+		t.Logf("request %d routed to: %s", i+1, pod)
 	}
 }
 
@@ -148,12 +259,53 @@ func getTargetPodFromChatCompletion(t *testing.T, message string, strategy strin
 	return dst.Header.Get("target-pod")
 }
 
-// ChiSquaredGoodnessOfFit calculates the chi-squared test statistic and degrees of freedom
-// for a goodness-of-fit test.
-// observed: A slice of observed frequencies for each category.
-// expected: A slice of expected frequencies for each category.
-// Returns the calculated chi-squared statistic and degrees of freedom.
-// Returns an error if the input slices are invalid (e.g., different lengths, negative values).
+// TestMultiStrategyRouting performs E2E checks for multi-strategy routing configs
+func TestMultiStrategyRouting(t *testing.T) {
+	// 1. Valid multi-strategy combinations
+	t.Run("ValidMultiStrategy_LeastRequest_Throughput", func(t *testing.T) {
+		req := "this is a multi-strategy test message"
+		// Testing equal weights
+		targetPod := getTargetPodFromChatCompletion(t, req, "least-request:1,throughput:1")
+		assert.NotEmpty(t, targetPod, "multi-strategy target pod should not be empty")
+	})
+
+	t.Run("ValidMultiStrategy_With_Different_Weights", func(t *testing.T) {
+		req := "this is another multi-strategy test message"
+		// Testing skewed weights
+		targetPod := getTargetPodFromChatCompletion(t, req, "prefix-cache:6,least-request:1,throughput:1")
+		assert.NotEmpty(t, targetPod, "multi-strategy weighted target pod should not be empty")
+	})
+
+	t.Run("ValidMultiStrategy_Partial_Weights", func(t *testing.T) {
+		req := "this is a partial weights multi-strategy test message"
+		// Testing partial weights (some with explicit weight, some omitted and defaulting to 1)
+		targetPod := getTargetPodFromChatCompletion(t, req, "least-request,throughput:2")
+		assert.NotEmpty(t, targetPod, "multi-strategy partial weighted target pod should not be empty")
+	})
+
+	t.Run("ValidMultiStrategy_No_Weights", func(t *testing.T) {
+		req := "this is a no weights multi-strategy test message"
+		// Testing no weights (all default to 1)
+		targetPod := getTargetPodFromChatCompletion(t, req, "least-request,throughput")
+		assert.NotEmpty(t, targetPod, "multi-strategy no weights target pod should not be empty")
+	})
+
+	// 2. Exclusive strategies fallback
+	t.Run("ExclusiveStrategy_FallbackToSelf_SLO", func(t *testing.T) {
+		req := "this is another exclusive strategy fallback test message"
+		// "slo" is exclusive and should strip other strategies and fallback to itself
+		targetPod := getTargetPodFromChatCompletion(t, req, "least-request:1,slo-least-load")
+		assert.NotEmpty(t, targetPod, "exclusive strategy should fallback to slo and return a valid pod")
+	})
+}
+
+// chiSquaredGoodnessOfFit runs a chi-squared goodness-of-fit test under uniform
+// expected counts: each category should occur expected times on average.
+//
+// observed holds per-category counts (e.g. per-pod histogram values); expected is the
+// uniform expected count per category (total / number of categories). Returns chi²,
+// degrees of freedom len(observed)-1, and an error for empty input, negative values,
+// or zero expected frequency.
 func chiSquaredGoodnessOfFit(observed []float64, expected float64) (chi2Stat float64, degreesOfFreedom int, err error) {
 	// Validate inputs
 	if len(observed) == 0 {
