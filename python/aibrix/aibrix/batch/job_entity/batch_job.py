@@ -860,7 +860,13 @@ def aggregate_batch_job_status(
     if not aggregated.status_copies:
         return aggregated
 
-    seens = max(
+    # Each status copy may carry a fallback "largest request id seen + 1"
+    # total from a worker/driver round. Keep the max seen bound so aggregated
+    # launched/completed/failed counts never exceed the furthest request id any
+    # copy observed. If validation already fixed aggregated.request_counts.total,
+    # that authoritative total stays in place and this seen bound only caps the
+    # per-copy counters during merge.
+    seen_total = max(
         (
             status_copy.request_counts.total
             for status_copy in aggregated.status_copies.values()
@@ -881,15 +887,21 @@ def aggregate_batch_job_status(
     )
 
     if aggregated.request_counts.total == 0:
-        aggregated.request_counts.total = seens
-    aggregated.request_counts.launched = min(seens, launched) if seens > 0 else launched
+        aggregated.request_counts.total = seen_total
+    aggregated.request_counts.launched = (
+        min(seen_total, launched) if seen_total > 0 else launched
+    )
     aggregated.request_counts.completed = (
-        min(seens, completed) if seens > 0 else completed
+        min(seen_total, completed) if seen_total > 0 else completed
     )
     remaining = (
-        max(seens - aggregated.request_counts.completed, 0) if seens > 0 else failed
+        max(seen_total - aggregated.request_counts.completed, 0)
+        if seen_total > 0
+        else failed
     )
-    aggregated.request_counts.failed = min(remaining, failed) if seens > 0 else failed
+    aggregated.request_counts.failed = (
+        min(remaining, failed) if seen_total > 0 else failed
+    )
     aggregated.usage = aggregate_batch_usage(aggregated.usage, aggregated.status_copies)
     return aggregated
 

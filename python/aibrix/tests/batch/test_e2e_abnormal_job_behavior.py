@@ -232,7 +232,8 @@ def force_batch_driver_crash_on_shutdown(monkeypatch, app) -> None:
     import _pytest.unraisableexception as pytest_unraisableexception
 
     from aibrix.batch import batch_scheduler as scheduler_module
-    from aibrix.batch.job_driver.runtime.base import RuntimeBase, logger as runtime_logger
+    from aibrix.batch.job_driver.runtime.base import RuntimeBase
+    from aibrix.batch.job_driver.runtime.base import logger as runtime_logger
 
     warnings.simplefilter("ignore", pytest.PytestUnraisableExceptionWarning)
     warnings.filterwarnings("ignore", category=pytest.PytestUnraisableExceptionWarning)
@@ -329,9 +330,7 @@ def force_batch_driver_crash_on_shutdown(monkeypatch, app) -> None:
                 if handle is not None:
                     opts = job.spec.opts or {}
                     before_delay = float(
-                        opts.get(
-                            TEST_OPTS_DELAY_BEFORE_FINALIZE_SHUTDOWN_SECONDS, 0.0
-                        )
+                        opts.get(TEST_OPTS_DELAY_BEFORE_FINALIZE_SHUTDOWN_SECONDS, 0.0)
                         or 0.0
                     )
                     if (

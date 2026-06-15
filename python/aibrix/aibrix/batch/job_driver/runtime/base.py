@@ -51,8 +51,8 @@ from typing import (
     runtime_checkable,
 )
 
-from aibrix.batch.client import EndpointSource
 import aibrix.batch.constant as constant
+from aibrix.batch.client import EndpointSource
 from aibrix.batch.job_driver.running_jobs import RunningJobs
 from aibrix.batch.job_entity import (
     BatchJob,
@@ -114,7 +114,7 @@ class Runtime(Protocol):
         job_id: str,
         *,
         progress_manager: Optional[RunningJobs] = None,
-        worker_id_generator: Optional[Callable[[str], str]] = None,
+        worker_id_generator: Optional[Callable[[Optional[str]], str]] = None,
     ) -> "AsyncRuntimeSession":
         """Async context manager: provision -> yield Endpoint -> teardown."""
         ...
@@ -316,7 +316,7 @@ class RuntimeBase:
         job: BatchJob,
         *,
         progress_manager: Optional[RunningJobs],
-        worker_id_generator: Optional[Callable[[str], str]],
+        worker_id_generator: Optional[Callable[[Optional[str]], str]],
     ) -> BatchJob:
         execution_ref = self._build_runtime_ref(job)
         if execution_ref is None:
@@ -392,7 +392,7 @@ class RuntimeBase:
         job_id: str,
         *,
         progress_manager: Optional[RunningJobs] = None,
-        worker_id_generator: Optional[Callable[[str], str]] = None,
+        worker_id_generator: Optional[Callable[[Optional[str]], str]] = None,
     ) -> AsyncIterator[Endpoint]:
         runtimeRef = self._load_runtime_ref(job)
         handle = None

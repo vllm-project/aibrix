@@ -428,8 +428,12 @@ class BaseJobDriver:
             raise ValueError("job_id is required")
         return job_id
 
-    def _assign_worker_id(self, runtime_key: str) -> str:
-        self._worker_id = f"{runtime_key}-{self._worker_token}"
+    def _assign_worker_id(self, runtime_key: Optional[str]) -> str:
+        self._worker_id = (
+            f"{runtime_key}-{self._worker_token}"
+            if runtime_key is not None
+            else self._worker_token
+        )
         return self._worker_id
 
     def _log_missing_job(self, job_id: str) -> None:
@@ -558,9 +562,11 @@ class BaseJobDriver:
         job_id: str,
     ) -> RequestCountStats:
         """Return lazy initialized local RequestCountStats
-        Note that local RequestCountStats.total records dispatched largest record id
-        for the purpose of total verification in case precalculated total > largest dispatched
-        and the JobDriver never ends.
+        Note that local RequestCountStats.total is also used as a fallback
+        "largest request id seen + 1" tracker. Validation should pre-seed the
+        authoritative total, but if it did not, the driver still needs a moving
+        upper bound so round-based worker execution can stop once all seen
+        requests are drained instead of looping forever.
         """
         self._ensure_local_job_state(job_id)
         if self._request_counts is None:
@@ -568,13 +574,17 @@ class BaseJobDriver:
         return self._request_counts
 
     def _accumulate_dispatched_request(self, job_id: str, request_id: int) -> None:
-        """Track dispatched requests, add request launched count, and reset total if see larger request id."""
+        """Track dispatched requests and the largest request id seen so far."""
         request_counts = self._get_local_request_counts(job_id)
         if request_id in self._launched_request_ids:
             return
         self._launched_request_ids.add(request_id)
         request_counts.launched += 1
         if request_id >= request_counts.total:
+            # When validation did not fix total up front, treat total as the
+            # highest dispatched request id + 1. The progress tracker uses this
+            # fallback bound to decide whether another execution round is still
+            # needed for requests that have been seen but not yet completed.
             request_counts.total = request_id + 1
 
     def _accumulate_completed_requests(
