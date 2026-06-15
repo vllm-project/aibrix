@@ -82,6 +82,7 @@ Documentation
    :maxdepth: 1
    :caption: Benchmark
 
+   features/brixbench.rst
    features/benchmark-and-generator.rst
 
 .. toctree::
