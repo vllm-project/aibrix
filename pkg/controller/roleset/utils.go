@@ -270,6 +270,7 @@ func injectTopologyAffinityToPodSpec(
 		// avoid duplicate terms
 		for _, term := range spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
 			if term.TopologyKey == topologyKey &&
+				term.LabelSelector != nil &&
 				reflect.DeepEqual(term.LabelSelector.MatchLabels, matchLabels) {
 				return
 			}
@@ -284,6 +285,7 @@ func injectTopologyAffinityToPodSpec(
 		for _, term := range spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
 			if term.Weight == weightedTerm.Weight &&
 				term.PodAffinityTerm.TopologyKey == topologyKey &&
+				term.PodAffinityTerm.LabelSelector != nil &&
 				reflect.DeepEqual(term.PodAffinityTerm.LabelSelector.MatchLabels, matchLabels) {
 				return
 			}

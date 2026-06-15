@@ -677,6 +677,86 @@ func TestInjectTopologyAffinityForPod_Required(t *testing.T) {
 	assert.Equal(t, "test-roleset", required[0].LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
 }
 
+func TestInjectTopologyAffinityForPod_RequiredIgnoresExistingNilSelector(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-roleset",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+		},
+	}
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Affinity: &corev1.Affinity{
+				PodAffinity: &corev1.PodAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+						{TopologyKey: "kubernetes.io/hostname"},
+					},
+				},
+			},
+		},
+	}
+	tp := &orchestrationv1alpha1.TopologyPolicy{
+		Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+		Key:   "kubernetes.io/hostname",
+		Mode:  orchestrationv1alpha1.TopologyPolicyRequired,
+	}
+
+	if !assert.NotPanics(t, func() {
+		injectTopologyAffinityForPod(pod, roleSet, "prefill", tp)
+	}) {
+		return
+	}
+
+	required := pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	assert.Len(t, required, 2)
+	assert.Nil(t, required[0].LabelSelector)
+	assert.Equal(t, "test-roleset", required[1].LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
+}
+
+func TestInjectTopologyAffinityForPod_PreferredIgnoresExistingNilSelector(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-roleset",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-stormservice",
+			},
+		},
+	}
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Affinity: &corev1.Affinity{
+				PodAffinity: &corev1.PodAffinity{
+					PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+						{
+							Weight: 100,
+							PodAffinityTerm: corev1.PodAffinityTerm{
+								TopologyKey: "kubernetes.io/hostname",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	tp := &orchestrationv1alpha1.TopologyPolicy{
+		Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+		Key:   "kubernetes.io/hostname",
+	}
+
+	if !assert.NotPanics(t, func() {
+		injectTopologyAffinityForPod(pod, roleSet, "prefill", tp)
+	}) {
+		return
+	}
+
+	preferred := pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	assert.Len(t, preferred, 2)
+	assert.Nil(t, preferred[0].PodAffinityTerm.LabelSelector)
+	assert.Equal(t, "test-roleset", preferred[1].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
+}
+
 func TestInjectTopologyAffinityForPodTemplate_Preferred(t *testing.T) {
 	roleSet := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{
