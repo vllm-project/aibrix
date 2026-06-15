@@ -364,12 +364,12 @@ func TestInjectColocationAffinity_Preferred(t *testing.T) {
 			},
 		},
 	}
-	pod := &corev1.Pod{}
-	injectColocationAffinity(pod, roleSet)
+	spec := &corev1.PodSpec{}
+	injectColocationAffinity(spec, roleSet)
 
-	require.NotNil(t, pod.Spec.Affinity)
-	require.NotNil(t, pod.Spec.Affinity.PodAffinity)
-	preferred := pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	require.NotNil(t, spec.Affinity)
+	require.NotNil(t, spec.Affinity.PodAffinity)
+	preferred := spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
 	require.Len(t, preferred, 1)
 	assert.Equal(t, int32(100), preferred[0].Weight)
 	assert.Equal(t, constants.ColocationTopologyKey, preferred[0].PodAffinityTerm.TopologyKey)
@@ -380,9 +380,9 @@ func TestInjectColocationAffinity_NoAnnotation(t *testing.T) {
 	roleSet := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "pd-roleset"},
 	}
-	pod := &corev1.Pod{}
-	injectColocationAffinity(pod, roleSet)
-	assert.Nil(t, pod.Spec.Affinity)
+	spec := &corev1.PodSpec{}
+	injectColocationAffinity(spec, roleSet)
+	assert.Nil(t, spec.Affinity)
 }
 
 func TestInjectColocationAffinity_PreservesExistingAffinity(t *testing.T) {
@@ -403,18 +403,16 @@ func TestInjectColocationAffinity_PreservesExistingAffinity(t *testing.T) {
 			TopologyKey: "kubernetes.io/zone",
 		},
 	}
-	pod := &corev1.Pod{
-		Spec: corev1.PodSpec{
-			Affinity: &corev1.Affinity{
-				PodAffinity: &corev1.PodAffinity{
-					PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{existingTerm},
-				},
+	spec := &corev1.PodSpec{
+		Affinity: &corev1.Affinity{
+			PodAffinity: &corev1.PodAffinity{
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{existingTerm},
 			},
 		},
 	}
-	injectColocationAffinity(pod, roleSet)
+	injectColocationAffinity(spec, roleSet)
 
-	preferred := pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	preferred := spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
 	require.Len(t, preferred, 2)
 	assert.Equal(t, int32(50), preferred[0].Weight)
 	assert.Equal(t, int32(100), preferred[1].Weight)
@@ -453,6 +451,47 @@ func TestRenderStormServicePod_ColocationPreferred(t *testing.T) {
 	require.NotNil(t, pod.Spec.Affinity)
 	preferred := pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
 	require.Len(t, preferred, 1)
+	assert.Equal(t, constants.ColocationTopologyKey, preferred[0].PodAffinityTerm.TopologyKey)
+	assert.Equal(t, "pd-roleset", preferred[0].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
+}
+
+func TestCreatePodSetForRole_ColocationPreferred(t *testing.T) {
+	podGroupSize := int32(2)
+	replicas := int32(1)
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pd-roleset",
+			Namespace: "default",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+			Annotations: map[string]string{
+				constants.RoleSetIndexAnnotationKey: "0",
+				constants.ColocationAnnotationKey:   constants.ColocationPreferredValue,
+			},
+		},
+	}
+	role := &orchestrationv1alpha1.RoleSpec{
+		Name:         "prefill",
+		Replicas:     &replicas,
+		PodGroupSize: &podGroupSize,
+		Template: corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "vllm"}},
+			},
+		},
+	}
+
+	syncer := &PodSetRoleSyncer{
+		computeHashFunc: func(t *corev1.PodTemplateSpec, _ *int32) string { return "testhash" },
+	}
+	roleIndex := 0
+	podSet := syncer.createPodSetForRole(roleSet, role, &roleIndex)
+
+	require.NotNil(t, podSet.Spec.Template.Spec.Affinity)
+	preferred := podSet.Spec.Template.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	require.Len(t, preferred, 1)
+	assert.Equal(t, int32(100), preferred[0].Weight)
 	assert.Equal(t, constants.ColocationTopologyKey, preferred[0].PodAffinityTerm.TopologyKey)
 	assert.Equal(t, "pd-roleset", preferred[0].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
 }

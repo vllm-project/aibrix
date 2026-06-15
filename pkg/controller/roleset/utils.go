@@ -163,8 +163,7 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 	pod.Spec.Hostname = pod.Name
 	pod.Spec.Subdomain = roleSet.Labels[constants.StormServiceNameLabelKey]
 
-	// inject colocation affinity if requested
-	injectColocationAffinity(pod, roleSet)
+	injectColocationAffinity(&pod.Spec, roleSet)
 
 	// inject container env
 	for i := range pod.Spec.Containers {
@@ -182,7 +181,7 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 // the model.aibrix.ai/colocation: "preferred" annotation. The rule selects all pods in the same
 // RoleSet so that prefill and decode workers prefer to land on the same node.
 // Existing affinity rules on the pod template are preserved.
-func injectColocationAffinity(pod *v1.Pod, roleSet *orchestrationv1alpha1.RoleSet) {
+func injectColocationAffinity(spec *v1.PodSpec, roleSet *orchestrationv1alpha1.RoleSet) {
 	if roleSet.Annotations[constants.ColocationAnnotationKey] != constants.ColocationPreferredValue {
 		return
 	}
@@ -197,14 +196,14 @@ func injectColocationAffinity(pod *v1.Pod, roleSet *orchestrationv1alpha1.RoleSe
 			TopologyKey: constants.ColocationTopologyKey,
 		},
 	}
-	if pod.Spec.Affinity == nil {
-		pod.Spec.Affinity = &v1.Affinity{}
+	if spec.Affinity == nil {
+		spec.Affinity = &v1.Affinity{}
 	}
-	if pod.Spec.Affinity.PodAffinity == nil {
-		pod.Spec.Affinity.PodAffinity = &v1.PodAffinity{}
+	if spec.Affinity.PodAffinity == nil {
+		spec.Affinity.PodAffinity = &v1.PodAffinity{}
 	}
-	pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution = append(
-		pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
+	spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution = append(
+		spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
 		term,
 	)
 }

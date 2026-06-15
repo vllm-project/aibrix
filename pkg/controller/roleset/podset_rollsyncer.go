@@ -438,6 +438,8 @@ func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.Ro
 		)
 	}
 
+	injectColocationAffinity(&podSet.Spec.Template.Spec, roleSet)
+
 	return podSet
 }
 
