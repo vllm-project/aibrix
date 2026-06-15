@@ -50,7 +50,12 @@ const (
 	defaultRedisKeyExpiry                        = 5 * time.Minute
 	defaultKeyRotationSec                        = 3600 // 1 hour, key rotation interval
 	// if po2 router is not used for a long time, the request tracker will stop counting after 600 seconds to reduce redis pressure and latency
-	defaultTrackerTimeout = time.Minute * 5 // 5 minutes, request tracker timeout
+	defaultTrackerTimeout = 5 * time.Minute // 5 minutes, request tracker timeout
+	// defaultRedisOpTimeout is the timeout for the detached Redis counter operations
+	// (Incr/Decr/Expire). These are single-key operations that normally complete in well
+	// under a millisecond; the timeout only guards against a stalled or unreachable Redis
+	// so cleanup goroutines do not leak.
+	defaultRedisOpTimeout = 2 * time.Second
 )
 
 func RegisterPowerOfTwoRouter(redisClient *redis.Client) {
@@ -333,12 +338,19 @@ func (p *PowerOfTwoRouter) AddRequestCount(ctx *types.RoutingContext, requestID 
 	if added != nil {
 		return 0
 	}
-	ctx.Context = context.WithValue(ctx.Context, po2RequestCountAddedKey, true)
 
 	key := p.getRequestCountRedisKey(ctx)
 
-	// Increment the request count in Redis
-	newCount, err := p.redisClient.Incr(ctx.Context, key).Result()
+	// Increment the request count in Redis.
+	// IMPORTANT: Use a detached background context rather than ctx.Context. Routing has
+	// already completed (HasRouted() is true) and the request was dispatched to a pod, so
+	// it must be counted. If we used ctx.Context and it were cancelled (client disconnect,
+	// timeout), Incr would fail and DoneRequestCount would later be unable to balance it.
+	// Detaching keeps Incr/Decr symmetric.
+	redisCtx, cancel := context.WithTimeout(context.Background(), defaultRedisOpTimeout)
+	defer cancel()
+
+	newCount, err := p.redisClient.Incr(redisCtx, key).Result()
 	if err != nil {
 		klog.ErrorS(err, "failed to increment request count",
 			"request_id", requestID,
@@ -346,8 +358,18 @@ func (p *PowerOfTwoRouter) AddRequestCount(ctx *types.RoutingContext, requestID 
 		return 0
 	}
 
-	// Set expiry on the key to prevent memory leak
-	p.redisClient.Expire(ctx.Context, key, defaultRedisKeyExpiry)
+	// Mark as added only after Incr succeeds, so a failed Incr does not cause
+	// DoneRequestCount to issue an unbalanced Decr.
+	ctx.Context = context.WithValue(ctx.Context, po2RequestCountAddedKey, true)
+
+	// Set expiry on the key to prevent memory leak. Reuse the same detached context so the
+	// TTL is always set even if the originating request context was cancelled.
+	if err := p.redisClient.Expire(redisCtx, key, defaultRedisKeyExpiry).Err(); err != nil {
+		klog.ErrorS(err, "failed to set expiry on request count key",
+			"request_id", requestID,
+			"key", key)
+		// Continue anyway - the counter is incremented, we just might have a memory leak
+	}
 
 	klog.V(4).InfoS("power_of_two_add_request",
 		"request_id", requestID,
@@ -386,7 +408,15 @@ func (p *PowerOfTwoRouter) DoneRequestCount(ctx *types.RoutingContext, requestID
 	key := p.getRequestCountRedisKey(ctx)
 
 	// Decrement the request count in Redis
-	newCount, err := p.redisClient.Decr(ctx.Context, key).Result()
+	// IMPORTANT: Use background context instead of ctx.Context because the request context
+	// may be cancelled (client disconnect, timeout, etc.), which would cause the Redis Decr
+	// to fail immediately. This would leave the counter incremented without decrementing,
+	// causing a permanent counter leak and skewed routing decisions.
+	// We use a short timeout to ensure the operation completes even if the request is cancelled.
+	redisCtx, cancel := context.WithTimeout(context.Background(), defaultRedisOpTimeout)
+	defer cancel()
+
+	newCount, err := p.redisClient.Decr(redisCtx, key).Result()
 	if err != nil {
 		klog.ErrorS(err, "failed to decrement request count",
 			"request_id", requestID,

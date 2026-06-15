@@ -421,14 +421,72 @@ func TestPowerOfTwoRouter_ContextCancelledScenario(t *testing.T) {
 		cancel()
 
 		// Cleanup should work even with cancelled context
+		// This is the key fix: DoneRequestCount uses background context for Redis operations
+		// so it succeeds even when routingCtx.Context is cancelled
 		assert.NotPanics(t, func() {
 			router.DoneRequestCount(routingCtx, "test-request-partial", "test-model", traceTerm)
 		})
 
-		// Verify count was decremented
+		// Verify count was decremented despite cancelled context
+		// This proves the counter leak is fixed
 		server := podServerKey{pod: pod1, port: 0}
 		count := router.getRequestCount(context.Background(), "test-model", server, routingCtx.RequestTime)
 		assert.Equal(t, int64(0), count, "count should be decremented even with cancelled context")
+	})
+
+	t.Run("context cancelled between Incr and Expire should still set TTL", func(t *testing.T) {
+		// This test verifies that even if context is cancelled after Incr succeeds,
+		// the Expire operation still completes using background context
+		ctx, cancel := context.WithCancel(context.Background())
+		routingCtx := types.NewRoutingContext(ctx, RouterPowerOfTwo, "test-model", "", "test-request-expire", "")
+
+		pod1 := createTestPodForPowerOfTwo("pod1", "10.0.0.1", 8000)
+		routingCtx.SetTargetPod(pod1)
+
+		router.lastRoutingTimeMu.Lock()
+		router.lastRoutingTime["test-model"] = time.Now()
+		router.lastRoutingTimeMu.Unlock()
+
+		// Add request and immediately cancel context
+		traceTerm := router.AddRequestCount(routingCtx, "test-request-expire", "test-model")
+		cancel()
+
+		// Verify the key has TTL set (Expire succeeded with background context)
+		key := router.getRequestCountRedisKey(routingCtx)
+		ttl, err := client.TTL(context.Background(), key).Result()
+		assert.NoError(t, err)
+		assert.Greater(t, ttl.Seconds(), float64(0), "TTL should be set even if context was cancelled after Incr")
+
+		// Clean up
+		router.DoneRequestCount(routingCtx, "test-request-expire", "test-model", traceTerm)
+	})
+
+	t.Run("context already cancelled before AddRequestCount should still increment", func(t *testing.T) {
+		// This verifies the fix for the reviewer's correctness concern: AddRequestCount uses
+		// a detached background context for Incr, so a request that completed routing is still
+		// counted even if its context was cancelled before AddRequestCount runs. This keeps
+		// Incr/Decr balanced.
+		ctx, cancel := context.WithCancel(context.Background())
+		routingCtx := types.NewRoutingContext(ctx, RouterPowerOfTwo, "test-model", "", "test-request-precancelled", "")
+
+		pod1 := createTestPodForPowerOfTwo("pod1", "10.0.0.1", 8000)
+		routingCtx.SetTargetPod(pod1)
+
+		router.lastRoutingTimeMu.Lock()
+		router.lastRoutingTime["test-model"] = time.Now()
+		router.lastRoutingTimeMu.Unlock()
+
+		// Cancel BEFORE calling AddRequestCount
+		cancel()
+
+		traceTerm := router.AddRequestCount(routingCtx, "test-request-precancelled", "test-model")
+		assert.Greater(t, traceTerm, int64(0), "Incr should succeed with detached context even if request context is cancelled")
+
+		// Counter should be balanced back to zero after Done
+		router.DoneRequestCount(routingCtx, "test-request-precancelled", "test-model", traceTerm)
+		server := podServerKey{pod: pod1, port: 0}
+		count := router.getRequestCount(context.Background(), "test-model", server, routingCtx.RequestTime)
+		assert.Equal(t, int64(0), count, "Incr/Decr should remain balanced")
 	})
 }
 
