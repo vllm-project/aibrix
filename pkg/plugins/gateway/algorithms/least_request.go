@@ -146,11 +146,14 @@ func (r *leastRequestRouter) SubscribedMetrics() []string {
 }
 
 func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod) *v1.Pod {
+	return selectTargetPodWithLeastRequestCountFromCounts(getRequestCounts(cache, readyPods), readyPods)
+}
+
+func selectTargetPodWithLeastRequestCountFromCounts(podRequestCount map[string]int, readyPods []*v1.Pod) *v1.Pod {
 	var targetPod *v1.Pod
 	targetPods := []string{}
 
 	minCount := math.MaxInt32
-	podRequestCount := getRequestCounts(cache, readyPods)
 	klog.V(4).InfoS("selectTargetPodWithLeastRequestCount", "podRequestCount", podRequestCount)
 	for podname, totalReq := range podRequestCount {
 		if totalReq < minCount {

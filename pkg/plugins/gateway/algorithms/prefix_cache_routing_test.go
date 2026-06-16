@@ -29,191 +29,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 )
 
-// TestGetTargetPodOnLoadImbalance tests load imbalance detection and pod selection
-func TestGetTargetPodOnLoadImbalance(t *testing.T) {
-	tests := []struct {
-		name             string
-		podCount         int
-		targetPodListLen int
-		requestCounts    map[string]int // pod name -> request count
-		imbalanceCount   int            // threshold value
-		expectImbalance  bool
-		expectPodPrefix  string // Expected pod name prefix (e.g., "pod-0" for min count pod)
-		description      string // Test description
-	}{
-		{
-			name:             "no_imbalance_identical_counts",
-			podCount:         4,
-			targetPodListLen: 4,
-			requestCounts:    map[string]int{"pod-0": 10, "pod-1": 10, "pod-2": 10, "pod-3": 10},
-			imbalanceCount:   8,
-			expectImbalance:  false,
-			expectPodPrefix:  "",
-			description:      "Identical request counts should show no imbalance",
-		},
-		{
-			name:             "imbalance_detected_single_min",
-			podCount:         3,
-			targetPodListLen: 1,
-			requestCounts:    map[string]int{"pod-0": 0, "pod-1": 10, "pod-2": 20},
-			imbalanceCount:   8,
-			expectImbalance:  true,
-			expectPodPrefix:  "pod-0",
-			description:      "Clear imbalance should select single minimum pod",
-		},
-		{
-			name:            "imbalance_multiple_min_pods",
-			podCount:        4,
-			requestCounts:   map[string]int{"pod-0": 0, "pod-1": 0, "pod-2": 10, "pod-3": 20},
-			imbalanceCount:  8,
-			expectImbalance: true,
-			expectPodPrefix: "pod-", // Any of pod-0 or pod-1
-			description:     "Multiple minimum pods should select one of them",
-		},
-		{
-			name:             "exactly_at_threshold",
-			podCount:         2,
-			targetPodListLen: 1,
-			requestCounts:    map[string]int{"pod-0": 0, "pod-1": 8},
-			imbalanceCount:   8,
-			expectImbalance:  false,
-			expectPodPrefix:  "",
-			description:      "Difference exactly at threshold should show no imbalance",
-		},
-		{
-			name:             "just_above_threshold",
-			podCount:         2,
-			targetPodListLen: 1,
-			requestCounts:    map[string]int{"pod-0": 0, "pod-1": 9},
-			imbalanceCount:   8,
-			expectImbalance:  true,
-			expectPodPrefix:  "pod-0",
-			description:      "Difference just above threshold should trigger imbalance",
-		},
-		{
-			name:             "empty_pods_list",
-			podCount:         0,
-			targetPodListLen: 0,
-			requestCounts:    map[string]int{},
-			imbalanceCount:   8,
-			expectImbalance:  false,
-			expectPodPrefix:  "",
-			description:      "Empty pods list should show no imbalance",
-		},
-		{
-			name:             "single_pod_no_imbalance",
-			podCount:         1,
-			targetPodListLen: 1,
-			requestCounts:    map[string]int{"pod-0": 10},
-			imbalanceCount:   8,
-			expectImbalance:  false,
-			expectPodPrefix:  "",
-			description:      "Single pod should never show imbalance",
-		},
-		{
-			name:             "all_zero_counts",
-			podCount:         3,
-			targetPodListLen: 3,
-			requestCounts:    map[string]int{"pod-0": 0, "pod-1": 0, "pod-2": 0},
-			imbalanceCount:   8,
-			expectImbalance:  false,
-			expectPodPrefix:  "",
-			description:      "All zero counts should show no imbalance",
-		},
-		{
-			name:             "large_imbalance",
-			podCount:         4,
-			targetPodListLen: 1,
-			requestCounts:    map[string]int{"pod-0": 0, "pod-1": 5, "pod-2": 50, "pod-3": 100},
-			imbalanceCount:   8,
-			expectImbalance:  true,
-			expectPodPrefix:  "pod-0",
-			description:      "Large spread in request counts should trigger imbalance and select minimum",
-		},
-		{
-			name:             "default_threshold_value_no_imbalance",
-			podCount:         4,
-			targetPodListLen: 1,
-			requestCounts:    map[string]int{"pod-0": 1, "pod-1": 2, "pod-2": 3, "pod-3": 9},
-			imbalanceCount:   8, // Default threshold
-			expectImbalance:  false,
-			expectPodPrefix:  "",
-			description:      "Pod running request count ≤ default abs value of 8 should show no imbalance",
-		},
-		{
-			name:             "default_threshold_value_with_imbalance",
-			podCount:         4,
-			targetPodListLen: 2,
-			requestCounts:    map[string]int{"pod-0": 2, "pod-1": 2, "pod-2": 8, "pod-3": 16},
-			imbalanceCount:   8, // Default threshold
-			expectImbalance:  true,
-			expectPodPrefix:  "pod-", // Any of pod-0 or pod-1
-			description:      "Pod running request count > default abs value of 8 should trigger imbalance",
-		},
-	}
-
-	// Save original value and restore after tests
-	originalImbalanceCount := podRunningRequestImbalanceAbsCount
-	defer func() {
-		podRunningRequestImbalanceAbsCount = originalImbalanceCount
-	}()
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Set the imbalance threshold for this test
-			podRunningRequestImbalanceAbsCount = tt.imbalanceCount
-
-			// Create test pods
-			pods := make([]*v1.Pod, tt.podCount)
-			for i := 0; i < tt.podCount; i++ {
-				pods[i] = &v1.Pod{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      fmt.Sprintf("pod-%d", i),
-						Namespace: "default",
-					},
-					Status: v1.PodStatus{
-						PodIP: fmt.Sprintf("10.0.0.%d", i+1),
-						Conditions: []v1.PodCondition{
-							{Type: v1.PodReady, Status: v1.ConditionTrue},
-						},
-					},
-				}
-			}
-
-			// Setup metrics in cache
-			metricsMap := make(map[string]map[string]metrics.MetricValue)
-			for podName, reqCount := range tt.requestCounts {
-				metricsMap[podName] = map[string]metrics.MetricValue{
-					metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: float64(reqCount)},
-				}
-			}
-
-			testCache := cache.NewWithPodsMetricsForTest(pods, "test-model", metricsMap)
-
-			// Execute function
-			targetPodList, imbalance := getTargetPodListOnLoadImbalance(testCache, pods)
-
-			// Verify imbalance detection
-			assert.Equal(t, tt.expectImbalance, imbalance, "Imbalance detection mismatch")
-
-			// Verify target pod selection
-			if tt.expectImbalance {
-				assert.NotNil(t, targetPodList[0], "Expected a target pod when imbalance detected")
-				if tt.expectPodPrefix != "" && len(targetPodList) > 0 {
-					assert.Contains(t, targetPodList[0].Name, tt.expectPodPrefix, "Unexpected target pod selected")
-					// Verify it has minimum count
-					minCount := tt.requestCounts[targetPodList[0].Name]
-					for _, count := range tt.requestCounts {
-						assert.GreaterOrEqual(t, count, minCount, "Selected pod should have minimum request count")
-					}
-				}
-			} else {
-				assert.Equal(t, tt.targetPodListLen, len(targetPodList), "No target pod expected when no imbalance")
-			}
-		})
-	}
-}
-
 // TestGetTargetPodFromMatchedPods tests pod selection from matched pods
 func TestGetTargetPodFromMatchedPods(t *testing.T) {
 	// Helper to create test setup
@@ -628,148 +443,6 @@ func TestSelectTargetPodWithLeastRequestCount(t *testing.T) {
 	}
 }
 
-// TestLoadImbalanceEdgeCases tests extreme edge cases for load imbalance detection
-func TestLoadImbalanceEdgeCases(t *testing.T) {
-	tests := []struct {
-		name             string
-		podCount         int
-		targetPodListLen int
-		requestCounts    map[string]int
-		imbalanceCount   int
-		expectImbalance  bool
-		expectPodPrefix  string
-		description      string
-	}{
-		{
-			name:             "max_int_values_no_overflow",
-			podCount:         2,
-			targetPodListLen: 1,
-			requestCounts:    map[string]int{"pod-0": math.MaxInt32, "pod-1": math.MaxInt32 - 1},
-			imbalanceCount:   8,
-			expectImbalance:  false, // Difference = 1, below threshold
-			expectPodPrefix:  "",
-			description:      "Should handle MaxInt32 values without overflow",
-		},
-		{
-			name:            "max_int_imbalance_detected",
-			podCount:        2,
-			requestCounts:   map[string]int{"pod-0": math.MaxInt32 - 20, "pod-1": math.MaxInt32},
-			imbalanceCount:  8,
-			expectImbalance: true, // Difference = 20, above threshold
-			expectPodPrefix: "pod-0",
-			description:     "Should detect imbalance with large MaxInt32 values",
-		},
-		{
-			name:            "min_int_values_protection",
-			podCount:        2,
-			requestCounts:   map[string]int{"pod-0": math.MinInt32, "pod-1": 0},
-			imbalanceCount:  8,
-			expectImbalance: true, // Massive difference
-			expectPodPrefix: "pod-0",
-			description:     "Should handle MinInt32 values correctly",
-		},
-		{
-			name:            "zero_threshold_no_imbalance",
-			podCount:        3,
-			requestCounts:   map[string]int{"pod-0": 5, "pod-1": 10, "pod-2": 15},
-			imbalanceCount:  0,    // Zero threshold - no imbalance allowed
-			expectImbalance: true, // Any difference triggers imbalance
-			expectPodPrefix: "pod-0",
-			description:     "Zero threshold should trigger imbalance for any difference",
-		},
-		{
-			name:            "negative_threshold_no_imbalance",
-			podCount:        2,
-			requestCounts:   map[string]int{"pod-0": 0, "pod-1": 100},
-			imbalanceCount:  -1,   // Negative threshold (invalid)
-			expectImbalance: true, // Large difference should still trigger
-			expectPodPrefix: "pod-0",
-			description:     "Negative threshold should not prevent imbalance detection",
-		},
-		{
-			name:             "all_pods_same_max_value",
-			targetPodListLen: 3,
-			podCount:         3,
-			requestCounts:    map[string]int{"pod-0": math.MaxInt32, "pod-1": math.MaxInt32, "pod-2": math.MaxInt32},
-			imbalanceCount:   8,
-			expectImbalance:  false, // No difference
-			expectPodPrefix:  "",
-			description:      "Identical MaxInt32 values should show no imbalance",
-		},
-		{
-			name:            "mixed_extreme_values",
-			podCount:        3,
-			requestCounts:   map[string]int{"pod-0": math.MinInt32, "pod-1": 0, "pod-2": math.MaxInt32},
-			imbalanceCount:  8,
-			expectImbalance: true, // Extreme spread
-			expectPodPrefix: "pod-0",
-			description:     "Mixed extreme values should select minimum correctly",
-		},
-	}
-
-	// Save original value and restore after tests
-	originalImbalanceCount := podRunningRequestImbalanceAbsCount
-	defer func() {
-		podRunningRequestImbalanceAbsCount = originalImbalanceCount
-	}()
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Set the imbalance threshold for this test
-			podRunningRequestImbalanceAbsCount = tt.imbalanceCount
-
-			// Create test pods
-			pods := make([]*v1.Pod, tt.podCount)
-			for i := 0; i < tt.podCount; i++ {
-				pods[i] = &v1.Pod{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      fmt.Sprintf("pod-%d", i),
-						Namespace: "default",
-					},
-					Status: v1.PodStatus{
-						PodIP: fmt.Sprintf("10.0.0.%d", i+1),
-						Conditions: []v1.PodCondition{
-							{Type: v1.PodReady, Status: v1.ConditionTrue},
-						},
-					},
-				}
-			}
-
-			// Setup metrics in cache
-			metricsMap := make(map[string]map[string]metrics.MetricValue)
-			for podName, reqCount := range tt.requestCounts {
-				metricsMap[podName] = map[string]metrics.MetricValue{
-					metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: float64(reqCount)},
-				}
-			}
-
-			testCache := cache.NewWithPodsMetricsForTest(pods, "test-model", metricsMap)
-
-			// Execute function
-			targetPodList, imbalance := getTargetPodListOnLoadImbalance(testCache, pods)
-
-			// Verify imbalance detection
-			assert.Equal(t, tt.expectImbalance, imbalance, "Imbalance detection mismatch: %s", tt.description)
-
-			// Verify target pod selection
-			if tt.expectImbalance {
-				assert.NotNil(t, targetPodList[0], "Expected a target pod when imbalance detected: %s", tt.description)
-				if tt.expectPodPrefix != "" && len(targetPodList) > 0 {
-					assert.Contains(t, targetPodList[0].Name, tt.expectPodPrefix, "Unexpected target pod selected: %s", tt.description)
-					// Verify it has minimum count
-					minCount := tt.requestCounts[targetPodList[0].Name]
-					for _, count := range tt.requestCounts {
-						assert.GreaterOrEqual(t, count, minCount, "Selected pod should have minimum request count: %s", tt.description)
-					}
-				}
-			} else {
-				assert.Equal(t, tt.targetPodListLen, len(targetPodList), "No target pod expected when no imbalance: %s", tt.description)
-			}
-		})
-	}
-
-}
-
 // TestPrefixMatchingStandardDeviationEdgeCases tests edge cases for standard deviation handling
 func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
 	// Helper to create test setup
@@ -1040,6 +713,112 @@ func TestKVSyncPodKeyHandlingEdgeCases(t *testing.T) {
 				if result != nil {
 					assert.Equal(t, tt.expectedPod, result.Name, tt.description)
 				}
+			}
+		})
+	}
+}
+
+// TestGetTargetPodListOnLoadImbalance tests the relative load-gate logic
+func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
+	tests := []struct {
+		name            string
+		requestCounts   map[string]int
+		expectImbalance bool
+		expectMinPods   []string // pod names that should appear in result (all have min count)
+	}{
+		{
+			name:            "empty",
+			requestCounts:   map[string]int{},
+			expectImbalance: false,
+		},
+		{
+			name:            "all_zero_no_imbalance",
+			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 0},
+			expectImbalance: false,
+		},
+		{
+			name:            "uniform_load_no_imbalance",
+			requestCounts:   map[string]int{"p0": 10, "p1": 10, "p2": 10},
+			expectImbalance: false,
+		},
+		{
+			name:            "small_absolute_gap_no_imbalance",
+			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 5},
+			expectImbalance: false, // gap=5 < minGap=8
+		},
+		{
+			name:            "gap_exactly_at_threshold_no_imbalance",
+			requestCounts:   map[string]int{"p0": 0, "p1": 8},
+			expectImbalance: false, // gap=8, condition is < 8 which is false, BUT factor check: 8 <= 2*(4+1)=10 → no imbalance
+		},
+		{
+			name:            "moderate_load_within_factor_no_imbalance",
+			requestCounts:   map[string]int{"p0": 5, "p1": 5, "p2": 5, "p3": 15},
+			expectImbalance: false, // mean=7.5, 15 <= 2*(7.5+1)=17
+		},
+		{
+			name:            "severe_skew_triggers_imbalance",
+			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 0, "p3": 15},
+			expectImbalance: true, // mean=3.75, 15>2*(3.75+1)=9.5; gap=15>=8
+			expectMinPods:   []string{"p0", "p1", "p2"},
+		},
+		{
+			// With 2 pods [0, x]: mean=x/2, factor*(mean+1)=2*(x/2+1)=x+2, so max=x <= x+2 always.
+			// The factor gate never fires with exactly 2 pods — by design, restricting to 1 of 2 pods
+			// offers no meaningful diversity benefit.
+			name:            "two_pods_gate_never_fires",
+			requestCounts:   map[string]int{"p0": 0, "p1": 100},
+			expectImbalance: false,
+		},
+		{
+			name:            "four_pods_one_overloaded",
+			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 5, "p3": 20},
+			expectImbalance: true, // mean=6.25, 20>2*(6.25+1)=14.5; gap=20>=8
+			expectMinPods:   []string{"p0", "p1"},
+		},
+		{
+			name:            "single_pod_never_imbalanced",
+			requestCounts:   map[string]int{"p0": 100},
+			expectImbalance: false,
+		},
+		{
+			name:            "large_spread_triggers_imbalance",
+			requestCounts:   map[string]int{"p0": 0, "p1": 5, "p2": 50, "p3": 100},
+			expectImbalance: true, // mean=38.75, 100>2*(38.75+1)=79.5; gap=100>=8
+			expectMinPods:   []string{"p0"},
+		},
+		{
+			name:            "multiple_min_pods_returned",
+			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 50, "p3": 100},
+			expectImbalance: true, // mean=37.5, 100>2*(37.5+1)=77; gap=100>=8
+			expectMinPods:   []string{"p0", "p1"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Build pod slice matching the keys in requestCounts
+			var pods []*v1.Pod
+			for name := range tt.requestCounts {
+				pods = append(pods, &v1.Pod{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				})
+			}
+
+			result, imbalanced := getTargetPodListOnLoadImbalance(tt.requestCounts, pods)
+			assert.Equal(t, tt.expectImbalance, imbalanced)
+			if tt.expectImbalance {
+				assert.NotEmpty(t, result)
+				for _, pod := range result {
+					assert.Contains(t, tt.expectMinPods, pod.Name)
+				}
+				// All returned pods must have the minimum count
+				minCount := tt.requestCounts[result[0].Name]
+				for _, pod := range result {
+					assert.Equal(t, minCount, tt.requestCounts[pod.Name])
+				}
+			} else {
+				assert.Empty(t, result)
 			}
 		})
 	}
