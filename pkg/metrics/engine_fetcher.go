@@ -231,22 +231,25 @@ func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoi
 			continue
 		}
 
-		// Parse the metric
-		metricValue, err := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, err, identifier))
-			continue
-		}
-
 		// Store in appropriate scope
 		if metricDef.MetricScope == PodMetricScope {
+			metricValue, err := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
+			if err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, err, identifier))
+				continue
+			}
 			result.Metrics[metricName] = metricValue
 		} else if metricDef.MetricScope == PodModelMetricScope {
-			// For model-scoped metrics, we need to extract model names from the raw metrics
-			modelNames := ef.extractModelNamesFromMetrics(allMetrics, rawMetricName)
-			for _, modelName := range modelNames {
+			// Parse one value per model_name so models on a multi-model pod don't share a
+			// single instance taken from metricFamily.Metric[0].
+			modelMetrics, err := ef.parseModelMetricsFromFamily(allMetrics, rawMetricName, metricDef)
+			if err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, err, identifier))
+				continue
+			}
+			for modelName, value := range modelMetrics {
 				key := fmt.Sprintf("%s/%s", modelName, metricName)
-				result.ModelMetrics[key] = metricValue
+				result.ModelMetrics[key] = value
 			}
 		}
 
@@ -286,7 +289,8 @@ func (ef *EngineMetricsFetcher) getAvailableMetricsForEngine(engineType string) 
 	return availableMetrics
 }
 
-// parseMetricFromFamily parses a specific metric from Prometheus metric families
+// parseMetricFromFamily parses the first instance of a metric family. It is used for
+// pod-scoped metrics, which are not differentiated by model_name.
 func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto.MetricFamily, rawMetricName string, metric Metric) (MetricValue, error) {
 	metricFamily, exists := allMetrics[rawMetricName]
 	if !exists {
@@ -297,21 +301,109 @@ func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto
 		return nil, fmt.Errorf("no metric instances found for %s", rawMetricName)
 	}
 
-	// Take the first metric instance (could be enhanced to handle multiple instances)
-	firstMetric := metricFamily.Metric[0]
+	return ef.parseMetricInstance(metricFamily.Metric[0], metricFamily, metric, rawMetricName)
+}
 
-	// Parse based on metric type
+// parseModelMetricsFromFamily returns one MetricValue per model_name in the family, so models on a
+// multi-model pod no longer share a single instance. Instances that repeat a model_name (differing
+// only by a non-model label) are folded together by aggregateModelMetric.
+func (ef *EngineMetricsFetcher) parseModelMetricsFromFamily(allMetrics map[string]*dto.MetricFamily, rawMetricName string, metric Metric) (map[string]MetricValue, error) {
+	metricFamily, exists := allMetrics[rawMetricName]
+	if !exists {
+		return nil, fmt.Errorf("raw metric %s not found", rawMetricName)
+	}
+
+	if len(metricFamily.Metric) == 0 {
+		return nil, fmt.Errorf("no metric instances found for %s", rawMetricName)
+	}
+
+	modelMetrics := make(map[string]MetricValue)
+	for _, familyMetric := range metricFamily.Metric {
+		modelName, err := GetLabelValueForKey(familyMetric, "model_name")
+		if err != nil || modelName == "" {
+			continue
+		}
+
+		value, err := ef.parseMetricInstance(familyMetric, metricFamily, metric, rawMetricName)
+		if err != nil {
+			// Skip the malformed instance rather than dropping every model in the family.
+			klog.V(4).InfoS("skipping metric instance that failed to parse",
+				"metric", rawMetricName, "model", modelName, "err", err)
+			continue
+		}
+
+		if existing, ok := modelMetrics[modelName]; ok {
+			value = aggregateModelMetric(existing, value, modelName, metric.MetricType.Raw)
+		}
+		modelMetrics[modelName] = value
+	}
+
+	if len(modelMetrics) == 0 {
+		klog.V(4).InfoS("metric family has no model_name-labeled instances", "metric", rawMetricName)
+	}
+
+	return modelMetrics, nil
+}
+
+// aggregateModelMetric folds incoming into the value already parsed for modelName and returns it.
+// Counters and histograms that repeat a model_name (differing only by a non-model label such as
+// finished_reason on vllm:request_success_total) are summed; gauges keep the latest instance. The
+// differentiating labels are reset to model_name only so EmitMetricToPrometheus does not report the
+// merged total under a single arbitrary label value. It mutates and returns existing in place; the
+// sole caller reassigns the map entry.
+func aggregateModelMetric(existing, incoming MetricValue, modelName string, rawType RawMetricType) MetricValue {
+	switch rawType {
+	case Counter:
+		existingVal, ok := existing.(*SimpleMetricValue)
+		if !ok {
+			return incoming
+		}
+		incomingVal, ok := incoming.(*SimpleMetricValue)
+		if !ok {
+			return incoming
+		}
+		existingVal.Value += incomingVal.Value
+		existingVal.Labels = map[string]string{"model_name": modelName}
+		return existingVal
+	case Histogram:
+		existingVal, ok := existing.(*HistogramMetricValue)
+		if !ok {
+			return incoming
+		}
+		incomingVal, ok := incoming.(*HistogramMetricValue)
+		if !ok {
+			return incoming
+		}
+		existingVal.Sum += incomingVal.Sum
+		existingVal.Count += incomingVal.Count
+		for bound, count := range incomingVal.Buckets {
+			existingVal.Buckets[bound] += count
+		}
+		existingVal.Labels = map[string]string{"model_name": modelName}
+		return existingVal
+	case Gauge:
+		// A gauge is a single value per model, so keep the latest instance.
+		return incoming
+	default:
+		// Only raw Gauge/Counter/Histogram metrics reach this path.
+		return incoming
+	}
+}
+
+// parseMetricInstance converts a single Prometheus metric instance into a typed MetricValue
+// according to the metric definition.
+func (ef *EngineMetricsFetcher) parseMetricInstance(familyMetric *dto.Metric, metricFamily *dto.MetricFamily, metric Metric, rawMetricName string) (MetricValue, error) {
 	if metric.MetricType.IsRawMetric() {
 		switch metric.MetricType.Raw {
 		case Gauge, Counter:
-			simpleValue, err := GetCounterGaugeValue(firstMetric, metricFamily.GetType())
+			simpleValue, err := GetCounterGaugeValue(familyMetric, metricFamily.GetType())
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse counter/gauge metric %s: %v", rawMetricName, err)
 			}
 			return simpleValue, nil
 
 		case Histogram:
-			histValue, err := GetHistogramValue(firstMetric)
+			histValue, err := GetHistogramValue(familyMetric)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse histogram metric %s: %v", rawMetricName, err)
 			}
@@ -321,7 +413,7 @@ func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto
 			return nil, fmt.Errorf("unsupported raw metric type: %v", metric.MetricType.Raw)
 		}
 	} else if metric.MetricType.Query == QueryLabel {
-		label, err := GetLabelValueForKey(firstMetric, metric.LabelKey)
+		label, err := GetLabelValueForKey(familyMetric, metric.LabelKey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to extract label %s for metric %s: %v", metric.LabelKey, rawMetricName, err)
 		}
@@ -329,29 +421,6 @@ func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto
 	}
 
 	return nil, fmt.Errorf("unsupported metric type for raw parsing: %v", metric.MetricType)
-}
-
-// extractModelNamesFromMetrics extracts model names from metric labels
-func (ef *EngineMetricsFetcher) extractModelNamesFromMetrics(allMetrics map[string]*dto.MetricFamily, rawMetricName string) []string {
-	metricFamily, exists := allMetrics[rawMetricName]
-	if !exists {
-		return []string{}
-	}
-
-	modelNames := make(map[string]struct{}) // Use map to deduplicate
-	for _, familyMetric := range metricFamily.Metric {
-		// TODO: confirm whether vLLM/SGLang uses the same label_key.
-		if modelName, err := GetLabelValueForKey(familyMetric, "model_name"); err == nil && modelName != "" {
-			modelNames[modelName] = struct{}{}
-		}
-	}
-
-	// Convert to slice
-	result := make([]string, 0, len(modelNames))
-	for modelName := range modelNames {
-		result = append(result, modelName)
-	}
-	return result
 }
 
 // fetchAllMetricsFromURL performs a single HTTP request and parses all Prometheus metrics
