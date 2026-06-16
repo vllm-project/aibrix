@@ -22,11 +22,13 @@ per-request output error or a job-level ``BatchJobError``).
 from __future__ import annotations
 
 from enum import Enum
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 
 class InferenceErrorCode(str, Enum):
     TRANSPORT_ERROR = "transport_error"
+    HTTP_ERROR = "http_error"
+    RESPONSE_ERROR = "response_error"
     ALL_ENDPOINTS_FAILED = "all_endpoints_failed"
     NO_ENDPOINT = "no_endpoint"
     CONNECTION_SETUP = "connection_setup"
@@ -41,14 +43,22 @@ class InferenceError(Exception):
         message: str,
         *,
         causes: Optional[Iterable[str]] = None,
+        status_code: Optional[int] = None,
+        response_body: Any = None,
+        retryable: Optional[bool] = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.causes = list(causes) if causes else []
+        self.status_code = status_code
+        self.response_body = response_body
+        self.retryable = retryable
 
     def __str__(self) -> str:
         base = f"[{self.code.value}] {self.message}"
+        if self.status_code is not None:
+            base += f" status={self.status_code}"
         if self.causes:
             base += " (" + "; ".join(self.causes) + ")"
         return base

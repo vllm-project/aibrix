@@ -37,7 +37,7 @@ func ptrStatus(s types.ProvisionStatus) *types.ProvisionStatus {
 //nolint:gocyclo // Test function with many sub-tests
 func TestMemoryStore(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore()
+	s := NewMemoryStore(nil)
 	t.Cleanup(func() { _ = s.Close() })
 
 	// load demo data for testing purpose

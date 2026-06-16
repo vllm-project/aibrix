@@ -13,33 +13,30 @@
 # limitations under the License.
 
 import asyncio
-import os
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
 import pytest
 
+import aibrix.client.redis as redis_client
 from aibrix.storage import RedisStorage, StorageType, create_storage
 
 
 def _test_redis_connectivity():
     """Test if Redis is accessible on localhost:6379."""
     try:
-        import redis
 
         def test_connection():
-            # Try to connect to Redis with a short timeout
-            client = redis.Redis(
-                host=os.environ.get("REDIS_HOST", "localhost"),
-                port=int(os.environ.get("REDIS_PORT", "6379")),
-                db=int(os.environ.get("REDIS_DB", "0")),
-                password=os.environ.get("REDIS_PASSWORD"),
-                socket_connect_timeout=2,
-                socket_timeout=2,
-                decode_responses=True,
-            )
-            # Test with a simple ping
-            return client.ping()
+            async def ping():
+                # Try to connect to Redis with a short timeout.
+                client = redis_client.get_redis_client()
+                try:
+                    # Test with a simple ping against the async client.
+                    return await client.ping()
+                finally:
+                    await client.aclose()
+
+            return asyncio.run(ping())
 
         # Use ThreadPoolExecutor to enforce timeout
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -75,32 +72,7 @@ def get_redis_storage(**kwargs):
 async def test_redis_storage_creation():
     """Test Redis storage can be created."""
     storage = RedisStorage()
-    assert storage.host == "localhost"
-    assert storage.port == 6379
-    assert storage.db == 0
-    assert storage.password is None
-    await storage.close()
-
-
-@pytest.mark.asyncio
-async def test_redis_storage_creation_with_params():
-    """Test Redis storage can be created with custom parameters."""
-    storage = RedisStorage(host="redis-server", port=6380, db=1, password="secret")
-    assert storage.host == "redis-server"
-    assert storage.port == 6380
-    assert storage.db == 1
-    assert storage.password == "secret"
-    await storage.close()
-
-
-@pytest.mark.asyncio
-async def test_redis_storage_factory():
-    """Test Redis storage can be created via factory."""
-    storage = create_storage(StorageType.REDIS, host="localhost", port=6379, db=0)
-    assert isinstance(storage, RedisStorage)
-    assert storage.host == "localhost"
-    assert storage.port == 6379
-    assert storage.db == 0
+    assert storage._kwargs == {}
     await storage.close()
 
 
@@ -378,6 +350,40 @@ async def test_redis_hierarchical_token_pagination():
         # Clean up
         for i in range(10):
             await storage.delete_object(f"batch/job_{i:03d}")
+
+    finally:
+        await storage.close()
+
+
+@requires_redis
+@pytest.mark.asyncio
+async def test_redis_hierarchical_after_key_pagination():
+    """Test hierarchical after_key pagination uses timestamp ordering."""
+    storage = get_redis_storage()
+    try:
+        test_keys = [f"batch/after_job_{i:03d}" for i in range(4)]
+
+        for key in test_keys:
+            await storage.put_object(key, f"job data for {key}".encode())
+
+        all_objects, _ = await storage.list_objects("batch", "/")
+        first_page, _ = await storage.list_objects("batch", "/", limit=2)
+        second_page, next_token = await storage.list_objects(
+            "batch", "/", limit=2, after_key=first_page[-1]
+        )
+
+        assert first_page == all_objects[:2]
+        assert second_page == all_objects[2:4]
+        assert next_token is None
+
+        missing_page, missing_token = await storage.list_objects(
+            "batch", "/", limit=2, after_key="batch/does-not-exist"
+        )
+        assert missing_page == []
+        assert missing_token is None
+
+        for key in test_keys:
+            await storage.delete_object(key)
 
     finally:
         await storage.close()

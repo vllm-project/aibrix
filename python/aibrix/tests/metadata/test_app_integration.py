@@ -31,9 +31,10 @@ from aibrix.storage import StorageType
 def _args(**overrides):
     defaults = {
         "enable_fastapi_docs": False,
-        "enable_k8s_support": False,
+        "enable_k8s_support": True,
         "disable_batch_api": True,
         "disable_file_api": True,
+        "job_store_provider": None,
         "dry_run": False,
     }
     defaults.update(overrides)
@@ -145,8 +146,8 @@ def test_build_app_skips_k8s_clients_when_disabled(
     assert hasattr(app.state, "batch_driver")
 
 
-def test_status_endpoint(_mock_k8s_config_loading):
-    """The /status endpoint reports the HTTP client and batch driver (no kopf)."""
+def test_status_endpoint_without_k8s(_mock_k8s_config_loading):
+    """Test /status endpoint without K8s support."""
     args = _args(
         enable_k8s_support=False,
         disable_batch_api=True,

@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
@@ -53,7 +54,7 @@ const (
 )
 
 // NewMySQLStore creates mysql-backed gorm store with auto-migrations.
-func NewMySQLStore(dsn, encryptionKey string) (*GORMStore, error) {
+func NewMySQLStore(dsn, encryptionKey string, injector error_injection.Injector) (*GORMStore, error) {
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open mysql: %w", err)
@@ -66,7 +67,7 @@ func NewMySQLStore(dsn, encryptionKey string) (*GORMStore, error) {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("failed to ping mysql: %w", err)
 	}
-	s, err := newGORMStore(db, encryptionKey)
+	s, err := newGORMStore(db, encryptionKey, injector)
 	if err != nil {
 		_ = sqlDB.Close()
 		return nil, err
@@ -82,7 +83,7 @@ func NewMySQLStore(dsn, encryptionKey string) (*GORMStore, error) {
 // Pass ":memory:" or any "...mode=memory..." DSN to get an in-memory database;
 // such DSNs are pinned to a single connection so all queries see the same
 // in-process database.
-func NewSQLiteStore(dsn, encryptionKey string) (*GORMStore, error) {
+func NewSQLiteStore(dsn, encryptionKey string, injector error_injection.Injector) (*GORMStore, error) {
 	dialector, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite: %w", err)
@@ -107,7 +108,7 @@ func NewSQLiteStore(dsn, encryptionKey string) (*GORMStore, error) {
 	// see the same per-connection database.
 	sqlDB.SetMaxOpenConns(1)
 	sqlDB.SetMaxIdleConns(1)
-	s, err := newGORMStore(db, encryptionKey)
+	s, err := newGORMStore(db, encryptionKey, injector)
 	if err != nil {
 		_ = sqlDB.Close()
 		return nil, err
@@ -123,8 +124,8 @@ func NewSQLiteStore(dsn, encryptionKey string) (*GORMStore, error) {
 // by the memory:// URI scheme and by tests; equivalent to
 // NewSQLiteStore(":memory:", ...). Production deployments should use a
 // sqlite: file URL or mysql:// instead.
-func NewMemoryStore() *GORMStore {
-	s, err := NewSQLiteStore(":memory:", strings.Repeat("0", 64))
+func NewMemoryStore(injector error_injection.Injector) *GORMStore {
+	s, err := NewSQLiteStore(":memory:", strings.Repeat("0", 64), injector)
 	if err != nil {
 		panic(fmt.Sprintf("failed to initialize in-memory sqlite store: %v", err))
 	}
@@ -137,16 +138,17 @@ func isSQLiteInMemoryDSN(dsn string) bool {
 
 // GORMStore implements Store for mysql/sqlite with shared logic.
 type GORMStore struct {
-	db     *gorm.DB
-	aesKey []byte
+	db       *gorm.DB
+	aesKey   []byte
+	injector error_injection.Injector
 }
 
-func newGORMStore(db *gorm.DB, encryptionKey string) (*GORMStore, error) {
+func newGORMStore(db *gorm.DB, encryptionKey string, injector error_injection.Injector) (*GORMStore, error) {
 	key, err := hex.DecodeString(encryptionKey)
 	if err != nil || len(key) != 32 {
 		return nil, fmt.Errorf("encryption key must be a 64-char hex string (32 bytes)")
 	}
-	return &GORMStore{db: db, aesKey: key}, nil
+	return &GORMStore{db: db, aesKey: key, injector: injector}, nil
 }
 
 func (s *GORMStore) RunMigrations() error {
@@ -242,6 +244,11 @@ func (s *GORMStore) DeleteDeployment(ctx context.Context, id string) error {
 }
 
 func (s *GORMStore) UpsertJob(ctx context.Context, rec *models.Job) error {
+	if s.injector != nil {
+		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_UPSERT_JOB); err != nil {
+			return err
+		}
+	}
 	if rec == nil || rec.ID == "" {
 		return status.Error(codes.InvalidArgument, "job id is required")
 	}
@@ -255,6 +262,11 @@ func (s *GORMStore) UpsertJob(ctx context.Context, rec *models.Job) error {
 }
 
 func (s *GORMStore) GetJob(ctx context.Context, id string) (*models.Job, error) {
+	if s.injector != nil {
+		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_GET_JOB); err != nil {
+			return nil, err
+		}
+	}
 	var rec models.Job
 	if err := s.db.WithContext(ctx).Where("deleted = ?", false).First(&rec, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -266,6 +278,11 @@ func (s *GORMStore) GetJob(ctx context.Context, id string) (*models.Job, error) 
 }
 
 func (s *GORMStore) ListJobs(ctx context.Context, ids []string) (map[string]*models.Job, error) {
+	if s.injector != nil {
+		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_LIST_JOBS); err != nil {
+			return nil, err
+		}
+	}
 	out := make(map[string]*models.Job, len(ids))
 	if len(ids) == 0 {
 		return out, nil
@@ -754,6 +771,11 @@ func (s *GORMStore) ListQuotas(ctx context.Context, search string) ([]*pb.Quota,
 }
 
 func (s *GORMStore) GetProvision(ctx context.Context, provisionId string) (*types.ProvisionResult, error) {
+	if s.injector != nil {
+		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_GET_PROVISION); err != nil {
+			return nil, err
+		}
+	}
 	var rec models.ProvisionResult
 	if err := s.db.WithContext(ctx).First(&rec, "provision_id = ? AND deleted = ?", provisionId, false).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -788,6 +810,11 @@ func (s *GORMStore) GetProvisionByIdempotencyKey(ctx context.Context, idempotenc
 }
 
 func (s *GORMStore) UpsertProvision(ctx context.Context, result *types.ProvisionResult) error {
+	if s.injector != nil {
+		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_UPSERT_PROVISION); err != nil {
+			return err
+		}
+	}
 	if result == nil {
 		return fmt.Errorf("provision result is required")
 	}
@@ -819,14 +846,14 @@ func (s *GORMStore) UpsertProvision(ctx context.Context, result *types.Provision
 }
 
 func (s *GORMStore) UpdateProvisionStatus(ctx context.Context, provisionId string, pstatus types.ProvisionStatus) error {
-	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("provision_id = ? AND deleted = ?", provisionId, false).Updates(map[string]interface{}{"status": string(pstatus), "updated_at": time.Now()}).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("provision_id = ? AND deleted = ?", provisionId, false).Updates(map[string]interface{}{"status": string(pstatus), "updated_at": time.Now().UTC()}).Error; err != nil {
 		return fmt.Errorf("failed to update provision result status: %w", err)
 	}
 	return nil
 }
 
 func (s *GORMStore) DeleteProvision(ctx context.Context, provisionId string) error {
-	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("provision_id = ?", provisionId).Updates(map[string]interface{}{"deleted": true, "updated_at": time.Now()}).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("provision_id = ?", provisionId).Updates(map[string]interface{}{"deleted": true, "updated_at": time.Now().UTC()}).Error; err != nil {
 		return fmt.Errorf("failed to delete provision result: %w", err)
 	}
 	return nil

@@ -48,6 +48,19 @@ class RunningJobs(Protocol):
         """
         ...
 
+    async def complete_job_request(
+        self, job_id: str, req_id: int, failed: bool = False
+    ) -> BatchJob:
+        """Mark one request completed.
+
+        Used by concurrent single-worker execution, where completions can arrive
+        out of order and no next-request cursor should be returned.
+
+        Raises:
+            JobUnexpectedStateError: If job is not in progress.
+        """
+        ...
+
     async def mark_job_progress_and_get_next_request(
         self, job_id: str, req_id: int
     ) -> Tuple[BatchJob, int]:

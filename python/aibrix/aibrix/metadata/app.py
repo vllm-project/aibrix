@@ -24,7 +24,6 @@ from fastapi.responses import JSONResponse
 from kubernetes import client as k8s_client
 from kubernetes import config
 
-from aibrix import envs
 from aibrix.batch import BatchDriver
 from aibrix.batch.client import (
     EndpointSource,
@@ -36,6 +35,7 @@ from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files, models, users
 from aibrix.metadata.core import HTTPXClientWrapper
 from aibrix.metadata.setting import settings
+from aibrix.metadata.store import RedisMetadataStore
 from aibrix.storage import create_storage
 
 logger = init_logger(__name__)
@@ -47,12 +47,6 @@ _LOG_HTTP_BODIES = os.getenv("AIBRIX_MDS_HTTP_BODY_LOG", "").lower() in (
     "true",
     "yes",
 )
-
-
-def _require_setting(name: str, value: Any) -> Any:
-    if value is None or value == "":
-        raise RuntimeError(f"{name} environment variable is required")
-    return value
 
 
 def _load_batch_k8s_context(
@@ -170,22 +164,12 @@ async def lifespan(app: FastAPI):
     # Initialize metadata store (abstraction over Redis) only if not already set
     # (e.g., tests may pre-configure a mock store before lifespan runs)
     if not hasattr(app.state, "metadata_store") or app.state.metadata_store is None:
-        from aibrix.metadata.store import RedisMetadataStore
-
-        redis_host = envs.STORAGE_REDIS_HOST or "localhost"
-        metadata_store = RedisMetadataStore(
-            host=redis_host,
-            port=envs.STORAGE_REDIS_PORT,
-            db=envs.STORAGE_REDIS_DB,
-            password=envs.STORAGE_REDIS_PASSWORD,
-        )
+        metadata_store = RedisMetadataStore()
         app.state.metadata_store = metadata_store
         # Backward compatibility: expose underlying Redis client for components
         # that haven't migrated to the MetadataStore interface yet
         app.state.redis_client = metadata_store.client
-        logger.info(
-            f"Metadata store initialized: {redis_host}:{envs.STORAGE_REDIS_PORT}"
-        )
+        logger.info("Metadata store initialized")
 
     if hasattr(app.state, "httpx_client_wrapper"):
         app.state.httpx_client_wrapper.start()

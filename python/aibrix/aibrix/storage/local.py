@@ -16,7 +16,7 @@ import asyncio
 import hashlib
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
@@ -173,8 +173,12 @@ class LocalStorage(BaseStorage):
         """Store metadata for an object."""
         metadata_path = self._get_metadata_path(key)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        created_at = await asyncio.get_event_loop().run_in_executor(
+            None, self._get_or_create_metadata_created_at, metadata_path
+        )
 
         metadata_data = {
+            "created_at": created_at,
             "content_type": content_type,
             "metadata": metadata or {},
             "content_length": content_length,
@@ -268,6 +272,7 @@ class LocalStorage(BaseStorage):
         delimiter: Optional[str] = None,
         limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
+        after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
         """List objects with given prefix.
 
@@ -280,6 +285,7 @@ class LocalStorage(BaseStorage):
         for keys that were stored without an extension.
         """
         _METADATA_SUFFIX = ".metadata"
+        _BATCH_JOB_PREFIX = "batchjob:"
 
         def _list_files():
             # Parse continuation token as offset (default to 0)
@@ -297,7 +303,9 @@ class LocalStorage(BaseStorage):
             # a partial prefix such as ``batchjob:`` (directory descent missed
             # them, returning nothing for any non-directory prefix).
             entries: list[str] = []
+            batch_job_entries: list[tuple[str, Optional[datetime]]] = []
             seen: set[str] = set()
+            batch_job_ordering = delimiter is None and prefix == _BATCH_JOB_PREFIX
             for item in self.base_path.rglob("*" + _METADATA_SUFFIX):
                 if not item.is_file():
                     continue
@@ -318,10 +326,31 @@ class LocalStorage(BaseStorage):
                     entry = key
                 if entry not in seen:
                     seen.add(entry)
-                    entries.append(entry)
+                    if batch_job_ordering:
+                        batch_job_entries.append(
+                            (entry, self._read_metadata_created_at(item))
+                        )
+                    else:
+                        entries.append(entry)
 
-            # Sort for consistent pagination
-            entries.sort()
+            if batch_job_ordering:
+                batch_job_entries.sort(key=lambda entry: entry[0])
+                batch_job_entries.sort(
+                    key=lambda entry: (
+                        entry[1].timestamp() if entry[1] is not None else float("-inf")
+                    ),
+                    reverse=True,
+                )
+                entries = [entry for entry, _ in batch_job_entries]
+            else:
+                # Sort for consistent pagination
+                entries.sort()
+
+            if continuation_token is None and after_key:
+                try:
+                    offset = entries.index(after_key) + 1
+                except ValueError:
+                    return [], None
 
             # Apply pagination
             remaining = entries[offset:] if offset > 0 else entries
@@ -333,6 +362,30 @@ class LocalStorage(BaseStorage):
             return paginated, next_token
 
         return await asyncio.get_event_loop().run_in_executor(None, _list_files)
+
+    def _get_or_create_metadata_created_at(self, metadata_path: Path) -> str:
+        if metadata_path.exists():
+            try:
+                metadata_data = self._read_json_file(metadata_path)
+                created_at = metadata_data.get("created_at")
+                if isinstance(created_at, str) and created_at:
+                    return created_at
+            except Exception:
+                pass
+        return datetime.now(timezone.utc).isoformat()
+
+    def _read_metadata_created_at(self, metadata_path: Path) -> Optional[datetime]:
+        try:
+            metadata_data = self._read_json_file(metadata_path)
+        except Exception:
+            return None
+        created_at = metadata_data.get("created_at")
+        if not isinstance(created_at, str) or not created_at:
+            return None
+        try:
+            return datetime.fromisoformat(created_at)
+        except ValueError:
+            return None
 
     async def object_exists(self, key: str) -> bool:
         """Check if object exists."""

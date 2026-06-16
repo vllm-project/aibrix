@@ -30,20 +30,20 @@ jobs:
             file: development/app/Dockerfile
             context: development/app
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
         with:
           submodules: 'true'
       - name: Login to DockerHub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
       - name: Build and push ${{ matrix.component.name }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           platforms: linux/amd64,linux/arm64
           context: ${{ matrix.component.context || '.' }}
@@ -75,21 +75,21 @@ jobs:
             file: development/app/Dockerfile
             context: development/app
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
         with:
           submodules: 'true'
       - name: Login to Github Container registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.AIBRIX_ORG_PACKAGE_UPDATE_GITHUB_TOKEN }}
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
       - name: Build and push ${{ matrix.component.name }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           platforms: linux/amd64,linux/arm64
           context: ${{ matrix.component.context || '.' }}
@@ -102,13 +102,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.12"]
     name: publish
     steps:
       - name: Check out source repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Set up Python environment ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install poetry and prepare build dependencies
@@ -122,7 +122,7 @@ jobs:
           POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_TOKEN }}
         run: |
           pushd python/aibrix
-          poetry publish --build
+          poetry publish --build --skip-existing
           popd
       - name: Add package to release artifact
         run: |
@@ -131,7 +131,7 @@ jobs:
           ls -al dist/*
           popd
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: aibrix-python-packages-${{ matrix.python-version }}
           path: |
@@ -154,9 +154,9 @@ jobs:
         with:
           tool-cache: false
       - name: Check out source repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Set up Python environment ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
@@ -176,7 +176,7 @@ jobs:
           password: ${{ secrets.PYPI_TOKEN }}
           packages-dir: python/aibrix_kvcache/dist
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: aibrix-kvcache-python-packages
           path: |
@@ -187,13 +187,15 @@ jobs:
     steps:
       # Checkout the repository
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
 
       # Install Kustomize
       - name: Install Kustomize
         run: |
-          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
-          mv kustomize /usr/local/bin/
+          KUSTOMIZE_VERSION=v5.4.3
+          curl -L "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" | tar -xz
+          sudo mv kustomize /usr/local/bin/
+          kustomize version
 
       # Build Kustomize package
       - name: Build Kustomize
@@ -204,19 +206,19 @@ jobs:
 
       # Upload the Kustomize YAML as a release artifact
       - name: Upload Kustomize YAML
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: aibrix-dependency-${{ github.ref_name }}.yaml
           path: aibrix-dependency-${{ github.ref_name }}.yaml
 
       - name: Upload Kustomize YAML
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: aibrix-core-crds-${{ github.ref_name }}.yaml
           path: aibrix-core-crds-${{ github.ref_name }}.yaml
 
       - name: Upload Kustomize YAML
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: aibrix-core-${{ github.ref_name }}.yaml
           path: aibrix-core-${{ github.ref_name }}.yaml
@@ -224,25 +226,23 @@ jobs:
   cut-github-release:
     runs-on: ubuntu-latest
     needs: [python-wheel-release, artifact-release]
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
 
       # Download the Kustomize artifact from the previous job
       - name: Download Kustomize YAML
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: aibrix-dependency-${{ github.ref_name }}.yaml
 
       - name: Download Kustomize YAML
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: aibrix-core-crds-${{ github.ref_name }}.yaml
 
       - name: Download Kustomize YAML
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: aibrix-core-${{ github.ref_name }}.yaml
 
@@ -260,7 +260,7 @@ jobs:
           fi
 
       - name: Create Draft Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

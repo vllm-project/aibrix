@@ -1,4 +1,4 @@
-.. _gateway:
+.. _deploying-gateway:
 
 ===================
 Deploying Gateway
@@ -57,11 +57,19 @@ Enabling Redis for Multi-Replica Deployments
 
 When running more than one gateway plugin replica, shared state is required so that all
 instances agree on routing decisions (e.g. prefix-cache block assignments, rate-limit counters).
-The gateway plugin reads the ``REDIS_HOST`` environment variable at startup to connect to a
-Redis instance. If the variable is unset or Redis is unreachable, each replica operates with
-in-process state only, which causes inconsistent routing across pods.
+Two settings must both be configured:
 
-Enable Redis by pointing the gateway plugin at the bundled Redis instance:
+1. **Connect to Redis** — the gateway plugin reads the ``REDIS_HOST`` environment variable at
+   startup. If the variable is unset or Redis is unreachable, each replica operates with
+   in-process state only, which causes inconsistent routing across pods.
+
+2. **Enable cross-replica state sync** — setting ``AIBRIX_STATESYNC_ENABLED=true`` activates
+   the Redis-backed delta-sync mechanism that propagates prefix-cache state across replicas.
+   Without this flag, the gateway connects to Redis for other purposes (e.g. rate limiting)
+   but **does not** synchronize prefix-cache routing state between pods, so multi-replica
+   ``prefix-cache`` routing will still produce inconsistent decisions.
+
+Enable both by updating your ``values.yaml`` override:
 
 .. code-block:: yaml
 
@@ -70,10 +78,18 @@ Enable Redis by pointing the gateway plugin at the bundled Redis instance:
         redis:
           host: ""   # leave empty to use the chart-managed Redis (aibrix-redis-master)
           port: 6379
+      container:
+        envs:
+          AIBRIX_STATESYNC_ENABLED: "true"
 
 The Helm chart sets ``REDIS_HOST`` automatically from ``gatewayPlugin.dependencies.redis.host``,
 defaulting to ``<release-name>-redis-master`` when the field is empty. For an external Redis
 cluster, set ``host`` to the service hostname or IP of your Redis endpoint.
+
+.. note::
+    ``AIBRIX_STATESYNC_ENABLED`` defaults to ``false``. It must be explicitly set to ``true``
+    for cross-replica state sync to activate. Omitting this flag is the most common cause of
+    inconsistent ``prefix-cache`` routing when scaling the gateway plugin beyond one replica.
 
 Sizing Redis
 ~~~~~~~~~~~~

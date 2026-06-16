@@ -70,3 +70,8 @@ class BatchRegistry:
         jobs.extend(self._in_progress.values())
         jobs.extend(self._done.values())
         return jobs
+
+    def reset_runtime_state(self) -> None:
+        self._pending.clear()
+        self._in_progress.clear()
+        self._done.clear()

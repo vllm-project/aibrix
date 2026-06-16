@@ -124,11 +124,11 @@ def create_storage(
         password = kwargs.get("password") or envs.STORAGE_REDIS_PASSWORD
 
         return RedisStorage(
+            config=config,
             host=host,
             port=port,
             db=db,
             password=password,
-            config=config,
         )
 
     else:

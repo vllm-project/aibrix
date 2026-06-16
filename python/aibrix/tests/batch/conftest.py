@@ -214,7 +214,7 @@ def s3_credentials_secret(
 def job_rbac(k8s_config, test_namespace):
     """
     Session-scoped fixture to set up RBAC resources for job testing.
-    This ensures that tests using create_test_app with enable_k8s_job=True
+    This ensures that tests using create_test_app with enable_k8s_support=True
     have the necessary service accounts and permissions.
     Returns the service account name for use in job creation.
     """
@@ -303,21 +303,18 @@ def job_rbac(k8s_config, test_namespace):
 def ensure_job_rbac(job_rbac):
     """
     Function-scoped fixture that ensures RBAC resources are available for tests.
-    Use this fixture in tests that depend on create_test_app with enable_k8s_job=True.
+    Use this fixture in tests that depend on create_test_app with enable_k8s_support=True.
     Returns the service account name for use in job creation.
     """
     return job_rbac
 
 
 def create_test_app(
-    enable_k8s_job: bool = False,
-    enable_redis_job: bool = False,
-    enable_mongo_job: bool = False,
     enable_k8s_support: bool = True,
     storage_type: StorageType = StorageType.LOCAL,
     metastore_type: StorageType = StorageType.LOCAL,
     params: Optional[Dict[str, Any]] = None,
-    dry_run: Optional[bool] = None,
+    dry_run: bool = False,
 ):
     """Create a FastAPI app configured for e2e testing.
 
@@ -328,8 +325,6 @@ def create_test_app(
     """
     if params is None:
         params = {}
-    if dry_run is None:
-        dry_run = not (enable_k8s_job or enable_redis_job or enable_mongo_job)
 
     # Save old settings
     oldStorage, oldMetaStore = settings.STORAGE_TYPE, settings.METASTORE_TYPE
@@ -442,7 +437,7 @@ def test_app(
     )
     monkeypatch.setenv("WORKER_REDIS_PORT", os.environ.get("REDIS_PORT", "6379"))
     return create_test_app(
-        enable_k8s_job=True,
+        enable_k8s_support=True,
         storage_type=StorageType.S3,
         metastore_type=StorageType.REDIS,
         params={"bucket_name": test_s3_bucket},

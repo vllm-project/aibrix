@@ -253,7 +253,7 @@ def _warn_deferred_profile_fields(p: BatchProfile) -> List[str]:
     if sched.retry_policy is not None:
         warnings.append(
             "scheduling.retry_policy is accepted but not yet honored "
-            "(smart-client retry is not yet implemented)"
+            "(the smart client uses its built-in retry defaults today)"
         )
 
     return warnings

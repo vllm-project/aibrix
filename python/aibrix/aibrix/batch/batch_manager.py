@@ -150,6 +150,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
 
         self._creation_timeouts: Dict[str, asyncio.Task] = {}
         self._session_metadata: Dict[str, Dict[str, Any]] = {}
+        self._pending_deleted_jobs: set[str] = set()
 
     # The three pools live in the BatchRegistry; these proxies keep the existing
     # by-pool access (orchestration logic + tests) working unchanged while the
@@ -193,6 +194,12 @@ class BatchManager(RunningJobs, SchedulableJobs):
             self.job_updated_handler,
             self.job_deleted_handler,
         )
+
+    def reset_runtime_state(self) -> None:
+        self._registry.reset_runtime_state()
+        self._pending_deleted_jobs.clear()
+        self._creation_timeouts.clear()
+        self._session_metadata.clear()
 
     async def create_job(
         self,
@@ -583,24 +590,37 @@ class BatchManager(RunningJobs, SchedulableJobs):
         job = await self.get_job(job_id)
         return job.status if job else None
 
-    async def list_jobs(self) -> List[BatchJob]:
+    async def list_jobs(
+        self,
+        after: Optional[str] = None,
+        limit: int = JobEntityManager.DEFAULT_JOB_PAGE_LIMIT,
+    ) -> List[BatchJob]:
         """List all jobs."""
-        # [TODO][NEXT Load all jobs from persistent store
-        all_jobs: Optional[List[BatchJob]] = None
         if self._job_entity_manager:
-            all_jobs = await self._job_entity_manager.list_jobs()
-        else:
-            # Collect jobs from all states
-            all_jobs = []
-            all_jobs.extend(self._pending_jobs.values())
-            all_jobs.extend(self._in_progress_jobs.values())
-            all_jobs.extend(self._done_jobs.values())
+            return await self._job_entity_manager.list_jobs(after=after, limit=limit)
+
+        # Collect jobs from all states
+        all_jobs: List[BatchJob] = []
+        all_jobs.extend(self._pending_jobs.values())
+        all_jobs.extend(self._in_progress_jobs.values())
+        all_jobs.extend(self._done_jobs.values())
 
         # Sort by creation time (newest first)
         assert all_jobs is not None
         all_jobs.sort(key=lambda job: job.status.created_at, reverse=True)
-
-        return all_jobs
+        if after:
+            after_index = next(
+                (
+                    index
+                    for index, job in enumerate(all_jobs)
+                    if job.job_id == after or job.status.job_id == after
+                ),
+                -1,
+            )
+            if after_index < 0:
+                return []
+            all_jobs = all_jobs[after_index + 1 :]
+        return all_jobs[:limit]
 
     async def admit(self, job_id: str) -> Optional[JobDriver]:
         """Admit a pending job: validate it, promote pending -> in-progress, and
@@ -732,6 +752,17 @@ class BatchManager(RunningJobs, SchedulableJobs):
         meta_data = await self._meta_from_in_progress_job(job_id)
         return meta_data, meta_data.next_request_id()
 
+    async def complete_job_request(
+        self, job_id: str, req_id: int, failed: bool = False
+    ) -> BatchJob:
+        """Mark a request completed without advancing the serial cursor."""
+        meta_data = await self._meta_from_in_progress_job(job_id)
+        async with meta_data._async_lock:
+            if req_id < 0 or req_id >= meta_data.status.request_counts.total:
+                raise ValueError(f"invalid request_id: {req_id}")
+            meta_data.complete_one_request(req_id, failed=failed)
+            return meta_data
+
     async def mark_job_progress_and_get_next_request(
         self, job_id: str, req_id: int
     ) -> Tuple[BatchJob, int]:
@@ -835,11 +866,16 @@ class BatchManager(RunningJobs, SchedulableJobs):
             )
         )
         job.status.errors = [ex]
-        has_partial_output = (
-            meta_data.status.temp_output_file_id is not None
+        has_any_output_artifact_prepared = (
+            meta_data.status.output_file_id is not None
+            or meta_data.status.error_file_id is not None
+            or meta_data.status.temp_output_file_id is not None
             or meta_data.status.temp_error_file_id is not None
         )
-        if meta_data.status.state == BatchJobState.IN_PROGRESS and has_partial_output:
+        if (
+            meta_data.status.state == BatchJobState.IN_PROGRESS
+            and has_any_output_artifact_prepared
+        ):
             job.status.finalizing_at = datetime.now(timezone.utc)
             job.status.state = BatchJobState.FINALIZING
         else:

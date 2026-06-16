@@ -109,6 +109,10 @@ type MetricCache interface {
 }
 
 // RequestTracker defines operations for track workload statistics
+//
+// Contract: ctx may be nil (e.g. a request cancelled before routing completes).
+// The registry passes ctx through to every tracker unfiltered, so all
+// implementations MUST guard against a nil ctx (and a cancelled ctx.Context).
 type RequestTracker interface {
 	// AddRequestCount tracks the start of a request after routing.
 	// To support realtime statistics update and access, AddRequestCount can be called multiple times for a request.

@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
-	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -36,9 +35,6 @@ import (
 )
 
 func Test_PrefixCacheE2E(t *testing.T) {
-	// Ensure metrics are not enabled
-	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "false")
-
 	readyPods := getReadyPods()
 	c := cache.NewWithPodsMetricsForTest(
 		readyPods,
@@ -217,9 +213,6 @@ func getReadyPods() []*v1.Pod {
 }
 
 func TestPrefixCache_ScoreAll(t *testing.T) {
-	// Ensure metrics are not enabled
-	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "false")
-
 	readyPods := getReadyPods()
 	c := cache.NewWithPodsMetricsForTest(
 		readyPods,

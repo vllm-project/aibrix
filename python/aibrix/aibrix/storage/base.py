@@ -202,6 +202,7 @@ class BaseStorage(ABC):
         delimiter: Optional[str] = None,
         limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
+        after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
         """List objects with given prefix using token-based pagination.
 
@@ -210,6 +211,8 @@ class BaseStorage(ABC):
             delimiter: Delimiter for hierarchical listing
             limit: Maximum number of objects to return (None for no limit)
             continuation_token: Token to continue from previous pagination call
+            after_key: Key from the previous page to translate into a backend
+                continuation position when continuation_token is not provided
 
         Returns:
             Tuple of (object_keys, next_continuation_token)

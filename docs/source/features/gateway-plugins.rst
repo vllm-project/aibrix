@@ -440,6 +440,7 @@ Collect logs from the Envoy proxy and the gateway plugin for deeper investigatio
     kubectl logs aibrix-gateway-plugins-6bd9fcd5b9-2bwpr -n aibrix-system
 
 .. _observability_telemetry:
+
 Observability & Telemetry
 -------------------------
 

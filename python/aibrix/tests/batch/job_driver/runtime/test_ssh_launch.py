@@ -202,7 +202,7 @@ async def test_provision_retries_ssh_connect(monkeypatch):
     handle = await rt._provision(Job(), "job_1")
     assert handle.conn is fake_conn
     assert connect.await_count == 2
-    assert connect.await_args.kwargs["timeout"] == 15.0
+    assert "timeout" not in connect.await_args.kwargs
 
 
 def test_runpod_runtime_is_ssh_launch():
