@@ -32,7 +32,7 @@ func TestCheckPoint_PerJobConfig(t *testing.T) {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeTimeout: {
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "timeout error in {{.component}}",
 				Placeholders:    map[string]string{"component": "test"},
 			},
@@ -121,8 +121,8 @@ func TestCheckPoint_PerJobConfig(t *testing.T) {
 		if injectedErr.Type != ErrorTypeTimeout {
 			t.Errorf("InjectedError.Type = %v, want %v", injectedErr.Type, ErrorTypeTimeout)
 		}
-		if injectedErr.Code != "DEADLINE_EXCEEDED" {
-			t.Errorf("InjectedError.Code = %v, want %v", injectedErr.Code, "DEADLINE_EXCEEDED")
+		if injectedErr.Code != CodeDeadlineExceeded {
+			t.Errorf("InjectedError.Code = %v, want %v", injectedErr.Code, CodeDeadlineExceeded)
 		}
 	})
 
@@ -173,7 +173,7 @@ func TestCheckPoint_GlobalConfig(t *testing.T) {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "service unavailable",
 			},
 		},
@@ -197,7 +197,9 @@ func TestCheckPoint_GlobalConfig(t *testing.T) {
 
 	// CheckPoint should use global config
 	inj, _ := NewInjector()
-	inj.SetGlobalConfig(globalCfg)
+	if err := inj.SetGlobalConfig(globalCfg); err != nil {
+		t.Fatalf("SetGlobalConfig() error: %v", err)
+	}
 	err := inj.CheckPoint(ctx, "test.global")
 	if err == nil {
 		t.Errorf("CheckPoint() expected error from global config, got nil")
@@ -226,12 +228,12 @@ func TestCheckPoint_Priority(t *testing.T) {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeTimeout: {
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "timeout error",
 			},
 			ErrorTypeInternal: {
 				Type:            ErrorTypeInternal,
-				Code:            "INTERNAL",
+				Code:            CodeInternal,
 				MessageTemplate: "internal error",
 			},
 		},
@@ -266,7 +268,9 @@ func TestCheckPoint_Priority(t *testing.T) {
 
 	// CheckPoint should use per-job config (timeout), not global (internal)
 	inj, _ := NewInjector()
-	inj.SetGlobalConfig(globalCfg)
+	if err := inj.SetGlobalConfig(globalCfg); err != nil {
+		t.Fatalf("SetGlobalConfig() error: %v", err)
+	}
 	err := inj.CheckPoint(ctx, "test.priority")
 	if err == nil {
 		t.Errorf("CheckPoint() expected error, got nil")
@@ -372,7 +376,7 @@ func TestRenderTemplate(t *testing.T) {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeTimeout: {
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "timeout after {{.duration}}ms in {{.operation}}",
 				Placeholders: map[string]string{
 					"duration":   "5000",
@@ -403,8 +407,8 @@ func TestRenderTemplate(t *testing.T) {
 				if err.Type != ErrorTypeTimeout {
 					t.Errorf("InjectedError.Type = %v, want %v", err.Type, ErrorTypeTimeout)
 				}
-				if err.Code != "DEADLINE_EXCEEDED" {
-					t.Errorf("InjectedError.Code = %v, want %v", err.Code, "DEADLINE_EXCEEDED")
+				if err.Code != CodeDeadlineExceeded {
+					t.Errorf("InjectedError.Code = %v, want %v", err.Code, CodeDeadlineExceeded)
 				}
 				// Should use default placeholders
 				expectedMsg := "timeout after 5000ms in default_op"
@@ -448,8 +452,8 @@ func TestRenderTemplate(t *testing.T) {
 					t.Errorf("InjectedError.Type = %v, want %v", err.Type, ErrorTypeInternal)
 				}
 				// Should use default code
-				if err.Code != "INTERNAL" {
-					t.Errorf("InjectedError.Code = %v, want %v", err.Code, "INTERNAL")
+				if err.Code != CodeInternal {
+					t.Errorf("InjectedError.Code = %v, want %v", err.Code, CodeInternal)
 				}
 			},
 		},
@@ -503,7 +507,7 @@ func TestCheckPoint_ExcludedPoints(t *testing.T) {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeTimeout: {
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "timeout error",
 			},
 		},
@@ -566,7 +570,7 @@ func TestCheckPoint_WildcardPattern(t *testing.T) {
 			Templates: map[ErrorType]*InjectionTemplate{
 				ErrorTypeTimeout: {
 					Type:            ErrorTypeTimeout,
-					Code:            "DEADLINE_EXCEEDED",
+					Code:            CodeDeadlineExceeded,
 					MessageTemplate: "timeout error",
 				},
 			},
@@ -591,7 +595,9 @@ func TestCheckPoint_WildcardPattern(t *testing.T) {
 			point := createPoint(id)
 			DefaultRegistry[point.ID] = point
 		}
-		inj.SetGlobalConfig(globalCfg)
+		if err := inj.SetGlobalConfig(globalCfg); err != nil {
+			t.Fatalf("SetGlobalConfig() error: %v", err)
+		}
 
 		err := inj.CheckPoint(context.Background(), "wildcard.test1")
 		if err == nil {
@@ -617,7 +623,9 @@ func TestCheckPoint_WildcardPattern(t *testing.T) {
 			point := createPoint(id)
 			DefaultRegistry[point.ID] = point
 		}
-		inj.SetGlobalConfig(globalCfg)
+		if err := inj.SetGlobalConfig(globalCfg); err != nil {
+			t.Fatalf("SetGlobalConfig() error: %v", err)
+		}
 
 		for _, id := range pointIDs {
 			err := inj.CheckPoint(context.Background(), id)
@@ -644,7 +652,7 @@ func TestCheckPoint_CrashInjection(t *testing.T) {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeCrash: {
 				Type:            ErrorTypeCrash,
-				Code:            "CRASH",
+				Code:            CodeCrash,
 				MessageTemplate: "simulating crash at {{.point}}",
 				Placeholders:    map[string]string{"point": "test.crash"},
 			},
@@ -672,7 +680,8 @@ func TestCheckPoint_CrashInjection(t *testing.T) {
 		}
 	}()
 
-	injector.CheckPoint(ctx, "test.crash")
+	// This will panic, error return is intentionally ignored
+	_ = injector.CheckPoint(ctx, "test.crash")
 }
 
 // TestListPoints tests the ListPoints method.

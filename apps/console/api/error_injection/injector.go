@@ -29,6 +29,19 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// Default gRPC/HTTP error codes for error types.
+const (
+	CodeDeadlineExceeded  = "DEADLINE_EXCEEDED"
+	CodeUnavailable       = "UNAVAILABLE"
+	CodeInvalidArgument   = "INVALID_ARGUMENT"
+	CodeNotFound          = "NOT_FOUND"
+	CodePermissionDenied  = "PERMISSION_DENIED"
+	CodeResourceExhausted = "RESOURCE_EXHAUSTED"
+	CodeInternal          = "INTERNAL"
+	CodeCrash             = "CRASH"
+	CodeUnknown           = "UNKNOWN"
+)
+
 // Sentinel errors for the injector.
 var (
 	// ErrInjectorDisabled is returned when the injector is disabled.
@@ -319,23 +332,23 @@ func (i *InjectorImpl) RenderTemplate(pointID string, errorType ErrorType, overr
 func getDefaultCode(errorType ErrorType) string {
 	switch errorType {
 	case ErrorTypeTimeout:
-		return "DEADLINE_EXCEEDED"
+		return CodeDeadlineExceeded
 	case ErrorTypeUnavailable:
-		return "UNAVAILABLE"
+		return CodeUnavailable
 	case ErrorTypeInvalidArgument:
-		return "INVALID_ARGUMENT"
+		return CodeInvalidArgument
 	case ErrorTypeNotFound:
-		return "NOT_FOUND"
+		return CodeNotFound
 	case ErrorTypePermissionDenied:
-		return "PERMISSION_DENIED"
+		return CodePermissionDenied
 	case ErrorTypeResourceExhausted:
-		return "RESOURCE_EXHAUSTED"
+		return CodeResourceExhausted
 	case ErrorTypeInternal:
-		return "INTERNAL"
+		return CodeInternal
 	case ErrorTypeCrash:
-		return "CRASH"
+		return CodeCrash
 	default:
-		return "UNKNOWN"
+		return CodeUnknown
 	}
 }
 

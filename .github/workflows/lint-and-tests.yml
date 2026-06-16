@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/**'
       - 'pkg/**'
+      - 'apps/**'
       - 'test/**'
       - 'cmd/**'
       - 'api/**'
@@ -19,6 +20,7 @@ on:
     paths:
       - '.github/workflows/**'
       - 'pkg/**'
+      - 'apps/**'
       - 'test/**'
       - 'cmd/**'
       - 'api/**'
