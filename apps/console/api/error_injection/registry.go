@@ -50,19 +50,19 @@ func registerConsoleInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeInvalidArgument: {
 				Type:            ErrorTypeInvalidArgument,
-				Code:            "INVALID_ARGUMENT",
+				Code:            CodeInvalidArgument,
 				MessageTemplate: "invalid job spec: {{.reason}}",
 				Placeholders:    map[string]string{"reason": "missing required field"},
 			},
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "job service unavailable: {{.service}}",
 				Placeholders:    map[string]string{"service": "job_handler"},
 			},
 			ErrorTypePermissionDenied: {
 				Type:            ErrorTypePermissionDenied,
-				Code:            "PERMISSION_DENIED",
+				Code:            CodePermissionDenied,
 				MessageTemplate: "permission denied: {{.action}} on {{.resource}}",
 				Placeholders:    map[string]string{"action": "create", "resource": "job"},
 			},
@@ -78,13 +78,13 @@ func registerConsoleInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeNotFound: {
 				Type:            ErrorTypeNotFound,
-				Code:            "NOT_FOUND",
+				Code:            CodeNotFound,
 				MessageTemplate: "job {{.job_id}} not found",
 				Placeholders:    map[string]string{"job_id": "test-job-123"},
 			},
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "job service unavailable: {{.service}}",
 				Placeholders:    map[string]string{"service": "job_handler"},
 			},
@@ -100,19 +100,19 @@ func registerConsoleInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeNotFound: {
 				Type:            ErrorTypeNotFound,
-				Code:            "NOT_FOUND",
+				Code:            CodeNotFound,
 				MessageTemplate: "job {{.job_id}} not found",
 				Placeholders:    map[string]string{"job_id": "test-job-123"},
 			},
 			ErrorTypePermissionDenied: {
 				Type:            ErrorTypePermissionDenied,
-				Code:            "PERMISSION_DENIED",
+				Code:            CodePermissionDenied,
 				MessageTemplate: "permission denied: {{.action}} on {{.resource}}",
 				Placeholders:    map[string]string{"action": "cancel", "resource": "job"},
 			},
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "job service unavailable: {{.service}}",
 				Placeholders:    map[string]string{"service": "job_handler"},
 			},
@@ -128,7 +128,7 @@ func registerConsoleInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "job service unavailable: {{.service}}",
 				Placeholders:    map[string]string{"service": "job_handler"},
 			},
@@ -144,13 +144,13 @@ func registerConsoleInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeInvalidArgument: {
 				Type:            ErrorTypeInvalidArgument,
-				Code:            "INVALID_ARGUMENT",
+				Code:            CodeInvalidArgument,
 				MessageTemplate: "invalid file: {{.reason}}",
 				Placeholders:    map[string]string{"reason": "file size exceeds limit"},
 			},
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "storage service unavailable: {{.service}}",
 				Placeholders:    map[string]string{"service": "file_storage"},
 			},
@@ -166,13 +166,13 @@ func registerConsoleInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeNotFound: {
 				Type:            ErrorTypeNotFound,
-				Code:            "NOT_FOUND",
+				Code:            CodeNotFound,
 				MessageTemplate: "file {{.file_id}} not found",
 				Placeholders:    map[string]string{"file_id": "test-file-123"},
 			},
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "storage service unavailable: {{.service}}",
 				Placeholders:    map[string]string{"service": "file_storage"},
 			},
@@ -191,19 +191,19 @@ func registerPlannerInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeInvalidArgument: {
 				Type:            ErrorTypeInvalidArgument,
-				Code:            "INVALID_ARGUMENT",
+				Code:            CodeInvalidArgument,
 				MessageTemplate: "invalid job request: {{.reason}}",
 				Placeholders:    map[string]string{"reason": "missing job spec"},
 			},
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "planner queue unavailable: {{.queue}}",
 				Placeholders:    map[string]string{"queue": "planning_queue"},
 			},
 			ErrorTypeCrash: {
 				Type:            ErrorTypeCrash,
-				Code:            "CRASH",
+				Code:            CodeCrash,
 				MessageTemplate: "simulated crash at {{.point}}",
 				Placeholders:    map[string]string{"point": "planner.enqueue"},
 			},
@@ -219,13 +219,13 @@ func registerPlannerInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeInternal: {
 				Type:            ErrorTypeInternal,
-				Code:            "INTERNAL",
+				Code:            CodeInternal,
 				MessageTemplate: "planning failed: {{.reason}}",
 				Placeholders:    map[string]string{"reason": "internal planning error"},
 			},
 			ErrorTypeResourceExhausted: {
 				Type:            ErrorTypeResourceExhausted,
-				Code:            "RESOURCE_EXHAUSTED",
+				Code:            CodeResourceExhausted,
 				MessageTemplate: "resource exhausted: {{.resource}}",
 				Placeholders:    map[string]string{"resource": "gpu_memory"},
 			},
@@ -241,13 +241,13 @@ func registerPlannerInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "batch client unavailable: {{.client}}",
 				Placeholders:    map[string]string{"client": "batch_client"},
 			},
 			ErrorTypeInvalidArgument: {
 				Type:            ErrorTypeInvalidArgument,
-				Code:            "INVALID_ARGUMENT",
+				Code:            CodeInvalidArgument,
 				MessageTemplate: "invalid batch request: {{.reason}}",
 				Placeholders:    map[string]string{"reason": "invalid job spec"},
 			},
@@ -263,13 +263,13 @@ func registerPlannerInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeNotFound: {
 				Type:            ErrorTypeNotFound,
-				Code:            "NOT_FOUND",
+				Code:            CodeNotFound,
 				MessageTemplate: "planned job {{.job_id}} not found",
 				Placeholders:    map[string]string{"job_id": "test-job-123"},
 			},
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "planner unavailable: {{.component}}",
 				Placeholders:    map[string]string{"component": "planner"},
 			},
@@ -285,7 +285,7 @@ func registerPlannerInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "store unavailable: {{.store}}",
 				Placeholders:    map[string]string{"store": "job_store"},
 			},
@@ -301,19 +301,19 @@ func registerPlannerInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "store unavailable during recovery: {{.store}}",
 				Placeholders:    map[string]string{"store": "job_store"},
 			},
 			ErrorTypeInternal: {
 				Type:            ErrorTypeInternal,
-				Code:            "INTERNAL",
+				Code:            CodeInternal,
 				MessageTemplate: "recovery failed: {{.reason}}",
 				Placeholders:    map[string]string{"reason": "inconsistent state"},
 			},
 			ErrorTypeCrash: {
 				Type:            ErrorTypeCrash,
-				Code:            "CRASH",
+				Code:            CodeCrash,
 				MessageTemplate: "simulated crash at {{.point}}",
 				Placeholders:    map[string]string{"point": "planner.recover"},
 			},
@@ -332,25 +332,25 @@ func registerResourceManagerInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "resource manager unavailable: {{.component}}",
 				Placeholders:    map[string]string{"component": "provisioner"},
 			},
 			ErrorTypeResourceExhausted: {
 				Type:            ErrorTypeResourceExhausted,
-				Code:            "RESOURCE_EXHAUSTED",
+				Code:            CodeResourceExhausted,
 				MessageTemplate: "no available resources: {{.resource_type}}",
 				Placeholders:    map[string]string{"resource_type": "gpu"},
 			},
 			ErrorTypeTimeout: {
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "provisioning timeout after {{.duration}}",
 				Placeholders:    map[string]string{"duration": "10m"},
 			},
 			ErrorTypeCrash: {
 				Type:            ErrorTypeCrash,
-				Code:            "CRASH",
+				Code:            CodeCrash,
 				MessageTemplate: "simulated crash at {{.point}}",
 				Placeholders:    map[string]string{"point": "rm.provision"},
 			},
@@ -366,13 +366,13 @@ func registerResourceManagerInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeNotFound: {
 				Type:            ErrorTypeNotFound,
-				Code:            "NOT_FOUND",
+				Code:            CodeNotFound,
 				MessageTemplate: "provision {{.provision_id}} not found",
 				Placeholders:    map[string]string{"provision_id": "prov-123"},
 			},
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "resource manager unavailable: {{.component}}",
 				Placeholders:    map[string]string{"component": "status_checker"},
 			},
@@ -388,19 +388,19 @@ func registerResourceManagerInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "resource manager unavailable: {{.component}}",
 				Placeholders:    map[string]string{"component": "releaser"},
 			},
 			ErrorTypeTimeout: {
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "release timeout after {{.duration}}",
 				Placeholders:    map[string]string{"duration": "30s"},
 			},
 			ErrorTypeCrash: {
 				Type:            ErrorTypeCrash,
-				Code:            "CRASH",
+				Code:            CodeCrash,
 				MessageTemplate: "simulated crash at {{.point}}",
 				Placeholders:    map[string]string{"point": "rm.release"},
 			},
@@ -416,13 +416,13 @@ func registerResourceManagerInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeNotFound: {
 				Type:            ErrorTypeNotFound,
-				Code:            "NOT_FOUND",
+				Code:            CodeNotFound,
 				MessageTemplate: "resource {{.resource_name}} not found in catalog",
 				Placeholders:    map[string]string{"resource_name": "gpu-a100"},
 			},
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "catalog unavailable: {{.catalog}}",
 				Placeholders:    map[string]string{"catalog": "resource_catalog"},
 			},
@@ -441,19 +441,19 @@ func registerBatchClientInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "batch service unavailable: {{.service}}",
 				Placeholders:    map[string]string{"service": "batch_api"},
 			},
 			ErrorTypeInvalidArgument: {
 				Type:            ErrorTypeInvalidArgument,
-				Code:            "INVALID_ARGUMENT",
+				Code:            CodeInvalidArgument,
 				MessageTemplate: "invalid batch request: {{.reason}}",
 				Placeholders:    map[string]string{"reason": "invalid spec"},
 			},
 			ErrorTypeTimeout: {
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "batch creation timeout after {{.duration}}",
 				Placeholders:    map[string]string{"duration": "60s"},
 			},
@@ -469,13 +469,13 @@ func registerBatchClientInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeNotFound: {
 				Type:            ErrorTypeNotFound,
-				Code:            "NOT_FOUND",
+				Code:            CodeNotFound,
 				MessageTemplate: "batch {{.batch_id}} not found",
 				Placeholders:    map[string]string{"batch_id": "batch-123"},
 			},
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "batch service unavailable: {{.service}}",
 				Placeholders:    map[string]string{"service": "batch_api"},
 			},
@@ -491,13 +491,13 @@ func registerBatchClientInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeNotFound: {
 				Type:            ErrorTypeNotFound,
-				Code:            "NOT_FOUND",
+				Code:            CodeNotFound,
 				MessageTemplate: "batch {{.batch_id}} not found",
 				Placeholders:    map[string]string{"batch_id": "batch-123"},
 			},
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "batch service unavailable: {{.service}}",
 				Placeholders:    map[string]string{"service": "batch_api"},
 			},
@@ -513,7 +513,7 @@ func registerBatchClientInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "batch service unavailable: {{.service}}",
 				Placeholders:    map[string]string{"service": "batch_api"},
 			},
@@ -532,19 +532,19 @@ func registerStoreInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "store unavailable: {{.store}}",
 				Placeholders:    map[string]string{"store": "job_store"},
 			},
 			ErrorTypeInternal: {
 				Type:            ErrorTypeInternal,
-				Code:            "INTERNAL",
+				Code:            CodeInternal,
 				MessageTemplate: "upsert failed: {{.reason}}",
 				Placeholders:    map[string]string{"reason": "database error"},
 			},
 			ErrorTypeCrash: {
 				Type:            ErrorTypeCrash,
-				Code:            "CRASH",
+				Code:            CodeCrash,
 				MessageTemplate: "simulated crash at {{.point}}",
 				Placeholders:    map[string]string{"point": "store.upsert_job"},
 			},
@@ -560,13 +560,13 @@ func registerStoreInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeNotFound: {
 				Type:            ErrorTypeNotFound,
-				Code:            "NOT_FOUND",
+				Code:            CodeNotFound,
 				MessageTemplate: "job {{.job_id}} not found",
 				Placeholders:    map[string]string{"job_id": "test-job-123"},
 			},
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "store unavailable: {{.store}}",
 				Placeholders:    map[string]string{"store": "job_store"},
 			},
@@ -582,7 +582,7 @@ func registerStoreInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "store unavailable: {{.store}}",
 				Placeholders:    map[string]string{"store": "job_store"},
 			},
@@ -598,13 +598,13 @@ func registerStoreInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "store unavailable: {{.store}}",
 				Placeholders:    map[string]string{"store": "provision_store"},
 			},
 			ErrorTypeCrash: {
 				Type:            ErrorTypeCrash,
-				Code:            "CRASH",
+				Code:            CodeCrash,
 				MessageTemplate: "simulated crash at {{.point}}",
 				Placeholders:    map[string]string{"point": "store.upsert_provision"},
 			},
@@ -620,13 +620,13 @@ func registerStoreInjectionPoints() {
 		Templates: map[ErrorType]*InjectionTemplate{
 			ErrorTypeNotFound: {
 				Type:            ErrorTypeNotFound,
-				Code:            "NOT_FOUND",
+				Code:            CodeNotFound,
 				MessageTemplate: "provision {{.provision_id}} not found",
 				Placeholders:    map[string]string{"provision_id": "prov-123"},
 			},
 			ErrorTypeUnavailable: {
 				Type:            ErrorTypeUnavailable,
-				Code:            "UNAVAILABLE",
+				Code:            CodeUnavailable,
 				MessageTemplate: "store unavailable: {{.store}}",
 				Placeholders:    map[string]string{"store": "provision_store"},
 			},
