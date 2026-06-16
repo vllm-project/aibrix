@@ -34,7 +34,7 @@ func TestRenderError(t *testing.T) {
 			name: "simple template without placeholders",
 			template: &InjectionTemplate{
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "Request timed out",
 				Placeholders:    nil,
 			},
@@ -44,7 +44,7 @@ func TestRenderError(t *testing.T) {
 				if result.Type != ErrorTypeTimeout {
 					t.Errorf("expected type %s, got %s", ErrorTypeTimeout, result.Type)
 				}
-				if result.Code != "DEADLINE_EXCEEDED" {
+				if result.Code != CodeDeadlineExceeded {
 					t.Errorf("expected code DEADLINE_EXCEEDED, got %s", result.Code)
 				}
 				if result.Message != "Request timed out" {
@@ -56,7 +56,7 @@ func TestRenderError(t *testing.T) {
 			name: "template with placeholders using defaults",
 			template: &InjectionTemplate{
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "Provision timed out after {{.timeout_seconds}}s",
 				Placeholders: map[string]string{
 					"timeout_seconds": "60",
@@ -75,7 +75,7 @@ func TestRenderError(t *testing.T) {
 			name: "template with overrides",
 			template: &InjectionTemplate{
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "Provision timed out after {{.timeout_seconds}}s",
 				Placeholders: map[string]string{
 					"timeout_seconds": "60",
@@ -96,7 +96,7 @@ func TestRenderError(t *testing.T) {
 			name: "template with DetailsTemplate",
 			template: &InjectionTemplate{
 				Type:            ErrorTypeUnavailable,
-				Code:            "RESOURCE_EXHAUSTED",
+				Code:            CodeResourceExhausted,
 				MessageTemplate: "No {{.gpu_type}} GPUs available in {{.region}}",
 				Placeholders: map[string]string{
 					"gpu_type": "A100",
@@ -145,7 +145,7 @@ func TestRenderError(t *testing.T) {
 			name: "template with invalid template syntax",
 			template: &InjectionTemplate{
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "Invalid {{.template",
 				Placeholders:    map[string]string{},
 			},
@@ -157,7 +157,7 @@ func TestRenderError(t *testing.T) {
 			name: "template with invalid details template syntax",
 			template: &InjectionTemplate{
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "Valid message",
 				Placeholders:    map[string]string{},
 				DetailsTemplate: map[string]string{
@@ -172,7 +172,7 @@ func TestRenderError(t *testing.T) {
 			name: "empty message template",
 			template: &InjectionTemplate{
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "",
 				Placeholders:    nil,
 			},
@@ -188,7 +188,7 @@ func TestRenderError(t *testing.T) {
 			name: "empty DetailsTemplate",
 			template: &InjectionTemplate{
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "Simple error",
 				Placeholders:    nil,
 				DetailsTemplate: map[string]string{},
@@ -208,7 +208,7 @@ func TestRenderError(t *testing.T) {
 			name: "override adds new placeholder not in defaults",
 			template: &InjectionTemplate{
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "Error with {{.custom}} value",
 				Placeholders:    map[string]string{},
 			},
@@ -510,18 +510,14 @@ func TestMergePlaceholders(t *testing.T) {
 			}
 
 			// Verify original maps not mutated
-			if origDefaults != nil {
-				for k, v := range origDefaults {
-					if tt.defaults[k] != v {
-						t.Errorf("defaults map was mutated: key %q was %q, now %q", k, v, tt.defaults[k])
-					}
+			for k, v := range origDefaults {
+				if tt.defaults[k] != v {
+					t.Errorf("defaults map was mutated: key %q was %q, now %q", k, v, tt.defaults[k])
 				}
 			}
-			if origOverrides != nil {
-				for k, v := range origOverrides {
-					if tt.overrides[k] != v {
-						t.Errorf("overrides map was mutated: key %q was %q, now %q", k, v, tt.overrides[k])
-					}
+			for k, v := range origOverrides {
+				if tt.overrides[k] != v {
+					t.Errorf("overrides map was mutated: key %q was %q, now %q", k, v, tt.overrides[k])
 				}
 			}
 		})
@@ -690,7 +686,7 @@ func TestTemplateExamples(t *testing.T) {
 			name: "provision timeout example",
 			template: &InjectionTemplate{
 				Type:            ErrorTypeTimeout,
-				Code:            "DEADLINE_EXCEEDED",
+				Code:            CodeDeadlineExceeded,
 				MessageTemplate: "Provision timed out after {{.timeout_seconds}}s",
 				Placeholders: map[string]string{
 					"timeout_seconds": "60",
@@ -706,7 +702,7 @@ func TestTemplateExamples(t *testing.T) {
 			name: "GPU unavailable example",
 			template: &InjectionTemplate{
 				Type:            ErrorTypeUnavailable,
-				Code:            "RESOURCE_EXHAUSTED",
+				Code:            CodeResourceExhausted,
 				MessageTemplate: "No {{.gpu_type}} GPUs available in {{.region}}",
 				Placeholders: map[string]string{
 					"gpu_type": "A100",
@@ -724,7 +720,7 @@ func TestTemplateExamples(t *testing.T) {
 			name: "GPU unavailable with partial override",
 			template: &InjectionTemplate{
 				Type:            ErrorTypeUnavailable,
-				Code:            "RESOURCE_EXHAUSTED",
+				Code:            CodeResourceExhausted,
 				MessageTemplate: "No {{.gpu_type}} GPUs available in {{.region}}",
 				Placeholders: map[string]string{
 					"gpu_type": "A100",
@@ -741,7 +737,7 @@ func TestTemplateExamples(t *testing.T) {
 			name: "complex error with details",
 			template: &InjectionTemplate{
 				Type:            ErrorTypeNotFound,
-				Code:            "NOT_FOUND",
+				Code:            CodeNotFound,
 				MessageTemplate: "Model {{.model_name}} not found in namespace {{.namespace}}",
 				Placeholders: map[string]string{
 					"model_name": "default-model",
@@ -763,7 +759,7 @@ func TestTemplateExamples(t *testing.T) {
 			name: "rate limit error",
 			template: &InjectionTemplate{
 				Type:            ErrorTypeUnavailable,
-				Code:            "RESOURCE_EXHAUSTED",
+				Code:            CodeResourceExhausted,
 				MessageTemplate: "Rate limit exceeded: {{.limit}} requests per {{.period}}. Retry after {{.retry_after}}s.",
 				Placeholders: map[string]string{
 					"limit":       "100",
