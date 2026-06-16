@@ -203,11 +203,7 @@ func main() {
 	}
 
 	grpcMaxMessageSize := utils.LoadEnvInt(envGRPCMaxMessageSizeBytes, defaultGRPCMaxMessageSizeBytes)
-	opts = append(opts,
-		grpc.MaxRecvMsgSize(grpcMaxMessageSize),
-		grpc.MaxSendMsgSize(grpcMaxMessageSize),
-	)
-	klog.Infof("gRPC max message size: %d bytes", grpcMaxMessageSize)
+	opts = append(opts, grpc.MaxRecvMsgSize(grpcMaxMessageSize))
 
 	s := grpc.NewServer(opts...)
 
