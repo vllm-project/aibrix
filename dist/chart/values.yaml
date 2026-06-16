@@ -89,6 +89,7 @@ gatewayPlugin:
       AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: "2"
       AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
       AIBRIX_STATESYNC_ENABLED: "false"
+      AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES: "4194304" # 4MB
   dependencies:
     redis:
       host: "" # aibrix-redis-master
@@ -199,7 +200,7 @@ gateway:
             memory: 32Mi
   clientTrafficPolicy:
     connection:
-      bufferLimit: 4194304  # 4MiB
+      bufferLimit: 4194304  # 4MiB — keep in sync with AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES
       connectionLimit:
         value: 1024
     http2:
