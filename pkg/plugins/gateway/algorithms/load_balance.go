@@ -55,7 +55,7 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 
 	for i, pod := range pods {
 		reqCount := 0.0
-		if v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning); err == nil {
+		if v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning); err == nil && v != nil {
 			reqCount = v.GetSimpleValue()
 		}
 		scores[i] = reqCount / r.capacityOf(pod)
@@ -120,7 +120,7 @@ func (r *loadBalanceRouter) Route(ctx *types.RoutingContext, readyPodList types.
 // capacityOf returns the throughput capacity of a pod.
 // Uses observed drain rate from cache when available; falls back to 1.0 (uniform).
 func (r *loadBalanceRouter) capacityOf(pod *v1.Pod) float64 {
-	if v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeRunningRequestsDrainRate1m); err == nil {
+	if v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeRunningRequestsDrainRate1m); err == nil && v != nil {
 		if dr := v.GetSimpleValue(); dr > 0 {
 			return dr
 		}

@@ -35,8 +35,9 @@ This document covers all environment variables used in the `pkg/plugins/gateway`
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
 | `AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE` | string | `"character"` | Tokenizer type for prefix cache hashing. Options: `character`, `tiktoken`, `remote`. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
-| `AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT` | int | `8` | Absolute running-request count difference threshold that triggers load-imbalance routing. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
-| `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` | int | `1` | Factor multiplied by the standard deviation of pod loads during imbalance calculation. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
+| `AIBRIX_PREFIX_CACHE_LOAD_IMBALANCE_FACTOR` | float64 | `2.0` | Gate multiplier: load-imbalance gate fires when `max_req > factor × (mean_req + 1)`. Both this and `IMBALANCE_MIN_GAP` must be satisfied. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
+| `AIBRIX_PREFIX_CACHE_LOAD_IMBALANCE_MIN_GAP` | int | `8` | Minimum absolute gap (`max_req − min_req`) required alongside the factor check to trigger the load-imbalance gate. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
+| `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` | int | `1` | Factor multiplied by the standard deviation of pod loads when selecting among prefix-matched pods (`pod.req ≤ mean + factor × σ`). | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
 | `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER` | bool | `false` | Use a remote HTTP tokenizer service instead of the local tokenizer. Requires `AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE=remote`. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
 | `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED` | bool | `false` | Enable KV cache event synchronization across gateway replicas. When `true`, also requires `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER=true`. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
 | `AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT` | string | `""` | Remote tokenizer service endpoint URL. Required when `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true`. | [pkg/constants/kv_event_sync.go](../../constants/kv_event_sync.go) |

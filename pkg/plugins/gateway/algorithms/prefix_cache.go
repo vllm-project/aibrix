@@ -437,8 +437,6 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 		return "", errors.New("no target pod found")
 	}
 
-	// Use pre-computed prefixHashes from MatchPrefix directly, avoiding a second tokenization pass
-	// that PostRouteUpdate would otherwise perform via GetPrefixHashes(tokens).
 	if len(prefixHashes) > 0 {
 		p.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Name)
 	}
@@ -475,8 +473,6 @@ func (p prefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodLi
 		return err
 	}
 
-	// MatchPrefix on just the target pod gives us both the hashes and the overlap %
-	// for logging, without scanning other pods.
 	matchedPods, prefixHashes := p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model,
 		map[string]struct{}{targetPod.Name: {}})
 
