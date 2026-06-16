@@ -48,6 +48,11 @@ import (
 	"sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
 
+const (
+	defaultGRPCMaxMessageSizeBytes = 4 * 1024 * 1024
+	envGRPCMaxMessageSizeBytes     = "AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES"
+)
+
 var (
 	grpcAddr        string
 	httpAddr        string
@@ -196,6 +201,13 @@ func main() {
 		}
 		opts = append(opts, grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	}
+
+	grpcMaxMessageSize := utils.LoadEnvInt(envGRPCMaxMessageSizeBytes, defaultGRPCMaxMessageSizeBytes)
+	opts = append(opts,
+		grpc.MaxRecvMsgSize(grpcMaxMessageSize),
+		grpc.MaxSendMsgSize(grpcMaxMessageSize),
+	)
+	klog.Infof("gRPC max message size: %d bytes", grpcMaxMessageSize)
 
 	s := grpc.NewServer(opts...)
 
