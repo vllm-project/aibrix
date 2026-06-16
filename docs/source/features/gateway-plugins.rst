@@ -163,11 +163,12 @@ General load balancing
 * ``least-utilization``: routes to the pod with the lowest overall utilization score.
 * ``throughput``: routes to the pod that has processed the fewest total weighted tokens, favoring underloaded pods.
 * ``power-of-two``: applies power-of-two-choices — randomly samples two pods and selects the better one.
+* ``load-balance``: capacity-aware weighted least-request routing. Scores each pod as ``running_requests / drain_rate`` (pending time), where ``drain_rate`` is the observed request completion rate. Selects the pod with the lowest pending time, breaking ties randomly. Falls back to uniform capacity (``drain_rate = 1``) when metrics are unavailable.
 
 KV-cache aware
 ^^^^^^^^^^^^^^
 
-* ``prefix-cache``: routes to a pod that already holds a KV cache matching the request's prompt prefix, with load balancing and multi-turn conversation support.
+* ``prefix-cache``: routes to a pod that already holds a KV cache matching the request's prompt prefix. Uses a load-imbalance gate to restrict prefix matching to the least-loaded pods when load is severely skewed, then selects the best prefix-matched pod within a configurable stddev threshold. Supports two modes: standard (local hash table) and KV sync (real-time distributed index via ``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true``).
 * ``prefix-cache-preble``: routes considering both prefix cache hits and pod load, based on `Preble: Efficient Distributed Prompt Scheduling for LLM Serving <https://arxiv.org/abs/2407.00023>`_.
 
 Fairness
