@@ -313,7 +313,7 @@ func TestHandleResponseBody_NonStreamNoTokens(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
+	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
 
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
@@ -347,7 +347,7 @@ func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "test-model", false, 0, false)
+	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "test-model", false, 0, false)
 
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
@@ -396,7 +396,7 @@ func TestHandleResponseBody_NonLanguageRequest(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
+	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
 
 	// Non-language request with EndOfStream sets complete=true
 	assert.True(t, complete)
@@ -425,7 +425,7 @@ func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
+	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
 
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
@@ -456,7 +456,7 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "test-model", false, 0, false)
+	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "test-model", false, 0, false)
 
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
@@ -492,7 +492,7 @@ func TestHandleResponseBody_LanguagePartialResponse(t *testing.T) {
 		},
 	}
 
-	resp, complete := server.HandleResponseBody(routerCtx, "rid-partial", req, utils.User{}, 0, "m", false, 0, false)
+	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "rid-partial", req, utils.User{}, 0, "m", false, 0, false)
 	assert.False(t, complete)
 	assert.NotNil(t, resp)
 	assert.NotNil(t, resp.GetResponseBody().GetResponse())
@@ -515,7 +515,7 @@ func TestHandleResponseBody_DoesNotDuplicateTrace(t *testing.T) {
 		},
 	}
 
-	_, complete := server.HandleResponseBody(routerCtx, "rid", req, utils.User{}, 0, "m", false, 0, true)
+	_, complete := server.HandleResponseBody(context.Background(), routerCtx, "rid", req, utils.User{}, 0, "m", false, 0, true)
 	assert.True(t, complete)
 	mockCache.AssertNotCalled(t, "DoneRequestTrace", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
@@ -594,7 +594,7 @@ func TestHandleResponseBody_SSEParsing(t *testing.T) {
 			}
 
 			// stream=true
-			resp, complete := server.HandleResponseBody(routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", true, 0, false)
+			resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", true, 0, false)
 
 			if tt.expectError {
 				assert.True(t, complete)

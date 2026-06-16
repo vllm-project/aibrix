@@ -17,6 +17,7 @@ limitations under the License.
 package handler
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,6 +26,11 @@ import (
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"k8s.io/klog/v2"
+
+	"github.com/vllm-project/aibrix/apps/console/api/middleware"
+	"github.com/vllm-project/aibrix/apps/console/api/store"
+
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 )
 
 // fileHTTPClientTimeout bounds proxy requests to the metadata service so a slow
@@ -35,13 +41,21 @@ const fileHTTPClientTimeout = 60 * time.Second
 type FileHandler struct {
 	metadataServiceURL string
 	httpClient         *http.Client
+	store              store.Store
+	injector           error_injection.Injector
 }
 
 // NewFileHandler creates a new file proxy handler.
-func NewFileHandler(metadataServiceURL string) *FileHandler {
+func NewFileHandler(metadataServiceURL string, injector error_injection.Injector, stores ...store.Store) *FileHandler {
+	var st store.Store
+	if len(stores) > 0 {
+		st = stores[0]
+	}
 	return &FileHandler{
 		metadataServiceURL: strings.TrimRight(metadataServiceURL, "/"),
 		httpClient:         &http.Client{Timeout: fileHTTPClientTimeout},
+		store:              st,
+		injector:           injector,
 	}
 }
 
@@ -63,6 +77,12 @@ func (h *FileHandler) RegisterRoutes(mux *runtime.ServeMux) {
 
 // handleUpload proxies multipart file uploads to POST {metadataServiceURL}/v1/files.
 func (h *FileHandler) handleUpload(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	if h.injector != nil {
+		if err := h.injector.CheckPoint(r.Context(), error_injection.POINT_CONSOLE_UPLOAD_FILE); err != nil {
+			http.Error(w, err.Error(), convertInjectedErrorToHttpCode(err))
+			return
+		}
+	}
 	targetURL := h.metadataServiceURL + "/v1/files"
 	h.proxyRequest(w, r, "POST", targetURL)
 }
@@ -88,12 +108,77 @@ func (h *FileHandler) handleGetMetadata(w http.ResponseWriter, r *http.Request, 
 
 // handleDownloadContent proxies file content download to GET {metadataServiceURL}/v1/files/{file_id}/content.
 func (h *FileHandler) handleDownloadContent(w http.ResponseWriter, r *http.Request, pathParams map[string]string) {
+	if h.injector != nil {
+		if err := h.injector.CheckPoint(r.Context(), error_injection.POINT_CONSOLE_DOWNLOAD_FILE); err != nil {
+			http.Error(w, err.Error(), convertInjectedErrorToHttpCode(err))
+			return
+		}
+	}
 	fileID := pathParams["file_id"]
+	if err := h.authorizeFileDownload(r.Context(), fileID); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.message), err.status)
+		return
+	}
 	targetURL := fmt.Sprintf("%s/v1/files/%s/content", h.metadataServiceURL, fileID)
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
 	}
 	h.proxyRequest(w, r, "GET", targetURL)
+}
+
+type fileAuthorizationError struct {
+	status  int
+	message string
+}
+
+func (h *FileHandler) authorizeFileDownload(ctx context.Context, fileID string) *fileAuthorizationError {
+	if h.store == nil || fileID == "" {
+		return nil
+	}
+	jobs, err := h.store.ListJobsByDatasetID(ctx, fileID)
+	if err != nil {
+		klog.Errorf("authorize file download %s: %v", fileID, err)
+		return &fileAuthorizationError{
+			status:  http.StatusInternalServerError,
+			message: "failed to authorize file download",
+		}
+	}
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	viewer := ""
+	if user := middleware.GetUser(ctx); user != nil {
+		viewer = strings.TrimSpace(user.Email)
+	}
+	if viewer == "" {
+		return &fileAuthorizationError{
+			status:  http.StatusForbidden,
+			message: "only the job owner can download this file",
+		}
+	}
+
+	hasOwnedJob := false
+	for _, job := range jobs {
+		if job == nil {
+			continue
+		}
+		owner := strings.TrimSpace(job.CreatedBy)
+		if owner == "" {
+			continue
+		}
+		hasOwnedJob = true
+		if strings.EqualFold(owner, viewer) {
+			return nil
+		}
+	}
+	if !hasOwnedJob {
+		return nil
+	}
+	return &fileAuthorizationError{
+		status:  http.StatusForbidden,
+		message: "only the job owner can download this file",
+	}
 }
 
 // proxyRequest forwards an HTTP request to the target URL and copies the response back.

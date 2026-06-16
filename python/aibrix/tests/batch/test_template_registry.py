@@ -25,6 +25,8 @@ from aibrix.batch.template import (
     local_profile_registry,
     local_template_registry,
 )
+from aibrix.batch.template.registry import _warn_deferred_profile_fields
+from aibrix.batch.template.schema import BatchProfile
 
 
 def _write(tmp_path: Path, name: str, content) -> Path:
@@ -50,7 +52,7 @@ def _valid_template(name="m", version="v1", status="active"):
 def _valid_profile(name="p1"):
     return {
         "name": name,
-        "spec": {"storage": {"backend": "local", "bucket": "/tmp"}},
+        "spec": {"scheduling": {"max_concurrency": 32}},
     }
 
 
@@ -140,6 +142,20 @@ class TestTemplateRegistry:
 
 
 class TestProfileRegistry:
+    def test_retry_policy_warning_does_not_claim_smart_client_missing(self):
+        profile = BatchProfile(
+            name="p-retry",
+            spec={"scheduling": {"retry_policy": {"max_retries": 3}}},
+        )
+
+        warnings = _warn_deferred_profile_fields(profile)
+
+        assert any("scheduling.retry_policy" in warning for warning in warnings)
+        assert all(
+            "smart-client retry is not yet implemented" not in warning
+            for warning in warnings
+        )
+
     def test_load_with_default(self, tmp_path):
         path = _write(
             tmp_path,
@@ -165,7 +181,7 @@ class TestProfileRegistry:
         assert reg.default_name() is None or reg.default_name() == "p1"
 
     def test_per_item_error_isolation(self, tmp_path):
-        bad = {"name": "bad", "spec": {"storage": {}}}  # storage.backend missing
+        bad = {"name": "bad", "spec": {"scheduling": {"max_concurrency": 0}}}
         path = _write(
             tmp_path,
             "p.yaml",

@@ -14,7 +14,7 @@
 
 """ModelDeploymentTemplate and BatchProfile schema, registries, loaders."""
 
-from .registry import (
+from aibrix.batch.template.registry import (
     DEFAULT_NAMESPACE,
     PROFILES_CONFIGMAP_NAME,
     PROFILES_DATA_KEY,
@@ -31,7 +31,7 @@ from .registry import (
     local_profile_registry,
     local_template_registry,
 )
-from .schema import (
+from aibrix.batch.template.schema import (
     SCHEMA_API_VERSION,
     AcceleratorSpec,
     BatchProfile,
@@ -45,8 +45,6 @@ from .schema import (
     EngineType,
     Interconnect,
     KvCacheQuantization,
-    MetastoreBackend,
-    MetastoreSpec,
     ModelDeploymentTemplate,
     ModelDeploymentTemplateList,
     ModelDeploymentTemplateSpec,
@@ -60,8 +58,6 @@ from .schema import (
     ResolvedJobSpec,
     RetryPolicy,
     SchedulingSpec,
-    StorageBackend,
-    StorageSpec,
     TemplateOverridesSpec,
     TemplateStatus,
     WeightQuantization,
@@ -97,8 +93,6 @@ __all__ = [
     "ModelDeploymentTemplate",
     "ModelDeploymentTemplateList",
     "ModelDeploymentTemplateSpec",
-    "MetastoreBackend",
-    "MetastoreSpec",
     "ModelSourceSpec",
     "ModelSourceType",
     "ParallelismSpec",
@@ -114,8 +108,6 @@ __all__ = [
     "QuotaSpec",
     "RetryPolicy",
     "SchedulingSpec",
-    "StorageBackend",
-    "StorageSpec",
     # Overrides + resolved
     "TemplateOverridesSpec",
     "ProfileOverridesSpec",

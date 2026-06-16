@@ -25,16 +25,12 @@ from aibrix.batch.template import (
     EngineArgsSpec,
     EngineSpec,
     EngineType,
-    MetastoreBackend,
-    MetastoreSpec,
     ModelDeploymentTemplate,
     ModelDeploymentTemplateList,
     ModelSourceSpec,
     ModelSourceType,
     ParallelismSpec,
     ProfileOverridesSpec,
-    StorageBackend,
-    StorageSpec,
     TemplateOverridesSpec,
     TemplateStatus,
 )
@@ -164,37 +160,29 @@ class TestBatchProfile:
     def test_minimal_valid(self):
         p = BatchProfile(
             name="p1",
-            spec={"storage": StorageSpec(backend=StorageBackend.S3, bucket="b")},
+            spec={},
         )
         assert p.name == "p1"
         # defaults applied
         assert p.spec.scheduling.completion_window.value == "24h"
         assert p.spec.quota.max_requests_per_batch == 50000
 
-    def test_storage_bucket_required(self):
+    def test_storage_and_metastore_are_not_profile_fields(self):
         with pytest.raises(ValidationError):
-            StorageSpec(backend=StorageBackend.S3, bucket="")
-
-    def test_metastore_config_is_accepted(self):
-        p = BatchProfile(
-            name="p1",
-            spec={
-                "storage": StorageSpec(backend=StorageBackend.S3, bucket="b"),
-                "metastore": MetastoreSpec(
-                    backend=MetastoreBackend.REDIS,
-                    endpoint_url="redis.default.svc.cluster.local",
-                ),
-            },
-        )
-        assert p.spec.metastore is not None
-        assert p.spec.metastore.backend == MetastoreBackend.REDIS
+            BatchProfile(
+                name="p1",
+                spec={
+                    "storage": {"backend": "s3", "bucket": "b"},
+                    "metastore": {"backend": "redis"},
+                },
+            )
 
 
 class TestBatchProfileList:
     def _profile_dict(self, name):
         return {
             "name": name,
-            "spec": {"storage": {"backend": "s3", "bucket": "b"}},
+            "spec": {},
         }
 
     def test_default_must_exist_in_items(self):

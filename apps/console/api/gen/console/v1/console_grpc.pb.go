@@ -1401,3 +1401,257 @@ var QuotaService_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "console/v1/console.proto",
 }
+
+const (
+	InjectionService_ListInjectionPoints_FullMethodName  = "/console.v1.InjectionService/ListInjectionPoints"
+	InjectionService_GetInjectionConfig_FullMethodName   = "/console.v1.InjectionService/GetInjectionConfig"
+	InjectionService_SetInjectionConfig_FullMethodName   = "/console.v1.InjectionService/SetInjectionConfig"
+	InjectionService_ClearInjectionConfig_FullMethodName = "/console.v1.InjectionService/ClearInjectionConfig"
+	InjectionService_GetInjectionTrace_FullMethodName    = "/console.v1.InjectionService/GetInjectionTrace"
+)
+
+// InjectionServiceClient is the client API for InjectionService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type InjectionServiceClient interface {
+	ListInjectionPoints(ctx context.Context, in *ListInjectionPointsRequest, opts ...grpc.CallOption) (*ListInjectionPointsResponse, error)
+	GetInjectionConfig(ctx context.Context, in *GetInjectionConfigRequest, opts ...grpc.CallOption) (*GetInjectionConfigResponse, error)
+	SetInjectionConfig(ctx context.Context, in *SetInjectionConfigRequest, opts ...grpc.CallOption) (*SetInjectionConfigResponse, error)
+	ClearInjectionConfig(ctx context.Context, in *ClearInjectionConfigRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	GetInjectionTrace(ctx context.Context, in *GetInjectionTraceRequest, opts ...grpc.CallOption) (*GetInjectionTraceResponse, error)
+}
+
+type injectionServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewInjectionServiceClient(cc grpc.ClientConnInterface) InjectionServiceClient {
+	return &injectionServiceClient{cc}
+}
+
+func (c *injectionServiceClient) ListInjectionPoints(ctx context.Context, in *ListInjectionPointsRequest, opts ...grpc.CallOption) (*ListInjectionPointsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListInjectionPointsResponse)
+	err := c.cc.Invoke(ctx, InjectionService_ListInjectionPoints_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *injectionServiceClient) GetInjectionConfig(ctx context.Context, in *GetInjectionConfigRequest, opts ...grpc.CallOption) (*GetInjectionConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetInjectionConfigResponse)
+	err := c.cc.Invoke(ctx, InjectionService_GetInjectionConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *injectionServiceClient) SetInjectionConfig(ctx context.Context, in *SetInjectionConfigRequest, opts ...grpc.CallOption) (*SetInjectionConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetInjectionConfigResponse)
+	err := c.cc.Invoke(ctx, InjectionService_SetInjectionConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *injectionServiceClient) ClearInjectionConfig(ctx context.Context, in *ClearInjectionConfigRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, InjectionService_ClearInjectionConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *injectionServiceClient) GetInjectionTrace(ctx context.Context, in *GetInjectionTraceRequest, opts ...grpc.CallOption) (*GetInjectionTraceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetInjectionTraceResponse)
+	err := c.cc.Invoke(ctx, InjectionService_GetInjectionTrace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// InjectionServiceServer is the server API for InjectionService service.
+// All implementations must embed UnimplementedInjectionServiceServer
+// for forward compatibility.
+type InjectionServiceServer interface {
+	ListInjectionPoints(context.Context, *ListInjectionPointsRequest) (*ListInjectionPointsResponse, error)
+	GetInjectionConfig(context.Context, *GetInjectionConfigRequest) (*GetInjectionConfigResponse, error)
+	SetInjectionConfig(context.Context, *SetInjectionConfigRequest) (*SetInjectionConfigResponse, error)
+	ClearInjectionConfig(context.Context, *ClearInjectionConfigRequest) (*emptypb.Empty, error)
+	GetInjectionTrace(context.Context, *GetInjectionTraceRequest) (*GetInjectionTraceResponse, error)
+	mustEmbedUnimplementedInjectionServiceServer()
+}
+
+// UnimplementedInjectionServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedInjectionServiceServer struct{}
+
+func (UnimplementedInjectionServiceServer) ListInjectionPoints(context.Context, *ListInjectionPointsRequest) (*ListInjectionPointsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListInjectionPoints not implemented")
+}
+func (UnimplementedInjectionServiceServer) GetInjectionConfig(context.Context, *GetInjectionConfigRequest) (*GetInjectionConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetInjectionConfig not implemented")
+}
+func (UnimplementedInjectionServiceServer) SetInjectionConfig(context.Context, *SetInjectionConfigRequest) (*SetInjectionConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetInjectionConfig not implemented")
+}
+func (UnimplementedInjectionServiceServer) ClearInjectionConfig(context.Context, *ClearInjectionConfigRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method ClearInjectionConfig not implemented")
+}
+func (UnimplementedInjectionServiceServer) GetInjectionTrace(context.Context, *GetInjectionTraceRequest) (*GetInjectionTraceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetInjectionTrace not implemented")
+}
+func (UnimplementedInjectionServiceServer) mustEmbedUnimplementedInjectionServiceServer() {}
+func (UnimplementedInjectionServiceServer) testEmbeddedByValue()                          {}
+
+// UnsafeInjectionServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to InjectionServiceServer will
+// result in compilation errors.
+type UnsafeInjectionServiceServer interface {
+	mustEmbedUnimplementedInjectionServiceServer()
+}
+
+func RegisterInjectionServiceServer(s grpc.ServiceRegistrar, srv InjectionServiceServer) {
+	// If the following call panics, it indicates UnimplementedInjectionServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&InjectionService_ServiceDesc, srv)
+}
+
+func _InjectionService_ListInjectionPoints_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListInjectionPointsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InjectionServiceServer).ListInjectionPoints(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InjectionService_ListInjectionPoints_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InjectionServiceServer).ListInjectionPoints(ctx, req.(*ListInjectionPointsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _InjectionService_GetInjectionConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetInjectionConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InjectionServiceServer).GetInjectionConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InjectionService_GetInjectionConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InjectionServiceServer).GetInjectionConfig(ctx, req.(*GetInjectionConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _InjectionService_SetInjectionConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetInjectionConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InjectionServiceServer).SetInjectionConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InjectionService_SetInjectionConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InjectionServiceServer).SetInjectionConfig(ctx, req.(*SetInjectionConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _InjectionService_ClearInjectionConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClearInjectionConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InjectionServiceServer).ClearInjectionConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InjectionService_ClearInjectionConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InjectionServiceServer).ClearInjectionConfig(ctx, req.(*ClearInjectionConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _InjectionService_GetInjectionTrace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetInjectionTraceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InjectionServiceServer).GetInjectionTrace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InjectionService_GetInjectionTrace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InjectionServiceServer).GetInjectionTrace(ctx, req.(*GetInjectionTraceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// InjectionService_ServiceDesc is the grpc.ServiceDesc for InjectionService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var InjectionService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "console.v1.InjectionService",
+	HandlerType: (*InjectionServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "ListInjectionPoints",
+			Handler:    _InjectionService_ListInjectionPoints_Handler,
+		},
+		{
+			MethodName: "GetInjectionConfig",
+			Handler:    _InjectionService_GetInjectionConfig_Handler,
+		},
+		{
+			MethodName: "SetInjectionConfig",
+			Handler:    _InjectionService_SetInjectionConfig_Handler,
+		},
+		{
+			MethodName: "ClearInjectionConfig",
+			Handler:    _InjectionService_ClearInjectionConfig_Handler,
+		},
+		{
+			MethodName: "GetInjectionTrace",
+			Handler:    _InjectionService_GetInjectionTrace_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "console/v1/console.proto",
+}

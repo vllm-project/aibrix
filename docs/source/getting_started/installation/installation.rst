@@ -126,6 +126,8 @@ Nightly Version
     cd aibrix
     # Install component dependencies
     kubectl apply -k config/dependency --server-side
+    # Install AIBrix CRDs (separate from the operator so uninstalls don't wipe user CRs)
+    kubectl apply -k config/crd --server-side
     kubectl apply -k config/default
 
 
@@ -136,6 +138,7 @@ Install AIBrix in testing Environments
    :maxdepth: 1
    :caption: Getting Started
 
+   local-mode.rst
    lambda.rst
    mac-for-desktop.rst
    aws.rst

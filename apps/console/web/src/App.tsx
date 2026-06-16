@@ -19,9 +19,13 @@ import { ModelLibrary } from './components/ModelLibrary';
 import { ModelDetail } from './components/ModelDetail';
 import { CreateModelDeploymentTemplate } from './components/CreateModelDeploymentTemplate';
 import { Playground } from './components/Playground';
+import { Deployments } from './components/Deployments';
+import { CreateDeployment } from './components/CreateDeployment';
+import { DeploymentDetail } from './components/DeploymentDetail';
 import { ApiKeysPage } from './components/settings/ApiKeysPage';
 import { SecretsPage } from './components/settings/SecretsPage';
 import { Toast } from './components/settings/Toast';
+import { features } from './config/features';
 
 // ── Route adapters: each one reads useParams/useNavigate and forwards to the
 // existing component. Keeps the leaf components unchanged.
@@ -92,6 +96,32 @@ function PlaygroundRoute() {
   return <Playground onNavigateToModel={(id) => navigate(`/models/${id}`)} />;
 }
 
+function DeploymentsRoute() {
+  const navigate = useNavigate();
+  return (
+    <Deployments
+      onSelectDeployment={(id) => navigate(`/deployments/${id}`)}
+      onCreateDeployment={() => navigate('/deployments/new')}
+    />
+  );
+}
+
+function CreateDeploymentRoute() {
+  const navigate = useNavigate();
+  return <CreateDeployment onBack={() => navigate('/deployments')} />;
+}
+
+function DeploymentDetailRoute() {
+  const { deploymentId } = useParams<{ deploymentId: string }>();
+  const navigate = useNavigate();
+  return (
+    <DeploymentDetail
+      deploymentId={deploymentId ?? null}
+      onBack={() => navigate('/deployments')}
+    />
+  );
+}
+
 function ComingSoon({ title, description, features }: {
   title: string;
   description: string;
@@ -141,6 +171,20 @@ function DeploymentsComingSoon() {
   );
 }
 
+function PlaygroundComingSoon() {
+  return (
+    <ComingSoon
+      title="Playground"
+      description="Interactively test and compare models from your library with a chat-style interface. We're putting the finishing touches on it."
+      features={[
+        'Chat with any registered model in real time',
+        'Tune sampling parameters and system prompts on the fly',
+        'Compare responses side by side across models',
+      ]}
+    />
+  );
+}
+
 function LoraComingSoon() {
   return (
     <ComingSoon
@@ -184,7 +228,7 @@ export default function App() {
   // Settings has its own sidebar; settings tab comes from URL.
   const isSettings = location.pathname.startsWith('/settings');
   const settingsTab: SettingsTab = location.pathname === '/settings/secrets' ? 'secrets' : 'api-keys';
-  const isPlayground = location.pathname.startsWith('/playground');
+  const isPlayground = features.playground && location.pathname.startsWith('/playground');
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -208,7 +252,10 @@ export default function App() {
             <Route path="/batch/new" element={<CreateJobRoute />} />
             <Route path="/batch/:jobId" element={<JobDetailRoute />} />
 
-            <Route path="/playground" element={<PlaygroundRoute />} />
+            <Route
+              path="/playground"
+              element={features.playground ? <PlaygroundRoute /> : <PlaygroundComingSoon />}
+            />
 
             <Route path="/models" element={<ModelLibraryRoute />} />
             <Route path="/models/:modelId" element={<ModelDetailRoute />} />
@@ -229,7 +276,18 @@ export default function App() {
               element={<TemplateFormRoute mode="clone" />}
             />
 
-            <Route path="/deployments" element={<DeploymentsComingSoon />} />
+            <Route
+              path="/deployments"
+              element={features.deployments ? <DeploymentsRoute /> : <DeploymentsComingSoon />}
+            />
+            <Route
+              path="/deployments/new"
+              element={features.deployments ? <CreateDeploymentRoute /> : <Navigate to="/deployments" replace />}
+            />
+            <Route
+              path="/deployments/:deploymentId"
+              element={features.deployments ? <DeploymentDetailRoute /> : <Navigate to="/deployments" replace />}
+            />
             <Route path="/lora" element={<LoraComingSoon />} />
 
             <Route path="/settings" element={<Navigate to="/settings/api-keys" replace />} />

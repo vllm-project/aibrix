@@ -69,3 +69,8 @@ Production Monitoring
 ---------------------
 
  TODO: Screenshots and visual examples will be added soon to illustrate key views and usage patterns.
+
+OpenTelemetry
+-------------
+
+To enable the telemetry components, please refer to :ref:`observability_telemetry` for details.

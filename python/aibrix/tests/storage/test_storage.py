@@ -206,6 +206,66 @@ class TestStorageFunctionality:
             await storage.delete_object(key)
 
     @pytest.mark.asyncio
+    async def test_list_objects_with_continuation_token_pagination(
+        self, storage: BaseStorage
+    ):
+        """Test paginating object listings with continuation tokens."""
+        test_objects = [
+            "test/list-pagination/file01.txt",
+            "test/list-pagination/file02.txt",
+            "test/list-pagination/file03.txt",
+            "test/list-pagination/file04.txt",
+        ]
+
+        for key in test_objects:
+            await storage.put_object(key, f"content of {key}")
+
+        first_page, continuation_token = await storage.list_objects(
+            "test/list-pagination/",
+            limit=2,
+        )
+        second_page, next_token = await storage.list_objects(
+            "test/list-pagination/",
+            limit=2,
+            continuation_token=continuation_token,
+        )
+
+        assert first_page == test_objects[:2]
+        assert continuation_token is not None
+        assert second_page == test_objects[2:]
+        assert next_token is None
+
+        for key in test_objects:
+            await storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_list_objects_with_after_key_pagination(self, storage: BaseStorage):
+        """Test paginating object listings with after_key."""
+        test_objects = [
+            "test/list-after-key/file01.txt",
+            "test/list-after-key/file02.txt",
+            "test/list-after-key/file03.txt",
+            "test/list-after-key/file04.txt",
+        ]
+
+        for key in test_objects:
+            await storage.put_object(key, f"content of {key}")
+
+        first_page, _ = await storage.list_objects("test/list-after-key/", limit=2)
+        second_page, next_token = await storage.list_objects(
+            "test/list-after-key/",
+            limit=2,
+            after_key=first_page[-1],
+        )
+
+        assert first_page == test_objects[:2]
+        assert second_page == test_objects[2:]
+        assert next_token is None
+
+        for key in test_objects:
+            await storage.delete_object(key)
+
+    @pytest.mark.asyncio
     async def test_copy_object(self, storage: BaseStorage):
         """Test object copying."""
         source_key = "test/source.txt"
@@ -396,14 +456,14 @@ class TestStorageFunctionality:
                 # Content type inference varies by storage implementation
                 # Local storage can infer from extension, S3/TOS may not
                 if storage.__class__.__name__ == "LocalStorage":
-                    assert (
-                        metadata.content_type == expected_content_type
-                    ), f"Expected {expected_content_type} for {filename}, got {metadata.content_type}"
+                    assert metadata.content_type == expected_content_type, (
+                        f"Expected {expected_content_type} for {filename}, got {metadata.content_type}"
+                    )
                 else:
                     # For other storage types, just verify content type is set to something
-                    assert (
-                        metadata.content_type is not None
-                    ), f"Content type should be set for {filename}"
+                    assert metadata.content_type is not None, (
+                        f"Content type should be set for {filename}"
+                    )
 
             finally:
                 # Cleanup
@@ -546,9 +606,9 @@ class TestStorageFunctionality:
             local_storage = storage
             assert isinstance(local_storage, LocalStorage)
             metadata_path = local_storage._get_metadata_path(key)
-            assert (
-                not metadata_path.exists()
-            ), "Metadata file should be deleted with object"
+            assert not metadata_path.exists(), (
+                "Metadata file should be deleted with object"
+            )
 
     @pytest.mark.asyncio
     async def test_multipart_apis(self, storage: BaseStorage):

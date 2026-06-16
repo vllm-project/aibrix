@@ -21,6 +21,15 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
+
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
+
+	// Link in the built-in cloud providers so their init() registrations run.
+	// To add a provider, implement it under provider/<name> and add a blank
+	// import here.
+	_ "github.com/vllm-project/aibrix/apps/console/api/resource_manager/provider/kubernetes"
+	_ "github.com/vllm-project/aibrix/apps/console/api/resource_manager/provider/lambdacloud"
+	_ "github.com/vllm-project/aibrix/apps/console/api/resource_manager/provider/runpod"
 )
 
 type ResourceManager struct {
@@ -28,10 +37,11 @@ type ResourceManager struct {
 	Provisioner provisioner.Provisioner
 	Catalog     catalog.Catalog
 	Store       store.Store
+	Injector    error_injection.Injector
 }
 
-func NewResourceManager(provider types.ResourceProvisionType, store store.Store) (*ResourceManager, error) {
-	provisioner, err := provisioner.NewProvisioner(provider, store)
+func NewResourceManager(provider types.ResourceProvisionType, store store.Store, injector error_injection.Injector) (*ResourceManager, error) {
+	provisioner, err := provisioner.NewProvisioner(provider, store, injector)
 	if err != nil {
 		return nil, err
 	}
@@ -46,5 +56,6 @@ func NewResourceManager(provider types.ResourceProvisionType, store store.Store)
 		Provisioner: provisioner,
 		Catalog:     catalog,
 		Store:       store,
+		Injector:    injector,
 	}, nil
 }

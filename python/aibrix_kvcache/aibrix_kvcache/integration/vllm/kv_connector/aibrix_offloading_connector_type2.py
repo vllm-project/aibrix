@@ -85,13 +85,22 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         # recvs
         self._send_stream = torch.cuda.Stream()
         self._recv_stream = torch.cuda.Stream()
+        # Size slot-mapping buffers to the block-aligned worst case:
+        # vLLM's scheduler caps raw tokens at max_num_batched_tokens, but each
+        # request's contribution is rounded up to cache_block_ntokens, so the
+        # cumulative block-aligned count can exceed max_num_batched_tokens by
+        # up to max_num_seqs * cache_block_ntokens.
+        _slot_mapping_size = (
+            config.scheduler_config.max_num_batched_tokens
+            + config.scheduler_config.max_num_seqs * self.cache_block_ntokens
+        )
         self._send_slot_mapping = torch.empty(
-            config.scheduler_config.max_num_batched_tokens,
+            _slot_mapping_size,
             dtype=torch.long,
             device="cuda",
         )
         self._recv_slot_mapping = torch.empty(
-            config.scheduler_config.max_num_batched_tokens,
+            _slot_mapping_size,
             dtype=torch.long,
             device="cuda",
         )
@@ -136,6 +145,7 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         self,
         metadata: AIBrixOffloadingConnectorMetadata,
     ) -> dict[str, int]:
+        self._release_acquired_kvcache_handles()
         self._update_meta_cache(metadata)
 
         stats = {}
@@ -302,6 +312,8 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         for seq_request_id in self._acquired_kvcache_handles:
             if self._acquired_kvcache_handles[seq_request_id] is None:
                 continue
+            if seq_request_id not in metadata:
+                continue
             handle = self._acquired_kvcache_handles[seq_request_id]
             seq_cached_meta = self._meta_cache[seq_request_id]
             seq_context_len = metadata[seq_request_id].context_len
@@ -373,13 +385,14 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
                 seq_context_len, seq_query_len = self._send_lengths[seq_req_id]
                 if seq_query_len == 0:
                     continue
+                if seq_req_id not in metadata:
+                    continue
                 # allocate staging buffers that can hold kvcache for all layers
                 seq_request_meta = metadata[seq_req_id]
                 handle = self._allocate_for_request(seq_request_meta)
                 if handle is None:
                     continue
-                else:
-                    self._allocated_kvcache_handles[seq_req_id] = handle
+                self._allocated_kvcache_handles[seq_req_id] = handle
 
         for seq_req_id, _ in self._allocated_kvcache_handles.items():
             if (
@@ -495,6 +508,8 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
                 seq_request_id not in self._allocated_kvcache_handles
                 or self._allocated_kvcache_handles[seq_request_id] is None
             ):
+                continue
+            if seq_request_id not in metadata:
                 continue
             seq_request_meta = metadata[seq_request_id]
             self._send_kv_impl(seq_request_meta)

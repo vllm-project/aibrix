@@ -79,12 +79,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.annotations['batch.job.aibrix.ai/opts.fail_after_n_requests']
-            - name: LLM_READY_ENDPOINT
-              value: http://localhost:8000/ready
             - name: STORAGE_TYPE
               value: local
             - name: STORAGE_LOCAL_PATH
               value: /tmp/aibrix-storage
+            - name: LLM_READY_ENDPOINT
+              value: http://localhost:8000/ready
         - name: llm-engine
           image: aibrix/vllm-mock:nightly
           ports:

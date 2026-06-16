@@ -18,10 +18,14 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/vllm-project/aibrix/apps/console/api/common"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
+	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 	"gorm.io/gorm/clause"
 )
@@ -159,6 +163,7 @@ func (s *GORMStore) loadDemoJobs() error {
 			ExpiresAt:        now,
 			RequestCounts:    &pb.JobRequestCounts{Total: 1000, Completed: 998, Failed: 2},
 			Usage:            &pb.JobUsage{InputTokens: 250000, OutputTokens: 180000, TotalTokens: 430000},
+			Metadata:         map[string]string{"aibrix.console.created_by": "demo@aibrix.ai", "aibrix.console.display_name": "gsm-8k-20260118"},
 			Name:             "gsm-8k-20260118",
 			CreatedBy:        "demo@aibrix.ai",
 		},
@@ -174,12 +179,32 @@ func (s *GORMStore) loadDemoJobs() error {
 			InProgressAt:     now - 1700,
 			ExpiresAt:        now - 1800 + 86400,
 			RequestCounts:    &pb.JobRequestCounts{Total: 500, Completed: 250, Failed: 0},
+			Metadata:         map[string]string{"aibrix.console.created_by": "demo@aibrix.ai", "aibrix.console.display_name": "gsm-8k-20260118-v2"},
 			Name:             "gsm-8k-20260118-v2",
 			CreatedBy:        "demo@aibrix.ai",
 		},
 	}
 
-	for _, pbJob := range jobs {
+	for jobID, pbJob := range jobs {
+		// Build AIBrixExtraBody with runtime
+		aibrixExtraBody := &plannerclient.AIBrixExtraBody{
+			JobID: jobID,
+			Runtime: &plannerapi.RuntimeRef{
+				Target: "mock",
+				Options: map[string]any{
+					"namespace": "aibrix-system",
+				},
+			},
+			Model: pbJob.Model,
+		}
+
+		if aibrixJSON, err := json.Marshal(aibrixExtraBody); err == nil {
+			if pbJob.ExtraBody == nil {
+				pbJob.ExtraBody = make(map[string]string)
+			}
+			pbJob.ExtraBody[common.AIBrixExtraBodyField] = string(aibrixJSON)
+		}
+
 		var job models.Job
 		if err := job.FromPB(pbJob); err != nil {
 			return fmt.Errorf("convert demo job %s: %w", pbJob.Id, err)

@@ -22,6 +22,8 @@ overrides = {}
 MODEL_NAME = os.getenv("MODEL_NAME", "llama2-7b")
 DEPLOYMENT_NAME = os.getenv("DEPLOYMENT_NAME", "llama2-7b")
 NAMESPACE = os.getenv("POD_NAMESPACE", "default")
+# Kubernetes sets HOSTNAME to the pod name; fall back to the deployment name.
+POD_NAME = os.getenv("POD_NAME") or os.getenv("HOSTNAME") or DEPLOYMENT_NAME
 DEFAULT_REPLICAS = int(os.getenv("DEFAULT_REPLICAS", "1"))
 SIMULATION = os.getenv("SIMULATION", "disabled")
 STANDALONE_MODE = os.getenv("STANDALONE_MODE", "false").lower() in ("true", "1", "yes")
@@ -62,7 +64,12 @@ if SIMULATION != "disabled":
         sys.argv.append(modelMaps.get(MODEL_NAME, MODEL_NAME))
 
 tokenizer = None
+tiktoken_encoding = None
 simulator = None  # Optional[Simulator] when simulation is enabled
+MAX_LOGGED_BODY_CHARS = int(os.getenv("MAX_LOGGED_BODY_CHARS", "4096"))
+MOCK_REQUEST_DURATION_SECONDS = float(
+    os.getenv("MOCK_REQUEST_DURATION_SECONDS", "0.2")
+)
 
 # Extract the api_key argument and prepare for authentication
 api_key = None
@@ -101,6 +108,13 @@ def auth_error(status):
 
 
 logger = logging.getLogger(__name__)
+
+try:
+    import tiktoken
+
+    tiktoken_encoding = tiktoken.get_encoding("cl100k_base")
+except Exception as e:
+    logger.warning(f"Failed to initialize tiktoken fallback tokenizer: {e}")
 
 
 # =============================================================================
@@ -159,6 +173,34 @@ def create_vllm_error(message, error_type, status_code):
     )
 
 
+def _json_for_log(value, max_chars=MAX_LOGGED_BODY_CHARS):
+    text = json.dumps(value, ensure_ascii=False, default=str)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "...(truncated)"
+
+
+def _log_mock_exchange(endpoint, payload, response):
+    logger.info(
+        "%s mock exchange\nrequest=%s\nresponse=%s",
+        endpoint,
+        _json_for_log(payload),
+        _json_for_log(response),
+    )
+
+
+def _sleep_for_request_latency(started_at, simulated_latency):
+    overhead = datetime.now().timestamp() - started_at
+    if simulated_latency > overhead:
+        time.sleep(simulated_latency - overhead)
+    elif simulated_latency > 0.0:
+        logger.warning(
+            f"Latency is less than overhead: L{simulated_latency} - O{overhead}"
+        )
+    elif MOCK_REQUEST_DURATION_SECONDS > overhead:
+        time.sleep(MOCK_REQUEST_DURATION_SECONDS - overhead)
+
+
 def read_configs(file_path):
     """
     Reads a JSON file that store sensitive information.
@@ -185,6 +227,32 @@ MOCK_PNG_B64 = (
 
 # Image model name patterns (case-insensitive)
 _IMAGE_MODEL_KEYWORDS = {"image", "edit", "diffusion", "qwen-image", "z-image"}
+
+
+# Pool of templates for the mock assistant reply. Picking one at random gives
+# the mock server some response variety instead of always emitting the same
+# sentence. `{model}` is the served model, `{pod}` is the answering pod name.
+_SIMULATED_RESPONSE_TEMPLATES = [
+    "This is a simulated message from {model} (pod {pod})!",
+    "Hello from {model} on pod {pod} — this is a mock response.",
+    "{model} here, served by {pod}. I'm a simulated reply for testing.",
+    "Greetings! Pod {pod} running {model} generated this placeholder answer.",
+    "Mock output from {model} (pod {pod}): everything looks good on my end.",
+    "You've reached the simulated {model} endpoint on {pod}. How can I pretend to help?",
+    "Beep boop — {model} on pod {pod} reporting in with a fake but friendly message.",
+    "Pretend-thinking complete. {model} (pod {pod}) returns this canned response.",
+]
+
+
+def simulated_message(model, prefix=""):
+    """Return a randomized mock assistant message for the given model.
+
+    Each call picks a random template so streamed and non-streamed mock replies
+    vary across requests, and embeds the answering pod name so it's clear which
+    replica handled the request.
+    """
+    template = random.choice(_SIMULATED_RESPONSE_TEMPLATES)
+    return prefix + template.format(model=model, pod=POD_NAME)
 
 
 # =============================================================================
@@ -271,16 +339,27 @@ def _has_input_images(messages: list) -> bool:
 
 
 def get_token_count(text):
-    try:
-        # Encode the text
-        encoded_input = tokenizer(text)
+    if text is None:
+        return 0
 
-        # Get the number of tokens
-        return len(encoded_input["input_ids"])
-    except Exception as e:
-        logger.error(f"Failed to get number of tokens: {e}")
+    text = str(text)
+    if not text:
+        return 0
 
-    return 1
+    if tokenizer is not None:
+        try:
+            encoded_input = tokenizer(text)
+            return len(encoded_input["input_ids"])
+        except Exception as e:
+            logger.warning(f"Failed to use model tokenizer, fallback to tiktoken: {e}")
+
+    if tiktoken_encoding is not None:
+        try:
+            return len(tiktoken_encoding.encode(text))
+        except Exception as e:
+            logger.warning(f"Failed to use tiktoken, fallback to heuristic: {e}")
+
+    return max(1, len(text.split()))
 
 
 models = [
@@ -499,11 +578,9 @@ def completion():
                 )
             )
 
-        overhead = datetime.now().timestamp() - start
-        if latency > overhead:
-            time.sleep(latency - overhead)
-        elif latency > 0.0:
-            logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
+        _sleep_for_request_latency(start, latency)
+
+        simulated_text = simulated_message(model)
 
         if stream:
 
@@ -514,7 +591,7 @@ def completion():
                         k=20,
                     )
                 )
-                full_text = f"This is simulated message from {model}!"
+                full_text = simulated_text
                 words = full_text.split()
                 for i, word in enumerate(words):
                     chunk = {
@@ -562,6 +639,21 @@ def completion():
             response = Response(generate(), mimetype="text/event-stream")
             response.headers['Cache-Control'] = 'no-cache'
             response.headers['X-Accel-Buffering'] = 'no'
+            _log_mock_exchange(
+                "/v1/completions",
+                request.json,
+                {
+                    "object": "text_completion",
+                    "model": model,
+                    "stream": True,
+                    "content_preview": simulated_text,
+                    "usage": {
+                        "prompt_tokens": input_tokens,
+                        "completion_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                    },
+                },
+            )
             return response
         else:
             response = {
@@ -572,7 +664,7 @@ def completion():
                 "system_fingerprint": "fp_44709d6fcb",
                 "choices": [
                     {
-                        "text": f"This is simulated message from {model}!",
+                        "text": simulated_text,
                         "index": 0,
                         "logprobs": None,
                         "finish_reason": "length",
@@ -587,6 +679,7 @@ def completion():
 
             _apply_pd_prefill_fields(response, request.json, input_tokens)
 
+            _log_mock_exchange("/v1/completions", request.json, response)
             return jsonify(response), 200
     except Exception as e:
         err = {
@@ -657,11 +750,9 @@ def chat_completions():
                 )
             )
 
-        overhead = datetime.now().timestamp() - start
-        if latency > overhead:
-            time.sleep(latency - overhead)
-        else:
-            logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
+        _sleep_for_request_latency(start, latency)
+
+        simulated_text = simulated_message(model, prefix="\n\n")
 
         if stream:
 
@@ -692,7 +783,7 @@ def chat_completions():
                 yield f"data: {json.dumps(role_chunk)}\n\n"
 
                 # Content chunks
-                full_text = f"\n\nThis is simulated message from {model}!"
+                full_text = simulated_text
                 words = full_text.split()
                 for i, word in enumerate(words):
                     chunk = {
@@ -758,6 +849,21 @@ def chat_completions():
             response = Response(generate(), mimetype="text/event-stream")
             response.headers['Cache-Control'] = 'no-cache'
             response.headers['X-Accel-Buffering'] = 'no'
+            _log_mock_exchange(
+                "/v1/chat/completions",
+                request.json,
+                {
+                    "object": "chat.completion.chunk",
+                    "model": model,
+                    "stream": True,
+                    "content_preview": simulated_text,
+                    "usage": {
+                        "prompt_tokens": input_tokens,
+                        "completion_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                    },
+                },
+            )
             return response
         else:
             # --- vLLM-Omni: image gen/edit via /v1/chat/completions ---
@@ -790,10 +896,11 @@ def chat_completions():
                         "total_tokens": input_tokens,
                     },
                 }
+                _log_mock_exchange("/v1/chat/completions", request.json, response)
                 return jsonify(response), 200
 
             # --- Standard text response (with optional audio) ---
-            text_content = f"\n\nThis is simulated message from {model}!"
+            text_content = simulated_text
             message_body = {
                 "role": "assistant",
                 "content": text_content,
@@ -829,6 +936,7 @@ def chat_completions():
 
             _apply_pd_prefill_fields(response, request.json, input_tokens)
 
+            _log_mock_exchange("/v1/chat/completions", request.json, response)
             return jsonify(response), 200
     except Exception as e:
         err = {

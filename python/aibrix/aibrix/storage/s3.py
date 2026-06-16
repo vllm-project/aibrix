@@ -201,6 +201,7 @@ class S3Storage(BaseStorage):
         delimiter: Optional[str] = None,
         limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
+        after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
         """List objects with given prefix using native S3 continuation tokens."""
 
@@ -216,6 +217,8 @@ class S3Storage(BaseStorage):
             # Use native S3 continuation token for pagination
             if continuation_token:
                 kwargs["ContinuationToken"] = continuation_token
+            elif after_key:
+                kwargs["StartAfter"] = after_key
 
             # Set MaxKeys for limit (S3 native pagination)
             if limit is not None:

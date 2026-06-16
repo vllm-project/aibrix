@@ -1,0 +1,16 @@
+Scenario: aibrix-recent-commits-custom-gateway-values-only
+Tests:
+  - name: aibrix-main-d5b6d5b-custom-gateway-values-only
+    provider: aibrix
+    fullstack: false
+    commit: d5b6d5b8b151e05025310aee13969a119b41c756
+    engine:
+      type: vllm
+      manifest: testdata/deployments/aibrix/models/pd-model.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke-pd.yaml
+    gateway:
+      image:
+        baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+        outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd

@@ -28,14 +28,15 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import ValidationError
 
-from aibrix.batch.job_driver import EchoInferenceEngineClient, JobDriver, LocalJobDriver
+from aibrix.batch.client import NoopEndpointSource
+from aibrix.batch.job_driver import BaseJobDriver, ExternalRuntime, JobDriver
 from aibrix.batch.job_entity import (
     AibrixMetadata,
     BatchJob,
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
-    BatchJobTransformer,
+    BatchJobStatusCopy,
     BatchUsage,
     Condition,
     ConditionStatus,
@@ -44,9 +45,11 @@ from aibrix.batch.job_entity import (
     ModelTemplateRef,
     ObjectMeta,
     OutputTokensDetails,
+    RequestCountStats,
     TypeMeta,
+    aggregate_batch_job_status,
+    merge_batch_job_status_copies,
 )
-from aibrix.batch.job_entity.k8s_transformer import JobAnnotationKey
 from aibrix.metadata.api.v1.batch import _batch_job_to_openai_response
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -100,9 +103,52 @@ class TestBatchUsageSchema:
 
 @pytest.fixture
 def driver() -> JobDriver:
-    return LocalJobDriver(
+    return BaseJobDriver(
         progress_manager=MagicMock(),
-        inference_client=EchoInferenceEngineClient(),
+        runtime=ExternalRuntime(NoopEndpointSource()),
+    )
+
+
+def _make_status_copy(
+    *,
+    total: int,
+    launched: int,
+    completed: int,
+    failed: int,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cached_tokens: int = 0,
+    reasoning_tokens: int = 0,
+) -> BatchJobStatusCopy:
+    return BatchJobStatusCopy(
+        state=BatchJobState.IN_PROGRESS,
+        requestCounts=RequestCountStats(
+            total=total,
+            launched=launched,
+            completed=completed,
+            failed=failed,
+        ),
+        usage=BatchUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            input_tokens_details=InputTokensDetails(cached_tokens=cached_tokens),
+            output_tokens_details=OutputTokensDetails(
+                reasoning_tokens=reasoning_tokens
+            ),
+        ),
+    )
+
+
+def _make_status(
+    *, status_copies: Optional[dict[str, BatchJobStatusCopy]]
+) -> BatchJobStatus:
+    return BatchJobStatus(
+        jobID="job-1",
+        state=BatchJobState.IN_PROGRESS,
+        createdAt=datetime.now(timezone.utc),
+        requestCounts=RequestCountStats(),
+        statusCopies=status_copies,
     )
 
 
@@ -203,72 +249,116 @@ class TestWorkerAccumulation:
         assert u.input_tokens == 0
         assert u.output_tokens == 0
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# K8s annotation persistence roundtrip
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def _make_status(usage=None, **kwargs) -> BatchJobStatus:
-    data = {
-        "jobID": "j1",
-        "state": kwargs.get("state", BatchJobState.IN_PROGRESS),
-        "createdAt": datetime.now(timezone.utc),
-        "requestCounts": {
-            "total": kwargs.get("total", 100),
-            "launched": 100,
-            "completed": kwargs.get("completed", 90),
-            "failed": kwargs.get("failed", 0),
-        },
-    }
-    s = BatchJobStatus.model_validate(data)
-    if usage is not None:
-        s.usage = usage
-    return s
-
-
-class TestUsageAnnotationRoundtrip:
-    def test_full_usage_persisted_and_restored(self):
-        original = _make_status(
-            usage=BatchUsage(
-                input_tokens=10_000,
-                output_tokens=5_000,
-                total_tokens=15_000,
-                input_tokens_details=InputTokensDetails(cached_tokens=2_000),
-                output_tokens_details=OutputTokensDetails(reasoning_tokens=300),
-            )
+    def test_aggregated_usage_includes_old_and_new_local_driver_status_copies(self):
+        status = BatchJobStatus(
+            jobID="job-1",
+            state=BatchJobState.IN_PROGRESS,
+            createdAt=datetime.now(timezone.utc),
+            statusCopies={
+                "worker-old": BatchJobStatusCopy(
+                    state=BatchJobState.IN_PROGRESS,
+                    usage=BatchUsage(
+                        input_tokens=100,
+                        output_tokens=40,
+                        total_tokens=140,
+                        input_tokens_details=InputTokensDetails(cached_tokens=10),
+                        output_tokens_details=OutputTokensDetails(reasoning_tokens=4),
+                    ),
+                ),
+                "worker-new": BatchJobStatusCopy(
+                    state=BatchJobState.IN_PROGRESS,
+                    usage=BatchUsage(
+                        input_tokens=30,
+                        output_tokens=12,
+                        total_tokens=42,
+                        input_tokens_details=InputTokensDetails(cached_tokens=3),
+                        output_tokens_details=OutputTokensDetails(reasoning_tokens=2),
+                    ),
+                ),
+            },
         )
-        annotations = BatchJobTransformer.create_status_annotations(original)
-        assert JobAnnotationKey.USAGE.value in annotations
 
-        # Hydrate a fresh status from annotations
-        fresh = _make_status()  # usage is None
-        restored = BatchJobTransformer.update_status_from_annotations(
-            fresh, annotations
+        aggregated = aggregate_batch_job_status(status, False)
+
+        assert aggregated.usage is not None
+        assert aggregated.usage.input_tokens == 130
+        assert aggregated.usage.output_tokens == 52
+        assert aggregated.usage.total_tokens == 182
+        assert aggregated.usage.input_tokens_details.cached_tokens == 13
+        assert aggregated.usage.output_tokens_details.reasoning_tokens == 6
+
+
+class TestStatusCopyMerging:
+    def test_merge_preserves_existing_copies_when_new_status_has_none(self):
+        existing = _make_status(
+            status_copies={
+                "worker-old": _make_status_copy(
+                    total=4,
+                    launched=4,
+                    completed=3,
+                    failed=1,
+                    input_tokens=100,
+                    output_tokens=40,
+                    cached_tokens=10,
+                    reasoning_tokens=4,
+                )
+            }
         )
-        assert restored.usage is not None
-        assert restored.usage.input_tokens == 10_000
-        assert restored.usage.output_tokens == 5_000
-        assert restored.usage.input_tokens_details.cached_tokens == 2_000
-        assert restored.usage.output_tokens_details.reasoning_tokens == 300
+        new = _make_status(status_copies=None)
 
-    def test_zero_usage_not_persisted(self):
-        """Empty BatchUsage shouldn't bloat annotations on uninitialized batches."""
-        original = _make_status(usage=BatchUsage())  # all zero
-        annotations = BatchJobTransformer.create_status_annotations(original)
-        assert JobAnnotationKey.USAGE.value not in annotations
+        merged = merge_batch_job_status_copies(existing, new)
 
-    def test_none_usage_not_persisted(self):
-        original = _make_status()  # usage stays None
-        annotations = BatchJobTransformer.create_status_annotations(original)
-        assert JobAnnotationKey.USAGE.value not in annotations
+        assert merged.status_copies is not None
+        assert set(merged.status_copies) == {"worker-old"}
+        assert merged.request_counts.total == 4
+        assert merged.request_counts.launched == 4
+        assert merged.request_counts.completed == 3
+        assert merged.request_counts.failed == 1
+        assert merged.usage is not None
+        assert merged.usage.input_tokens == 100
+        assert merged.usage.output_tokens == 40
 
-    def test_malformed_usage_annotation_yields_none(self):
-        fresh = _make_status()
-        restored = BatchJobTransformer.update_status_from_annotations(
-            fresh, {JobAnnotationKey.USAGE.value: "not-json{{"}
+    def test_merge_combines_existing_and_new_status_copies(self):
+        existing = _make_status(
+            status_copies={
+                "worker-old": _make_status_copy(
+                    total=5,
+                    launched=5,
+                    completed=2,
+                    failed=1,
+                    input_tokens=70,
+                    output_tokens=20,
+                    cached_tokens=7,
+                    reasoning_tokens=2,
+                )
+            }
         )
-        assert restored.usage is None  # graceful, no crash
+        new = _make_status(
+            status_copies={
+                "worker-new": _make_status_copy(
+                    total=5,
+                    launched=4,
+                    completed=3,
+                    failed=1,
+                    input_tokens=30,
+                    output_tokens=10,
+                    cached_tokens=3,
+                    reasoning_tokens=1,
+                )
+            }
+        )
+
+        merged = merge_batch_job_status_copies(existing, new)
+
+        assert merged.status_copies is not None
+        assert set(merged.status_copies) == {"worker-old", "worker-new"}
+        assert merged.request_counts.total == 5
+        assert merged.request_counts.launched == 5
+        assert merged.request_counts.completed == 5
+        assert merged.request_counts.failed == 0
+        assert merged.usage is not None
+        assert merged.usage.input_tokens == 100
+        assert merged.usage.output_tokens == 30
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -330,12 +420,12 @@ _OPENAI_8_STATES = {
 
 
 class TestApiResponseStateFlatten:
-    """Internal CREATED / FINALIZED states must not leak to the API."""
+    """FINALIZED is flattened to its condition; CREATED is surfaced as the
+    non-OpenAI 'scheduling' status (it spends real time awaiting admission)."""
 
     @pytest.mark.parametrize(
         "state,expected",
         [
-            (BatchJobState.CREATED, "validating"),
             (BatchJobState.VALIDATING, "validating"),
             (BatchJobState.IN_PROGRESS, "in_progress"),
             (BatchJobState.FINALIZING, "finalizing"),

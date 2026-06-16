@@ -33,6 +33,24 @@ kind: EnvoyProxy
 metadata:
   name: {{ include "aibrix.fullname" . }}-custom-proxy-config
 spec:
+{{- if .Values.openTelemetry.enable }}
+  telemetry:
+    tracing:
+      samplingRate: {{ .Values.openTelemetry.samplingRate | default 100 }}
+      provider:
+        type: OpenTelemetry
+        {{- if .Values.openTelemetry.serviceName }}
+        backendRefs:
+          - name: {{ .Values.openTelemetry.serviceName }}
+            {{- if .Values.openTelemetry.namespace }}
+            namespace: {{ .Values.openTelemetry.namespace }}
+            {{- end }}
+            port: {{ .Values.openTelemetry.port | default 4317 }}
+        {{- else }}
+        host: {{ .Values.openTelemetry.host | quote }}
+        port: {{ .Values.openTelemetry.port | default 4317 }}
+        {{- end }}
+{{- end }}
   provider:
     type: Kubernetes
     kubernetes:

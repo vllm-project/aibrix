@@ -36,9 +36,15 @@ type Store interface {
 	UpsertJob(ctx context.Context, rec *models.Job) error
 	GetJob(ctx context.Context, id string) (*models.Job, error) // (nil, nil) when not found
 	ListJobs(ctx context.Context, ids []string) (map[string]*models.Job, error)
+	ListJobsByBatchIDs(ctx context.Context, batchIDs []string) (map[string]*models.Job, error)
+	ListJobsByDatasetID(ctx context.Context, fileID string) ([]*models.Job, error)
 	DeleteJob(ctx context.Context, id string) error
 
 	ListNonTerminalJobs(ctx context.Context) ([]*models.Job, error)
+	// ListAllJobs lists all jobs with cursor-based pagination.
+	// after is the job ID cursor (empty string for first page).
+	// Returns jobs sorted by created_at descending, hasMore indicates if more results exist.
+	ListAllJobs(ctx context.Context, after string, limit int) ([]*models.Job, bool, error)
 
 	// Models
 	ListModels(ctx context.Context, search, category string) ([]*pb.Model, error)

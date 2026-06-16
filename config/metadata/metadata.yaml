@@ -30,20 +30,10 @@ rules:
   - apiGroups: ["model.aibrix.ai"]
     resources: ["modeladapters"]
     verbs: ["get", "list"]
-  # For batch job watching
-  - apiGroups: ["batch"] 
+  # For batch job execution (K8sJobRuntime creates/polls/deletes Jobs in-process)
+  - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # For kopf high availability
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["apiextensions.k8s.io"] # required by kopf
-    resources: ["customresourcedefinitions"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""] # required by kopf
-    resources: ["namespaces"]
-    verbs: ["list", "watch"]
+    verbs: ["get", "list", "create", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -78,10 +68,6 @@ spec:
         - name: init-redis
           image: busybox
           command: ['sh', '-c', 'until echo "ping" | nc aibrix-redis-master 6379 -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
-      volumes:
-        - name: config-volume
-          configMap:
-            name: metadata-config
       containers:
         - name: metadata-service
           image: metadata-service:latest
@@ -91,14 +77,17 @@ spec:
             - "0.0.0.0"
             - --port
             - "8090"
+            # Per-job k8s execution: jobs select the k8s-job provider via
+            # extra_body.aibrix.planner_decision and their worker pods bring
+            # their own inference engine endpoint. --enable-k8s-support lets the
+            # metadata service create the k8s clients needed to run jobs as
+            # Kubernetes Jobs/Deployments. Requires the jobs RBAC granted to the
+            # metadata service account.
+            - --enable-k8s-support
           imagePullPolicy: IfNotPresent
-          # Enable S3 or TOS to enable-k8s-job, default disabled.
+          # Configure S3 or TOS storage via the env patches for production batch jobs.
           ports:
             - containerPort: 8090
-          volumeMounts:
-            - name: config-volume
-              mountPath: /app/config
-              readOnly: true
           resources:
             limits:
               cpu: 500m

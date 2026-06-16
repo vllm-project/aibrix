@@ -14,28 +14,35 @@
 
 import asyncio
 import contextlib
-import io
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Optional
 
 import pytest
 
-import aibrix.batch.job_driver.deployment_driver as deployment_driver_module
-from aibrix.batch.job_driver import DeploymentJobDriver
+from aibrix.batch.batch_manager import BatchManager
+from aibrix.batch.batch_scheduler import BatchScheduler
+from aibrix.batch.client.sources import (
+    DiscoveryEndpointSource,
+    InClusterEndpointSource,
+    PortForwardEndpointSource,
+)
+from aibrix.batch.job_driver import BaseJobDriver, DeploymentRuntime, ExternalRuntime
 from aibrix.batch.job_driver.driver_factory import create_job_driver
+from aibrix.batch.job_driver.runtime.k8s_deployment import DeploymentHandle
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobEndpoint,
+    BatchJobError,
+    BatchJobErrorCode,
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
-    JobEntityManager,
     ObjectMeta,
     TypeMeta,
 )
-from aibrix.batch.job_manager import JobManager
-from aibrix.batch.scheduler import JobScheduler
+from aibrix.batch.manifest.renderer import RenderError
+from aibrix.batch.state import JobEntityManager
 from aibrix.context import InfrastructureContext
 
 
@@ -43,7 +50,9 @@ class FakeEntityManager(JobEntityManager):
     def __init__(self):
         super().__init__()
 
-    async def submit_job(self, session_id: str, job: BatchJobSpec):
+    async def submit_job(
+        self, session_id: str, job: BatchJobSpec, request_count: int = 0
+    ):
         return None
 
     async def update_job_ready(self, job: BatchJob):
@@ -58,10 +67,14 @@ class FakeEntityManager(JobEntityManager):
     async def delete_job(self, job: BatchJob):
         return None
 
-    def get_job(self, job_id: str) -> Optional[BatchJob]:
+    async def get_job(
+        self, job_id: str, force_reload: bool = False
+    ) -> Optional[BatchJob]:
         return None
 
-    def list_jobs(self) -> list[BatchJob]:
+    async def list_jobs(
+        self, after=None, limit=JobEntityManager.DEFAULT_JOB_PAGE_LIMIT
+    ) -> list[BatchJob]:
         return []
 
 
@@ -70,12 +83,11 @@ class FakeProgressManager:
         self.job = job
         self.failed_messages: list[str] = []
         self.validated_job_ids: list[str] = []
-        self.created_driver = None
 
     async def get_job(self, job_id: str) -> Optional[BatchJob]:
         return self.job if self.job.job_id == job_id else None
 
-    async def validate_job(self, job_id: str, inference_client=None) -> bool:
+    async def validate_job(self, job_id: str, endpoint_source=None) -> bool:
         if self.job.job_id != job_id:
             return False
         self.validated_job_ids.append(job_id)
@@ -110,30 +122,50 @@ class FakeCoreV1Api:
     def create_namespaced_service(self, namespace: str, body: dict):
         self.created.append((namespace, body))
 
+    def read_namespaced_service(self, name: str, namespace: str):
+        return SimpleNamespace(metadata=SimpleNamespace(name=name, namespace=namespace))
+
     def delete_namespaced_service(self, name: str, namespace: str):
         self.deleted.append((namespace, name))
 
 
 class FakeRenderer:
+    def __init__(self):
+        self.provider_specs = []
+
     def render(
         self,
-        template_name: str,
-        profile_name=None,
-        template_version=None,
-        deployment_name=None,
-        gpu_type=None,
+        job_id: str,
+        spec: BatchJobSpec,
+        provider_spec,
     ):
-        assert template_name == "mock-template"
+        assert job_id is not None
+        assert spec.model_template_name == "mock-template"
+        self.provider_specs.append(provider_spec)
         return {
             "deployment": {
                 "apiVersion": "apps/v1",
                 "kind": "Deployment",
-                "metadata": {"name": deployment_name, "namespace": "default"},
+                "metadata": {
+                    "name": "rendered-deployment",
+                    "namespace": "default",
+                    "labels": {"model.aibrix.ai/name": "rendered-model"},
+                },
                 "spec": {
                     "replicas": 1,
-                    "selector": {"matchLabels": {"app": deployment_name}},
+                    "selector": {
+                        "matchLabels": {
+                            "app": "rendered-app",
+                            "model.aibrix.ai/name": "rendered-model",
+                        }
+                    },
                     "template": {
-                        "metadata": {"labels": {"app": deployment_name}},
+                        "metadata": {
+                            "labels": {
+                                "app": "rendered-app",
+                                "model.aibrix.ai/name": "rendered-model",
+                            }
+                        },
                         "spec": {"containers": [{"name": "llm-engine"}]},
                     },
                 },
@@ -141,144 +173,17 @@ class FakeRenderer:
             "service": {
                 "apiVersion": "v1",
                 "kind": "Service",
-                "metadata": {"name": "template-service", "namespace": "default"},
+                "metadata": {"name": "rendered-service", "namespace": "default"},
                 "spec": {
-                    "selector": {"app": deployment_name},
+                    "selector": {
+                        "app": "rendered-app",
+                        "model.aibrix.ai/name": "rendered-model",
+                    },
                     "ports": [{"port": 8000, "targetPort": 8000}],
                     "type": "ClusterIP",
                 },
             },
         }
-
-
-@pytest.mark.asyncio
-async def test_kubernetes_service_inference_client_logs_single_warning_on_gateway_success(
-    monkeypatch,
-):
-    client = deployment_driver_module.KubernetesServiceInferenceClient(
-        core_v1_api=FakeCoreV1Api(),
-        namespace="default",
-        service_name="svc",
-        model_name="model-a",
-        service_port=8000,
-        base_url="http://svc.default.svc.cluster.local:8000",
-    )
-    warnings = []
-
-    def _warning(message, **kwargs):
-        warnings.append((message, kwargs))
-
-    monkeypatch.setattr(deployment_driver_module.logger, "warning", _warning)
-
-    def _proxy_fail(endpoint, request_data):
-        raise RuntimeError("proxy boom")
-
-    async def _gateway_success(endpoint, request_data):
-        return {"ok": True, "model": request_data["model"]}
-
-    client._proxy_inference_request = _proxy_fail
-    client._gateway_inference_request = _gateway_success
-
-    result = await client.inference_request("/v1/chat/completions", {"prompt": "hi"})
-
-    assert result == {"ok": True, "model": "model-a"}
-    assert len(warnings) == 1
-    assert warnings[0][0] == "Inference request succeeded via gateway after fallback"
-    assert warnings[0][1]["succeeded_via"] == "gateway"
-    assert warnings[0][1]["attempts_failed"] == ["service proxy failed: proxy boom"]
-
-
-@pytest.mark.asyncio
-async def test_kubernetes_service_inference_client_logs_single_warning_on_port_forward_success(
-    monkeypatch,
-):
-    client = deployment_driver_module.KubernetesServiceInferenceClient(
-        core_v1_api=FakeCoreV1Api(),
-        namespace="default",
-        service_name="svc",
-        model_name="model-a",
-        service_port=8000,
-        base_url="http://svc.default.svc.cluster.local:8000",
-    )
-    warnings = []
-
-    def _warning(message, **kwargs):
-        warnings.append((message, kwargs))
-
-    monkeypatch.setattr(deployment_driver_module.logger, "warning", _warning)
-
-    def _proxy_fail(endpoint, request_data):
-        raise RuntimeError("proxy boom")
-
-    async def _gateway_fail(endpoint, request_data):
-        raise RuntimeError("gateway boom")
-
-    async def _fallback_success(endpoint, request_data):
-        return {"ok": True, "model": request_data["model"]}
-
-    client._proxy_inference_request = _proxy_fail
-    client._gateway_inference_request = _gateway_fail
-    client._fallback_inference_request = _fallback_success
-
-    result = await client.inference_request("/v1/chat/completions", {"prompt": "hi"})
-
-    assert result == {"ok": True, "model": "model-a"}
-    assert len(warnings) == 1
-    assert (
-        warnings[0][0] == "Inference request succeeded via port-forward after fallback"
-    )
-    assert warnings[0][1]["succeeded_via"] == "port-forward"
-    assert warnings[0][1]["attempts_failed"] == [
-        "service proxy failed: proxy boom",
-        "gateway failed: gateway boom",
-    ]
-
-
-def test_kubernetes_service_inference_client_port_forward_parses_assigned_local_port(
-    monkeypatch,
-):
-    client = deployment_driver_module.KubernetesServiceInferenceClient(
-        core_v1_api=FakeCoreV1Api(),
-        namespace="default",
-        service_name="svc",
-        model_name="model-a",
-        service_port=8000,
-        base_url="http://svc.default.svc.cluster.local:8000",
-    )
-    commands = []
-    assigned_port = 39123
-
-    class _FakeProcess:
-        def __init__(self):
-            self.stdout = io.StringIO(
-                f"Forwarding from 127.0.0.1:{assigned_port} -> 8000\n"
-            )
-
-        def poll(self):
-            return None
-
-        def terminate(self):
-            return None
-
-    def _popen(command, **kwargs):
-        commands.append(command)
-        return _FakeProcess()
-
-    monkeypatch.setattr(deployment_driver_module.subprocess, "Popen", _popen)
-
-    base_url = client._start_port_forward()
-
-    assert commands == [
-        [
-            "kubectl",
-            "-n",
-            "default",
-            "port-forward",
-            "service/svc",
-            ":8000",
-        ]
-    ]
-    assert base_url == f"http://127.0.0.1:{assigned_port}"
 
 
 def _make_job(job_id: str = "job-123456789abc") -> BatchJob:
@@ -288,15 +193,15 @@ def _make_job(job_id: str = "job-123456789abc") -> BatchJob:
         completion_window="24h",
         aibrix={
             "model_template": {"name": "mock-template"},
-            "planner_decision": {
+            "runtime": {"target": "Kubernetes"},
+            "resource_allocation": {
                 "provision_id": "reservation-1",
                 "provision_resource_deadline": 3600,
                 "resource_details": [
                     {
-                        "resource_type": "deployment",
                         "endpoint_cluster": "cluster-a",
                         "gpu_type": "H100",
-                        "worker_num": 1,
+                        "replica": 1,
                     }
                 ],
             },
@@ -319,6 +224,14 @@ def _make_job(job_id: str = "job-123456789abc") -> BatchJob:
     )
 
 
+def _make_job_without_resource_details() -> BatchJob:
+    job = _make_job()
+    assert job.spec.aibrix is not None
+    assert job.spec.aibrix.resource_allocation is not None
+    job.spec.aibrix.resource_allocation.resource_details = None
+    return job
+
+
 def _make_infrastructure_context(
     apps_v1_api=object(), core_v1_api=object()
 ) -> InfrastructureContext:
@@ -330,11 +243,59 @@ def _make_infrastructure_context(
     )
 
 
-@pytest.fixture(autouse=True)
-def reset_deployment_driver_singleton():
-    deployment_driver_module._deployment_job_driver = None
-    yield
-    deployment_driver_module._deployment_job_driver = None
+class FakeDiscoveryV1Api:
+    def __init__(self, slices=None):
+        self.slices = slices or []
+        self.calls = []
+
+    def list_namespaced_endpoint_slice(self, namespace: str, label_selector: str):
+        self.calls.append((namespace, label_selector))
+        return SimpleNamespace(items=self.slices)
+
+
+def _make_deployment_driver(
+    context, progress_manager, entity_manager, renderer=None
+) -> BaseJobDriver:
+    """The converged driver: BaseJobDriver wired to a DeploymentRuntime. The
+    deployment-owns-the-run behaviors (no re-raise, always aggregate, internal
+    default failure) are derived from DeploymentRuntime.provisions=True."""
+    runtime = DeploymentRuntime(context, entity_manager, renderer)
+    return BaseJobDriver(progress_manager, runtime)
+
+
+def _make_deployment_handle(replicas: int = 1) -> DeploymentHandle:
+    return DeploymentHandle(
+        namespace="default",
+        deployment_name="rendered-deployment",
+        service_name="rendered-service",
+        model_name="rendered-model",
+        base_url="http://rendered-service.default.svc.cluster.local:8000",
+        service_port=8000,
+        replicas=replicas,
+    )
+
+
+@pytest.mark.asyncio
+async def test_deployment_driver_allows_missing_template_registry_at_construction():
+    driver = _make_deployment_driver(
+        _make_infrastructure_context(),
+        progress_manager=FakeProgressManager(_make_job()),
+        entity_manager=FakeEntityManager(),
+    )
+
+    assert driver._runtime._renderer is not None
+
+
+@pytest.mark.asyncio
+async def test_deployment_driver_reports_missing_template_registry_at_render_time():
+    driver = _make_deployment_driver(
+        _make_infrastructure_context(),
+        progress_manager=FakeProgressManager(_make_job()),
+        entity_manager=FakeEntityManager(),
+    )
+
+    with pytest.raises(RenderError, match="template registry is not configured"):
+        await driver._runtime._provision(_make_job(), "job-render-test")
 
 
 @pytest.mark.asyncio
@@ -346,21 +307,22 @@ async def test_deployment_driver_creates_runtime_and_finalizes_with_temp_files()
     entity_manager = FakeEntityManager()
     apps_api = FakeAppsV1Api()
     core_api = FakeCoreV1Api()
-    driver = DeploymentJobDriver(
+    driver = _make_deployment_driver(
         _make_infrastructure_context(apps_v1_api=apps_api, core_v1_api=core_api),
         progress_manager=progress_manager,
         entity_manager=entity_manager,
         renderer=FakeRenderer(),
     )
 
-    called = {"prepare": 0, "finalize": 0, "base_url": None}
+    called = {"prepare": 0, "finalize": 0, "base_url": None, "model_name": None}
 
     async def _prepare_job(_job):
         called["prepare"] += 1
         return _job
 
     async def _execute_worker(job_id):
-        called["base_url"] = driver._inference_client.base_url
+        called["base_url"] = driver._runtime._active_handle.base_url
+        called["model_name"] = driver._active_model_name
         progress_manager.job.status.state = BatchJobState.FINALIZING
         return progress_manager.job
 
@@ -373,50 +335,32 @@ async def test_deployment_driver_creates_runtime_and_finalizes_with_temp_files()
     driver.execute_worker = _execute_worker
     driver.finalize_job = _finalize_job
 
-    result = await driver.execute_job(job.job_id)
+    await driver.execute(job.job_id)
 
-    assert result.status.state == BatchJobState.FINALIZED
+    assert job.status.state == BatchJobState.FINALIZED
     assert called["prepare"] == 0
     assert called["finalize"] == 1
     assert (
-        called["base_url"]
-        == "http://batch-job-12345678-svc.default.svc.cluster.local:8000"
+        called["base_url"] == "http://rendered-service.default.svc.cluster.local:8000"
     )
+    assert called["model_name"] == "rendered-model"
     assert len(apps_api.created) == 1
     assert len(core_api.created) == 1
     created_deployment = apps_api.created[0][1]
     created_service = core_api.created[0][1]
     assert (
-        created_deployment["metadata"]["labels"]["batch.job.aibrix.ai/job-id"]
-        == job.job_id
-    )
-    assert (
-        created_deployment["spec"]["selector"]["matchLabels"][
-            "batch.job.aibrix.ai/job-id"
-        ]
-        == job.job_id
-    )
-    assert (
-        created_service["spec"]["selector"]["batch.job.aibrix.ai/job-id"] == job.job_id
-    )
-    assert (
         created_deployment["metadata"]["labels"]["model.aibrix.ai/name"]
-        == "batch-job-12345678-svc"
+        == "rendered-model"
     )
     assert (
         created_deployment["spec"]["selector"]["matchLabels"]["model.aibrix.ai/name"]
-        == "batch-job-12345678-svc"
+        == "rendered-model"
     )
     assert (
-        created_service["metadata"]["labels"]["model.aibrix.ai/name"]
-        == "batch-job-12345678-svc"
+        created_service["spec"]["selector"]["model.aibrix.ai/name"] == "rendered-model"
     )
-    assert (
-        created_service["spec"]["selector"]["model.aibrix.ai/name"]
-        == "batch-job-12345678-svc"
-    )
-    assert core_api.deleted == [("default", "batch-job-12345678-svc")]
-    assert apps_api.deleted == [("default", "batch-job-12345678-engine")]
+    assert core_api.deleted == [("default", "rendered-service")]
+    assert apps_api.deleted == [("default", "rendered-deployment")]
 
 
 @pytest.mark.asyncio
@@ -426,7 +370,7 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
     entity_manager = FakeEntityManager()
     apps_api = FakeAppsV1Api()
     core_api = FakeCoreV1Api()
-    driver = DeploymentJobDriver(
+    driver = _make_deployment_driver(
         _make_infrastructure_context(apps_v1_api=apps_api, core_v1_api=core_api),
         progress_manager=progress_manager,
         entity_manager=entity_manager,
@@ -452,36 +396,26 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
     driver.execute_worker = _execute_worker
     driver.finalize_job = _finalize_job
 
-    task = asyncio.create_task(driver.execute_job(job.job_id))
+    task = asyncio.create_task(driver.execute(job.job_id))
     await asyncio.wait_for(entered.wait(), timeout=1)
-    deleted = await driver._job_deleted_handler(job)
+    deleted = await driver._runtime._job_deleted_handler(job)
     assert deleted is True
     await task
 
-    assert core_api.deleted == [("default", "batch-job-delete-1-svc")]
-    assert apps_api.deleted == [("default", "batch-job-delete-1-engine")]
+    assert core_api.deleted == [("default", "rendered-service")]
+    assert apps_api.deleted == [("default", "rendered-deployment")]
 
 
-def test_create_job_driver_uses_deployment_driver_for_scheduler_jobs(monkeypatch):
-    """Protect driver selection for resource_type=deployment.
+@pytest.mark.asyncio
+async def test_create_job_driver_uses_deployment_runtime_for_kubernetes_target():
+    """Protect Runtime selection for runtime.target=Kubernetes.
 
-    If the factory regresses and falls back to the local/simple path,
-    metadata-server jobs that request deployment execution will silently
-    stop using DeploymentJobDriver.
+    If the factory regresses and falls back to the local/standalone path,
+    metadata-server jobs that request deployment execution silently stop
+    being wired to a DeploymentRuntime.
     """
     job = _make_job()
     entity_manager = FakeEntityManager()
-    deployment_sentinel = object()
-    simple_sentinel = object()
-
-    monkeypatch.setattr(
-        "aibrix.batch.job_driver.driver_factory.DeploymentJobDriver",
-        lambda context, progress_manager, entity_manager, **kwargs: deployment_sentinel,
-    )
-    monkeypatch.setattr(
-        "aibrix.batch.job_driver.driver_factory.SimpleJobDriver",
-        lambda progress_manager, entity_manager: simple_sentinel,
-    )
 
     driver = create_job_driver(
         _make_infrastructure_context(),
@@ -490,36 +424,109 @@ def test_create_job_driver_uses_deployment_driver_for_scheduler_jobs(monkeypatch
         job=job,
     )
 
-    assert driver is deployment_sentinel
+    assert isinstance(driver, BaseJobDriver)
+    assert isinstance(driver._runtime, DeploymentRuntime)
 
 
-def test_create_job_driver_passes_infrastructure_context_to_deployment_driver(
+@pytest.mark.asyncio
+async def test_deployment_runtime_uses_replica_capacity_for_in_cluster_service(
     monkeypatch,
 ):
-    """Protect infrastructure propagation into DeploymentJobDriver.
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    runtime = DeploymentRuntime(_make_infrastructure_context(), FakeEntityManager())
 
-    DeploymentJobDriver now depends on the shared infrastructure context for
-    registries and Kubernetes APIs. This catches regressions where the
-    factory still chooses DeploymentJobDriver but forgets to forward that
-    context.
+    source = runtime._build_endpoint_source(_make_deployment_handle(replicas=3))
+    try:
+        assert isinstance(source, InClusterEndpointSource)
+        assert len(await source.channels()) == 1
+        assert (await source.capacity()).count == 3
+    finally:
+        await source.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deployment_runtime_keeps_port_forward_capacity_as_single_tunnel(
+    monkeypatch,
+):
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    runtime = DeploymentRuntime(_make_infrastructure_context(), FakeEntityManager())
+
+    source = runtime._build_endpoint_source(_make_deployment_handle(replicas=3))
+    try:
+        assert isinstance(source, PortForwardEndpointSource)
+        assert (await source.capacity()).count == 1
+    finally:
+        await source.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deployment_runtime_can_use_endpoint_slice_discovery_in_cluster(
+    monkeypatch,
+):
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    monkeypatch.setenv("AIBRIX_BATCH_K8S_ENDPOINT_SOURCE", "endpointslice")
+    endpoint_slice = SimpleNamespace(
+        metadata=SimpleNamespace(name="slice-a", resource_version="10"),
+        ports=[SimpleNamespace(port=8000)],
+        endpoints=[
+            SimpleNamespace(
+                addresses=["10.244.0.11"],
+                conditions=SimpleNamespace(ready=True),
+            ),
+            SimpleNamespace(
+                addresses=["10.244.0.12"],
+                conditions=SimpleNamespace(ready=True),
+            ),
+        ],
+    )
+    discovery_api = FakeDiscoveryV1Api([endpoint_slice])
+    context = _make_infrastructure_context()
+    context.values["discovery_v1_api"] = discovery_api
+    runtime = DeploymentRuntime(context, FakeEntityManager())
+
+    source = runtime._build_endpoint_source(_make_deployment_handle(replicas=3))
+    try:
+        assert isinstance(source, DiscoveryEndpointSource)
+        assert (await source.capacity()).count == 2
+        assert discovery_api.calls == [
+            ("default", "kubernetes.io/service-name=rendered-service")
+        ]
+    finally:
+        await source.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deployment_runtime_defaults_when_resource_details_absent():
+    job = _make_job_without_resource_details()
+    apps_api = FakeAppsV1Api()
+    core_api = FakeCoreV1Api()
+    renderer = FakeRenderer()
+    driver = _make_deployment_driver(
+        _make_infrastructure_context(apps_api, core_api),
+        progress_manager=FakeProgressManager(job),
+        entity_manager=FakeEntityManager(),
+        renderer=renderer,
+    )
+
+    await driver._runtime._provision(job, job.job_id)
+
+    assert len(renderer.provider_specs) == 1
+    assert renderer.provider_specs[0].replica is None
+    assert apps_api.created[0][1]["spec"]["replicas"] == 1
+
+
+@pytest.mark.asyncio
+async def test_create_job_driver_passes_infrastructure_context_to_deployment_runtime():
+    """Protect infrastructure propagation into the DeploymentRuntime.
+
+    The runtime depends on the shared infrastructure context for registries
+    and Kubernetes APIs. This catches regressions where the factory selects
+    the right runtime but forgets to forward that context.
     """
     job = _make_job()
     entity_manager = FakeEntityManager()
-    captured = {}
 
-    def _deployment_driver(context, progress_manager, entity_manager, **kwargs):
-        captured["context"] = context
-        captured["progress_manager"] = progress_manager
-        captured["entity_manager"] = entity_manager
-        captured["kwargs"] = kwargs
-        return object()
-
-    monkeypatch.setattr(
-        "aibrix.batch.job_driver.driver_factory.DeploymentJobDriver",
-        _deployment_driver,
-    )
-
-    create_job_driver(
+    driver = create_job_driver(
         _make_infrastructure_context(
             apps_v1_api="apps-api",
             core_v1_api="core-api",
@@ -529,9 +536,11 @@ def test_create_job_driver_passes_infrastructure_context_to_deployment_driver(
         job=job,
     )
 
-    assert captured["context"].apps_v1_api == "apps-api"
-    assert captured["context"].core_v1_api == "core-api"
-    assert captured["entity_manager"] is entity_manager
+    runtime = driver._runtime
+    assert isinstance(runtime, DeploymentRuntime)
+    assert runtime._apps_v1_api == "apps-api"
+    assert runtime._core_v1_api == "core-api"
+    assert runtime._entity_manager is entity_manager
 
 
 @pytest.mark.asyncio
@@ -539,7 +548,7 @@ async def test_scheduler_uses_create_job_driver_for_deployment_jobs(monkeypatch)
     job = _make_job()
     entity_manager = FakeEntityManager()
     context = _make_infrastructure_context()
-    progress_manager = JobManager(context)
+    progress_manager = BatchManager(context)
     progress_manager._job_entity_manager = entity_manager
     assert job.job_id is not None
     progress_manager._pending_jobs[job.job_id] = job
@@ -549,7 +558,7 @@ async def test_scheduler_uses_create_job_driver_for_deployment_jobs(monkeypatch)
         async def validate_job(self, job_arg):
             return None
 
-        async def execute_job(self, job_id):
+        async def execute(self, job_id):
             created["job_id"] = job_id
 
     def _create_job_driver(
@@ -557,27 +566,27 @@ async def test_scheduler_uses_create_job_driver_for_deployment_jobs(monkeypatch)
         progress_manager_arg,
         entity_manager_arg,
         job_arg,
-        inference_client_arg=None,
+        endpoint_source_arg=None,
         **kwargs,
     ):
         created["context"] = context_arg
         created["progress_manager"] = progress_manager_arg
         created["entity_manager"] = entity_manager_arg
         created["job"] = job_arg
-        created["inference_client"] = inference_client_arg
+        created["endpoint_source"] = endpoint_source_arg
         created["kwargs"] = kwargs
         return _Driver()
 
     async def _one_job():
-        return job.job_id
+        return (job.job_id, driver)
 
     monkeypatch.setattr(
-        "aibrix.batch.job_manager.create_job_driver",
+        "aibrix.batch.batch_manager.create_job_driver",
         _create_job_driver,
     )
-    await progress_manager.validate_job(job.job_id)
-    scheduler = JobScheduler(context, progress_manager, entity_manager, 1)
-    monkeypatch.setattr(scheduler, "round_robin_get_job", _one_job)
+    driver = await progress_manager.admit(job.job_id)
+    scheduler = BatchScheduler(context, progress_manager, 1)
+    monkeypatch.setattr(scheduler, "schedule_next_job", _one_job)
 
     task = asyncio.create_task(scheduler.jobs_running_loop())
     try:
@@ -589,9 +598,85 @@ async def test_scheduler_uses_create_job_driver_for_deployment_jobs(monkeypatch)
         assert created["progress_manager"] is progress_manager
         assert created["entity_manager"] is entity_manager
         assert created["job"].job_id == job.job_id
-        assert created["inference_client"] is None
+        assert created["endpoint_source"] is None
         assert created["job_id"] == job.job_id
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+
+# ── converged-driver behavior (replaces the deleted Deployment/K8sJob subclasses) ──
+
+
+@pytest.mark.asyncio
+async def test_provisioning_runtime_drives_converged_failure_policy():
+    """A provisioning runtime makes the base driver own the whole run: no
+    re-raise, always aggregate, internal default failure. This is the
+    load-bearing replacement for the old DeploymentJobDriver overrides."""
+    runtime = DeploymentRuntime(_make_infrastructure_context(), FakeEntityManager())
+    driver = BaseJobDriver(FakeProgressManager(_make_job()), runtime)
+    assert driver._reraise_on_failure is False
+    assert driver._aggregate_always is True
+    assert driver._default_failure_code == BatchJobErrorCode.INTERNAL_ERROR
+
+
+def test_standalone_runtime_drives_inline_failure_policy():
+    """A non-provisioning runtime is the scheduler-driven inline path: re-raise,
+    aggregate only when this driver prepared, inference default failure."""
+    driver = BaseJobDriver(FakeProgressManager(_make_job()), ExternalRuntime(None))
+    assert driver._reraise_on_failure is True
+    assert driver._aggregate_always is False
+    assert driver._default_failure_code == BatchJobErrorCode.INFERENCE_FAILED
+
+
+def test_factory_unknown_provider_raises_invalid_driver():
+    job = SimpleNamespace(spec=SimpleNamespace(runtime_target="providr"))
+    with pytest.raises(BatchJobError) as excinfo:
+        create_job_driver(
+            _make_infrastructure_context(),
+            FakeProgressManager(_make_job()),
+            entity_manager=FakeEntityManager(),
+            job=job,
+        )
+    assert excinfo.value.code == BatchJobErrorCode.INVALID_DRIVER
+
+
+def test_factory_kubernetes_without_entity_manager_raises_invalid_driver():
+    job = SimpleNamespace(spec=SimpleNamespace(runtime_target="Kubernetes"))
+    with pytest.raises(BatchJobError) as excinfo:
+        create_job_driver(
+            _make_infrastructure_context(),
+            FakeProgressManager(_make_job()),
+            entity_manager=None,
+            job=job,
+        )
+    assert excinfo.value.code == BatchJobErrorCode.INVALID_DRIVER
+
+
+def test_factory_kubernetes_without_k8s_context_raises_invalid_driver():
+    job = SimpleNamespace(spec=SimpleNamespace(runtime_target="Kubernetes"))
+    with pytest.raises(BatchJobError) as excinfo:
+        create_job_driver(
+            InfrastructureContext(),
+            FakeProgressManager(_make_job()),
+            entity_manager=FakeEntityManager(),
+            job=job,
+        )
+    assert excinfo.value.code == BatchJobErrorCode.INVALID_DRIVER
+    assert "--enable-k8s-support" in excinfo.value.message
+
+
+def test_factory_external_provider_uses_local_runtime():
+    job = SimpleNamespace(spec=SimpleNamespace(runtime_target="External"))
+    sentinel = object()
+    driver = create_job_driver(
+        _make_infrastructure_context(),
+        FakeProgressManager(_make_job()),
+        entity_manager=FakeEntityManager(),
+        job=job,
+        endpoint_source=sentinel,
+    )
+    assert isinstance(driver, BaseJobDriver)
+    assert isinstance(driver._runtime, ExternalRuntime)
+    assert driver._runtime._source is sentinel

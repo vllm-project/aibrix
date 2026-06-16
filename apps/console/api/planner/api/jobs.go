@@ -18,8 +18,10 @@ package plannerapi
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/openai/openai-go/v3"
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 )
 
 // =============================================================================
@@ -46,6 +48,11 @@ type EnqueueRequest struct {
 	// the aibrix.console.* namespace and is the single source of truth
 	// for read-back via GetJob.
 	BatchParams openai.BatchNewParams `json:"batch_params"`
+	// RequestCountTotal is the frontend-computed request count (e.g., JSONL line count).
+	// The planner persists it to the store for display before MDS reports back.
+	RequestCountTotal int32 `json:"request_count_total,omitempty"`
+	// InjectionConfig is the error injection configuration for this job.
+	InjectionConfig *error_injection.InjectionConfig `json:"injection_config,omitempty"`
 }
 
 // Job is the planner's JobID-keyed result, returned from Enqueue,
@@ -64,6 +71,23 @@ type EnqueueRequest struct {
 type Job struct {
 	JobID string        `json:"job_id"`
 	Batch *openai.Batch `json:"batch,omitempty"`
+	State *JobState     `json:"state,omitempty"`
+}
+
+// JobState is the planner-owned lifecycle data that does not exist on the
+// OpenAI Batch object. It is persisted in Console's store and lets the BFF
+// expose pre-MDS events such as resource provisioning and submit failures.
+type JobState struct {
+	BatchID             string    `json:"batch_id,omitempty"`
+	ProvisionID         string    `json:"provision_id,omitempty"`
+	ErrorMessage        string    `json:"error_message,omitempty"`
+	QueuedAt            time.Time `json:"queued_at,omitempty"`
+	ResourcePreparingAt time.Time `json:"resource_preparing_at,omitempty"`
+	SubmittingAt        time.Time `json:"submitting_at,omitempty"`
+	ResourceFailedAt    time.Time `json:"resource_failed_at,omitempty"`
+	SubmitFailedAt      time.Time `json:"submit_failed_at,omitempty"`
+	CancelRequestedAt   time.Time `json:"cancel_requested_at,omitempty"`
+	CancelledAt         time.Time `json:"cancelled_at,omitempty"`
 }
 
 // ListJobsRequest queries the planner-merged job list using the same
@@ -99,4 +123,12 @@ type ModelTemplateRef struct {
 	Name    string          `json:"name"`
 	Version string          `json:"version,omitempty"`
 	Spec    json.RawMessage `json:"spec,omitempty"`
+}
+
+// RuntimeRef selects the metadata-service Runtime used to materialize the job.
+// Options is intentionally free-form for runtime-specific fields such as
+// Kubernetes namespace, region, or provisioner-specific switches.
+type RuntimeRef struct {
+	Target  string         `json:"target,omitempty"`
+	Options map[string]any `json:"options,omitempty"`
 }

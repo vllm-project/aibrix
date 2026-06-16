@@ -141,6 +141,84 @@ class TestLocalStorage:
             await local_storage.delete_object(key)
 
     @pytest.mark.asyncio
+    async def test_list_objects_supports_after_key(self, local_storage: LocalStorage):
+        test_files = [
+            "after/file1.txt",
+            "after/file2.txt",
+            "after/file3.txt",
+        ]
+
+        for key in test_files:
+            await local_storage.put_object(key, f"content of {key}")
+
+        first_page, _ = await local_storage.list_objects("after/", limit=2)
+        second_page, _ = await local_storage.list_objects(
+            "after/",
+            limit=2,
+            after_key=first_page[-1],
+        )
+
+        assert first_page == ["after/file1.txt", "after/file2.txt"]
+        assert second_page == ["after/file3.txt"]
+
+        for key in test_files:
+            await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_list_with_flat_string_prefix(self, local_storage: LocalStorage):
+        """list_objects matches a STRING prefix, not just a directory path.
+
+        Flat root-level keys like ``batchjob:<id>`` (no '/') must be found by a
+        partial prefix such as ``batchjob:`` — this is the JobStore.list_jobs
+        recovery contract on a LOCAL metastore. The old directory-descent
+        implementation returned nothing for any non-directory prefix.
+        """
+        await local_storage.put_object("batchjob:abc", b"a")
+        await local_storage.put_object("batchjob:def", b"b")
+        await local_storage.put_object("other:zzz", b"c")
+
+        keys, _ = await local_storage.list_objects(prefix="batchjob:")
+        assert sorted(keys) == ["batchjob:abc", "batchjob:def"]
+
+        # A delimiter must not break flat-prefix matching.
+        keys2, _ = await local_storage.list_objects(prefix="batchjob:", delimiter=":")
+        assert sorted(keys2) == ["batchjob:abc", "batchjob:def"]
+
+        for key in ("batchjob:abc", "batchjob:def", "other:zzz"):
+            await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_list_batchjob_prefix_orders_by_created_at_desc(
+        self, local_storage: LocalStorage
+    ):
+        keys = ["batchjob:job-b", "batchjob:job-a", "batchjob:job-c"]
+        created_at_by_key = {
+            "batchjob:job-b": "2026-01-01T00:00:01+00:00",
+            "batchjob:job-a": "2026-01-01T00:00:02+00:00",
+            "batchjob:job-c": "2026-01-01T00:00:03+00:00",
+        }
+
+        for key in keys:
+            await local_storage.put_object(key, key)
+            metadata_path = local_storage._get_metadata_path(key)
+            metadata = local_storage._read_json_file(metadata_path)
+            metadata["created_at"] = created_at_by_key[key]
+            local_storage._write_json_file(metadata_path, metadata)
+
+        first_page, _ = await local_storage.list_objects(prefix="batchjob:", limit=2)
+        second_page, _ = await local_storage.list_objects(
+            prefix="batchjob:",
+            limit=2,
+            after_key=first_page[-1],
+        )
+
+        assert first_page == ["batchjob:job-c", "batchjob:job-a"]
+        assert second_page == ["batchjob:job-b"]
+
+        for key in keys:
+            await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
     async def test_concurrent_operations(self, local_storage: LocalStorage):
         """Test concurrent read/write operations."""
         import asyncio
@@ -236,13 +314,15 @@ class TestLocalStorage:
             assert (
                 local_storage.base_path in full_path.parents
                 or full_path == local_storage.base_path
-            ), f"Path {full_path} should be within base directory {local_storage.base_path}"
+            ), (
+                f"Path {full_path} should be within base directory {local_storage.base_path}"
+            )
 
             # Verify the path doesn't contain traversal patterns
             relative_path = full_path.relative_to(local_storage.base_path)
-            assert ".." not in str(
-                relative_path
-            ), f"Sanitized path should not contain '..' but got: {relative_path}"
+            assert ".." not in str(relative_path), (
+                f"Sanitized path should not contain '..' but got: {relative_path}"
+            )
 
             # Should be retrievable with the original key
             result = await local_storage.get_object(key)
@@ -250,11 +330,11 @@ class TestLocalStorage:
 
             # Verify the actual stored filename matches expected sanitized version
             expected_sanitized = expected_sanitized_keys[i]
-            assert str(
-                relative_path
-            ).startswith(
+            assert str(relative_path).startswith(
                 expected_sanitized.replace("/", os.sep)
-            ), f"Expected sanitized key '{expected_sanitized}' but got '{relative_path}'"
+            ), (
+                f"Expected sanitized key '{expected_sanitized}' but got '{relative_path}'"
+            )
 
             # Cleanup
             await local_storage.delete_object(key)

@@ -38,9 +38,7 @@ from typing import Any, Dict, Generic, List, Optional, Tuple, TypeVar
 import yaml
 from pydantic import ValidationError
 
-from aibrix.logger import init_logger
-
-from .schema import (
+from aibrix.batch.template.schema import (
     BatchProfile,
     BatchProfileList,
     CompletionWindowOption,
@@ -50,6 +48,7 @@ from .schema import (
     Priority,
     TemplateStatus,
 )
+from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 
@@ -254,7 +253,7 @@ def _warn_deferred_profile_fields(p: BatchProfile) -> List[str]:
     if sched.retry_policy is not None:
         warnings.append(
             "scheduling.retry_policy is accepted but not yet honored "
-            "(smart-client retry is not yet implemented)"
+            "(the smart client uses its built-in retry defaults today)"
         )
 
     return warnings

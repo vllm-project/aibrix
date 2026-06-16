@@ -31,14 +31,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 import aibrix.batch.constant as constant
-from aibrix.batch.job_driver.inference_client import InferenceEngineClient
+from aibrix.batch.batch_manager import BatchManager
+from aibrix.batch.job_driver import JobDriver
 from aibrix.batch.job_entity import (
     BatchJobError,
     BatchJobErrorCode,
     BatchJobSpec,
     BatchJobState,
 )
-from aibrix.batch.job_manager import JobManager
 from aibrix.context import InfrastructureContext
 
 T = TypeVar("T")
@@ -180,66 +180,66 @@ def validate_batch_response(
 
     # Validate required fields
     if expected_id is not None:
-        assert (
-            response["id"] == expected_id
-        ), f"Expected id '{expected_id}', got '{response['id']}'"
+        assert response["id"] == expected_id, (
+            f"Expected id '{expected_id}', got '{response['id']}'"
+        )
     else:
         assert response["id"] is not None, "Required field 'id' should not be None"
 
-    assert (
-        response["object"] == expected_object
-    ), f"Expected object '{expected_object}', got '{response['object']}'"
+    assert response["object"] == expected_object, (
+        f"Expected object '{expected_object}', got '{response['object']}'"
+    )
 
     if expected_endpoint is not None:
-        assert (
-            response["endpoint"] == expected_endpoint
-        ), f"Expected endpoint '{expected_endpoint}', got '{response['endpoint']}'"
+        assert response["endpoint"] == expected_endpoint, (
+            f"Expected endpoint '{expected_endpoint}', got '{response['endpoint']}'"
+        )
     else:
-        assert (
-            response["endpoint"] is not None
-        ), "Required field 'endpoint' should not be None"
+        assert response["endpoint"] is not None, (
+            "Required field 'endpoint' should not be None"
+        )
 
     if expected_input_file_id is not None:
-        assert (
-            response["input_file_id"] == expected_input_file_id
-        ), f"Expected input_file_id '{expected_input_file_id}', got '{response['input_file_id']}'"
+        assert response["input_file_id"] == expected_input_file_id, (
+            f"Expected input_file_id '{expected_input_file_id}', got '{response['input_file_id']}'"
+        )
     else:
-        assert (
-            response["input_file_id"] is not None
-        ), "Required field 'input_file_id' should not be None"
+        assert response["input_file_id"] is not None, (
+            "Required field 'input_file_id' should not be None"
+        )
 
-    assert (
-        response["completion_window"] == expected_completion_window
-    ), f"Expected completion_window '{expected_completion_window}', got '{response['completion_window']}'"
+    assert response["completion_window"] == expected_completion_window, (
+        f"Expected completion_window '{expected_completion_window}', got '{response['completion_window']}'"
+    )
 
     if expected_status is not None:
-        assert (
-            response["status"] == expected_status
-        ), f"Expected status '{expected_status}', got '{response['status']}'"
+        assert response["status"] == expected_status, (
+            f"Expected status '{expected_status}', got '{response['status']}'"
+        )
     else:
-        assert (
-            response["status"] is not None
-        ), "Required field 'status' should not be None"
+        assert response["status"] is not None, (
+            "Required field 'status' should not be None"
+        )
 
     # created_at is required and should not be None
-    assert (
-        response["created_at"] is not None
-    ), "Required field 'created_at' should not be None"
-    assert isinstance(
-        response["created_at"], int
-    ), "Expected 'created_at' to be unix timestamp (int)"
+    assert response["created_at"] is not None, (
+        "Required field 'created_at' should not be None"
+    )
+    assert isinstance(response["created_at"], int), (
+        "Expected 'created_at' to be unix timestamp (int)"
+    )
 
     # created_at is required and should not be None
-    assert (
-        response["expires_at"] is not None
-    ), "Required field 'expires_at' should not be None"
-    assert isinstance(
-        response["expires_at"], int
-    ), "Expected 'expires_at' to be unix timestamp (int)"
+    assert response["expires_at"] is not None, (
+        "Required field 'expires_at' should not be None"
+    )
+    assert isinstance(response["expires_at"], int), (
+        "Expected 'expires_at' to be unix timestamp (int)"
+    )
     if expected_completion_window == "24h":
-        assert (
-            response["expires_at"] == response["created_at"] + 86400
-        ), "Expected 'expires_at' to be 'created_at' + 86400"
+        assert response["expires_at"] == response["created_at"] + 86400, (
+            "Expected 'expires_at' to be 'created_at' + 86400"
+        )
 
     # Validate optional fields
     def check_optional_field(
@@ -248,16 +248,16 @@ def validate_batch_response(
         if expected_value is None or expected_value is False:
             assert response[field_name] is None, f"Expected '{field_name}' to be None"
         elif expected_value is True and expected_type is not bool:
-            assert (
-                response[field_name] is not None
-            ), f"Required field '{field_name}' should not be None"
-            assert isinstance(
-                response[field_name], expected_type
-            ), f"Expected '{field_name}' to be type ({expected_type})"
+            assert response[field_name] is not None, (
+                f"Required field '{field_name}' should not be None"
+            )
+            assert isinstance(response[field_name], expected_type), (
+                f"Expected '{field_name}' to be type ({expected_type})"
+            )
         else:
-            assert (
-                response[field_name] == expected_value
-            ), f"Expected {field_name} '{expected_value}', got '{response[field_name]}'"
+            assert response[field_name] == expected_value, (
+                f"Expected {field_name} '{expected_value}', got '{response[field_name]}'"
+            )
 
     for field_name, expected_value, expected_type in optional_fields:
         check_optional_field(field_name, expected_value, expected_type)
@@ -268,9 +268,9 @@ def validate_batch_response(
             expected_errors = [expected_errors]
         assert isinstance(response["errors"], dict), "Expected 'errors' to be dict"
         assert "data" in response["errors"], "Expected 'errors.data' field"
-        assert isinstance(
-            response["errors"]["data"], list
-        ), "Expected 'errors.data' to be list"
+        assert isinstance(response["errors"]["data"], list), (
+            "Expected 'errors.data' to be list"
+        )
         assert len(response["errors"]["data"]) > 0
         errors = {}
         for error in response["errors"]["data"]:
@@ -281,8 +281,8 @@ def validate_batch_response(
             assert err_code in errors
 
 
-class FailingJobManager(JobManager):
-    """JobManager that can be configured to fail at specific stages."""
+class FailingJobManager(BatchManager):
+    """BatchManager that can be configured to fail at specific stages."""
 
     def __init__(
         self,
@@ -304,11 +304,7 @@ class FailingJobManager(JobManager):
         self.expiration = expiration
         self._processed_requests = 0
 
-    async def validate_job(
-        self,
-        job_id: str,
-        inference_client: Optional[InferenceEngineClient] = None,
-    ) -> bool:
+    async def admit(self, job_id: str) -> Optional[JobDriver]:
         """Override to simulate validation failures during job execution start."""
         if self.stall_validation is not None:
             # Prolong validation duration to allow cancellation during validation
@@ -322,7 +318,7 @@ class FailingJobManager(JobManager):
                 param="authentication",
             )
 
-        return await super().validate_job(job_id, inference_client)
+        return await super().admit(job_id)
 
     async def cancel_job(self, job_id: str) -> bool:
         if self.stall_cancelling is not None:

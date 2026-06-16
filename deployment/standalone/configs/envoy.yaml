@@ -72,6 +72,13 @@ static_resources:
                             idle_timeout: 300s
 
                         - match:
+                            prefix: "/v1/responses"
+                          route:
+                            cluster: vllm_backend
+                            timeout: 600s
+                            idle_timeout: 300s
+
+                        - match:
                             prefix: "/v1/messages"
                           route:
                             cluster: vllm_backend

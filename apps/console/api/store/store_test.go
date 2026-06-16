@@ -18,7 +18,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -38,7 +37,7 @@ func ptrStatus(s types.ProvisionStatus) *types.ProvisionStatus {
 //nolint:gocyclo // Test function with many sub-tests
 func TestMemoryStore(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore()
+	s := NewMemoryStore(nil)
 	t.Cleanup(func() { _ = s.Close() })
 
 	// load demo data for testing purpose
@@ -280,6 +279,32 @@ func TestMemoryStore(t *testing.T) {
 			}
 			if len(jobs) != 0 {
 				t.Errorf("expected 0 jobs, got %d", len(jobs))
+			}
+		})
+
+		t.Run("ListJobsByDatasetID", func(t *testing.T) {
+			fileID := "file-dataset-owner-check"
+			for _, job := range []*models.Job{
+				{ID: "dataset-input-job", InputDataset: fileID, CreatedBy: "owner@example.com"},
+				{ID: "dataset-output-job", OutputDataset: fileID, CreatedBy: "other@example.com"},
+				{ID: "dataset-unrelated-job", InputDataset: "file-unrelated", CreatedBy: "owner@example.com"},
+			} {
+				if err := s.UpsertJob(ctx, job); err != nil {
+					t.Fatalf("UpsertJob failed: %v", err)
+				}
+			}
+
+			jobs, err := s.ListJobsByDatasetID(ctx, fileID)
+			if err != nil {
+				t.Fatalf("ListJobsByDatasetID failed: %v", err)
+			}
+
+			ids := map[string]bool{}
+			for _, job := range jobs {
+				ids[job.ID] = true
+			}
+			if len(ids) != 2 || !ids["dataset-input-job"] || !ids["dataset-output-job"] {
+				t.Fatalf("ListJobsByDatasetID ids = %#v, want input and output jobs", ids)
 			}
 		})
 
@@ -1052,20 +1077,11 @@ func TestMemoryStore(t *testing.T) {
 			regionA := types.RegionSpec{Kubernetes: &types.KubernetesRegion{Context: "ctx-a", Namespace: "ns-a"}}
 			regionB := types.RegionSpec{Kubernetes: &types.KubernetesRegion{Context: "ctx-b", Namespace: "ns-b"}}
 
-			regionABytes, err := json.Marshal(regionA)
-			if err != nil {
-				t.Fatalf("marshal regionA failed: %v", err)
-			}
-			regionBBytes, err := json.Marshal(regionB)
-			if err != nil {
-				t.Fatalf("marshal regionB failed: %v", err)
-			}
-
 			resultA := &types.ProvisionResult{
 				IdempotencyKey: "idem-key-region-a",
 				ProvisionID:    "prov-region-a",
 				Status:         types.ProvisionStatusPending,
-				Region:         string(regionABytes),
+				Region:         regionA.String(),
 			}
 			if err := s.UpsertProvision(ctx, resultA); err != nil {
 				t.Fatalf("UpsertProvision regionA failed: %v", err)
@@ -1075,7 +1091,7 @@ func TestMemoryStore(t *testing.T) {
 				IdempotencyKey: "idem-key-region-b",
 				ProvisionID:    "prov-region-b",
 				Status:         types.ProvisionStatusPending,
-				Region:         string(regionBBytes),
+				Region:         regionB.String(),
 			}
 			if err := s.UpsertProvision(ctx, resultB); err != nil {
 				t.Fatalf("UpsertProvision regionB failed: %v", err)

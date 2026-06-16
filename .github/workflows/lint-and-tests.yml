@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/**'
       - 'pkg/**'
+      - 'apps/**'
       - 'test/**'
       - 'cmd/**'
       - 'api/**'
@@ -19,6 +20,7 @@ on:
     paths:
       - '.github/workflows/**'
       - 'pkg/**'
+      - 'apps/**'
       - 'test/**'
       - 'cmd/**'
       - 'api/**'
@@ -32,9 +34,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v6
         with:
           go-version: '1.22'
       - name: Lint
@@ -44,9 +46,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v6
         with:
           go-version: '1.22'
       - name: Verify Codegen
@@ -66,9 +68,9 @@ jobs:
       pull-requests: write
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v6
         with:
           go-version: '1.22'
       - name: Install ZMQ dependencies
@@ -76,7 +78,7 @@ jobs:
 
       # github action has errors, requires debugging
       # - name: Cache Go modules
-      #   uses: actions/cache@v3
+      #   uses: actions/cache@v5
       #   with:
       #     path: |
       #       ~/.cache/go-build
@@ -89,7 +91,7 @@ jobs:
         run: make test
 
       - name: upload cover profile artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cover.out
           path: cover.out
@@ -115,10 +117,10 @@ jobs:
 
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: download cover.out
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: cover.out
   
@@ -148,7 +150,7 @@ jobs:
           diff-base-breakdown-file-name: ${{ steps.download-main-breakdown.outputs.found_artifact == 'true' && 'main.breakdown' || '' }}
       
       - name: upload artifact (main.breakdown)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: github.ref_name == 'main'
         with:
           name: main.breakdown

@@ -37,6 +37,9 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/prefill"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/selector"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -87,14 +90,18 @@ func TestPDRouter_Route(t *testing.T) {
 		},
 	}
 
+	testTracker := pd.NewPrefillRequestTracker()
+	testClient := &http.Client{}
 	r := pdRouter{
 		cache:                 cache.NewForTest(),
 		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
-		prefillRequestTracker: pd.NewPrefillRequestTracker(),
-		httpClient:            &http.Client{},
+		prefillRequestTracker: testTracker,
+		httpClient:            testClient,
 		selectionCounts:       map[string]int64{},
 	}
+	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
+	r.prefillExecutor = prefill.NewDefaultExecutor(testClient, testTracker, prefillRequestTimeout)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -772,13 +779,17 @@ func TestDoPrefillRequest(t *testing.T) {
 	createRouter := func(pods []*v1.Pod, metricsMap map[string]map[string]metrics.MetricValue) *pdRouter {
 		c := cache.NewWithPodsMetricsForTest(pods, "m1", metricsMap)
 		tbl := prefixcacheindexer.NewPrefixHashTable()
-		return &pdRouter{
+		tracker := pd.NewPrefillRequestTracker()
+		client := &http.Client{}
+		r := &pdRouter{
 			prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), tbl),
 			prefixCacheIndexer:    tbl,
 			cache:                 c,
-			prefillRequestTracker: pd.NewPrefillRequestTracker(),
-			httpClient:            &http.Client{},
+			prefillRequestTracker: tracker,
+			httpClient:            client,
 		}
+		r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
+		return r
 	}
 
 	tests := []struct {
@@ -985,7 +996,7 @@ func TestPreparePrefillPayload(t *testing.T) {
 				Context: context.Background(),
 			}
 
-			payload, err := router.preparePrefillPayload(routingCtx, pod, tt.llmEngine)
+			payload, err := router.preparePrefillPayload(routingCtx, pod, tt.llmEngine, engine.Resolve(tt.llmEngine))
 			assert.NoError(t, err, tt.description)
 
 			var result map[string]any
@@ -1054,7 +1065,7 @@ func TestPreparePrefillPayloadBackwardCompatibility(t *testing.T) {
 				Context: context.Background(),
 			}
 
-			payload, err := router.preparePrefillPayload(routingCtx, pod, tc.engine)
+			payload, err := router.preparePrefillPayload(routingCtx, pod, tc.engine, engine.Resolve(tc.engine))
 			assert.NoError(t, err)
 
 			var result map[string]any
@@ -1337,13 +1348,16 @@ func TestVLLMIntegrationWithTestServer(t *testing.T) {
 		Context:    context.Background(),
 	}
 
+	vllmTracker := pd.NewPrefillRequestTracker()
+	vllmClient := &http.Client{}
 	router := &pdRouter{
 		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		cache:                 cache.NewWithPodsForTest(prefillPods, "test-model"),
-		prefillRequestTracker: pd.NewPrefillRequestTracker(),
-		httpClient:            &http.Client{},
+		prefillRequestTracker: vllmTracker,
+		httpClient:            vllmClient,
 	}
+	router.prefillExecutor = prefill.NewDefaultExecutor(vllmClient, vllmTracker, prefillRequestTimeout)
 
 	err := router.doPrefillRequest(routingCtx, prefillPods[0], VLLMEngine)
 	assert.NoError(t, err)
@@ -1464,13 +1478,16 @@ func TestTensorRTIntegrationWithTestServer(t *testing.T) {
 		Context:    context.Background(),
 	}
 
+	trtTracker := pd.NewPrefillRequestTracker()
+	trtClient := &http.Client{}
 	router := &pdRouter{
 		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		cache:                 cache.NewWithPodsForTest(prefillPods, "test-model"),
-		prefillRequestTracker: pd.NewPrefillRequestTracker(),
-		httpClient:            &http.Client{},
+		prefillRequestTracker: trtTracker,
+		httpClient:            trtClient,
 	}
+	router.prefillExecutor = prefill.NewDefaultExecutor(trtClient, trtTracker, prefillRequestTimeout)
 
 	err := router.doPrefillRequest(routingCtx, prefillPods[0], TensorRTLLM)
 	assert.NoError(t, err)
@@ -2619,17 +2636,17 @@ func TestFilterPrefillDecodePods_CombinedPickImbalance(t *testing.T) {
 }
 
 func TestGetDisaggRequestID_CustomEpoch(t *testing.T) {
-	id1 := getDisaggRequestID(0)
-	id2 := getDisaggRequestID(0)
-	assert.GreaterOrEqual(t, id1, trtMinGlobalID)
-	assert.GreaterOrEqual(t, id2, trtMinGlobalID)
+	id1 := engine.GetDisaggRequestID(0)
+	id2 := engine.GetDisaggRequestID(0)
+	assert.GreaterOrEqual(t, id1, engine.TRTMinGlobalID)
+	assert.GreaterOrEqual(t, id2, engine.TRTMinGlobalID)
 	assert.NotEqual(t, id1, id2, "counter should advance")
-	id3 := getDisaggRequestID(42)
-	assert.GreaterOrEqual(t, id3, trtMinGlobalID)
+	id3 := engine.GetDisaggRequestID(42)
+	assert.GreaterOrEqual(t, id3, engine.TRTMinGlobalID)
 }
 
 func TestValidateTRTMachineIDValue(t *testing.T) {
-	maxExclusive := int64(1 << trtMachineIDBits)
+	maxExclusive := int64(1 << engine.TRTMachineIDBits)
 	tests := []struct {
 		name    string
 		id      int64
@@ -2644,12 +2661,59 @@ func TestValidateTRTMachineIDValue(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateTRTMachineIDValue(tt.id)
+			err := engine.ValidateTRTMachineID(tt.id)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestSelectKvConnectorType(t *testing.T) {
+	old := aibrixKVConnectorType
+	aibrixKVConnectorType = KVConnectorTypeSHFS
+	defer func() {
+		aibrixKVConnectorType = old
+	}()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "empty label falls back to global config",
+			input:    "",
+			expected: KVConnectorTypeSHFS,
+		},
+		{
+			name:     "pod label overrides to nixl",
+			input:    KVConnectorTypeNIXL,
+			expected: KVConnectorTypeNIXL,
+		},
+		{
+			name:     "pod label overrides to shfs",
+			input:    KVConnectorTypeSHFS,
+			expected: KVConnectorTypeSHFS,
+		},
+		{
+			name:     "connector type is case insensitive",
+			input:    "ShFs",
+			expected: KVConnectorTypeSHFS,
+		},
+		{
+			name:     "invalid label falls back to global config",
+			input:    "invalid",
+			expected: KVConnectorTypeSHFS,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := selectKvConnectorType(tt.input)
+			assert.Equal(t, tt.expected, actual)
 		})
 	}
 }

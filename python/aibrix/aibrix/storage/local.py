@@ -16,7 +16,7 @@ import asyncio
 import hashlib
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
@@ -173,8 +173,12 @@ class LocalStorage(BaseStorage):
         """Store metadata for an object."""
         metadata_path = self._get_metadata_path(key)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        created_at = await asyncio.get_event_loop().run_in_executor(
+            None, self._get_or_create_metadata_created_at, metadata_path
+        )
 
         metadata_data = {
+            "created_at": created_at,
             "content_type": content_type,
             "metadata": metadata or {},
             "content_length": content_length,
@@ -268,6 +272,7 @@ class LocalStorage(BaseStorage):
         delimiter: Optional[str] = None,
         limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
+        after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
         """List objects with given prefix.
 
@@ -279,8 +284,8 @@ class LocalStorage(BaseStorage):
         mangled name, breaking the put → list → head_object round-trip
         for keys that were stored without an extension.
         """
-        prefix_path = self.base_path / prefix if prefix else self.base_path
         _METADATA_SUFFIX = ".metadata"
+        _BATCH_JOB_PREFIX = "batchjob:"
 
         def _list_files():
             # Parse continuation token as offset (default to 0)
@@ -291,47 +296,96 @@ class LocalStorage(BaseStorage):
                 except (ValueError, TypeError):
                     offset = 0
 
-            files = []
-            if prefix_path.is_dir():
+            # Recover every stored key by enumerating the sidecar ``.metadata``
+            # files anywhere under base_path. ``prefix`` is matched as an
+            # S3-style string prefix (``key.startswith(prefix)``), NOT as a
+            # directory path — so flat keys like ``batchjob:<id>`` are found by
+            # a partial prefix such as ``batchjob:`` (directory descent missed
+            # them, returning nothing for any non-directory prefix).
+            entries: list[str] = []
+            batch_job_entries: list[tuple[str, Optional[datetime]]] = []
+            seen: set[str] = set()
+            batch_job_ordering = delimiter is None and prefix == _BATCH_JOB_PREFIX
+            for item in self.base_path.rglob("*" + _METADATA_SUFFIX):
+                if not item.is_file():
+                    continue
+                key = item.relative_to(self.base_path).as_posix()[
+                    : -len(_METADATA_SUFFIX)
+                ]
+                if not key.startswith(prefix):
+                    continue
                 if delimiter:
-                    # List immediate children only
-                    for item in prefix_path.iterdir():
-                        if item.is_file():
-                            relative_path = str(item.relative_to(self.base_path))
-                            if relative_path.endswith(_METADATA_SUFFIX):
-                                files.append(relative_path[: -len(_METADATA_SUFFIX)])
-                        elif item.is_dir():
-                            files.append(
-                                str(item.relative_to(self.base_path)) + delimiter
-                            )
+                    # Roll keys with a delimiter after the prefix up into a
+                    # single common-prefix entry (S3 CommonPrefixes).
+                    remainder = key[len(prefix) :]
+                    idx = remainder.find(delimiter)
+                    entry = (
+                        prefix + remainder[: idx + len(delimiter)] if idx != -1 else key
+                    )
                 else:
-                    # Recursive listing
-                    for item in prefix_path.rglob("*"):
-                        if item.is_file():
-                            relative_path = str(item.relative_to(self.base_path))
-                            if relative_path.endswith(_METADATA_SUFFIX):
-                                files.append(relative_path[: -len(_METADATA_SUFFIX)])
-            elif prefix_path.is_file():
-                relative_path = str(prefix_path.relative_to(self.base_path))
-                if relative_path.endswith(_METADATA_SUFFIX):
-                    files.append(relative_path[: -len(_METADATA_SUFFIX)])
+                    entry = key
+                if entry not in seen:
+                    seen.add(entry)
+                    if batch_job_ordering:
+                        batch_job_entries.append(
+                            (entry, self._read_metadata_created_at(item))
+                        )
+                    else:
+                        entries.append(entry)
 
-            # Sort files for consistent pagination (by filename)
-            files.sort()
+            if batch_job_ordering:
+                batch_job_entries.sort(key=lambda entry: entry[0])
+                batch_job_entries.sort(
+                    key=lambda entry: (
+                        entry[1].timestamp() if entry[1] is not None else float("-inf")
+                    ),
+                    reverse=True,
+                )
+                entries = [entry for entry, _ in batch_job_entries]
+            else:
+                # Sort for consistent pagination
+                entries.sort()
+
+            if continuation_token is None and after_key:
+                try:
+                    offset = entries.index(after_key) + 1
+                except ValueError:
+                    return [], None
 
             # Apply pagination
-            remaining_files = files[offset:] if offset > 0 else files
-            paginated_files = (
-                remaining_files[:limit] if limit is not None else remaining_files
-            )
+            remaining = entries[offset:] if offset > 0 else entries
+            paginated = remaining[:limit] if limit is not None else remaining
 
-            # Check if there are more files for next page
-            has_more = limit is not None and len(remaining_files) > limit
-            next_token = str(offset + len(paginated_files)) if has_more else None
+            has_more = limit is not None and len(remaining) > limit
+            next_token = str(offset + len(paginated)) if has_more else None
 
-            return paginated_files, next_token
+            return paginated, next_token
 
         return await asyncio.get_event_loop().run_in_executor(None, _list_files)
+
+    def _get_or_create_metadata_created_at(self, metadata_path: Path) -> str:
+        if metadata_path.exists():
+            try:
+                metadata_data = self._read_json_file(metadata_path)
+                created_at = metadata_data.get("created_at")
+                if isinstance(created_at, str) and created_at:
+                    return created_at
+            except Exception:
+                pass
+        return datetime.now(timezone.utc).isoformat()
+
+    def _read_metadata_created_at(self, metadata_path: Path) -> Optional[datetime]:
+        try:
+            metadata_data = self._read_json_file(metadata_path)
+        except Exception:
+            return None
+        created_at = metadata_data.get("created_at")
+        if not isinstance(created_at, str) or not created_at:
+            return None
+        try:
+            return datetime.fromisoformat(created_at)
+        except ValueError:
+            return None
 
     async def object_exists(self, key: str) -> bool:
         """Check if object exists."""

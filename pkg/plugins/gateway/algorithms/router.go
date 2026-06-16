@@ -115,7 +115,7 @@ func ParseMultiRouterConfig(routerStr string) (*MultiRouterConfig, error) {
 	// If multiple exclusive strategies are found, the first one encountered wins
 	for _, item := range items {
 		if item.Name == "pd" || strings.HasPrefix(item.Name, "slo") {
-			klog.Infof("Exclusive routing strategy '%s' found in multi-strategy config. Other strategies will be ignored.", item.Name)
+			klog.V(4).Infof("Exclusive routing strategy '%s' found in multi-strategy config. Other strategies will be ignored.", item.Name)
 			return &MultiRouterConfig{Items: []RouterItem{{Name: item.Name, Coefficient: 1}}}, nil
 		}
 	}
@@ -515,7 +515,7 @@ func (rm *RouterManager) RegisterProvider(algorithm types.RoutingAlgorithm, prov
 	defer rm.routerMu.Unlock()
 	rm.routerFactory[algorithm] = provider
 	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
-	klog.Infof("Registered router for %s", algorithm)
+	klog.V(4).Infof("Registered router for %s", algorithm)
 }
 func RegisterProvider(algorithm types.RoutingAlgorithm, provider types.RouterProviderFunc) {
 	defaultRM.RegisterProvider(algorithm, provider)
@@ -552,7 +552,7 @@ func (rm *RouterManager) Init() {
 	defer rm.routerMu.Unlock()
 	for algorithm, constructor := range rm.routerConstructor {
 		rm.routerFactory[algorithm] = constructor()
-		klog.Infof("Registered router for %s", algorithm)
+		klog.V(4).Infof("Registered router for %s", algorithm)
 	}
 	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
 	rm.routerDoneInit()

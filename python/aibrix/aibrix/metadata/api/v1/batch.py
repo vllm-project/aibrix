@@ -17,10 +17,10 @@ import json
 import traceback
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from aibrix.batch import BatchDriver
 from aibrix.batch.job_entity import (
@@ -35,11 +35,14 @@ from aibrix.batch.job_entity import (
     BatchUsage,
     CompletionWindow,
     ModelTemplateRef,
-    PlannerDecision,
+    ResourceAllocation,
+    RuntimeSpec,
 )
 from aibrix.batch.manifest import RenderError
 from aibrix.batch.storage.batch_metastore import get_batch_job
 from aibrix.batch.template import (
+    BatchProfile,
+    ModelDeploymentTemplate,
     ProfileRegistry,
     TemplateRegistry,
 )
@@ -226,22 +229,35 @@ async def _validate_batch_input_file(
 
 
 # OpenAI Batch API request/response models
-class Decision(PlannerDecision):
-    """Decision from planner
+class ResourceAllocationRef(ResourceAllocation):
+    """Resource allocation metadata from the planner / resource manager.
 
-    Wire shape (under ``extra_body.aibrix.planner_decision``)::
+    Wire shape (under ``extra_body.aibrix.resource_allocation``)::
 
         {
             "provision_id": "xxxxxxxx",
             "provision_resource_deadline": 1422443902,  # optional; 0 / null = will not expire
             "resource_details": [
                 {
-                    "resource_type": "xxxxxxxx",
-                    "endpoint_cluster": 1422443902,  # optional; 0 / null = will not expire
+                    "endpoint_cluster": "cluster-a",  # optional
                     "gpu_type": "A100-SM-80G",  # optional
-                    "worker_num": 2,  # optional; 1 / null = 1
+                    "replica": 2,  # optional; 1 / null = 1
                 }
             ],
+        }
+
+    Runtime selection lives under ``extra_body.aibrix.runtime.target``.
+    """
+
+
+class RuntimeRef(RuntimeSpec):
+    """Selects which Runtime the batch job runs on.
+
+    Wire shape (under ``extra_body.aibrix.runtime``)::
+
+        {
+            "target": "Kubernetes",  # one registered runtime target
+            "options": {"namespace": "default"},  # free-form runtime options
         }
     """
 
@@ -289,6 +305,11 @@ class AibrixExtension(BaseModel):
             endpoint="/v1/chat/completions",
             extra_body={
                 "aibrix": {
+                    "runtime": {
+                        "target": "Kubernetes",
+                        "options": {"namespace": "default"},
+                    },
+                    "resource_allocation": {"provision_id": "reservation-1"},
                     "model_template": {"name": "llama3-70b-prod"},
                     "profile": {"name": "prod-24h"},
                 }
@@ -310,10 +331,21 @@ class AibrixExtension(BaseModel):
     keys off ``name`` + ``version``.
     """
 
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "forbid"}
 
     job_id: Optional[str] = None
-    planner_decision: Optional[PlannerDecision] = None
+    model: Optional[str] = Field(
+        default=None,
+        description=("Serving identifier the batch's requests carry in body.model"),
+    )
+    resource_allocation: Optional[ResourceAllocationRef] = None
+    runtime: Optional[RuntimeRef] = Field(
+        default=None,
+        description=(
+            "Runtime target selection. Absent routes to the injected "
+            "endpoint-source / standalone path."
+        ),
+    )
     model_template: Optional[TemplateRef] = Field(
         default=None,
         description="ModelDeploymentTemplate reference (name + optional version + overrides)",
@@ -322,6 +354,23 @@ class AibrixExtension(BaseModel):
         default=None,
         description="BatchProfile reference; falls back to registry default if omitted",
     )
+
+    @field_validator("model_template", mode="before")
+    @classmethod
+    def normalize_model_template(cls, value: Any) -> Any:
+        if isinstance(value, ModelDeploymentTemplate):
+            value = value.model_dump(exclude_none=True)
+        if isinstance(value, dict) and "status" in value:
+            value = dict(value)
+            value.pop("status")
+        return value
+
+    @field_validator("profile", mode="before")
+    @classmethod
+    def normalize_profile(cls, value: Any) -> Any:
+        if isinstance(value, BatchProfile):
+            return value.model_dump(exclude_none=True)
+        return value
 
 
 class BatchSpec(BaseModel):
@@ -357,7 +406,9 @@ class BatchSpec(BaseModel):
         if spec.aibrix is not None:
             aibrix = AibrixMetadata(
                 job_id=spec.aibrix.job_id,
-                planner_decision=spec.aibrix.planner_decision,
+                model=spec.aibrix.model,
+                resource_allocation=spec.aibrix.resource_allocation,
+                runtime=spec.aibrix.runtime,
                 model_template=spec.aibrix.model_template,
                 profile=spec.aibrix.profile,
             )
@@ -380,7 +431,28 @@ def _validate_aibrix_extension(
     have not yet attached registries), this is a no-op and validation
     falls back to render time with a less-friendly error path.
     """
-    if extension is None or extension.model_template is None:
+    if extension is None:
+        return
+
+    # runtime.target is a free-form string on the wire (RuntimeSpec is
+    # lenient, for downstream runtimes); reject an unknown one here with a 400
+    # instead of falling through to the standalone path / a late INVALID_DRIVER.
+    # Validate against the live runtime registry (not the static enum) so
+    # downstream/custom registered runtimes are accepted.
+    if extension.runtime is not None:
+        from aibrix.batch.job_driver.runtime import registered_runtimes
+
+        valid_targets = set(registered_runtimes())
+        if extension.runtime.target not in valid_targets:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"aibrix.runtime.target '{extension.runtime.target}' is "
+                    f"not a known runtime target. Valid: {sorted(valid_targets)}"
+                ),
+            )
+
+    if extension.model_template is None:
         return
 
     template_registry: Optional[TemplateRegistry] = getattr(
@@ -422,7 +494,7 @@ def _validate_aibrix_extension(
 
     if extension.profile is not None and profile_registry is not None:
         pref = extension.profile
-        if profile_registry.get(pref.name) is None:
+        if pref.spec is None and profile_registry.get(pref.name) is None:
             available = profile_registry.names()
             raise HTTPException(
                 status_code=400,
@@ -561,13 +633,13 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
     total_hours = delta.total_seconds() / 3600
     completion_window = f"{int(total_hours)}h"
 
-    # Map the internal state machine to OpenAI's 8-state enum:
-    #   {validating, failed, in_progress, finalizing, completed, expired,
-    #    cancelling, cancelled}
-    # Two internal states have no direct OpenAI counterpart:
-    #   - CREATED: batch just created, validation not yet started — surfaced
-    #     to clients as 'validating' since they cannot distinguish it from
-    #     in-flight validation.
+    # Map the internal state machine to the client-facing status:
+    #   - CREATED: accepted and waiting in the scheduler's pending pool for
+    #     admission (resource bring-up) — surfaced as 'scheduling'. NOTE: this
+    #     deviates from the OpenAI batch enum (no 'scheduling' state); we accept
+    #     the break because our platform spends real time here and 'scheduling'
+    #     is more accurate than OpenAI's 'validating' (which on our side is
+    #     near-instant: VALIDATING flips to IN_PROGRESS inside admit()).
     #   - FINALIZED: terminal umbrella state; the actual outcome lives in
     #     `status.condition` (completed / failed / expired / cancelled).
     if status.finished:
@@ -582,14 +654,14 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
             raise ValueError("job finalized without condition")
         state = condition.value
     elif status.state == BatchJobState.CREATED:
-        state = BatchJobState.VALIDATING.value
+        state = BatchJobState.SCHEDULING.value
     else:
         state = status.state.value
 
     return BatchResponse(
         id=status.job_id,
         endpoint=spec.endpoint,
-        model=spec.model_template_name,
+        model=spec.model or spec.model_template_name,
         errors=BatchErrors(data=status.errors) if status.errors else None,
         input_file_id=spec.input_file_id,
         completion_window=completion_window,
@@ -612,8 +684,8 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
     )
 
 
-@router.post("/", include_in_schema=False)
-@router.post("")
+@router.post("/", include_in_schema=False, response_model_exclude_none=True)
+@router.post("", response_model_exclude_none=True)
 async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse:
     """Create a new batch.
 
@@ -664,19 +736,17 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
             request_count=request_count,
         )  # type: ignore[call-arg]
 
-        # Create job using JobManager. Pass the validated input line
-        # count so request_counts.total is fixed at creation, matching
+        # Create the job through the driver facade. Pass the validated input
+        # line count so request_counts.total is fixed at creation, matching
         # OpenAI Batch API semantics.
-        job_id = await batch_driver.run_coroutine(
-            batch_driver.job_manager.create_job_with_spec(
-                session_id=session_id,
-                job_spec=batch_request,
-                request_count=request_count,
-            )
+        job_id = await batch_driver.create_job(
+            session_id=session_id,
+            job_spec=batch_request,
+            request_count=request_count,
         )
 
         # Retrieve the created job
-        job = await batch_driver.run_coroutine(batch_driver.job_manager.get_job(job_id))
+        job = await batch_driver.get_job(job_id)
         if not job:
             logger.error("Created job not found", job_id=job_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=500, detail="Created batch not found")
@@ -705,25 +775,22 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
 
 
 async def _resolve_batch_job(request: Request, batch_id: str) -> Optional[BatchJob]:
-    """Resolve a BatchJob by id, metastore-first with JobManager fallback.
+    """Resolve a BatchJob by id, metastore-first with BatchManager fallback.
 
-    The batch metastore is the source of truth. The fallback to
-    ``JobManager.get_job`` covers the brief window between
-    ``create_namespaced_job`` returning and the kopf ADDED handler
-    persisting the document, since the metadata service seeds the
-    JobManager pool synchronously on POST. Standalone mode (no kopf,
-    no K8s) also relies on the JobManager fallback because no
-    metastore document is ever written.
+    The batch metastore is the source of truth. The fallback to the driver's
+    in-memory pool covers the brief window after POST before the store write
+    is observable, since the metadata service seeds the BatchManager pool
+    synchronously on create.
     """
     job = await get_batch_job(batch_id)
     if job is not None:
         return job
 
     batch_driver: BatchDriver = request.app.state.batch_driver
-    return await batch_driver.run_coroutine(batch_driver.job_manager.get_job(batch_id))
+    return await batch_driver.get_job(batch_id)
 
 
-@router.get("/{batch_id}")
+@router.get("/{batch_id}", response_model_exclude_none=True)
 async def get_batch(request: Request, batch_id: str) -> BatchResponse:
     """Retrieve a batch by ID.
 
@@ -749,7 +816,7 @@ async def get_batch(request: Request, batch_id: str) -> BatchResponse:
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post("/{batch_id}/cancel")
+@router.post("/{batch_id}/cancel", response_model_exclude_none=True)
 async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
     """Cancel a batch.
 
@@ -768,12 +835,9 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
             logger.warning("Batch not found for cancellation", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=404, detail="Batch not found")
 
-        # Cancel the job. JobManager.cancel_job drives the K8s suspend
-        # patch and the status write to the BatchJobStore via
-        # JobCache._put_to_store.
-        success = await batch_driver.run_coroutine(
-            batch_driver.job_manager.cancel_job(batch_id)
-        )
+        # Cancel the job. BatchManager.cancel_job signals the entity manager
+        # to persist the cancellation and stops execution.
+        success = await batch_driver.cancel_job(batch_id)
         if not success:
             logger.warning("Failed to cancel batch", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=400, detail="Batch cannot be cancelled")
@@ -797,8 +861,8 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/", include_in_schema=False)
-@router.get("")
+@router.get("/", include_in_schema=False, response_model_exclude_none=True)
+@router.get("", response_model_exclude_none=True)
 async def list_batches(
     request: Request,
     after: Optional[str] = Query(None, description="Cursor for pagination"),
@@ -815,33 +879,9 @@ async def list_batches(
 
         logger.debug("Listing batches", after=after, limit=limit)  # type: ignore[call-arg]
 
-        # List still goes through JobManager. Adding a list_by_prefix to
-        # BatchJobStore would require either an eagerly-maintained index
-        # (Redis ZSET keyed by created_at) or an S3 list-objects walk;
-        # the latter does not fit the current cursor-based pagination
-        # cheaply. Point reads already serve from the store, so the
-        # tradeoff only hurts the rare list call.
-        all_jobs: List[BatchJob] = await batch_driver.run_coroutine(
-            batch_driver.job_manager.list_jobs()
+        all_jobs: List[BatchJob] = await batch_driver.list_jobs(
+            after=after, limit=limit + 1
         )
-
-        # Apply cursor-based pagination
-        if after:
-            # Find the index of the job with the 'after' ID
-            after_index = -1
-            for i, job in enumerate(all_jobs):
-                if job.status.job_id == after:
-                    after_index = i
-                    break
-
-            if after_index >= 0:
-                # Start after the found job
-                all_jobs = all_jobs[after_index + 1 :]
-            else:
-                # If 'after' job not found, return empty list
-                all_jobs = []
-
-        # Apply limit
         jobs_page = all_jobs[:limit]
 
         # Convert to OpenAI format

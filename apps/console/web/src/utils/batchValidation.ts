@@ -54,6 +54,7 @@ const MAX_ERRORS = 20;
 const MAX_DIFF_SAMPLES = 5;
 // OpenAI Batch API hard limit; MDS enforces the same cap (python/aibrix/.../batch.py).
 const MAX_REQUESTS_PER_BATCH = 50000;
+export const JSONL_EXTENSION_ERROR = 'File must use the .jsonl extension.';
 
 const OVERRIDE_FIELD_MAP: Record<keyof BatchOverrides, string> = {
   maxTokens: 'max_tokens',
@@ -64,6 +65,10 @@ const OVERRIDE_FIELD_MAP: Record<keyof BatchOverrides, string> = {
 
 // Endpoints where completion-style sampling params apply.
 const COMPLETION_ENDPOINTS = new Set(['/v1/chat/completions', '/v1/completions']);
+
+export function validateBatchFileName(fileName: string): string | null {
+  return fileName.trim().toLowerCase().endsWith('.jsonl') ? null : JSONL_EXTENSION_ERROR;
+}
 
 export function parseJsonl(text: string): ParseResult {
   const rawLines = text.trimEnd().split('\n');
@@ -182,6 +187,12 @@ export function validateBatchLines(parsed: ParseResult, ctx: ValidationContext):
     pushError(`Mixed models found: ${[...models].join(', ')}. All requests must use the same model.`);
   }
 
+  if (endpoints.size > 1) {
+    pushError(
+      `Multiple request endpoints found: ${[...endpoints].join(', ')}. A batch file must use one endpoint.`,
+    );
+  }
+
   const detectedModel = models.size >= 1 ? [...models][0] : null;
   // expectedModel comes from model.serving_name (the inference identifier).
   // Empty means the selected model isn't deployed yet; skip the identifier
@@ -202,6 +213,18 @@ export function validateBatchLines(parsed: ParseResult, ctx: ValidationContext):
 
 // Convenience wrapper: read file, parse, validate.
 export async function validateBatchFile(file: File, ctx: ValidationContext): Promise<ValidationResult> {
+  const fileNameError = validateBatchFileName(file.name);
+  if (fileNameError) {
+    return {
+      valid: false,
+      totalLines: 0,
+      errors: [fileNameError],
+      warnings: [],
+      detectedModel: null,
+      endpoints: [],
+    };
+  }
+
   const text = await file.text();
   const parsed = parseJsonl(text);
   return validateBatchLines(parsed, ctx);

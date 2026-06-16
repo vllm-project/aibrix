@@ -165,6 +165,15 @@ message Job {
   JobRequestCounts request_counts = 19;
   JobUsage usage = 20;
   map<string, string> metadata = 21;
+  // Raw extension payloads carried through OpenAI SDK extra_body. Values are
+  // compact JSON strings keyed by extension namespace, for example
+  // extra_body["aibrix"].
+  map<string, string> extra_body = 22;
+  repeated JobError errors = 23;
+  JobRuntime runtime = 24;
+  JobResourceAllocation resource_allocation = 25;
+  JobModelTemplateRef model_template_ref = 26;
+  JobProfileRef profile = 27;
 
   // Console-owned fields (persisted in the store)
   string name = 100;             // display name; resolved from metadata.display_name
@@ -174,6 +183,17 @@ message Job {
   // SDK-path jobs that pin templates through extra_body.aibrix instead.
   string model_template_name = 102;
   string model_template_version = 103;
+  string batch_id = 104;          // MDS/OpenAI batch id when different from Console job id
+  string provision_id = 105;      // Resource-manager provision id
+  string error_message = 106;     // Planner/provision/submit error summary
+  int64 queued_at = 107;
+  int64 resource_preparing_at = 108;
+  int64 submitting_at = 109;
+  int64 resource_failed_at = 110;
+  int64 submit_failed_at = 111;
+  int64 cancel_requested_at = 112;
+  JobProvision provision = 113;
+  repeated JobEvent events = 114;
 }
 
 message JobRequestCounts {
@@ -186,6 +206,65 @@ message JobUsage {
   int64 input_tokens = 1;
   int64 output_tokens = 2;
   int64 total_tokens = 3;
+}
+
+message JobError {
+  string code = 1;
+  string message = 2;
+  string param = 3;
+  int64 line = 4;
+}
+
+message JobRuntime {
+  string target = 1;
+  map<string, string> options = 2;
+  string raw_json = 100;
+}
+
+message JobResourceAllocation {
+  string provision_id = 1;
+  int64 provision_resource_deadline = 2;
+  repeated JobResourceDetail resource_details = 3;
+  string raw_json = 100;
+}
+
+message JobResourceDetail {
+  string endpoint_cluster = 1;
+  string gpu_type = 2;
+  int32 replica = 3;
+  map<string, string> extra = 100;
+}
+
+message JobModelTemplateRef {
+  string name = 1;
+  string version = 2;
+  string raw_json = 100;
+}
+
+message JobProfileRef {
+  string name = 1;
+  string raw_json = 100;
+}
+
+message JobProvision {
+  string provision_id = 1;
+  string provider = 2;
+  string idempotency_key = 3;
+  string status = 4;
+  string region = 5;
+  string error_message = 6;
+  int64 created_at = 7;
+  int64 updated_at = 8;
+  string raw_json = 100;
+}
+
+message JobEvent {
+  string id = 1;
+  string label = 2;
+  string status = 3;
+  string source = 4;
+  int64 at = 5;
+  string message = 6;
 }
 
 message ListJobsRequest {
@@ -217,12 +296,31 @@ message CreateJobRequest {
   string model_template_name = 5;
   string model_template_version = 6;  // optional; "" = latest active
 
+  // Model the template is resolved under. Template names are only unique
+  // per (model_id, name, version)
+  string model_id = 7;
+
+  // Request counts computed by frontend (e.g., counting JSONL lines).
+  // Passed through to planner and persisted for display before MDS processes.
+  int32 request_count_total = 8;
+
+  // Per-job error injection configuration. Optional.
+  // When provided, enables targeted error injection for this specific job.
+  InjectionConfig injection_config = 9;
+
   // Fields 10..13 (max_tokens / temperature / top_p / n) were removed:
   // the console wizard bakes per-batch sampling params into the uploaded
   // JSONL itself, so there's nothing for the BFF to forward. The OpenAI
   // SDK path can still POST them to MDS directly.
   reserved 10, 11, 12, 13;
   reserved "max_tokens", "temperature", "top_p", "n";
+}
+
+// InjectionConfig specifies per-job error injection behavior.
+message InjectionConfig {
+  bool enabled = 1;
+  repeated InjectionRule rules = 2;
+  double global_probability = 3;
 }
 
 message CancelJobRequest {
@@ -362,6 +460,15 @@ message CreateModelRequest {
 //       completion_window="24h",
 //       extra_body={
 //           "aibrix": {
+//               "model": "Qwen/Qwen3.5-32B",       # serving_name; see rules below
+//               "runtime": {
+//                   "target": "Kubernetes",        # registered MDS runtime target
+//                   "options": {"namespace": "default"}  # optional, runtime-owned
+//               },
+//               "resource_allocation": {
+//                   "provision_id": "reservation-1",
+//                   "resource_details": []          # optional planner/RM payload
+//               },
 //               "model_template": {
 //                   "name":    "llama3-70b-prod",   # required
 //                   "version": "v1.3.0",            # optional; "" = latest active
@@ -381,6 +488,16 @@ message CreateModelRequest {
 //
 //
 // rules:
+//   - model is the serving identifier (the catalog model's serving_name) that
+//     the batch's body.model carries. MDS echoes it as Batch.model and pins the
+//     engine's --served-model-name to it. Optional; when absent the engine
+//     serves under the template's model_source.uri and Batch.model falls back
+//     to model_template.name.
+//   - runtime.target selects the MDS Runtime. runtime.options is free-form and
+//     owned by the selected runtime; do not introduce runtime.placement.
+//   - resource_allocation carries generic planner / resource-manager output.
+//     resource_details remains a backend-defined array and is not renamed to
+//     placement.
 //   - model_template.name is required when extra_body.aibrix.model_template
 //     is present.
 //   - model_template.version: empty string -> latest active version of that
@@ -698,4 +815,157 @@ message ListQuotasRequest {
 
 message ListQuotasResponse {
   repeated Quota quotas = 1;
+}
+
+// =============================================================================
+// Error Injection Service
+//
+// Error injection allows controlled injection of errors into the batch pipeline
+// for testing chaos engineering and debugging. The service provides:
+// - ListInjectionPoints: discover all registered injection points
+// - GetInjectionConfig: read the global injection configuration
+// - SetInjectionConfig: update the global injection configuration
+// - ClearInjectionConfig: disable all injection (reset to empty config)
+// - GetInjectionTrace: retrieve execution trace for a specific job
+// =============================================================================
+
+service InjectionService {
+  rpc ListInjectionPoints(ListInjectionPointsRequest) returns (ListInjectionPointsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/injection/points"
+    };
+  }
+
+  rpc GetInjectionConfig(GetInjectionConfigRequest) returns (GetInjectionConfigResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/injection/config"
+    };
+  }
+
+  rpc SetInjectionConfig(SetInjectionConfigRequest) returns (SetInjectionConfigResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/injection/config"
+      body: "*"
+    };
+  }
+
+  rpc ClearInjectionConfig(ClearInjectionConfigRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/injection/config"
+    };
+  }
+
+  rpc GetInjectionTrace(GetInjectionTraceRequest) returns (GetInjectionTraceResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/injection/traces/{job_id}"
+    };
+  }
+}
+
+// ErrorType represents the category of error to inject.
+enum ErrorType {
+  ERROR_TYPE_UNSPECIFIED = 0;
+  ERROR_TYPE_TIMEOUT = 1;
+  ERROR_TYPE_UNAVAILABLE = 2;
+  ERROR_TYPE_INVALID_ARGUMENT = 3;
+  ERROR_TYPE_NOT_FOUND = 4;
+  ERROR_TYPE_PERMISSION_DENIED = 5;
+  ERROR_TYPE_RESOURCE_EXHAUSTED = 6;
+  ERROR_TYPE_INTERNAL = 7;
+  ERROR_TYPE_CRASH = 8;
+}
+
+// InjectionTemplate defines a template for generating specific error types.
+message InjectionTemplate {
+  ErrorType type = 1;
+  string code = 2;
+  string message_template = 3;
+  map<string, string> placeholders = 4;
+  map<string, string> details_template = 5;
+}
+
+// InjectionPoint represents a specific point in the pipeline where errors can be injected.
+message InjectionPoint {
+  string id = 1;                          // unique identifier "component.action"
+  string component = 2;                   // pipeline component name
+  string action = 3;                      // specific operation within the component
+  string description = 4;                 // human-readable explanation
+  map<string, InjectionTemplate> templates = 5;  // pre-defined error templates keyed by ErrorType name
+}
+
+// InjectionRule defines a rule for injecting errors at specific points.
+message InjectionRule {
+  string point_ref = 1;                   // injection point ID or wildcard pattern
+  ErrorType error_type = 2;               // which template to use
+  double probability = 3;                 // chance (0.0-1.0) that error triggers
+  map<string, string> overrides = 4;      // customization of template placeholder values
+}
+
+// InjectedError represents an error that was injected into the pipeline.
+message InjectedError {
+  ErrorType type = 1;
+  string code = 2;
+  string message = 3;
+  map<string, string> details = 4;
+}
+
+// GlobalInjectionConfig contains global error injection settings.
+message GlobalInjectionConfig {
+  bool enabled = 1;
+  repeated InjectionRule rules = 2;
+  repeated string excluded_points = 3;
+  double global_probability = 4;              // default probability for all points in chaos mode
+  map<string, double> point_weights = 5;      // per-point probability overrides (point_id -> probability)
+}
+
+// PointRecord tracks the execution and outcome of an injection point evaluation.
+message PointRecord {
+  string point_id = 1;
+  int64 timestamp = 2;                    // unix seconds
+  bool triggered = 3;
+  map<string, string> context_snapshot = 4;
+  InjectedError error = 5;
+  ErrorType template_used = 6;
+  map<string, string> overrides_applied = 7;
+  double probability_roll = 8;
+}
+
+// ExecutionTrace captures the complete trace of error injection for a job execution.
+message ExecutionTrace {
+  string job_id = 1;
+  int64 start_time = 2;                   // unix seconds
+  int64 end_time = 3;                     // unix seconds
+  repeated PointRecord points = 4;
+}
+
+// Request/Response messages for InjectionService RPCs
+
+message ListInjectionPointsRequest {}
+
+message ListInjectionPointsResponse {
+  repeated InjectionPoint points = 1;
+}
+
+message GetInjectionConfigRequest {}
+
+message GetInjectionConfigResponse {
+  GlobalInjectionConfig config = 1;
+}
+
+message SetInjectionConfigRequest {
+  GlobalInjectionConfig config = 1;
+}
+
+message SetInjectionConfigResponse {
+  GlobalInjectionConfig config = 1;
+}
+
+message ClearInjectionConfigRequest {}
+
+message GetInjectionTraceRequest {
+  string job_id = 1;
+}
+
+message GetInjectionTraceResponse {
+  ExecutionTrace trace = 1;
 }

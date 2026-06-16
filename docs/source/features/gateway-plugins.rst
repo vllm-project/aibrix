@@ -386,7 +386,6 @@ Rate Limiting Headers
    * - ``x-error-incr-tpm``
      - Error encountered while incrementing the TPM counter.
 
-
 Debugging Guidelines
 ^^^^^^^^^^^^^^^^^^^^
 
@@ -439,6 +438,81 @@ Collect logs from the Envoy proxy and the gateway plugin for deeper investigatio
     aibrix-redis-master-7d6b77c794-bcqxc        1/1     Running            0          22m
 
     kubectl logs aibrix-gateway-plugins-6bd9fcd5b9-2bwpr -n aibrix-system
+
+.. _observability_telemetry:
+
+Observability & Telemetry
+-------------------------
+
+The gateway plugins feature built-in support for distributed tracing using OpenTelemetry (OTel). This allows you to trace end-to-end request lifecycles across the external processing pipeline.
+
+Tracing is strictly opt-in by default to conserve system resources. To enable the telemetry components, you need to complete the following two steps:
+
+Step 1: Enable OpenTelemetry in EnvoyProxy
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Enable ``openTelemetry.enable`` in your helm chart or add the telemetry configuration directly to your ``EnvoyProxy`` resource.
+
+.. code-block:: yaml
+
+    apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: EnvoyProxy
+    metadata:
+      name: aibrix-custom-proxy-config
+    spec:
+      telemetry:
+        tracing:
+          samplingRate: 100
+          provider:
+            type: OpenTelemetry
+            openTelemetry:
+              # -- The hostname or IP address of the OpenTelemetry Collector/OTLP receiver.
+              # Do NOT include the protocol scheme (e.g., http://) or port here.
+              host: "otel-collector.monitoring.svc.cluster.local"
+
+              # -- The port of the OTLP gRPC receiver (Envoy strictly uses gRPC for this).
+              port: 4317
+
+Step 2: Configure the OTLP Exporter Endpoint
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Next, you must explicitly configure an OTLP exporter endpoint in your environment. You can enable it by setting either the global endpoint or the traces-specific endpoint.
+
+For example, if you are running a cluster local OTel Collector, inject the following environment variables:
+
+.. code-block:: yaml
+
+    env:
+      # Option 1: Global OTLP endpoint (Recommended)
+      # NOTE: If protocol is HTTP, the SDK automatically appends '/v1/traces' to this URL.
+      # If protocol is gRPC, it uses the base URL as-is.
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "http://otel-collector.monitoring.svc.cluster.local:4317"
+
+      # --- OR ---
+
+      # Option 2: Traces-specific endpoint (Uncomment to use instead of Option 1)
+      # The SDK uses this URL EXACTLY as-is without appending any paths.
+      # (Example below uses port 4318 for HTTP/Protobuf exports)
+      # - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+      #   value: "http://otel-collector.monitoring.svc.cluster.local:4318/v1/traces"
+
+      # Specifies the transport protocol. Valid options: grpc, http, or http/protobuf
+      - name: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: "grpc"
+
+      # Keeps TLS active but skips server certificate validation (useful for self-signed certs)
+      - name: OTEL_EXPORTER_OTLP_INSECURE_SKIP_VERIFY
+        value: "true"
+
+      # Set Headers if your OTel Collector or APM backend (e.g., Datadog, Honeycomb) requires authentication
+      - name: OTEL_EXPORTER_OTLP_HEADERS
+        value: "Authorization=Bearer {{ token }}"
+
+**Advanced Configuration**
+
+For a comprehensive list of supported telemetry configurations—including sampling rates, TLS options and custom headers,
+please refer to the full configuration guide in: `pkg/plugins/gateway/ENV_VARS.md`
 
 .. _config_profiles:
 

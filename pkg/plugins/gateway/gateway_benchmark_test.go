@@ -117,7 +117,7 @@ func BenchmarkHandleRequestBody_NoRoutingStrategy(b *testing.B) {
 		routingCtx := types.NewRoutingContext(context.Background(), baseCtx.Algorithm, "test-model", "", "bench-request-id", user.Name)
 		routingCtx.ReqPath = PathChatCompletions
 
-		server.HandleRequestBody(routingCtx, "bench-request-id", req, user)
+		server.HandleRequestBody(context.Background(), routingCtx, "bench-request-id", req, user)
 	}
 }
 
@@ -158,7 +158,7 @@ func BenchmarkHandleRequestBody_WithRoutingStrategy(b *testing.B) {
 		}
 		routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(benchRouter)
 
-		server.HandleRequestBody(routingCtx, "bench-request-id", req, user)
+		server.HandleRequestBody(context.Background(), routingCtx, "bench-request-id", req, user)
 	}
 }
 
@@ -180,7 +180,7 @@ func BenchmarkHandleRequestBody_ModelNotFound(b *testing.B) {
 		routingCtx := types.NewRoutingContext(context.Background(), "", "unknown-model", "", "bench-request-id", user.Name)
 		routingCtx.ReqPath = PathChatCompletions
 
-		server.HandleRequestBody(routingCtx, "bench-request-id", req, user)
+		server.HandleRequestBody(context.Background(), routingCtx, "bench-request-id", req, user)
 	}
 }
 
@@ -209,7 +209,7 @@ func BenchmarkHandleRequestBody_NoPodsAvailable(b *testing.B) {
 		routingCtx := types.NewRoutingContext(context.Background(), "", "test-model", "", "bench-request-id", user.Name)
 		routingCtx.ReqPath = PathChatCompletions
 
-		server.HandleRequestBody(routingCtx, "bench-request-id", req, user)
+		server.HandleRequestBody(context.Background(), routingCtx, "bench-request-id", req, user)
 	}
 }
 
@@ -291,7 +291,7 @@ func BenchmarkHandleRequestBody_WithRoutingStrategy_ChatCompletions_32k(b *testi
 			routingCtx.ReqHeaders = make(map[string]string)
 		}
 		routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(benchRouter)
-		server.HandleRequestBody(routingCtx, "bench-request-id", req, user)
+		server.HandleRequestBody(context.Background(), routingCtx, "bench-request-id", req, user)
 	}
 }
 
@@ -351,7 +351,7 @@ func BenchmarkHandleRequestBody_WithRoutingStrategy_Completions_32k(b *testing.B
 			routingCtx.ReqHeaders = make(map[string]string)
 		}
 		routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(benchRouter)
-		server.HandleRequestBody(routingCtx, "bench-request-id", req, user)
+		server.HandleRequestBody(context.Background(), routingCtx, "bench-request-id", req, user)
 	}
 }
 
@@ -381,6 +381,6 @@ func BenchmarkHandleRequestBody_StreamRequest(b *testing.B) {
 		routingCtx := types.NewRoutingContext(context.Background(), "", "test-model", "", "bench-request-id", user.Name)
 		routingCtx.ReqPath = PathChatCompletions
 
-		server.HandleRequestBody(routingCtx, "bench-request-id", req, user)
+		server.HandleRequestBody(context.Background(), routingCtx, "bench-request-id", req, user)
 	}
 }

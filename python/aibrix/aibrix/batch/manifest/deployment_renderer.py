@@ -14,16 +14,16 @@
 
 from __future__ import annotations
 
-import uuid
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
-from aibrix.batch.template import BatchProfile, ModelDeploymentTemplate
+from aibrix.batch.job_entity import BatchJobSpec, ResourceDetail
+from aibrix.batch.manifest.downloader_env import build_downloader_env
+from aibrix.batch.manifest.renderer import _RendererSupport
+from aibrix.batch.template import ModelDeploymentTemplate
 from aibrix.downloader.utils import infer_model_name
 
-from .downloader_env import build_downloader_env
-from .renderer import _RendererSupport
-
+_DEFAULT_NAMESPACE = "default"
 _AIBRIX_MODEL_NAME_KEY = "model.aibrix.ai/name"
 _RUNTIME_CONTAINER_NAME = "aibrix-runtime"
 _RUNTIME_IMAGE = "aibrix/runtime:nightly"
@@ -43,35 +43,27 @@ _MODEL_MOUNT_PATH = "/models"
 class DeploymentManifestRenderer(_RendererSupport):
     def render(
         self,
-        template_name: str,
-        profile_name: Optional[str] = None,
-        deployment_name: Optional[str] = None,
-        template_version: Optional[str] = None,
-        replicas: Optional[int] = None,
-        gpu_type: Optional[str] = None,
+        job_id: str,
+        spec: BatchJobSpec,
+        provider_spec: ResourceDetail,
+        namespace: str = _DEFAULT_NAMESPACE,
     ) -> Dict[str, Dict[str, Any]]:
-        template = self._resolve_template(template_name, template_version)
+        template, profile = self._resolve(spec)
+
         self._validate_template(template)
-        # only require profile if model download is neeeded
-        profile = (
-            self._resolve_profile(profile_name)
-            if self._needs_model_download(template)
-            else None
-        )
 
         # deployment_name use template.name + random 8hex
-        deployment_name = deployment_name or f"{template.name}-{uuid.uuid4().hex[:8]}"
-        replica_count = int(replicas or 1)
+        deployment_name = f"batch-{template.name}-{job_id[:8]}"
         port = self._resolve_engine_port(template)
 
         deployment = self._system_base(
             template,
             deployment_name,
-            replica_count,
+            provider_spec.replica or 1,
             port,
-            profile,
         )
-        self._apply_template(deployment, template)
+        deployment["metadata"]["namespace"] = namespace
+        self._apply_template(deployment, template, spec.model)
         service = self._build_service(deployment, template)
         return {"deployment": deployment, "service": service}
 
@@ -83,7 +75,6 @@ class DeploymentManifestRenderer(_RendererSupport):
         deployment_name: str,
         replicas: int,
         port: int,
-        profile: Optional[BatchProfile],
     ) -> Dict[str, Any]:
         labels = self._base_labels(template, deployment_name, port)
         volumes = [
@@ -130,8 +121,8 @@ class DeploymentManifestRenderer(_RendererSupport):
                             if self._needs_runtime_sidecar(template)
                             else []
                         ),
-                        "initContainers": self._init_containers(template, profile),
-                        "terminationGracePeriodSeconds": 300,
+                        "initContainers": self._init_containers(template),
+                        "terminationGracePeriodSeconds": 30,
                         "volumes": volumes,
                     },
                 },
@@ -171,12 +162,10 @@ class DeploymentManifestRenderer(_RendererSupport):
         }
 
     def _init_containers(
-        self, template: ModelDeploymentTemplate, profile: Optional[BatchProfile]
+        self, template: ModelDeploymentTemplate
     ) -> list[Dict[str, Any]]:
         if not self._needs_model_download(template):
             return []
-        if profile is None:
-            raise ValueError("profile is required for remote model downloads")
 
         return [
             {
@@ -189,7 +178,7 @@ class DeploymentManifestRenderer(_RendererSupport):
                     "--local-dir",
                     f"{_MODEL_MOUNT_PATH}/",
                 ],
-                "env": build_downloader_env(template, profile),
+                "env": build_downloader_env(template),
                 "volumeMounts": [
                     {
                         "mountPath": _MODEL_MOUNT_PATH,
@@ -202,7 +191,10 @@ class DeploymentManifestRenderer(_RendererSupport):
     # ── Layer 2: template ──────────────────────────────────────────────────
 
     def _apply_template(
-        self, manifest: Dict[str, Any], template: ModelDeploymentTemplate
+        self,
+        manifest: Dict[str, Any],
+        template: ModelDeploymentTemplate,
+        served_model_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Add the engine container based on the template spec."""
         template_for_engine = (
@@ -211,7 +203,9 @@ class DeploymentManifestRenderer(_RendererSupport):
             else template
         )
         port = self._resolve_engine_port(template_for_engine)
-        engine_container = self._build_engine_container(template_for_engine, port)
+        engine_container = self._build_engine_container(
+            template_for_engine, port, served_model_name
+        )
         volumes = engine_container.setdefault("volumeMounts", [])
         volumes.append({"name": _DSHM_VOLUME_NAME, "mountPath": _DSHM_MOUNT_PATH})
         if self._needs_model_download(template):

@@ -365,9 +365,9 @@ class TestHybridMappingStrategy:
 
         # Should have both types of rules
         assert rename_rules > 0, "Should have some renamed metrics for standardization"
-        assert (
-            passthrough_rules > 0
-        ), "Should have some pass-through metrics for debugging"
+        assert passthrough_rules > 0, (
+            "Should have some pass-through metrics for debugging"
+        )
 
         # Essential metrics should be renamed
         essential_mapped = [
@@ -397,9 +397,9 @@ class TestHybridMappingStrategy:
 
         # Should have both types of rules
         assert rename_rules > 0, "Should have some renamed metrics for standardization"
-        assert (
-            passthrough_rules > 0
-        ), "Should have some pass-through metrics for debugging"
+        assert passthrough_rules > 0, (
+            "Should have some pass-through metrics for debugging"
+        )
 
         # Essential metrics should be renamed
         essential_mapped = [

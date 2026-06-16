@@ -21,13 +21,64 @@ from pathlib import Path
 import pytest
 
 import aibrix.batch.constant as constant
+from aibrix.batch.client import NoopEndpointSource
 from aibrix.batch.driver import BatchDriver
-from aibrix.batch.job_driver import EchoInferenceEngineClient
-from aibrix.batch.job_entity import BatchJobErrorCode, BatchJobState, BatchJobStatus
+from aibrix.batch.job_entity import (
+    BatchJob,
+    BatchJobErrorCode,
+    BatchJobSpec,
+    BatchJobState,
+    BatchJobStatus,
+)
+from aibrix.batch.state import JobEntityManager
 from aibrix.context import InfrastructureContext
 from aibrix.storage import StorageType
 
 constant.EXPIRE_INTERVAL = 0.1
+# Idle poll is now a separate knob from the expiry cadence; speed it up too so
+# the scheduler picks jobs up promptly in these timing-sensitive tests.
+constant.SCHEDULE_IDLE_INTERVAL = 0.1
+
+
+class LifecycleEntityManager(JobEntityManager):
+    def __init__(self):
+        super().__init__()
+        self.started = False
+        self.stopped = False
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    async def submit_job(
+        self,
+        session_id: str,
+        job_spec: BatchJobSpec,
+        request_count: int = 0,
+    ):
+        raise NotImplementedError
+
+    async def update_job_ready(self, job: BatchJob):
+        raise NotImplementedError
+
+    async def update_job_status(self, job: BatchJob):
+        raise NotImplementedError
+
+    async def cancel_job(self, job: BatchJob):
+        raise NotImplementedError
+
+    async def delete_job(self, job: BatchJob):
+        raise NotImplementedError
+
+    async def get_job(self, job_id: str, force_reload: bool = False):
+        return None
+
+    async def list_jobs(
+        self, after=None, limit=JobEntityManager.DEFAULT_JOB_PAGE_LIMIT
+    ):
+        return []
 
 
 def generate_input_data(num_requests, local_file):
@@ -42,7 +93,7 @@ def generate_input_data(num_requests, local_file):
     # to check if the read and write are exactly the same.
     with open(local_file, "w") as file:
         for i in range(num_requests):
-            data["custom_id"] = i
+            data["custom_id"] = str(i)
             file.write(json.dumps(data) + "\n")
 
 
@@ -53,7 +104,7 @@ async def test_batch_driver_job_creation():
         context=InfrastructureContext(),
         storage_type=StorageType.LOCAL,
         metastore_type=StorageType.LOCAL,
-        inference_client=EchoInferenceEngineClient(),
+        endpoint_source=NoopEndpointSource(delay=constant.EXPIRE_INTERVAL),
     )
     await driver.start()
 
@@ -102,6 +153,23 @@ async def test_batch_driver_job_creation():
 
 
 @pytest.mark.asyncio
+async def test_batch_driver_starts_and_stops_entity_manager():
+    entity_manager = LifecycleEntityManager()
+    driver = BatchDriver(
+        context=InfrastructureContext(),
+        job_entity_manager=entity_manager,
+        storage_type=StorageType.LOCAL,
+        metastore_type=StorageType.LOCAL,
+    )
+
+    await driver.start()
+    await driver.stop()
+
+    assert entity_manager.started is True
+    assert entity_manager.stopped is True
+
+
+@pytest.mark.asyncio
 async def test_batch_driver_integration():
     """
     Integration test for the batch driver workflow.
@@ -112,7 +180,7 @@ async def test_batch_driver_integration():
         context=InfrastructureContext(),
         storage_type=StorageType.LOCAL,
         metastore_type=StorageType.LOCAL,
-        inference_client=EchoInferenceEngineClient(),
+        endpoint_source=NoopEndpointSource(delay=constant.EXPIRE_INTERVAL),
     )
     await driver.start()
 
@@ -203,7 +271,7 @@ async def test_batch_driver_resuming():
         context=InfrastructureContext(),
         storage_type=StorageType.LOCAL,
         metastore_type=StorageType.LOCAL,
-        inference_client=EchoInferenceEngineClient(),
+        endpoint_source=NoopEndpointSource(delay=constant.EXPIRE_INTERVAL),
     )
     await driver.start()
 
@@ -295,7 +363,7 @@ async def test_batch_driver_validation_failed() -> None:
         context=InfrastructureContext(),
         storage_type=StorageType.LOCAL,
         metastore_type=StorageType.LOCAL,
-        inference_client=EchoInferenceEngineClient(),
+        endpoint_source=NoopEndpointSource(delay=constant.EXPIRE_INTERVAL),
     )
     await driver.start()
 
@@ -341,15 +409,16 @@ async def test_batch_driver_validation_failed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_batch_driver_stop_raises_exception_with_fail_after_n_requests():
-    """Test that BatchDriver.stop() raises RuntimeError when jobs with fail_after_n_requests exist."""
+async def test_batch_driver_survives_job_failure_with_fail_after_n_requests():
+    """A single job failure (fail_after_n_requests) must finalize the job as
+    failed without tearing down the scheduler loop, so BatchDriver.stop()
+    completes cleanly."""
 
     driver = BatchDriver(
         context=InfrastructureContext(),
         storage_type=StorageType.LOCAL,
         metastore_type=StorageType.LOCAL,
-        inference_client=EchoInferenceEngineClient(),
-        stand_alone=False,
+        endpoint_source=NoopEndpointSource(delay=constant.EXPIRE_INTERVAL),
     )
 
     # Create a temporary file for job input
@@ -375,7 +444,7 @@ async def test_batch_driver_stop_raises_exception_with_fail_after_n_requests():
             metadata={"test": "metadata"},
             opts={
                 constant.BATCH_OPTS_FAIL_AFTER_N_REQUESTS: "2"
-            },  # This should trigger the stop() exception
+            },  # This triggers an artificial job failure
         )
 
         job_id = await driver.job_manager.create_job_with_spec(
@@ -408,16 +477,14 @@ async def test_batch_driver_stop_raises_exception_with_fail_after_n_requests():
         assert job.status.output_file_id is not None
         assert job.status.error_file_id is not None
 
-        # wait for exception reach driver.
+        # wait for the swallowed failure to settle in the scheduler loop.
         await asyncio.sleep(3.0)
 
-        # 5. Attempt to stop the driver - this should raise RuntimeError
-        with pytest.raises(RuntimeError, match="Artificial failure.*"):
-            await driver.stop()
+        # 5. Stop the driver - the single job failure was swallowed by the
+        # scheduler loop, so stop() must complete cleanly without raising.
+        await driver.stop()
 
-        print(
-            "✅ BatchDriver.stop() correctly raised RuntimeError for job with fail_after_n_requests"
-        )
+        print("✅ BatchDriver.stop() completed cleanly after a single job failure")
 
         # 6. Clean up the job to allow proper shutdown
         await driver.clear_job(job_id)

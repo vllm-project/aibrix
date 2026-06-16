@@ -28,10 +28,13 @@ import (
 // upward. The planner owns the JobID -> batch.ID translation
 // (in-memory today; durable when the persistence follow-up lands).
 //
+// Either Start or Recover must be called before any other methods.
+//
 // Close stops background workers and releases resources; callers
 // (e.g. Server.Shutdown) invoke it on shutdown without a runtime
 // type assertion.
 type Planner interface {
+	Start(ctx context.Context) error
 	Enqueue(ctx context.Context, req *EnqueueRequest) (*Job, error)
 	GetJob(ctx context.Context, jobID string) (*Job, error)
 	ListJobs(ctx context.Context, req *ListJobsRequest) (*ListJobsResponse, error)

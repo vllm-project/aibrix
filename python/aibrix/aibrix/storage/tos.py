@@ -167,6 +167,7 @@ class TOSStorage(BaseStorage):
         delimiter: Optional[str] = None,
         limit: Optional[int] = None,
         continuation_token: Optional[str] = None,
+        after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
         """List objects with given prefix."""
 
@@ -183,41 +184,30 @@ class TOSStorage(BaseStorage):
 
             # Use native TOS continuation token (marker) for pagination
             if continuation_token:
-                kwargs["marker"] = continuation_token
+                kwargs["continuation_token"] = continuation_token
+            if after_key:
+                kwargs["start_after"] = after_key
 
             # Set max_keys for limit (TOS native pagination)
             if limit is not None:
                 kwargs["max_keys"] = min(limit, 1000)  # TOS max is typically 1000
 
             try:
-                if delimiter:
-                    # Use list_objects_type2 for hierarchical listing
-                    response = self.client.list_objects_type2(**kwargs)
+                # Use list_objects_type2 for hierarchical listing
+                response = self.client.list_objects_type2(**kwargs)
 
-                    # Add files
-                    for obj in response.contents:
-                        objects.append(obj.key)
+                # Add files
+                for obj in response.contents:
+                    objects.append(obj.key)
 
-                    # Add "directories" (common prefixes)
-                    for prefix_info in getattr(response, "common_prefixes", []):
-                        objects.append(prefix_info.prefix)
+                # Add "directories" (common prefixes)
+                for prefix_info in getattr(response, "common_prefixes", []):
+                    objects.append(prefix_info.prefix)
 
-                    # Get next continuation token
-                    next_token = (
-                        response.next_continuation_token
-                        if response.is_truncated
-                        else None
-                    )
-                else:
-                    # Use list_objects for flat listing
-                    response = self.client.list_objects(**kwargs)
-
-                    for obj in response.contents:
-                        objects.append(obj.key)
-
-                    # Get next continuation token (marker)
-                    next_token = response.next_marker if response.is_truncated else None
-
+                # Get next continuation token
+                next_token = (
+                    response.next_continuation_token if response.is_truncated else None
+                )
             except (TosClientError, TosServerError) as e:
                 raise ValueError(f"Failed to list objects with prefix {prefix}: {e}")
 

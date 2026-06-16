@@ -1,0 +1,8 @@
+Scenario: vllm-basic-replicas
+Tests:
+  - name: vllm-qwen3-32b-tp4-replicas2
+    provider: null
+    engine:
+      type: vllm
+      manifest: testdata/deployments/vllm/qwen3-32b-tp4-replicas2.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke.yaml

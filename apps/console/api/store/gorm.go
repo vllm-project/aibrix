@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
@@ -53,7 +54,7 @@ const (
 )
 
 // NewMySQLStore creates mysql-backed gorm store with auto-migrations.
-func NewMySQLStore(dsn, encryptionKey string) (*GORMStore, error) {
+func NewMySQLStore(dsn, encryptionKey string, injector error_injection.Injector) (*GORMStore, error) {
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open mysql: %w", err)
@@ -66,7 +67,7 @@ func NewMySQLStore(dsn, encryptionKey string) (*GORMStore, error) {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("failed to ping mysql: %w", err)
 	}
-	s, err := newGORMStore(db, encryptionKey)
+	s, err := newGORMStore(db, encryptionKey, injector)
 	if err != nil {
 		_ = sqlDB.Close()
 		return nil, err
@@ -82,7 +83,7 @@ func NewMySQLStore(dsn, encryptionKey string) (*GORMStore, error) {
 // Pass ":memory:" or any "...mode=memory..." DSN to get an in-memory database;
 // such DSNs are pinned to a single connection so all queries see the same
 // in-process database.
-func NewSQLiteStore(dsn, encryptionKey string) (*GORMStore, error) {
+func NewSQLiteStore(dsn, encryptionKey string, injector error_injection.Injector) (*GORMStore, error) {
 	dialector, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite: %w", err)
@@ -107,7 +108,7 @@ func NewSQLiteStore(dsn, encryptionKey string) (*GORMStore, error) {
 	// see the same per-connection database.
 	sqlDB.SetMaxOpenConns(1)
 	sqlDB.SetMaxIdleConns(1)
-	s, err := newGORMStore(db, encryptionKey)
+	s, err := newGORMStore(db, encryptionKey, injector)
 	if err != nil {
 		_ = sqlDB.Close()
 		return nil, err
@@ -123,8 +124,8 @@ func NewSQLiteStore(dsn, encryptionKey string) (*GORMStore, error) {
 // by the memory:// URI scheme and by tests; equivalent to
 // NewSQLiteStore(":memory:", ...). Production deployments should use a
 // sqlite: file URL or mysql:// instead.
-func NewMemoryStore() *GORMStore {
-	s, err := NewSQLiteStore(":memory:", strings.Repeat("0", 64))
+func NewMemoryStore(injector error_injection.Injector) *GORMStore {
+	s, err := NewSQLiteStore(":memory:", strings.Repeat("0", 64), injector)
 	if err != nil {
 		panic(fmt.Sprintf("failed to initialize in-memory sqlite store: %v", err))
 	}
@@ -137,16 +138,17 @@ func isSQLiteInMemoryDSN(dsn string) bool {
 
 // GORMStore implements Store for mysql/sqlite with shared logic.
 type GORMStore struct {
-	db     *gorm.DB
-	aesKey []byte
+	db       *gorm.DB
+	aesKey   []byte
+	injector error_injection.Injector
 }
 
-func newGORMStore(db *gorm.DB, encryptionKey string) (*GORMStore, error) {
+func newGORMStore(db *gorm.DB, encryptionKey string, injector error_injection.Injector) (*GORMStore, error) {
 	key, err := hex.DecodeString(encryptionKey)
 	if err != nil || len(key) != 32 {
 		return nil, fmt.Errorf("encryption key must be a 64-char hex string (32 bytes)")
 	}
-	return &GORMStore{db: db, aesKey: key}, nil
+	return &GORMStore{db: db, aesKey: key, injector: injector}, nil
 }
 
 func (s *GORMStore) RunMigrations() error {
@@ -242,6 +244,11 @@ func (s *GORMStore) DeleteDeployment(ctx context.Context, id string) error {
 }
 
 func (s *GORMStore) UpsertJob(ctx context.Context, rec *models.Job) error {
+	if s.injector != nil {
+		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_UPSERT_JOB); err != nil {
+			return err
+		}
+	}
 	if rec == nil || rec.ID == "" {
 		return status.Error(codes.InvalidArgument, "job id is required")
 	}
@@ -255,6 +262,11 @@ func (s *GORMStore) UpsertJob(ctx context.Context, rec *models.Job) error {
 }
 
 func (s *GORMStore) GetJob(ctx context.Context, id string) (*models.Job, error) {
+	if s.injector != nil {
+		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_GET_JOB); err != nil {
+			return nil, err
+		}
+	}
 	var rec models.Job
 	if err := s.db.WithContext(ctx).Where("deleted = ?", false).First(&rec, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -266,6 +278,11 @@ func (s *GORMStore) GetJob(ctx context.Context, id string) (*models.Job, error) 
 }
 
 func (s *GORMStore) ListJobs(ctx context.Context, ids []string) (map[string]*models.Job, error) {
+	if s.injector != nil {
+		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_LIST_JOBS); err != nil {
+			return nil, err
+		}
+	}
 	out := make(map[string]*models.Job, len(ids))
 	if len(ids) == 0 {
 		return out, nil
@@ -276,6 +293,41 @@ func (s *GORMStore) ListJobs(ctx context.Context, ids []string) (map[string]*mod
 	}
 	for i := range rows {
 		out[rows[i].ID] = &rows[i]
+	}
+	return out, nil
+}
+
+func (s *GORMStore) ListJobsByBatchIDs(ctx context.Context, batchIDs []string) (map[string]*models.Job, error) {
+	out := make(map[string]*models.Job, len(batchIDs))
+	if len(batchIDs) == 0 {
+		return out, nil
+	}
+	var rows []models.Job
+	if err := s.db.WithContext(ctx).Where("deleted = ?", false).Where("batch_id IN ?", batchIDs).Find(&rows).Error; err != nil {
+		return nil, status.Errorf(codes.Internal, "list jobs by batch ids: %v", err)
+	}
+	for i := range rows {
+		if rows[i].BatchID != "" {
+			out[rows[i].BatchID] = &rows[i]
+		}
+	}
+	return out, nil
+}
+
+func (s *GORMStore) ListJobsByDatasetID(ctx context.Context, fileID string) ([]*models.Job, error) {
+	if fileID == "" {
+		return nil, nil
+	}
+	var rows []models.Job
+	if err := s.db.WithContext(ctx).
+		Where("deleted = ?", false).
+		Where("input_dataset = ? OR output_dataset = ? OR error_dataset = ?", fileID, fileID, fileID).
+		Find(&rows).Error; err != nil {
+		return nil, status.Errorf(codes.Internal, "list jobs by dataset id: %v", err)
+	}
+	out := make([]*models.Job, len(rows))
+	for i := range rows {
+		out[i] = &rows[i]
 	}
 	return out, nil
 }
@@ -302,6 +354,53 @@ func (s *GORMStore) ListNonTerminalJobs(ctx context.Context) ([]*models.Job, err
 		out[i] = &rows[i]
 	}
 	return out, nil
+}
+
+// ListAllJobs lists all jobs with cursor-based pagination, sorted by created_at descending.
+// after is the job ID cursor - returns jobs created before this job.
+func (s *GORMStore) ListAllJobs(ctx context.Context, after string, limit int) ([]*models.Job, bool, error) {
+	q := s.db.WithContext(ctx).Model(&models.Job{}).
+		Where("deleted = ?", false).
+		Order("created_at DESC, id DESC")
+
+	// Cursor-based pagination: after is a job ID, find jobs created before it
+	// Use composite cursor (created_at, id) to handle timestamp collisions
+	if after != "" {
+		var cursor models.Job
+		if err := s.db.WithContext(ctx).Select("id, created_at").Where("id = ? AND deleted = ?", after, false).First(&cursor).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				// Cursor not found, return empty result
+				return nil, false, nil
+			}
+			return nil, false, status.Errorf(codes.Internal, "find cursor job: %v", err)
+		}
+		// Composite cursor: (created_at, id) tuple comparison
+		// Select jobs where created_at < cursor.created_at OR (created_at = cursor.created_at AND id < cursor.id)
+		q = q.Where("created_at < ? OR (created_at = ? AND id < ?)", cursor.CreatedAt, cursor.CreatedAt, cursor.ID)
+	}
+
+	// Fetch one extra to check hasMore
+	fetchLimit := limit + 1
+	if limit > 0 {
+		q = q.Limit(fetchLimit)
+	}
+
+	var rows []models.Job
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, false, status.Errorf(codes.Internal, "list all jobs: %v", err)
+	}
+
+	hasMore := false
+	if limit > 0 && len(rows) > limit {
+		hasMore = true
+		rows = rows[:limit]
+	}
+
+	out := make([]*models.Job, len(rows))
+	for i := range rows {
+		out[i] = &rows[i]
+	}
+	return out, hasMore, nil
 }
 
 func (s *GORMStore) ListModels(ctx context.Context, search, category string) ([]*pb.Model, error) {
@@ -414,6 +513,14 @@ func (s *GORMStore) CreateModelDeploymentTemplate(ctx context.Context, req *pb.C
 	}
 	if req.GetSpec() == nil {
 		return nil, status.Error(codes.InvalidArgument, "spec is required")
+	}
+	// model_id is a soft reference (no DB-level FK); reject templates that
+	// would dangle under a model the catalog doesn't know about.
+	if _, err := s.GetModel(ctx, req.GetModelId()); err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, status.Errorf(codes.FailedPrecondition, "model %q not found; register the model before attaching templates", req.GetModelId())
+		}
+		return nil, err
 	}
 	version := req.GetVersion()
 	if version == "" {
@@ -664,6 +771,11 @@ func (s *GORMStore) ListQuotas(ctx context.Context, search string) ([]*pb.Quota,
 }
 
 func (s *GORMStore) GetProvision(ctx context.Context, provisionId string) (*types.ProvisionResult, error) {
+	if s.injector != nil {
+		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_GET_PROVISION); err != nil {
+			return nil, err
+		}
+	}
 	var rec models.ProvisionResult
 	if err := s.db.WithContext(ctx).First(&rec, "provision_id = ? AND deleted = ?", provisionId, false).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -698,6 +810,11 @@ func (s *GORMStore) GetProvisionByIdempotencyKey(ctx context.Context, idempotenc
 }
 
 func (s *GORMStore) UpsertProvision(ctx context.Context, result *types.ProvisionResult) error {
+	if s.injector != nil {
+		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_UPSERT_PROVISION); err != nil {
+			return err
+		}
+	}
 	if result == nil {
 		return fmt.Errorf("provision result is required")
 	}
@@ -711,6 +828,7 @@ func (s *GORMStore) UpsertProvision(ctx context.Context, result *types.Provision
 	rec := models.ProvisionResult{
 		IdempotencyKey: result.IdempotencyKey,
 		ProvisionID:    record.ProvisionID,
+		Provider:       record.Provider,
 		Region:         record.Region,
 		Status:         record.Status,
 		Payload:        datatypes.JSON(record.Payload),
@@ -720,7 +838,7 @@ func (s *GORMStore) UpsertProvision(ctx context.Context, result *types.Provision
 	}
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "idempotency_key"}},
-		DoUpdates: clause.AssignmentColumns([]string{"provision_id", "region", "status", "payload", "updated_at", "deleted"}),
+		DoUpdates: clause.AssignmentColumns([]string{"provision_id", "provider", "region", "status", "payload", "updated_at", "deleted"}),
 	}).Create(&rec).Error; err != nil {
 		return fmt.Errorf("failed to upsert provision result: %w", err)
 	}
@@ -728,14 +846,14 @@ func (s *GORMStore) UpsertProvision(ctx context.Context, result *types.Provision
 }
 
 func (s *GORMStore) UpdateProvisionStatus(ctx context.Context, provisionId string, pstatus types.ProvisionStatus) error {
-	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("provision_id = ? AND deleted = ?", provisionId, false).Updates(map[string]interface{}{"status": string(pstatus), "updated_at": time.Now()}).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("provision_id = ? AND deleted = ?", provisionId, false).Updates(map[string]interface{}{"status": string(pstatus), "updated_at": time.Now().UTC()}).Error; err != nil {
 		return fmt.Errorf("failed to update provision result status: %w", err)
 	}
 	return nil
 }
 
 func (s *GORMStore) DeleteProvision(ctx context.Context, provisionId string) error {
-	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("provision_id = ?", provisionId).Updates(map[string]interface{}{"deleted": true, "updated_at": time.Now()}).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("provision_id = ?", provisionId).Updates(map[string]interface{}{"deleted": true, "updated_at": time.Now().UTC()}).Error; err != nil {
 		return fmt.Errorf("failed to delete provision result: %w", err)
 	}
 	return nil
@@ -761,11 +879,7 @@ func (s *GORMStore) ListProvisions(ctx context.Context, options *types.ListOptio
 		if options.Regions != nil && len(*options.Regions) > 0 {
 			regionStrs := make([]string, 0, len(*options.Regions))
 			for _, region := range *options.Regions {
-				regionBytes, err := json.Marshal(region)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal region: %w", err)
-				}
-				regionStrs = append(regionStrs, string(regionBytes))
+				regionStrs = append(regionStrs, region.String())
 			}
 			q = q.Where("region IN ?", regionStrs)
 		}

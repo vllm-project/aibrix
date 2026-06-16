@@ -289,6 +289,10 @@ class ModelDeploymentTemplateSpec(_Strict):
         min_length=1,
         description="OpenAI endpoints this deployment can serve",
     )
+    service_id: Optional[str] = Field(
+        default=None,
+        description="Optional service identifier (e.g. discovery key) propagated to provider workload labels and discovery",
+    )
     deployment_mode: DeploymentMode = Field(
         default=DeploymentMode.DEDICATED,
         description="Only 'dedicated' is honored at runtime today.",
@@ -357,47 +361,6 @@ class ModelDeploymentTemplateList(RootModel[List[ModelDeploymentTemplate]]):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class StorageBackend(str, Enum):
-    S3 = "s3"
-    MINIO = "minio"
-    GCS = "gcs"
-    TOS = "tos"
-    LOCAL = "local"
-
-
-class StorageSpec(_Strict):
-    """Where batch input/output/checkpoint files live."""
-
-    backend: StorageBackend
-    bucket: str = Field(min_length=1, description="Bucket / container name")
-    region: Optional[str] = None
-    credentials_secret_ref: Optional[str] = Field(
-        default=None,
-        description="Name of K8s Secret with backend credentials",
-    )
-    endpoint_url: Optional[str] = Field(
-        default=None,
-        description="Override service endpoint (MinIO / S3-compatible)",
-    )
-
-
-class MetastoreBackend(str, Enum):
-    REDIS = "redis"
-    LOCAL = "local"
-
-
-class MetastoreSpec(_Strict):
-    backend: MetastoreBackend = Field(default=MetastoreBackend.REDIS)
-    credentials_secret_ref: Optional[str] = Field(
-        default=None,
-        description="Name of K8s Secret with metastore connection settings",
-    )
-    endpoint_url: Optional[str] = Field(
-        default=None,
-        description="Override metastore endpoint when secret does not provide one",
-    )
-
-
 class CompletionWindowOption(str, Enum):
     """SLO tier for batch completion.
 
@@ -421,8 +384,9 @@ class Priority(str, Enum):
 class RetryPolicy(_Strict):
     """Per-request retry policy.
 
-    Schema accepted; runtime retry is delegated to engine HTTP layer
-    plus the smart client when that lands.
+    Schema accepted for profile compatibility. Runtime dispatch already uses
+    the smart client's built-in retry defaults; this profile-level policy is
+    not mapped into engine RetryConfig yet.
     """
 
     max_retries: int = Field(default=2, ge=0)
@@ -478,8 +442,6 @@ class BatchProfileSpec(_Strict):
     there is no OpenAI compatibility being claimed at the field level.
     """
 
-    storage: StorageSpec
-    metastore: Optional[MetastoreSpec] = None
     scheduling: SchedulingSpec = Field(default_factory=SchedulingSpec)
     quota: QuotaSpec = Field(default_factory=QuotaSpec)
 

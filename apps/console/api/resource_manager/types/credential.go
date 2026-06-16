@@ -58,6 +58,8 @@ type ResourceCredential struct {
 	// Kubernetes contains Kubernetes credentials.
 	// Required when provider is "kubernetes".
 	Kubernetes *KubernetesCredential `json:"kubernetes,omitempty"`
+
+	ExtensionResourceCredentials
 }
 
 // ============================================================================

@@ -34,6 +34,9 @@ const (
 	defaultPrefixCacheBlockSize              = 4
 	defaultPrefixCacheEvictionInternalInSec  = 1  // 1 second
 	defaultPrefixCacheEvictionDurationInMins = 20 // 20 minutes
+	defaultPrefixCacheHashSeed               = uint64(0)
+	envPrefixCacheHashSeed                   = "AIBRIX_PREFIX_CACHE_HASH_SEED"
+	envStateSyncEnabled                      = "AIBRIX_STATESYNC_ENABLED"
 )
 
 var (
@@ -66,10 +69,39 @@ type Block struct {
 	modelToPods map[string]map[string]time.Time // model_name: map[pod_name]pod_last_access_time
 }
 
+func randomPrefixCacheHashSeed() uint64 {
+	return rand.New(rand.NewSource(time.Now().UnixNano())).Uint64()
+}
+
+func prefixCacheHashSeed() uint64 {
+	stateSyncEnabled := utils.LoadEnvBool(envStateSyncEnabled, false)
+
+	seedStr, ok := utils.LookupEnv(envPrefixCacheHashSeed)
+	if ok && seedStr != "" {
+		seed, err := strconv.ParseUint(seedStr, 10, 64)
+		if err != nil {
+			if stateSyncEnabled {
+				klog.Warningf("invalid %s=%q with %s=true, using default %d: %v",
+					envPrefixCacheHashSeed, seedStr, envStateSyncEnabled, defaultPrefixCacheHashSeed, err)
+				return defaultPrefixCacheHashSeed
+			}
+			klog.Warningf("invalid %s=%q, using random seed: %v", envPrefixCacheHashSeed, seedStr, err)
+			return randomPrefixCacheHashSeed()
+		}
+		return seed
+	}
+
+	if stateSyncEnabled {
+		return defaultPrefixCacheHashSeed
+	}
+	return randomPrefixCacheHashSeed()
+}
+
 func NewPrefixHashTable() *PrefixHashTable {
-	r := rand.New(rand.NewSource(time.Now().Unix()))
-	seed := r.Uint64()
+	seed := prefixCacheHashSeed()
 	klog.InfoS("prefix_cache_hash_table_configurations",
+		"prefix_cache_hash_seed", seed,
+		"statesync_enabled", utils.LoadEnvBool(envStateSyncEnabled, false),
 		"prefix_cache_block_number", prefixCacheBlockNumber,
 		"prefix_cache_block_size", prefixCacheBlockSize,
 		"prefix_cache_block_eviction_interval_seconds", prefixCacheEvictionInterval,

@@ -55,7 +55,8 @@ const (
 	// HeaderSessionID is the header used for session affinity routing.
 	// NOTE: If you change this value, you MUST also update sessionIDHeader in
 	// pkg/plugins/gateway/algorithms/simple_session_affinity.go
-	HeaderSessionID = "x-session-id"
+	HeaderSessionID   = "x-session-id"
+	HeaderTraceParent = "traceparent"
 
 	// RPM & TPM Update Errors
 	HeaderUpdateTPM        = "x-update-tpm"
@@ -97,6 +98,7 @@ const (
 
 	// Request Paths
 	PathChatCompletions     = "/v1/chat/completions"
+	PathResponses           = "/v1/responses"
 	PathMessages            = "/v1/messages"
 	PathCompletions         = "/v1/completions"
 	PathEmbeddings          = "/v1/embeddings"

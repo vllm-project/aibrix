@@ -22,7 +22,6 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +31,9 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/prefill"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/selector"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -41,26 +43,19 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// sonicJSONInt64 unmarshals JSON numbers into map[string]any as int64 (not float64), so large
-// integer fields (e.g. ctx_request_id, disagg_request_id in disaggregated_params) survive
-// marshal/unmarshal without float64 precision loss.
-var sonicJSONInt64 = sonic.Config{UseInt64: true}.Froze()
-
 const (
-	RouterPD                      types.RoutingAlgorithm = "pd"
-	VLLMEngine                    string                 = "vllm"
-	SGLangEngine                  string                 = "sglang"
-	TensorRTLLM                   string                 = "trtllm"
-	SGLangBootstrapPort           int64                  = 8998
-	SGLangBootstrapPortIdentifier string                 = "model.aibrix.ai/sglang-bootstrap-port"
-	LLMEngineIdentifier           string                 = constants.ModelLabelEngine
-	PDRoleSetIdentifier           string                 = "roleset-name"
-	PDRoleIdentifier              string                 = "role-name"
-	RoleReplicaIndex              string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
-	PodGroupIndex                 string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
-	PromptLenBucketMinLength      string                 = "prompt-len-bucket-min-length"
-	PromptLenBucketMaxLength      string                 = "prompt-len-bucket-max-length"
-	defaultPrefillRequestTimeout  int                    = 30
+	RouterPD                     types.RoutingAlgorithm = "pd"
+	VLLMEngine                   string                 = "vllm"
+	SGLangEngine                 string                 = "sglang"
+	TensorRTLLM                  string                 = "trtllm"
+	LLMEngineIdentifier          string                 = constants.ModelLabelEngine
+	PDRoleSetIdentifier          string                 = "roleset-name"
+	PDRoleIdentifier             string                 = "role-name"
+	RoleReplicaIndex             string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
+	PodGroupIndex                string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
+	PromptLenBucketMinLength     string                 = "prompt-len-bucket-min-length"
+	PromptLenBucketMaxLength     string                 = "prompt-len-bucket-max-length"
+	defaultPrefillRequestTimeout int                    = 30
 
 	defaultPrefillLoadImbalanceMinSpread      int32   = 16
 	defaultDecodeLoadImbalanceMinSpread       float64 = 16
@@ -77,9 +72,12 @@ const (
 )
 
 const (
+	// KVConnectorTypeIdentifier specifies the KV transfer backend for a PD pod. Supported values include "shfs", "nixl", and "mooncake".
+	KVConnectorTypeIdentifier = "model.aibrix.ai/kv-connector-type"
 	// KV connector types for different backends
-	KVConnectorTypeSHFS = "shfs" // Default - AIBrix SHFS/KVCacheManager (GPU)
-	KVConnectorTypeNIXL = "nixl" // NIXL for Neuron (uses disagg_prefill_resp wrapper)
+	KVConnectorTypeSHFS     = "shfs"     // Default - AIBrix SHFS/KVCacheManager (GPU)
+	KVConnectorTypeNIXL     = "nixl"     // NIXL for Neuron (uses disagg_prefill_resp wrapper)
+	KVConnectorTypeMooncake = "mooncake" // Mooncake KV transfer backend
 
 	HeaderPrefillTargetPodIP = "prefill-target-pod-ip"
 	HeaderPrefillTargetPod   = "prefill-target-pod"
@@ -111,6 +109,9 @@ var loadBalancingDecodePolicy = pd.LoadBalancingDecodePolicy{}
 
 func init() {
 	Register(RouterPD, NewPDRouter)
+	// Point the vLLM engine handler at the live connector-type var so that tests
+	// (and runtime config changes via env) are reflected without a second copy.
+	engine.SetConnectorTypeFunc(func() string { return aibrixKVConnectorType })
 }
 
 // pdAlgorithmConfig holds PD-specific algorithm configuration parsed from RoutingConfig.
@@ -199,6 +200,8 @@ type pdRouter struct {
 	prefixUpdateCh        chan prefixUpdateJob
 	countersMu            sync.RWMutex
 	selectionCounts       map[string]int64
+	podSelector           selector.PodSelector
+	prefillExecutor       prefill.PrefillExecutor
 }
 
 func newPrefixCachePrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable) pd.PrefillScorePolicy {
@@ -253,7 +256,7 @@ func NewPDRouter() (types.Router, error) {
 		},
 	}
 
-	pdRouter := pdRouter{
+	r := &pdRouter{
 		cache:                 c,
 		prefillPolicy:         policy,
 		decodePolicy:          decodePol,
@@ -264,9 +267,11 @@ func NewPDRouter() (types.Router, error) {
 		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
 		selectionCounts:       make(map[string]int64),
 	}
+	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
+	r.prefillExecutor = prefill.NewDefaultExecutor(httpClient, r.prefillRequestTracker, prefillRequestTimeout)
 
-	pdRouter.startPrefixUpdater()
-	return &pdRouter, nil
+	r.startPrefixUpdater()
+	return r, nil
 }
 
 func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
@@ -279,7 +284,7 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		return "", fmt.Errorf("engine validation failed for request %s: %w", ctx.RequestID, err)
 	}
 
-	prefillPod, decodePod, err := r.filterPrefillDecodePods(ctx, readyPods)
+	prefillPod, decodePod, err := r.podSelector.Select(ctx, readyPods)
 	if err != nil {
 		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRouteFilterPrefillDecodePodsFail, "status_code": "400"})
@@ -962,15 +967,6 @@ func getLLMEngine(pod *v1.Pod, labelName string, defaultValue string) string {
 		return defaultValue
 	}
 	return labelTarget
-}
-
-func getSGLangBootstrapPort(pod *v1.Pod) int64 {
-	if portStr, exists := pod.Annotations[SGLangBootstrapPortIdentifier]; exists {
-		if port, err := strconv.ParseInt(portStr, 10, 32); err == nil {
-			return port
-		}
-	}
-	return SGLangBootstrapPort // Default port
 }
 
 // validateAndGetLLMEngine validates that all prefill pods use the same engine and returns it.

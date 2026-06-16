@@ -12,15 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import TYPE_CHECKING
+
 from .base import BaseStorage, StorageConfig
 from .factory import create_storage, create_storage_from_env
 from .local import LocalStorage
 from .reader import Reader, SizeExceededError
-from .redis import RedisStorage
 from .s3 import S3Storage
 from .tos import TOSStorage
 from .types import StorageType
 from .utils import ObjectMetadata, generate_filename
+
+if TYPE_CHECKING:
+    from .redis import RedisStorage
 
 __all__ = [
     "BaseStorage",
@@ -37,3 +41,11 @@ __all__ = [
     "SizeExceededError",
     "generate_filename",
 ]
+
+
+def __getattr__(name: str):
+    if name == "RedisStorage":
+        from .redis import RedisStorage
+
+        return RedisStorage
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

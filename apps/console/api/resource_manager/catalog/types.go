@@ -17,6 +17,8 @@ limitations under the License.
 package catalog
 
 import (
+	"time"
+
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 )
 
@@ -161,6 +163,10 @@ type ResourcePricingItem struct {
 type ResourceListOptions struct {
 	// Region is the region identifier, provider-specific.
 	Region types.RegionSpec `json:"region"`
+
+	// Only used for historical and future resource listing
+	StartTime *time.Time `json:"start_time,omitempty"` // format 2026-03-07T03:29:00Z, UTC time
+	EndTime   *time.Time `json:"end_time,omitempty"`   // format 2026-03-07T03:29:00Z, UTC time
 
 	// Filter contains the resource filters.
 	Filter *ListResourceFilter `json:"filter,omitempty"`
