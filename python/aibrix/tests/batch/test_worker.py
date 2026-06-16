@@ -82,8 +82,9 @@ async def test_single_job_runner_marks_failed_and_done():
     assert failed.status.errors and failed.status.errors[0].message == "boom"
 
     # FINALIZING -> FINALIZED on done.
-    runner2 = SingleJobRunner(_make_job(BatchJobState.FINALIZING))
-    done = await runner2.mark_job_done("job-1")
+    finalizing_job = _make_job(BatchJobState.FINALIZING)
+    runner2 = SingleJobRunner(finalizing_job)
+    done = await runner2.mark_job_done(finalizing_job)
     assert done.status.state == BatchJobState.FINALIZED
 
     # get_job resolves by id only.

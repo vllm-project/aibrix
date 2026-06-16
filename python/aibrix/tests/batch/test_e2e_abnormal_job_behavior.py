@@ -150,13 +150,6 @@ def backend_runtime_create_patch(test_backend):
             "DeploymentRuntime._provision",
             DeploymentRuntime._provision,
         )
-    if backend_uses_tce_provider(test_backend):
-        from aibrix.batch.job_driver.octagram_driver import OctagramJobDriver
-
-        return (
-            "aibrix.batch.job_driver.octagram_driver.OctagramJobDriver._create_runtime",
-            OctagramJobDriver._create_runtime,
-        )
     raise ValueError(f"Backend {test_backend} does not have a runtime create hook")
 
 
@@ -170,8 +163,8 @@ def pytest_generate_tests(metafunc):
     select_e2e_backends(
         metafunc,
         [
+            "local_metastore_job_parallel",
             "local_job_using_deployment",
-            "local_job_using_octagram",
             "k8s_job",
         ],
         default_backend="local_metastore_job",
@@ -464,9 +457,9 @@ def install_pending_after_n_requests_barrier(
     original_sync_completed_request_tasks = target_driver._sync_completed_request_tasks
 
     async def block_after_completed_requests(
-        original_method, self, job_id, completed_request_tasks
+        original_method, self, job, completed_request_tasks
     ):
-        job, completed = await original_method(self, job_id, completed_request_tasks)
+        job, completed = await original_method(self, job, completed_request_tasks)
         if job.status.state != BatchJobState.IN_PROGRESS or job.status.finished:
             return job, completed
 
@@ -491,13 +484,11 @@ def install_pending_after_n_requests_barrier(
                 await asyncio.sleep(3600)
         return job, completed
 
-    async def blocked_sync_completed_request_tasks(
-        self, job_id, completed_request_tasks
-    ):
+    async def blocked_sync_completed_request_tasks(self, job, completed_request_tasks):
         return await block_after_completed_requests(
             original_sync_completed_request_tasks,
             self,
-            job_id,
+            job,
             completed_request_tasks,
         )
 
@@ -688,6 +679,29 @@ def validate_batch_response(
             assert isinstance(response[field_name], expected_type), (
                 f"Expected '{field_name}' to be type ({expected_type})"
             )
+        elif field_name == "request_counts" and isinstance(expected_value, dict):
+            actual_request_counts = response[field_name]
+            assert actual_request_counts is not None, (
+                "Required field 'request_counts' should not be None"
+            )
+            assert isinstance(actual_request_counts, dict), (
+                "Expected 'request_counts' to be a dict"
+            )
+            for expected_key, expected_count in expected_value.items():
+                if expected_key.endswith("_at_least"):
+                    actual_key = expected_key.removesuffix("_at_least")
+                    assert actual_key in actual_request_counts, (
+                        f"Expected request_counts.{actual_key} to exist"
+                    )
+                    assert actual_request_counts[actual_key] >= expected_count, (
+                        f"Expected request_counts.{actual_key} >= {expected_count}, "
+                        f"got {actual_request_counts[actual_key]}"
+                    )
+                    continue
+                assert actual_request_counts.get(expected_key) == expected_count, (
+                    f"Expected request_counts.{expected_key} == {expected_count}, "
+                    f"got {actual_request_counts.get(expected_key)}"
+                )
         else:
             assert response[field_name] == expected_value, (
                 f"Expected {field_name} '{expected_value}', got '{response[field_name]}'"
@@ -997,6 +1011,7 @@ async def complete_job_after_restart(
     expect_runtime_teardown_before_restart: bool = False,
     original_app=None,
     original_debug_state: Optional[Dict[str, int]] = None,
+    expected_request_counts=None,
 ):
     if expect_runtime_teardown_before_restart:
         verify_runtime_teardown(
@@ -1051,11 +1066,15 @@ async def complete_job_after_restart(
                 expected_errors=False,
                 expected_output_file_id=True,
                 expected_error_file_id=True,
-                expected_request_counts={
-                    "total": expected_total_requests,
-                    "completed": expected_total_requests,
-                    "failed": 0,
-                },
+                expected_request_counts=(
+                    expected_request_counts
+                    if expected_request_counts is not None
+                    else {
+                        "total": expected_total_requests,
+                        "completed": expected_total_requests,
+                        "failed": 0,
+                    }
+                ),
             )
             await restarted_app.state.batch_driver.clear_job(batch_id)
             return final_status
@@ -1301,11 +1320,19 @@ async def test_job_processing_failure(e2e_test_app, test_backend):
                 ),
                 expected_output_file_id=True,
                 expected_error_file_id=True,
-                expected_request_counts={
-                    "total": 10,
-                    "completed": 1,
-                    "failed": 0,
-                },
+                expected_request_counts=(
+                    {
+                        "total": 10,
+                        "completed_at_least": 1,
+                        "failed": 0,
+                    }
+                    if test_backend == "local_metastore_job_parallel"
+                    else {
+                        "total": 10,
+                        "completed": 1,
+                        "failed": 0,
+                    }
+                ),
             )
 
             print(
@@ -1953,7 +1980,11 @@ async def test_job_expiration_during_processing(e2e_test_app, test_backend):
     with create_test_client(e2e_test_app) as client:
         input_file_id = upload_batch_input_file(client, 3)
         original_delay = set_runtime_inference_delay(
-            e2e_test_app, test_backend, delay_seconds=1.0
+            e2e_test_app,
+            test_backend,
+            delay_seconds=(
+                3.0 if test_backend == "local_metastore_job_parallel" else 1.0
+            ),
         )
 
         # Step 2: Inject FailingBatchManager to add fail_after metadata during job creation

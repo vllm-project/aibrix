@@ -20,6 +20,7 @@ its registry) and the single-job worker path — neither reimplements the
 progress bitmap; both delegate to the tracker here.
 """
 
+import asyncio
 from typing import Optional
 
 from aibrix.batch.job_driver.driver import JobDriver
@@ -48,6 +49,7 @@ class JobMetaInfo(BatchJob):
             status=job.status,
         )
         self._job_driver: Optional[JobDriver] = None
+        self._async_lock = asyncio.Lock()
         # Per-request progress lives in a standalone JobProgressTracker (which
         # does NOT inherit BatchJob); JobMetaInfo just delegates to it. The
         # tracker mutates this job's status, so behavior is unchanged.

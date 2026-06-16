@@ -959,7 +959,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
         await self.job_updated_handler(meta_data, persisted)
         return persisted
 
-    async def mark_job_done(self, job_id: str) -> BatchJob:
+    async def mark_job_done(self, job: BatchJob) -> BatchJob:
         """
         Mark job done.
 
@@ -967,7 +967,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
             JobUnexpectedStateError: If job is not in progress and not finalizing.
         """
         try:
-            meta_data = await self._meta_from_in_progress_job(job_id)
+            meta_data = await self._meta_from_in_progress_job(job.job_id)
         except JobUnexpectedStateError as juse:
             logger.warning(str(juse), state=juse.state)  # type: ignore[call-arg]
             raise
@@ -980,15 +980,15 @@ class BatchManager(RunningJobs, SchedulableJobs):
 
         logger.debug(
             "mark_job_done source counts",
-            job_id=job_id,
-            total=meta_data.status.request_counts.total,
-            launched=meta_data.status.request_counts.launched,
-            completed=meta_data.status.request_counts.completed,
-            failed=meta_data.status.request_counts.failed,
-            state=meta_data.status.state,
+            job_id=job.job_id,
+            total=job.status.request_counts.total,
+            launched=job.status.request_counts.launched,
+            completed=job.status.request_counts.completed,
+            failed=job.status.request_counts.failed,
+            state=job.status.state,
         )  # type: ignore[call-arg]
 
-        job = meta_data.copy()
+        job = meta_data.copy(job.status)
         finalized_at = datetime.now(timezone.utc)
         job.status.finalized_at = finalized_at
         # Do not override existing condition. Fill up locally for data integrity in case apply_job_changes does nothing
@@ -1018,7 +1018,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
         if not await self.conclude_job(job, meta_data):
             return meta_data
 
-        logger.info("Job is finalized", job_id=job_id)  # type: ignore[call-arg]
+        logger.info("Job is finalized", job_id=job.job_id)  # type: ignore[call-arg]
         return job
 
     async def mark_job_failed(self, job_id: str, ex: BatchJobError) -> BatchJob:

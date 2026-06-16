@@ -378,6 +378,12 @@ class FastNoopEndpointSource(NoopEndpointSource):
         )
 
 
+class ParallelNoopEndpointSource(FastNoopEndpointSource):
+    def __init__(self, context, capacity: int):
+        super().__init__(context)
+        self._capacity = capacity
+
+
 class FakeDeploymentAppsV1Api:
     def __init__(self):
         self.created: list[tuple[str, dict[str, Any]]] = []
@@ -601,6 +607,10 @@ class E2ETestBackend(str):
 
 E2E_BACKENDS: dict[str, E2ETestBackend] = {
     "local_metastore_job": E2ETestBackend("local_metastore_job"),
+    "local_metastore_job_parallel": E2ETestBackend(
+        "local_metastore_job_parallel",
+        max_concurrency=5,
+    ),
     "local_job_using_deployment": E2ETestBackend(
         "local_job_using_deployment",
         request_kwargs={
@@ -858,7 +868,7 @@ def build_e2e_test_app(
     monkeypatch.chdir(tmp_path)
     del request, preserve_redis_prefix
 
-    if test_backend == "local_metastore_job":
+    if test_backend in {"local_metastore_job", "local_metastore_job_parallel"}:
         app = create_test_app(
             storage_type=StorageType.LOCAL,
             metastore_type=StorageType.LOCAL,
@@ -866,6 +876,13 @@ def build_e2e_test_app(
         )
         app.state.metadata_store = MockMetadataStore()
         app.state.redis_client = None
+        if test_backend == "local_metastore_job_parallel":
+            endpoint_source = ParallelNoopEndpointSource(
+                app.state.batch_driver._context,
+                capacity=test_backend.max_concurrency,
+            )
+            app.state.batch_driver._endpoint_source = endpoint_source
+            app.state.batch_driver.job_manager.set_endpoint_source(endpoint_source)
         return app
 
     if test_backend == "local_job_using_deployment":

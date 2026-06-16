@@ -31,6 +31,7 @@ from aibrix.batch.job_entity import (
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    BatchJobStatusCopy,
     ObjectMeta,
     RequestCountStats,
     TypeMeta,
@@ -260,7 +261,9 @@ async def test_execute_worker_uses_concurrent_dispatch_for_known_total(monkeypat
 
     result = await driver.execute_worker(job.job_id)
 
-    assert result.status.state == BatchJobState.FINALIZING
+    assert (
+        result.status.state == BatchJobState.IN_PROGRESS
+    )  # No finalize triggered by execute_worker
     assert result.status.request_counts.completed == 4
     assert set(outputs) == {0, 1, 2, 3}
     assert channel.peak == 2
@@ -301,13 +304,37 @@ async def test_execute_worker_passes_client_concurrency_as_absolute_adaptive_cap
 async def test_execute_worker_reconciles_storage_done_requests(monkeypatch):
     job = _make_job(total=2)
     driver, _ = _driver(job, capacity=2)
-    requests = [{"_request_index": 1, "custom_id": "req-1", "body": {"i": 1}}]
-    _patch_storage(monkeypatch, requests, done={0})
+    read_starts = []
+    done = {0}
+
+    async def read_job_next_request(_job, start_index=0):
+        read_starts.append(start_index)
+        yield {"_request_index": 1, "custom_id": "req-1", "body": {"i": 1}}
+
+    async def is_request_done(_job, request_index):
+        return request_index in done
+
+    from aibrix.batch.job_driver import base as base_module
+
+    monkeypatch.setattr(
+        base_module.storage, "read_job_next_request", read_job_next_request
+    )
+    monkeypatch.setattr(base_module.storage, "is_request_done", is_request_done)
+    outputs = {}
+
+    async def write_job_output_data(_job, request_index, output_data):
+        done.add(request_index)
+        outputs[request_index] = output_data
+
+    monkeypatch.setattr(
+        base_module.storage, "write_job_output_data", write_job_output_data
+    )
 
     result = await driver.execute_worker(job.job_id)
 
-    assert result.status.state == BatchJobState.FINALIZING
-    assert result.status.request_counts.completed == 2
+    assert read_starts == [1]
+    assert result.status.request_counts.completed == 1
+    assert set(outputs) == {1}
 
 
 @pytest.mark.asyncio
@@ -351,8 +378,66 @@ async def test_reconcile_storage_done_checks_are_parallel(monkeypatch):
 
     monkeypatch.setattr(base_module.storage, "is_request_done", is_request_done)
 
-    result = await driver._sync_completed_requests_from_storage(job.job_id, job)
+    result = await driver._get_next_pass_start(job)
 
     assert peak > 1
-    assert result.status.state == BatchJobState.FINALIZING
+    assert result == -1
+
+
+@pytest.mark.asyncio
+async def test_finalize_job_persists_calibrated_counts_before_done(monkeypatch):
+    job = _make_job(total=4)
+    driver, _ = _driver(job, capacity=2)
+    worker_status = job.status.model_copy(deep=True)
+    worker_status.request_counts = RequestCountStats(total=4, launched=1, completed=1)
+    job.status = worker_status
+    job.status.status_copies = {
+        driver._worker_id: BatchJobStatusCopy.from_status(worker_status)
+    }
+    driver._progress_manager._meta.status = job.status.model_copy(deep=True)
+    captured = {}
+
+    async def finalize_job_output_data(finalizing_job):
+        finalizing_job.status.request_counts = RequestCountStats(
+            total=4,
+            launched=4,
+            completed=4,
+            failed=0,
+        )
+
+    async def mark_job_done(finalized_job):
+        captured["job_id"] = finalized_job.job_id
+        captured["status"] = finalized_job.status.model_copy(deep=True)
+        if finalized_job.status.finalizing_at is None:
+            finalized_job.status.finalizing_at = datetime.now()
+        finalized_job.status.finalized_at = datetime.now()
+        finalized_job.status.state = BatchJobState.FINALIZED
+        driver._progress_manager._meta = finalized_job
+        return driver._progress_manager._meta
+
+    async def mark_job_finalizing(job_id):
+        raise AssertionError(f"finalize_job should not mark {job_id} finalizing first")
+
+    from aibrix.batch.job_driver import base as base_module
+
+    monkeypatch.setattr(
+        base_module.storage, "finalize_job_output_data", finalize_job_output_data
+    )
+    monkeypatch.setattr(driver._progress_manager, "mark_job_done", mark_job_done)
+    monkeypatch.setattr(
+        driver._progress_manager, "mark_job_finalizing", mark_job_finalizing
+    )
+
+    result = await driver.finalize_job(job)
+
+    assert captured["job_id"] == job.job_id
+    assert captured["status"].request_counts.total == 4
+    assert captured["status"].request_counts.launched == 4
+    assert captured["status"].request_counts.completed == 4
+    assert captured["status"].request_counts.failed == 0
+    assert result.status.state == BatchJobState.FINALIZED
+    assert result.status.finalizing_at is not None
+    assert result.status.request_counts.total == 4
+    assert result.status.request_counts.launched == 4
     assert result.status.request_counts.completed == 4
+    assert result.status.request_counts.failed == 0

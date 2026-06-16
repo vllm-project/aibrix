@@ -297,7 +297,7 @@ class BaseJobDriver:
             return
 
         if job.status.state == BatchJobState.IN_PROGRESS:
-            self._restore_execution_state(job)
+            self._reset_execution_state(job)
 
         try:
             job = await self._execute_job_in_runtime(self._runtime, job)
@@ -374,16 +374,30 @@ class BaseJobDriver:
             and job.status.temp_error_file_id is not None
         )
 
-    def _get_next_pass_start(self, job: BatchJob) -> int:
+    async def _get_next_pass_start(self, job: BatchJob) -> int:
         if self._should_stop_before_proceed(job):
             return -1
         request_counts = job.status.request_counts
-        if (
-            request_counts.total > 0
-            and request_counts.completed + request_counts.failed >= request_counts.total
-        ):
+        if request_counts.total <= 0:
+            return 0
+        elif request_counts.completed + request_counts.failed >= request_counts.total:
             return -1
-        return 0
+
+        for start in range(0, request_counts.total, _DONE_RECONCILE_CHUNK_SIZE):
+            request_ids = range(
+                start,
+                min(start + _DONE_RECONCILE_CHUNK_SIZE, request_counts.total),
+            )
+            done_flags = await asyncio.gather(
+                *[
+                    storage.is_request_done(job, request_id)
+                    for request_id in request_ids
+                ]
+            )
+            for request_id, done in zip(request_ids, done_flags):
+                if not done:
+                    return request_id
+        return -1
 
     # ── failure / error / log helpers ──────────────────────────────────────────
 
@@ -473,23 +487,26 @@ class BaseJobDriver:
 
         return job, self._should_stop_before_proceed(job)
 
-    async def _finish_stopped_job(self, job: BatchJob) -> BatchJob:
+    async def _finish_stopped_job(
+        self, job: BatchJob, require_finalize: bool = False
+    ) -> BatchJob:
         """Conclude a cancelled job before request execution if this driver owns it."""
         if job.status.finished:
             return job
 
         if (
-            job.status.is_finalizing_required()
+            (require_finalize or job.status.is_finalizing_required())
             and self._can_finalize_job(job)
             and self._should_finalize()
         ):
+            logger.debug("Finalizing job", job_id=job.job_id)  # type: ignore[call-arg]
             return await self.finalize_job(job)
 
         # If finalizing is not needed, we still need to fill state gap between
         # in-progross and finalized manually
         await self._progress_manager.mark_job_finalizing(job.job_id)
-        synced = await self._progress_manager.mark_job_done(job.job_id)
-        self._log_completed(job)
+        synced = await self._progress_manager.mark_job_done(job)
+        self._log_completed(synced)
         return synced
 
     def _mark_job_completed_when_fully_processed(self, job: BatchJob) -> BatchJob:
@@ -538,7 +555,7 @@ class BaseJobDriver:
 
         return job
 
-    def _restore_execution_state(self, job: BatchJob) -> None:
+    def _reset_execution_state(self, job: BatchJob) -> None:
         self._ensure_local_job_state(job.job_id)
         self._request_counts = None
         self._usage = None
@@ -829,18 +846,7 @@ class BaseJobDriver:
             job = self._mark_job_completed_when_fully_processed(job)
             job = await self._after_execute_worker(job)
 
-        if (
-            job.status.is_finalizing_required()
-            and self._can_finalize_job(job)
-            and self._should_finalize()
-        ):
-            logger.debug("Finalizing job", job_id=job.job_id)  # type: ignore[call-arg]
-            return await self.finalize_job(job)
-
-        await self._progress_manager.mark_job_done(job.job_id)
-        self._drop_usage_state(job.job_id)
-        self._log_completed(job)
-        return job
+        return await self._finish_stopped_job(job)
 
     async def run_job(self, job_id: str, endpoint: Endpoint) -> BatchJob:
         """Run the job once provisioning is done. Two shapes:
@@ -898,8 +904,10 @@ class BaseJobDriver:
 
         Sending requests is delegated to the dispatch engine: the engine owns
         endpoint resolution, failover, and concurrency. Jobs with a known total
-        use the concurrent engine loop; unknown-total jobs keep a compatibility
-        serial cursor because input EOF discovery is part of that protocol.
+        use the concurrent engine loop only when the engine advertises parallel
+        capacity and there is no serial-only compatibility option enabled.
+        Unknown-total jobs keep the serial cursor because input EOF discovery is
+        part of that protocol.
         """
         if self._engine is None:
             raise RuntimeError(
@@ -910,17 +918,19 @@ class BaseJobDriver:
                 "(prepare_job / finalize_job do not need an engine.)"
             )
 
-        job_for_mode = await self._progress_manager.get_job(job_id)
+        job, stopped = await self._is_job_stopped(job_id)
+        if stopped:
+            return await self._finish_stopped_job(job)
+
         if (
-            job_for_mode is not None
-            and job_for_mode.status.request_counts.total > 0
-            and self._parse_fail_after_n_requests(job_for_mode) is None
+            job.status.request_counts.total > 0
+            and (await self._engine.capacity()).count > 1
         ):
-            return await self._execute_worker_concurrent(job_for_mode)
+            return await self._execute_worker_concurrent(job)
 
-        return await self._execute_worker_serial(job_id)
+        return await self._execute_worker_serial(job)
 
-    async def _execute_worker_serial(self, job_id: str) -> BatchJob:
+    async def _execute_worker_serial(self, job: BatchJob) -> BatchJob:
         """Compatibility path for unknown-total inputs.
 
         It is serial only because the old cursor protocol discovers EOF while
@@ -928,18 +938,18 @@ class BaseJobDriver:
         DispatchEngine, so this is not a second inference client.
         """
         assert self._engine is not None  # guaranteed by execute_worker
+        job_id = job.job_id
+        assert job_id is not None
 
-        job, stopped = await self._is_job_stopped(job_id)
-        if stopped:
-            return await self._finish_stopped_job(job)
-
-        line_no = self._get_next_pass_start(job)
+        line_no = await self._get_next_pass_start(job)
         if line_no < 0:
             logger.warning(
                 "Job has something wrong with metadata in batch manager, nothing left to execute",
                 job_id=job_id,
             )  # type: ignore[call-arg]
-            return job
+
+            # There could be request count leaks. We leave finalize to calibrate the counters.
+            return await self._finish_stopped_job(job, require_finalize=True)
 
         if line_no == 0:
             logger.debug("Start processing job", job_id=job_id, opts=job.spec.opts)  # type: ignore[call-arg]
@@ -951,6 +961,7 @@ class BaseJobDriver:
         fail_after_n_requests = self._parse_fail_after_n_requests(job)
 
         processed_requests = 0
+        # The loop is necessary in cases of job driver lock a request but unable to process it (complete or fail), e.g., server crash.
         while line_no >= 0:
             async for request_input in storage.read_job_next_request(job, line_no):
                 # Before-task job interruption check, will reload job's up-to-date status..
@@ -992,7 +1003,7 @@ class BaseJobDriver:
             if reloaded_job is None:
                 raise RuntimeError(f"Job metadata missing for {job_id}")
             job = reloaded_job
-            line_no = self._get_next_pass_start(job)
+            line_no = await self._get_next_pass_start(job)
             if line_no < 0 and job.status.request_counts.total > 0:
                 logger.info(
                     "Job completed, total requests are processed",
@@ -1019,42 +1030,127 @@ class BaseJobDriver:
         assert self._engine is not None  # guaranteed by execute_worker
         job_id = job.job_id
         assert job_id is not None
-        total = job.status.request_counts.total
-        latest_job = job
 
-        logger.debug(
-            "Start processing job concurrently",
-            job_id=job_id,
-            total=total,
-            opts=job.spec.opts,
-        )  # type: ignore[call-arg]
+        completed_request_ids: asyncio.Queue[Optional[int]] = asyncio.Queue()
+        start_index = await self._get_next_pass_start(job)
+        fail_after_n_requests = self._parse_fail_after_n_requests(job)
+        processed_requests = 0
+        fail_after_triggered = False
+        if start_index < 0:
+            logger.warning(
+                "Job has something wrong with metadata in batch manager, nothing left to execute",
+                job_id=job_id,
+            )  # type: ignore[call-arg]
+
+            # There could be request count leaks. We leave finalize to calibrate the counters.
+            return await self._finish_stopped_job(job, require_finalize=True)
+
+        pending_in_round = 0
+        round_drained = asyncio.Event()
+        round_drained.set()
+        if start_index == 0:
+            logger.debug(
+                "Start processing job concurrently",
+                job_id=job_id,
+                total=job.status.request_counts.total,
+                opts=job.spec.opts,
+            )  # type: ignore[call-arg]
+        else:
+            logger.debug(
+                "Resuming job concurrently",
+                job_id=job_id,
+                request_id=start_index,
+                total=job.status.request_counts.total,
+                opts=job.spec.opts,
+            )  # type: ignore[call-arg]
 
         async def feed():
-            async for request_input in storage.read_job_next_request(job, 0):
-                request_id = request_input.pop("_request_index", -1)
-                if request_id < 0 or request_id >= total:
-                    continue
+            nonlocal job, start_index, pending_in_round
+            # The loop is necessary in cases of job driver lock a request but unable to process it (complete or fail), e.g., server crash.
+            while start_index >= 0:
+                async for request_input in storage.read_job_next_request(
+                    job, start_index
+                ):
+                    request_id = request_input.pop("_request_index", -1)
+                    if request_id < 0:
+                        continue
+                    self._accumulate_dispatched_request(job_id, request_id)
+                    pending_in_round += 1
+                    round_drained.clear()
 
-                if "body" not in request_input:
-                    raise BatchJobError(
-                        code=BatchJobErrorCode.INVALID_INPUT_FILE,
-                        message="Request missing 'body' field",
-                        line=request_id,
+                    if "body" not in request_input:
+                        raise BatchJobError(
+                            code=BatchJobErrorCode.INVALID_INPUT_FILE,
+                            message="Request missing 'body' field",
+                            line=request_id,
+                        )
+
+                    custom_id = request_input.get("custom_id", "")
+                    yield InferenceRequest(
+                        path=job.spec.endpoint,
+                        payload=self._shape_payload(request_input["body"]),
+                        ref=(request_id, custom_id),
                     )
 
-                custom_id = request_input.get("custom_id", "")
-                yield InferenceRequest(
-                    path=job.spec.endpoint,
-                    payload=self._shape_payload(request_input["body"]),
-                    ref=(request_id, custom_id),
+                await round_drained.wait()
+                reloaded_job = await self._progress_manager.get_job(job_id)
+                if reloaded_job is None:
+                    raise RuntimeError(f"Job metadata missing for {job_id}")
+                job = reloaded_job
+                start_index = await self._get_next_pass_start(job)
+                local_request_counts = self._get_local_request_counts(job_id)
+                if start_index < 0 and local_request_counts.total > 0:
+                    logger.info(
+                        "Job completed, total requests are processed",
+                        job_id=job_id,
+                        total=local_request_counts.total,
+                    )  # type: ignore[call-arg]
+                    return
+
+        async def sync_completed_requests() -> None:
+            nonlocal job, pending_in_round
+
+            async def sync_batch(request_ids: list[int]) -> None:
+                nonlocal job, pending_in_round
+                completed_request_tasks = {
+                    asyncio.create_task(asyncio.sleep(0, result=request_id))
+                    for request_id in request_ids
+                }
+                if not completed_request_tasks:
+                    return
+                await asyncio.gather(*completed_request_tasks)
+                job, _ = await self._sync_completed_request_tasks(
+                    job,
+                    completed_request_tasks,
                 )
+                pending_in_round = max(0, pending_in_round - len(request_ids))
+                if pending_in_round == 0:
+                    round_drained.set()
+
+            while True:
+                request_id = await completed_request_ids.get()
+                if request_id is None:
+                    return
+
+                batch = [request_id]
+                while True:
+                    try:
+                        next_request_id = completed_request_ids.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if next_request_id is None:
+                        await sync_batch(batch)
+                        return
+                    batch.append(next_request_id)
+
+                await sync_batch(batch)
 
         async def on_result(
             request: InferenceRequest,
             response: Optional[dict[str, Any]],
             error: Optional[InferenceError],
         ) -> None:
-            nonlocal latest_job
+            nonlocal job, processed_requests, fail_after_triggered
             request_id, custom_id = request.ref
             if error is None and isinstance(response, dict):
                 async with self._usage_lock:
@@ -1064,13 +1160,22 @@ class BaseJobDriver:
                 custom_id, job_id, request_id, job.spec, response, error
             )
             await storage.write_job_output_data(job, request_id, record)
-            latest_job = await self._progress_manager.complete_job_request(
-                job_id, request_id, failed=error is not None
-            )
-            await self._snapshot_usage_to_status(job_id)
+            await completed_request_ids.put(request_id)
+            processed_requests += 1
+            if (
+                not fail_after_triggered
+                and fail_after_n_requests is not None
+                and processed_requests >= fail_after_n_requests
+            ):
+                fail_after_triggered = True
+                raise RuntimeError(
+                    f"Artificial failure triggered after processing {processed_requests} requests "
+                    f"(fail_after_n_requests={fail_after_n_requests})"
+                )
 
         stats = DispatchStats()
         telemetry_interval = _telemetry_interval_seconds()
+        sync_task = asyncio.create_task(sync_completed_requests())
         telemetry_task = (
             asyncio.create_task(
                 self._log_dispatch_telemetry(
@@ -1091,6 +1196,9 @@ class BaseJobDriver:
                 **run_kwargs,
             )
         finally:
+            await completed_request_ids.put(None)
+            with contextlib.suppress(asyncio.CancelledError):
+                await sync_task
             if telemetry_task is not None:
                 telemetry_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -1102,36 +1210,18 @@ class BaseJobDriver:
                 final=True,
             )
 
-        final_snapshot = stats.snapshot(reset_window=False)
-        latest_job = await self._sync_completed_requests_from_storage(
-            job_id, latest_job
-        )
-        counts = latest_job.status.request_counts
-        if (
-            counts.completed + counts.failed == counts.total
-            and latest_job.status.state != BatchJobState.FINALIZING
-        ):
-            counts.launched = max(
-                counts.launched,
-                counts.completed + counts.failed,
-                final_snapshot.started,
-            )
-            latest_job.status.finalizing_at = datetime.now(timezone.utc)
-            latest_job.status.state = BatchJobState.FINALIZING
-        elif final_snapshot.completed == total:
-            counts.launched = max(counts.launched, final_snapshot.started)
-            counts.completed = final_snapshot.completed - final_snapshot.failed
-            counts.failed = final_snapshot.failed
-            latest_job.status.finalizing_at = datetime.now(timezone.utc)
-            latest_job.status.state = BatchJobState.FINALIZING
+        reloaded_job = await self._progress_manager.get_job(job_id)
+        if reloaded_job is None:
+            raise RuntimeError(f"Job metadata missing for {job_id}")
+        job = reloaded_job
 
         logger.debug(
             "Worker completed, job state:",
             job_id=job_id,
-            total=latest_job.status.request_counts.total if latest_job else None,
-            state=latest_job.status.state.value if latest_job else None,
+            total=job.status.request_counts.total if job else None,
+            state=job.status.state.value if job else None,
         )  # type: ignore[call-arg]
-        return latest_job
+        return job
 
     async def _log_dispatch_telemetry(
         self,
@@ -1178,43 +1268,6 @@ class BaseJobDriver:
             avg_latency_seconds=_round_optional(snapshot.avg_latency_seconds),
             p95_latency_seconds=_round_optional(snapshot.p95_latency_seconds),
         )  # type: ignore[call-arg]
-
-    async def _sync_completed_requests_from_storage(
-        self, job_id: str, job: BatchJob
-    ) -> BatchJob:
-        """Reconcile already-finished requests skipped by storage.
-
-        This keeps resume behavior correct without duplicating the durable done
-        record in the client.
-        """
-        latest_job = job
-        total = job.status.request_counts.total
-        counts = latest_job.status.request_counts
-        if counts.completed + counts.failed == counts.total:
-            return latest_job
-
-        for start in range(0, total, _DONE_RECONCILE_CHUNK_SIZE):
-            counts = latest_job.status.request_counts
-            if counts.completed + counts.failed == counts.total:
-                return latest_job
-
-            request_ids = range(start, min(start + _DONE_RECONCILE_CHUNK_SIZE, total))
-            done_flags = await asyncio.gather(
-                *[
-                    storage.is_request_done(job, request_id)
-                    for request_id in request_ids
-                ]
-            )
-            for request_id, done in zip(request_ids, done_flags):
-                counts = latest_job.status.request_counts
-                if counts.completed + counts.failed == counts.total:
-                    return latest_job
-                if not done:
-                    continue
-                latest_job = await self._progress_manager.complete_job_request(
-                    job_id, request_id
-                )
-        return latest_job
 
     async def _send_one(
         self, endpoint: str, body: Dict[str, Any], request_id: int
@@ -1310,14 +1363,14 @@ class BaseJobDriver:
 
     async def finalize_job(self, job: BatchJob) -> BatchJob:
         """Aggregate outputs (when this driver owns aggregation) and mark done."""
-        job = await self._progress_manager.mark_job_finalizing(job.job_id)
 
         try:
-            await storage.finalize_job_output_data(job)
+            job = await self._progress_manager.mark_job_finalizing(job.job_id)
 
+            await storage.finalize_job_output_data(job)
+            synced = await self._progress_manager.mark_job_done(job)
             logger.debug("Finalized job", job_id=job.job_id)  # type: ignore[call-arg]
-            synced = await self._progress_manager.mark_job_done(job.job_id)
-            self._log_completed(job)
+            self._log_completed(synced)
         except Exception as e:
             logger.error("Error finalizing job output data: %s", e)  # type: ignore[call-arg]
             raise BatchJobError(

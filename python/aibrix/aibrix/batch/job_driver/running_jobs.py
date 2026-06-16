@@ -118,7 +118,7 @@ class RunningJobs(Protocol):
         """Transition a running job into finalizing."""
         ...
 
-    async def mark_job_done(self, job_id: str) -> BatchJob:
+    async def mark_job_done(self, job: BatchJob) -> BatchJob:
         """Mark job completed.
 
         Raises:

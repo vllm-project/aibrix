@@ -148,9 +148,9 @@ class SingleJobRunner(RunningJobs):
         self._meta.complete_one_request(req_id)
         return self._meta
 
-    async def mark_job_done(self, job_id: str) -> BatchJob:
-        job = self._meta
-        if job.status.state != BatchJobState.FINALIZING:
+    async def mark_job_done(self, job: BatchJob) -> BatchJob:
+        meta = self._meta
+        if meta.status.state != BatchJobState.FINALIZING:
             raise RuntimeError(f"Job is not in finalizing state: {job.status.state}")
         job.status.completed_at = datetime.now(timezone.utc)
         job.status.finalized_at = job.status.completed_at
@@ -163,7 +163,8 @@ class SingleJobRunner(RunningJobs):
                 )
             )
         job.status.state = BatchJobState.FINALIZED
-        return job
+        meta.status = job.status
+        return meta
 
     async def mark_job_validated(self, job_id: str, status: BatchJobStatus) -> BatchJob:
         del job_id
