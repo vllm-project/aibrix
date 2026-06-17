@@ -10,6 +10,7 @@ Welcome to AIBrix, an open-source initiative designed to provide essential build
 ## Latest News
 
 ### Releases
+- **[2026-06-16]** AIBrix v0.7.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.7.0) and [Blog Post](https://aibrix.github.io/posts/2026-06-16-v0.7.0-release/) for more details.
 - **[2026-03-05]** AIBrix v0.6.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.6.0) and [Blog Post](https://aibrix.github.io/posts/2026-03-03-v0.6.0-release/) for more details.
 - **[2025-11-10]** AIBrix v0.5.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.5.0) and [Blog Post](https://aibrix.github.io/posts/2025-11-10-v0.5.0-release/) for more details.
 - **[2025-08-05]** AIBrix v0.4.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.4.0) and [Blog Post](https://aibrix.github.io/posts/2025-08-04-v0.4.0-release/) for more details.
@@ -55,6 +56,9 @@ cd aibrix
 # Install nightly aibrix dependencies
 kubectl apply -k config/dependency --server-side
 
+# Install nightly AIBrix CRDs (separate from the operator so uninstalls don't wipe user CRs)
+kubectl apply -k config/crd --server-side
+
 # Install nightly aibrix components
 kubectl apply -k config/default
 ```
@@ -62,10 +66,13 @@ kubectl apply -k config/default
 Install stable distribution
 ```shell
 # Install component dependencies
-kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.6.0/aibrix-dependency-v0.6.0.yaml" --server-side
+kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-dependency-v0.7.0.yaml" --server-side
+
+# Install AIBrix CRDs (separate from the operator so uninstalls don't wipe user CRs)
+kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-core-crds-v0.7.0.yaml" --server-side
 
 # Install aibrix components
-kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.6.0/aibrix-core-v0.6.0.yaml"
+kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-core-v0.7.0.yaml"
 ```
 
 ## Documentation

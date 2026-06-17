@@ -25,9 +25,11 @@ Stable Version
 .. code:: bash
 
     # Install component dependencies
-    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.6.0/aibrix-dependency-v0.6.0.yaml --server-side
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-dependency-v0.7.0.yaml --server-side
+    # Install AIBrix CRDs (separate from the operator so uninstalls don't wipe user CRs)
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-core-crds-v0.7.0.yaml --server-side
     # Install aibrix components
-    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.6.0/aibrix-core-v0.6.0.yaml
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-core-v0.7.0.yaml
 
 
 Stable Version Using Helm
