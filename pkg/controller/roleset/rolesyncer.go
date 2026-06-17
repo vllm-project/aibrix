@@ -665,4 +665,3 @@ func GetRoleSyncer(cli client.Client, role *orchestrationv1alpha1.RoleSpec) Role
 		computeHashFunc: ctrlutil.ComputeHash,
 	}
 }
-
