@@ -14,7 +14,8 @@
 """Kubernetes endpoint sources, selected by known topology (no runtime probing).
 
 - ``InClusterEndpointSource``: caller runs in-cluster -> hit the Service
-  ClusterIP (kube-proxy balances, count=1) or a fixed pod-url set (count=N).
+  ClusterIP (kube-proxy balances, count=replicas) or a fixed pod-url set
+  (count=N).
 - ``PortForwardEndpointSource``: caller runs out-of-cluster -> ``kubectl
   port-forward`` a Service and expose one local channel; ``aclose`` tears the
   forwarder down.
@@ -26,10 +27,12 @@ intentionally gone: topology is a construction-time choice, not a probe.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 import subprocess
 import time
-from typing import List, Optional, Sequence, Union
+from dataclasses import dataclass
+from typing import Any, List, Optional, Sequence, Union
 
 from aibrix.batch.client.channel import Channel, HttpChannel
 from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
@@ -39,26 +42,125 @@ from aibrix.logger import init_logger
 logger = init_logger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class K8sDiscoveredEndpoint:
+    base_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class K8sEndpointSliceSnapshot:
+    version: int
+    endpoints: List[K8sDiscoveredEndpoint]
+
+
+class K8sEndpointSliceDiscovery:
+    """Discover ready pod endpoints behind one Kubernetes Service."""
+
+    def __init__(
+        self,
+        discovery_v1_api: Any,
+        *,
+        namespace: str,
+        service_name: str,
+        service_port: int,
+        scheme: str = "http",
+    ) -> None:
+        self._api = discovery_v1_api
+        self._namespace = namespace
+        self._service_name = service_name
+        self._service_port = service_port
+        self._scheme = scheme
+
+    async def discover_model_endpoints(
+        self, served_model_name: str, service_id: Optional[str] = None
+    ) -> K8sEndpointSliceSnapshot:
+        del served_model_name, service_id
+        return await asyncio.to_thread(self._discover)
+
+    def _discover(self) -> K8sEndpointSliceSnapshot:
+        label_selector = f"kubernetes.io/service-name={self._service_name}"
+        result = self._api.list_namespaced_endpoint_slice(
+            namespace=self._namespace,
+            label_selector=label_selector,
+        )
+        slices = list(getattr(result, "items", []) or [])
+        endpoints: List[K8sDiscoveredEndpoint] = []
+        version_parts: List[str] = []
+
+        for endpoint_slice in slices:
+            metadata = getattr(endpoint_slice, "metadata", None)
+            version_parts.append(
+                f"{getattr(metadata, 'name', '')}:"
+                f"{getattr(metadata, 'resource_version', '')}"
+            )
+            port = self._endpoint_port(endpoint_slice)
+            for endpoint in getattr(endpoint_slice, "endpoints", []) or []:
+                if self._explicitly_not_ready(endpoint):
+                    continue
+                for address in getattr(endpoint, "addresses", []) or []:
+                    endpoints.append(
+                        K8sDiscoveredEndpoint(
+                            base_url=f"{self._scheme}://{self._url_host(address)}:{port}"
+                        )
+                    )
+
+        endpoints = sorted(endpoints, key=lambda endpoint: endpoint.base_url)
+        version_parts.extend(endpoint.base_url for endpoint in endpoints)
+        version = int.from_bytes(
+            hashlib.sha1("|".join(version_parts).encode("utf-8")).digest()[:8],
+            byteorder="big",
+        )
+        return K8sEndpointSliceSnapshot(version=version, endpoints=endpoints)
+
+    def _endpoint_port(self, endpoint_slice: Any) -> int:
+        ports = getattr(endpoint_slice, "ports", []) or []
+        for port in ports:
+            value = getattr(port, "port", None)
+            if value is not None and int(value) == self._service_port:
+                return int(value)
+        for port in ports:
+            value = getattr(port, "port", None)
+            if value is not None:
+                return int(value)
+        return self._service_port
+
+    @staticmethod
+    def _explicitly_not_ready(endpoint: Any) -> bool:
+        conditions = getattr(endpoint, "conditions", None)
+        return getattr(conditions, "ready", None) is False
+
+    @staticmethod
+    def _url_host(host: str) -> str:
+        if ":" in host and not host.startswith("["):
+            return f"[{host}]"
+        return host
+
+
 class InClusterEndpointSource:
-    """Reach an in-cluster Service ClusterIP (count=1) or pod URLs (count=N)
-    over plain HTTP. Assumes the caller runs inside the cluster."""
+    """Reach an in-cluster Service ClusterIP or pod URLs over plain HTTP.
+
+    Service URLs may advertise a larger capacity than their channel count
+    because kube-proxy balances connections behind the single DNS name.
+    """
 
     def __init__(
         self,
         base_urls: Union[str, Sequence[str]],
         *,
+        capacity: Optional[int] = None,
         timeout: float = 30.0,
     ) -> None:
         urls = [base_urls] if isinstance(base_urls, str) else list(base_urls)
         self._channels: List[Channel] = [
             HttpChannel(url, timeout=timeout) for url in urls
         ]
+        self._capacity = max(1, int(capacity)) if capacity is not None else len(urls)
 
     async def channels(self) -> List[Channel]:
         return list(self._channels)
 
     async def capacity(self) -> CapacitySignal:
-        return CapacitySignal(count=len(self._channels))
+        return CapacitySignal(count=self._capacity)
 
     async def wait_capacity_change(self, previous: CapacitySignal) -> CapacitySignal:
         await asyncio.Future()
@@ -91,11 +193,23 @@ class PortForwardEndpointSource:
         self._ready_timeout = ready_timeout
         self._process: Optional[subprocess.Popen[str]] = None
         self._channel: Optional[Channel] = None
+        self._lock = asyncio.Lock()
 
     async def channels(self) -> List[Channel]:
-        if self._channel is None:
-            self._channel = await asyncio.to_thread(self._start)
-        return [self._channel]
+        async with self._lock:
+            if self._channel is None or not self._port_forward_running():
+                if self._channel is not None:
+                    await self._channel.aclose()
+                    self._channel = None
+                if self._process is not None:
+                    logger.warning(
+                        "port-forward process exited; restarting",
+                        target=f"service/{self._service_name}:{self._service_port}",
+                        namespace=self._namespace,
+                    )  # type: ignore[call-arg]
+                    await asyncio.to_thread(self._terminate)
+                self._channel = await asyncio.to_thread(self._start)
+            return [self._channel]
 
     async def capacity(self) -> CapacitySignal:
         return CapacitySignal(count=1)
@@ -145,11 +259,15 @@ class PortForwardEndpointSource:
         )
 
     async def aclose(self) -> None:
-        if self._channel is not None:
-            await self._channel.aclose()
-            self._channel = None
-        if self._process is not None:
-            await asyncio.to_thread(self._terminate)
+        async with self._lock:
+            if self._channel is not None:
+                await self._channel.aclose()
+                self._channel = None
+            if self._process is not None:
+                await asyncio.to_thread(self._terminate)
+
+    def _port_forward_running(self) -> bool:
+        return self._process is not None and self._process.poll() is None
 
     def _terminate(self) -> None:
         process = self._process

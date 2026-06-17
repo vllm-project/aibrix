@@ -230,7 +230,7 @@ async def test_openai_batch_api_e2e():
     3. Poll job status until completion
     4. Download and verify output via Files API
     """
-    app = create_test_app(enable_k8s_support=False)
+    app = create_test_app(enable_k8s_support=False, dry_run=True)
 
     with TestClient(app) as client:
         # Step 1: Upload sample input file via Files API
@@ -683,7 +683,7 @@ async def test_openai_batch_api_multi_endpoint(endpoint: str):
     - /v1/embeddings
     - /v1/rerank
     """
-    app = create_test_app(enable_k8s_support=False)
+    app = create_test_app(enable_k8s_support=False, dry_run=True)
     num_requests = 3
 
     with TestClient(app) as client:

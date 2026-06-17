@@ -25,6 +25,8 @@ from aibrix.batch.template import (
     local_profile_registry,
     local_template_registry,
 )
+from aibrix.batch.template.registry import _warn_deferred_profile_fields
+from aibrix.batch.template.schema import BatchProfile
 
 
 def _write(tmp_path: Path, name: str, content) -> Path:
@@ -140,6 +142,20 @@ class TestTemplateRegistry:
 
 
 class TestProfileRegistry:
+    def test_retry_policy_warning_does_not_claim_smart_client_missing(self):
+        profile = BatchProfile(
+            name="p-retry",
+            spec={"scheduling": {"retry_policy": {"max_retries": 3}}},
+        )
+
+        warnings = _warn_deferred_profile_fields(profile)
+
+        assert any("scheduling.retry_policy" in warning for warning in warnings)
+        assert all(
+            "smart-client retry is not yet implemented" not in warning
+            for warning in warnings
+        )
+
     def test_load_with_default(self, tmp_path):
         path = _write(
             tmp_path,

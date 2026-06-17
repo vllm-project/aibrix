@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
 )
@@ -41,21 +42,22 @@ import (
 // Credentials are service-level: a single operator-configured account backs
 // every request, the same model as the RunPod provisioner.
 type lambdaProvisioner struct {
-	store  store.Store
-	cfg    *Config
-	client *Client
+	store    store.Store
+	cfg      *Config
+	client   *Client
+	injector error_injection.Injector
 }
 
 // newProvisioner builds a Lambda provisioner. A configured API key is required;
 // selecting Lambda without one is an error rather than a silent degradation.
-func newProvisioner(s store.Store, cfg *Config) (*lambdaProvisioner, error) {
+func newProvisioner(s store.Store, cfg *Config, injector error_injection.Injector) (*lambdaProvisioner, error) {
 	if cfg == nil || cfg.APIKey == "" {
 		return nil, &types.ProvisionerError{
 			Message: "lambdaCloud provisioner selected but LAMBDA_CLOUD_API_KEY is not set",
 			Code:    "MissingCredential",
 		}
 	}
-	return &lambdaProvisioner{store: s, cfg: cfg, client: NewClient(cfg)}, nil
+	return &lambdaProvisioner{store: s, cfg: cfg, client: NewClient(cfg), injector: injector}, nil
 }
 
 // Type returns the provisioner type.

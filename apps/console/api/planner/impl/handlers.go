@@ -17,6 +17,7 @@ limitations under the License.
 package impl
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/openai/openai-go/v3"
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
@@ -67,7 +69,7 @@ func updateStatusUnsafe(job *queuedJob, newStatus plannerapi.JobStatus) {
 	}
 }
 
-func handleCleanup(p *Planner, job *queuedJob, sourceStatus, targetStatus plannerapi.JobStatus) {
+func handleCleanup(ctx context.Context, p *Planner, job *queuedJob, sourceStatus, targetStatus plannerapi.JobStatus) {
 	job.mu.RLock()
 	if job.status.IsTerminal() || job.status != sourceStatus {
 		job.mu.RUnlock()
@@ -80,14 +82,14 @@ func handleCleanup(p *Planner, job *queuedJob, sourceStatus, targetStatus planne
 	job.mu.RUnlock()
 
 	if provisionID != "" {
-		p.releaseAfter(jobID, provisionID, "provision cancel")
+		p.releaseAfter(ctx, jobID, provisionID, "provision cancel")
 	}
 
 	var batch *openai.Batch
 	if batchID != "" && targetStatus != plannerapi.JobStatusExpired && targetStatus != plannerapi.JobStatusCompleted {
 		klog.Infof("[planner] cancel submitted job_id=%q batch_id=%q", jobID, batchID)
 		var err error
-		if batch, err = p.bc.CancelBatch(p.baseCtx, batchID); err != nil {
+		if batch, err = p.bc.CancelBatch(ctx, batchID); err != nil {
 			klog.Warningf("[planner] CancelBatch failed for job_id=%q: %v", jobID, err)
 		}
 	}
@@ -100,7 +102,7 @@ func handleCleanup(p *Planner, job *queuedJob, sourceStatus, targetStatus planne
 		updateStatusUnsafe(job, targetStatus)
 	}
 	job.mu.Unlock()
-	p.persist(job)
+	p.persist(ctx, job)
 }
 
 func handleProvisioning(p *Planner, job *queuedJob) {
@@ -125,6 +127,10 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 		job.status = plannerapi.JobStatusPlanned
 		job.plannedAt = time.Now().UTC()
 	}
+	ctx := p.baseCtx
+	if p.injector != nil && job.req.InjectionConfig != nil {
+		ctx = error_injection.WithInjectionContext(ctx, job.req.InjectionConfig)
+	}
 	job.mu.Unlock()
 
 	provReq := &rmtypes.ResourceProvision{
@@ -132,10 +138,10 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 		IdempotencyKey: jobID,
 	}
 
-	provResult, err := p.prov.Provision(p.baseCtx, provReq)
+	provResult, err := p.prov.Provision(ctx, provReq)
 	if err != nil {
 		klog.Warningf("[planner] Provision failed for job_id=%q: %v", jobID, err)
-		p.markFailed(job, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInsufficientResources, err))
+		p.markFailed(ctx, job, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInsufficientResources, err))
 		return
 	}
 
@@ -146,7 +152,7 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 	job.mu.Lock()
 	if job.provisionID != "" || job.status.IsTerminal() {
 		job.mu.Unlock()
-		if err := p.prov.Release(p.baseCtx, provResult.ProvisionID); err != nil {
+		if err := p.prov.Release(ctx, provResult.ProvisionID); err != nil {
 			klog.Warningf("[planner] Cancel provision failed for provision_id=%q: %v", provResult.ProvisionID, err)
 		} else {
 			klog.Warningf("[planner] Cancel unused provision provision_id=%q", provResult.ProvisionID)
@@ -158,7 +164,7 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 	job.resourcePreparingAt = time.Now().UTC()
 	if job.status == plannerapi.JobStatusCancelling {
 		job.mu.Unlock()
-		handleCleanup(p, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
+		handleCleanup(ctx, p, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
 		return
 	}
 
@@ -166,7 +172,7 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 	// Job is now in running queue
 	job.queue = p.runningQueue
 	job.mu.Unlock()
-	p.persist(job)
+	p.persist(ctx, job)
 	// It's ok if the job's status has changed in between, the processing logic
 	// of running queue will handle it
 	p.pendingQueue.Remove(jobID)
@@ -185,23 +191,27 @@ func handleResourcePreparing(p *Planner, job *queuedJob) {
 		job.mu.RUnlock()
 		return
 	}
+	ctx := p.baseCtx
+	if p.injector != nil && job.req.InjectionConfig != nil {
+		ctx = error_injection.WithInjectionContext(ctx, job.req.InjectionConfig)
+	}
 	if provisionID == "" {
 		job.mu.RUnlock()
-		p.markFailed(job, plannerapi.JobStatusResourceFailed, fmt.Errorf("job %q has no provision ID", jobID))
+		p.markFailed(ctx, job, plannerapi.JobStatusResourceFailed, fmt.Errorf("job %q has no provision ID", jobID))
 		return
 	}
 	job.mu.RUnlock()
 
 	// Query provision status
 	filter := &rmtypes.ListOptions{ProvisionIDs: &[]string{provisionID}}
-	results, err := p.prov.List(p.baseCtx, filter)
+	results, err := p.prov.List(ctx, filter)
 	if err != nil {
 		klog.Warningf("[planner] list provision failed job_id=%q provision_id=%q: %v", jobID, provisionID, err)
 		return
 	}
 
 	if len(results) == 0 {
-		p.markFailed(job, plannerapi.JobStatusResourceFailed, fmt.Errorf("provision %q not found", provisionID))
+		p.markFailed(ctx, job, plannerapi.JobStatusResourceFailed, fmt.Errorf("provision %q not found", provisionID))
 		return
 	}
 
@@ -219,7 +229,7 @@ func handleResourcePreparing(p *Planner, job *queuedJob) {
 		job.mu.Unlock()
 
 	case rmtypes.ProvisionStatusFailed, rmtypes.ProvisionStatusReleasing, rmtypes.ProvisionStatusReleased, rmtypes.ProvisionStatusReleaseFailed:
-		p.markFailed(job, plannerapi.JobStatusResourceFailed, fmt.Errorf("provision failed: %s", provResult.ErrorMessage))
+		p.markFailed(ctx, job, plannerapi.JobStatusResourceFailed, fmt.Errorf("provision failed: %s", provResult.ErrorMessage))
 
 	default:
 		// Still pending, wait for next iteration
@@ -243,14 +253,19 @@ func submitToMDS(p *Planner, job *queuedJob) {
 		job.mu.RUnlock()
 		return // Not ready yet, will be checked in next iteration
 	}
+	ctx := p.baseCtx
+	if p.injector != nil && job.req.InjectionConfig != nil {
+		ctx = error_injection.WithInjectionContext(ctx, job.req.InjectionConfig)
+	}
+
 	if spec == nil {
 		job.mu.RUnlock()
-		p.markFailed(job, plannerapi.JobStatusResourceFailed, fmt.Errorf("job %q has no scheduled resource", jobID))
+		p.markFailed(ctx, job, plannerapi.JobStatusResourceFailed, fmt.Errorf("job %q has no scheduled resource", jobID))
 		return
 	}
 	if alloc == nil {
 		job.mu.RUnlock()
-		p.markFailed(job, plannerapi.JobStatusResourceFailed, fmt.Errorf("job %q has no allocated resource", jobID))
+		p.markFailed(ctx, job, plannerapi.JobStatusResourceFailed, fmt.Errorf("job %q has no allocated resource", jobID))
 		return
 	}
 	job.mu.RUnlock()
@@ -258,7 +273,7 @@ func submitToMDS(p *Planner, job *queuedJob) {
 	runtime, err := p.backend.BuildRuntime(req, alloc)
 	if err != nil {
 		klog.Warningf("[planner] BuildRuntime failed job_id=%q: %v", jobID, err)
-		p.markFailed(job, plannerapi.JobStatusResourceFailed, err)
+		p.markFailed(ctx, job, plannerapi.JobStatusResourceFailed, err)
 		return
 	}
 
@@ -279,10 +294,18 @@ func submitToMDS(p *Planner, job *queuedJob) {
 		klog.Infof("[planner] AIBrixExtraBody: %s", aibrixBodyJson)
 	}
 
-	batch, err := p.bc.CreateBatch(p.baseCtx, req.BatchParams, aibrix)
+	// CheckPoint: planner.submit_batch
+	if p.injector != nil {
+		if err := p.injector.CheckPoint(ctx, error_injection.POINT_PLANNER_SUBMIT_BATCH); err != nil {
+			p.markFailed(ctx, job, plannerapi.JobStatusSubmitFailed, err)
+			return
+		}
+	}
+
+	batch, err := p.bc.CreateBatch(ctx, req.BatchParams, aibrix)
 	if err != nil {
 		klog.Warningf("[planner] CreateBatch failed job_id=%q: %v", jobID, err)
-		p.markFailed(job, plannerapi.JobStatusSubmitFailed, err)
+		p.markFailed(ctx, job, plannerapi.JobStatusSubmitFailed, err)
 		return
 	}
 
@@ -301,14 +324,14 @@ func submitToMDS(p *Planner, job *queuedJob) {
 	job.extraBody = aibrixBodyJson
 	if job.status == plannerapi.JobStatusCancelling {
 		job.mu.Unlock()
-		handleCleanup(p, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
+		handleCleanup(ctx, p, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
 		return
 	}
 
 	job.status = plannerapi.JobStatusSubmitting
 	job.mu.Unlock()
 
-	p.persist(job)
+	p.persist(ctx, job)
 }
 
 func handleRunning(p *Planner, job *queuedJob) {
@@ -320,14 +343,19 @@ func handleRunning(p *Planner, job *queuedJob) {
 		job.mu.RUnlock()
 		return
 	}
+	ctx := p.baseCtx
+	if p.injector != nil && job.req.InjectionConfig != nil {
+		ctx = error_injection.WithInjectionContext(ctx, job.req.InjectionConfig)
+	}
+
 	if batchID == "" {
 		job.mu.RUnlock()
-		p.markFailed(job, plannerapi.JobStatusSubmitFailed, fmt.Errorf("job %q has no batch ID", jobID))
+		p.markFailed(ctx, job, plannerapi.JobStatusSubmitFailed, fmt.Errorf("job %q has no batch ID", jobID))
 		return
 	}
 	job.mu.RUnlock()
 
-	batch, err := p.bc.GetBatch(p.baseCtx, batchID)
+	batch, err := p.bc.GetBatch(ctx, batchID)
 	if err != nil {
 		klog.Warningf("[planner] GetBatch failed job_id=%q batch_id=%q: %v", jobID, batchID, err)
 		// Don't mark failed, let it be polled again in next iteration
@@ -348,12 +376,12 @@ func handleRunning(p *Planner, job *queuedJob) {
 
 	mergeBatchIntoModel(rec, batch)
 	if p.store != nil {
-		if err := p.store.UpsertJob(p.baseCtx, rec); err != nil {
+		if err := p.store.UpsertJob(ctx, rec); err != nil {
 			klog.Warningf("[planner] sync persist job_id=%q: %v", jobID, err)
 		}
 	}
 
 	if newStatus.IsTerminal() {
-		handleCleanup(p, job, status, newStatus)
+		handleCleanup(ctx, p, job, status, newStatus)
 	}
 }

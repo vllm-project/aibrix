@@ -642,3 +642,51 @@ Example (Kubernetes Secret)
    export PROMETHEUS_ENDPOINT="http://prometheus-operated.prometheus.svc:9090"
    export PROMETHEUS_BASIC_AUTH_SECRET_NAME="prometheus-basic-auth"
    export PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE="aibrix-system"
+
+Message Size Configuration
+---------------------------
+
+Two independent size limits apply to requests flowing through the gateway. Both default to **4 MiB** and must be kept in sync when you raise or lower the limit.
+
+Gateway Plugin gRPC Buffer (``AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Envoy communicates with the AIBrix gateway plugin over an external-processing (ext_proc) gRPC connection. This env var controls the maximum size of a single gRPC message on that connection. Requests or responses larger than this value are rejected before they reach routing logic.
+
+Configure it under ``gatewayPlugin.envs`` in ``values.yaml``:
+
+.. code-block:: yaml
+
+   gatewayPlugin:
+     envs:
+       AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES: "4194304"  # 4 MiB
+
+Envoy Connection Buffer (``clientTrafficPolicy.connection.bufferLimit``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Envoy itself buffers each incoming HTTP connection up to ``bufferLimit`` bytes before it begins processing. If a request body exceeds this limit Envoy returns a ``413`` before the ext_proc filter is even invoked.
+
+Configure it under ``envoyGateway.clientTrafficPolicy`` in ``values.yaml``:
+
+.. code-block:: yaml
+
+   envoyGateway:
+     clientTrafficPolicy:
+       connection:
+         bufferLimit: 4194304  # 4 MiB
+
+Keeping the two values in sync
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Because Envoy drops the connection before the gateway plugin sees it when ``bufferLimit`` is the binding limit, both values should always be set to the same size. When you need to support larger payloads (e.g. large KV-cache state-sync messages), update **both** fields together:
+
+.. code-block:: yaml
+
+   gatewayPlugin:
+     envs:
+       AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES: "16777216"  # 16 MiB
+
+   envoyGateway:
+     clientTrafficPolicy:
+       connection:
+         bufferLimit: 16777216  # 16 MiB

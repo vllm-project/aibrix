@@ -89,6 +89,7 @@ gatewayPlugin:
       AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: "2"
       AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
       AIBRIX_STATESYNC_ENABLED: "false"
+      AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES: "4194304" # 4MB
   dependencies:
     redis:
       host: "" # aibrix-redis-master
@@ -199,7 +200,7 @@ gateway:
             memory: 32Mi
   clientTrafficPolicy:
     connection:
-      bufferLimit: 4194304  # 4MiB
+      bufferLimit: 4194304  # 4MiB — keep in sync with AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES
       connectionLimit:
         value: 1024
     http2:
@@ -309,6 +310,12 @@ certmanager:
 
 openTelemetry:
   enable: false
+  # serviceName/namespace takes precedence over host.
+  # If serviceName is provided, it will be used directly in backendRefs.
+  # The 'host' field below will be ignored.
+  serviceName: ""
+  namespace: ""
+  # Only takes effect if serviceName is empty.
   host: ""
   port: 4317
   # -- (Envoy-side only) The sampling rate for distributed tracing.

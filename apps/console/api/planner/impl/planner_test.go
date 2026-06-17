@@ -205,7 +205,7 @@ func newTestPlannerWithConfig(t *testing.T, bc plannerclient.BatchClient, prov *
 	t.Helper()
 	// Use in-memory SQLite store to match production behavior and enable
 	// testing of terminal job retrieval from store after memory eviction
-	memStore := store.NewMemoryStore()
+	memStore := store.NewMemoryStore(nil)
 	q := NewPlanner(PlannerConfig{
 		BatchClient:            bc,
 		Provisioner:            prov,
@@ -1038,7 +1038,7 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 	}
 
 	// Use in-memory SQLite store to match production behavior
-	memStore := store.NewMemoryStore()
+	memStore := store.NewMemoryStore(nil)
 	q := NewPlanner(PlannerConfig{
 		BatchClient:            &fakeBatchClient{},
 		Provisioner:            prov,

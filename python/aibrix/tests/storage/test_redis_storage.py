@@ -355,6 +355,40 @@ async def test_redis_hierarchical_token_pagination():
         await storage.close()
 
 
+@requires_redis
+@pytest.mark.asyncio
+async def test_redis_hierarchical_after_key_pagination():
+    """Test hierarchical after_key pagination uses timestamp ordering."""
+    storage = get_redis_storage()
+    try:
+        test_keys = [f"batch/after_job_{i:03d}" for i in range(4)]
+
+        for key in test_keys:
+            await storage.put_object(key, f"job data for {key}".encode())
+
+        all_objects, _ = await storage.list_objects("batch", "/")
+        first_page, _ = await storage.list_objects("batch", "/", limit=2)
+        second_page, next_token = await storage.list_objects(
+            "batch", "/", limit=2, after_key=first_page[-1]
+        )
+
+        assert first_page == all_objects[:2]
+        assert second_page == all_objects[2:4]
+        assert next_token is None
+
+        missing_page, missing_token = await storage.list_objects(
+            "batch", "/", limit=2, after_key="batch/does-not-exist"
+        )
+        assert missing_page == []
+        assert missing_token is None
+
+        for key in test_keys:
+            await storage.delete_object(key)
+
+    finally:
+        await storage.close()
+
+
 def test_feature_detection():
     """Test feature detection methods."""
     storage = RedisStorage()

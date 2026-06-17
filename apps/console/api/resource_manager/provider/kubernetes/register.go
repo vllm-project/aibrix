@@ -17,6 +17,7 @@ limitations under the License.
 package kubernetes
 
 import (
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/catalog"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
@@ -29,8 +30,8 @@ import (
 // always succeeds and errors surface only when the provisioner/catalog
 // is actually constructed with missing or invalid credentials.
 func init() {
-	provisioner.Register(types.ResourceProvisionTypeKubernetes, func(s store.Store) (provisioner.Provisioner, error) {
-		return newProvisioner(s)
+	provisioner.Register(types.ResourceProvisionTypeKubernetes, func(s store.Store, injector error_injection.Injector) (provisioner.Provisioner, error) {
+		return newProvisioner(s, injector)
 	})
 	catalog.Register(types.ResourceProvisionTypeKubernetes, func() (catalog.Catalog, error) {
 		return newCatalog()

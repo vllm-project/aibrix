@@ -17,9 +17,11 @@ import json
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
+from aibrix import envs
 from aibrix.batch.job_entity import BatchJob, BatchJobError
 from aibrix.batch.job_entity.batch_job import BatchUsage
 from aibrix.batch.storage.batch_metastore import (
+    METASTORE_LIST_PAGE_SIZE,
     delete_metadata,
     get_metadata,
     is_request_done,
@@ -88,6 +90,7 @@ class BatchStorageAdapter:
             AsyncIterator of lines that were successfully locked for processing
         """
         idx = start_index
+        done = 0  # Track done requests so far
         # Use 'async for' to iterate and 'yield' each item.
         async for line in self.storage.readline_iter(
             job.spec.input_file_id, start_index
@@ -96,13 +99,14 @@ class BatchStorageAdapter:
             if len(line) == 0:
                 continue
 
-            # Try to lock this request before processing
+            # Try to lock this request before processing.
             lock_key = self._get_request_meta_output_key(job, idx)
             try:
-                # Try to acquire lock with 1 hour expiration
-                locked = await lock_request(lock_key, expiration_seconds=3600)
+                # Try to acquire lock with configurable expiration
+                locked = await lock_request(
+                    lock_key, expiration_seconds=envs.INFERENCE_TASK_TIMEOUT
+                )
             except Exception as e:
-                # Lock operation failed (should not happen with return False requirement)
                 logger.warning(
                     "Error on locking request in the job, assuming locking not supported",
                     job_id=job.job_id,
@@ -112,9 +116,9 @@ class BatchStorageAdapter:
                 locked = True
 
             if locked:
-                # Successfully locked, yield the request data
                 request_data = json.loads(line)
                 request_data["_request_index"] = idx  # Add index for tracking
+                request_data["_done"] = done  # return done requests so far
                 logger.debug(
                     "Locked and will processing request in the job",
                     job_id=job.job_id,
@@ -122,8 +126,9 @@ class BatchStorageAdapter:
                     requset=request_data,
                 )  # type:ignore[call-arg]
                 yield request_data
+            elif await is_request_done(lock_key):
+                done += 1
             else:
-                # Request already locked by another worker, skip it
                 logger.debug(
                     "Skipping already locked request in the job",
                     job_id=job.job_id,
@@ -234,7 +239,7 @@ class BatchStorageAdapter:
             json_str,
         )
 
-        # Unlock the request by setting completion status
+        # Unlock the request by setting completion status.
         unlock_key = self._get_request_meta_output_key(job, request_index)
         completion_status = self._get_request_meta_output_val(is_error, etag)
         await unlock_request(unlock_key, completion_status)
@@ -253,39 +258,77 @@ class BatchStorageAdapter:
             # Do nothing
             return
 
-        # 1. List all keys from metastore with the job prefix
         prefix = self._get_request_meta_output_key(job, None)
-        all_keys = await list_metastore_keys(prefix)
+        output: List[Dict[str, str | int]] = []
+        error: List[Dict[str, str | int]] = []
+        completed = 0
+        failed = 0
+        valid_keys: List[str] = []
+        launched = 0
+        max_index = -1
+        continuation_token = None
 
-        logger.debug(
-            "Metastore keys found during job finalizing",
-            job_id=job.job_id,
-            prefix=prefix,
-            keys=all_keys,
-        )  # type: ignore[call-arg]
+        while True:
+            # 1. Get keys
+            keys, continuation_token = await list_metastore_keys(
+                prefix,
+                limit=METASTORE_LIST_PAGE_SIZE,
+                continuation_token=continuation_token,
+            )
 
-        # 2. Extract indices from keys and determine maximum index for total count
-        indices = []
-        for key in all_keys:
-            # Extract index from key format: batch:{job_id}:done/{idx}
-            try:
-                idx_str = key[len(prefix) :]  # Get the index part
-                idx = int(idx_str)
-                indices.append(idx)
-            except ValueError:
-                logger.warning(
-                    "Invalid key format found in metastore",
-                    key=key,
-                    job_id=job.job_id,
-                )  # type: ignore[call-arg]
-                continue
+            logger.debug(
+                "Metastore key batch found during job finalizing",
+                job_id=job.job_id,
+                prefix=prefix,
+                key_count=len(keys),
+                continuation_token=continuation_token,
+            )  # type: ignore[call-arg]
 
-        # Sort indices to ensure proper ordering
-        indices.sort()
+            # 2. Extract indices from keys and determine maximum index for total count
+            indexed_keys: List[Tuple[int, str]] = []
+            for key in keys:
+                try:
+                    idx = int(key[len(prefix) :])
+                    indexed_keys.append((idx, key))
+                except ValueError:
+                    logger.warning(
+                        "Invalid key format found in metastore",
+                        key=key,
+                        job_id=job.job_id,
+                    )  # type: ignore[call-arg]
 
-        # 3. Calculate actual counts based on metastore keys
-        launched = len(indices)
-        total = indices[-1] + 1 if launched > 0 else 0
+            if indexed_keys:
+                indexed_keys.sort(key=lambda item: item[0])
+                launched += len(indexed_keys)
+                max_index = max(max_index, indexed_keys[-1][0])
+
+                etag_results = await asyncio.gather(
+                    *[get_metadata(key) for _, key in indexed_keys]
+                )
+
+                # 3. Calculate actual counts based on metastore keys
+                for (idx, key), (meta_val, exist) in zip(indexed_keys, etag_results):
+                    if not exist:
+                        continue
+
+                    etag, is_error = self._parse_request_meta_output_val(meta_val)
+                    if etag == "":
+                        continue
+
+                    valid_keys.append(key)
+                    val: Dict[str, str | int] = {"etag": etag, "part_number": idx}
+
+                    if is_error:
+                        error.append(val)
+                        failed += 1
+                    else:
+                        output.append(val)
+                        completed += 1
+
+            if continuation_token is None:
+                break
+
+        total = max_index + 1 if launched > 0 else 0
 
         logger.info(
             "Finalizing job output data using metastore keys",
@@ -293,36 +336,6 @@ class BatchStorageAdapter:
             launched=launched,
             total=total,
         )  # type: ignore[call-arg]
-
-        # Fetch metadata for all found keys
-        keys = [self._get_request_meta_output_key(job, idx) for idx in indices]
-        etag_results = await asyncio.gather(*[get_metadata(key) for key in keys])
-
-        # Process results and categorize into outputs and errors
-        output: List[Dict[str, str | int]] = []
-        error: List[Dict[str, str | int]] = []
-        completed = 0
-        failed = 0
-        valid_keys = []
-
-        for idx, key, etag_result in zip(indices, keys, etag_results):
-            meta_val, exist = etag_result
-            if not exist:
-                continue
-
-            etag, is_error = self._parse_request_meta_output_val(meta_val)
-            if etag == "":
-                continue
-
-            valid_keys.append(key)
-            val: Dict[str, str | int] = {"etag": etag, "part_number": idx}
-
-            if is_error:
-                error.append(val)
-                failed += 1
-            else:
-                output.append(val)
-                completed += 1
 
         # 4. Update job object with calculated request counts if they differ.
         # ``total`` is preserved when set at job creation (validated input
@@ -374,7 +387,9 @@ class BatchStorageAdapter:
 
         # Delete metadata for valid keys only
         if valid_keys:
-            await asyncio.gather(*[delete_metadata(key) for key in valid_keys])
+            for start in range(0, len(valid_keys), METASTORE_LIST_PAGE_SIZE):
+                batch = valid_keys[start : start + METASTORE_LIST_PAGE_SIZE]
+                await asyncio.gather(*[delete_metadata(key) for key in batch])
 
     async def _sum_usage_from_output(self, output_file_id: str) -> BatchUsage:
         """Read the merged output JSONL and sum the per-line usage.

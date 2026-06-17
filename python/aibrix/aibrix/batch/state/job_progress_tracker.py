@@ -18,12 +18,15 @@ and the runtime progress state stop being a single object. The tracker is a
 plain component — it does NOT inherit BatchJob; it holds a reference to the job
 it tracks and mutates ``job.status.request_counts`` / ``job.status.state``.
 
-The metastore relies on a serial "launch before complete" streaming protocol:
-``next_request_id`` hands out ids (and discovers ``total`` lazily when 0), and
-``complete_one_request`` marks completion and flips the job to FINALIZING once
-all requests are accounted for. That protocol is preserved byte-for-byte here;
-only its home changed. (Concurrency — knowing ``total`` up front and marking by
-count rather than by the terminal-id sentinel — is a separate, gated change.)
+The legacy metastore path relies on a serial "launch before complete" streaming
+protocol: ``next_request_id`` hands out ids (and discovers ``total`` lazily when
+0), and ``complete_one_request`` marks completion and flips the job to
+FINALIZING once all requests are accounted for.
+
+The concurrent worker path still uses the same completion bitmap. It does not
+need a separate claim ledger because v1 runs one worker per job; in-flight
+request ids live in that worker's tasks, and completed requests are recorded
+only after output/error has been written.
 """
 
 from __future__ import annotations
@@ -51,6 +54,7 @@ class JobProgressTracker:
 
     def set_request_executed(self, req_id):
         # This marks the request successfully executed.
+        self._ensure_request_capacity(req_id)
         self._request_progress_bits[req_id] = True
         # Check if self._min_unexecuted_id need to be updated
         if req_id != self._min_unexecuted_id:
@@ -63,6 +67,7 @@ class JobProgressTracker:
                 break
 
     def get_request_bit(self, req_id):
+        self._ensure_request_capacity(req_id)
         return self._request_progress_bits[req_id]
 
     def complete_one_request(self, req_id, failed: bool = False):
@@ -76,7 +81,13 @@ class JobProgressTracker:
             if self._status.request_counts.launched > self._status.request_counts.total:
                 self._status.request_counts.launched = self._status.request_counts.total
             self._no_total = False
-        elif not self._request_progress_bits[req_id]:
+            self._trim_request_bits(self._status.request_counts.total)
+        else:
+            self._ensure_request_capacity(req_id)
+        if (
+            req_id < len(self._request_progress_bits)
+            and not self._request_progress_bits[req_id]
+        ):
             self.set_request_executed(req_id)
             if failed:
                 self._status.request_counts.failed += 1
@@ -116,9 +127,9 @@ class JobProgressTracker:
         if not self._no_total and req_id == self._status.request_counts.total:
             req_id = self._min_unexecuted_id
 
-        # In case total has not confirmed, expland _request_progress_bits if necessary.
+        # In case total has not confirmed, expand _request_progress_bits if necessary.
         if req_id >= len(self._request_progress_bits):
-            self._request_progress_bits.append(False)
+            self._ensure_request_capacity(req_id)
 
         # Skip executed requests.
         while self._request_progress_bits[req_id]:
@@ -126,7 +137,7 @@ class JobProgressTracker:
             if not self._no_total and req_id == self._status.request_counts.total:
                 req_id = self._min_unexecuted_id
             if req_id >= len(self._request_progress_bits):
-                self._request_progress_bits.append(False)
+                self._ensure_request_capacity(req_id)
 
         # Update _next_request_id
         self._next_request_id = req_id
@@ -136,3 +147,10 @@ class JobProgressTracker:
         if req_id >= self._status.request_counts.total:
             self._status.request_counts.total = req_id + 1
         return req_id
+
+    def _ensure_request_capacity(self, req_id: int) -> None:
+        while req_id >= len(self._request_progress_bits):
+            self._request_progress_bits.append(False)
+
+    def _trim_request_bits(self, total: int) -> None:
+        del self._request_progress_bits[total:]

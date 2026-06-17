@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	"github.com/vllm-project/aibrix/apps/console/api/planner/utils"
 	"k8s.io/klog/v2"
@@ -152,7 +153,11 @@ func (w *planningLoop) processPendingQueue() {
 	})
 
 	for _, job := range pendingCancelling {
-		handleCleanup(w.planner, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
+		ctx := w.ctx
+		if w.planner.injector != nil && job.req.InjectionConfig != nil {
+			ctx = error_injection.WithInjectionContext(ctx, job.req.InjectionConfig)
+		}
+		handleCleanup(ctx, w.planner, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
 	}
 
 	// Execute provisioning
@@ -192,17 +197,21 @@ func (w *planningLoop) processRunningQueue() {
 			return true
 		}
 		deadline := job.expiresAt
+		ctx := w.ctx
+		if w.planner.injector != nil && job.req.InjectionConfig != nil {
+			ctx = error_injection.WithInjectionContext(ctx, job.req.InjectionConfig)
+		}
 		job.mu.RUnlock()
 
 		if !deadline.IsZero() && deadline.Before(time.Now().UTC()) {
 			// Job expired
-			wp.Submit(func() { handleCleanup(w.planner, job, status, plannerapi.JobStatusExpired) })
+			wp.Submit(func() { handleCleanup(ctx, w.planner, job, status, plannerapi.JobStatusExpired) })
 			return true
 		}
 
 		switch status {
 		case plannerapi.JobStatusCancelling:
-			wp.Submit(func() { handleCleanup(w.planner, job, status, plannerapi.JobStatusCancelled) })
+			wp.Submit(func() { handleCleanup(ctx, w.planner, job, status, plannerapi.JobStatusCancelled) })
 		case plannerapi.JobStatusResourcePreparing:
 			// Query provision status only, mark readyToSubmit if ready
 			wp.Submit(func() { handleResourcePreparing(w.planner, job) })

@@ -104,6 +104,16 @@ class SingleJobRunner:
     async def get_job_next_request(self, job_id: str) -> Tuple[BatchJob, int]:
         return self._meta, self._meta.next_request_id()
 
+    async def complete_job_request(
+        self, job_id: str, req_id: int, failed: bool = False
+    ) -> BatchJob:
+        async with self._meta._async_lock:
+            total = self._meta.status.request_counts.total
+            if req_id < 0 or req_id >= total:
+                raise ValueError(f"invalid request_id: {req_id}")
+            self._meta.complete_one_request(req_id, failed=failed)
+            return self._meta
+
     async def mark_job_progress_and_get_next_request(
         self, job_id: str, req_id: int
     ) -> Tuple[BatchJob, int]:

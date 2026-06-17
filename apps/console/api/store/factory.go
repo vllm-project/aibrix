@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 )
 
 // NewFromURI dispatches to a Store implementation based on the URI scheme.
@@ -37,7 +39,7 @@ import (
 // use memory:// — production deployments should use sqlite: or mysql://.
 //
 // secretKey is forwarded to backends that encrypt stored secrets at rest.
-func NewFromURI(uri, secretKey string) (Store, error) {
+func NewFromURI(uri, secretKey string, injector error_injection.Injector) (Store, error) {
 	if uri == "" {
 		uri = "sqlite:/tmp/aibrix-console.db"
 	}
@@ -46,7 +48,7 @@ func NewFromURI(uri, secretKey string) (Store, error) {
 		// sqlite:///abs/path → //abs/path → /abs/path so the URL form and
 		// the raw driver form converge on the same DSN.
 		dsn = strings.TrimPrefix(dsn, "//")
-		return NewSQLiteStore(dsn, secretKey)
+		return NewSQLiteStore(dsn, secretKey, injector)
 	}
 	u, err := url.Parse(uri)
 	if err != nil {
@@ -54,9 +56,9 @@ func NewFromURI(uri, secretKey string) (Store, error) {
 	}
 	switch u.Scheme {
 	case "memory":
-		return NewMemoryStore(), nil
+		return NewMemoryStore(injector), nil
 	case "mysql":
-		return NewMySQLStore(mysqlURIToDSN(u), secretKey)
+		return NewMySQLStore(mysqlURIToDSN(u), secretKey, injector)
 	default:
 		return nil, fmt.Errorf("unsupported store scheme %q (URI %q); use sqlite:, mysql://, or memory://", u.Scheme, uri)
 	}

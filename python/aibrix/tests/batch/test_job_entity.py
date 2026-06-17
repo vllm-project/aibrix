@@ -458,8 +458,8 @@ class TestBatchJobErrorFastAPICompatibility:
         parsed = json.loads(json_str)
         assert parsed["code"] == BatchJobErrorCode.AUTHENTICATION_ERROR.value
         assert parsed["message"] == "JSON TypeAdapter test"
-        assert parsed["param"] is None
-        assert parsed["line"] is None
+        assert "param" not in parsed
+        assert "line" not in parsed
 
     def test_batch_job_error_pydantic_validation_and_serialization_roundtrip(self):
         """Test BatchJobError validation and serialization roundtrip through Pydantic."""
@@ -530,4 +530,4 @@ class TestBatchJobErrorFastAPICompatibility:
             assert serialized_error["code"] == error_codes[i].value
             assert serialized_error["message"] == str(exceptions[i])
             assert serialized_error["param"] == f"param_{error_codes[i].value}"
-            assert serialized_error["line"] is None
+            assert "line" not in serialized_error

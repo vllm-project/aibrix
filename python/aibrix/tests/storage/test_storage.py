@@ -206,6 +206,66 @@ class TestStorageFunctionality:
             await storage.delete_object(key)
 
     @pytest.mark.asyncio
+    async def test_list_objects_with_continuation_token_pagination(
+        self, storage: BaseStorage
+    ):
+        """Test paginating object listings with continuation tokens."""
+        test_objects = [
+            "test/list-pagination/file01.txt",
+            "test/list-pagination/file02.txt",
+            "test/list-pagination/file03.txt",
+            "test/list-pagination/file04.txt",
+        ]
+
+        for key in test_objects:
+            await storage.put_object(key, f"content of {key}")
+
+        first_page, continuation_token = await storage.list_objects(
+            "test/list-pagination/",
+            limit=2,
+        )
+        second_page, next_token = await storage.list_objects(
+            "test/list-pagination/",
+            limit=2,
+            continuation_token=continuation_token,
+        )
+
+        assert first_page == test_objects[:2]
+        assert continuation_token is not None
+        assert second_page == test_objects[2:]
+        assert next_token is None
+
+        for key in test_objects:
+            await storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_list_objects_with_after_key_pagination(self, storage: BaseStorage):
+        """Test paginating object listings with after_key."""
+        test_objects = [
+            "test/list-after-key/file01.txt",
+            "test/list-after-key/file02.txt",
+            "test/list-after-key/file03.txt",
+            "test/list-after-key/file04.txt",
+        ]
+
+        for key in test_objects:
+            await storage.put_object(key, f"content of {key}")
+
+        first_page, _ = await storage.list_objects("test/list-after-key/", limit=2)
+        second_page, next_token = await storage.list_objects(
+            "test/list-after-key/",
+            limit=2,
+            after_key=first_page[-1],
+        )
+
+        assert first_page == test_objects[:2]
+        assert second_page == test_objects[2:]
+        assert next_token is None
+
+        for key in test_objects:
+            await storage.delete_object(key)
+
+    @pytest.mark.asyncio
     async def test_copy_object(self, storage: BaseStorage):
         """Test object copying."""
         source_key = "test/source.txt"
