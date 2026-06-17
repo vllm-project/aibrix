@@ -38,12 +38,13 @@ def _pending_job(job_id, due_epoch):
 
 
 class FakeProgressManager:
-    def __init__(self, job_id_status=None, pending=None):
+    def __init__(self, job_id_status=None, pending=None, in_progress=None):
         self.job_id_status = job_id_status or {}
         self.validated_job_ids = []
         self.expired_job_ids = []
         self.failed_errors = {}
         self._pending = list(pending or [])
+        self._in_progress = list(in_progress or [])
 
     async def get_job_status(self, job_id):
         if job_id not in self.job_id_status:
@@ -65,13 +66,17 @@ class FakeProgressManager:
     async def expire_job(self, job_id):
         self.expired_job_ids.append(job_id)
         # An expired job is finalized in the registry, so it is no longer
-        # pending / admittable afterwards.
+        # schedulable afterwards.
         self.job_id_status.pop(job_id, None)
         self._pending = [j for j in self._pending if j.job_id != job_id]
+        self._in_progress = [j for j in self._in_progress if j.job_id != job_id]
         return True
 
     async def list_pending(self):
         return list(self._pending)
+
+    async def list_in_progress(self):
+        return list(self._in_progress)
 
 
 def _make_scheduler(progress_manager, pool_size=1):

@@ -79,10 +79,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.annotations['batch.job.aibrix.ai/temp-error-file-id']
-            - name: BATCH_OPTS_FAIL_AFTER_N_REQUESTS
+            - name: BATCH_OPTS
               valueFrom:
                 fieldRef:
-                  fieldPath: metadata.annotations['batch.job.aibrix.ai/opts.fail_after_n_requests']
+                  fieldPath: metadata.annotations['batch.job.aibrix.ai/opts']
             - name: STORAGE_TYPE
               value: local
             - name: STORAGE_LOCAL_PATH

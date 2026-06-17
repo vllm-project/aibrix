@@ -319,7 +319,7 @@ def ensure_job_rbac(job_rbac):
 
 
 def create_test_app(
-    enable_k8s_support: bool = True,
+    enable_k8s_support: bool = False,
     storage_type: StorageType = StorageType.LOCAL,
     metastore_type: StorageType = StorageType.LOCAL,
     params: Optional[Dict[str, Any]] = None,

@@ -38,7 +38,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from math import isfinite
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, Optional, Set, Tuple
 
 import aibrix.batch.constant as constant
 import aibrix.batch.storage as storage
@@ -604,14 +604,16 @@ class BaseJobDriver:
             # needed for requests that have been seen but not yet completed.
             request_counts.total = request_id + 1
 
-    def _accumulate_completed_requests(
+    def _accumulate_done_requests(
         self,
         job_id: str,
         completed_request_ids: list[int],
+        failed_request_ids: Optional[list[int]] = None,
     ) -> None:
-        """Track completed request count for this job."""
+        """Track finished request counts for this job."""
         request_counts = self._get_local_request_counts(job_id)
         request_counts.completed += len(completed_request_ids)
+        request_counts.failed += len(failed_request_ids or [])
 
     def _accumulate_usage(
         self, job_id: str, custom_id: Optional[str], raw_usage: Optional[dict]
@@ -747,20 +749,30 @@ class BaseJobDriver:
     async def _sync_completed_request_tasks(
         self,
         job: BatchJob,
-        completed_request_tasks: set[asyncio.Task[int]],
+        completed_request_results: Iterable[tuple[int, bool]],
     ) -> tuple[BatchJob, int]:
         """Compatibility seam for tests and drivers that sync completions after
         a pass or request batch."""
-        completed_request_ids = [task.result() for task in completed_request_tasks]
-        self._accumulate_completed_requests(job.job_id, completed_request_ids)
+        completed_results = list(completed_request_results)
+        completed_request_ids = [
+            request_id for request_id, failed in completed_results if not failed
+        ]
+        failed_request_ids = [
+            request_id for request_id, failed in completed_results if failed
+        ]
+        self._accumulate_done_requests(
+            job.job_id,
+            completed_request_ids,
+            failed_request_ids,
+        )
         job = await self._persist_worker_status(job)
-        return job, len(completed_request_ids)
+        return job, len(completed_results)
 
     async def _execute_request(
         self,
         job: BatchJob,
         request_input: dict[str, Any],
-    ) -> int:
+    ) -> tuple[int, bool]:
         """Execute one request and persist its output record."""
         request_id = request_input.pop("_request_index")
         self._accumulate_dispatched_request(job.job_id, request_id)
@@ -784,7 +796,7 @@ class BaseJobDriver:
             custom_id, job.job_id, request_id, job.spec, request_output, last_error
         )
         await storage.write_job_output_data(job, request_id, response)
-        return request_id
+        return request_id, last_error is not None
 
     # ── lifecycle template ───────────────────────────────────────────────
 
@@ -975,7 +987,7 @@ class BaseJobDriver:
                 )
                 await completed_task
                 job, completed = await self._sync_completed_request_tasks(
-                    job, {completed_task}
+                    job, [completed_task.result()]
                 )
                 processed_requests += completed
 
@@ -1031,7 +1043,9 @@ class BaseJobDriver:
         job_id = job.job_id
         assert job_id is not None
 
-        completed_request_ids: asyncio.Queue[Optional[int]] = asyncio.Queue()
+        completed_request_ids: asyncio.Queue[Optional[tuple[int, bool]]] = (
+            asyncio.Queue()
+        )
         start_index = await self._get_next_pass_start(job)
         fail_after_n_requests = self._parse_fail_after_n_requests(job)
         processed_requests = 0
@@ -1110,38 +1124,33 @@ class BaseJobDriver:
         async def sync_completed_requests() -> None:
             nonlocal job, pending_in_round
 
-            async def sync_batch(request_ids: list[int]) -> None:
+            async def sync_batch(request_results: list[tuple[int, bool]]) -> None:
                 nonlocal job, pending_in_round
-                completed_request_tasks = {
-                    asyncio.create_task(asyncio.sleep(0, result=request_id))
-                    for request_id in request_ids
-                }
-                if not completed_request_tasks:
+                if not request_results:
                     return
-                await asyncio.gather(*completed_request_tasks)
                 job, _ = await self._sync_completed_request_tasks(
                     job,
-                    completed_request_tasks,
+                    request_results,
                 )
-                pending_in_round = max(0, pending_in_round - len(request_ids))
+                pending_in_round = max(0, pending_in_round - len(request_results))
                 if pending_in_round == 0:
                     round_drained.set()
 
             while True:
-                request_id = await completed_request_ids.get()
-                if request_id is None:
+                request_result = await completed_request_ids.get()
+                if request_result is None:
                     return
 
-                batch = [request_id]
+                batch = [request_result]
                 while True:
                     try:
-                        next_request_id = completed_request_ids.get_nowait()
+                        next_request_result = completed_request_ids.get_nowait()
                     except asyncio.QueueEmpty:
                         break
-                    if next_request_id is None:
+                    if next_request_result is None:
                         await sync_batch(batch)
                         return
-                    batch.append(next_request_id)
+                    batch.append(next_request_result)
 
                 await sync_batch(batch)
 
@@ -1160,7 +1169,7 @@ class BaseJobDriver:
                 custom_id, job_id, request_id, job.spec, response, error
             )
             await storage.write_job_output_data(job, request_id, record)
-            await completed_request_ids.put(request_id)
+            await completed_request_ids.put((request_id, error is not None))
             processed_requests += 1
             if (
                 not fail_after_triggered

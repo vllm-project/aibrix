@@ -65,8 +65,13 @@ def _make_test_job(
     job_id: str = "j",
     *,
     execution: dict[str, JobRuntimeRef] | None = None,
+    opts: dict[str, object] | None = None,
 ) -> object:
-    return SimpleNamespace(job_id=job_id, status=_FakeStatus(execution))
+    return SimpleNamespace(
+        job_id=job_id,
+        status=_FakeStatus(execution),
+        spec=SimpleNamespace(opts=dict(opts or {})),
+    )
 
 
 async def _maybe_await(result):

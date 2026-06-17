@@ -166,6 +166,10 @@ class LocalStorage(BaseStorage2):
             os.replace(tmp_path, path)
         except Exception:
             try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
                 os.unlink(tmp_path)
             except FileNotFoundError:
                 pass
@@ -537,6 +541,10 @@ class LocalStorage(BaseStorage2):
                 os.fsync(f.fileno())
             os.replace(tmp_path, path)
         except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
             try:
                 os.unlink(tmp_path)
             except FileNotFoundError:

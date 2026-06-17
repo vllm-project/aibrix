@@ -165,12 +165,9 @@ class TestCreateBatch:
             assert response.status_code == 422
 
     def test_create_rejects_unknown_input_file(self):
-        # NOTE: When the input file does not exist, the local storage's
-        # readline_iter currently yields zero lines instead of raising
-        # FileNotFoundError, so the route reports the input as empty rather
-        # than not-found. This documents the current behavior; if storage
-        # is updated to surface FileNotFoundError, the assertion should
-        # tighten to match "not found".
+        # Route-level create now only stages the batch and returns 200.
+        # The semantic input-file validation moved to
+        # tests/batch/test_base_job_driver.py under BaseJobDriver.validate_job.
         with TestClient(create_test_app()) as client:
             response = client.post(
                 "/v1/batches",
@@ -180,26 +177,32 @@ class TestCreateBatch:
                     "completion_window": "24h",
                 },
             )
-            assert response.status_code == 400
+            assert response.status_code == 200
 
     def test_create_rejects_input_missing_custom_id(self):
+        # Route-level create now only stages the batch and returns 200.
+        # The semantic request-line validation moved to
+        # tests/batch/test_base_job_driver.py under BaseJobDriver.validate_job.
         line = _chat_request()
         line.pop("custom_id")
         with TestClient(create_test_app()) as client:
             response = _create_chat_batch(client, lines=[line])
-            assert response.status_code == 400
-            assert "custom_id" in response.json()["error"]["message"]
+            assert response.status_code == 200
 
     def test_create_rejects_input_url_mismatching_batch_endpoint(self):
+        # Route-level create now only stages the batch and returns 200.
+        # The semantic request-line validation moved to
+        # tests/batch/test_base_job_driver.py under BaseJobDriver.validate_job.
         line = _chat_request()
         line["url"] = "/v1/embeddings"  # mismatch
         with TestClient(create_test_app()) as client:
             response = _create_chat_batch(client, lines=[line])
-            assert response.status_code == 400
-            assert "does not match" in response.json()["error"]["message"]
+            assert response.status_code == 200
 
     def test_create_rejects_embeddings_input_missing_input_field(self):
-        # Embeddings body must carry 'input'; here we omit it.
+        # Route-level create now only stages the batch and returns 200.
+        # The semantic request-body validation moved to
+        # tests/batch/test_base_job_driver.py under BaseJobDriver.validate_job.
         line = {
             "custom_id": "e1",
             "method": "POST",
@@ -216,18 +219,22 @@ class TestCreateBatch:
                     "completion_window": "24h",
                 },
             )
-            assert response.status_code == 400
-            assert "input" in response.json()["error"]["message"]
+            assert response.status_code == 200
 
     def test_create_rejects_chat_messages_not_list(self):
+        # Route-level create now only stages the batch and returns 200.
+        # The semantic request-body validation moved to
+        # tests/batch/test_base_job_driver.py under BaseJobDriver.validate_job.
         line = _chat_request()
         line["body"]["messages"] = "not-a-list"
         with TestClient(create_test_app()) as client:
             response = _create_chat_batch(client, lines=[line])
-            assert response.status_code == 400
-            assert "messages" in response.json()["error"]["message"]
+            assert response.status_code == 200
 
     def test_create_rejects_empty_input_file(self):
+        # Route-level create now only stages the batch and returns 200.
+        # The empty-file validation moved to
+        # tests/batch/test_base_job_driver.py under BaseJobDriver.validate_job.
         with TestClient(create_test_app()) as client:
             file_id = _upload_jsonl(client, BytesIO(b"\n\n  \n"))
             response = client.post(
@@ -238,8 +245,7 @@ class TestCreateBatch:
                     "completion_window": "24h",
                 },
             )
-            assert response.status_code == 400
-            assert "empty" in response.json()["error"]["message"].lower()
+            assert response.status_code == 200
 
     def test_create_trailing_slash_works(self):
         with TestClient(create_test_app()) as client:

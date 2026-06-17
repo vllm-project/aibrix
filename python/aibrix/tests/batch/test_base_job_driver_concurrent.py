@@ -346,15 +346,29 @@ async def test_execute_worker_stats_fallback_preserves_failed_count(monkeypatch)
         for i in range(3)
     ]
     _patch_storage(monkeypatch, requests)
+    persisted_statuses = []
 
     async def complete_without_progress(job_id, req_id, failed=False):
         return job
 
+    async def update_job_local_status(job_id, worker_id, status):
+        persisted_statuses.append(status.model_copy(deep=True))
+        updated = job.model_copy(deep=True)
+        updated.status = status.model_copy(deep=True)
+        driver._progress_manager._meta = updated
+        return updated
+
     driver._progress_manager.complete_job_request = complete_without_progress
+    driver._progress_manager.update_job_local_status = update_job_local_status
 
     result = await driver.execute_worker(job.job_id)
 
-    assert result.status.state == BatchJobState.FINALIZING
+    assert (
+        result.status.state == BatchJobState.IN_PROGRESS
+    )  # Execute worker will not set state to FINALIZING anymore.
+    assert persisted_statuses
+    assert persisted_statuses[-1].request_counts.completed == 2
+    assert persisted_statuses[-1].request_counts.failed == 1
     assert result.status.request_counts.completed == 2
     assert result.status.request_counts.failed == 1
 
@@ -396,6 +410,7 @@ async def test_finalize_job_persists_calibrated_counts_before_done(monkeypatch):
     }
     driver._progress_manager._meta.status = job.status.model_copy(deep=True)
     captured = {}
+    lifecycle = []
 
     async def finalize_job_output_data(finalizing_job):
         finalizing_job.status.request_counts = RequestCountStats(
@@ -406,6 +421,7 @@ async def test_finalize_job_persists_calibrated_counts_before_done(monkeypatch):
         )
 
     async def mark_job_done(finalized_job):
+        lifecycle.append("done")
         captured["job_id"] = finalized_job.job_id
         captured["status"] = finalized_job.status.model_copy(deep=True)
         if finalized_job.status.finalizing_at is None:
@@ -416,7 +432,12 @@ async def test_finalize_job_persists_calibrated_counts_before_done(monkeypatch):
         return driver._progress_manager._meta
 
     async def mark_job_finalizing(job_id):
-        raise AssertionError(f"finalize_job should not mark {job_id} finalizing first")
+        lifecycle.append("finalizing")
+        finalizing_job = driver._progress_manager._meta.model_copy(deep=True)
+        finalizing_job.status.state = BatchJobState.FINALIZING
+        finalizing_job.status.finalizing_at = datetime.now()
+        driver._progress_manager._meta = finalizing_job
+        return finalizing_job
 
     from aibrix.batch.job_driver import base as base_module
 
@@ -430,7 +451,10 @@ async def test_finalize_job_persists_calibrated_counts_before_done(monkeypatch):
 
     result = await driver.finalize_job(job)
 
+    assert lifecycle == ["finalizing", "done"]
     assert captured["job_id"] == job.job_id
+    assert captured["status"].state == BatchJobState.FINALIZING
+    assert captured["status"].finalizing_at is not None
     assert captured["status"].request_counts.total == 4
     assert captured["status"].request_counts.launched == 4
     assert captured["status"].request_counts.completed == 4

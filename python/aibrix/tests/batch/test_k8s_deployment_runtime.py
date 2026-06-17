@@ -24,6 +24,7 @@ from aibrix.batch.client.sources import (
 )
 from aibrix.batch.job_driver import BaseJobDriver, DeploymentRuntime, ExternalRuntime
 from aibrix.batch.job_driver.driver_factory import create_job_driver
+from aibrix.batch.job_driver.runtime.k8s_deployment import DeploymentHandle
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobEndpoint,
@@ -325,13 +326,14 @@ async def test_k8s_deployment_runtime_reconnect_accepts_current_payload_keys():
 @pytest.mark.asyncio
 async def test_k8s_deployment_runtime_connect_uses_in_cluster_source(monkeypatch):
     runtime = _make_runtime(renderer=FakeRenderer())
-    handle = SimpleNamespace(
+    handle = DeploymentHandle(
         namespace="default",
         deployment_name="rendered-deployment",
         service_name="rendered-service",
         model_name="rendered-model",
         base_url="http://rendered-service.default.svc.cluster.local:8000",
         service_port=8000,
+        replicas=1,
     )
 
     monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
@@ -346,13 +348,14 @@ async def test_k8s_deployment_runtime_connect_uses_port_forward_source_outside_c
     monkeypatch,
 ):
     runtime = _make_runtime(renderer=FakeRenderer())
-    handle = SimpleNamespace(
+    handle = DeploymentHandle(
         namespace="default",
         deployment_name="rendered-deployment",
         service_name="rendered-service",
         model_name="rendered-model",
         base_url="http://rendered-service.default.svc.cluster.local:8000",
         service_port=8000,
+        replicas=1,
     )
 
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)

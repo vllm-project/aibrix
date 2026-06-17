@@ -72,7 +72,7 @@ def _in_progress_meta_job(job_id: str, total_requests: int) -> JobMetaInfo:
 
 
 class _FakeJobDriver:
-    async def job_deleted_handler(self, job: BatchJob) -> bool:
+    async def terminate(self, job: BatchJob) -> bool:
         del job
         return True
 
@@ -256,6 +256,10 @@ async def test_job_committed_handler_recovers_done_job_without_scheduling():
 
 @pytest.mark.asyncio
 async def test_validate_job_finalizes_worker_style_validation_failure(monkeypatch):
+    # Manager coverage stops at the admit/finalize boundary: once
+    # BaseJobDriver.validate_job raises, BatchManager must finalize the job
+    # into the done set. The detailed invalid-input permutations live in
+    # tests/batch/test_base_job_driver.py.
     job_manager = _job_manager()
 
     batch_job = BatchJob(
@@ -334,9 +338,10 @@ async def test_mark_job_failed_finalizes_when_any_output_artifact_prepared():
         BatchJobError(code=BatchJobErrorCode.UNKNOWN_ERROR, message="boom"),
     )
 
-    assert result.status.state == BatchJobState.FINALIZING
+    assert result.status.state == BatchJobState.IN_PROGRESS
+    assert result.status.condition == ConditionType.FAILED
+    assert result.status.finalizing_at is None
     assert result.status.finalized_at is None
-    assert result.status.finalizing_at is not None
 
 
 @pytest.mark.asyncio

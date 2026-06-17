@@ -100,7 +100,7 @@ class BatchJobTransformer:
                 )  # type: ignore[call-arg]
             else:
                 if isinstance(decoded_opts, dict):
-                    batch_opts = decoded_opts
+                    batch_opts.update(decoded_opts)
                 else:
                     logger.warning(
                         "Ignoring opts annotation because it is not a JSON object",
