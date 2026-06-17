@@ -37,7 +37,10 @@ import os
 from typing import Any, Dict, List
 
 from aibrix import envs
+from aibrix.logger import init_logger
 from aibrix.storage import StorageType
+
+logger = init_logger(__name__)
 
 
 def build_storage_env() -> List[Dict[str, Any]]:
@@ -150,7 +153,8 @@ def _redis_env() -> List[Dict[str, Any]]:
     Secret via ``valueFrom.secretKeyRef``. The worker reads it through
     ``envs.STORAGE_REDIS_PASSWORD`` (which falls back to ``REDIS_PASSWORD``).
     Nothing is injected when either var is unset, so the Deployment path and
-    no-auth dev setups are unchanged.
+    no-auth dev setups are unchanged. A partial config, or a metastore password
+    with no secret ref, is logged as a warning.
     """
     worker_host = (
         os.getenv("WORKER_REDIS_HOST")
@@ -173,5 +177,17 @@ def _redis_env() -> List[Dict[str, Any]]:
                     "secretKeyRef": {"name": secret_name, "key": secret_key},
                 },
             }
+        )
+    elif secret_name or secret_key:
+        logger.warning(
+            "Ignoring partial worker Redis password config; set both "
+            "WORKER_REDIS_PASSWORD_SECRET_NAME and "
+            "WORKER_REDIS_PASSWORD_SECRET_KEY to inject REDIS_PASSWORD."
+        )
+    elif envs.STORAGE_REDIS_PASSWORD:
+        logger.warning(
+            "Metastore Redis password is set but no worker secret ref is "
+            "configured; set WORKER_REDIS_PASSWORD_SECRET_NAME and "
+            "WORKER_REDIS_PASSWORD_SECRET_KEY so workers can authenticate."
         )
     return env
