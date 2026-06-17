@@ -608,7 +608,7 @@ func TestGetTopologyMatchLabels(t *testing.T) {
 	}
 }
 
-func TestInjectTopologyAffinityForPod_DefaultsToPreferred(t *testing.T) {
+func TestInjectTopologyAffinity_DefaultsToPreferred(t *testing.T) {
 	roleSet := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-roleset",
@@ -623,7 +623,7 @@ func TestInjectTopologyAffinityForPod_DefaultsToPreferred(t *testing.T) {
 		Key:   "kubernetes.io/hostname",
 	}
 
-	injectTopologyAffinityForPod(pod, roleSet, "prefill", tp)
+	injectTopologyAffinity(&pod.Spec, roleSet, "prefill", tp)
 
 	assert.Len(t, pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, 0)
 	preferred := pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
@@ -633,7 +633,7 @@ func TestInjectTopologyAffinityForPod_DefaultsToPreferred(t *testing.T) {
 	assert.Equal(t, "test-roleset", preferred[0].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
 }
 
-func TestInjectTopologyAffinityForPod_SkipsEmptyTopologyKey(t *testing.T) {
+func TestInjectTopologyAffinity_SkipsEmptyTopologyKey(t *testing.T) {
 	roleSet := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-roleset",
@@ -647,12 +647,12 @@ func TestInjectTopologyAffinityForPod_SkipsEmptyTopologyKey(t *testing.T) {
 		Scope: orchestrationv1alpha1.TopologyRoleSetScope,
 	}
 
-	injectTopologyAffinityForPod(pod, roleSet, "prefill", tp)
+	injectTopologyAffinity(&pod.Spec, roleSet, "prefill", tp)
 
 	assert.Nil(t, pod.Spec.Affinity)
 }
 
-func TestInjectTopologyAffinityForPod_Required(t *testing.T) {
+func TestInjectTopologyAffinity_Required(t *testing.T) {
 	roleSet := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-roleset",
@@ -668,7 +668,7 @@ func TestInjectTopologyAffinityForPod_Required(t *testing.T) {
 		Mode:  orchestrationv1alpha1.TopologyPolicyRequired,
 	}
 
-	injectTopologyAffinityForPod(pod, roleSet, "prefill", tp)
+	injectTopologyAffinity(&pod.Spec, roleSet, "prefill", tp)
 
 	assert.Len(t, pod.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution, 0)
 	required := pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution
@@ -677,7 +677,7 @@ func TestInjectTopologyAffinityForPod_Required(t *testing.T) {
 	assert.Equal(t, "test-roleset", required[0].LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
 }
 
-func TestInjectTopologyAffinityForPod_RequiredIgnoresExistingNilSelector(t *testing.T) {
+func TestInjectTopologyAffinity_RequiredIgnoresExistingNilSelector(t *testing.T) {
 	roleSet := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-roleset",
@@ -704,7 +704,7 @@ func TestInjectTopologyAffinityForPod_RequiredIgnoresExistingNilSelector(t *test
 	}
 
 	if !assert.NotPanics(t, func() {
-		injectTopologyAffinityForPod(pod, roleSet, "prefill", tp)
+		injectTopologyAffinity(&pod.Spec, roleSet, "prefill", tp)
 	}) {
 		return
 	}
@@ -715,7 +715,7 @@ func TestInjectTopologyAffinityForPod_RequiredIgnoresExistingNilSelector(t *test
 	assert.Equal(t, "test-roleset", required[1].LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
 }
 
-func TestInjectTopologyAffinityForPod_PreferredIgnoresExistingNilSelector(t *testing.T) {
+func TestInjectTopologyAffinity_PreferredIgnoresExistingNilSelector(t *testing.T) {
 	roleSet := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-roleset",
@@ -746,7 +746,7 @@ func TestInjectTopologyAffinityForPod_PreferredIgnoresExistingNilSelector(t *tes
 	}
 
 	if !assert.NotPanics(t, func() {
-		injectTopologyAffinityForPod(pod, roleSet, "prefill", tp)
+		injectTopologyAffinity(&pod.Spec, roleSet, "prefill", tp)
 	}) {
 		return
 	}
@@ -757,7 +757,7 @@ func TestInjectTopologyAffinityForPod_PreferredIgnoresExistingNilSelector(t *tes
 	assert.Equal(t, "test-roleset", preferred[1].PodAffinityTerm.LabelSelector.MatchLabels[constants.RoleSetNameLabelKey])
 }
 
-func TestInjectTopologyAffinityForPodTemplate_Preferred(t *testing.T) {
+func TestInjectTopologyAffinity_PodTemplateSpecPreferred(t *testing.T) {
 	roleSet := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-roleset",
@@ -773,7 +773,7 @@ func TestInjectTopologyAffinityForPodTemplate_Preferred(t *testing.T) {
 		Mode:  orchestrationv1alpha1.TopologyPolicyPreferred,
 	}
 
-	injectTopologyAffinityForPodTemplate(template, roleSet, "decode", tp)
+	injectTopologyAffinity(&template.Spec, roleSet, "decode", tp)
 
 	assert.Len(t, template.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, 0)
 	preferred := template.Spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution

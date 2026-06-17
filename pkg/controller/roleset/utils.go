@@ -52,6 +52,8 @@ const (
 	PodGroupSyncedEventType = "PodGroupSynced"
 	PodSyncedEventType      = "PodSynced"
 	FailureEventType        = "Failure"
+
+	topologyPreferredAffinityWeight int32 = 100
 )
 
 // GetReadyReplicaCountForRole returns the number of ready roleSets corresponding to the given replica sets.
@@ -177,10 +179,7 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 
 	// inject topology co-location affinity if TopologyPolicy is specified
 	if roleSet.Spec.TopologyPolicy != nil {
-		tp := roleSet.Spec.TopologyPolicy
-		if tp.Key != "" && tp.Scope != "" {
-			injectTopologyAffinityForPod(pod, roleSet, role.Name, tp)
-		}
+		injectTopologyAffinity(&pod.Spec, roleSet, role.Name, roleSet.Spec.TopologyPolicy)
 	}
 }
 
@@ -262,6 +261,7 @@ func injectTopologyAffinityToPodSpec(
 		spec.Affinity.PodAffinity = &v1.PodAffinity{}
 	}
 
+	// The API defaults Mode to Preferred; this fallback keeps direct callers and older objects safe.
 	if mode == "" {
 		mode = orchestrationv1alpha1.TopologyPolicyPreferred
 	}
@@ -279,7 +279,7 @@ func injectTopologyAffinityToPodSpec(
 			append(spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, affinityTerm)
 	default:
 		weightedTerm := v1.WeightedPodAffinityTerm{
-			Weight:          100,
+			Weight:          topologyPreferredAffinityWeight,
 			PodAffinityTerm: affinityTerm,
 		}
 		for _, term := range spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
@@ -346,13 +346,13 @@ func getTopologyMatchLabels(
 	return matchLabels, true
 }
 
-func injectTopologyAffinityForPod(
-	pod *v1.Pod,
+func injectTopologyAffinity(
+	spec *v1.PodSpec,
 	roleSet *orchestrationv1alpha1.RoleSet,
 	roleName string,
 	tp *orchestrationv1alpha1.TopologyPolicy,
 ) {
-	if !hasTopologyKey(roleSet, tp) {
+	if !validateTopologyKey(roleSet, tp) {
 		return
 	}
 
@@ -361,28 +361,10 @@ func injectTopologyAffinityForPod(
 		return
 	}
 
-	injectTopologyAffinityToPodSpec(&pod.Spec, matchLabels, tp.Key, tp.Mode)
+	injectTopologyAffinityToPodSpec(spec, matchLabels, tp.Key, tp.Mode)
 }
 
-func injectTopologyAffinityForPodTemplate(
-	template *v1.PodTemplateSpec,
-	roleSet *orchestrationv1alpha1.RoleSet,
-	roleName string,
-	tp *orchestrationv1alpha1.TopologyPolicy,
-) {
-	if !hasTopologyKey(roleSet, tp) {
-		return
-	}
-
-	matchLabels, ok := getTopologyMatchLabels(roleSet, roleName, tp)
-	if !ok {
-		return
-	}
-
-	injectTopologyAffinityToPodSpec(&template.Spec, matchLabels, tp.Key, tp.Mode)
-}
-
-func hasTopologyKey(roleSet *orchestrationv1alpha1.RoleSet, tp *orchestrationv1alpha1.TopologyPolicy) bool {
+func validateTopologyKey(roleSet *orchestrationv1alpha1.RoleSet, tp *orchestrationv1alpha1.TopologyPolicy) bool {
 	if tp.Key != "" {
 		return true
 	}
