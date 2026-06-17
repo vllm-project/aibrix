@@ -43,6 +43,17 @@ type PodSetRoleSyncer struct {
 }
 
 func (p *PodSetRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
+	// Clean up orphan Pods left by the old StatefulRoleSyncer/StatelessRoleSyncer
+	// when podGroupSize was switched from <=1 to >1.
+	cleaned, err := cleanupOrphanPods(ctx, p.cli, roleSet, role)
+	if err != nil {
+		return cleaned, err
+	}
+	if cleaned {
+		klog.V(4).Infof("[PodSetRoleSyncer.Scale] cleaned orphan pods for roleset %s/%s role %s, waiting for next reconcile", roleSet.Namespace, roleSet.Name, role.Name)
+		return true, nil
+	}
+
 	var podSetsToCreate, podSetsToDelete []*orchestrationv1alpha1.PodSet
 	allPodSets, err := getRolePodSets(ctx, p.cli, roleSet.Namespace, roleSet.Name, role.Name)
 	if err != nil {
@@ -544,3 +555,4 @@ func deletePodSetsInBatch(ctx context.Context, cli client.Client, podSets []*orc
 	}
 	return len(podSets), nil
 }
+
