@@ -555,4 +555,3 @@ func deletePodSetsInBatch(ctx context.Context, cli client.Client, podSets []*orc
 	}
 	return len(podSets), nil
 }
-
