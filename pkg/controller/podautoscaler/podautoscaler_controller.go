@@ -60,6 +60,7 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/metrics/pkg/client/clientset/versioned"
 	custommetrics "k8s.io/metrics/pkg/client/custom_metrics"
+	externalmetrics "k8s.io/metrics/pkg/client/external_metrics"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -132,11 +133,16 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(cached)
 	apis := custommetrics.NewAvailableAPIsGetter(disc)
 	customClient := custommetrics.NewForConfig(restConfig, mapper, apis)
+	externalClient, err := externalmetrics.NewForConfig(restConfig)
+	if err != nil {
+		klog.Warningf("Failed to create external metrics client: %v. Kubernetes external metrics will be unavailable.", err)
+		externalClient = nil
+	}
 
 	workloadScaleClient := NewWorkloadScale(mgr.GetClient(), mgr.GetRESTMapper())
 
 	// Create factory with all metric fetcher types
-	factory := metrics.NewDefaultMetricFetcherFactory(resourceClient, customClient)
+	factory := metrics.NewDefaultMetricFetcherFactory(resourceClient, customClient, externalClient)
 
 	// Create a unified autoscaler that can handle all strategies
 	// It will be configured per-request based on PodAutoscaler spec
@@ -264,6 +270,7 @@ type PodAutoscalerReconciler struct {
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers/finalizers,verbs=update
 //+kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=external.metrics.k8s.io,resources=*,verbs=get;list
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch;update
 //+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=stormservices,verbs=get;list;watch;patch
 
@@ -473,6 +480,10 @@ func (r *PodAutoscalerReconciler) validatePodMetricSource(ms *autoscalingv1alpha
 }
 
 func (r *PodAutoscalerReconciler) validateExternalMetricSource(ms *autoscalingv1alpha1.MetricSource) ValidationResult {
+	if ms.Endpoint == "" &&
+		(ms.MetricSourceType == autoscalingv1alpha1.EXTERNAL || ms.MetricSourceType == autoscalingv1alpha1.DOMAIN) {
+		return validOK()
+	}
 	if ms.ProtocolType == "" {
 		return invalid(ReasonMetricsConfigError, "protocolType is required for metricSourceType=external.")
 	}

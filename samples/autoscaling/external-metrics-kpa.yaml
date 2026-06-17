@@ -1,0 +1,24 @@
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: deepseek-r1-distill-llama-8b-external-kpa
+  namespace: default
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    kpa.autoscaling.aibrix.ai/scale-down-delay: 3m
+spec:
+  scalingStrategy: KPA
+  minReplicas: 1
+  maxReplicas: 8
+  metricsSources:
+    # Uses Kubernetes external.metrics.k8s.io. Do not set endpoint, path, or
+    # protocolType for this mode.
+    - metricSourceType: external
+      targetMetric: aibrix_running_requests
+      targetValue: "100"
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: deepseek-r1-distill-llama-8b

@@ -193,6 +193,9 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 			}
 
 		case autoscalingv1alpha1.EXTERNAL, autoscalingv1alpha1.DOMAIN:
+			if ms.Endpoint == "" {
+				break
+			}
 			if ms.ProtocolType == "" {
 				allErrs = append(allErrs, field.Required(msPath.Child("protocolType"), "required for metricSourceType=external/domain"))
 			}

@@ -28,6 +28,7 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/metrics/pkg/client/clientset/versioned"
 	"k8s.io/metrics/pkg/client/custom_metrics"
+	"k8s.io/metrics/pkg/client/external_metrics"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -215,7 +216,8 @@ func (f *CustomMetricsFetcher) fetchCustomMetric(ctx context.Context, pod v1.Pod
 
 // ExternalMetricsFetcher handles external metrics with per-pod adaptation
 type ExternalMetricsFetcher struct {
-	engineFetcher *metrics.EngineMetricsFetcher
+	engineFetcher         *metrics.EngineMetricsFetcher
+	externalMetricsClient external_metrics.ExternalMetricsClient
 }
 
 var _ MetricFetcher = (*ExternalMetricsFetcher)(nil)
@@ -223,6 +225,19 @@ var _ MetricFetcher = (*ExternalMetricsFetcher)(nil)
 func NewExternalMetricsFetcher() *ExternalMetricsFetcher {
 	return &ExternalMetricsFetcher{
 		engineFetcher: metrics.NewEngineMetricsFetcher(),
+	}
+}
+
+func NewExternalMetricsFetcherWithClients(
+	engineFetcher *metrics.EngineMetricsFetcher,
+	externalMetricsClient external_metrics.ExternalMetricsClient,
+) *ExternalMetricsFetcher {
+	if engineFetcher == nil {
+		engineFetcher = metrics.NewEngineMetricsFetcher()
+	}
+	return &ExternalMetricsFetcher{
+		engineFetcher:         engineFetcher,
+		externalMetricsClient: externalMetricsClient,
 	}
 }
 
@@ -279,10 +294,23 @@ func (f *ExternalMetricsFetcher) fetchFromK8sExternalMetrics(ctx context.Context
 		"pod", pod.Name,
 		"metric", source.TargetMetric)
 
-	// TODO: Implement Kubernetes external.metrics API client
-	// For now, return a placeholder that won't break the system
-	klog.Warningf("Kubernetes external.metrics API not implemented yet for metric %s", source.TargetMetric)
-	return 0.0, fmt.Errorf("kubernetes external.metrics API not implemented yet for metric %s", source.TargetMetric)
+	if f.externalMetricsClient == nil {
+		return 0.0, fmt.Errorf("kubernetes external.metrics client not initialized for metric %s", source.TargetMetric)
+	}
+
+	metricList, err := f.externalMetricsClient.NamespacedMetrics(pod.Namespace).List(source.TargetMetric, labels.Everything())
+	if err != nil {
+		return 0.0, fmt.Errorf("failed to fetch external metric %s in namespace %s: %w", source.TargetMetric, pod.Namespace, err)
+	}
+	if len(metricList.Items) == 0 {
+		return 0.0, fmt.Errorf("no external metric values returned for %s in namespace %s", source.TargetMetric, pod.Namespace)
+	}
+
+	total := 0.0
+	for _, item := range metricList.Items {
+		total += item.Value.AsApproximateFloat64()
+	}
+	return total, nil
 }
 
 // MetricFetcherFactory provides a clean way to get the right fetcher for each metric source type
@@ -303,12 +331,13 @@ type DefaultMetricFetcherFactory struct {
 func NewDefaultMetricFetcherFactory(
 	resourceClient *versioned.Clientset,
 	customClient custom_metrics.CustomMetricsClient,
+	externalClient external_metrics.ExternalMetricsClient,
 ) *DefaultMetricFetcherFactory {
 	return &DefaultMetricFetcherFactory{
 		rest:     NewRestMetricsFetcher(),
 		resource: NewResourceMetricsFetcher(resourceClient),
 		custom:   NewCustomMetricsFetcher(customClient),
-		external: NewExternalMetricsFetcher(),
+		external: NewExternalMetricsFetcherWithClients(nil, externalClient),
 	}
 }
 

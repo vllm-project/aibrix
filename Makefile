@@ -169,6 +169,10 @@ test-integration-controller: manifests fmt vet envtest ginkgo
 test-e2e:
 	./test/run-e2e-tests.sh
 
+.PHONY: test-e2e-external-metrics
+test-e2e-external-metrics: ## Run external metrics autoscaler e2e against local minikube.
+	./test/run-external-metrics-e2e.sh
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter & yamllint
 	$(GOLANGCI_LINT) run

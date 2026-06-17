@@ -82,6 +82,34 @@ func (f *fakeAutoScaler) ComputeDesiredReplicas(ctx context.Context, req Replica
 	return f.result, f.err
 }
 
+func TestValidateMetricsSourcesAllowsK8sExternalMetrics(t *testing.T) {
+	for _, metricSourceType := range []autoscalingv1alpha1.MetricSourceType{
+		autoscalingv1alpha1.EXTERNAL,
+		autoscalingv1alpha1.DOMAIN,
+	} {
+		t.Run(string(metricSourceType), func(t *testing.T) {
+			r := &PodAutoscalerReconciler{}
+			pa := &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: metricSourceType,
+							TargetMetric:     "aibrix_test_queue_depth",
+							TargetValue:      "40",
+						},
+					},
+				},
+			}
+
+			result := r.validateMetricsSources(pa)
+
+			if !result.Valid {
+				t.Fatalf("expected Kubernetes external metrics source to be valid, got reason=%s message=%s", result.Reason, result.Message)
+			}
+		})
+	}
+}
+
 // ---- helpers ----
 
 func buildPod(ns, name string, lbls map[string]string) *corev1.Pod {

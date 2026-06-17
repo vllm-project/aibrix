@@ -37,9 +37,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
+	clientgotesting "k8s.io/client-go/testing"
+	externalmetricsv1beta1 "k8s.io/metrics/pkg/apis/external_metrics/v1beta1"
 	v1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	"k8s.io/metrics/pkg/client/clientset/versioned"
+	externalmetricsfake "k8s.io/metrics/pkg/client/external_metrics/fake"
 	"k8s.io/utils/ptr"
 )
 
@@ -144,6 +148,68 @@ func TestResourceMetricsFetcher_FetchPodMetrics(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, expectedMetricValue, actualMetricValue)
+}
+
+func TestExternalMetricsFetcher_FetchPodMetricsFromK8sExternalMetrics(t *testing.T) {
+	externalClient := &externalmetricsfake.FakeExternalMetricsClient{}
+	externalClient.AddReactor("list", "queue_depth", func(action clientgotesting.Action) (bool, runtime.Object, error) {
+		listAction := action.(clientgotesting.ListAction)
+		assert.Equal(t, "default", listAction.GetNamespace())
+		return true, &externalmetricsv1beta1.ExternalMetricValueList{
+			Items: []externalmetricsv1beta1.ExternalMetricValue{
+				{
+					MetricName: "queue_depth",
+					Value:      resource.MustParse("40"),
+				},
+				{
+					MetricName: "queue_depth",
+					Value:      resource.MustParse("60"),
+				},
+			},
+		}, nil
+	})
+
+	fetcher := NewExternalMetricsFetcherWithClients(nil, externalClient)
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.EXTERNAL,
+		TargetMetric:     "queue_depth",
+	}
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "external-source",
+			Namespace: "default",
+		},
+	}
+
+	actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+	assert.NoError(t, err)
+	assert.Equal(t, 100.0, actualMetricValue)
+}
+
+func TestExternalMetricsFetcher_FetchPodMetricsReturnsErrorForEmptyExternalMetrics(t *testing.T) {
+	externalClient := &externalmetricsfake.FakeExternalMetricsClient{}
+	externalClient.AddReactor("list", "queue_depth", func(action clientgotesting.Action) (bool, runtime.Object, error) {
+		return true, &externalmetricsv1beta1.ExternalMetricValueList{}, nil
+	})
+
+	fetcher := NewExternalMetricsFetcherWithClients(nil, externalClient)
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.EXTERNAL,
+		TargetMetric:     "queue_depth",
+	}
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "external-source",
+			Namespace: "default",
+		},
+	}
+
+	actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no external metric values")
+	assert.Equal(t, 0.0, actualMetricValue)
 }
 
 func parseURL(rawURL string) (string, string) {
