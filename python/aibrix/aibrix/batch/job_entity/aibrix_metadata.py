@@ -55,6 +55,24 @@ class ResourceAllocation(_Lenient):
     resource_details: Optional[List[ResourceDetail]] = None
 
 
+class ClientRetryPolicy(_Strict):
+    """Per-job smart-client retry behavior."""
+
+    max_retries: Optional[int] = Field(default=None, ge=0)
+    base_delay_seconds: Optional[float] = Field(default=None, ge=0)
+    max_delay_seconds: Optional[float] = Field(default=None, ge=0)
+    no_endpoint_max_retries: Optional[int] = Field(default=None, ge=0)
+
+
+class ClientConfig(_Strict):
+    """Per-job smart-client execution controls."""
+
+    max_concurrency: Optional[int] = Field(default=None, ge=1)
+    adaptive_concurrency: Optional[bool] = None
+    adaptive_max_factor: Optional[float] = Field(default=None, ge=1)
+    retry_policy: Optional[ClientRetryPolicy] = None
+
+
 class ModelTemplateRef(_Strict):
     """Reference to a ModelDeploymentTemplate registered via ConfigMap."""
 
@@ -122,6 +140,7 @@ class AibrixMetadata(_Strict):
     model_template: Optional[ModelTemplateRef] = None
     profile: Optional[BatchProfileRef] = None
     model: Optional[str] = None
+    client: Optional[ClientConfig] = None
 
     def to_metadata(self) -> "AibrixMetadata":
         return AibrixMetadata(**self.model_dump(exclude_none=True))
@@ -138,6 +157,7 @@ class AibrixMetadata(_Strict):
         runtime_target: Optional[str] = None,
         runtime_options: Optional[Dict[str, Any]] = None,
         model: Optional[str] = None,
+        client: Optional[ClientConfig] = None,
     ) -> Optional["AibrixMetadata"]:
         model_template = None
         if model_template_name:
@@ -164,6 +184,7 @@ class AibrixMetadata(_Strict):
             and profile is None
             and runtime is None
             and model is None
+            and client is None
         ):
             return None
 
@@ -173,11 +194,13 @@ class AibrixMetadata(_Strict):
             model_template=model_template,
             profile=profile,
             model=model,
+            client=client,
         )
 
     def to_extension_fields(self) -> Dict[str, Any]:
         return {
             "model": self.model,
+            "client": self.client.model_dump(exclude_none=True) if self.client else None,
             "model_template_name": (
                 self.model_template.name if self.model_template else None
             ),

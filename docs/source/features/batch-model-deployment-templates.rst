@@ -307,9 +307,28 @@ The MDS API accepts this AIBrix extension block:
          "name": "llama3-8b-a10",
          "version": "v1",
          "spec": {}
+       },
+       "client": {
+         "max_concurrency": 256,
+         "adaptive_concurrency": true,
+         "adaptive_max_factor": 16,
+         "retry_policy": {
+           "max_retries": 5,
+           "base_delay_seconds": 2,
+           "max_delay_seconds": 10,
+           "no_endpoint_max_retries": 5
+         }
        }
      }
    }
+
+``client`` controls per-job smart-client behavior. ``max_concurrency`` is an
+absolute job-global in-flight cap. If adaptive concurrency is enabled, the cap
+limits adaptive growth; if adaptive concurrency is disabled, it becomes the
+fixed concurrency. Omitted fields fall back to metadata-service environment
+defaults and then built-in defaults. This public block intentionally does not
+expose telemetry interval, QPS, request timeout, or fine-grained adaptive
+controller internals.
 
 The known upstream runtime targets are:
 

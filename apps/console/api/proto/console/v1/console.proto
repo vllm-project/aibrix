@@ -490,6 +490,17 @@ message CreateModelRequest {
 //                   "overrides": {                  # optional
 //                       "scheduling": {"max_concurrency": 32}
 //                   }
+//               },
+//               "client": {                         # optional smart-client controls
+//                   "max_concurrency": 256,          # optional job-global cap, >= 1
+//                   "adaptive_concurrency": true,    # optional
+//                   "adaptive_max_factor": 16,       # optional, >= 1
+//                   "retry_policy": {                # optional
+//                       "max_retries": 5,            # optional, >= 0
+//                       "base_delay_seconds": 2,     # optional, >= 0
+//                       "max_delay_seconds": 10,     # optional, >= 0
+//                       "no_endpoint_max_retries": 5 # optional, >= 0
+//                   }
 //               }
 //           }
 //       }
@@ -518,6 +529,17 @@ message CreateModelRequest {
 //   - profile.name is required when extra_body.aibrix.profile is present.
 //   - profile.overrides is optional and ALLOWLISTED. Allowlist today:
 //     {scheduling}. Same rejection rule as above.
+//   - client controls per-job smart-client behavior only. It does not expose
+//     telemetry/logging interval, QPS, request timeout, or fine-grained adaptive
+//     controller internals.
+//   - client.max_concurrency is an absolute job-global in-flight cap. When
+//     adaptive_concurrency is true, it caps adaptive growth. When
+//     adaptive_concurrency is false, it is the fixed concurrency. If omitted,
+//     adaptive jobs keep the source.capacity * adaptive_max_factor upper bound,
+//     and fixed jobs use source.capacity.
+//   - client.retry_policy fields override cluster env defaults field by field;
+//     omitted fields continue to fall back to env vars and then built-in
+//     defaults.
 //   - When extra_body.aibrix is omitted entirely, the metadata service uses
 //     its configured default profile and rejects the request if no template
 //     can be inferred from the request `model` field.

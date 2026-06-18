@@ -728,6 +728,43 @@ async def test_adaptive_concurrency_can_grow_above_source_capacity():
 
 
 @pytest.mark.asyncio
+async def test_adaptive_concurrency_respects_absolute_max_cap():
+    inflight = 0
+    peak = 0
+
+    class _SlowChannel(_FakeChannel):
+        async def send(self, request):
+            nonlocal inflight, peak
+            inflight += 1
+            peak = max(peak, inflight)
+            await asyncio.sleep(0.01)
+            inflight -= 1
+            return {"usage": {"completion_tokens": 10}}
+
+    source = _FakeSource([_SlowChannel("s")])
+    engine = DispatchEngine(source, max_retries=0)
+    results = []
+
+    async def feed():
+        for request in _reqs(24):
+            yield request
+
+    async def on_result(req, resp, err):
+        results.append((req.ref, resp, err))
+
+    await engine.run(
+        feed(),
+        on_result,
+        adaptive_concurrency=True,
+        adaptive_max_factor=16,
+        adaptive_max_concurrency=2,
+    )
+
+    assert len(results) == 24
+    assert peak <= 2
+
+
+@pytest.mark.asyncio
 async def test_dispatch_stats_tracks_qps_inputs_and_limit():
     release = asyncio.Event()
     both_started = asyncio.Event()

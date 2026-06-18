@@ -202,6 +202,7 @@ class DispatchEngine:
         qps: Optional[float] = None,
         adaptive_concurrency: bool = False,
         adaptive_max_factor: float = 1.0,
+        adaptive_max_concurrency: Optional[int] = None,
         concurrency_controller: Optional[ConcurrencyController] = None,
         stats: Optional[DispatchStats] = None,
     ) -> None:
@@ -217,6 +218,7 @@ class DispatchEngine:
                 max_concurrency=max_concurrency,
                 adaptive_concurrency=adaptive_concurrency,
                 adaptive_max_factor=adaptive_max_factor,
+                adaptive_max_concurrency=adaptive_max_concurrency,
                 concurrency_controller=concurrency_controller,
             )
         )
@@ -318,15 +320,21 @@ class DispatchEngine:
         max_concurrency: Optional[ConcurrencyLimit],
         adaptive_concurrency: bool,
         adaptive_max_factor: float,
+        adaptive_max_concurrency: Optional[int],
         concurrency_controller: Optional[ConcurrencyController],
     ) -> ConcurrencyController:
         if concurrency_controller is not None:
             return concurrency_controller
         limit = await self._resolve_limit(max_concurrency)
         if adaptive_concurrency:
+            max_limit = (
+                max(int(adaptive_max_concurrency), 1)
+                if adaptive_max_concurrency is not None
+                else self._adaptive_max_limit(limit, adaptive_max_factor)
+            )
             return LLMAdaptiveConcurrencyController(
-                initial_limit=limit,
-                max_limit=self._adaptive_max_limit(limit, adaptive_max_factor),
+                initial_limit=min(limit, max_limit),
+                max_limit=max_limit,
             )
         return FixedConcurrencyController(limit)
 
