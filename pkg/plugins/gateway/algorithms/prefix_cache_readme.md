@@ -8,9 +8,9 @@ falls back to least-loaded routing to prevent hot-spots.
 ## Routing Flow
 
 ```
-Incoming Request
-      │
-      ▼
+      Incoming Request
+             │
+             ▼
 ┌─────────────────────────────┐
 │  Tokenize & hash prompt     │  splits prompt into fixed-size blocks,
 │  into prefix blocks         │  computes hash per block
@@ -18,37 +18,37 @@ Incoming Request
              │
              ▼
 ┌─────────────────────────────┐        YES
-│  Load imbalance?            │─────────────────────────────────────┐
-│  max_req - min_req >        │                                     │
-│  IMBALANCE_ABS_COUNT        │                                     ▼
-└────────────┬────────────────┘              ┌────────────────────────────────┐
-             │ NO                            │  Route to pod with least       │
-             ▼                               │  running requests (fallback)   │
-┌─────────────────────────────┐              └────────────────────┬───────────┘
+│  Load imbalance?            │───────────────────────────────────┐
+│  max_req - min_req >        │                                   │
+│  IMBALANCE_ABS_COUNT        │                                   ▼
+└────────────┬────────────────┘                 ┌────────────────────────────────┐
+             │ NO                               │  Route to pod with least       │
+             ▼                                  │  running requests (fallback)   │
+┌─────────────────────────────┐                 └─────────────────┬──────────────┘
 │  Match prefix hashes        │                                   │
 │  against ready pods         │                                   │
 └────────────┬────────────────┘                                   │
-             │                                                     │
+             │                                                    │
     ┌────────┴────────┐                                           │
     │ match_pods      │ NO match_pods                             │
     │ found?          │──────────────────────────────────────────►│
     └────────┬────────┘                                           │
-             │ YES                                                 │
-             ▼                                                     │
+             │ YES                                                │
+             ▼                                                    │
 ┌─────────────────────────────┐                                   │
 │  Sort match_pods by:        │                                   │
 │  1. prefix_match% DESC      │                                   │
 │  2. running_requests ASC    │                                   │
 └────────────┬────────────────┘                                   │
-             │                                                     │
-             ▼                                                     │
+             │                                                    │
+             ▼                                                    │
 ┌─────────────────────────────┐        NO pod within threshold    │
 │  Select first pod where:    │──────────────────────────────────►│
 │  running_req <=             │                                   │
 │  mean + load_factor * σ     │                                   │
 └────────────┬────────────────┘                                   │
-             │                                                     │
-             └──────────────────────┬──────────────────────────────┘
+             │                                                    │
+             └──────────────────────┬─────────────────────────────┘
                                     │
                                     ▼
                              Target Pod Selected
