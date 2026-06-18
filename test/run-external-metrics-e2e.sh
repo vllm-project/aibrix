@@ -4,6 +4,7 @@ set -euo pipefail
 
 EXTERNAL_METRICS_E2E_CLUSTER="${EXTERNAL_METRICS_E2E_CLUSTER:-minikube}"
 EXTERNAL_METRICS_E2E_USE_EXISTING_CONTROLLER="${EXTERNAL_METRICS_E2E_USE_EXISTING_CONTROLLER:-false}"
+EXTERNAL_METRICS_E2E_KEEP_ON_FAILURE="${EXTERNAL_METRICS_E2E_KEEP_ON_FAILURE:-false}"
 MINIKUBE_PROFILE="${MINIKUBE_PROFILE:-minikube}"
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-installation-test}"
 IMAGE_TAG="${IMAGE_TAG:-external-metrics-e2e}"
@@ -15,6 +16,15 @@ cleanup() {
   if [ "${EXTERNAL_METRICS_E2E_USE_EXISTING_CONTROLLER}" != "true" ]; then
     kubectl delete -k test/e2e/testdata/external-metrics-autoscaler/aibrix --ignore-not-found=true || true
   fi
+}
+
+cleanup_on_exit() {
+  local status=$?
+  if [ "${status}" -ne 0 ] && [ "${EXTERNAL_METRICS_E2E_KEEP_ON_FAILURE}" = "true" ]; then
+    echo "preserving external metrics e2e resources for failure diagnostics" >&2
+    return
+  fi
+  cleanup
 }
 
 diagnose() {
@@ -64,7 +74,7 @@ case "${EXTERNAL_METRICS_E2E_CLUSTER}" in
     ;;
 esac
 
-trap cleanup EXIT
+trap cleanup_on_exit EXIT
 
 TARGETARCH="${TARGETARCH:-$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}')}"
 mkdir -p bin

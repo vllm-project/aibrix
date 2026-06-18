@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -26,15 +27,20 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/ptr"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	aibrixclientset "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
+	aibrixfake "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/fake"
 	patypes "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
 )
 
@@ -66,6 +72,46 @@ func TestExternalMetricsAutoscaler(t *testing.T) {
 	createExternalMetricsScaleTarget(ctx, t, k8sClient)
 	createExternalMetricPodAutoscaler(ctx, t, aibrixClient)
 	waitForDeploymentReplicas(ctx, t, k8sClient, 2)
+}
+
+func TestCreateExternalMetricsScaleTargetUpdatesExistingResource(t *testing.T) {
+	existing := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            e2eTargetName,
+			Namespace:       e2ePANamespace,
+			ResourceVersion: "1",
+		},
+	}
+	k8sClient := k8sfake.NewSimpleClientset(existing)
+	k8sClient.PrependReactor("update", "deployments", requireUpdateResourceVersion)
+
+	createExternalMetricsScaleTarget(context.Background(), t, k8sClient)
+}
+
+func TestCreateExternalMetricPodAutoscalerUpdatesExistingResource(t *testing.T) {
+	existing := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "external-metrics-e2e",
+			Namespace:       e2ePANamespace,
+			ResourceVersion: "1",
+		},
+	}
+	aibrixClient := aibrixfake.NewSimpleClientset(existing)
+	aibrixClient.PrependReactor("update", "podautoscalers", requireUpdateResourceVersion)
+
+	createExternalMetricPodAutoscaler(context.Background(), t, aibrixClient)
+}
+
+func requireUpdateResourceVersion(action k8stesting.Action) (bool, runtime.Object, error) {
+	update := action.(k8stesting.UpdateAction)
+	accessor, err := meta.Accessor(update.GetObject())
+	if err != nil {
+		return true, nil, err
+	}
+	if accessor.GetResourceVersion() == "" {
+		return true, nil, errors.New("resourceVersion required")
+	}
+	return false, nil, nil
 }
 
 func externalMetricsClients(t *testing.T) (*kubernetes.Clientset, *aibrixclientset.Clientset) {
@@ -107,7 +153,7 @@ func assertExternalMetricAPI(ctx context.Context, t *testing.T, k8sClient *kuber
 	}
 }
 
-func createExternalMetricsScaleTarget(ctx context.Context, t *testing.T, k8sClient *kubernetes.Clientset) {
+func createExternalMetricsScaleTarget(ctx context.Context, t *testing.T, k8sClient kubernetes.Interface) {
 	t.Helper()
 
 	replicas := int32(1)
@@ -154,6 +200,11 @@ func createExternalMetricsScaleTarget(ctx context.Context, t *testing.T, k8sClie
 
 	_, err := k8sClient.AppsV1().Deployments(e2ePANamespace).Create(ctx, deployment, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
+		current, getErr := k8sClient.AppsV1().Deployments(e2ePANamespace).Get(ctx, e2eTargetName, metav1.GetOptions{})
+		if getErr != nil {
+			t.Fatalf("failed to get existing scale target deployment: %v", getErr)
+		}
+		deployment.ResourceVersion = current.ResourceVersion
 		_, err = k8sClient.AppsV1().Deployments(e2ePANamespace).Update(ctx, deployment, metav1.UpdateOptions{})
 	}
 	if err != nil {
@@ -161,7 +212,7 @@ func createExternalMetricsScaleTarget(ctx context.Context, t *testing.T, k8sClie
 	}
 }
 
-func createExternalMetricPodAutoscaler(ctx context.Context, t *testing.T, aibrixClient *aibrixclientset.Clientset) {
+func createExternalMetricPodAutoscaler(ctx context.Context, t *testing.T, aibrixClient aibrixclientset.Interface) {
 	t.Helper()
 
 	pa := &autoscalingv1alpha1.PodAutoscaler{
@@ -193,6 +244,11 @@ func createExternalMetricPodAutoscaler(ctx context.Context, t *testing.T, aibrix
 
 	_, err := aibrixClient.AutoscalingV1alpha1().PodAutoscalers(e2ePANamespace).Create(ctx, pa, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
+		current, getErr := aibrixClient.AutoscalingV1alpha1().PodAutoscalers(e2ePANamespace).Get(ctx, pa.Name, metav1.GetOptions{})
+		if getErr != nil {
+			t.Fatalf("failed to get existing PodAutoscaler: %v", getErr)
+		}
+		pa.ResourceVersion = current.ResourceVersion
 		_, err = aibrixClient.AutoscalingV1alpha1().PodAutoscalers(e2ePANamespace).Update(ctx, pa, metav1.UpdateOptions{})
 	}
 	if err != nil {

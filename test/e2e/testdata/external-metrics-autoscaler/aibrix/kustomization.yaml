@@ -5,9 +5,6 @@ resources:
 - ../../../../../config/standalone/autoscaler-controller
 
 images:
-- name: controller
-  newName: aibrix/controller-manager
-  newTag: external-metrics-e2e
 - name: aibrix/controller-manager
   newName: aibrix/controller-manager
   newTag: external-metrics-e2e
