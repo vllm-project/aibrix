@@ -657,6 +657,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
             new_category="_in_progress_jobs",
         )  # type: ignore[call-arg]
 
+        became_in_progress = False
         try:
             job_driver = create_job_driver(
                 self._context,
@@ -670,6 +671,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
             if meta_data.status.state == BatchJobState.VALIDATING:
                 meta_data.status.in_progress_at = datetime.now(timezone.utc)
                 meta_data.status.state = BatchJobState.IN_PROGRESS
+                became_in_progress = True
         except Exception as e:
             logger.error("Job validation failed", job_id=job_id, exc_info=True)  # type: ignore[call-arg]
             error = (
@@ -685,6 +687,22 @@ class BatchManager(RunningJobs, SchedulableJobs):
             )
             return None
 
+        # Persist the VALIDATING->IN_PROGRESS transition. The metastore is the
+        # console's source of truth (see _resolve_batch_job); without this flush
+        # the job keeps its CREATED snapshot (surfaced as 'scheduling') until the
+        # terminal flush in mark_job_done, so in_progress/finalizing/completed all
+        # appear at once. Best-effort: a persist hiccup must not block admission —
+        # the terminal flush still carries the full status.
+        if became_in_progress and self._job_entity_manager:
+            try:
+                await self.apply_job_changes(meta_data, meta_data)
+            except Exception:
+                logger.warning(
+                    "Failed to persist IN_PROGRESS transition",
+                    job_id=job_id,
+                    exc_info=True,
+                )
+
         return job_driver
 
     async def get_job_endpoint(self, job_id: str) -> str:
@@ -696,6 +714,29 @@ class BatchManager(RunningJobs, SchedulableJobs):
             logger.info("Job is discarded", job_id=job_id)  # type: ignore[call-arg]
             return ""
         return str(job.spec.endpoint)
+
+    async def _complete_request_and_maybe_persist(
+        self, meta_data: JobMetaInfo, req_id: int, failed: bool = False
+    ) -> None:
+        """Complete one request and, if that flips the job into FINALIZING, flush
+        the transition to the metastore so the console shows 'finalizing' before
+        the terminal flush. Only the state transition is persisted (not every
+        request), keeping metastore writes to one per state change."""
+        was_finalizing = meta_data.status.state == BatchJobState.FINALIZING
+        meta_data.complete_one_request(req_id, failed)
+        if (
+            not was_finalizing
+            and meta_data.status.state == BatchJobState.FINALIZING
+            and self._job_entity_manager
+        ):
+            try:
+                await self.apply_job_changes(meta_data, meta_data)
+            except Exception:
+                logger.warning(
+                    "Failed to persist FINALIZING transition",
+                    job_id=meta_data.job_id,
+                    exc_info=True,
+                )
 
     async def mark_job_progress(self, job_id: str, req_id: int) -> Tuple[BatchJob, int]:
         """
@@ -710,7 +751,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
         if req_id < 0 or req_id > meta_data.status.request_counts.total:
             raise ValueError(f"invalide request_id: {req_id}")
 
-        meta_data.complete_one_request(req_id)
+        await self._complete_request_and_maybe_persist(meta_data, req_id)
         return meta_data, meta_data.next_request_id()
 
     async def mark_jobs_progresses(
@@ -735,7 +776,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
                     total=request_len,
                 )
                 continue
-            meta_data.complete_one_request(req_id)
+            await self._complete_request_and_maybe_persist(meta_data, req_id)
 
         return meta_data
 
@@ -778,7 +819,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
         """
         meta_data = await self._meta_from_in_progress_job(job_id)
 
-        meta_data.complete_one_request(req_id)
+        await self._complete_request_and_maybe_persist(meta_data, req_id)
         return meta_data, meta_data.next_request_id()
 
     async def mark_job_total(self, job_id: str, total_requests: int) -> BatchJob:

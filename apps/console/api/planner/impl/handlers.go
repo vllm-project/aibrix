@@ -34,7 +34,7 @@ import (
 
 func isBatchRunning(s plannerapi.JobStatus) bool {
 	switch s {
-	case plannerapi.JobStatusSubmitting, plannerapi.JobStatusValidating, plannerapi.JobStatusInProgress, plannerapi.JobStatusFinalizing:
+	case plannerapi.JobStatusSubmitting, plannerapi.JobStatusScheduling, plannerapi.JobStatusValidating, plannerapi.JobStatusInProgress, plannerapi.JobStatusFinalizing:
 		return true
 	}
 	return false
