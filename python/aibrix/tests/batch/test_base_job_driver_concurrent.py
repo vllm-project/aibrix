@@ -26,6 +26,7 @@ from aibrix.batch.client import (
 )
 from aibrix.batch.job_driver import BaseJobDriver, ExternalRuntime
 from aibrix.batch.job_entity import (
+    AibrixMetadata,
     BatchJob,
     BatchJobSpec,
     BatchJobState,
@@ -108,6 +109,16 @@ class _Source:
         await self._channel.aclose()
 
 
+class _CapturingEngine:
+    def __init__(self):
+        self.run_kwargs = None
+
+    async def run(self, requests, on_result, **kwargs):
+        self.run_kwargs = kwargs
+        async for request in requests:
+            await on_result(request, {"usage": {"prompt_tokens": 1}}, None)
+
+
 def _driver(
     job: BatchJob,
     *,
@@ -118,6 +129,78 @@ def _driver(
     driver = BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
     driver._engine = DispatchEngine(_Source(channel, capacity), max_retries=0)
     return driver, channel
+
+
+def test_retry_config_prefers_job_client_and_falls_back_to_env(monkeypatch):
+    from aibrix.batch.job_driver import base as base_module
+
+    monkeypatch.setenv("AIBRIX_BATCH_INFERENCE_MAX_RETRIES", "9")
+    monkeypatch.setenv("AIBRIX_BATCH_NO_ENDPOINT_MAX_RETRIES", "11")
+    monkeypatch.setenv("AIBRIX_BATCH_RETRY_BASE_DELAY_SECONDS", "2")
+    monkeypatch.setenv("AIBRIX_BATCH_RETRY_MAX_DELAY_SECONDS", "10")
+    job = _make_job(total=1)
+    job.spec.aibrix = AibrixMetadata(
+        client={
+            "retry_policy": {
+                "max_retries": 5,
+                "max_delay_seconds": 6,
+            }
+        }
+    )
+    driver = BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
+
+    retry = driver._retry_config_for_job(job)
+
+    assert retry.max_retries == 5
+    assert retry.no_endpoint_retries() == 11
+    assert retry.base_delay_seconds == 2
+    assert retry.max_delay_seconds == 6
+    assert base_module._inference_max_retries() == 9
+
+
+def test_retry_backoff_delays_are_configurable_from_env(monkeypatch):
+    from aibrix.batch.job_driver import base as base_module
+
+    monkeypatch.setenv("AIBRIX_BATCH_RETRY_BASE_DELAY_SECONDS", "2")
+    monkeypatch.setenv("AIBRIX_BATCH_RETRY_MAX_DELAY_SECONDS", "10")
+
+    assert base_module._retry_base_delay_seconds() == 2.0
+    assert base_module._retry_max_delay_seconds() == 10.0
+
+
+def test_dispatch_kwargs_preserve_adaptive_capacity_factor_when_cap_absent(
+    monkeypatch,
+):
+    monkeypatch.setenv("AIBRIX_BATCH_ADAPTIVE_MAX_FACTOR", "12")
+    job = _make_job(total=1)
+    driver = BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
+
+    kwargs = driver._dispatch_run_kwargs_for_job(job)
+
+    assert kwargs == {
+        "adaptive_concurrency": True,
+        "adaptive_max_factor": 12.0,
+    }
+
+
+def test_dispatch_kwargs_use_fixed_max_concurrency_when_adaptive_disabled():
+    job = _make_job(total=1)
+    job.spec.aibrix = AibrixMetadata(
+        client={
+            "max_concurrency": 64,
+            "adaptive_concurrency": False,
+            "adaptive_max_factor": 16,
+        }
+    )
+    driver = BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
+
+    kwargs = driver._dispatch_run_kwargs_for_job(job)
+
+    assert kwargs == {
+        "adaptive_concurrency": False,
+        "adaptive_max_factor": 16,
+        "max_concurrency": 64,
+    }
 
 
 def _patch_storage(monkeypatch, requests, done: Optional[set[int]] = None):
@@ -166,6 +249,34 @@ async def test_execute_worker_uses_concurrent_dispatch_for_known_total(monkeypat
     assert result.status.usage.input_tokens == 4
     assert result.status.usage.output_tokens == 8
     assert result.status.usage.total_tokens == 12
+
+
+@pytest.mark.asyncio
+async def test_execute_worker_passes_client_concurrency_as_absolute_adaptive_cap(
+    monkeypatch,
+):
+    job = _make_job(total=1)
+    job.spec.aibrix = AibrixMetadata(
+        client={
+            "max_concurrency": 64,
+            "adaptive_concurrency": True,
+            "adaptive_max_factor": 16,
+        }
+    )
+    driver = BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
+    engine = _CapturingEngine()
+    driver._engine = engine
+    requests = [{"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}}]
+    _patch_storage(monkeypatch, requests)
+
+    result = await driver.execute_worker(job.job_id)
+
+    assert result.status.state == BatchJobState.FINALIZING
+    assert engine.run_kwargs is not None
+    assert engine.run_kwargs["adaptive_concurrency"] is True
+    assert engine.run_kwargs["adaptive_max_concurrency"] == 64
+    assert engine.run_kwargs["adaptive_max_factor"] == 16
+    assert "max_concurrency" not in engine.run_kwargs
 
 
 @pytest.mark.asyncio

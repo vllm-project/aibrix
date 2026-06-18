@@ -813,6 +813,10 @@ _BASE_WORKER_ENV: List[Dict[str, Any]] = [
         "valueFrom": _ann_field_ref(JobAnnotationKey.ENDPOINT.value),
     },
     {
+        "name": "BATCH_AIBRIX",
+        "valueFrom": _ann_field_ref(JobAnnotationKey.AIBRIX.value),
+    },
+    {
         "name": "BATCH_OUTPUT_FILE_ID",
         "valueFrom": _ann_field_ref(JobAnnotationKey.OUTPUT_FILE_ID.value),
     },

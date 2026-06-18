@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -34,6 +35,40 @@ def _make_job(state: BatchJobState) -> BatchJob:
         status=BatchJobStatus(jobID="job-1", state=state, createdAt=datetime.now()),
     )
     return job
+
+
+def test_load_job_from_env_restores_aibrix_client(monkeypatch):
+    monkeypatch.setenv("JOB_NAME", "batch-job")
+    monkeypatch.setenv("JOB_NAMESPACE", "default")
+    monkeypatch.setenv("JOB_UID", "job-1")
+    monkeypatch.setenv("BATCH_INPUT_FILE_ID", "file-1")
+    monkeypatch.setenv("BATCH_ENDPOINT", "/v1/chat/completions")
+    monkeypatch.setenv("BATCH_OUTPUT_FILE_ID", "out")
+    monkeypatch.setenv("BATCH_TEMP_OUTPUT_FILE_ID", "tmp-out")
+    monkeypatch.setenv("BATCH_ERROR_FILE_ID", "err")
+    monkeypatch.setenv("BATCH_TEMP_ERROR_FILE_ID", "tmp-err")
+    monkeypatch.setenv("LLM_READY_ENDPOINT", "http://localhost:8000/health")
+    monkeypatch.setenv(
+        "BATCH_AIBRIX",
+        json.dumps(
+            {
+                "client": {
+                    "max_concurrency": 64,
+                    "adaptive_concurrency": True,
+                    "adaptive_max_factor": 8,
+                    "retry_policy": {"max_retries": 5},
+                }
+            }
+        ),
+    )
+
+    job = BatchWorker().load_job_from_env()
+
+    assert job.spec.aibrix is not None
+    assert job.spec.aibrix.client is not None
+    assert job.spec.aibrix.client.max_concurrency == 64
+    assert job.spec.aibrix.client.retry_policy is not None
+    assert job.spec.aibrix.client.retry_policy.max_retries == 5
 
 
 @pytest.mark.asyncio

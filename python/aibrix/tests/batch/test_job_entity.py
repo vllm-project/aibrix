@@ -12,6 +12,7 @@ from aibrix.batch.job_entity import (
     BatchJobErrorCode,
     BatchJobSpec,
     BatchProfileRef,
+    ClientConfig,
     CompletionWindow,
     JobAnnotationKey,
     ModelTemplateRef,
@@ -204,6 +205,32 @@ class TestBatchJobEntityCreation:
 
         assert allocation.provision_id == "reservation-1"
         assert getattr(allocation, "future_field") == {"phase": "queued"}
+
+    def test_aibrix_metadata_extension_fields_include_client(self):
+        metadata = AibrixMetadata(
+            client=ClientConfig.model_validate(
+                {
+                    "max_concurrency": 256,
+                    "adaptive_concurrency": True,
+                    "adaptive_max_factor": 16,
+                    "retry_policy": {
+                        "max_retries": 5,
+                        "base_delay_seconds": 2,
+                        "max_delay_seconds": 10,
+                        "no_endpoint_max_retries": 5,
+                    },
+                }
+            )
+        )
+
+        fields = metadata.to_extension_fields()
+        restored = AibrixMetadata.from_extension_fields(**fields)
+
+        assert fields["client"]["max_concurrency"] == 256
+        assert restored is not None
+        assert restored.client is not None
+        assert restored.client.retry_policy is not None
+        assert restored.client.retry_policy.base_delay_seconds == 2
 
     def test_resource_detail_allows_extra_fields(self):
         detail = ResourceDetail.model_validate(

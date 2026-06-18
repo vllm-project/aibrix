@@ -69,10 +69,14 @@ _ADAPTIVE_MAX_FACTOR_ENV = "AIBRIX_BATCH_ADAPTIVE_MAX_FACTOR"
 _TELEMETRY_INTERVAL_ENV = "AIBRIX_BATCH_TELEMETRY_INTERVAL_SECONDS"
 _INFERENCE_MAX_RETRIES_ENV = "AIBRIX_BATCH_INFERENCE_MAX_RETRIES"
 _NO_ENDPOINT_MAX_RETRIES_ENV = "AIBRIX_BATCH_NO_ENDPOINT_MAX_RETRIES"
+_RETRY_BASE_DELAY_ENV = "AIBRIX_BATCH_RETRY_BASE_DELAY_SECONDS"
+_RETRY_MAX_DELAY_ENV = "AIBRIX_BATCH_RETRY_MAX_DELAY_SECONDS"
 _DEFAULT_ADAPTIVE_MAX_FACTOR = 8.0
 _DEFAULT_TELEMETRY_INTERVAL_SECONDS = 5.0
 _DEFAULT_INFERENCE_MAX_RETRIES = 120
 _DEFAULT_NO_ENDPOINT_MAX_RETRIES = 120
+_DEFAULT_RETRY_BASE_DELAY_SECONDS = 0.5
+_DEFAULT_RETRY_MAX_DELAY_SECONDS = 5.0
 _DONE_RECONCILE_CHUNK_SIZE = 256
 
 
@@ -107,6 +111,20 @@ def _inference_max_retries() -> int:
             _DEFAULT_INFERENCE_MAX_RETRIES,
         ),
         0,
+    )
+
+
+def _retry_base_delay_seconds() -> float:
+    return max(
+        _float_env(_RETRY_BASE_DELAY_ENV, _DEFAULT_RETRY_BASE_DELAY_SECONDS),
+        0.0,
+    )
+
+
+def _retry_max_delay_seconds() -> float:
+    return max(
+        _float_env(_RETRY_MAX_DELAY_ENV, _DEFAULT_RETRY_MAX_DELAY_SECONDS),
+        0.0,
     )
 
 
@@ -300,6 +318,61 @@ class BaseJobDriver:
         self._usage_by_job.pop(job_id, None)
         self._usage_counted_ids.pop(job_id, None)
 
+    def _retry_config_for_job(self, job: BatchJob) -> RetryConfig:
+        policy = (
+            job.spec.aibrix.client.retry_policy
+            if job.spec.aibrix
+            and job.spec.aibrix.client
+            and job.spec.aibrix.client.retry_policy
+            else None
+        )
+        return RetryConfig(
+            max_retries=(
+                policy.max_retries
+                if policy is not None and policy.max_retries is not None
+                else _inference_max_retries()
+            ),
+            base_delay_seconds=(
+                policy.base_delay_seconds
+                if policy is not None and policy.base_delay_seconds is not None
+                else _retry_base_delay_seconds()
+            ),
+            max_delay_seconds=(
+                policy.max_delay_seconds
+                if policy is not None and policy.max_delay_seconds is not None
+                else _retry_max_delay_seconds()
+            ),
+            no_endpoint_max_retries=(
+                policy.no_endpoint_max_retries
+                if policy is not None and policy.no_endpoint_max_retries is not None
+                else _no_endpoint_max_retries()
+            ),
+        )
+
+    def _dispatch_run_kwargs_for_job(self, job: BatchJob) -> Dict[str, Any]:
+        client = job.spec.aibrix.client if job.spec.aibrix else None
+        adaptive = (
+            client.adaptive_concurrency
+            if client is not None and client.adaptive_concurrency is not None
+            else True
+        )
+        adaptive_max_factor = (
+            client.adaptive_max_factor
+            if client is not None and client.adaptive_max_factor is not None
+            else _adaptive_max_factor()
+        )
+        max_concurrency = client.max_concurrency if client is not None else None
+        kwargs: Dict[str, Any] = {
+            "adaptive_concurrency": adaptive,
+            "adaptive_max_factor": adaptive_max_factor,
+        }
+        if max_concurrency is not None:
+            if adaptive:
+                kwargs["adaptive_max_concurrency"] = max_concurrency
+            else:
+                kwargs["max_concurrency"] = max_concurrency
+        return kwargs
+
     async def _snapshot_usage_to_status(self, job_id: str) -> None:
         """Push the current accumulator into the live BatchJob's status so
         downstream persistence reflects the latest tally."""
@@ -335,12 +408,7 @@ class BaseJobDriver:
                 self._engine = (
                     DispatchEngine(
                         endpoint.source,
-                        retry=RetryConfig(
-                            max_retries=_inference_max_retries(),
-                            base_delay_seconds=0.5,
-                            max_delay_seconds=5.0,
-                            no_endpoint_max_retries=_no_endpoint_max_retries(),
-                        ),
+                        retry=self._retry_config_for_job(job),
                     )
                     if endpoint.source is not None
                     else None
@@ -688,12 +756,12 @@ class BaseJobDriver:
             else None
         )
         try:
+            run_kwargs = self._dispatch_run_kwargs_for_job(latest_job)
             await self._engine.run(
                 feed(),
                 on_result,
-                adaptive_concurrency=True,
-                adaptive_max_factor=_adaptive_max_factor(),
                 stats=stats,
+                **run_kwargs,
             )
         finally:
             if telemetry_task is not None:

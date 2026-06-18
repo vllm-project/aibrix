@@ -29,6 +29,7 @@ from aibrix.batch.job_entity import (
     BatchJobSpec,
     BatchJobTransformer,
     BatchProfileRef,
+    ClientConfig,
     CompletionWindow,
     ModelTemplateRef,
 )
@@ -492,6 +493,38 @@ class TestRendererRoundtrip:
         assert extracted.metadata == {"team": "x"}
         assert extracted.template_overrides == {"engine_args": {"max_num_seqs": 512}}
         assert extracted.profile_overrides == {"scheduling": {"max_concurrency": 16}}
+
+    def test_annotations_roundtrip_client_config(self, renderer_factory):
+        r = renderer_factory(
+            templates=[_vllm_template(count=1)],
+            profiles=[_profile(name="vllm-profile")],
+        )
+        spec = _spec(profile_name="vllm-profile")
+        assert spec.aibrix is not None
+        spec.aibrix.client = ClientConfig.model_validate(
+            {
+                "max_concurrency": 64,
+                "adaptive_concurrency": True,
+                "adaptive_max_factor": 8,
+                "retry_policy": {
+                    "max_retries": 5,
+                    "base_delay_seconds": 2,
+                    "max_delay_seconds": 10,
+                    "no_endpoint_max_retries": 7,
+                },
+            }
+        )
+
+        m = r.render(session_id="s1", spec=spec)
+        extracted = BatchJobTransformer._extract_batch_job_spec(
+            m["spec"]["template"]["metadata"]["annotations"], m["spec"]
+        )
+
+        assert extracted.aibrix is not None
+        assert extracted.aibrix.client is not None
+        assert extracted.aibrix.client.max_concurrency == 64
+        assert extracted.aibrix.client.retry_policy is not None
+        assert extracted.aibrix.client.retry_policy.max_delay_seconds == 10
 
 
 class TestMetastoreEnv:

@@ -33,6 +33,7 @@ from aibrix.batch.job_entity import (
     BatchJobStatus,
     BatchProfileRef,
     BatchUsage,
+    ClientConfig,
     CompletionWindow,
     ModelTemplateRef,
     ResourceAllocation,
@@ -312,6 +313,17 @@ class AibrixExtension(BaseModel):
                     "resource_allocation": {"provision_id": "reservation-1"},
                     "model_template": {"name": "llama3-70b-prod"},
                     "profile": {"name": "prod-24h"},
+                    "client": {
+                        "max_concurrency": 256,
+                        "adaptive_concurrency": True,
+                        "adaptive_max_factor": 16,
+                        "retry_policy": {
+                            "max_retries": 5,
+                            "base_delay_seconds": 2,
+                            "max_delay_seconds": 10,
+                            "no_endpoint_max_retries": 5,
+                        },
+                    },
                 }
             },
         )
@@ -353,6 +365,10 @@ class AibrixExtension(BaseModel):
     profile: Optional[ProfileRef] = Field(
         default=None,
         description="BatchProfile reference; falls back to registry default if omitted",
+    )
+    client: Optional[ClientConfig] = Field(
+        default=None,
+        description="Per-job smart-client concurrency and retry controls",
     )
 
     @field_validator("model_template", mode="before")
@@ -411,6 +427,7 @@ class BatchSpec(BaseModel):
                 runtime=spec.aibrix.runtime,
                 model_template=spec.aibrix.model_template,
                 profile=spec.aibrix.profile,
+                client=spec.aibrix.client,
             )
         return BatchJobSpec(
             input_file_id=spec.input_file_id,
