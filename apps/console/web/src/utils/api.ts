@@ -78,6 +78,11 @@ export interface CreateJobRequest {
   modelTemplateVersion?: string;
   // Model the template was picked under (wizard step 1). 
   modelId?: string;
+  resourceRequest?: JobResourceRequest;
+}
+
+export interface JobResourceRequest {
+  replicas?: number;
 }
 
 export interface ListJobsResponse {

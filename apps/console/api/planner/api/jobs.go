@@ -51,8 +51,17 @@ type EnqueueRequest struct {
 	// RequestCountTotal is the frontend-computed request count (e.g., JSONL line count).
 	// The planner persists it to the store for display before MDS reports back.
 	RequestCountTotal int32 `json:"request_count_total,omitempty"`
+	// ResourceRequest is the Console-supplied resource intent. The planner uses
+	// it for resource-manager requests; the final allocation is recorded on
+	// extra_body.aibrix.resource_allocation.
+	ResourceRequest *ResourceRequest `json:"resource_request,omitempty"`
 	// InjectionConfig is the error injection configuration for this job.
 	InjectionConfig *error_injection.InjectionConfig `json:"injection_config,omitempty"`
+}
+
+// ResourceRequest captures user resource intent before planner/RM resolution.
+type ResourceRequest struct {
+	Replicas int `json:"replicas,omitempty"`
 }
 
 // Job is the planner's JobID-keyed result, returned from Enqueue,
