@@ -15,7 +15,6 @@
 import logging
 import os
 import sys
-from logging import Logger
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -63,7 +62,7 @@ def logging_basic_config(settings: Optional[AIBrixSettings] = None) -> None:
     )
 
 
-def init_logger(name: str) -> Logger:
+def init_logger(name: str) -> structlog.stdlib.BoundLogger:
     logger = structlog.get_logger(name)
     logger.setLevel(active_settings.LOG_LEVEL)
     return logger
