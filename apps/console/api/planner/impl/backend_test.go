@@ -17,10 +17,12 @@ limitations under the License.
 package impl
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
+	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"k8s.io/utils/ptr"
 )
@@ -54,6 +56,53 @@ func TestDecodeEngineFromTemplateEmpty(t *testing.T) {
 	image, serveArgs, err := decodeEngineFromTemplate(nil)
 	if err != nil || image != "" || serveArgs != nil {
 		t.Errorf("got (%q, %v, %v), want empty", image, serveArgs, err)
+	}
+}
+
+func TestDefaultPlannerBackendScheduleUsesRequestedReplicas(t *testing.T) {
+	backend := &defaultPlannerBackend{provider: rmtypes.ResourceProvisionTypeKubernetes}
+	spec, err := backend.Schedule(context.Background(), &plannerapi.EnqueueRequest{
+		ResourceRequest: &plannerapi.ResourceRequest{Replicas: 4},
+		ModelTemplate: &plannerapi.ModelTemplateRef{
+			Spec: []byte(`{"accelerator": {"type": "A10", "count": 1}}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if spec.Groups == nil || len(*spec.Groups) != 1 {
+		t.Fatalf("groups = %#v, want one group", spec.Groups)
+	}
+	got := (*spec.Groups)[0].Replicas
+	if got == nil || *got != 4 {
+		t.Fatalf("replicas = %v, want 4", got)
+	}
+}
+
+func TestDefaultPlannerBackendBuildResourceAllocationIncludesReplicas(t *testing.T) {
+	backend := &defaultPlannerBackend{provider: rmtypes.ResourceProvisionTypeKubernetes}
+	allocation := backend.BuildResourceAllocation(rmtypes.ResourceProvisionSpec{
+		Groups: &[]rmtypes.ResourceGroupSpec{
+			buildProvisionGroupPlan("A10", 1, 4),
+		},
+	}, &rmtypes.ProvisionResult{ProvisionID: "prov-1"})
+
+	defaultAllocation, ok := allocation.(*plannerclient.DefaultResourceAllocation)
+	if !ok {
+		t.Fatalf("allocation type = %T, want DefaultResourceAllocation", allocation)
+	}
+	if defaultAllocation.ProvisionID != "prov-1" {
+		t.Fatalf("provision id = %q, want prov-1", defaultAllocation.ProvisionID)
+	}
+	if len(defaultAllocation.ResourceDetails) != 1 {
+		t.Fatalf("resource details len = %d, want 1", len(defaultAllocation.ResourceDetails))
+	}
+	detail := defaultAllocation.ResourceDetails[0]
+	if detail.Replica != 4 {
+		t.Fatalf("replica = %d, want 4", detail.Replica)
+	}
+	if detail.GpuType != "A10" {
+		t.Fatalf("gpu type = %q, want A10", detail.GpuType)
 	}
 }
 

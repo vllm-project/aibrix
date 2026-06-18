@@ -202,6 +202,13 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	if req.Endpoint == "" {
 		return nil, status.Error(codes.InvalidArgument, "endpoint is required")
 	}
+	replicas := int32(1)
+	if req.ResourceRequest != nil && req.ResourceRequest.Replicas != 0 {
+		replicas = req.ResourceRequest.Replicas
+		if replicas < 1 || replicas > 128 {
+			return nil, status.Error(codes.InvalidArgument, "resource_request.replicas must be between 1 and 128")
+		}
+	}
 
 	completionWindow := req.CompletionWindow
 	if completionWindow == "" {
@@ -286,6 +293,9 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 			Metadata:         metadata,
 		},
 		InjectionConfig: injectionConfig,
+		ResourceRequest: &plannerapi.ResourceRequest{
+			Replicas: int(replicas),
+		},
 	}
 
 	job, err := h.planner.Enqueue(ctx, enqueueReq)

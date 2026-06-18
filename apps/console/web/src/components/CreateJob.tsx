@@ -70,6 +70,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [temperature, setTemperature] = useState('');
   const [topP, setTopP] = useState('');
   const [n, setN] = useState('');
+  const [replicas, setReplicas] = useState('1');
   const [selectedEndpoint, setSelectedEndpoint] = useState('');
 
   const [models, setModels] = useState<Model[]>([]);
@@ -462,6 +463,9 @@ export function CreateJob({ onBack }: CreateJobProps) {
         modelTemplateName: selectedTemplate?.name,
         modelTemplateVersion: selectedTemplate?.version,
         modelId: selectedModelId || undefined,
+        resourceRequest: {
+          replicas: parseNumber(replicas) ?? 1,
+        },
       });
       onBack();
     } catch (err) {
@@ -916,6 +920,32 @@ export function CreateJob({ onBack }: CreateJobProps) {
                   onChange={setSelectedEndpoint}
                 />
 
+                <div className="border-t border-gray-100 pt-4">
+                  <h3 className="text-sm font-medium mb-1">Resources</h3>
+                  <p className="text-xs text-gray-400 mb-4">
+                    Choose how many dedicated workers this batch should provision.
+                  </p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm mb-1">Service replicas</label>
+                      <p className="text-xs text-gray-400 mb-1">1 – 128</p>
+                      <input
+                        type="text"
+                        value={replicas}
+                        onChange={(e) => handleParamChange('replicas', e.target.value, setReplicas, 1, 128, true)}
+                        placeholder="1"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.replicas ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.replicas && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.replicas}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
                 {/* Hyperparameters section */}
                 <div className="border-t border-gray-100 pt-4">
                   <h3 className="text-sm font-medium mb-1">Inference Parameters</h3>
@@ -1153,6 +1183,11 @@ export function CreateJob({ onBack }: CreateJobProps) {
                 <div>
                   <div className="mb-1">Output Dataset:</div>
                   <p className="text-gray-500">The output file is created automatically after successful requests complete.</p>
+                </div>
+
+                <div>
+                  <div className="mb-1">Service replicas:</div>
+                  <p className="text-gray-500">The number of dedicated workers to provision for this batch.</p>
                 </div>
 
                 <h4 className="mt-4 mb-2">Inference Parameters</h4>

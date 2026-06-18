@@ -115,11 +115,22 @@ func decodeEngineFromTemplate(ref *plannerapi.ModelTemplateRef) (image string, s
 	return spec.Engine.Image, spec.Engine.ServeArgs, nil
 }
 
-// buildProvisionGroupPlan composes the single-replica ResourceGroupSpec
-// shared by all backends today.
-func buildProvisionGroupPlan(gpuType string, gpusPerReplica int) rmtypes.ResourceGroupSpec {
+const defaultJobReplicas = 1
+
+func requestedReplicas(req *plannerapi.EnqueueRequest) int {
+	if req == nil || req.ResourceRequest == nil || req.ResourceRequest.Replicas <= 0 {
+		return defaultJobReplicas
+	}
+	return req.ResourceRequest.Replicas
+}
+
+// buildProvisionGroupPlan composes the ResourceGroupSpec shared by all backends today.
+func buildProvisionGroupPlan(gpuType string, gpusPerReplica int, replicas int) rmtypes.ResourceGroupSpec {
+	if replicas <= 0 {
+		replicas = defaultJobReplicas
+	}
 	group := rmtypes.ResourceGroupSpec{
-		Replicas:       ptr.To(1),
+		Replicas:       ptr.To(replicas),
 		GpusPerReplica: gpusPerReplica,
 	}
 	if gpuType != "" {
@@ -128,6 +139,25 @@ func buildProvisionGroupPlan(gpuType string, gpusPerReplica int) rmtypes.Resourc
 		}
 	}
 	return group
+}
+
+func defaultResourceDetailsFromProvisionSpec(spec rmtypes.ResourceProvisionSpec) []plannerclient.DefaultResourceDetail {
+	if spec.Groups == nil || len(*spec.Groups) == 0 {
+		return nil
+	}
+	group := (*spec.Groups)[0]
+	detail := plannerclient.DefaultResourceDetail{
+		Replica: defaultJobReplicas,
+	}
+	if group.Replicas != nil && *group.Replicas > 0 {
+		detail.Replica = *group.Replicas
+	}
+	if group.AcceleratorPreference != nil &&
+		group.AcceleratorPreference.PreferredTypes != nil &&
+		len(*group.AcceleratorPreference.PreferredTypes) > 0 {
+		detail.GpuType = (*group.AcceleratorPreference.PreferredTypes)[0]
+	}
+	return []plannerclient.DefaultResourceDetail{detail}
 }
 
 // defaultPlannerBackend serves providers that only need default scheduling and
@@ -150,7 +180,7 @@ func (b *defaultPlannerBackend) Schedule(_ context.Context, req *plannerapi.Enqu
 	if err != nil {
 		return
 	}
-	spec.Groups = &[]rmtypes.ResourceGroupSpec{buildProvisionGroupPlan(gpuType, gpusPerReplica)}
+	spec.Groups = &[]rmtypes.ResourceGroupSpec{buildProvisionGroupPlan(gpuType, gpusPerReplica, requestedReplicas(req))}
 	return
 }
 
@@ -165,7 +195,9 @@ func (b *defaultPlannerBackend) BuildRuntime(req *plannerapi.EnqueueRequest, pro
 	return plannerclient.RuntimeForProvisionResult(b.provider, prov, req.Model, image, serveArgs)
 }
 
-func (b *defaultPlannerBackend) BuildResourceAllocation(_ rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult) plannerclient.ResourceAllocation {
-	// Default allocation shape; accelerator scalars are ignored here.
-	return &plannerclient.DefaultResourceAllocation{ProvisionID: prov.ProvisionID}
+func (b *defaultPlannerBackend) BuildResourceAllocation(spec rmtypes.ResourceProvisionSpec, prov *rmtypes.ProvisionResult) plannerclient.ResourceAllocation {
+	return &plannerclient.DefaultResourceAllocation{
+		ProvisionID:     prov.ProvisionID,
+		ResourceDetails: defaultResourceDetailsFromProvisionSpec(spec),
+	}
 }
