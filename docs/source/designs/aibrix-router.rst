@@ -73,10 +73,11 @@ AIBrix ships with a set of built-in algorithms, each optimized for different wor
 * ``least-utilization``: routes to the pod with the lowest overall utilization score.
 * ``throughput``: routes to the pod that has processed the fewest total weighted tokens, favoring underloaded pods.
 * ``power-of-two``: applies the power-of-two choices algorithm — samples two pods and selects the better one.
+* ``load-balance``: capacity-aware weighted least-request routing. Scores each pod as ``running_requests / drain_rate`` (pending time), where ``drain_rate`` is the observed request completion rate. Selects the pod with the lowest pending time. Falls back to uniform capacity when drain-rate metrics are unavailable.
 
 **KV-cache aware**
 
-* ``prefix-cache``: routes to a pod that already has a KV cache matching the request's prompt prefix, with integrated load balancing and multi-turn conversation support.
+* ``prefix-cache``: routes to a pod that already has a KV cache matching the request's prompt prefix. A load-imbalance gate restricts prefix matching to the least-loaded pods when load is severely skewed; the best prefix-matched pod within a stddev load threshold is then selected. Supports standard mode (local hash table) and KV sync mode (real-time distributed index, enabled via ``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true``).
 * ``prefix-cache-preble``: routes considering both prefix cache hits and pod load. Based on `Preble: Efficient Distributed Prompt Scheduling for LLM Serving <https://arxiv.org/abs/2407.00023>`_.
 
 **Fairness**

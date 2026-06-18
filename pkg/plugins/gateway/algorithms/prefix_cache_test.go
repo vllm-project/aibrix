@@ -136,7 +136,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	c.AddRequestCount(ctx6, ctx6.RequestID, ctx6.Model)
 	t.Log(targetPod)
 
-	// pre prefix match, load imbalance -> select least request pod
+	// prefix match, load imbalanced -> binary gate fires, routes to globally least-loaded pod
 	input = "abcdefgh"
 	// pre_request_count: [p1: 0, p2: 3 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
 	// post_request_count: [p1: 0 , p2: 9 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
@@ -148,11 +148,11 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	}
 	ctx7 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r7", "")
 	p1, err := prefixCacheRouter.Route(ctx7, podList)
-	// post_request_count: [p1: 9 (abcdefgh), p2: 0 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
+	// load gate restricts to least-loaded pod only; result is not any of the previously cached pods
 	t.Log(p2, p3, p4)
 	t.Log(p1)
 	assert.NoError(t, err)
-	assert.False(t, slices.Contains([]string{p2, p3, p4}, p1))
+	assert.False(t, slices.Contains([]string{p2, p3, p4}, p1), "load gate should route to least-loaded pod, not a prefix-cached pod")
 }
 
 func getReadyPods() []*v1.Pod {
