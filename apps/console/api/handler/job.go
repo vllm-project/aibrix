@@ -64,6 +64,14 @@ const (
 	defaultListLimit = 20
 )
 
+var supportedCompletionWindows = map[string]struct{}{
+	"1h":  {},
+	"2h":  {},
+	"6h":  {},
+	"12h": {},
+	"24h": {},
+}
+
 // JobHandler implements console.v1.JobService.
 type JobHandler struct {
 	pb.UnimplementedJobServiceServer
@@ -213,6 +221,13 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	completionWindow := req.CompletionWindow
 	if completionWindow == "" {
 		completionWindow = string(openai.BatchNewParamsCompletionWindow24h)
+	}
+	if _, ok := supportedCompletionWindows[completionWindow]; !ok {
+		return nil, status.Errorf(
+			codes.InvalidArgument,
+			"unsupported completion_window %q; supported values: 1h, 2h, 6h, 12h, 24h",
+			completionWindow,
+		)
 	}
 
 	// Console-generated JobID. The async Scheduler will own a durable

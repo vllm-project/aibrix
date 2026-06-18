@@ -347,8 +347,10 @@ class TestRendererHappyPath:
             templates=[_vllm_template(count=1)],
             profiles=[_profile()],
         )
-        m = r.render(session_id="s1", spec=_spec())
-        assert m["spec"]["activeDeadlineSeconds"] == 86400  # 24h
+        spec = _spec()
+        spec.completion_window = CompletionWindow.SIX_HOURS.expires_at()
+        m = r.render(session_id="s1", spec=spec)
+        assert m["spec"]["activeDeadlineSeconds"] == 21600  # 6h
 
     def test_parallelism_override(self, renderer_factory):
         r = renderer_factory(
