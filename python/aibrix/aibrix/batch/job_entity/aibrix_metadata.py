@@ -5,6 +5,11 @@ from pydantic import Field
 
 from aibrix.batch.job_entity.base import _Lenient, _Strict
 
+#: Absolute upper bound for the per-job smart-client in-flight cap. Protects
+#: the gateway / inference endpoints from a single job requesting runaway
+#: concurrency. Conservative for now; raise if real workloads need more.
+MAX_CLIENT_CONCURRENCY = 256
+
 
 class RuntimeTarget(str, Enum):
     """Where a batch job runs — the selector the user (or Console / planner)
@@ -67,7 +72,9 @@ class ClientRetryPolicy(_Strict):
 class ClientConfig(_Strict):
     """Per-job smart-client execution controls."""
 
-    max_concurrency: Optional[int] = Field(default=None, ge=1)
+    max_concurrency: Optional[int] = Field(
+        default=None, ge=1, le=MAX_CLIENT_CONCURRENCY
+    )
     adaptive_concurrency: Optional[bool] = None
     adaptive_max_factor: Optional[float] = Field(default=None, ge=1)
     retry_policy: Optional[ClientRetryPolicy] = None
@@ -200,7 +207,9 @@ class AibrixMetadata(_Strict):
     def to_extension_fields(self) -> Dict[str, Any]:
         return {
             "model": self.model,
-            "client": self.client.model_dump(exclude_none=True) if self.client else None,
+            "client": self.client.model_dump(exclude_none=True)
+            if self.client
+            else None,
             "model_template_name": (
                 self.model_template.name if self.model_template else None
             ),

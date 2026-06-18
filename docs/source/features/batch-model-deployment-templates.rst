@@ -323,9 +323,10 @@ The MDS API accepts this AIBrix extension block:
    }
 
 ``client`` controls per-job smart-client behavior. ``max_concurrency`` is an
-absolute job-global in-flight cap. If adaptive concurrency is enabled, the cap
-limits adaptive growth; if adaptive concurrency is disabled, it becomes the
-fixed concurrency. Omitted fields fall back to metadata-service environment
+absolute job-global in-flight cap, hard limited to 256 (requests above are
+rejected). If adaptive concurrency is enabled, the cap limits adaptive growth;
+if adaptive concurrency is disabled, it becomes the fixed concurrency. Omitted
+fields fall back to metadata-service environment
 defaults and then built-in defaults. This public block intentionally does not
 expose telemetry interval, QPS, request timeout, or fine-grained adaptive
 controller internals.
