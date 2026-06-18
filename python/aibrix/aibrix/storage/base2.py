@@ -1,3 +1,4 @@
+import ast
 import asyncio
 from io import BytesIO
 from typing import AsyncIterator, Union
@@ -41,12 +42,26 @@ class BaseStorage2(BaseStorage):
             chunk_keys = staged_part_keys[
                 chunk_start : chunk_start + prefetch_concurrency
             ]
-            chunk_results = await asyncio.gather(
-                *(
+            tasks = [
+                asyncio.create_task(
                     _load_part(int(part["part_number"]), staged_part_key)
-                    for part, staged_part_key in zip(chunk_parts, chunk_keys)
                 )
-            )
+                for part, staged_part_key in zip(chunk_parts, chunk_keys)
+            ]
+            try:
+                chunk_results = await asyncio.gather(*tasks)
+            except Exception:
+                # TODO: Add a config option to allow faulty aggregation so callers
+                # can choose whether failed staged-part reads should fail the
+                # whole chunk or be tolerated best-effort.
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                # Drain cancelled sibling tasks so they do not keep running or
+                # surface unhandled exceptions after we re-raise the first error.
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+
             for part_number, part_data in chunk_results:
                 yield part_number, part_data
 
@@ -59,7 +74,7 @@ class BaseStorage2(BaseStorage):
         """Complete small-parts uploads using bounded native multipart reassembly."""
         try:
             metadata_data = await self.get_object(self._multipart_upload_key(upload_id))
-            upload_metadata = eval(metadata_data.decode("utf-8"))
+            upload_metadata = ast.literal_eval(metadata_data.decode("utf-8"))
         except Exception:
             if self.is_native_multipart_supported():
                 return await self._native_complete_multipart_upload(
@@ -135,7 +150,8 @@ class BaseStorage2(BaseStorage):
                         aggregated_parts,
                     )
 
-                assert native_upload_id is not None
+                if native_upload_id is None:
+                    raise ValueError("Native upload ID was not initialized")
                 await self._native_complete_multipart_upload(
                     key, native_upload_id, aggregated_parts
                 )
@@ -203,7 +219,7 @@ class BaseStorage2(BaseStorage):
         if flush_size is None:
             flush_size = len(buffer)
         chunk = bytes(buffer[:flush_size])
-        del buffer[:flush_size]
         etag = await self._native_upload_part(key, upload_id, part_number, chunk)
+        del buffer[:flush_size]
         parts.append({"part_number": part_number, "etag": etag})
         return part_number + 1

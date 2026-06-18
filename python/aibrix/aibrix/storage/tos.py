@@ -167,7 +167,7 @@ class TOSStorage(BaseStorage2):
         """Delete multiple objects from TOS using native batch delete."""
         if not keys:
             return
-        delete_limit = min(self.config.multi_object_delete_limit, len(keys))
+        delete_limit = max(1, min(self.config.multi_object_delete_limit, len(keys)))
 
         def _delete_chunk(chunk: list[str]) -> None:
             try:
@@ -185,7 +185,7 @@ class TOSStorage(BaseStorage2):
                     "code": error.code,
                     "message": error.message,
                 }
-                for error in result.error
+                for error in (result.error or [])
                 if error.code not in {"NoSuchKey", "404", "NotFound"}
             ]
             if errors:

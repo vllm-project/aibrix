@@ -41,6 +41,7 @@ class StorageConfig:
     # impose a storage-wide total GET/PUT concurrency cap.
     max_session_concurrency: int = 10
     # Per-request multi-object delete batch size for backends such as S3/TOS.
+    # Do not increase this value for S3/TOS, and do so if you know what you are doing.
     multi_object_delete_limit: int = 1000
     strict_multipart_min_part_size: Optional[bool] = None
 

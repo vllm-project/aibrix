@@ -195,7 +195,7 @@ class S3Storage(BaseStorage2):
         """Delete multiple objects from S3 using native batch delete."""
         if not keys:
             return
-        delete_limit = min(self.config.multi_object_delete_limit, len(keys))
+        delete_limit = max(1, min(self.config.multi_object_delete_limit, len(keys)))
 
         def _delete_chunk(chunk: list[str]) -> None:
             response = self.client.delete_objects(
