@@ -37,6 +37,9 @@ import {
   BatchOverrides,
 } from '../utils/batchValidation';
 import {
+  COMPLETION_WINDOW_OPTIONS,
+  DEFAULT_COMPLETION_WINDOW,
+  CompletionWindowOption,
   formatBytes,
   formatFileCreatedAt,
   formatModelSelectionLabel,
@@ -71,6 +74,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [topP, setTopP] = useState('');
   const [n, setN] = useState('');
   const [replicas, setReplicas] = useState('1');
+  const [completionWindow, setCompletionWindow] = useState<CompletionWindowOption>(DEFAULT_COMPLETION_WINDOW);
   const [selectedEndpoint, setSelectedEndpoint] = useState('');
 
   const [models, setModels] = useState<Model[]>([]);
@@ -458,7 +462,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
       await createJob({
         inputDataset: datasetId || '',
         endpoint,
-        completionWindow: '24h',
+        completionWindow,
         name: displayName,
         modelTemplateName: selectedTemplate?.name,
         modelTemplateVersion: selectedTemplate?.version,
@@ -911,6 +915,21 @@ export function CreateJob({ onBack }: CreateJobProps) {
                   <div className="px-4 py-2 border border-gray-200 rounded-lg text-sm text-gray-500 bg-gray-50">
                     Created automatically when the batch completes.
                   </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm mb-2">Completion window</label>
+                  <select
+                    value={completionWindow}
+                    onChange={(e) => setCompletionWindow(e.target.value as CompletionWindowOption)}
+                    className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 bg-white"
+                  >
+                    {COMPLETION_WINDOW_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <BatchEndpointControl

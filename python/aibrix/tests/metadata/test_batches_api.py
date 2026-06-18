@@ -136,6 +136,21 @@ class TestCreateBatch:
             )
             assert response.status_code == 422
 
+    def test_create_accepts_supported_completion_window(self):
+        with TestClient(create_test_app()) as client:
+            file_id = _upload_jsonl(client, _make_jsonl([_chat_request()]))
+            response = client.post(
+                "/v1/batches",
+                json={
+                    "input_file_id": file_id,
+                    "endpoint": "/v1/chat/completions",
+                    "completion_window": "12h",
+                },
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["completion_window"] == "12h"
+
     def test_create_rejects_unknown_completion_window(self):
         with TestClient(create_test_app()) as client:
             file_id = _upload_jsonl(client, _make_jsonl([_chat_request()]))

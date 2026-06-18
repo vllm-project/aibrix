@@ -364,9 +364,8 @@ class ModelDeploymentTemplateList(RootModel[List[ModelDeploymentTemplate]]):
 class CompletionWindowOption(str, Enum):
     """SLO tier for batch completion.
 
-    The schema accepts all values; only TWENTY_FOUR_HOURS is honored
-    at runtime today. 1H/4H/BEST_EFFORT will take effect once the
-    deadline-aware scheduler ships.
+    Profile-level values are accepted for forward compatibility. Runtime
+    deadlines are currently driven by the per-batch completion_window field.
     """
 
     ONE_HOUR = "1h"
@@ -400,12 +399,11 @@ class RetryPolicy(_Strict):
 class SchedulingSpec(_Strict):
     """Scheduling policy for batches using this profile.
 
-    Honored at runtime today: completion_window (only 24h),
-    max_concurrency, request_timeout_seconds.
+    Honored at runtime today: max_concurrency, request_timeout_seconds.
 
     Accepted by the schema but not yet honored (load-time warning):
-    priority, provider_preference, allow_preempt, allow_spot,
-    retry_policy.
+    completion_window, priority, provider_preference, allow_preempt,
+    allow_spot, retry_policy.
     """
 
     completion_window: CompletionWindowOption = Field(
@@ -529,10 +527,9 @@ class ProfileOverridesSpec(_Strict):
 
         {"scheduling": {"max_concurrency": 32}}
 
-    Today the renderer only honours the profile's completion_window and
-    drops the rest with a warning at load time; the override field is
-    accepted (and roundtripped) for forward compatibility with the
-    deadline-aware scheduler.
+    Today the renderer roundtrips scheduling overrides for forward
+    compatibility; the per-batch completion_window field controls the
+    runtime deadline.
     """
 
     scheduling: Optional[SchedulingSpec] = Field(

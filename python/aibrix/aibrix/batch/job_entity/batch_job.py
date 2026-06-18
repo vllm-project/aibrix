@@ -37,11 +37,22 @@ class BatchJobEndpoint(str, Enum):
 class CompletionWindow(str, Enum):
     """Valid completion windows for batch jobs."""
 
+    ONE_HOUR = "1h"
+    TWO_HOURS = "2h"
+    SIX_HOURS = "6h"
+    TWELVE_HOURS = "12h"
     TWENTY_FOUR_HOURS = "24h"
 
     def expires_at(self) -> int:
         """Returns the expiration time of the completion window."""
-        return 86400  # Return default value
+        hours = {
+            CompletionWindow.ONE_HOUR: 1,
+            CompletionWindow.TWO_HOURS: 2,
+            CompletionWindow.SIX_HOURS: 6,
+            CompletionWindow.TWELVE_HOURS: 12,
+            CompletionWindow.TWENTY_FOUR_HOURS: 24,
+        }[self]
+        return hours * 60 * 60
 
 
 class BatchJobState(str, Enum):

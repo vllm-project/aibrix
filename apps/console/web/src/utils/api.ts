@@ -66,10 +66,12 @@ export type JobEndpoint =
   | '/v1/embeddings'
   | '/v1/rerank';
 
+export type JobCompletionWindow = '1h' | '2h' | '6h' | '12h' | '24h';
+
 export interface CreateJobRequest {
   inputDataset: string;
   endpoint: JobEndpoint;
-  completionWindow?: '24h';
+  completionWindow?: JobCompletionWindow;
   name: string;
   // ModelDeploymentTemplate binding picked by the create-job wizard. The SDK
   // path may omit these and rely on metadata-service-side resolution via

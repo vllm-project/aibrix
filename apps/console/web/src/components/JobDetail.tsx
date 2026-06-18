@@ -10,7 +10,13 @@ import {
   XCircle,
 } from 'lucide-react';
 import { cancelJob, getJob, getUserInfo } from '../utils/api';
-import { canCancelBatchJob, copyBatchIdentifier, getBatchDatasetRows } from '../utils/batchProduct';
+import {
+  canCancelBatchJob,
+  copyBatchIdentifier,
+  formatDuration,
+  getBatchDatasetRows,
+  getBatchTiming,
+} from '../utils/batchProduct';
 import { copyToClipboard } from '../utils/clipboard';
 import { Job, JobEvent, JobStatus } from '../data/mockData';
 
@@ -52,6 +58,23 @@ function formatCompactTime(unixSec?: number): string {
 
 function formatNumber(n?: number): string {
   return typeof n === 'number' ? n.toLocaleString() : '—';
+}
+
+function terminalTimeLabel(status: JobStatus): string {
+  switch (status) {
+    case 'completed':
+      return 'Completed';
+    case 'failed':
+    case 'resource_failed':
+    case 'submit_failed':
+      return 'Failed';
+    case 'expired':
+      return 'Expired';
+    case 'cancelled':
+      return 'Cancelled';
+    default:
+      return 'Finished';
+  }
 }
 
 function terminalStatus(status: JobStatus): boolean {
@@ -295,6 +318,7 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
   const events = getEvents(job);
   const metadataEntries = visibleMetadata(job);
   const datasetRows = getBatchDatasetRows(job);
+  const timing = getBatchTiming(job);
 
   return (
     <div className="p-8">
@@ -536,12 +560,22 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                 <div className="text-gray-900">{formatTimestamp(job.createdAt)}</div>
               </div>
               <div>
-                <div className="text-gray-500 mb-1">Expires</div>
-                <div className="text-gray-900">{formatTimestamp(job.expiresAt)}</div>
+                <div className="text-gray-500 mb-1">Deadline</div>
+                <div className="text-gray-900">{formatTimestamp(timing.deadlineAt ?? undefined)}</div>
               </div>
               <div>
                 <div className="text-gray-500 mb-1">Completion Window</div>
                 <div className="text-gray-900">{job.completionWindow || '—'}</div>
+              </div>
+              {!isTerminal && (
+                <div>
+                  <div className="text-gray-500 mb-1">Remaining</div>
+                  <div className="text-gray-900">{formatDuration(timing.remainingSeconds)}</div>
+                </div>
+              )}
+              <div>
+                <div className="text-gray-500 mb-1">Elapsed</div>
+                <div className="text-gray-900">{formatDuration(timing.elapsedSeconds)}</div>
               </div>
               {job.batchId && (
                 <div>
@@ -549,16 +583,10 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                   <code className="text-sm bg-gray-100 px-2 py-1 rounded-md break-all">{job.batchId}</code>
                 </div>
               )}
-              {(job.completedAt ?? 0) > 0 && (
+              {timing.terminalAt && (
                 <div>
-                  <div className="text-gray-500 mb-1">Completed</div>
-                  <div className="text-gray-900">{formatTimestamp(job.completedAt)}</div>
-                </div>
-              )}
-              {(job.failedAt ?? 0) > 0 && (
-                <div>
-                  <div className="text-gray-500 mb-1">Failed</div>
-                  <div className="text-gray-900">{formatTimestamp(job.failedAt)}</div>
+                  <div className="text-gray-500 mb-1">{terminalTimeLabel(job.status)}</div>
+                  <div className="text-gray-900">{formatTimestamp(timing.terminalAt)}</div>
                 </div>
               )}
               <div>

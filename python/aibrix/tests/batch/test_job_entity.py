@@ -148,6 +148,22 @@ class TestBatchJobEntityCreation:
         assert spec.completion_window == 86400
         assert spec.metadata == {"priority": "high"}
 
+    def test_batch_job_spec_supported_completion_windows(self):
+        windows = {
+            "1h": 3600,
+            "2h": 7200,
+            "6h": 21600,
+            "12h": 43200,
+            "24h": 86400,
+        }
+        for window, seconds in windows.items():
+            spec = BatchJobSpec.from_strings(
+                input_file_id="test-input-123",
+                endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+                completion_window=window,
+            )
+            assert spec.completion_window == seconds
+
     def test_batch_job_spec_creation_with_aibrix_metadata(self):
         spec = BatchJobSpec(
             input_file_id="test-input-123",
