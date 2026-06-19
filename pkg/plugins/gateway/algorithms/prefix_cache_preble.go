@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -76,6 +77,7 @@ type histogramEntry struct {
 
 type prefixCacheAndLoadRouter struct {
 	cache          *prefixcacheindexer.LPRadixCache
+	metricCache    cache.Cache
 	histogram      *SlidingWindowHistogram
 	numPods        int
 	podAllocations map[*prefixcacheindexer.TreeNode]map[int]bool
@@ -231,6 +233,12 @@ func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNod
 }
 
 func NewPrefixCacheAndLoadRouter() (types.Router, error) {
+	metricCache, err := cache.Get()
+	if err != nil {
+		klog.Error("fail to get cache store in prefix-cache-preble router")
+		return nil, err
+	}
+
 	numPods := 0 // NOTE: it will be initialized in Route function. This number can change dynamically due to scaling or failure.
 	histogram := &SlidingWindowHistogram{
 		windowDuration:             slidingWindowPeriod,
@@ -248,6 +256,7 @@ func NewPrefixCacheAndLoadRouter() (types.Router, error) {
 
 	router := &prefixCacheAndLoadRouter{
 		cache:          prefixcacheindexer.NewLPRadixCache(numPods),
+		metricCache:    metricCache,
 		histogram:      histogram,
 		numPods:        numPods,
 		podAllocations: make(map[*prefixcacheindexer.TreeNode]map[int]bool),
@@ -478,6 +487,18 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 
 	node, matchedTokens, _ := p.cache.AddPrefix(tokens, ctx.Model, "")
 	readyPodsMap := readyPodsByName(readyPods)
+
+	// Check for load imbalance using real-time running request counts
+	leastReqPodList, isLoadImbalanced := getTargetPodListOnLoadImbalance(p.metricCache, readyPods)
+	if isLoadImbalanced {
+		klog.InfoS("requestID: %s, Load imbalance detected, restricting to least-loaded pods", "requestID", ctx.RequestID)
+		if len(leastReqPodList) == 0 {
+			return "", fmt.Errorf("no target pod found when load imbalanced")
+		}
+		readyPods = leastReqPodList
+		readyPodsMap = readyPodsByName(readyPods)
+	}
+
 	var matchedPods []*v1.Pod
 	var matchedPodsNames []string
 	if modelPods, ok := node.GetModelToPods()[ctx.Model]; ok {
