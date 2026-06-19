@@ -17,17 +17,13 @@ import time
 from typing import BinaryIO, Optional, TextIO, Union
 
 import aibrix.client.redis as redis
-from aibrix.storage.base import (
-    BaseStorage,
-    PutObjectOptions,
-    StorageConfig,
-    StorageType,
-)
+from aibrix.storage.base import PutObjectOptions, StorageConfig, StorageType
+from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata
 
 
-class RedisStorage(BaseStorage):
+class RedisStorage(BaseStorage2):
     """Redis storage implementation.
 
     This implementation uses Redis as a key-value store with the following features:

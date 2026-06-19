@@ -54,7 +54,9 @@ class TestStorageFactory:
         """Test creating storage with custom configuration."""
         config = StorageConfig(
             multipart_threshold=1024 * 1024,  # 1MB
-            max_concurrency=5,
+            max_concurrency=7,
+            max_session_concurrency=5,
+            multi_object_delete_limit=123,
             range_chunksize=512 * 1024,  # 512KB
         )
 
@@ -65,7 +67,9 @@ class TestStorageFactory:
 
             assert isinstance(storage, LocalStorage)
             assert storage.config.multipart_threshold == 1024 * 1024
-            assert storage.config.max_concurrency == 5
+            assert storage.config.max_concurrency == 7
+            assert storage.config.max_session_concurrency == 5
+            assert storage.config.multi_object_delete_limit == 123
             assert storage.config.range_chunksize == 512 * 1024
 
     def test_create_s3_storage_missing_bucket(self):
