@@ -59,4 +59,5 @@ type AIBrixExtraBody struct {
 	ResourceAllocation ResourceAllocation           `json:"resource_allocation,omitempty"`
 	ModelTemplate      *plannerapi.ModelTemplateRef `json:"model_template,omitempty"`
 	Model              string                       `json:"model,omitempty"`
+	Client             *plannerapi.ClientConfig     `json:"client,omitempty"`
 }

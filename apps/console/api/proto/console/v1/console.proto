@@ -313,6 +313,11 @@ message CreateJobRequest {
   // extra_body.aibrix.resource_allocation.
   JobResourceRequest resource_request = 14;
 
+  // Per-job smart-client controls (concurrency + retry). Projected into
+  // extra_body.aibrix.client. All fields optional; omitted ones fall back to
+  // metadata-service env defaults.
+  JobClientConfig client = 15;
+
   // Fields 10..13 (max_tokens / temperature / top_p / n) were removed:
   // the console wizard bakes per-batch sampling params into the uploaded
   // JSONL itself, so there's nothing for the BFF to forward. The OpenAI
@@ -323,6 +328,23 @@ message CreateJobRequest {
 
 message JobResourceRequest {
   int32 replicas = 1;
+}
+
+// JobClientConfig mirrors the metadata-service aibrix.client block. Optional
+// fields use proto3 presence so "unset" (fall back to env defaults) is
+// distinguishable from an explicit zero.
+message JobClientConfig {
+  optional int32 max_concurrency = 1;       // absolute in-flight cap, 1..256
+  optional bool adaptive_concurrency = 2;   // grow concurrency adaptively
+  optional double adaptive_max_factor = 3;  // adaptive growth factor, >= 1
+  JobClientRetryPolicy retry_policy = 4;
+}
+
+message JobClientRetryPolicy {
+  optional int32 max_retries = 1;             // per-request retries, >= 0
+  optional double base_delay_seconds = 2;     // backoff base, >= 0
+  optional double max_delay_seconds = 3;      // backoff ceiling, >= 0
+  optional int32 no_endpoint_max_retries = 4; // retries while no endpoint, >= 0
 }
 
 // InjectionConfig specifies per-job error injection behavior.

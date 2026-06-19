@@ -311,6 +311,7 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 		ResourceRequest: &plannerapi.ResourceRequest{
 			Replicas: int(replicas),
 		},
+		Client: toPlannerClientConfig(req.Client),
 	}
 
 	job, err := h.planner.Enqueue(ctx, enqueueReq)
@@ -318,6 +319,30 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 		return nil, mapPlannerError(err, "create batch")
 	}
 	return h.enrichJob(ctx, mergeJob(job, nil)), nil
+}
+
+// toPlannerClientConfig projects the proto JobClientConfig into the planner's
+// ClientConfig. Pointer fields carry proto3 presence straight through, so an
+// unset field stays nil and falls back to MDS env defaults. Range validation
+// (e.g. max_concurrency <= 256) is enforced by the metadata service.
+func toPlannerClientConfig(c *pb.JobClientConfig) *plannerapi.ClientConfig {
+	if c == nil {
+		return nil
+	}
+	out := &plannerapi.ClientConfig{
+		MaxConcurrency:      c.MaxConcurrency,
+		AdaptiveConcurrency: c.AdaptiveConcurrency,
+		AdaptiveMaxFactor:   c.AdaptiveMaxFactor,
+	}
+	if rp := c.RetryPolicy; rp != nil {
+		out.RetryPolicy = &plannerapi.ClientRetryPolicy{
+			MaxRetries:           rp.MaxRetries,
+			BaseDelaySeconds:     rp.BaseDelaySeconds,
+			MaxDelaySeconds:      rp.MaxDelaySeconds,
+			NoEndpointMaxRetries: rp.NoEndpointMaxRetries,
+		}
+	}
+	return out
 }
 
 // CancelJob routes through Planner.Cancel; the planner resolves JobID
