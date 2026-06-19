@@ -24,8 +24,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -454,14 +452,11 @@ func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.Ro
 
 // getRolePodSets returns all PodSets for a specific role
 func getRolePodSets(ctx context.Context, cli client.Client, namespace, roleSetName, roleName string) ([]*orchestrationv1alpha1.PodSet, error) {
-	roleSetReq, _ := labels.NewRequirement(constants.RoleSetNameLabelKey, selection.Equals, []string{roleSetName})
-	roleReq, _ := labels.NewRequirement(constants.RoleNameLabelKey, selection.Equals, []string{roleName})
-	labelSelector := labels.NewSelector().Add(*roleSetReq).Add(*roleReq)
-
 	podSetList := &orchestrationv1alpha1.PodSetList{}
-	err := cli.List(ctx, podSetList,
-		client.InNamespace(namespace),
-		client.MatchingLabelsSelector{Selector: labelSelector})
+	err := cli.List(ctx, podSetList, client.InNamespace(namespace), client.MatchingLabels{
+		constants.RoleSetNameLabelKey: roleSetName,
+		constants.RoleNameLabelKey:    roleName,
+	})
 	if err != nil {
 		return nil, err
 	}

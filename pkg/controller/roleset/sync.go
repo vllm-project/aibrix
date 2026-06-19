@@ -25,8 +25,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -174,13 +172,10 @@ func (r *RoleSetReconciler) calculateStatusForRole(ctx context.Context, rs *orch
 	}
 
 	// Use traditional pod-based status calculation for podGroupSize <= 1
-	roleSetRequirement, _ := labels.NewRequirement(constants.RoleSetNameLabelKey, selection.Equals, []string{rs.Name})
-	labelSelector := labels.NewSelector()
-	labelSelector = labelSelector.Add(*roleSetRequirement)
 	allPods := &v1.PodList{}
-	if err := r.Client.List(ctx, allPods,
-		client.InNamespace(rs.Namespace),
-		client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
+	if err := r.Client.List(ctx, allPods, client.InNamespace(rs.Namespace), client.MatchingLabels{
+		constants.RoleSetNameLabelKey: rs.Name,
+	}); err != nil {
 		return nil, err
 	}
 	var pods []*v1.Pod
@@ -207,14 +202,11 @@ func (r *RoleSetReconciler) calculateStatusForRole(ctx context.Context, rs *orch
 
 func (r *RoleSetReconciler) calculateStatusFromPodSets(ctx context.Context, rs *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (*orchestrationv1alpha1.RoleStatus, error) {
 	// Get PodSets for this role
-	roleSetReq, _ := labels.NewRequirement(constants.RoleSetNameLabelKey, selection.Equals, []string{rs.Name})
-	roleReq, _ := labels.NewRequirement(constants.RoleNameLabelKey, selection.Equals, []string{role.Name})
-	labelSelector := labels.NewSelector().Add(*roleSetReq).Add(*roleReq)
-
 	podSetList := &orchestrationv1alpha1.PodSetList{}
-	err := r.Client.List(ctx, podSetList,
-		client.InNamespace(rs.Namespace),
-		client.MatchingLabelsSelector{Selector: labelSelector})
+	err := r.Client.List(ctx, podSetList, client.InNamespace(rs.Namespace), client.MatchingLabels{
+		constants.RoleSetNameLabelKey: rs.Name,
+		constants.RoleNameLabelKey:    role.Name,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -251,15 +243,10 @@ func (r *RoleSetReconciler) calculateStatusFromPodSets(ctx context.Context, rs *
 }
 
 func (r *RoleSetReconciler) finalize(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet) (bool, error) {
-	roleSetRequirement, _ := labels.NewRequirement(constants.RoleSetNameLabelKey, selection.Equals, []string{roleSet.Name})
-	labelSelector := labels.NewSelector()
-	labelSelector = labelSelector.Add(*roleSetRequirement)
-
+	selectorOpt := client.MatchingLabels{constants.RoleSetNameLabelKey: roleSet.Name}
 	// 1. check if all podsets are delete for podGroupSize > 1
 	allPodSets := &orchestrationv1alpha1.PodSetList{}
-	if err := r.Client.List(ctx, allPodSets,
-		client.InNamespace(roleSet.Namespace),
-		client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
+	if err := r.Client.List(ctx, allPodSets, client.InNamespace(roleSet.Namespace), selectorOpt); err != nil {
 		return false, err
 	} else if len(allPodSets.Items) != 0 {
 		// delete pods
@@ -277,9 +264,7 @@ func (r *RoleSetReconciler) finalize(ctx context.Context, roleSet *orchestration
 
 	// 2. check if all pods are deleted.
 	allPods := &v1.PodList{}
-	if err := r.Client.List(ctx, allPods,
-		client.InNamespace(roleSet.Namespace),
-		client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
+	if err := r.Client.List(ctx, allPods, client.InNamespace(roleSet.Namespace), selectorOpt); err != nil {
 		return false, err
 	} else if len(allPods.Items) != 0 {
 		// delete pods
