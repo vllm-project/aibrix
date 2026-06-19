@@ -87,7 +87,21 @@ func handleCleanup(ctx context.Context, p *Planner, job *queuedJob, sourceStatus
 	}
 
 	var batch *openai.Batch
-	if batchID != "" && targetStatus != plannerapi.JobStatusExpired && targetStatus != plannerapi.JobStatusCompleted {
+	switch {
+	case batchID == "":
+		// No MDS batch association yet (e.g. expiry/cancel before submission).
+	case targetStatus == plannerapi.JobStatusExpired || targetStatus == plannerapi.JobStatusCompleted:
+		// Natural terminal states are finalized by the runtime, which aggregates
+		// any already-completed requests into the output/error files. Read the
+		// finalized batch so a planner-side conclusion still records MDS output,
+		// counts, and timestamps instead of a stale in-progress snapshot.
+		var err error
+		if batch, err = p.bc.GetBatch(ctx, batchID); err != nil {
+			klog.Warningf("[planner] GetBatch on cleanup failed job_id=%q batch_id=%q: %v", jobID, batchID, err)
+		}
+	default:
+		// Cancellation is planner-initiated: tell MDS to cancel and adopt the
+		// returned batch.
 		klog.Infof("[planner] cancel submitted job_id=%q batch_id=%q", jobID, batchID)
 		var err error
 		if batch, err = p.bc.CancelBatch(ctx, batchID); err != nil {
@@ -98,8 +112,17 @@ func handleCleanup(ctx context.Context, p *Planner, job *queuedJob, sourceStatus
 	job.mu.Lock()
 	if !job.status.IsTerminal() {
 		job.provisionID = ""
-		job.batchID = ""
-		job.batch = batch
+		if batchID != "" {
+			// The MDS batch remains the source of truth for terminal output,
+			// counts, and timestamps. Keep the association so GetJob/ListJobs
+			// can still hydrate from MDS after the in-memory job is evicted.
+			if batch != nil {
+				job.batch = batch
+			}
+		} else {
+			job.batchID = ""
+			job.batch = batch
+		}
 		updateStatusUnsafe(job, targetStatus)
 	}
 	job.mu.Unlock()
@@ -382,8 +405,15 @@ func handleRunning(p *Planner, job *queuedJob) {
 	newStatus := plannerapi.JobStatus(batch.Status)
 
 	job.mu.Lock()
-	if job.status.IsTerminal() || job.status == plannerapi.JobStatusCancelling {
+	currentStatus := job.status
+	if currentStatus.IsTerminal() || currentStatus == plannerapi.JobStatusCancelling {
 		job.mu.Unlock()
+		return
+	}
+	if newStatus.IsTerminal() {
+		job.batch = batch
+		job.mu.Unlock()
+		handleCleanup(ctx, p, job, currentStatus, newStatus)
 		return
 	}
 	updateStatusUnsafe(job, newStatus)
@@ -398,7 +428,4 @@ func handleRunning(p *Planner, job *queuedJob) {
 		}
 	}
 
-	if newStatus.IsTerminal() {
-		handleCleanup(ctx, p, job, status, newStatus)
-	}
 }

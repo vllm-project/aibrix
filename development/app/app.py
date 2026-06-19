@@ -8,8 +8,10 @@ import re
 import logging
 import struct
 import sys
+import threading
 import time
 from datetime import datetime
+from dataclasses import dataclass
 from random import randint
 import os
 import uuid
@@ -70,6 +72,27 @@ MAX_LOGGED_BODY_CHARS = int(os.getenv("MAX_LOGGED_BODY_CHARS", "4096"))
 MOCK_REQUEST_DURATION_SECONDS = float(
     os.getenv("MOCK_REQUEST_DURATION_SECONDS", "0.2")
 )
+MOCK_CAPACITY_AWARE_LATENCY = os.getenv(
+    "MOCK_CAPACITY_AWARE_LATENCY", "true"
+).lower() in ("true", "1", "yes")
+MOCK_SERVER_CAPACITY = int(os.getenv("MOCK_SERVER_CAPACITY", "1"))
+MOCK_BASE_LATENCY_SECONDS = float(os.getenv("MOCK_BASE_LATENCY_SECONDS", "0.05"))
+MOCK_TTFT_BASE_SECONDS = float(os.getenv("MOCK_TTFT_BASE_SECONDS", "0.03"))
+MOCK_PREFILL_SECONDS_PER_1K_TOKENS = float(
+    os.getenv("MOCK_PREFILL_SECONDS_PER_1K_TOKENS", "0.02")
+)
+MOCK_DECODE_SECONDS_PER_TOKEN = float(
+    os.getenv("MOCK_DECODE_SECONDS_PER_TOKEN", "0.002")
+)
+MOCK_OVERLOAD_PENALTY_SECONDS = float(
+    os.getenv("MOCK_OVERLOAD_PENALTY_SECONDS", "0.08")
+)
+MOCK_LATENCY_JITTER_SECONDS = float(os.getenv("MOCK_LATENCY_JITTER_SECONDS", "0.01"))
+
+_mock_capacity_lock = threading.Lock()
+_mock_capacity_inflight = 0
+_mock_capacity_max_inflight = 0
+_mock_capacity_requests = 0
 
 # Extract the api_key argument and prepare for authentication
 api_key = None
@@ -207,6 +230,104 @@ def _sleep_for_request_latency(started_at, simulated_latency):
         )
     elif MOCK_REQUEST_DURATION_SECONDS > overhead:
         time.sleep(MOCK_REQUEST_DURATION_SECONDS - overhead)
+
+
+@dataclass(frozen=True)
+class MockLatencySample:
+    latency_seconds: float
+    ttft_seconds: float
+    tpot_seconds: float
+    inflight: int
+    max_inflight: int
+    capacity: int
+    overload: int
+    request_index: int
+
+
+def _begin_capacity_aware_request(input_tokens, output_tokens):
+    """Return a latency sample and reserve one mock worker slot.
+
+    The model is intentionally simple but captures the core behavior needed by
+    smart-client tests: requests are cheap until per-pod capacity is exceeded,
+    then queueing pressure increases TTFT and end-to-end latency.
+    """
+    global _mock_capacity_inflight, _mock_capacity_max_inflight
+    global _mock_capacity_requests
+
+    input_token_count = max(int(input_tokens or 0), 0)
+    output_token_count = max(int(output_tokens or 0), 0)
+    capacity = max(MOCK_SERVER_CAPACITY, 1)
+    prompt_latency = (
+        input_token_count / 1000.0
+    ) * MOCK_PREFILL_SECONDS_PER_1K_TOKENS
+    decode_latency = output_token_count * MOCK_DECODE_SECONDS_PER_TOKEN
+    jitter = (
+        random.uniform(0.0, MOCK_LATENCY_JITTER_SECONDS)
+        if MOCK_LATENCY_JITTER_SECONDS > 0
+        else 0.0
+    )
+
+    with _mock_capacity_lock:
+        _mock_capacity_inflight += 1
+        _mock_capacity_requests += 1
+        _mock_capacity_max_inflight = max(
+            _mock_capacity_max_inflight, _mock_capacity_inflight
+        )
+        inflight = _mock_capacity_inflight
+        max_inflight = _mock_capacity_max_inflight
+        request_index = _mock_capacity_requests
+
+    overload = max(inflight - capacity, 0)
+    overload_latency = overload * MOCK_OVERLOAD_PENALTY_SECONDS
+    ttft = MOCK_TTFT_BASE_SECONDS + prompt_latency + overload_latency
+    latency = max(MOCK_BASE_LATENCY_SECONDS, ttft + decode_latency + jitter)
+    tpot = max((latency - ttft) / max(output_token_count, 1), 0.0)
+    return MockLatencySample(
+        latency_seconds=latency,
+        ttft_seconds=ttft,
+        tpot_seconds=tpot,
+        inflight=inflight,
+        max_inflight=max_inflight,
+        capacity=capacity,
+        overload=overload,
+        request_index=request_index,
+    )
+
+
+def _end_capacity_aware_request():
+    global _mock_capacity_inflight
+    with _mock_capacity_lock:
+        _mock_capacity_inflight = max(_mock_capacity_inflight - 1, 0)
+
+
+def _capacity_metrics(sample):
+    if sample is None:
+        return None
+    return {
+        "time_to_first_token_seconds": round(sample.ttft_seconds, 6),
+        "time_per_output_token_seconds": round(sample.tpot_seconds, 6),
+        "mock_latency_seconds": round(sample.latency_seconds, 6),
+        "mock_inflight_at_start": sample.inflight,
+        "mock_max_inflight": sample.max_inflight,
+        "mock_capacity": sample.capacity,
+        "mock_overload": sample.overload,
+        "mock_request_index": sample.request_index,
+        "mock_pod": POD_NAME,
+    }
+
+
+def _sleep_for_mock_latency(started_at, simulated_latency, input_tokens, output_tokens):
+    sample = None
+    try:
+        if MOCK_CAPACITY_AWARE_LATENCY:
+            sample = _begin_capacity_aware_request(input_tokens, output_tokens)
+            _sleep_for_request_latency(started_at, sample.latency_seconds)
+        else:
+            _sleep_for_request_latency(started_at, simulated_latency)
+        return sample
+    finally:
+        if sample is not None:
+            _end_capacity_aware_request()
 
 
 def read_configs(file_path):
@@ -586,7 +707,9 @@ def completion():
                 )
             )
 
-        _sleep_for_request_latency(start, latency)
+        latency_sample = _sleep_for_mock_latency(
+            start, latency, input_tokens, output_tokens
+        )
 
         simulated_text = simulated_message(model)
 
@@ -655,6 +778,7 @@ def completion():
                     "model": model,
                     "stream": True,
                     "content_preview": simulated_text,
+                    "metrics": _capacity_metrics(latency_sample),
                     "usage": {
                         "prompt_tokens": input_tokens,
                         "completion_tokens": output_tokens,
@@ -684,6 +808,9 @@ def completion():
                     "total_tokens": input_tokens + output_tokens,
                 },
             }
+            metrics = _capacity_metrics(latency_sample)
+            if metrics is not None:
+                response["metrics"] = metrics
 
             _apply_pd_prefill_fields(response, request.json, input_tokens)
 
@@ -758,7 +885,9 @@ def chat_completions():
                 )
             )
 
-        _sleep_for_request_latency(start, latency)
+        latency_sample = _sleep_for_mock_latency(
+            start, latency, input_tokens, output_tokens
+        )
 
         simulated_text = simulated_message(model, prefix="\n\n")
 
@@ -865,6 +994,7 @@ def chat_completions():
                     "model": model,
                     "stream": True,
                     "content_preview": simulated_text,
+                    "metrics": _capacity_metrics(latency_sample),
                     "usage": {
                         "prompt_tokens": input_tokens,
                         "completion_tokens": output_tokens,
@@ -941,6 +1071,9 @@ def chat_completions():
                     }
                 ],
             }
+            metrics = _capacity_metrics(latency_sample)
+            if metrics is not None:
+                response["metrics"] = metrics
 
             _apply_pd_prefill_fields(response, request.json, input_tokens)
 
