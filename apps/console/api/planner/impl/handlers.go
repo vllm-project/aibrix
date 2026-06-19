@@ -283,6 +283,7 @@ func submitToMDS(p *Planner, job *queuedJob) {
 		ResourceAllocation: p.backend.BuildResourceAllocation(*spec, alloc),
 		ModelTemplate:      req.ModelTemplate,
 		Model:              req.Model,
+		Client:             req.Client,
 	}
 
 	if batchParamsJson, err := json.Marshal(req.BatchParams); err == nil {

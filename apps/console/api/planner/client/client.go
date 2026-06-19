@@ -222,5 +222,8 @@ func buildExtraBodyOptions(eb AIBrixExtraBody) []option.RequestOption {
 	if eb.Model != "" {
 		opts = append(opts, option.WithJSONSet("aibrix.model", eb.Model))
 	}
+	if eb.Client != nil {
+		opts = append(opts, option.WithJSONSet("aibrix.client", eb.Client))
+	}
 	return opts
 }

@@ -81,10 +81,28 @@ export interface CreateJobRequest {
   // Model the template was picked under (wizard step 1). 
   modelId?: string;
   resourceRequest?: JobResourceRequest;
+  // Per-job smart-client controls, forwarded to extra_body.aibrix.client.
+  client?: JobClientConfig;
 }
 
 export interface JobResourceRequest {
   replicas?: number;
+}
+
+// JobClientConfig mirrors the metadata-service aibrix.client block. All fields
+// optional; omitted ones fall back to metadata-service env defaults.
+export interface JobClientConfig {
+  maxConcurrency?: number;       // absolute in-flight cap, 1..256
+  adaptiveConcurrency?: boolean; // grow concurrency adaptively
+  adaptiveMaxFactor?: number;    // adaptive growth factor, >= 1
+  retryPolicy?: JobClientRetryPolicy;
+}
+
+export interface JobClientRetryPolicy {
+  maxRetries?: number;             // per-request retries, >= 0
+  baseDelaySeconds?: number;       // backoff base, >= 0
+  maxDelaySeconds?: number;        // backoff ceiling, >= 0
+  noEndpointMaxRetries?: number;   // retries while no endpoint, >= 0
 }
 
 export interface ListJobsResponse {

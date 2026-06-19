@@ -55,6 +55,9 @@ type EnqueueRequest struct {
 	// it for resource-manager requests; the final allocation is recorded on
 	// extra_body.aibrix.resource_allocation.
 	ResourceRequest *ResourceRequest `json:"resource_request,omitempty"`
+	// Client is the Console-supplied smart-client control block, projected
+	// verbatim into extra_body.aibrix.client.
+	Client *ClientConfig `json:"client,omitempty"`
 	// InjectionConfig is the error injection configuration for this job.
 	InjectionConfig *error_injection.InjectionConfig `json:"injection_config,omitempty"`
 }
@@ -62,6 +65,26 @@ type EnqueueRequest struct {
 // ResourceRequest captures user resource intent before planner/RM resolution.
 type ResourceRequest struct {
 	Replicas int `json:"replicas,omitempty"`
+}
+
+// ClientConfig is the Console-supplied per-job smart-client control block. The
+// planner projects it verbatim into extra_body.aibrix.client; MDS reads it back
+// as BatchSpec.aibrix.client. Pointer fields carry proto3 presence so an unset
+// field falls back to the metadata-service env defaults rather than overriding
+// with a zero value.
+type ClientConfig struct {
+	MaxConcurrency      *int32             `json:"max_concurrency,omitempty"`
+	AdaptiveConcurrency *bool              `json:"adaptive_concurrency,omitempty"`
+	AdaptiveMaxFactor   *float64           `json:"adaptive_max_factor,omitempty"`
+	RetryPolicy         *ClientRetryPolicy `json:"retry_policy,omitempty"`
+}
+
+// ClientRetryPolicy mirrors the metadata-service aibrix.client.retry_policy block.
+type ClientRetryPolicy struct {
+	MaxRetries           *int32   `json:"max_retries,omitempty"`
+	BaseDelaySeconds     *float64 `json:"base_delay_seconds,omitempty"`
+	MaxDelaySeconds      *float64 `json:"max_delay_seconds,omitempty"`
+	NoEndpointMaxRetries *int32   `json:"no_endpoint_max_retries,omitempty"`
 }
 
 // Job is the planner's JobID-keyed result, returned from Enqueue,
