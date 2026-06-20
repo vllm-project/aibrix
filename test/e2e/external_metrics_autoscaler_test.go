@@ -244,7 +244,9 @@ func createExternalMetricPodAutoscaler(ctx context.Context, t *testing.T, aibrix
 
 	_, err := aibrixClient.AutoscalingV1alpha1().PodAutoscalers(e2ePANamespace).Create(ctx, pa, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
-		current, getErr := aibrixClient.AutoscalingV1alpha1().PodAutoscalers(e2ePANamespace).Get(ctx, pa.Name, metav1.GetOptions{})
+		current, getErr := aibrixClient.AutoscalingV1alpha1().
+			PodAutoscalers(e2ePANamespace).
+			Get(ctx, pa.Name, metav1.GetOptions{})
 		if getErr != nil {
 			t.Fatalf("failed to get existing PodAutoscaler: %v", getErr)
 		}
