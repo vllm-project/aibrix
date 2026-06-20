@@ -220,8 +220,27 @@ func TestPrefixCacheAndLoadRouterRouting(t *testing.T) {
 		{
 			name: "no_pods_available_error",
 			setupRouter: func() *prefixCacheAndLoadRouter {
-				router, _ := NewPrefixCacheAndLoadRouter()
-				return router.(*prefixCacheAndLoadRouter)
+				router := &prefixCacheAndLoadRouter{
+					cache:       prefixcacheindexer.NewLPRadixCache(4),
+					metricCache: cache.NewForTest(),
+					histogram: &SlidingWindowHistogram{
+						windowDuration:             slidingWindowPeriod,
+						histogram:                  make(map[*prefixcacheindexer.TreeNode]int),
+						nodeToCount:                make(map[*prefixcacheindexer.TreeNode]int),
+						hitTokens:                  make(map[*prefixcacheindexer.TreeNode]int),
+						promptTokens:               make(map[*prefixcacheindexer.TreeNode]int),
+						decodingSize:               make(map[*prefixcacheindexer.TreeNode]int),
+						timestamps:                 []histogramEntry{},
+						numPods:                    0,
+						podAllocations:             make(map[*prefixcacheindexer.TreeNode]map[int]bool),
+						currentDecodeLengthsPerPod: make(map[string]int),
+						avgTimePerTokenPerPod:      make(map[string][]float64),
+						perNodeTotalDecodeLengths:  make(map[*prefixcacheindexer.TreeNode]int),
+					},
+					numPods:        0,
+					podAllocations: make(map[*prefixcacheindexer.TreeNode]map[int]bool),
+				}
+				return router
 			},
 			setupContext: func() *types.RoutingContext {
 				return createTestRoutingContext("test-model", "Any request", "req-no-pods")
