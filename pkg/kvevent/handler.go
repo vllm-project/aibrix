@@ -132,10 +132,32 @@ func (h *eventHandler) handleBlockRemoved(ctx context.Context, event *kvcache.Bl
 }
 
 func (h *eventHandler) handleAllBlocksCleared(ctx context.Context, event *kvcache.AllBlocksClearedEvent) error {
-	// Not implemented: AllBlocksCleared events are pod-local optimizations that
-	// clear the entire cache for a specific model. These events don't need cross-pod
-	// synchronization as they represent local memory management decisions. Each pod
-	// manages its own cache lifecycle independently based on its memory constraints.
-	klog.V(4).Infof("Received AllBlocksCleared event for pod %s (not implemented)", h.podKey)
+	// The engine wiped its entire prefix cache (/reset_prefix_cache, OOM-driven
+	// reset, or /sleep level>=1). The pod stays Running and /health still returns
+	// 200, so the pod-unsubscribe path that normally calls RemovePrefix never
+	// fires. If we don't purge the pod's entries here, the prefix router keeps
+	// preferring this pod for prefixes whose blocks are now gone, turning every
+	// such match into a cold miss. See issue #2287.
+	//
+	// Note: events alone are not a complete fix (vLLM only flushes queued KV
+	// events from inside a scheduler step, so an idle/sleeping engine may never
+	// emit this, and ZMQ delivery is lossy). A metric-driven reconcile backstop
+	// is tracked separately in #2287.
+	syncIndexer, err := h.manager.syncProvider.GetSyncIndexer(ctx)
+	if err != nil {
+		if IsTemporaryError(err) {
+			klog.V(4).Infof("Temporary error getting sync indexer: %v", err)
+			return nil // Don't fail on temporary errors
+		}
+		return fmt.Errorf("failed to get sync indexer: %w", err)
+	}
+
+	if err := syncIndexer.RemovePrefix(ctx, h.modelName, h.loraID, h.podKey); err != nil {
+		klog.Errorf("Failed to process AllBlocksCleared event for pod %s: %v", h.podKey, err)
+		return err
+	}
+
+	klog.V(4).Infof("Processed AllBlocksCleared event: purged prefix entries for pod %s", h.podKey)
+
 	return nil
 }
