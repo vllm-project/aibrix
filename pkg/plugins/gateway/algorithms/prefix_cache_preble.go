@@ -486,18 +486,13 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 	}
 
 	node, matchedTokens, _ := p.cache.AddPrefix(tokens, ctx.Model, "")
-	readyPodsMap := readyPodsByName(readyPods)
-
 	// Check for load imbalance using real-time running request counts
 	leastReqPodList, isLoadImbalanced := getTargetPodListOnLoadImbalance(p.metricCache, readyPods)
 	if isLoadImbalanced {
-		klog.InfoS("requestID: %s, Load imbalance detected, restricting to least-loaded pods", "requestID", ctx.RequestID)
-		if len(leastReqPodList) == 0 {
-			return "", fmt.Errorf("no target pod found when load imbalanced")
-		}
+		klog.InfoS("Load imbalance detected, restricting to least-loaded pods", "requestID", ctx.RequestID)
 		readyPods = leastReqPodList
-		readyPodsMap = readyPodsByName(readyPods)
 	}
+	readyPodsMap := readyPodsByName(readyPods)
 
 	var matchedPods []*v1.Pod
 	var matchedPodsNames []string
@@ -511,10 +506,10 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 		matchRatio = float64(len(matchedTokens)) / float64(len(tokens))
 	}
 	prefixRoutingThreshold := 0.5
-	klog.InfoS("requestID: %s, Matched tokens/Total tokens: %d/%d, Matching ratio: %.0f%%, len(matchedPodsNames): %d, matchedPodsNames: %v", "requestID", ctx.RequestID, "matchedTokens", len(matchedTokens), "totalTokens", len(tokens), "matchingRatio", matchRatio*100, "matchedPodsNamesCount", len(matchedPods), "matchedPodsNames", matchedPodsNames)
+	klog.InfoS("Prefix cache match statistics", "requestID", ctx.RequestID, "matchedTokens", len(matchedTokens), "totalTokens", len(tokens), "matchingRatio", matchRatio*100, "matchedPodsNamesCount", len(matchedPods), "matchedPodsNames", matchedPodsNames)
 
 	if matchRatio > prefixRoutingThreshold {
-		klog.InfoS("requestID: %s, Do prefix-aware routing! (matching ratio: %.2f > %.2f)", "requestID", ctx.RequestID, "matchRatio", matchRatio, "threshold", prefixRoutingThreshold)
+		klog.InfoS("Do prefix-aware routing", "requestID", ctx.RequestID, "matchRatio", matchRatio, "threshold", prefixRoutingThreshold)
 		var prefixMatches []prefixMatch
 
 		currentNode := node
@@ -547,37 +542,37 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 					targetPod = pod
 				}
 			}
-			klog.InfoS("requestID: %s, Selected pod %s from longest matching node with match length %d", "requestID", ctx.RequestID, "podName", targetPod.Name, "matchLength", longestMatch.matchLength)
+			klog.InfoS("Selected pod from longest matching node", "requestID", ctx.RequestID, "podName", targetPod.Name, "matchLength", longestMatch.matchLength)
 		} else {
 			tokenInString, err := utils.DetokenizeText(tokens)
 			matchedTokensInString, _ := utils.DetokenizeText(matchedTokens)
 			if err != nil {
-				klog.ErrorS(err, "requestID: %s, DetokenizeTexts failed: %s, tokens: '%v', matchedTokens: '%v', model: %s", "requestID", ctx.RequestID, "tokens", tokenInString, "matchedTokens", matchedTokensInString, "model", ctx.Model)
+				klog.ErrorS(err, "DetokenizeTexts failed", "requestID", ctx.RequestID, "tokens", tokenInString, "matchedTokens", matchedTokensInString, "model", ctx.Model)
 			} else {
-				klog.InfoS("requestID: %s, No matched pods found for tokens: '%v', matchedTokens: '%v', model: %s", "requestID", ctx.RequestID, "tokens", tokenInString, "matchedTokens", matchedTokensInString, "model", ctx.Model)
+				klog.InfoS("No matched pods found", "requestID", ctx.RequestID, "tokens", tokenInString, "matchedTokens", matchedTokensInString, "model", ctx.Model)
 			}
 		}
 	}
 
 	if targetPod == nil {
-		klog.InfoS("requestID: %s, Do cost model based routing! (matching ratio: %.2f%%, len(matchedPods): %d)", "requestID", ctx.RequestID, "matchRatio", matchRatio*100, "matchedPodsCount", len(matchedPods))
+		klog.InfoS("Do cost model based routing", "requestID", ctx.RequestID, "matchRatio", matchRatio*100, "matchedPodsCount", len(matchedPods))
 		podCosts := p.histogram.getCurrentAllocationCostPerPod()
 		minCost := math.MaxFloat64
 		for _, pod := range readyPods {
 			cost := podCosts[pod.Name]
-			klog.InfoS("PodName: %s, Cost: %f", "podName", pod.Name, "cost", cost)
+			klog.InfoS("Pod cost", "podName", pod.Name, "cost", cost)
 			if cost < minCost {
 				minCost = cost
 				targetPod = pod
 			}
 		}
 		if targetPod != nil {
-			klog.InfoS("Lowest cost pod: %s", "podName", targetPod.Name)
+			klog.InfoS("Lowest cost pod selected", "podName", targetPod.Name)
 		}
 	}
 
 	if targetPod == nil {
-		klog.ErrorS(fmt.Errorf("no suitable pod found"), "requestID: %s, After all logic, no suitable pod found. readyPods: %v", "requestID", ctx.RequestID, "readyPods", readyPods)
+		klog.ErrorS(fmt.Errorf("no suitable pod found"), "After all routing logic, no suitable pod found", "requestID", ctx.RequestID, "readyPods", readyPods)
 		return "", fmt.Errorf("no suitable pod found")
 	}
 
