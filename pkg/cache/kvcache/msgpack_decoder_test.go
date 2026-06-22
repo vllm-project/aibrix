@@ -372,3 +372,129 @@ func TestBlockRemovedEventWithBytesHashes(t *testing.T) {
 	assert.Equal(t, "removed-model", removed.ModelName)
 	assert.Equal(t, "removed-pod", removed.PodName)
 }
+
+// --- Issue #2285: decoder must read lora_id/medium/lora_name/group_idx ---
+
+// rawBlockStoredBatch marshals a single BlockStored event using the exact
+// positional layout vLLM emits (msgspec array_like, tag first), so these tests
+// assert against the real wire contract rather than Go-encoder symmetry.
+//
+// vLLM BlockStored positions (vllm/distributed/kv_events.py):
+//
+//	[0]tag [1]block_hashes [2]parent_block_hash [3]token_ids [4]block_size
+//	[5]lora_id [6]medium [7]lora_name [8]extra_keys [9]group_idx ...
+func rawBlockStoredBatch(t *testing.T, eventFields []interface{}) []byte {
+	t.Helper()
+	event := append([]interface{}{string(EventTypeBlockStored)}, eventFields...)
+	batch := []interface{}{
+		float64(1_700_000_000), // batch timestamp (seconds)
+		[]interface{}{event},
+	}
+	data, err := msgpack.Marshal(batch)
+	require.NoError(t, err)
+	return data
+}
+
+// blockStoredCore returns the four always-present fields after the tag:
+// block_hashes, parent_block_hash, token_ids, block_size.
+func blockStoredCore() []interface{} {
+	return []interface{}{
+		[]interface{}{int64(101), int64(102)}, // block_hashes
+		nil,                                   // parent_block_hash
+		[]interface{}{int64(1), int64(2), int64(3), int64(4)}, // token_ids
+		int64(4), // block_size
+	}
+}
+
+func decodeSingleBlockStored(t *testing.T, data []byte) *BlockStoredEvent {
+	t.Helper()
+	batch, err := DecodeEventBatch(data, "m", "p")
+	require.NoError(t, err)
+	require.Len(t, batch.Events, 1)
+	ev, ok := batch.Events[0].(*BlockStoredEvent)
+	require.True(t, ok, "expected *BlockStoredEvent")
+	return ev
+}
+
+func TestBlockStored_DecodesAllOptionalFields(t *testing.T) {
+	fields := append(blockStoredCore(),
+		int64(7),    // lora_id
+		"GPU",       // medium
+		"adapter-a", // lora_name
+		nil,         // extra_keys
+		int64(3),    // group_idx
+	)
+	ev := decodeSingleBlockStored(t, rawBlockStoredBatch(t, fields))
+
+	require.NotNil(t, ev.LoraID)
+	assert.Equal(t, int64(7), *ev.LoraID)
+	require.NotNil(t, ev.Medium)
+	assert.Equal(t, "GPU", *ev.Medium)
+	require.NotNil(t, ev.LoraName)
+	assert.Equal(t, "adapter-a", *ev.LoraName)
+	require.NotNil(t, ev.GroupIdx)
+	assert.Equal(t, int64(3), *ev.GroupIdx)
+}
+
+// group_idx sits at position 9, after extra_keys at 8. Verify it is read by
+// position even when extra_keys carries a non-nil payload.
+func TestBlockStored_GroupIdxReadPastExtraKeys(t *testing.T) {
+	fields := append(blockStoredCore(),
+		nil,                               // lora_id
+		"cpu",                             // medium
+		nil,                               // lora_name
+		[]interface{}{[]interface{}{"k"}}, // extra_keys (non-nil)
+		int64(5),                          // group_idx
+	)
+	ev := decodeSingleBlockStored(t, rawBlockStoredBatch(t, fields))
+
+	require.NotNil(t, ev.Medium)
+	assert.Equal(t, "cpu", *ev.Medium)
+	require.NotNil(t, ev.GroupIdx)
+	assert.Equal(t, int64(5), *ev.GroupIdx)
+}
+
+// None values (nil medium / lora_name) must decode to nil pointers, not "".
+func TestBlockStored_NilOptionalValues(t *testing.T) {
+	fields := append(blockStoredCore(),
+		nil, // lora_id
+		nil, // medium
+		nil, // lora_name
+		nil, // extra_keys
+		nil, // group_idx
+	)
+	ev := decodeSingleBlockStored(t, rawBlockStoredBatch(t, fields))
+
+	assert.Nil(t, ev.LoraID)
+	assert.Nil(t, ev.Medium)
+	assert.Nil(t, ev.LoraName)
+	assert.Nil(t, ev.GroupIdx)
+}
+
+// Older vLLM builds send only the first five positions. Decoding must still
+// succeed and leave the new fields nil (no panic, no error).
+func TestBlockStored_BackwardCompatShortArray(t *testing.T) {
+	ev := decodeSingleBlockStored(t, rawBlockStoredBatch(t, blockStoredCore()))
+
+	assert.Equal(t, []int64{101, 102}, ev.BlockHashes)
+	assert.Nil(t, ev.LoraID)
+	assert.Nil(t, ev.Medium)
+	assert.Nil(t, ev.LoraName)
+	assert.Nil(t, ev.GroupIdx)
+}
+
+// Intermediate length: through lora_name (position 7), no extra_keys/group_idx.
+func TestBlockStored_PartialOptionalFields(t *testing.T) {
+	fields := append(blockStoredCore(),
+		int64(2),    // lora_id
+		"GPU",       // medium
+		"adapter-b", // lora_name
+	)
+	ev := decodeSingleBlockStored(t, rawBlockStoredBatch(t, fields))
+
+	require.NotNil(t, ev.LoraID)
+	assert.Equal(t, int64(2), *ev.LoraID)
+	require.NotNil(t, ev.LoraName)
+	assert.Equal(t, "adapter-b", *ev.LoraName)
+	assert.Nil(t, ev.GroupIdx)
+}
