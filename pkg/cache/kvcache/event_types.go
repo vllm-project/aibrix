@@ -107,7 +107,10 @@ type BlockStoredEvent struct {
 	LoraID   *int64  // position 5; deprecated upstream in favor of LoraName
 	Medium   *string // position 6; storage tier, e.g. "GPU"/"cpu" (nil = unspecified)
 	LoraName *string // position 7; canonical adapter id
-	GroupIdx *int64  // position 9; KV-cache group for hybrid-attention models
+	// position 8 (extra_keys) is intentionally not decoded here; it is consumed
+	// in the follow-up PR for block-hash reconstruction. GroupIdx is read at its
+	// fixed position 9 regardless.
+	GroupIdx *int64 // position 9; KV-cache group for hybrid-attention models
 
 	// NOTE: These are NOT part of msgpack
 	Timestamp time.Time `msgpack:"-"`
