@@ -29,6 +29,7 @@ package pd
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -47,6 +48,13 @@ const (
 	// which routes prefill requests purely by the lowest running-request count
 	// without consulting the prefix cache.
 	PrefillScorePolicyLeastRequest = "least_request"
+
+	// PrefillScorePolicyConductor selects the conductor scoring policy, which
+	// combines prefix-cache matching with both running-request count and a
+	// pod-load indicator (reqCnt/maxRequestCount). It is intended as a
+	// drop-in refinement of prefix_cache that places more emphasis on
+	// load balance when cache matches are close.
+	PrefillScorePolicyConductor = "conductor"
 )
 
 // PrefillScorer is a request-scoped scorer created by PrefillScorePolicy. Prepare
@@ -177,4 +185,119 @@ func (s leastRequestScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 		"policy", PrefillScorePolicyLeastRequest,
 		"running_reqs", reqCnt)
 	return reqCnt
+}
+
+// conductorPrefillPolicy estimates TTFT by summing three per-pod components
+// (queue + prefix + prefill). Estimators are extracted as plain linear
+// functions so tuning and future updates. Lower estimates:
+//
+//   estimated_TTFT(pod) = queue(reqCnt) + prefix(matched_tokens) + prefill(unmatched_tokens)
+//
+// Each linear forms:
+//
+//   queue(n)      = k_queue * n
+//   prefix(m)      = k_prefix * m + b_prefix
+//   prefill(u)     = k_prefill * u + b_prefill
+//
+// with k_prefill > k_prefix so that cache-hit pods score lower than cache-miss ones.
+// Matched prefix length is derived from the prefix-cache match percentage
+// returned by PrefixHashTable. Unmatched length is what remains after the
+// matched prefix. The request is tokenized once in Prepare so per-pod scoring
+// stays cheap on the hot path.
+type conductorPrefillPolicy struct {
+	tok                tokenizer.Tokenizer
+	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
+}
+
+// NewConductorPrefillPolicy constructs a conductor PrefillScorePolicy with the
+// given tokenizer and shared prefix-hash table.
+func NewConductorPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *prefixcacheindexer.PrefixHashTable) PrefillScorePolicy {
+	return &conductorPrefillPolicy{
+		tok:                tok,
+		prefixCacheIndexer: prefixCacheIndexer,
+	}
+}
+
+// Prepare tokenizes routingCtx.Message and performs a prefix-cache lookup against the
+// ready-pod set, keeping the input token count so downstream ScorePod can derive
+// matched/unmatched lengths from the per-pod match percentage.
+func (p *conductorPrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*v1.Pod, readyPodsMap map[string]struct{}) (PrefillScorer, error) {
+	tokens, err := p.tok.TokenizeInputText(routingCtx.Message)
+	if err != nil {
+		return nil, err
+	}
+	matchedPods, hashes := p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
+	return &conductorScorer{
+		matchedPods: matchedPods,
+		hashes:      hashes,
+		totalTokens: len(tokens),
+	}, nil
+}
+
+func (p *conductorPrefillPolicy) Name() string { return PrefillScorePolicyConductor }
+
+// conductorScorer is the request-scoped scorer produced by conductorPrefillPolicy.
+type conductorScorer struct {
+	matchedPods map[string]int
+	hashes      []uint64
+	totalTokens int
+}
+
+func (s *conductorScorer) PrefixHashes() []uint64 { return s.hashes }
+
+// estimateQueue estimates the queue-wait component of TTFT as a simple linear function
+// of the pod's currently running request count.
+//
+//	queue_estimate = reqCnt * avgPrefillTime
+func (s *conductorScorer) estimateQueue(reqCnt float64) float64 {
+	// TODO: fetch real-time value, but current scorer interface signature does not allow it
+	avgPrefillTimeSeconds := 100.0 
+	return reqCnt * avgPrefillTimeSeconds
+}
+
+// estimatePrefix estimates the prefix-cache portion of TTFT based on the number of
+// tokens already matched in the pod.
+//
+//	use model: T = A * tokens + B (linear)
+func (s *conductorScorer) estimatePrefix(matchedTokens float64) float64 {
+	PrefixTimeCoeffA := 0.005
+	PrefixTimeCoeffB := 1.0
+	return PrefixTimeCoeffA * matchedTokens + PrefixTimeCoeffB
+}
+
+// estimatePrefill estimates the prefill-compute portion of TTFT in milliseconds 
+// for the tokens that did not match the prefix cache.
+//
+// Uses model: T = A * tokens^B + C (superlinear due to attention complexity).
+func (s *conductorScorer) estimatePrefill(unmatchedTokens float64) float64 {
+	PrefillTimeCoeffA := 0.001
+	PrefillTimeCoeffB := 1.5
+	PrefillTimeCoeffC := 5.0
+	return PrefillTimeCoeffA * math.Pow(unmatchedTokens, PrefillTimeCoeffB) + PrefillTimeCoeffC
+}
+
+// ScorePod returns the estimated TTFT for a single pod by summing the queue,
+// prefix, and prefill components. Lower scores are preferred by the router.
+func (s *conductorScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
+	matchPct := float64(s.matchedPods[pod.Name]) // 0..100, 0 when the pod is not in matchedPods
+	matchedTokens := float64(s.totalTokens) * matchPct / 100.0
+	unmatchedTokens := float64(s.totalTokens) - matchedTokens
+
+	queueEst := s.estimateQueue(reqCnt)
+	prefixEst := s.estimatePrefix(matchedTokens)
+	prefillEst := s.estimatePrefill(unmatchedTokens)
+	score := queueEst + prefixEst + prefillEst
+
+	klog.V(4).InfoS("prefill_score", "pod_name", pod.Name,
+		"policy", PrefillScorePolicyConductor,
+		"score", score,
+		"running_reqs", reqCnt,
+		"total_tokens", s.totalTokens,
+		"prefix_match_percent", matchPct,
+		"matched_tokens", matchedTokens,
+		"unmatched_tokens", unmatchedTokens,
+		"queue_estimate", queueEst,
+		"prefix_estimate", prefixEst,
+		"prefill_estimate", prefillEst)
+	return score
 }

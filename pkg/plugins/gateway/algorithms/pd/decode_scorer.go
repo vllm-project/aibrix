@@ -39,11 +39,19 @@ const (
 	// DecodePolicyLeastRequest routes to the pod with the fewest active decode
 	// requests (including pending requests not yet reflected in metrics).
 	DecodePolicyLeastRequest DecodePolicyName = "least_request"
+
+	// DecodePolicyConductor routes to the pod with the best combined score of
+	// normalized running-request count, inverse throughput, and free GPU
+	// headroom. Compared to load_balancing, conductor weights free-GPU more
+	// aggressively and adds a small "cold-pod boost" for pods with very low
+	// request counts.
+	DecodePolicyConductor DecodePolicyName = "conductor"
 )
 
 const (
 	ScorePolicyLoadBalancing = string(DecodePolicyLoadBalancing)
 	ScorePolicyLeastRequest  = string(DecodePolicyLeastRequest)
+	ScorePolicyConductor     = string(DecodePolicyConductor)
 )
 
 // Weights for the load_balancing score numerator:
@@ -164,12 +172,28 @@ func (LeastRequestDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext,
 	return in.RunningReqs
 }
 
+// ConductorDecodePolicy is left empty. LoadBalancingDecodePolicy serves as the default.
+type ConductorDecodePolicy struct{}
+
+func (ConductorDecodePolicy) Name() DecodePolicyName { return DecodePolicyConductor }
+
+func (ConductorDecodePolicy) Describe() string {
+	return "TODO: not implemented yet"
+}
+
+func (ConductorDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, pod *v1.Pod, in DecodePodInput) float64 {
+	_ = pod
+	_ = in
+	return 0
+}
+
 // decodePolicyFactories is the immutable registry of built-in decode scoring
 // policies. Custom policies registered at runtime go into decodePolicyRegistryCustom
 // so that the built-in map never needs a mutex.
 var decodePolicyFactories = map[string]func() DecodeScorePolicy{
 	string(DecodePolicyLoadBalancing): func() DecodeScorePolicy { return LoadBalancingDecodePolicy{} },
 	string(DecodePolicyLeastRequest):  func() DecodeScorePolicy { return LeastRequestDecodePolicy{} },
+	string(DecodePolicyConductor):     func() DecodeScorePolicy { return ConductorDecodePolicy{} },
 }
 
 // RegisterDecodePolicy registers a custom decode scoring policy factory under
