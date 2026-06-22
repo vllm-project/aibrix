@@ -308,12 +308,43 @@ message CreateJobRequest {
   // When provided, enables targeted error injection for this specific job.
   InjectionConfig injection_config = 9;
 
+  // Resource intent supplied by the console UI. The planner projects this into
+  // resource-manager requests and later records the final allocation in
+  // extra_body.aibrix.resource_allocation.
+  JobResourceRequest resource_request = 14;
+
+  // Per-job smart-client controls (concurrency + retry). Projected into
+  // extra_body.aibrix.client. All fields optional; omitted ones fall back to
+  // metadata-service env defaults.
+  JobClientConfig client = 15;
+
   // Fields 10..13 (max_tokens / temperature / top_p / n) were removed:
   // the console wizard bakes per-batch sampling params into the uploaded
   // JSONL itself, so there's nothing for the BFF to forward. The OpenAI
   // SDK path can still POST them to MDS directly.
   reserved 10, 11, 12, 13;
   reserved "max_tokens", "temperature", "top_p", "n";
+}
+
+message JobResourceRequest {
+  int32 replicas = 1;
+}
+
+// JobClientConfig mirrors the metadata-service aibrix.client block. Optional
+// fields use proto3 presence so "unset" (fall back to env defaults) is
+// distinguishable from an explicit zero.
+message JobClientConfig {
+  optional int32 max_concurrency = 1;       // absolute in-flight cap, 1..256
+  optional bool adaptive_concurrency = 2;   // grow concurrency adaptively
+  optional double adaptive_max_factor = 3;  // adaptive growth factor, >= 1
+  JobClientRetryPolicy retry_policy = 4;
+}
+
+message JobClientRetryPolicy {
+  optional int32 max_retries = 1;             // per-request retries, >= 0
+  optional double base_delay_seconds = 2;     // backoff base, >= 0
+  optional double max_delay_seconds = 3;      // backoff ceiling, >= 0
+  optional int32 no_endpoint_max_retries = 4; // retries while no endpoint, >= 0
 }
 
 // InjectionConfig specifies per-job error injection behavior.
@@ -481,6 +512,17 @@ message CreateModelRequest {
 //                   "overrides": {                  # optional
 //                       "scheduling": {"max_concurrency": 32}
 //                   }
+//               },
+//               "client": {                         # optional smart-client controls
+//                   "max_concurrency": 256,          # optional job-global cap, 1..256
+//                   "adaptive_concurrency": true,    # optional
+//                   "adaptive_max_factor": 16,       # optional, >= 1
+//                   "retry_policy": {                # optional
+//                       "max_retries": 5,            # optional, >= 0
+//                       "base_delay_seconds": 2,     # optional, >= 0
+//                       "max_delay_seconds": 10,     # optional, >= 0
+//                       "no_endpoint_max_retries": 5 # optional, >= 0
+//                   }
 //               }
 //           }
 //       }
@@ -509,6 +551,18 @@ message CreateModelRequest {
 //   - profile.name is required when extra_body.aibrix.profile is present.
 //   - profile.overrides is optional and ALLOWLISTED. Allowlist today:
 //     {scheduling}. Same rejection rule as above.
+//   - client controls per-job smart-client behavior only. It does not expose
+//     telemetry/logging interval, QPS, request timeout, or fine-grained adaptive
+//     controller internals.
+//   - client.max_concurrency is an absolute job-global in-flight cap, hard
+//     limited to 256 (requests above are rejected). When adaptive_concurrency
+//     is true, it caps adaptive growth. When adaptive_concurrency is false, it
+//     is the fixed concurrency. If omitted, adaptive jobs keep the
+//     source.capacity * adaptive_max_factor upper bound, and fixed jobs use
+//     source.capacity.
+//   - client.retry_policy fields override cluster env defaults field by field;
+//     omitted fields continue to fall back to env vars and then built-in
+//     defaults.
 //   - When extra_body.aibrix is omitted entirely, the metadata service uses
 //     its configured default profile and rejects the request if no template
 //     can be inferred from the request `model` field.

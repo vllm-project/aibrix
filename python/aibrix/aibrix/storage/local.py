@@ -20,19 +20,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
-from aibrix.storage.base import (
-    BaseStorage,
-    PutObjectOptions,
-    StorageConfig,
-    StorageType,
-)
+from aibrix.storage.base import PutObjectOptions, StorageConfig, StorageType
+from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata, _sanitize_key, generate_filename
 
 LOCAL_STORAGE_PATH_VAR = "STORAGE_LOCAL_PATH"
 
 
-class LocalStorage(BaseStorage):
+class LocalStorage(BaseStorage2):
     """Local filesystem storage implementation."""
 
     def __init__(

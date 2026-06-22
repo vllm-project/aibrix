@@ -64,6 +64,14 @@ const (
 	defaultListLimit = 20
 )
 
+var supportedCompletionWindows = map[string]struct{}{
+	"1h":  {},
+	"2h":  {},
+	"6h":  {},
+	"12h": {},
+	"24h": {},
+}
+
 // JobHandler implements console.v1.JobService.
 type JobHandler struct {
 	pb.UnimplementedJobServiceServer
@@ -202,10 +210,24 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	if req.Endpoint == "" {
 		return nil, status.Error(codes.InvalidArgument, "endpoint is required")
 	}
+	replicas := int32(1)
+	if req.ResourceRequest != nil && req.ResourceRequest.Replicas != 0 {
+		replicas = req.ResourceRequest.Replicas
+		if replicas < 1 || replicas > 128 {
+			return nil, status.Error(codes.InvalidArgument, "resource_request.replicas must be between 1 and 128")
+		}
+	}
 
 	completionWindow := req.CompletionWindow
 	if completionWindow == "" {
 		completionWindow = string(openai.BatchNewParamsCompletionWindow24h)
+	}
+	if _, ok := supportedCompletionWindows[completionWindow]; !ok {
+		return nil, status.Errorf(
+			codes.InvalidArgument,
+			"unsupported completion_window %q; supported values: 1h, 2h, 6h, 12h, 24h",
+			completionWindow,
+		)
 	}
 
 	// Console-generated JobID. The async Scheduler will own a durable
@@ -286,6 +308,10 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 			Metadata:         metadata,
 		},
 		InjectionConfig: injectionConfig,
+		ResourceRequest: &plannerapi.ResourceRequest{
+			Replicas: int(replicas),
+		},
+		Client: toPlannerClientConfig(req.Client),
 	}
 
 	job, err := h.planner.Enqueue(ctx, enqueueReq)
@@ -293,6 +319,30 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 		return nil, mapPlannerError(err, "create batch")
 	}
 	return h.enrichJob(ctx, mergeJob(job, nil)), nil
+}
+
+// toPlannerClientConfig projects the proto JobClientConfig into the planner's
+// ClientConfig. Pointer fields carry proto3 presence straight through, so an
+// unset field stays nil and falls back to MDS env defaults. Range validation
+// (e.g. max_concurrency <= 256) is enforced by the metadata service.
+func toPlannerClientConfig(c *pb.JobClientConfig) *plannerapi.ClientConfig {
+	if c == nil {
+		return nil
+	}
+	out := &plannerapi.ClientConfig{
+		MaxConcurrency:      c.MaxConcurrency,
+		AdaptiveConcurrency: c.AdaptiveConcurrency,
+		AdaptiveMaxFactor:   c.AdaptiveMaxFactor,
+	}
+	if rp := c.RetryPolicy; rp != nil {
+		out.RetryPolicy = &plannerapi.ClientRetryPolicy{
+			MaxRetries:           rp.MaxRetries,
+			BaseDelaySeconds:     rp.BaseDelaySeconds,
+			MaxDelaySeconds:      rp.MaxDelaySeconds,
+			NoEndpointMaxRetries: rp.NoEndpointMaxRetries,
+		}
+	}
+	return out
 }
 
 // CancelJob routes through Planner.Cancel; the planner resolves JobID

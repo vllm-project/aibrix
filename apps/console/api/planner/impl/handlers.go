@@ -34,7 +34,7 @@ import (
 
 func isBatchRunning(s plannerapi.JobStatus) bool {
 	switch s {
-	case plannerapi.JobStatusSubmitting, plannerapi.JobStatusValidating, plannerapi.JobStatusInProgress, plannerapi.JobStatusFinalizing:
+	case plannerapi.JobStatusSubmitting, plannerapi.JobStatusScheduling, plannerapi.JobStatusValidating, plannerapi.JobStatusInProgress, plannerapi.JobStatusFinalizing:
 		return true
 	}
 	return false
@@ -283,6 +283,7 @@ func submitToMDS(p *Planner, job *queuedJob) {
 		ResourceAllocation: p.backend.BuildResourceAllocation(*spec, alloc),
 		ModelTemplate:      req.ModelTemplate,
 		Model:              req.Model,
+		Client:             req.Client,
 	}
 
 	if batchParamsJson, err := json.Marshal(req.BatchParams); err == nil {

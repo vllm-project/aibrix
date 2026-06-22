@@ -21,7 +21,12 @@ import {
   listModelDeploymentTemplates,
   JobEndpoint,
 } from '../utils/api';
-import type { FileInfo, ModelDeploymentTemplate } from '../utils/api';
+import type {
+  FileInfo,
+  ModelDeploymentTemplate,
+  JobClientConfig,
+  JobClientRetryPolicy,
+} from '../utils/api';
 import {
   validateBatchFile,
   validateBatchLines,
@@ -37,6 +42,9 @@ import {
   BatchOverrides,
 } from '../utils/batchValidation';
 import {
+  COMPLETION_WINDOW_OPTIONS,
+  DEFAULT_COMPLETION_WINDOW,
+  CompletionWindowOption,
   formatBytes,
   formatFileCreatedAt,
   formatModelSelectionLabel,
@@ -70,7 +78,19 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [temperature, setTemperature] = useState('');
   const [topP, setTopP] = useState('');
   const [n, setN] = useState('');
+  const [replicas, setReplicas] = useState('1');
+  const [completionWindow, setCompletionWindow] = useState<CompletionWindowOption>(DEFAULT_COMPLETION_WINDOW);
   const [selectedEndpoint, setSelectedEndpoint] = useState('');
+
+  // Client settings (extra_body.aibrix.client). All optional; blank = use
+  // metadata-service defaults. adaptiveConcurrency defaults on, matching MDS.
+  const [maxConcurrency, setMaxConcurrency] = useState('');
+  const [adaptiveConcurrency, setAdaptiveConcurrency] = useState(true);
+  const [adaptiveMaxFactor, setAdaptiveMaxFactor] = useState('');
+  const [retryMaxRetries, setRetryMaxRetries] = useState('');
+  const [retryBaseDelay, setRetryBaseDelay] = useState('');
+  const [retryMaxDelay, setRetryMaxDelay] = useState('');
+  const [retryNoEndpointMaxRetries, setRetryNoEndpointMaxRetries] = useState('');
 
   const [models, setModels] = useState<Model[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
@@ -349,6 +369,28 @@ export function CreateJob({ onBack }: CreateJobProps) {
 
   const hasParamErrors = Object.values(paramErrors).some(e => e !== '');
 
+  // Assemble extra_body.aibrix.client from the Settings inputs, omitting blanks
+  // so unset fields fall back to metadata-service defaults. Returns undefined
+  // when nothing is configured.
+  const buildClientConfig = (): JobClientConfig | undefined => {
+    const retry: JobClientRetryPolicy = {
+      maxRetries: parseNumber(retryMaxRetries),
+      baseDelaySeconds: parseNumber(retryBaseDelay),
+      maxDelaySeconds: parseNumber(retryMaxDelay),
+      noEndpointMaxRetries: parseNumber(retryNoEndpointMaxRetries),
+    };
+    const hasRetry = Object.values(retry).some(v => v !== undefined);
+    const client: JobClientConfig = {
+      maxConcurrency: parseNumber(maxConcurrency),
+      // Only forward the toggle when the user diverged from the default (on).
+      adaptiveConcurrency: adaptiveConcurrency ? undefined : false,
+      adaptiveMaxFactor: parseNumber(adaptiveMaxFactor),
+      retryPolicy: hasRetry ? retry : undefined,
+    };
+    const hasAny = Object.values(client).some(v => v !== undefined);
+    return hasAny ? client : undefined;
+  };
+
   useEffect(() => {
     if (selectedFile) {
       setUploadedFileId(null);
@@ -457,11 +499,15 @@ export function CreateJob({ onBack }: CreateJobProps) {
       await createJob({
         inputDataset: datasetId || '',
         endpoint,
-        completionWindow: '24h',
+        completionWindow,
         name: displayName,
         modelTemplateName: selectedTemplate?.name,
         modelTemplateVersion: selectedTemplate?.version,
         modelId: selectedModelId || undefined,
+        resourceRequest: {
+          replicas: parseNumber(replicas) ?? 1,
+        },
+        client: buildClientConfig(),
       });
       onBack();
     } catch (err) {
@@ -909,12 +955,181 @@ export function CreateJob({ onBack }: CreateJobProps) {
                   </div>
                 </div>
 
+                <div>
+                  <label className="block text-sm mb-2">Completion window</label>
+                  <select
+                    value={completionWindow}
+                    onChange={(e) => setCompletionWindow(e.target.value as CompletionWindowOption)}
+                    className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 bg-white"
+                  >
+                    {COMPLETION_WINDOW_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 <BatchEndpointControl
                   template={selectedTemplate}
                   selectedEndpoint={selectedEndpoint}
                   detectedEndpoint={validation?.endpoints[0] ?? ''}
                   onChange={setSelectedEndpoint}
                 />
+
+                <div className="border-t border-gray-100 pt-4">
+                  <h3 className="text-sm font-medium mb-1">Resources</h3>
+                  <p className="text-xs text-gray-400 mb-4">
+                    Choose how many dedicated workers this batch should provision.
+                  </p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm mb-1">Service replicas</label>
+                      <p className="text-xs text-gray-400 mb-1">1 – 128</p>
+                      <input
+                        type="text"
+                        value={replicas}
+                        onChange={(e) => handleParamChange('replicas', e.target.value, setReplicas, 1, 128, true)}
+                        placeholder="1"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.replicas ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.replicas && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.replicas}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Client settings section (extra_body.aibrix.client) */}
+                <div className="border-t border-gray-100 pt-4">
+                  <h3 className="text-sm font-medium mb-1">Client Settings</h3>
+                  <p className="text-xs text-gray-400 mb-4">
+                    Optional smart-client concurrency and retry controls. Leave blank to use service defaults.
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm mb-1">Max Concurrency</label>
+                      <p className="text-xs text-gray-400 mb-1">1 – 256</p>
+                      <input
+                        type="text"
+                        value={maxConcurrency}
+                        onChange={(e) => handleParamChange('maxConcurrency', e.target.value, setMaxConcurrency, 1, 256, true)}
+                        placeholder="e.g. 256"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.maxConcurrency ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.maxConcurrency && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.maxConcurrency}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm mb-1">Adaptive Max Factor</label>
+                      <p className="text-xs text-gray-400 mb-1">&ge; 1</p>
+                      <input
+                        type="text"
+                        value={adaptiveMaxFactor}
+                        onChange={(e) => handleParamChange('adaptiveMaxFactor', e.target.value, setAdaptiveMaxFactor, 1, 1024, false)}
+                        placeholder="e.g. 8"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.adaptiveMaxFactor ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.adaptiveMaxFactor && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.adaptiveMaxFactor}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <label className="flex items-center gap-2 mt-3 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={adaptiveConcurrency}
+                      onChange={(e) => setAdaptiveConcurrency(e.target.checked)}
+                      className="rounded border-gray-300 text-teal-600 focus:ring-teal-500/30"
+                    />
+                    Adaptive concurrency
+                    <span className="text-xs text-gray-400">
+                      (grow toward Max Concurrency; off = fixed concurrency)
+                    </span>
+                  </label>
+
+                  <h4 className="text-sm font-medium mt-4 mb-2">Retry Policy</h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm mb-1">Max Retries</label>
+                      <p className="text-xs text-gray-400 mb-1">&ge; 0</p>
+                      <input
+                        type="text"
+                        value={retryMaxRetries}
+                        onChange={(e) => handleParamChange('retryMaxRetries', e.target.value, setRetryMaxRetries, 0, 100000, true)}
+                        placeholder="e.g. 5"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.retryMaxRetries ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.retryMaxRetries && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.retryMaxRetries}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm mb-1">No-Endpoint Max Retries</label>
+                      <p className="text-xs text-gray-400 mb-1">&ge; 0</p>
+                      <input
+                        type="text"
+                        value={retryNoEndpointMaxRetries}
+                        onChange={(e) => handleParamChange('retryNoEndpointMaxRetries', e.target.value, setRetryNoEndpointMaxRetries, 0, 100000, true)}
+                        placeholder="e.g. 5"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.retryNoEndpointMaxRetries ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.retryNoEndpointMaxRetries && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.retryNoEndpointMaxRetries}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm mb-1">Base Delay (s)</label>
+                      <p className="text-xs text-gray-400 mb-1">&ge; 0</p>
+                      <input
+                        type="text"
+                        value={retryBaseDelay}
+                        onChange={(e) => handleParamChange('retryBaseDelay', e.target.value, setRetryBaseDelay, 0, 3600, false)}
+                        placeholder="e.g. 0.5"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.retryBaseDelay ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.retryBaseDelay && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.retryBaseDelay}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm mb-1">Max Delay (s)</label>
+                      <p className="text-xs text-gray-400 mb-1">&ge; 0</p>
+                      <input
+                        type="text"
+                        value={retryMaxDelay}
+                        onChange={(e) => handleParamChange('retryMaxDelay', e.target.value, setRetryMaxDelay, 0, 3600, false)}
+                        placeholder="e.g. 5"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.retryMaxDelay ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.retryMaxDelay && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.retryMaxDelay}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
 
                 {/* Hyperparameters section */}
                 <div className="border-t border-gray-100 pt-4">
@@ -1153,6 +1368,11 @@ export function CreateJob({ onBack }: CreateJobProps) {
                 <div>
                   <div className="mb-1">Output Dataset:</div>
                   <p className="text-gray-500">The output file is created automatically after successful requests complete.</p>
+                </div>
+
+                <div>
+                  <div className="mb-1">Service replicas:</div>
+                  <p className="text-gray-500">The number of dedicated workers to provision for this batch.</p>
                 </div>
 
                 <h4 className="mt-4 mb-2">Inference Parameters</h4>

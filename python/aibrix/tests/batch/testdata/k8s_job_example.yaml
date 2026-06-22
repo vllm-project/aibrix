@@ -59,6 +59,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.annotations['batch.job.aibrix.ai/endpoint']
+            - name: BATCH_AIBRIX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['batch.job.aibrix.ai/aibrix']
             - name: BATCH_OUTPUT_FILE_ID
               valueFrom:
                 fieldRef:

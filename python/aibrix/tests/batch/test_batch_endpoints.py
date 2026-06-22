@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from aibrix.batch.job_entity import (
     AibrixMetadata,
@@ -314,6 +315,65 @@ def test_batch_spec_accepts_aibrix_metadata():
     }
 
 
+def test_batch_spec_accepts_client_config():
+    spec = BatchSpec.model_validate(
+        {
+            "input_file_id": "file-123",
+            "endpoint": "/v1/chat/completions",
+            "completion_window": "24h",
+            "aibrix": {
+                "client": {
+                    "max_concurrency": 256,
+                    "adaptive_concurrency": True,
+                    "adaptive_max_factor": 16,
+                    "retry_policy": {
+                        "max_retries": 5,
+                        "base_delay_seconds": 2,
+                        "max_delay_seconds": 10,
+                        "no_endpoint_max_retries": 7,
+                    },
+                }
+            },
+        }
+    )
+
+    batch_job_spec = BatchSpec.newBatchJobSpec(spec)
+
+    assert batch_job_spec.aibrix is not None
+    assert batch_job_spec.aibrix.client is not None
+    assert batch_job_spec.aibrix.client.max_concurrency == 256
+    assert batch_job_spec.aibrix.client.adaptive_concurrency is True
+    assert batch_job_spec.aibrix.client.adaptive_max_factor == 16
+    retry = batch_job_spec.aibrix.client.retry_policy
+    assert retry is not None
+    assert retry.max_retries == 5
+    assert retry.base_delay_seconds == 2
+    assert retry.max_delay_seconds == 10
+    assert retry.no_endpoint_max_retries == 7
+
+
+@pytest.mark.parametrize(
+    "client",
+    [
+        {"max_concurrency": 0},
+        {"max_concurrency": 257},
+        {"adaptive_max_factor": 0.5},
+        {"retry_policy": {"max_retries": -1}},
+        {"retry_policy": {"base_delay_seconds": -0.1}},
+    ],
+)
+def test_batch_spec_rejects_invalid_client_config(client):
+    with pytest.raises(ValidationError):
+        BatchSpec.model_validate(
+            {
+                "input_file_id": "file-123",
+                "endpoint": "/v1/chat/completions",
+                "completion_window": "24h",
+                "aibrix": {"client": client},
+            }
+        )
+
+
 def test_batch_spec_accepts_full_template_and_profile_objects():
     spec = BatchSpec.model_validate(
         {
@@ -400,6 +460,12 @@ def test_batch_response_includes_input_aibrix_metadata():
                     name="default-profile",
                     overrides={"scheduling": {"max_concurrency": 4}},
                 ),
+                client={
+                    "max_concurrency": 64,
+                    "adaptive_concurrency": True,
+                    "adaptive_max_factor": 8,
+                    "retry_policy": {"max_retries": 5},
+                },
             ),
         ),
         status=BatchJobStatus(
@@ -428,6 +494,10 @@ def test_batch_response_includes_input_aibrix_metadata():
     assert response.aibrix.profile is not None
     assert response.aibrix.profile.name == "default-profile"
     assert response.aibrix.profile.overrides == {"scheduling": {"max_concurrency": 4}}
+    assert response.aibrix.client is not None
+    assert response.aibrix.client.max_concurrency == 64
+    assert response.aibrix.client.retry_policy is not None
+    assert response.aibrix.client.retry_policy.max_retries == 5
     assert response.model == "echo-template"
 
 

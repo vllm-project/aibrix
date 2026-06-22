@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
+import json
 import os
 import signal
 import subprocess
@@ -28,6 +29,7 @@ from aibrix.batch.client import GatewayEndpointSource
 from aibrix.batch.job_driver.base import BaseJobDriver
 from aibrix.batch.job_driver.runtime import ExternalRuntime
 from aibrix.batch.job_entity import (
+    AibrixMetadata,
     BatchJob,
     BatchJobError,
     BatchJobSpec,
@@ -210,6 +212,7 @@ class BatchWorker:
         # Get batch job metadata from environment variables
         input_file_id = os.getenv("BATCH_INPUT_FILE_ID")
         endpoint = os.getenv("BATCH_ENDPOINT")
+        aibrix = self._load_aibrix_from_env()
         opts: dict[str, str] = {}
         if (
             failed_after_after_n_requests := os.getenv(
@@ -261,6 +264,7 @@ class BatchWorker:
                 endpoint=endpoint,
                 metadata=None,
                 opts=opts,
+                aibrix=aibrix.model_dump(exclude_none=True) if aibrix else None,
             )
 
             # Determine state based on file IDs (as in current transformer logic)
@@ -301,6 +305,19 @@ class BatchWorker:
             raise RuntimeError(
                 f"Error creating BatchJob from environment variables: {e}"
             ) from e
+
+    def _load_aibrix_from_env(self) -> Optional[AibrixMetadata]:
+        raw = os.getenv("BATCH_AIBRIX")
+        if not raw:
+            return None
+        try:
+            return AibrixMetadata.model_validate(json.loads(raw))
+        except Exception as exc:
+            logger.warning(
+                "Failed to parse BATCH_AIBRIX; ignoring AIBrix metadata",
+                error=str(exc),
+            )  # type: ignore[call-arg]
+            return None
 
     async def wait_for_in_progress(
         self, job: BatchJob, max_wait: int = 300

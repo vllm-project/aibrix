@@ -2,8 +2,8 @@ apiVersion: v2
 name: aibrix
 description: Cloud-native LLM inference infrastructure with distributed inference, KV caching, intelligent routing, and autoscaling capabilities
 type: application
-version: 0.7.0-rc.2
-appVersion: "0.7.0-rc.2"
+version: 0.7.0
+appVersion: "0.7.0"
 home: https://github.com/vllm-project/aibrix
 sources:
   - https://github.com/vllm-project/aibrix

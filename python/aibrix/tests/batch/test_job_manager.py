@@ -520,6 +520,115 @@ async def test_expire_job_persists_via_entity_manager():
 
 
 @pytest.mark.asyncio
+async def test_admit_persists_in_progress_transition(monkeypatch):
+    """The VALIDATING->IN_PROGRESS transition in admit() must be flushed to the
+    metastore so the console reflects execution start. Without it the job
+    appears stuck at 'scheduling' (the CREATED mapping) until finalize flushes
+    every timestamp at once ("flash in")."""
+    recorded: List[BatchJob] = []
+
+    class _RecordingEM(MockJobEntityManager):
+        async def update_job_status(self, job: BatchJob) -> None:
+            recorded.append(job.model_copy(deep=True))
+
+    asyncio.get_running_loop().name = "test_admit_persists_in_progress"
+    job_manager = _job_manager()
+    await job_manager.set_job_entity_manager(_RecordingEM(delay=0.0))
+
+    async def _ok_validate(self, job):
+        return None
+
+    monkeypatch.setattr(
+        "aibrix.batch.job_driver.base.BaseJobDriver.validate_job",
+        _ok_validate,
+    )
+
+    batch_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
+        metadata=ObjectMeta(
+            name="admit-job",
+            namespace="default",
+            uid="admit-uid",
+            creationTimestamp=datetime.now(),
+        ),
+        spec=BatchJobSpec(
+            input_file_id="f-admit",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        ),
+        status=BatchJobStatus(
+            jobID="admit-job-id",
+            state=BatchJobState.CREATED,
+            createdAt=datetime.now(),
+            inProgressAt=None,
+        ),
+    )
+    job_manager._pending_jobs["admit-job-id"] = batch_job
+
+    driver = await job_manager.admit("admit-job-id")
+
+    assert driver is not None
+    meta = job_manager._in_progress_jobs["admit-job-id"]
+    assert meta.status.state == BatchJobState.IN_PROGRESS
+    assert meta.status.in_progress_at is not None
+    # The transition was persisted exactly once, carrying IN_PROGRESS.
+    assert len(recorded) == 1
+    assert recorded[0].status.state == BatchJobState.IN_PROGRESS
+    assert recorded[0].status.in_progress_at is not None
+
+
+@pytest.mark.asyncio
+async def test_finalizing_transition_persists():
+    """When the last request completes and the job flips IN_PROGRESS->FINALIZING,
+    that transition must be flushed to the metastore so the console can show
+    'finalizing' before the terminal flush, instead of all events appearing at
+    once."""
+    from aibrix.batch.state import JobMetaInfo
+
+    recorded: List[BatchJob] = []
+
+    class _RecordingEM(MockJobEntityManager):
+        async def update_job_status(self, job: BatchJob) -> None:
+            recorded.append(job.model_copy(deep=True))
+
+    asyncio.get_running_loop().name = "test_finalizing_persists"
+    job_manager = _job_manager()
+    await job_manager.set_job_entity_manager(_RecordingEM(delay=0.0))
+
+    batch_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
+        metadata=ObjectMeta(
+            name="fin-job",
+            namespace="default",
+            uid="fin-uid",
+            creationTimestamp=datetime.now(),
+        ),
+        spec=BatchJobSpec(
+            input_file_id="f-fin",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        ),
+        status=BatchJobStatus(
+            jobID="fin-job-id",
+            state=BatchJobState.IN_PROGRESS,
+            createdAt=datetime.now(),
+            inProgressAt=datetime.now(),
+        ),
+    )
+    batch_job.status.request_counts.total = 1
+    meta = JobMetaInfo(batch_job)
+    job_manager._in_progress_jobs["fin-job-id"] = meta
+
+    # Complete the single request -> tracker flips the job to FINALIZING.
+    await job_manager.mark_job_progress("fin-job-id", 0)
+
+    assert meta.status.state == BatchJobState.FINALIZING
+    assert meta.status.finalizing_at is not None
+    assert len(recorded) == 1
+    assert recorded[0].status.state == BatchJobState.FINALIZING
+
+
+@pytest.mark.asyncio
 async def test_async_create_job_with_timeout():
     """Test that create_job throws error when timeout occurs."""
     # Create mock entity manager with long delay (longer than timeout)

@@ -638,10 +638,9 @@ class JobManifestRenderer(_RendererSupport):
         self, manifest: Dict[str, Any], profile: BatchProfile
     ) -> Dict[str, Any]:
         """Apply batch-level profile policy to the Job manifest."""
-        # Profile-driven scheduling fields that affect Job spec directly.
-        # Only completion_window is honored, and only as 24h. The
-        # actual deadline is set in apply_per_batch from
-        # spec.completion_window so user-supplied window wins.
+        # Profile-driven scheduling fields do not directly mutate the Job spec
+        # today. The actual deadline is set in apply_per_batch from
+        # spec.completion_window so the per-batch request is authoritative.
 
         return manifest
 
@@ -811,6 +810,10 @@ _BASE_WORKER_ENV: List[Dict[str, Any]] = [
     {
         "name": "BATCH_ENDPOINT",
         "valueFrom": _ann_field_ref(JobAnnotationKey.ENDPOINT.value),
+    },
+    {
+        "name": "BATCH_AIBRIX",
+        "valueFrom": _ann_field_ref(JobAnnotationKey.AIBRIX.value),
     },
     {
         "name": "BATCH_OUTPUT_FILE_ID",
