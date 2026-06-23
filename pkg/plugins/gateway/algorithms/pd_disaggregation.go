@@ -165,7 +165,7 @@ func (r *pdRouter) effectiveScorePolicies(routingCtx *types.RoutingContext) (pd.
 		case pd.PrefillScorePolicyPrefixCache:
 			prefill = newPrefixCachePrefillPolicy(r.prefixCacheIndexer)
 		case pd.PrefillScorePolicyConductor:
-			prefill = newConductorPrefillPolicy(r.prefixCacheIndexer)
+			prefill = newConductorPrefillPolicy(r.prefixCacheIndexer, r.cache)
 		default:
 			klog.InfoS("unknown prefillScorePolicy in routingConfig, keeping env-based policy",
 				"request_id", routingCtx.RequestID, "value", s,
@@ -216,14 +216,14 @@ func newPrefixCachePrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHas
 	return pd.NewPrefixCachePrefillPolicy(tok, sharedPrefixTable)
 }
 
-func newConductorPrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable) pd.PrefillScorePolicy {
+func newConductorPrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable, metricCache cache.MetricCache) pd.PrefillScorePolicy {
 	var tok tokenizer.Tokenizer
 	if tokenizerType == tokenizerTypeTiktoken {
 		tok = tokenizer.NewTiktokenTokenizer()
 	} else {
 		tok = tokenizer.NewCharacterTokenizer()
 	}
-	return pd.NewConductorPrefillPolicy(tok, sharedPrefixTable)
+	return pd.NewConductorPrefillPolicy(tok, sharedPrefixTable, metricCache)
 }
 
 func NewPDRouter() (types.Router, error) {
@@ -242,7 +242,7 @@ func NewPDRouter() (types.Router, error) {
 	case pd.PrefillScorePolicyPrefixCache:
 		policy = newPrefixCachePrefillPolicy(sharedPrefixTable)
 	case pd.PrefillScorePolicyConductor:
-		policy = newConductorPrefillPolicy(sharedPrefixTable)
+		policy = newConductorPrefillPolicy(sharedPrefixTable, c)
 	default:
 		klog.InfoS("pd_router unknown AIBRIX_PREFILL_SCORE_POLICY, using prefix_cache",
 			"value", aibrixPrefillScorePolicy,

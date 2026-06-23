@@ -31,6 +31,8 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
@@ -207,14 +209,16 @@ func (s leastRequestScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 type conductorPrefillPolicy struct {
 	tok                tokenizer.Tokenizer
 	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
+	metricCache        cache.MetricCache
 }
 
 // NewConductorPrefillPolicy constructs a conductor PrefillScorePolicy with the
 // given tokenizer and shared prefix-hash table.
-func NewConductorPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *prefixcacheindexer.PrefixHashTable) PrefillScorePolicy {
+func NewConductorPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *prefixcacheindexer.PrefixHashTable, metricCache cache.MetricCache) PrefillScorePolicy {
 	return &conductorPrefillPolicy{
 		tok:                tok,
 		prefixCacheIndexer: prefixCacheIndexer,
+		metricCache:        metricCache,
 	}
 }
 
@@ -231,6 +235,8 @@ func (p *conductorPrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*
 		matchedPods: matchedPods,
 		hashes:      hashes,
 		totalTokens: len(tokens),
+		metricCache: p.metricCache,
+		modelName:   routingCtx.Model,
 	}, nil
 }
 
@@ -241,6 +247,8 @@ type conductorScorer struct {
 	matchedPods map[string]int
 	hashes      []uint64
 	totalTokens int
+	metricCache cache.MetricCache
+	modelName   string
 }
 
 func (s *conductorScorer) PrefixHashes() []uint64 { return s.hashes }
@@ -249,9 +257,7 @@ func (s *conductorScorer) PrefixHashes() []uint64 { return s.hashes }
 // of the pod's currently running request count.
 //
 //	queue_estimate = reqCnt * avgPrefillTime
-func (s *conductorScorer) estimateQueue(reqCnt float64) float64 {
-	// TODO: fetch real-time value, but current scorer interface signature does not allow it
-	avgPrefillTimeSeconds := 100.0 
+func (s *conductorScorer) estimateQueue(reqCnt float64, avgPrefillTimeSeconds float64) float64 {
 	return reqCnt * avgPrefillTimeSeconds
 }
 
@@ -283,7 +289,14 @@ func (s *conductorScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 	matchedTokens := float64(s.totalTokens) * matchPct / 100.0
 	unmatchedTokens := float64(s.totalTokens) - matchedTokens
 
-	queueEst := s.estimateQueue(reqCnt)
+	avgPrefillTimeSecondsMetric, err := s.metricCache.GetMetricValueByPodModel(pod.Name, pod.Namespace, s.modelName, metrics.RequestPrefillTimeSeconds)
+	avgPrefillTimeSeconds := float64(0.5) // default value if metric lookup fails
+	if err != nil {
+		klog.V(4).ErrorS(err, "error getting RequestPrefillTimeSeconds")
+	} else {
+		avgPrefillTimeSeconds = avgPrefillTimeSecondsMetric.GetSimpleValue()
+	}
+	queueEst := s.estimateQueue(reqCnt, avgPrefillTimeSeconds)
 	prefixEst := s.estimatePrefix(matchedTokens)
 	prefillEst := s.estimatePrefill(unmatchedTokens)
 	score := queueEst + prefixEst + prefillEst
