@@ -583,6 +583,29 @@ func Test_selectTargetPod(t *testing.T) {
 	}
 }
 
+func Test_selectTargetPod_PDIncompleteRoleset(t *testing.T) {
+	routing.Init()
+	server := &Server{}
+	routeCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, "test-model", "test-message", "test-request", "test-user")
+	pods := &utils.PodArray{Pods: []*v1.Pod{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "prefill-only",
+			Labels: map[string]string{
+				"roleset-name": "rs1",
+				"role-name":    "prefill",
+			},
+		},
+		Status: v1.PodStatus{
+			PodIP:      "1.2.3.4",
+			Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+		},
+	}}}
+
+	_, err := server.selectTargetPod(context.Background(), routeCtx, pods, "")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no complete prefill-decode roleset")
+}
+
 func TestValidateHTTPRouteStatus(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -906,6 +929,21 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 		mockGW.AssertExpectations(t)
 		mockGWV1.AssertExpectations(t)
 		mockHTTP.AssertExpectations(t)
+	})
+
+	t.Run("explicit routing skips httproute on error path", func(t *testing.T) {
+		mockGW := &MockGatewayClient{}
+		s := &Server{gatewayClient: mockGW}
+		rctx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "", "rid", "")
+		out := s.responseErrorProcessingWithHeaders(context.Background(), rctx, nil, 404, "m", "rid", `{"detail":"Not Found"}`)
+		ir := out.GetImmediateResponse()
+		if assert.NotNil(t, ir) {
+			var parsed map[string]any
+			assert.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
+			errObj := parsed["error"].(map[string]any)
+			assert.Equal(t, `{"detail":"Not Found"}`, errObj["message"])
+		}
+		mockGW.AssertNotCalled(t, "GatewayV1")
 	})
 
 	t.Run("503 maps to service_unavailable", func(t *testing.T) {
