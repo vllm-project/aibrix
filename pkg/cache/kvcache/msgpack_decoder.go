@@ -145,12 +145,39 @@ func parseEventArray(arr []interface{}) (KVEvent, error) {
 			return nil, err
 		}
 
-		return &BlockStoredEvent{
+		ev := &BlockStoredEvent{
 			Type:            EventTypeBlockStored,
 			BlockHashes:     blockHashes,
 			ParentBlockHash: parentHash,
 			TokenIDs:        tokens,
-		}, nil
+		}
+
+		// Optional fields added by newer vLLM builds. msgspec omit_defaults may
+		// drop trailing ones, so read by position with bounds checks and leave
+		// the rest nil. Position 8 (extra_keys) is skipped here; group_idx is
+		// still indexed at its fixed position 9.
+		if len(arr) > 5 {
+			if ev.LoraID, err = toInt64Ptr(arr[5]); err != nil {
+				return nil, fmt.Errorf("invalid lora_id: %w", err)
+			}
+		}
+		if len(arr) > 6 {
+			if ev.Medium, err = toStringPtr(arr[6]); err != nil {
+				return nil, fmt.Errorf("invalid medium: %w", err)
+			}
+		}
+		if len(arr) > 7 {
+			if ev.LoraName, err = toStringPtr(arr[7]); err != nil {
+				return nil, fmt.Errorf("invalid lora_name: %w", err)
+			}
+		}
+		if len(arr) > 9 {
+			if ev.GroupIdx, err = toInt64Ptr(arr[9]); err != nil {
+				return nil, fmt.Errorf("invalid group_idx: %w", err)
+			}
+		}
+
+		return ev, nil
 
 	case EventTypeBlockRemoved:
 		if len(arr) < 2 {
@@ -346,6 +373,24 @@ func toInt64Ptr(v any) (*int64, error) {
 		return nil, err
 	}
 	return &val, nil
+}
+
+// toStringPtr converts a nullable msgpack string field to *string.
+// A nil input (Python None) yields a nil pointer. msgpack may decode a string
+// as either string or []byte, so both are accepted.
+func toStringPtr(v any) (*string, error) {
+	if v == nil {
+		return nil, nil
+	}
+	switch s := v.(type) {
+	case string:
+		return &s, nil
+	case []byte:
+		str := string(s)
+		return &str, nil
+	default:
+		return nil, fmt.Errorf("expected string, got %T", v)
+	}
 }
 
 func parseUint32(v any) (uint32, error) {
