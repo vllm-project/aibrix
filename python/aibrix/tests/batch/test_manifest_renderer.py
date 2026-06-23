@@ -628,6 +628,113 @@ class TestMetastoreEnv:
         assert env["REDIS_HOST"] == "redis-shared.aibrix.svc"
         assert env["REDIS_PORT"] == "16379"
 
+    def test_worker_redis_password_injected_as_secret_ref(
+        self, renderer_factory, monkeypatch
+    ):
+        """An authenticated metastore needs the worker to receive the Redis
+        password. It is delivered via a Secret reference so the password is
+        never written into the rendered pod spec as a literal value."""
+        from aibrix.batch.storage import batch_metastore
+        from aibrix.storage import StorageType
+
+        monkeypatch.setattr(
+            batch_metastore, "get_metastore_type", lambda: StorageType.REDIS
+        )
+        monkeypatch.setenv("WORKER_REDIS_PASSWORD_SECRET_NAME", "aibrix-redis")
+        monkeypatch.setenv("WORKER_REDIS_PASSWORD_SECRET_KEY", "redis-password")
+
+        r = renderer_factory(
+            templates=[_vllm_template(count=1)],
+            profiles=[_profile()],
+        )
+        m = r.render(session_id="s1", spec=_spec())
+        env = {e["name"]: e for e in _worker_container(m)["env"]}
+        assert "value" not in env["REDIS_PASSWORD"]
+        secret_ref = env["REDIS_PASSWORD"]["valueFrom"]["secretKeyRef"]
+        assert secret_ref == {"name": "aibrix-redis", "key": "redis-password"}
+
+    def test_redis_password_secret_ref_omitted_when_unset(
+        self, renderer_factory, monkeypatch
+    ):
+        """Without the Secret env vars the worker emits no REDIS_PASSWORD entry,
+        so the Deployment path and no-auth dev setups stay unchanged."""
+        from aibrix.batch.storage import batch_metastore
+        from aibrix.storage import StorageType
+
+        monkeypatch.setattr(
+            batch_metastore, "get_metastore_type", lambda: StorageType.REDIS
+        )
+        monkeypatch.delenv("WORKER_REDIS_PASSWORD_SECRET_NAME", raising=False)
+        monkeypatch.delenv("WORKER_REDIS_PASSWORD_SECRET_KEY", raising=False)
+
+        r = renderer_factory(
+            templates=[_vllm_template(count=1)],
+            profiles=[_profile()],
+        )
+        m = r.render(session_id="s1", spec=_spec())
+        env_names = {e["name"] for e in _worker_container(m)["env"]}
+        assert "REDIS_PASSWORD" not in env_names
+
+    def test_worker_redis_password_partial_config_warns(
+        self, renderer_factory, monkeypatch
+    ):
+        """A half-configured secret (only the name or only the key) injects no
+        REDIS_PASSWORD and logs a warning so the misconfiguration is visible."""
+        from unittest import mock
+
+        from aibrix.batch.manifest import storage_env
+        from aibrix.batch.storage import batch_metastore
+        from aibrix.storage import StorageType
+
+        monkeypatch.setattr(
+            batch_metastore, "get_metastore_type", lambda: StorageType.REDIS
+        )
+        monkeypatch.setenv("WORKER_REDIS_PASSWORD_SECRET_NAME", "aibrix-redis")
+        monkeypatch.delenv("WORKER_REDIS_PASSWORD_SECRET_KEY", raising=False)
+        log = mock.Mock()
+        monkeypatch.setattr(storage_env, "logger", log)
+
+        r = renderer_factory(
+            templates=[_vllm_template(count=1)],
+            profiles=[_profile()],
+        )
+        m = r.render(session_id="s1", spec=_spec())
+        env_names = {e["name"] for e in _worker_container(m)["env"]}
+        assert "REDIS_PASSWORD" not in env_names
+        log.warning.assert_called_once()
+        assert "partial" in log.warning.call_args.args[0].lower()
+
+    def test_worker_redis_password_warns_when_metastore_password_unwired(
+        self, renderer_factory, monkeypatch
+    ):
+        """A metastore password with no worker secret ref leaves the worker
+        unable to authenticate, so the renderer logs a warning."""
+        from unittest import mock
+
+        from aibrix import envs
+        from aibrix.batch.manifest import storage_env
+        from aibrix.batch.storage import batch_metastore
+        from aibrix.storage import StorageType
+
+        monkeypatch.setattr(
+            batch_metastore, "get_metastore_type", lambda: StorageType.REDIS
+        )
+        monkeypatch.delenv("WORKER_REDIS_PASSWORD_SECRET_NAME", raising=False)
+        monkeypatch.delenv("WORKER_REDIS_PASSWORD_SECRET_KEY", raising=False)
+        monkeypatch.setattr(envs, "STORAGE_REDIS_PASSWORD", "s3cr3t")
+        log = mock.Mock()
+        monkeypatch.setattr(storage_env, "logger", log)
+
+        r = renderer_factory(
+            templates=[_vllm_template(count=1)],
+            profiles=[_profile()],
+        )
+        m = r.render(session_id="s1", spec=_spec())
+        env_names = {e["name"] for e in _worker_container(m)["env"]}
+        assert "REDIS_PASSWORD" not in env_names
+        log.warning.assert_called_once()
+        assert "no worker secret ref" in log.warning.call_args.args[0]
+
 
 class TestMockEngineOverrideNoop:
     def test_mock_template_ignores_engine_args_override(self, renderer_factory, caplog):
