@@ -298,6 +298,8 @@ func (f *ExternalMetricsFetcher) fetchFromK8sExternalMetrics(ctx context.Context
 		return 0.0, fmt.Errorf("kubernetes external.metrics client not initialized for metric %s", source.TargetMetric)
 	}
 
+	// MetricSource has no selector today, so this fetch is intentionally scoped only by namespace and metric name.
+	// This assumes a single PodAutoscaler owns each external metric in a namespace; selector-based restriction is a follow-up API change.
 	metricList, err := f.externalMetricsClient.NamespacedMetrics(pod.Namespace).List(source.TargetMetric, labels.Everything())
 	if err != nil {
 		return 0.0, fmt.Errorf("failed to fetch external metric %s in namespace %s: %w", source.TargetMetric, pod.Namespace, err)
@@ -306,6 +308,7 @@ func (f *ExternalMetricsFetcher) fetchFromK8sExternalMetrics(ctx context.Context
 		return 0.0, fmt.Errorf("no external metric values returned for %s in namespace %s", source.TargetMetric, pod.Namespace)
 	}
 
+	// Kubernetes external metrics are treated as aggregate values; multiple returned items are summed.
 	total := 0.0
 	for _, item := range metricList.Items {
 		total += item.Value.AsApproximateFloat64()

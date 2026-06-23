@@ -71,7 +71,7 @@ func TestExternalMetricsAutoscaler(t *testing.T) {
 	assertExternalMetricAPI(ctx, t, k8sClient)
 	createExternalMetricsScaleTarget(ctx, t, k8sClient)
 	createExternalMetricPodAutoscaler(ctx, t, aibrixClient)
-	waitForDeploymentReplicas(ctx, t, k8sClient, 2)
+	waitForDesiredReplicas(ctx, t, k8sClient, 2)
 }
 
 func TestCreateExternalMetricsScaleTargetUpdatesExistingResource(t *testing.T) {
@@ -258,7 +258,7 @@ func createExternalMetricPodAutoscaler(ctx context.Context, t *testing.T, aibrix
 	}
 }
 
-func waitForDeploymentReplicas(ctx context.Context, t *testing.T, k8sClient *kubernetes.Clientset, minimum int32) {
+func waitForDesiredReplicas(ctx context.Context, t *testing.T, k8sClient *kubernetes.Clientset, minimum int32) {
 	t.Helper()
 
 	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 3*time.Minute, true, func(ctx context.Context) (bool, error) {

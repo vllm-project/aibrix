@@ -212,6 +212,26 @@ func TestExternalMetricsFetcher_FetchPodMetricsReturnsErrorForEmptyExternalMetri
 	assert.Equal(t, 0.0, actualMetricValue)
 }
 
+func TestExternalMetricsFetcher_FetchPodMetricsReturnsErrorWithoutK8sExternalMetricsClient(t *testing.T) {
+	fetcher := NewExternalMetricsFetcher()
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.EXTERNAL,
+		TargetMetric:     "queue_depth",
+	}
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "external-source",
+			Namespace: "default",
+		},
+	}
+
+	actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "kubernetes external.metrics client not initialized")
+	assert.Equal(t, 0.0, actualMetricValue)
+}
+
 func parseURL(rawURL string) (string, string) {
 	u, err := url.Parse(rawURL)
 	if err != nil {

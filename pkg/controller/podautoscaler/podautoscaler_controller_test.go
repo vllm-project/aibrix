@@ -110,6 +110,32 @@ func TestValidateMetricsSourcesAllowsK8sExternalMetrics(t *testing.T) {
 	}
 }
 
+func TestValidateMetricsSourcesRequiresTargetMetricForK8sExternalMetrics(t *testing.T) {
+	r := &PodAutoscalerReconciler{}
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					MetricSourceType: autoscalingv1alpha1.EXTERNAL,
+					TargetValue:      "40",
+				},
+			},
+		},
+	}
+
+	result := r.validateMetricsSources(pa)
+
+	if result.Valid {
+		t.Fatal("expected Kubernetes external metrics source without targetMetric to be invalid")
+	}
+	if result.Reason != ReasonMetricsConfigError {
+		t.Fatalf("expected reason=%s, got %s", ReasonMetricsConfigError, result.Reason)
+	}
+	if result.Message != "metricsSource[0]: targetMetric must be specified" {
+		t.Fatalf("unexpected message: %s", result.Message)
+	}
+}
+
 // ---- helpers ----
 
 func buildPod(ns, name string, lbls map[string]string) *corev1.Pod {

@@ -158,13 +158,15 @@ func writeJSON(w http.ResponseWriter, obj any) {
 func writeStatus(w http.ResponseWriter, code int, reason, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	writeJSON(w, metav1.Status{
+	if err := json.NewEncoder(w).Encode(metav1.Status{
 		TypeMeta: metav1.TypeMeta{Kind: "Status", APIVersion: "v1"},
 		Status:   metav1.StatusFailure,
 		Reason:   metav1.StatusReason(reason),
 		Message:  message,
 		Code:     int32(code),
-	})
+	}); err != nil {
+		log.Printf("failed to write status response: %v", err)
+	}
 }
 
 func env(key, fallback string) string {

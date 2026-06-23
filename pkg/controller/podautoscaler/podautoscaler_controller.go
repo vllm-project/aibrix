@@ -480,6 +480,7 @@ func (r *PodAutoscalerReconciler) validatePodMetricSource(ms *autoscalingv1alpha
 }
 
 func (r *PodAutoscalerReconciler) validateExternalMetricSource(ms *autoscalingv1alpha1.MetricSource) ValidationResult {
+	// Empty endpoint selects the Kubernetes external.metrics API instead of an HTTP metrics endpoint.
 	if ms.Endpoint == "" &&
 		(ms.MetricSourceType == autoscalingv1alpha1.EXTERNAL || ms.MetricSourceType == autoscalingv1alpha1.DOMAIN) {
 		return validOK()
