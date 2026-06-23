@@ -52,10 +52,7 @@ const (
 	PrefillScorePolicyLeastRequest = "least_request"
 
 	// PrefillScorePolicyConductor selects the conductor scoring policy, which
-	// combines prefix-cache matching with both running-request count and a
-	// pod-load indicator (reqCnt/maxRequestCount). It is intended as a
-	// drop-in refinement of prefix_cache that places more emphasis on
-	// load balance when cache matches are close.
+	// estimates the TTFT (contains queue, prefix, and prefill) for each pod
 	PrefillScorePolicyConductor = "conductor"
 )
 
@@ -190,22 +187,10 @@ func (s leastRequestScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 }
 
 // conductorPrefillPolicy estimates TTFT by summing three per-pod components
-// (queue + prefix + prefill). Estimators are extracted as plain linear
-// functions so tuning and future updates. Lower estimates:
-//
-//   estimated_TTFT(pod) = queue(reqCnt) + prefix(matched_tokens) + prefill(unmatched_tokens)
-//
-// Each linear forms:
-//
-//   queue(n)      = k_queue * n
-//   prefix(m)      = k_prefix * m + b_prefix
-//   prefill(u)     = k_prefill * u + b_prefill
-//
-// with k_prefill > k_prefix so that cache-hit pods score lower than cache-miss ones.
-// Matched prefix length is derived from the prefix-cache match percentage
-// returned by PrefixHashTable. Unmatched length is what remains after the
-// matched prefix. The request is tokenized once in Prepare so per-pod scoring
-// stays cheap on the hot path.
+//   estimated_TTFT(pod) = 	queue(reqCnt, PrefillTimePerRequest)
+// 						 	+ prefix(matched_tokens) 
+// 						 	+ prefill(unmatched_tokens)
+// metricCache is used to get real-time info PrefillTimePerRequest.
 type conductorPrefillPolicy struct {
 	tok                tokenizer.Tokenizer
 	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
@@ -213,7 +198,7 @@ type conductorPrefillPolicy struct {
 }
 
 // NewConductorPrefillPolicy constructs a conductor PrefillScorePolicy with the
-// given tokenizer and shared prefix-hash table.
+// given tokenizer, shared prefix-hash table, and metric cache.
 func NewConductorPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *prefixcacheindexer.PrefixHashTable, metricCache cache.MetricCache) PrefillScorePolicy {
 	return &conductorPrefillPolicy{
 		tok:                tok,
@@ -293,8 +278,8 @@ func (s *conductorScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 	avgPrefillTimeSeconds := float64(0.5) // default value if metric lookup fails
 	if err != nil {
 		klog.V(4).ErrorS(err, "error getting RequestPrefillTimeSeconds")
-	} else {
-		avgPrefillTimeSeconds = avgPrefillTimeSecondsMetric.GetSimpleValue()
+	} else if hist := avgPrefillTimeSecondsMetric.GetHistogramValue(); hist != nil && hist.Count > 0 {
+		avgPrefillTimeSeconds = hist.GetMean()
 	}
 	queueEst := s.estimateQueue(reqCnt, avgPrefillTimeSeconds)
 	prefixEst := s.estimatePrefix(matchedTokens)
