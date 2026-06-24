@@ -51,6 +51,8 @@ import (
 	"k8s.io/klog/v2"
 )
 
+const testChatCompletionsPath = "/v1/chat/completions"
+
 // scorePrefillWithDefaultPolicy runs scorePrefillPods using the router's configured prefill policy (tests / benchmarks).
 func scorePrefillWithDefaultPolicy(r *pdRouter, ctx *types.RoutingContext, pods []*v1.Pod) (map[string]*Scores, float64, []uint64) {
 	return r.scorePrefillPods(ctx, pods, r.prefillPolicy)
@@ -201,7 +203,7 @@ func TestPDRouter_RouteDoesNotEmitAsyncPrefillSuccessBeforeHTTPCompletes(t *test
 	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
 
 	ctx := types.NewRoutingContext(context.Background(), RouterPD, "test-model", "test", "async-prefill-success", "user")
-	ctx.ReqPath = "/v1/chat/completions"
+	ctx.ReqPath = testChatCompletionsPath
 	ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
 
 	result, err := r.Route(ctx, &utils.PodArray{Pods: pods})
@@ -288,7 +290,7 @@ func TestPDRouter_RouteRecordsAsyncPrefillFailureWithoutSuccess(t *testing.T) {
 	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
 
 	ctx := types.NewRoutingContext(context.Background(), RouterPD, "test-model", "test", "async-prefill-fail", "user")
-	ctx.ReqPath = "/v1/chat/completions"
+	ctx.ReqPath = testChatCompletionsPath
 	ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
 
 	result, err := r.Route(ctx, &utils.PodArray{Pods: pods})
@@ -958,7 +960,7 @@ func TestDoPrefillRequest(t *testing.T) {
 		return &types.RoutingContext{
 			RequestID: "test-request",
 			Model:     "test-model",
-			ReqPath:   "/v1/chat/completions",
+			ReqPath:   testChatCompletionsPath,
 			ReqBody:   []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`),
 			ReqHeaders: map[string]string{
 				"Authorization": "Bearer test-1234",
@@ -1533,7 +1535,7 @@ func TestVLLMIntegrationWithTestServer(t *testing.T) {
 	routingCtx := &types.RoutingContext{
 		RequestID:  "integration-test",
 		Model:      "test-model",
-		ReqPath:    "/v1/chat/completions",
+		ReqPath:    testChatCompletionsPath,
 		ReqBody:    []byte(`{"messages":[{"role":"user","content":"test"}]}`),
 		ReqHeaders: map[string]string{"Authorization": "Bearer test"},
 		Context:    context.Background(),
@@ -1663,7 +1665,7 @@ func TestTensorRTIntegrationWithTestServer(t *testing.T) {
 	routingCtx := &types.RoutingContext{
 		RequestID:  "integration-test",
 		Model:      "test-model",
-		ReqPath:    "/v1/chat/completions",
+		ReqPath:    testChatCompletionsPath,
 		ReqBody:    []byte(`{"messages":[{"role":"user","content":"test"}]}`),
 		ReqHeaders: map[string]string{"Authorization": "Bearer test"},
 		Context:    context.Background(),
