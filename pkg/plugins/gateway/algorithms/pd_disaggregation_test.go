@@ -27,10 +27,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
@@ -121,6 +123,195 @@ func TestPDRouter_Route(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPDRouter_RouteDoesNotEmitAsyncPrefillSuccessBeforeHTTPCompletes(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	assert.NoError(t, err)
+	prefillPort := listenerPort(t, l)
+
+	releasePrefill := make(chan struct{})
+	releasedPrefill := false
+	prefillStarted := make(chan struct{})
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(prefillStarted)
+		<-releasePrefill
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	ts.Listener = l
+	ts.Start()
+	defer ts.Close()
+	defer func() {
+		if !releasedPrefill {
+			close(releasePrefill)
+		}
+	}()
+
+	successCounter, cleanup := metrics.SetupCounterMetricsForTest(
+		metrics.GatewayPrefillRequestSuccessTotal,
+		[]string{"gateway_pod", "model", "status", "status_code"},
+	)
+	defer cleanup()
+
+	pods := []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "prefill-1",
+				Labels: map[string]string{
+					PDRoleSetIdentifier:      "test",
+					PDRoleIdentifier:         "prefill",
+					LLMEngineIdentifier:      SGLangEngine,
+					constants.ModelLabelPort: prefillPort,
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP:      "127.0.0.1",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "decode-1",
+				Labels: map[string]string{
+					PDRoleSetIdentifier: "test",
+					PDRoleIdentifier:    "decode",
+					LLMEngineIdentifier: SGLangEngine,
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP:      "127.0.0.2",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+	}
+
+	tracker := pd.NewPrefillRequestTracker()
+	client := &http.Client{}
+	r := pdRouter{
+		cache:                 cache.NewForTest(),
+		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: tracker,
+		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
+		httpClient:            client,
+		selectionCounts:       map[string]int64{},
+	}
+	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
+	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
+
+	ctx := types.NewRoutingContext(context.Background(), RouterPD, "test-model", "test", "async-prefill-success", "user")
+	ctx.ReqPath = "/v1/chat/completions"
+	ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
+
+	result, err := r.Route(ctx, &utils.PodArray{Pods: pods})
+
+	assert.NoError(t, err)
+	assert.Equal(t, "127.0.0.2:8000", result)
+	assert.Equal(t, 0.0, testutil.ToFloat64(successCounter.WithLabelValues("", "test-model", pdRoutePrefillRequestSuccess, "200")))
+
+	<-prefillStarted
+	close(releasePrefill)
+	releasedPrefill = true
+	assert.Eventually(t, func() bool {
+		return testutil.ToFloat64(successCounter.WithLabelValues("", "test-model", pdRoutePrefillRequestSuccess, "200")) == 1.0
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestPDRouter_RouteRecordsAsyncPrefillFailureWithoutSuccess(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	assert.NoError(t, err)
+	prefillPort := listenerPort(t, l)
+
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("server error"))
+	}))
+	ts.Listener = l
+	ts.Start()
+	defer ts.Close()
+
+	var metricsMu sync.Mutex
+	metricCounts := map[string]float64{}
+	originalFn := metrics.IncrementCounterMetricFnForTest
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labels []string, labelValues ...string) {
+		metricsMu.Lock()
+		defer metricsMu.Unlock()
+		metricCounts[name] += value
+	}
+	defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+
+	pods := []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "prefill-1",
+				Labels: map[string]string{
+					PDRoleSetIdentifier:      "test",
+					PDRoleIdentifier:         "prefill",
+					LLMEngineIdentifier:      SGLangEngine,
+					constants.ModelLabelPort: prefillPort,
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP:      "127.0.0.1",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "decode-1",
+				Labels: map[string]string{
+					PDRoleSetIdentifier: "test",
+					PDRoleIdentifier:    "decode",
+					LLMEngineIdentifier: SGLangEngine,
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP:      "127.0.0.2",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+	}
+
+	tracker := pd.NewPrefillRequestTracker()
+	client := &http.Client{}
+	r := pdRouter{
+		cache:                 cache.NewForTest(),
+		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: tracker,
+		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
+		httpClient:            client,
+		selectionCounts:       map[string]int64{},
+	}
+	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
+	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
+
+	ctx := types.NewRoutingContext(context.Background(), RouterPD, "test-model", "test", "async-prefill-fail", "user")
+	ctx.ReqPath = "/v1/chat/completions"
+	ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
+
+	result, err := r.Route(ctx, &utils.PodArray{Pods: pods})
+
+	assert.NoError(t, err)
+	assert.Equal(t, "127.0.0.2:8000", result)
+	assert.Eventually(t, func() bool {
+		metricsMu.Lock()
+		defer metricsMu.Unlock()
+		return metricCounts[metrics.GatewayPrefillRequestFailTotal] == 1.0
+	}, time.Second, 10*time.Millisecond)
+
+	metricsMu.Lock()
+	defer metricsMu.Unlock()
+	assert.Equal(t, 0.0, metricCounts[metrics.GatewayPrefillRequestSuccessTotal])
+}
+
+func listenerPort(t *testing.T, l net.Listener) string {
+	t.Helper()
+	_, port, err := net.SplitHostPort(l.Addr().String())
+	assert.NoError(t, err)
+	assert.NotEmpty(t, port)
+	return port
 }
 
 func TestFilterPrefillDecodePods(t *testing.T) {

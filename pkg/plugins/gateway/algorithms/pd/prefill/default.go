@@ -35,7 +35,10 @@ import (
 )
 
 // trtllmEngine is kept local to avoid importing routingalgorithms (circular).
-const trtllmEngine = "trtllm"
+const (
+	trtllmEngine                = "trtllm"
+	prefillRequestSuccessStatus = "pd-prefill-request-success"
+)
 
 // DefaultExecutor is the standard PrefillExecutor. It owns the HTTP client and
 // the prefill-request tracker so that prefill logic can be tested in isolation
@@ -96,24 +99,40 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 	if handler.IsAsync() {
 		// SGLang uses a bootstrap handshake to coordinate KV transfer out-of-band;
 		// fire asynchronously and return immediately.
+		requestID := routingCtx.RequestID
+		requestTime := routingCtx.RequestTime
+		prefillStartTime := routingCtx.PrefillStartTime
+		prefillPodName := prefillPod.Name
+		prefillPodIP := prefillPod.Status.PodIP
+		asyncCtx := &types.RoutingContext{
+			Context:     routingCtx.Context,
+			RequestID:   requestID,
+			Model:       routingCtx.Model,
+			Engine:      routingCtx.Engine,
+			RequestTime: requestTime,
+			ReqHeaders:  cloneStringMap(routingCtx.ReqHeaders),
+		}
 		go func() {
-			defer e.tracker.RemovePrefillRequest(routingCtx.RequestID)
+			defer e.tracker.RemovePrefillRequest(requestID)
 
-			if _, err := e.executeHTTP(apiURL, routingCtx, payload); err != nil {
+			if _, err := e.executeHTTP(apiURL, asyncCtx, payload); err != nil {
 				klog.ErrorS(err, "prefill_request_failed",
-					"request_id", routingCtx.RequestID,
+					"request_id", requestID,
 					"llm_engine", llmEngine,
-					"prefill_pod", prefillPod.Name,
-					"prefill_pod_ip", prefillPod.Status.PodIP,
-					"elapsed", routingCtx.Elapsed(time.Now()))
+					"prefill_pod", prefillPodName,
+					"prefill_pod_ip", prefillPodIP,
+					"elapsed", time.Since(requestTime))
 				return
 			}
 
-			routingCtx.PrefillEndTime = time.Now()
+			metrics.EmitMetricToPrometheus(asyncCtx, nil, metrics.GatewayPrefillRequestSuccessTotal, &metrics.SimpleMetricValue{Value: 1.0},
+				map[string]string{"status": prefillRequestSuccessStatus, "status_code": "200"})
+
+			prefillEndTime := time.Now()
 			completionFields = append(completionFields,
-				"routing_time_taken", routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime),
-				"prefill_time_taken", routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime),
-				"outstanding_prefill_requests", e.tracker.GetPrefillRequestCountsForPod(prefillPod.Name)-1)
+				"routing_time_taken", prefillStartTime.Sub(requestTime),
+				"prefill_time_taken", prefillEndTime.Sub(prefillStartTime),
+				"outstanding_prefill_requests", e.tracker.GetPrefillRequestCountsForPod(prefillPodName)-1)
 			klog.InfoS("prefill_request_end", completionFields...)
 		}()
 		return nil
@@ -217,4 +236,15 @@ func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingConte
 	}
 
 	return responseData, nil
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
