@@ -27,7 +27,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
@@ -202,7 +201,9 @@ func TestPDRouter_RouteDoesNotEmitAsyncPrefillSuccessBeforeHTTPCompletes(t *test
 	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
 	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
 
-	ctx := types.NewRoutingContext(context.Background(), RouterPD, "test-model", "test", "async-prefill-success", "user")
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	ctx := types.NewRoutingContext(parentCtx, RouterPD, "test-model", "test", "async-prefill-success", "user")
 	ctx.ReqPath = testChatCompletionsPath
 	ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
 
@@ -213,6 +214,7 @@ func TestPDRouter_RouteDoesNotEmitAsyncPrefillSuccessBeforeHTTPCompletes(t *test
 	assert.Equal(t, 0.0, testutil.ToFloat64(successCounter.WithLabelValues("", "test-model", pdRoutePrefillRequestSuccess, "200")))
 
 	<-prefillStarted
+	cancelParent()
 	close(releasePrefill)
 	releasedPrefill = true
 	assert.Eventually(t, func() bool {
@@ -233,15 +235,11 @@ func TestPDRouter_RouteRecordsAsyncPrefillFailureWithoutSuccess(t *testing.T) {
 	ts.Start()
 	defer ts.Close()
 
-	var metricsMu sync.Mutex
-	metricCounts := map[string]float64{}
-	originalFn := metrics.IncrementCounterMetricFnForTest
-	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labels []string, labelValues ...string) {
-		metricsMu.Lock()
-		defer metricsMu.Unlock()
-		metricCounts[name] += value
-	}
-	defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+	failCounter, cleanup := metrics.SetupCounterMetricsForTest(
+		metrics.GatewayPrefillRequestFailTotal,
+		[]string{"gateway_pod", "model", "status", "status_code"},
+	)
+	defer cleanup()
 
 	pods := []*v1.Pod{
 		{
@@ -298,14 +296,8 @@ func TestPDRouter_RouteRecordsAsyncPrefillFailureWithoutSuccess(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "127.0.0.2:8000", result)
 	assert.Eventually(t, func() bool {
-		metricsMu.Lock()
-		defer metricsMu.Unlock()
-		return metricCounts[metrics.GatewayPrefillRequestFailTotal] == 1.0
+		return testutil.ToFloat64(failCounter.WithLabelValues("", "test-model", "http_error", "500")) == 1.0
 	}, time.Second, 10*time.Millisecond)
-
-	metricsMu.Lock()
-	defer metricsMu.Unlock()
-	assert.Equal(t, 0.0, metricCounts[metrics.GatewayPrefillRequestSuccessTotal])
 }
 
 func listenerPort(t *testing.T, l net.Listener) string {

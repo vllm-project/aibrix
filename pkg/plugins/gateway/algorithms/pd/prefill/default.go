@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"time"
 
@@ -105,12 +106,12 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		prefillPodName := prefillPod.Name
 		prefillPodIP := prefillPod.Status.PodIP
 		asyncCtx := &types.RoutingContext{
-			Context:     routingCtx.Context,
+			Context:     context.WithoutCancel(routingCtx.Context),
 			RequestID:   requestID,
 			Model:       routingCtx.Model,
 			Engine:      routingCtx.Engine,
 			RequestTime: requestTime,
-			ReqHeaders:  cloneStringMap(routingCtx.ReqHeaders),
+			ReqHeaders:  maps.Clone(routingCtx.ReqHeaders),
 		}
 		go func() {
 			defer e.tracker.RemovePrefillRequest(requestID)
@@ -236,15 +237,4 @@ func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingConte
 	}
 
 	return responseData, nil
-}
-
-func cloneStringMap(src map[string]string) map[string]string {
-	if src == nil {
-		return nil
-	}
-	dst := make(map[string]string, len(src))
-	for key, value := range src {
-		dst[key] = value
-	}
-	return dst
 }

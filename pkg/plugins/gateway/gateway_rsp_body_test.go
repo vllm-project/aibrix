@@ -23,9 +23,11 @@ import (
 	"time"
 
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -318,6 +320,67 @@ func TestHandleResponseBody_NonStreamNoTokens(t *testing.T) {
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
 	assert.NotNil(t, resp.GetResponseBody())
+}
+
+func TestHandleResponseBody_PDPrefillTimingMetricsRequirePrefillEndTime(t *testing.T) {
+	tests := []struct {
+		name             string
+		prefillEndOffset time.Duration
+		wantBucket       string
+		wantCount        float64
+	}{
+		{
+			name:       "skips prefill timing metric when prefill end is unset",
+			wantBucket: "0-1ms",
+			wantCount:  0.0,
+		},
+		{
+			name:             "emits prefill timing metric when prefill end is set",
+			prefillEndOffset: 50 * time.Millisecond,
+			wantBucket:       "50-100ms",
+			wantCount:        1.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prefillCounter, cleanup := metrics.SetupCounterMetricsForTest(
+				metrics.GatewayPrefillTimeBucketTotal,
+				[]string{"gateway_pod", "model", "bucket"},
+			)
+			defer cleanup()
+
+			mockCache := &MockCache{Cache: cache.NewForTest()}
+			mockCache.On("DoneRequestTrace", mock.Anything, "test-req-id", "test-model", int64(10), int64(5), int64(0)).Maybe()
+
+			server := &Server{cache: mockCache}
+			requestTime := time.Now().Add(-200 * time.Millisecond)
+			prefillStartTime := requestTime.Add(20 * time.Millisecond)
+			routerCtx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", "test-req-id", "")
+			routerCtx.ReqPath = PathChatCompletions
+			routerCtx.RequestTime = requestTime
+			routerCtx.PrefillStartTime = prefillStartTime
+			if tt.prefillEndOffset > 0 {
+				routerCtx.PrefillEndTime = prefillStartTime.Add(tt.prefillEndOffset)
+			}
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        []byte(`{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`),
+						EndOfStream: true,
+					},
+				},
+			}
+
+			resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", false, 0, false)
+
+			assert.True(t, complete)
+			assert.NotNil(t, resp)
+			assert.Equal(t, tt.wantCount, testutil.ToFloat64(prefillCounter.WithLabelValues("", "test-model", tt.wantBucket)))
+			mockCache.AssertExpectations(t)
+		})
+	}
 }
 
 func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
