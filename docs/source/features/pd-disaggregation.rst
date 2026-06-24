@@ -272,12 +272,62 @@ Configure the range in the pod's ``routingConfig``:
    * - ``combined``
      - ``true`` = this pod is a standard inference pod (runs both prefill and decode). Default: ``false``.
    * - ``prefillScorePolicy``
-     - How to score prefill pods. ``prefix_cache`` (default) or ``least_request``.
+     - How to score prefill pods. ``prefix_cache`` (default), ``least_request``, or ``conductor``.
    * - ``decodeScorePolicy``
-     - How to score decode pods. ``load_balancing`` (default) or ``least_request``.
+     - How to score decode pods. ``load_balancing`` (default), ``least_request``, or ``conductor``.
 
 .. note::
     Bucketing only takes effect when ``AIBRIX_PROMPT_LENGTH_BUCKETING=true`` is set on the gateway plugin.
+
+
+Conductor Scoring Policy
+-------------------------
+
+The ``conductor`` scoring policy selects pods by estimating latency for both prefill and decode phases, combining real-time metrics with workload characteristics.
+
+**Prefill Scoring**
+
+Estimates Time To First Token (TTFT) by considering:
+
+- **Queue time** — Time waiting behind currently running requests
+- **Prefix time** — Time to process tokens already in the KV prefix cache
+- **Prefill time** — Time to compute tokens that do not match the cache (accounts for attention complexity)
+
+**Decode Scoring**
+
+Estimates Time Between Tokens (TBT) by considering:
+
+- **Current throughput** — Derived from real-time generation metrics
+- **Batch scaling** — TBT increases as batch size grows
+- **GPU pressure** — Applies a penalty when cache usage exceeds 90%
+
+**Configuration**
+
+Enable conductor via the routing config:
+
+.. code-block:: yaml
+
+    annotations:
+      model.aibrix.ai/config: |
+        {
+          "profiles": {
+            "default": {
+              "routingStrategy": "pd",
+              "routingConfig": {
+                "prefillScorePolicy": "conductor",
+                "decodeScorePolicy": "conductor"
+              }
+            }
+          }
+        }
+
+Or set gateway-wide via ``AIBRIX_PREFILL_SCORE_POLICY`` and ``AIBRIX_DECODE_SCORE_POLICY``.
+
+**When to use conductor:**
+
+- You want routing based on predicted latency rather than just request count
+- Your workload has variable prompt lengths and mixed cache-hit patterns
+- You need to account for GPU memory pressure in decode routing
 
 
 Complete Example
@@ -388,10 +438,10 @@ These are set on the **gateway plugin** deployment.
      - Seconds before a prefill request to a prefill pod times out.
    * - ``AIBRIX_PREFILL_SCORE_POLICY``
      - ``prefix_cache``
-     - Default scoring policy for selecting prefill pods. ``prefix_cache`` or ``least_request``.
+     - Default scoring policy for selecting prefill pods. ``prefix_cache``, ``least_request``, or ``conductor``.
    * - ``AIBRIX_DECODE_SCORE_POLICY``
      - ``load_balancing``
-     - Default scoring policy for selecting decode pods.
+     - Default scoring policy for selecting decode pods. ``load_balancing``, ``least_request``, or ``conductor``.
    * - ``AIBRIX_KV_CONNECTOR_TYPE``
      - ``shfs``
      - KV transfer backend. ``shfs`` for GPU (SHFS/KVCacheManager), ``nixl`` for Neuron (TensorRT-LLM).
