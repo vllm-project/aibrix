@@ -2549,6 +2549,7 @@ func TestFilterPrefillDecodePods_SelectCorrectBucketPods(t *testing.T) {
 		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: pd.NewPrefillRequestTracker(),
+		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
 		httpClient:            &http.Client{},
 		selectionCounts:       map[string]int64{},
 	}
@@ -2579,6 +2580,7 @@ func TestFilterPrefillDecodePods_CombinedFallbackBucketing(t *testing.T) {
 		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: pd.NewPrefillRequestTracker(),
+		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
 		httpClient:            &http.Client{},
 		selectionCounts:       map[string]int64{},
 	}
@@ -2610,6 +2612,7 @@ func TestFilterPrefillDecodePods_NoBucketMatchNoCombined(t *testing.T) {
 		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: pd.NewPrefillRequestTracker(),
+		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
 		httpClient:            &http.Client{},
 		selectionCounts:       map[string]int64{},
 	}
