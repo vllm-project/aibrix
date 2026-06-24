@@ -190,6 +190,9 @@ spec:
             value: /v1/chat/completions
         - path:
             type: PathPrefix
+            value: /v1/responses
+        - path:
+            type: PathPrefix
             value: /v1/completions
         - path:
             type: PathPrefix
