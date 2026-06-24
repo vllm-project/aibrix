@@ -814,7 +814,9 @@ async def test_admit_persists_in_progress_transition(monkeypatch):
     await job_manager.set_job_entity_manager(_RecordingEM(delay=0.0))
 
     async def _ok_validate(self, job):
-        return None
+        validated_status = job.status.model_copy(deep=True)
+        validated_status.request_counts.total = 1
+        await self._progress_manager.mark_job_validated(job.job_id, validated_status)
 
     monkeypatch.setattr(
         "aibrix.batch.job_driver.base.BaseJobDriver.validate_job",
@@ -857,11 +859,9 @@ async def test_admit_persists_in_progress_transition(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_finalizing_transition_persists():
-    """When the last request completes and the job flips IN_PROGRESS->FINALIZING,
-    that transition must be flushed to the metastore so the console can show
-    'finalizing' before the terminal flush, instead of all events appearing at
-    once."""
-    from aibrix.batch.state import JobMetaInfo
+    """The explicit mark_job_finalizing() transition must be flushed to the
+    metastore so the console can show 'finalizing' before the terminal flush.
+    The per-request completion bitmap is covered by test_job_progress_tracker."""
 
     recorded: List[BatchJob] = []
 
@@ -896,14 +896,15 @@ async def test_finalizing_transition_persists():
     batch_job.status.request_counts.total = 1
     meta = JobMetaInfo(batch_job)
     job_manager._in_progress_jobs["fin-job-id"] = meta
+    job_manager._job_entity_manager.jobs["fin-job-id"] = batch_job.model_copy(deep=True)
 
-    # Complete the single request -> tracker flips the job to FINALIZING.
-    await job_manager.mark_job_progress("fin-job-id", 0)
+    await job_manager.mark_job_finalizing("fin-job-id")
 
     assert meta.status.state == BatchJobState.FINALIZING
     assert meta.status.finalizing_at is not None
     assert len(recorded) == 1
     assert recorded[0].status.state == BatchJobState.FINALIZING
+    assert recorded[0].status.finalizing_at is not None
 
 
 @pytest.mark.asyncio
