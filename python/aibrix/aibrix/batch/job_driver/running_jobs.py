@@ -24,7 +24,7 @@ interface the driver calls; the manager answers the per-request calls below from
 each job's tracker. A driver never touches a tracker directly.
 """
 
-from typing import List, Optional, Protocol, Tuple, runtime_checkable
+from typing import Optional, Protocol, runtime_checkable
 
 from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobStatus
 
@@ -35,61 +35,6 @@ class RunningJobs(Protocol):
 
     async def get_job(self, job_id: str) -> Optional[BatchJob]:
         """Get job by ID, or None if not found."""
-        ...
-
-    async def get_job_next_request(self, job_id: str) -> Tuple[BatchJob, int]:
-        """Get the next request ID to execute.
-
-        Returns:
-            (BatchJob, next_request_id) or (BatchJob, -1) if the job is done.
-
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
-        """
-        ...
-
-    async def complete_job_request(
-        self, job_id: str, req_id: int, failed: bool = False
-    ) -> BatchJob:
-        """Mark one request completed.
-
-        Used by concurrent single-worker execution, where completions can arrive
-        out of order and no next-request cursor should be returned.
-
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
-        """
-        ...
-
-    async def mark_job_progress_and_get_next_request(
-        self, job_id: str, req_id: int
-    ) -> Tuple[BatchJob, int]:
-        """Mark a request completed and return the next request ID.
-
-        Returns:
-            (BatchJob, next_request_id) or (BatchJob, -1) if the job is done.
-
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
-        """
-        ...
-
-    async def mark_jobs_progresses(
-        self, job_id: str, executed_requests: List[int]
-    ) -> BatchJob:
-        """Mark multiple requests completed.
-
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
-        """
-        ...
-
-    async def mark_job_total(self, job_id: str, total_requests: int) -> BatchJob:
-        """Mark the total number of requests for a job.
-
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
-        """
         ...
 
     async def mark_job_validated(self, job_id: str, status: BatchJobStatus) -> BatchJob:

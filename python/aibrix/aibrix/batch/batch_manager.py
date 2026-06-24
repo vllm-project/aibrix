@@ -692,7 +692,6 @@ class BatchManager(RunningJobs, SchedulableJobs):
             new_category="_in_progress_jobs",
         )  # type: ignore[call-arg]
 
-        became_in_progress = False
         try:
             job_driver = create_job_driver(
                 self._context,
@@ -720,22 +719,6 @@ class BatchManager(RunningJobs, SchedulableJobs):
             )
             return None
 
-        # Persist the VALIDATING->IN_PROGRESS transition. The metastore is the
-        # console's source of truth (see _resolve_batch_job); without this flush
-        # the job keeps its CREATED snapshot (surfaced as 'scheduling') until the
-        # terminal flush in mark_job_done, so in_progress/finalizing/completed all
-        # appear at once. Best-effort: a persist hiccup must not block admission —
-        # the terminal flush still carries the full status.
-        if became_in_progress and self._job_entity_manager:
-            try:
-                await self.apply_job_changes(meta_data, meta_data)
-            except Exception:
-                logger.warning(
-                    "Failed to persist IN_PROGRESS transition",
-                    job_id=job_id,
-                    exc_info=True,
-                )
-
         return job_driver
 
     async def get_job_endpoint(self, job_id: str) -> str:
@@ -747,123 +730,6 @@ class BatchManager(RunningJobs, SchedulableJobs):
             logger.info("Job is discarded", job_id=job_id)  # type: ignore[call-arg]
             return ""
         return str(job.spec.endpoint)
-
-    async def _complete_request_and_maybe_persist(
-        self, meta_data: JobMetaInfo, req_id: int, failed: bool = False
-    ) -> None:
-        """Complete one request and, if that flips the job into FINALIZING, flush
-        the transition to the metastore so the console shows 'finalizing' before
-        the terminal flush. Only the state transition is persisted (not every
-        request), keeping metastore writes to one per state change."""
-        was_finalizing = meta_data.status.state == BatchJobState.FINALIZING
-        meta_data.complete_one_request(req_id, failed)
-        if (
-            not was_finalizing
-            and meta_data.status.state == BatchJobState.FINALIZING
-            and self._job_entity_manager
-        ):
-            try:
-                await self.apply_job_changes(meta_data, meta_data)
-            except Exception:
-                logger.warning(
-                    "Failed to persist FINALIZING transition",
-                    job_id=meta_data.job_id,
-                    exc_info=True,
-                )
-
-    async def mark_job_progress(self, job_id: str, req_id: int) -> Tuple[BatchJob, int]:
-        """
-        This is used to sync job's progress, called by job driver.
-        It is guaranteed that each request is executed at least once.
-
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
-        """
-        meta_data = await self._meta_from_in_progress_job(job_id)
-
-        if req_id < 0 or req_id > meta_data.status.request_counts.total:
-            raise ValueError(f"invalide request_id: {req_id}")
-
-        await self._complete_request_and_maybe_persist(meta_data, req_id)
-        return meta_data, meta_data.next_request_id()
-
-    async def mark_jobs_progresses(
-        self, job_id: str, executed_requests: List[int]
-    ) -> BatchJob:
-        """
-        This is the batch operation to sync jobs' progresses, called by job driver.
-        It is guaranteed that each request is executed at least once.
-
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
-        """
-        meta_data = await self._meta_from_in_progress_job(job_id)
-
-        request_len = meta_data.status.request_counts.total
-        for req_id in executed_requests:
-            if req_id < 0 or req_id > request_len:
-                logger.error(  # type: ignore[call-arg]
-                    "Mark job progress failed - request index out of boundary",
-                    job_id=job_id,
-                    req_id=req_id,
-                    total=request_len,
-                )
-                continue
-            await self._complete_request_and_maybe_persist(meta_data, req_id)
-
-        return meta_data
-
-    async def get_job_next_request(self, job_id: str) -> Tuple[BatchJob, int]:
-        """
-        Get next request id to execute, see JobMetaInfo::next_request_id for details
-
-        Returns:
-            tuple: (job, next_request_id) or (job, -1) if job is done
-
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
-        """
-        meta_data = await self._meta_from_in_progress_job(job_id)
-        return meta_data, meta_data.next_request_id()
-
-    async def complete_job_request(
-        self, job_id: str, req_id: int, failed: bool = False
-    ) -> BatchJob:
-        """Mark a request completed without advancing the serial cursor."""
-        meta_data = await self._meta_from_in_progress_job(job_id)
-        async with meta_data._async_lock:
-            if req_id < 0 or req_id >= meta_data.status.request_counts.total:
-                raise ValueError(f"invalid request_id: {req_id}")
-            meta_data.complete_one_request(req_id, failed=failed)
-            return meta_data
-
-    async def mark_job_progress_and_get_next_request(
-        self, job_id: str, req_id: int
-    ) -> Tuple[BatchJob, int]:
-        """
-        This is used to sync job's progress, called by execution proxy.
-        It is guaranteed that each request is executed at least once.
-
-        Returns:
-            tuple: (job, next_request_id) or (job, -1) if job is done
-
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
-        """
-        meta_data = await self._meta_from_in_progress_job(job_id)
-
-        await self._complete_request_and_maybe_persist(meta_data, req_id)
-        return meta_data, meta_data.next_request_id()
-
-    async def mark_job_total(self, job_id: str, total_requests: int) -> BatchJob:
-        """
-        This is used to set job's total requests when stream reader sees the end of the request.
-
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
-        """
-        job, _ = await self.mark_job_progress(job_id, total_requests + 1)
-        return job
 
     async def mark_job_validated(self, job_id: str, status: BatchJobStatus) -> BatchJob:
         meta_data = await self._meta_from_in_progress_job(job_id)

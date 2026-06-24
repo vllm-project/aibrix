@@ -119,6 +119,11 @@ class _CapturingEngine:
         async for request in requests:
             await on_result(request, {"usage": {"prompt_tokens": 1}}, None)
 
+    async def capacity(self) -> CapacitySignal:
+        """Expose the source's advertised concurrency capacity to callers that
+        need to choose between serial and concurrent orchestration."""
+        return CapacitySignal(count=2)
+
 
 def _driver(
     job: BatchJob,
@@ -292,7 +297,9 @@ async def test_execute_worker_passes_client_concurrency_as_absolute_adaptive_cap
 
     result = await driver.execute_worker(job.job_id)
 
-    assert result.status.state == BatchJobState.FINALIZING
+    assert (
+        result.status.state == BatchJobState.IN_PROGRESS
+    )  # execute_worker will not set FINALIZING status
     assert engine.run_kwargs is not None
     assert engine.run_kwargs["adaptive_concurrency"] is True
     assert engine.run_kwargs["adaptive_max_concurrency"] == 64
@@ -348,9 +355,6 @@ async def test_execute_worker_stats_fallback_preserves_failed_count(monkeypatch)
     _patch_storage(monkeypatch, requests)
     persisted_statuses = []
 
-    async def complete_without_progress(job_id, req_id, failed=False):
-        return job
-
     async def update_job_local_status(job_id, worker_id, status):
         persisted_statuses.append(status.model_copy(deep=True))
         updated = job.model_copy(deep=True)
@@ -358,7 +362,6 @@ async def test_execute_worker_stats_fallback_preserves_failed_count(monkeypatch)
         driver._progress_manager._meta = updated
         return updated
 
-    driver._progress_manager.complete_job_request = complete_without_progress
     driver._progress_manager.update_job_local_status = update_job_local_status
 
     result = await driver.execute_worker(job.job_id)

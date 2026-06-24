@@ -93,18 +93,6 @@ async def test_single_job_runner_marks_failed_and_done():
 
 
 @pytest.mark.asyncio
-async def test_single_job_runner_completes_out_of_order():
-    job = _make_job(BatchJobState.IN_PROGRESS)
-    job.status.request_counts.total = 2
-    runner = SingleJobRunner(job)
-
-    await runner.complete_job_request("job-1", 1)
-    assert job.status.state == BatchJobState.IN_PROGRESS
-    await runner.complete_job_request("job-1", 0)
-    assert job.status.state == BatchJobState.FINALIZING
-
-
-@pytest.mark.asyncio
 async def test_run_returns_failure_when_execution_fails(monkeypatch):
     worker = BatchWorker()
     worker.llm_engine_base_url = "http://localhost:8000"

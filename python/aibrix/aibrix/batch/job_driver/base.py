@@ -1197,7 +1197,7 @@ class BaseJobDriver:
             else None
         )
         try:
-            run_kwargs = self._dispatch_run_kwargs_for_job(latest_job)
+            run_kwargs = self._dispatch_run_kwargs_for_job(job)
             await self._engine.run(
                 feed(),
                 on_result,
