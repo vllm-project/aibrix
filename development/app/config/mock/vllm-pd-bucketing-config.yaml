@@ -1,0 +1,320 @@
+# vLLM PD prompt-length bucketing mock for e2e tests.
+#
+# Three StormServices share model llama2-7b-vllm-bucket:
+#   - bucket-short:  prefill+decode for prompts 0–15 tokens
+#   - bucket-medium: prefill+decode for prompts 16–32 tokens
+#   - pd-bkt-comb: "all" role (combined=true) for prompts >32 tokens
+#     StormService name is kept short so generated pod hostnames stay within the
+#     63-character Kubernetes DNS label limit.
+#
+# Requires AIBRIX_PROMPT_LENGTH_BUCKETING=true on the gateway plugin (see config/test/gateway).
+# Apply alongside components.yaml (provides mocked-app-sa and RBAC).
+---
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: mock-llama2-7b-pd-bucket-short
+  namespace: default
+  labels:
+    model.aibrix.ai/name: "llama2-7b-vllm-bucket"
+    model.aibrix.ai/port: "8000"
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: "mock-llama2-7b-pd-bucket-short"
+  template:
+    metadata:
+      labels:
+        app: "mock-llama2-7b-pd-bucket-short"
+    spec:
+      roles:
+        - name: prefill
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: "llama2-7b-vllm-bucket"
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+                adapter.model.aibrix.ai/enabled: "true"
+              annotations:
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 0,
+                          "promptLenBucketMaxLength": 15
+                        }
+                      }
+                    }
+                  }
+            spec:
+              serviceAccountName: mocked-app-sa
+              containers:
+                - name: llm-engine
+                  image: aibrix/vllm-mock:nightly
+                  ports:
+                    - containerPort: 8000
+                  env:
+                    - name: DEPLOYMENT_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.labels['app']
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: MY_POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+        - name: decode
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: "llama2-7b-vllm-bucket"
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+                adapter.model.aibrix.ai/enabled: "true"
+              annotations:
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 0,
+                          "promptLenBucketMaxLength": 15
+                        }
+                      }
+                    }
+                  }
+            spec:
+              serviceAccountName: mocked-app-sa
+              containers:
+                - name: llm-engine
+                  image: aibrix/vllm-mock:nightly
+                  ports:
+                    - containerPort: 8000
+                  env:
+                    - name: DEPLOYMENT_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.labels['app']
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: MY_POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+---
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: mock-llama2-7b-pd-bucket-medium
+  namespace: default
+  labels:
+    model.aibrix.ai/name: "llama2-7b-vllm-bucket"
+    model.aibrix.ai/port: "8000"
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: "mock-llama2-7b-pd-bucket-medium"
+  template:
+    metadata:
+      labels:
+        app: "mock-llama2-7b-pd-bucket-medium"
+    spec:
+      roles:
+        - name: prefill
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: "llama2-7b-vllm-bucket"
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+                adapter.model.aibrix.ai/enabled: "true"
+              annotations:
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 16,
+                          "promptLenBucketMaxLength": 32
+                        }
+                      }
+                    }
+                  }
+            spec:
+              serviceAccountName: mocked-app-sa
+              containers:
+                - name: llm-engine
+                  image: aibrix/vllm-mock:nightly
+                  ports:
+                    - containerPort: 8000
+                  env:
+                    - name: DEPLOYMENT_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.labels['app']
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: MY_POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+        - name: decode
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: "llama2-7b-vllm-bucket"
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+                adapter.model.aibrix.ai/enabled: "true"
+              annotations:
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 16,
+                          "promptLenBucketMaxLength": 32
+                        }
+                      }
+                    }
+                  }
+            spec:
+              serviceAccountName: mocked-app-sa
+              containers:
+                - name: llm-engine
+                  image: aibrix/vllm-mock:nightly
+                  ports:
+                    - containerPort: 8000
+                  env:
+                    - name: DEPLOYMENT_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.labels['app']
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: MY_POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+---
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: mock-llama2-pd-bkt-comb
+  namespace: default
+  labels:
+    model.aibrix.ai/name: "llama2-7b-vllm-bucket"
+    model.aibrix.ai/port: "8000"
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: "mock-llama2-pd-bkt-comb"
+  template:
+    metadata:
+      labels:
+        app: "mock-llama2-pd-bkt-comb"
+    spec:
+      roles:
+        - name: all
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: "llama2-7b-vllm-bucket"
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+                adapter.model.aibrix.ai/enabled: "true"
+              annotations:
+                model.aibrix.ai/config: |
+                  {
+                    "defaultProfile": "pd",
+                    "profiles": {
+                      "pd": {
+                        "routingStrategy": "pd",
+                        "routingConfig": {
+                          "promptLenBucketMinLength": 0,
+                          "combined": true
+                        }
+                      }
+                    }
+                  }
+            spec:
+              serviceAccountName: mocked-app-sa
+              containers:
+                - name: llm-engine
+                  image: aibrix/vllm-mock:nightly
+                  ports:
+                    - containerPort: 8000
+                  env:
+                    - name: DEPLOYMENT_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.labels['app']
+                    - name: POD_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: MY_POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP

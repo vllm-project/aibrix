@@ -326,10 +326,39 @@ type Scores struct {
 	Score float64
 }
 
-// filterPrefillDecodePods filters pods into prefill and decode categories.
-// For multi-node tensor parallelism (e.g., TP=16 with node_rank=0 and node_rank=1),
-// only pods with PodGroupIndex="0" (node_rank=0) are selected as they run the HTTP server.
-// Pods without PodGroupIndex label are also included for backward compatibility.
+// filterPrefillDecodePods selects one prefill pod and one decode pod for the request.
+// For multi-node tensor parallelism, only pods with PodGroupIndex="0" run the HTTP
+// server and are routable; pods without that label are included for backward compatibility.
+//
+// Selection sequence:
+//
+//  1. collectAndBucketPods — partitions readyPods from eligible rolesets into prefill,
+//     decode, and (when bucketing is on) prompt-length-filtered and combined-role slices.
+//
+//  2. Pod availability check — errors immediately when no prefill or decode pods exist
+//     and no combined pod is available to cover the gap.
+//
+//  3. Bucketing path (AIBRIX_PROMPT_LENGTH_BUCKETING only) —
+//     a. No bucket match: prompt length falls outside every declared range.
+//     - Combined pods available → pick a random combined pod (no prefill HTTP call).
+//     - No combined pods → error; do not route to the wrong storm.
+//     b. Bucket match + load imbalance: prefill or decode pods are hot while a
+//     combined pod is idle → score and pick the best combined pod.
+//
+//  4. Prefill load-imbalance fast path — if outstanding prefill counts are skewed
+//     beyond aibrixPrefillLoadImbalanceMinSpread, narrow to the single least-loaded
+//     prefill pod and align decodePods to its roleset.
+//
+//  5. Decode load-imbalance fast path — three ordered checks (request-count spread,
+//     throughput spread, drain-rate ratio); the first that fires narrows decodePods
+//     to a single pod and aligns prefillPods to its roleset.
+//
+//  6. Score remaining candidates — scorePrefillPods and scoreDecodePods evaluate
+//     every roleset; finalPDScore picks the roleset with the lowest combined score.
+//
+//  7. Tracker registration — AddPrefillRequest and AddPendingDecode are called on
+//     the selected pods before returning so concurrent Route calls see up-to-date
+//     counts immediately.
 func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
 	var promptLength int
 	if aibrixPromptLengthBucketing {
@@ -345,17 +374,27 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	if len(decodePods) == 0 && !combinedAvailable {
 		return nil, nil, fmt.Errorf("decode pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
 	}
-	if combinedAvailable {
+
+	if aibrixPromptLengthBucketing {
 		if len(promptLengthBucketingPrefillPods) == 0 || len(promptLengthBucketingDecodePods) == 0 {
-			klog.InfoS("routing to combined pod", "requestId", routingCtx.RequestID, "promptLength", promptLength)
-			return nil, combinedPods[rand.Intn(len(combinedPods))], nil
+			// No bucket matches the request's prompt length.
+			if combinedAvailable {
+				// Combined pods cover any prompt length; pick one at random.
+				klog.InfoS("no bucket matches prompt length, routing to combined pod",
+					"requestId", routingCtx.RequestID, "promptLength", promptLength, "combinedPods", len(combinedPods),
+					"bucketPrefillPods", len(promptLengthBucketingPrefillPods), "bucketDecodePods", len(promptLengthBucketingDecodePods))
+				return nil, combinedPods[rand.Intn(len(combinedPods))], nil
+			}
+			// Do not fall back to unfiltered PD pods: each pod group (storm) is sized for a
+			// specific prompt-length range and cross-bucket routing produces incorrect results.
+			return nil, nil, fmt.Errorf("no prompt-length bucket matches prompt length %d and no combined pods available", promptLength)
 		}
 
+		// Bucket match exists; check if load imbalance favours a combined pod instead.
 		if r.shouldPickCombined(routingCtx, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods) {
 			combinedPod := r.scoreCombinedPods(routingCtx, combinedPods)
 			if combinedPod != nil {
-				klog.InfoS("load imbalance detected, selecting combined pod",
-					"requestId", routingCtx.RequestID, "selectedCombinedPod", combinedPod.Name)
+				klog.InfoS("load imbalance detected, selecting combined pod", "requestId", routingCtx.RequestID, "selectedCombinedPod", combinedPod.Name)
 				return nil, combinedPod, nil
 			}
 		}
@@ -914,7 +953,8 @@ func isPodWithHTTPServer(pod *v1.Pod) bool {
 func (r *pdRouter) isPodSuitableForPromptLength(routingCtx *types.RoutingContext, pod *v1.Pod, promptLength int) bool {
 	profile := configprofiles.ResolveProfileFromPod(pod, routingCtx.ReqConfigProfile)
 	if profile == nil {
-		return false
+		// Pods without model.aibrix.ai/config are not bucket-scoped; treat as any length.
+		return true
 	}
 	pdCfg := parsePDAlgorithmConfig(profile.RoutingConfig)
 	minLength, maxLength := pdCfg.PromptLenBucketMinLength, pdCfg.PromptLenBucketMaxLength

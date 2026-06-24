@@ -2599,6 +2599,32 @@ func TestFilterPrefillDecodePods_CombinedFallbackBucketing(t *testing.T) {
 	assert.Equal(t, 0, r.prefillRequestTracker.GetPrefillRequestCountsForPod("prefill-ok"))
 }
 
+func TestFilterPrefillDecodePods_NoBucketMatchNoCombined(t *testing.T) {
+	old := aibrixPromptLengthBucketing
+	aibrixPromptLengthBucketing = true
+	defer func() { aibrixPromptLengthBucketing = old }()
+
+	r := pdRouter{
+		cache:                 cache.NewForTest(),
+		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: pd.NewPrefillRequestTracker(),
+		httpClient:            &http.Client{},
+		selectionCounts:       map[string]int64{},
+	}
+
+	configBlocked := pdConfigAnnotation(0, 1, false)
+	prefillOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "prefill"}, Annotations: map[string]string{constants.ModelAnnoConfig: configBlocked}}}
+	decodeOK := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "decode-ok", Labels: map[string]string{PDRoleSetIdentifier: "rs1", PDRoleIdentifier: "decode"}, Annotations: map[string]string{constants.ModelAnnoConfig: configBlocked}}}
+
+	ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "say test", "req-no-bucket", "user")
+	prefill, decode, err := r.filterPrefillDecodePods(ctx, []*v1.Pod{prefillOK, decodeOK})
+	assert.Error(t, err)
+	assert.Nil(t, prefill)
+	assert.Nil(t, decode)
+	assert.Contains(t, err.Error(), "no prompt-length bucket matches")
+}
+
 func TestFilterPrefillDecodePods_CombinedPickImbalance(t *testing.T) {
 	old := aibrixPromptLengthBucketing
 	aibrixPromptLengthBucketing = true

@@ -130,6 +130,7 @@ func assertPDDisaggregationAfterPodDeletion(t *testing.T, roleLabel, modelName, 
 
 	t.Cleanup(func() {
 		validateAllPodsAreReady(t, k8sClient, initialCount)
+		waitForPDDisaggregationRouting(t, modelName)
 		t.Logf("%s pod %s has been recreated and cluster is back to %d pods", roleLabel, podToDelete, initialCount)
 	})
 
@@ -184,6 +185,8 @@ func TestPDDisaggregationVLLMDecodePodFailure(t *testing.T) {
 // PD router consistently selects valid prefill/decode pod pairs across requests.
 func TestPDDisaggregationVLLMMultipleRequests(t *testing.T) {
 	const iterations = 5
+
+	waitForPDDisaggregationRouting(t, modelNameVLLM)
 
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))

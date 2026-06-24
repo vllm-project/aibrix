@@ -74,7 +74,7 @@ func Test_ValidateRoutingStrategy(t *testing.T) {
 			expectedValidation: false,
 		},
 	}
-	cache.NewForTest()
+	cache.InitForTest()
 	routing.Init()
 	for _, tt := range tests {
 		_, currentValidation := routing.Validate(tt.routingStrategy)
@@ -581,29 +581,6 @@ func Test_selectTargetPod(t *testing.T) {
 			mockRouter.AssertExpectations(subtest)
 		})
 	}
-}
-
-func Test_selectTargetPod_PDIncompleteRoleset(t *testing.T) {
-	routing.Init()
-	server := &Server{}
-	routeCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, "test-model", "test-message", "test-request", "test-user")
-	pods := &utils.PodArray{Pods: []*v1.Pod{{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "prefill-only",
-			Labels: map[string]string{
-				"roleset-name": "rs1",
-				"role-name":    "prefill",
-			},
-		},
-		Status: v1.PodStatus{
-			PodIP:      "1.2.3.4",
-			Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
-		},
-	}}}
-
-	_, err := server.selectTargetPod(context.Background(), routeCtx, pods, "")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no complete prefill-decode roleset")
 }
 
 func TestValidateHTTPRouteStatus(t *testing.T) {

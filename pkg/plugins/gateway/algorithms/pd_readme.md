@@ -409,6 +409,23 @@ collectAndBucketPods()
 If bucket-filtered lists are non-empty, they replace the unfiltered lists.
 ```
 
+### Model-level bucketing detection
+
+`modelUsesPromptLengthBucketing()` checks whether any ready pod for the model declares an explicit prompt-length bucket (non-default `promptLenBucketMinLength` / `promptLenBucketMaxLength`) or a `combined=true` role. When no pod has such config, standard PD routing applies even if `AIBRIX_PROMPT_LENGTH_BUCKETING` is globally enabled — so adding the feature flag to a cluster does not affect models that have not opted in.
+
+### No-match guard
+
+When bucketing is enabled **and** the model uses bucketing (has at least one pod with bucket config), but the request's prompt length does not fall within any pod's declared range, the router returns an error rather than silently falling back to the unfiltered prefill/decode pool. Routing to the wrong bucket's pods would be incorrect: each pod group (storm) is sized and configured for a specific prompt-length range, so cross-bucket routing would produce unpredictable KV cache behavior.
+
+```
+if AIBRIX_PROMPT_LENGTH_BUCKETING &&
+   modelUsesPromptLengthBucketing() &&
+   (bucketPrefills == 0 || bucketDecodes == 0):
+     → error: "no prompt-length bucket matches prompt length N and no combined pods available"
+```
+
+This guard fires only after the combined-pod path has already been exhausted (combined pods are checked first and also handle the no-bucket-match case when they exist).
+
 ### Combined Pods
 
 When bucketing is enabled, pods with `combined=true` in their config profile can act as both prefill and decode. The router falls back to a combined pod when:
