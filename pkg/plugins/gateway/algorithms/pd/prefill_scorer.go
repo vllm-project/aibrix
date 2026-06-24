@@ -54,6 +54,17 @@ const (
 	// PrefillScorePolicyConductor selects the conductor scoring policy, which
 	// estimates the TTFT (contains queue, prefix, and prefill) for each pod
 	PrefillScorePolicyConductor = "conductor"
+
+	// Default TTFT estimation coefficients for conductor policy.
+	// Units: time in milliseconds, tokens are unitless.
+	//
+	// Prefix time model: T = PrefixTimeCoeffA * tokens + PrefixTimeCoeffB
+	DefaultPrefixTimeCoeffA = 0.005
+	DefaultPrefixTimeCoeffB = 1.0
+	// Prefill time model: T = PrefillTimeCoeffA * tokens^PrefillTimeCoeffB + PrefillTimeCoeffC
+	DefaultPrefillTimeCoeffA = 0.001
+	DefaultPrefillTimeCoeffB = 1.5
+	DefaultPrefillTimeCoeffC = 5.0
 )
 
 // PrefillScorer is a request-scoped scorer created by PrefillScorePolicy. Prepare
@@ -186,24 +197,57 @@ func (s leastRequestScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 	return reqCnt
 }
 
+// ConductorPrefillPolicyConfig contains TTFT estimation coefficients for the conductor policy.
+// These coefficients are used to model the time taken for prefix processing and prefill computation.
+type ConductorPrefillPolicyConfig struct {
+	// PrefixTimeCoeffA is the linear coefficient for prefix time estimation.
+	// Prefix time model: T = PrefixTimeCoeffA * tokens + PrefixTimeCoeffB
+	PrefixTimeCoeffA float64
+	// PrefixTimeCoeffB is the constant offset for prefix time estimation.
+	PrefixTimeCoeffB float64
+	// PrefillTimeCoeffA is the scaling coefficient for prefill time estimation.
+	// Prefill time model: T = PrefillTimeCoeffA * tokens^PrefillTimeCoeffB + PrefillTimeCoeffC
+	PrefillTimeCoeffA float64
+	// PrefillTimeCoeffB is the exponent for prefill time estimation (accounts for attention complexity).
+	PrefillTimeCoeffB float64
+	// PrefillTimeCoeffC is the constant offset for prefill time estimation.
+	PrefillTimeCoeffC float64
+}
+
+// NewConductorPrefillPolicyConfig returns a config with default coefficients.
+// different GPU device may have different default coefficients
+// A possible solution: add 'device' arg to ConductorPrefillPolicyConfig.
+// like ConductorPrefillPolicyConfig("default"), ConductorPrefillPolicyConfig("a100")
+//
+// now only support default config. arg not applied.
+func NewConductorPrefillPolicyConfig() ConductorPrefillPolicyConfig {
+	return ConductorPrefillPolicyConfig{
+		PrefixTimeCoeffA:  DefaultPrefixTimeCoeffA,
+		PrefixTimeCoeffB:  DefaultPrefixTimeCoeffB,
+		PrefillTimeCoeffA: DefaultPrefillTimeCoeffA,
+		PrefillTimeCoeffB: DefaultPrefillTimeCoeffB,
+		PrefillTimeCoeffC: DefaultPrefillTimeCoeffC,
+	}
+}
+
 // conductorPrefillPolicy estimates TTFT by summing three per-pod components
-//   estimated_TTFT(pod) = 	queue(reqCnt, PrefillTimePerRequest)
-// 						 	+ prefix(matched_tokens) 
-// 						 	+ prefill(unmatched_tokens)
+// estimated_TTFT(pod) = queue(reqCnt, PrefillTimePerRequest) + prefix(matched_tokens) + prefill(unmatched_tokens)
 // metricCache is used to get real-time info PrefillTimePerRequest.
 type conductorPrefillPolicy struct {
 	tok                tokenizer.Tokenizer
 	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
 	metricCache        cache.MetricCache
+	config             ConductorPrefillPolicyConfig
 }
 
 // NewConductorPrefillPolicy constructs a conductor PrefillScorePolicy with the
-// given tokenizer, shared prefix-hash table, and metric cache.
-func NewConductorPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *prefixcacheindexer.PrefixHashTable, metricCache cache.MetricCache) PrefillScorePolicy {
+// given tokenizer, shared prefix-hash table, metric cache, and TTFT estimation config.
+func NewConductorPrefillPolicy(tok tokenizer.Tokenizer, prefixCacheIndexer *prefixcacheindexer.PrefixHashTable, metricCache cache.MetricCache, config ConductorPrefillPolicyConfig) PrefillScorePolicy {
 	return &conductorPrefillPolicy{
 		tok:                tok,
 		prefixCacheIndexer: prefixCacheIndexer,
 		metricCache:        metricCache,
+		config:             config,
 	}
 }
 
@@ -222,6 +266,7 @@ func (p *conductorPrefillPolicy) Prepare(routingCtx *types.RoutingContext, _ []*
 		totalTokens: len(tokens),
 		metricCache: p.metricCache,
 		modelName:   routingCtx.Model,
+		config:      p.config,
 	}, nil
 }
 
@@ -234,54 +279,61 @@ type conductorScorer struct {
 	totalTokens int
 	metricCache cache.MetricCache
 	modelName   string
+	config      ConductorPrefillPolicyConfig
 }
 
 func (s *conductorScorer) PrefixHashes() []uint64 { return s.hashes }
 
-// estimateQueue estimates the queue-wait component of TTFT as a simple linear function
+// estimateQueue estimates the queue-wait component of TTFT (in ms) as a simple linear function
 // of the pod's currently running request count.
 //
-//	queue_estimate = reqCnt * avgPrefillTime
-func (s *conductorScorer) estimateQueue(reqCnt float64, avgPrefillTimeSeconds float64) float64 {
-	return reqCnt * avgPrefillTimeSeconds
+// queue_estimate = reqCnt * avgPrefillTimeMs
+func (s *conductorScorer) estimateQueue(reqCnt float64, avgPrefillTimeMs float64) float64 {
+	if reqCnt <= 0 {
+		return 0.0
+	}
+	return reqCnt * avgPrefillTimeMs
 }
 
-// estimatePrefix estimates the prefix-cache portion of TTFT based on the number of
+// estimatePrefix estimates the prefix-cache portion of TTFT (in ms) based on the number of
 // tokens already matched in the pod.
 //
-//	use model: T = A * tokens + B (linear)
+// use model: T = A * tokens + B (linear)
 func (s *conductorScorer) estimatePrefix(matchedTokens float64) float64 {
-	PrefixTimeCoeffA := 0.005
-	PrefixTimeCoeffB := 1.0
-	return PrefixTimeCoeffA * matchedTokens + PrefixTimeCoeffB
+	if matchedTokens <= 0 {
+		return 0.0
+	}
+	return s.config.PrefixTimeCoeffA*matchedTokens + s.config.PrefixTimeCoeffB
 }
 
-// estimatePrefill estimates the prefill-compute portion of TTFT in milliseconds 
+// estimatePrefill estimates the prefill-compute portion of TTFT (in ms)
 // for the tokens that did not match the prefix cache.
 //
 // Uses model: T = A * tokens^B + C (superlinear due to attention complexity).
 func (s *conductorScorer) estimatePrefill(unmatchedTokens float64) float64 {
-	PrefillTimeCoeffA := 0.001
-	PrefillTimeCoeffB := 1.5
-	PrefillTimeCoeffC := 5.0
-	return PrefillTimeCoeffA * math.Pow(unmatchedTokens, PrefillTimeCoeffB) + PrefillTimeCoeffC
+	if unmatchedTokens <= 0 {
+		return 0.0
+	}
+	return s.config.PrefillTimeCoeffA*math.Pow(unmatchedTokens, s.config.PrefillTimeCoeffB) + s.config.PrefillTimeCoeffC
 }
 
-// ScorePod returns the estimated TTFT for a single pod by summing the queue,
+// ScorePod returns the estimated TTFT (in ms) for a single pod by summing the queue,
 // prefix, and prefill components. Lower scores are preferred by the router.
 func (s *conductorScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 	matchPct := float64(s.matchedPods[pod.Name]) // 0..100, 0 when the pod is not in matchedPods
 	matchedTokens := float64(s.totalTokens) * matchPct / 100.0
 	unmatchedTokens := float64(s.totalTokens) - matchedTokens
 
+	// default value applied if metric lookup fails
+	// assume it's 512 tokens' prefill time under config
+	avgPrefillTimeMs := s.estimatePrefill(512)
 	avgPrefillTimeSecondsMetric, err := s.metricCache.GetMetricValueByPodModel(pod.Name, pod.Namespace, s.modelName, metrics.RequestPrefillTimeSeconds)
-	avgPrefillTimeSeconds := float64(0.5) // default value if metric lookup fails
 	if err != nil {
 		klog.V(4).ErrorS(err, "error getting RequestPrefillTimeSeconds")
 	} else if hist := avgPrefillTimeSecondsMetric.GetHistogramValue(); hist != nil && hist.Count > 0 {
-		avgPrefillTimeSeconds = hist.GetMean()
+		avgPrefillTimeMs = hist.GetMean() * 1000
 	}
-	queueEst := s.estimateQueue(reqCnt, avgPrefillTimeSeconds)
+	queueEst := s.estimateQueue(reqCnt, avgPrefillTimeMs)
 	prefixEst := s.estimatePrefix(matchedTokens)
 	prefillEst := s.estimatePrefill(unmatchedTokens)
 	score := queueEst + prefixEst + prefillEst

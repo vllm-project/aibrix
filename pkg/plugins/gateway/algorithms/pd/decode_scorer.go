@@ -40,11 +40,10 @@ const (
 	// requests (including pending requests not yet reflected in metrics).
 	DecodePolicyLeastRequest DecodePolicyName = "least_request"
 
-	// DecodePolicyConductor routes to the pod with the best combined score of
-	// normalized running-request count, inverse throughput, and free GPU
-	// headroom. Compared to load_balancing, conductor weights free-GPU more
-	// aggressively and adds a small "cold-pod boost" for pods with very low
-	// request counts.
+	// DecodePolicyConductor routes to the pod with the lowest estimated TBT
+	// (time between tokens) after adding the request, accounting for GPU-cache
+	// pressure. Uses throughput-derived TBT, sublinear batch-size scaling, and
+	// a penalty for pods above the GPU-cache utilization threshold.
 	DecodePolicyConductor DecodePolicyName = "conductor"
 )
 
@@ -52,6 +51,13 @@ const (
 	ScorePolicyLoadBalancing = string(DecodePolicyLoadBalancing)
 	ScorePolicyLeastRequest  = string(DecodePolicyLeastRequest)
 	ScorePolicyConductor     = string(DecodePolicyConductor)
+)
+
+// Default values for ConductorDecodePolicy.
+const (
+	DefaultGPUCachePressureThreshold = 0.9
+	DefaultGPUCachePressurePenalty   = 1.5
+	DefaultDecodeTBTFallbackMs       = 20.0
 )
 
 // Weights for the load_balancing score numerator:
@@ -172,19 +178,45 @@ func (LeastRequestDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext,
 	return in.RunningReqs
 }
 
-// ConductorDecodePolicy is left empty. LoadBalancingDecodePolicy serves as the default.
+// ConductorDecodePolicy scores decode pods by estimated TBT
+// after adding the request, with a GPU-cache pressure penalty.
+//
+//	estimated_TBT = current_TBT * (1 + 1 / max(running_reqs, 1))
+//	if gpu_cache_usage > threshold: estimated_TBT *= penalty
+//
+// Lower score is better.
 type ConductorDecodePolicy struct{}
 
 func (ConductorDecodePolicy) Name() DecodePolicyName { return DecodePolicyConductor }
 
 func (ConductorDecodePolicy) Describe() string {
-	return "TODO: not implemented yet"
+	return fmt.Sprintf("conductor: estimated TBT after adding request; gpu_penalty=%gx above %.0f%% usage",
+		DefaultGPUCachePressurePenalty, DefaultGPUCachePressureThreshold*100)
 }
 
 func (ConductorDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, pod *v1.Pod, in DecodePodInput) float64 {
-	_ = pod
-	_ = in
-	return 0
+	currentTBTMs := DefaultDecodeTBTFallbackMs
+	if in.Throughput > 0 {
+		currentTBTMs = 1000.0 / in.Throughput
+	}
+
+	// TBT after adding one request to a decode pod.
+	runningReqs := math.Max(in.RunningReqs, 1.0)
+	estimatedTBT := currentTBTMs * (1.0 + 1.0/runningReqs)
+
+	// GPU-cache pressure penalty.
+	gpuCacheUsage := 1.0 - in.FreeGPUPercent/100.0
+	if gpuCacheUsage > DefaultGPUCachePressureThreshold {
+		estimatedTBT *= DefaultGPUCachePressurePenalty
+	}
+
+	klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
+		"policy", DecodePolicyConductor, "decode_score", estimatedTBT,
+		"current_tbt_ms", currentTBTMs, "running_reqs", in.RunningReqs,
+		"gpu_cache_usage", gpuCacheUsage, "throughput", in.Throughput,
+		"free_gpu_percent", in.FreeGPUPercent)
+
+	return estimatedTBT
 }
 
 // decodePolicyFactories is the immutable registry of built-in decode scoring
@@ -246,11 +278,11 @@ func ResolveDecodePolicy(raw string) (policy DecodeScorePolicy, canonical Decode
 // policy names, including both built-in and dynamically registered custom ones.
 // Used in log/error messages to guide operators toward valid values.
 func ValidDecodePolicyNames() []string {
-	names := []string{string(DecodePolicyLoadBalancing), string(DecodePolicyLeastRequest)}
+	names := []string{string(DecodePolicyLoadBalancing), string(DecodePolicyLeastRequest), string(DecodePolicyConductor)}
 	decodePolicyRegistryMu.RLock()
 	defer decodePolicyRegistryMu.RUnlock()
 	for name := range decodePolicyRegistryCustom {
-		if name != string(DecodePolicyLoadBalancing) && name != string(DecodePolicyLeastRequest) {
+		if name != string(DecodePolicyLoadBalancing) && name != string(DecodePolicyLeastRequest) && name != string(DecodePolicyConductor) {
 			names = append(names, name)
 		}
 	}

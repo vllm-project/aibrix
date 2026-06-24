@@ -18,7 +18,6 @@ package pd
 
 import (
 	"fmt"
-	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -111,7 +110,7 @@ func TestNewConductorPrefillPolicy(t *testing.T) {
 	pt := prefixcacheindexer.NewPrefixHashTable()
 	mc := newMockMetricCache()
 
-	policy := NewConductorPrefillPolicy(tok, pt, mc)
+	policy := NewConductorPrefillPolicy(tok, pt, mc, NewConductorPrefillPolicyConfig())
 
 	assert.NotNil(t, policy)
 	assert.Equal(t, PrefillScorePolicyConductor, policy.Name())
@@ -127,7 +126,7 @@ func TestConductorPrepare_Basic(t *testing.T) {
 	pt := prefixcacheindexer.NewPrefixHashTable()
 	mc := newMockMetricCache()
 
-	policy := NewConductorPrefillPolicy(tok, pt, mc)
+	policy := NewConductorPrefillPolicy(tok, pt, mc, NewConductorPrefillPolicyConfig())
 
 	ctx := makeRoutingContext("test-model", "hello world")
 	pods := []*v1.Pod{makeTestPod("pod-1", "default")}
@@ -154,13 +153,13 @@ func TestConductorScorePod_WithHistogramMetric(t *testing.T) {
 	pt := prefixcacheindexer.NewPrefixHashTable()
 	mc := newMockMetricCache()
 
-	policy := NewConductorPrefillPolicy(tok, pt, mc)
+	policy := NewConductorPrefillPolicy(tok, pt, mc, NewConductorPrefillPolicyConfig())
 
 	model := "test-model"
 	pod := makeTestPod("pod-1", "default")
 
-	// Set up histogram: sum=200, count=100 -> mean=2.0 seconds
-	mc.SetHistogram("pod-1", "default", model, metrics.RequestPrefillTimeSeconds, 200.0, 100.0)
+	// Set up histogram: sum=0.2ms, count=100 -> mean=0.02ms
+	mc.SetHistogram("pod-1", "default", model, metrics.RequestPrefillTimeSeconds, 0.2, 100.0)
 
 	ctx := makeRoutingContext(model, "test")
 	readyMap := map[string]struct{}{"pod-1": {}}
@@ -169,12 +168,45 @@ func TestConductorScorePod_WithHistogramMetric(t *testing.T) {
 	assert.NoError(t, err)
 
 	score := scorer.ScorePod(pod, 3.0, 10.0)
+	// tokenLen = 4, where 0 matched, 4 unmatched
+	// queue 3 * 0.2s / 100 = 6ms
+	// prefix = 0 + 1 = 1ms
+	// prefill = 0.001 * 4^1.5 + 5 = 5.008ms
+	// total = 6 + 1 + 5.008 = 12.008ms
+	assert.InDelta(t, 12.008, score, 1e-9)
+}
 
-	// queue 3 * 200 / 100 = 6.0
-	// prefix = 0 + 1 = 1
-	// prefill = 0.001 * 4^1.5 + 5 = 5.008
-	// total = 6 + 1 + 5.008 = 12.008
-	assert.Greater(t, 1e-6, math.Abs(score-12.008))
+// ============================================================
+// Test: ScorePod with zero tokens (empty message)
+// ============================================================
+// Verifies that an empty message (totalTokens = 0) results in
+// both prefix and prefill estimates short-circuit to 0.
+// The score reduces to purely the queue component.
+func TestConductorScorePod_EmptyMessage(t *testing.T) {
+	tok := tokenizer.NewCharacterTokenizer()
+	pt := prefixcacheindexer.NewPrefixHashTable()
+	mc := newMockMetricCache()
+
+	policy := NewConductorPrefillPolicy(tok, pt, mc, NewConductorPrefillPolicyConfig())
+
+	model := "test-model"
+	pod := makeTestPod("pod-1", "default")
+
+	// Set up histogram: sum=0.2s, count=100 -> mean=0.002s = 2ms
+	mc.SetHistogram("pod-1", "default", model, metrics.RequestPrefillTimeSeconds, 0.2, 100.0)
+
+	// Empty message -> totalTokens = 0
+	ctx := makeRoutingContext(model, "")
+	readyMap := map[string]struct{}{"pod-1": {}}
+
+	scorer, err := policy.Prepare(ctx, []*v1.Pod{pod}, readyMap)
+	assert.NoError(t, err)
+
+	conductorScorer := scorer.(*conductorScorer)
+	assert.Equal(t, 0, conductorScorer.totalTokens)
+
+	score := scorer.ScorePod(pod, 3.0, 10.0)
+	assert.InDelta(t, 6.0, score, 1e-9)
 }
 
 // ============================================================
@@ -189,13 +221,13 @@ func TestConductorScorePod_CacheUpdateReflected(t *testing.T) {
 	pt := prefixcacheindexer.NewPrefixHashTable()
 	mc := newMockMetricCache()
 
-	policy := NewConductorPrefillPolicy(tok, pt, mc)
+	policy := NewConductorPrefillPolicy(tok, pt, mc, NewConductorPrefillPolicyConfig())
 
 	model := "test-model"
 	pod := makeTestPod("pod-1", "default")
 
 	// Phase 1: Initial state - avgPrefillTime = 1.0s
-	mc.SetHistogram("pod-1", "default", model, metrics.RequestPrefillTimeSeconds, 100.0, 100.0)
+	mc.SetHistogram("pod-1", "default", model, metrics.RequestPrefillTimeSeconds, 0.1, 100.0)
 
 	ctx := makeRoutingContext(model, "hello")
 	readyMap := map[string]struct{}{"pod-1": {}}
@@ -206,7 +238,7 @@ func TestConductorScorePod_CacheUpdateReflected(t *testing.T) {
 	score1 := scorer1.ScorePod(pod, 5.0, 10.0)
 
 	// Phase 2: Update cache - avgPrefillTime becomes 10.0s (10x slower)
-	mc.SetHistogram("pod-1", "default", model, metrics.RequestPrefillTimeSeconds, 1000.0, 100.0)
+	mc.SetHistogram("pod-1", "default", model, metrics.RequestPrefillTimeSeconds, 1.0, 100.0)
 
 	// Create a NEW scorer via Prepare (simulating a new routing request)
 	scorer2, err := policy.Prepare(ctx, []*v1.Pod{pod}, readyMap)

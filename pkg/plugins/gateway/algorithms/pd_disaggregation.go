@@ -38,7 +38,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
-	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -207,23 +206,11 @@ type pdRouter struct {
 }
 
 func newPrefixCachePrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable) pd.PrefillScorePolicy {
-	var tok tokenizer.Tokenizer
-	if tokenizerType == tokenizerTypeTiktoken {
-		tok = tokenizer.NewTiktokenTokenizer()
-	} else {
-		tok = tokenizer.NewCharacterTokenizer()
-	}
-	return pd.NewPrefixCachePrefillPolicy(tok, sharedPrefixTable)
+	return pd.NewPrefixCachePrefillPolicy(newTokenizer(), sharedPrefixTable)
 }
 
 func newConductorPrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable, metricCache cache.MetricCache) pd.PrefillScorePolicy {
-	var tok tokenizer.Tokenizer
-	if tokenizerType == tokenizerTypeTiktoken {
-		tok = tokenizer.NewTiktokenTokenizer()
-	} else {
-		tok = tokenizer.NewCharacterTokenizer()
-	}
-	return pd.NewConductorPrefillPolicy(tok, sharedPrefixTable, metricCache)
+	return pd.NewConductorPrefillPolicy(newTokenizer(), sharedPrefixTable, metricCache, pd.NewConductorPrefillPolicyConfig())
 }
 
 func NewPDRouter() (types.Router, error) {
