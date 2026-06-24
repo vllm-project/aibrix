@@ -110,6 +110,7 @@ func TestPDRouter_Route(t *testing.T) {
 
 			ctx := types.NewRoutingContext(context.Background(), "test", "model", "message", "test-request", "user")
 			ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
+			ctx.Engine = tt.llmEngine
 
 			result, err := r.Route(ctx, &utils.PodArray{Pods: tt.readyPods})
 

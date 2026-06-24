@@ -442,6 +442,14 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", fmt.Errorf("no ready pods for routing")
 	}
 
+	if routeCtx.Algorithm == routing.RouterPD {
+		engine, err := routing.ValidateAndGetLLMEngine(readyPods)
+		if err != nil {
+			return "", fmt.Errorf("engine validation failed for request %s: %w", routeCtx.RequestID, err)
+		}
+		routeCtx.Engine = engine
+	}
+
 	router, err := routing.Select(routeCtx)
 	if err != nil {
 		return "", err

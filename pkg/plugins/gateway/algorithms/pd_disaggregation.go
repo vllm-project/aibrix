@@ -277,13 +277,6 @@ func NewPDRouter() (types.Router, error) {
 
 func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	readyPods := readyPodList.All()
-	prefillPodsForEngine := prefillPodsFromEligibleRolesets(readyPods)
-	llmEngine, err := validateAndGetLLMEngine(prefillPodsForEngine)
-	if err != nil {
-		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
-			map[string]string{"status": pdRouteValidateLLMEngineFail, "status_code": "400"})
-		return "", fmt.Errorf("engine validation failed for request %s: %w", ctx.RequestID, err)
-	}
 
 	prefillPod, decodePod, err := r.podSelector.Select(ctx, readyPods)
 	if err != nil {
@@ -304,7 +297,7 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		}
 		ctx.RespHeaders[HeaderPrefillTargetPod] = prefillPod.Name
 		ctx.RespHeaders[HeaderPrefillTargetPodIP] = prefillPod.Status.PodIP
-		err = r.doPrefillRequest(ctx, prefillPod, llmEngine)
+		err = r.doPrefillRequest(ctx, prefillPod, ctx.Engine)
 		if err != nil {
 			// Remove is a no-op if the executor already cleaned up (e.g. sync HTTP failure).
 			r.prefillRequestTracker.RemovePrefillRequest(ctx.RequestID)
@@ -1140,20 +1133,19 @@ func getLLMEngine(pod *v1.Pod, labelName string, defaultValue string) string {
 	return labelTarget
 }
 
-// validateAndGetLLMEngine validates that all prefill pods use the same engine and returns it.
-func validateAndGetLLMEngine(prefillPods []*v1.Pod) (string, error) {
-	if len(prefillPods) == 0 {
-		return "", fmt.Errorf("no prefill pods provided")
+// ValidateAndGetLLMEngine validates that all pods use the same LLM engine label and returns it.
+func ValidateAndGetLLMEngine(pods []*v1.Pod) (string, error) {
+	if len(pods) == 0 {
+		return "", fmt.Errorf("no pods provided")
 	}
 
-	firstEngine := getLLMEngine(prefillPods[0], LLMEngineIdentifier, VLLMEngine)
+	firstEngine := getLLMEngine(pods[0], LLMEngineIdentifier, VLLMEngine)
 
-	// Validate all pods use the same engine
-	for i := 1; i < len(prefillPods); i++ {
-		engine := getLLMEngine(prefillPods[i], LLMEngineIdentifier, VLLMEngine)
+	for i := 1; i < len(pods); i++ {
+		engine := getLLMEngine(pods[i], LLMEngineIdentifier, VLLMEngine)
 		if engine != firstEngine {
 			return "", fmt.Errorf("inconsistent LLM engines detected: pod %s has %s, pod %s has %s",
-				prefillPods[0].Name, firstEngine, prefillPods[i].Name, engine)
+				pods[0].Name, firstEngine, pods[i].Name, engine)
 		}
 	}
 
