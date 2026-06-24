@@ -28,9 +28,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
@@ -422,16 +420,10 @@ func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.P
 }
 
 func (r *PodSetReconciler) getPodsForPodSet(ctx context.Context, podSet *orchestrationv1alpha1.PodSet) (*v1.PodList, error) {
-	requirement, err := labels.NewRequirement(constants.PodSetNameLabelKey, selection.Equals, []string{podSet.Name})
-	if err != nil {
-		return nil, err
-	}
-	labelSelector := labels.NewSelector().Add(*requirement)
-
 	podList := &v1.PodList{}
-	err = r.List(ctx, podList,
-		client.InNamespace(podSet.Namespace),
-		client.MatchingLabelsSelector{Selector: labelSelector})
+	err := r.List(ctx, podList, client.InNamespace(podSet.Namespace), client.MatchingLabels{
+		constants.PodSetNameLabelKey: podSet.Name,
+	})
 	return podList, err
 }
 
