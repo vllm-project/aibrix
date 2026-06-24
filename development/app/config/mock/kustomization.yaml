@@ -3,6 +3,7 @@ resources:
   - components.yaml
   - config-profile.yaml
   - vllm-pd-config.yaml
+  - vllm-pd-bucketing-config.yaml
   - sglang-pd-config.yaml
   - trtllm-pd-config.yaml
 

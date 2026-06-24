@@ -90,7 +90,8 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		completionFields = append([]interface{}{}, fields...)
 	}
 
-	e.tracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name)
+	// PrefillRequestTracker.AddPrefillRequest is called at pod selection time in
+	// filterPrefillDecodePods; this executor only removes the entry when prefill completes.
 	routingCtx.PrefillStartTime = time.Now()
 
 	if handler.IsAsync() {
