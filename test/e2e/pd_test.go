@@ -20,11 +20,13 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // assertPDDisaggregation sends a single PD-routed chat completion for the given model and
@@ -99,6 +101,106 @@ func TestPDDisaggregationTRTLLM(t *testing.T) {
 		"Say this is a test for TensorRT-LLM PD disaggregation",
 		"TRT-LLM PD chat completion request failed",
 		"TRT-LLM")
+}
+
+// TestPDDisaggregationVLLMPrefillPodFailure verifies that with 2x1P1D setup, taking down one
+// prefill pod still allows 10 requests to succeed via the remaining complete roleset.
+func TestPDDisaggregationVLLMPrefillPodFailure(t *testing.T) {
+	ctx := context.Background()
+	k8sClient, _ := initializeClient(ctx, t)
+
+	initialPods, err := k8sClient.CoreV1().Pods("default").List(ctx, v1.ListOptions{})
+	require.NoError(t, err)
+	initialCount := len(initialPods.Items)
+
+	prefillPods, err := k8sClient.CoreV1().Pods("default").List(ctx, v1.ListOptions{
+		LabelSelector: "role-name=prefill",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, prefillPods.Items, "expected at least one prefill pod")
+
+	podToDelete := prefillPods.Items[0].Name
+	t.Logf("deleting prefill pod: %s", podToDelete)
+
+	require.NoError(t, k8sClient.CoreV1().Pods("default").Delete(ctx, podToDelete, v1.DeleteOptions{}))
+
+	t.Cleanup(func() {
+		validateAllPodsAreReady(t, k8sClient, initialCount)
+		t.Logf("prefill pod %s has been recreated and cluster is back to %d pods", podToDelete, initialCount)
+	})
+
+	// Give the gateway time to detect the pod is gone.
+	time.Sleep(3 * time.Second)
+
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+
+	for i := 0; i < 10; i++ {
+		_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+			Messages: []openai.ChatCompletionMessageParamUnion{
+				openai.UserMessage("PD prefill-pod-failure resilience test"),
+			},
+			Model: modelNameVLLM,
+		})
+		require.NoError(t, err, "request %d failed after prefill pod deletion", i)
+
+		decodePod := dst.Header.Get("target-pod")
+		prefillPod := dst.Header.Get("prefill-target-pod")
+		assert.NotEmpty(t, decodePod, "request %d: target-pod header must be set", i)
+		assert.NotEmpty(t, prefillPod, "request %d: prefill-target-pod header must be set", i)
+		assert.NotEqual(t, prefillPod, decodePod, "request %d: prefill and decode pods should differ", i)
+		t.Logf("request %d — prefill: %s, decode: %s", i, prefillPod, decodePod)
+	}
+}
+
+// TestPDDisaggregationVLLMDecodePodFailure verifies that with 2x1P1D setup, taking down one
+// decode pod still allows 10 requests to succeed via the remaining complete roleset.
+func TestPDDisaggregationVLLMDecodePodFailure(t *testing.T) {
+	ctx := context.Background()
+	k8sClient, _ := initializeClient(ctx, t)
+
+	initialPods, err := k8sClient.CoreV1().Pods("default").List(ctx, v1.ListOptions{})
+	require.NoError(t, err)
+	initialCount := len(initialPods.Items)
+
+	decodePods, err := k8sClient.CoreV1().Pods("default").List(ctx, v1.ListOptions{
+		LabelSelector: "role-name=decode",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, decodePods.Items, "expected at least one decode pod")
+
+	podToDelete := decodePods.Items[0].Name
+	t.Logf("deleting decode pod: %s", podToDelete)
+
+	require.NoError(t, k8sClient.CoreV1().Pods("default").Delete(ctx, podToDelete, v1.DeleteOptions{}))
+
+	t.Cleanup(func() {
+		validateAllPodsAreReady(t, k8sClient, initialCount)
+		t.Logf("decode pod %s has been recreated and cluster is back to %d pods", podToDelete, initialCount)
+	})
+
+	// Give the gateway time to detect the pod is gone.
+	time.Sleep(3 * time.Second)
+
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+
+	for i := 0; i < 10; i++ {
+		_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+			Messages: []openai.ChatCompletionMessageParamUnion{
+				openai.UserMessage("PD decode-pod-failure resilience test"),
+			},
+			Model: modelNameVLLM,
+		})
+		require.NoError(t, err, "request %d failed after decode pod deletion", i)
+
+		decodePod := dst.Header.Get("target-pod")
+		prefillPod := dst.Header.Get("prefill-target-pod")
+		assert.NotEmpty(t, decodePod, "request %d: target-pod header must be set", i)
+		assert.NotEmpty(t, prefillPod, "request %d: prefill-target-pod header must be set", i)
+		assert.NotEqual(t, prefillPod, decodePod, "request %d: prefill and decode pods should differ", i)
+		t.Logf("request %d — prefill: %s, decode: %s", i, prefillPod, decodePod)
+	}
 }
 
 // TestPDDisaggregationVLLMMultipleRequests sends several requests to verify that the

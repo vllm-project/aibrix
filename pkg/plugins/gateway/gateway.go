@@ -441,9 +441,6 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods for routing")
 	}
-	if routeCtx.Algorithm == routing.RouterPD && !routing.HasEligibleRoleset(readyPods) {
-		return "", fmt.Errorf("no complete prefill-decode roleset available")
-	}
 
 	router, err := routing.Select(routeCtx)
 	if err != nil {
