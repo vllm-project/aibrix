@@ -1,9 +1,9 @@
 # vLLM PD (Prefill-Decode) disaggregation mock StormService for e2e tests.
 #
-# A single StormService replica with two roles ("prefill" and "decode") backed
-# by the vllm-mock image.  The gateway PD router pairs pods from the same
-# roleset (auto-assigned by the StormService controller as "roleset-name") and
-# routes the prefill probe to the prefill pod before sending the full request
+# Two StormService replicas (2x1P1D): each roleset has one prefill and one decode
+# pod backed by the vllm-mock image.  The gateway PD router pairs pods from the
+# same roleset (auto-assigned by the StormService controller as "roleset-name")
+# and routes the prefill probe to the prefill pod before sending the full request
 # to the decode pod.
 #
 # Apply alongside components.yaml (provides mocked-app-sa and RBAC).
@@ -16,7 +16,7 @@ metadata:
     model.aibrix.ai/name: "llama2-7b-vllm"
     model.aibrix.ai/port: "8000"
 spec:
-  replicas: 1
+  replicas: 2
   updateStrategy:
     type: InPlaceUpdate
   stateful: true
