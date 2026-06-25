@@ -1,0 +1,26 @@
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: deepseek-r1-distill-llama-8b-external-metrics
+  namespace: default
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    autoscaling.aibrix.ai/up-fluctuation-tolerance: '0.1'
+    autoscaling.aibrix.ai/down-fluctuation-tolerance: '0.2'
+    apa.autoscaling.aibrix.ai/window: 30s
+spec:
+  scalingStrategy: APA
+  minReplicas: 1
+  maxReplicas: 8
+  metricsSources:
+    # Uses Kubernetes external.metrics.k8s.io. An external metrics adapter must
+    # expose this metric in the same namespace as the target workload.
+    - metricSourceType: external
+      targetMetric: aibrix_queue_depth
+      targetValue: "40"
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: deepseek-r1-distill-llama-8b

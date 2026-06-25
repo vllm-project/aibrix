@@ -248,6 +248,10 @@ jobs:
           kind get kubeconfig --name installation-test > /tmp/admin.conf
           export KUBECONFIG=/tmp/admin.conf
           make test-e2e
+          export EXTERNAL_METRICS_E2E_CLUSTER=kind
+          export EXTERNAL_METRICS_E2E_USE_EXISTING_CONTROLLER=true
+          export KIND_CLUSTER_NAME=installation-test
+          make test-e2e-external-metrics
 
       - name: Clean up
         run: kind delete cluster --name installation-test
