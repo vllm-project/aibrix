@@ -36,8 +36,7 @@ func makeDecodePod(name, namespace string) *v1.Pod {
 
 func makeDecodeRoutingContext() *types.RoutingContext {
 	return &types.RoutingContext{
-		Model:     "test-model",
-		RequestID: "test-req-1",
+		Model: testModelName,
 	}
 }
 
@@ -54,13 +53,6 @@ func TestConductorDecodePolicy_NameAndDescribe(t *testing.T) {
 	assert.Contains(t, d, "conductor")
 }
 
-func TestConductorDecodePolicy_Describe(t *testing.T) {
-	p := ConductorDecodePolicy{}
-	d := p.Describe()
-	assert.NotEmpty(t, d)
-	assert.Contains(t, d, "conductor")
-}
-
 // ============================================================
 // ConductorDecodePolicy: ScoreDecodePod — basic TBT estimation
 // ============================================================
@@ -68,7 +60,7 @@ func TestConductorDecodePolicy_Describe(t *testing.T) {
 func TestConductorDecodePolicy_BasicTBT(t *testing.T) {
 	p := ConductorDecodePolicy{}
 	ctx := makeDecodeRoutingContext()
-	pod := makeDecodePod("pod-1", "default")
+	pod := makeDecodePod(testPodName, testNamespace)
 
 	in := DecodePodInput{
 		RunningReqs:     4.0,
@@ -95,7 +87,7 @@ func TestConductorDecodePolicy_BasicTBT(t *testing.T) {
 func TestConductorDecodePolicy_ZeroThroughputFallback(t *testing.T) {
 	p := ConductorDecodePolicy{}
 	ctx := makeDecodeRoutingContext()
-	pod := makeDecodePod("pod-1", "default")
+	pod := makeDecodePod(testPodName, testNamespace)
 
 	in := DecodePodInput{
 		RunningReqs:     2.0,
@@ -121,7 +113,7 @@ func TestConductorDecodePolicy_ZeroThroughputFallback(t *testing.T) {
 func TestConductorDecodePolicy_ZeroRunningReqsFloor(t *testing.T) {
 	p := ConductorDecodePolicy{}
 	ctx := makeDecodeRoutingContext()
-	pod := makeDecodePod("pod-1", "default")
+	pod := makeDecodePod(testPodName, testNamespace)
 
 	in := DecodePodInput{
 		RunningReqs:     0.0,

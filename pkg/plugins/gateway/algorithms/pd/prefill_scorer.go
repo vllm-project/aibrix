@@ -317,6 +317,20 @@ func (s *conductorScorer) estimatePrefill(unmatchedTokens float64) float64 {
 	return s.config.PrefillTimeCoeffA*math.Pow(unmatchedTokens, s.config.PrefillTimeCoeffB) + s.config.PrefillTimeCoeffC
 }
 
+// getAvgPrefillTimeMs returns the average prefill time (in ms) for the given pod.
+// Returns -1 if the metric lookup fails for any reason.
+func (s *conductorScorer) getAvgPrefillTimeMs(podName, podNamespace, modelName string) float64 {
+	histogramMetric, err := s.metricCache.GetMetricValueByPodModel(podName, podNamespace, modelName, metrics.RequestPrefillTimeSeconds)
+	if err != nil || histogramMetric == nil {
+		return -1
+	}
+	histogram := histogramMetric.GetHistogramValue()
+	if histogram == nil || histogram.Count <= 0 {
+		return -1
+	}
+	return histogram.GetMean() * 1000.0
+}
+
 // ScorePod returns the estimated TTFT (in ms) for a single pod by summing the queue,
 // prefix, and prefill components. Lower scores are preferred by the router.
 func (s *conductorScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
@@ -326,12 +340,10 @@ func (s *conductorScorer) ScorePod(pod *v1.Pod, reqCnt, _ float64) float64 {
 
 	// default value applied if metric lookup fails
 	// assume it's 512 tokens' prefill time under config
-	avgPrefillTimeMs := s.estimatePrefill(512)
-	avgPrefillTimeSecondsMetric, err := s.metricCache.GetMetricValueByPodModel(pod.Name, pod.Namespace, s.modelName, metrics.RequestPrefillTimeSeconds)
-	if err != nil {
-		klog.V(4).ErrorS(err, "error getting RequestPrefillTimeSeconds")
-	} else if hist := avgPrefillTimeSecondsMetric.GetHistogramValue(); hist != nil && hist.Count > 0 {
-		avgPrefillTimeMs = hist.GetMean() * 1000
+	avgPrefillTimeMs := s.getAvgPrefillTimeMs(pod.Name, pod.Namespace, s.modelName)
+	if avgPrefillTimeMs < 0 {
+		klog.V(4).InfoS("failed to get RequestPrefillTimeSeconds for pod", "pod", pod.Name)
+		avgPrefillTimeMs = s.estimatePrefill(512)
 	}
 	queueEst := s.estimateQueue(reqCnt, avgPrefillTimeMs)
 	prefixEst := s.estimatePrefix(matchedTokens)

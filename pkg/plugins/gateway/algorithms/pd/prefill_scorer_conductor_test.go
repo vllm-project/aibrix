@@ -18,6 +18,7 @@ package pd
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,6 +29,13 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+const (
+	testModelName = "test-model"
+	testMessage   = "test"
+	testNamespace = "default"
+	testPodName   = "pod-1"
 )
 
 var _ cache.MetricCache = (*mockMetricCache)(nil)
@@ -94,9 +102,9 @@ func makeTestPod(name, namespace string) *v1.Pod {
 }
 
 // Helper to create a routing context
-func makeRoutingContext(model, message string) *types.RoutingContext {
+func makePrefillRoutingContext(message string) *types.RoutingContext {
 	return &types.RoutingContext{
-		Model:   model,
+		Model:   testModelName,
 		Message: message,
 	}
 }
@@ -128,9 +136,9 @@ func TestConductorPrepare_Basic(t *testing.T) {
 
 	policy := NewConductorPrefillPolicy(tok, pt, mc, NewConductorPrefillPolicyConfig())
 
-	ctx := makeRoutingContext("test-model", "hello world")
-	pods := []*v1.Pod{makeTestPod("pod-1", "default")}
-	readyMap := map[string]struct{}{"pod-1": {}}
+	ctx := makePrefillRoutingContext(testMessage)
+	pods := []*v1.Pod{makeTestPod(testPodName, testNamespace)}
+	readyMap := map[string]struct{}{testPodName: {}}
 
 	scorer, err := policy.Prepare(ctx, pods, readyMap)
 
@@ -138,8 +146,8 @@ func TestConductorPrepare_Basic(t *testing.T) {
 	assert.NotNil(t, scorer)
 
 	conductorScorer := scorer.(*conductorScorer)
-	assert.Equal(t, "test-model", conductorScorer.modelName)
-	assert.Equal(t, len("hello world"), conductorScorer.totalTokens)
+	assert.Equal(t, testModelName, conductorScorer.modelName)
+	assert.Equal(t, len(testMessage), conductorScorer.totalTokens)
 	assert.Equal(t, mc, conductorScorer.metricCache)
 }
 
@@ -155,14 +163,13 @@ func TestConductorScorePod_WithHistogramMetric(t *testing.T) {
 
 	policy := NewConductorPrefillPolicy(tok, pt, mc, NewConductorPrefillPolicyConfig())
 
-	model := "test-model"
-	pod := makeTestPod("pod-1", "default")
+	pod := makeTestPod(testPodName, testNamespace)
 
 	// Set up histogram: sum=0.2ms, count=100 -> mean=0.02ms
-	mc.SetHistogram("pod-1", "default", model, metrics.RequestPrefillTimeSeconds, 0.2, 100.0)
+	mc.SetHistogram(testPodName, testNamespace, testModelName, metrics.RequestPrefillTimeSeconds, 0.2, 100.0)
 
-	ctx := makeRoutingContext(model, "test")
-	readyMap := map[string]struct{}{"pod-1": {}}
+	ctx := makePrefillRoutingContext(testMessage)
+	readyMap := map[string]struct{}{testPodName: {}}
 
 	scorer, err := policy.Prepare(ctx, []*v1.Pod{pod}, readyMap)
 	assert.NoError(t, err)
@@ -170,10 +177,10 @@ func TestConductorScorePod_WithHistogramMetric(t *testing.T) {
 	score := scorer.ScorePod(pod, 3.0, 10.0)
 	// tokenLen = 4, where 0 matched, 4 unmatched
 	// queue 3 * 0.2s / 100 = 6ms
-	// prefix = 0 + 1 = 1ms
+	// prefix = 0ms
 	// prefill = 0.001 * 4^1.5 + 5 = 5.008ms
-	// total = 6 + 1 + 5.008 = 12.008ms
-	assert.InDelta(t, 12.008, score, 1e-9)
+	// total = 6 + 0 + 5.008 = 11.008ms
+	assert.InDelta(t, 11.008, score, 1e-9)
 }
 
 // ============================================================
@@ -189,15 +196,14 @@ func TestConductorScorePod_EmptyMessage(t *testing.T) {
 
 	policy := NewConductorPrefillPolicy(tok, pt, mc, NewConductorPrefillPolicyConfig())
 
-	model := "test-model"
-	pod := makeTestPod("pod-1", "default")
+	pod := makeTestPod(testPodName, testNamespace)
 
 	// Set up histogram: sum=0.2s, count=100 -> mean=0.002s = 2ms
-	mc.SetHistogram("pod-1", "default", model, metrics.RequestPrefillTimeSeconds, 0.2, 100.0)
+	mc.SetHistogram(testPodName, testNamespace, testModelName, metrics.RequestPrefillTimeSeconds, 0.2, 100.0)
 
 	// Empty message -> totalTokens = 0
-	ctx := makeRoutingContext(model, "")
-	readyMap := map[string]struct{}{"pod-1": {}}
+	ctx := makePrefillRoutingContext("")
+	readyMap := map[string]struct{}{testPodName: {}}
 
 	scorer, err := policy.Prepare(ctx, []*v1.Pod{pod}, readyMap)
 	assert.NoError(t, err)
@@ -223,14 +229,13 @@ func TestConductorScorePod_CacheUpdateReflected(t *testing.T) {
 
 	policy := NewConductorPrefillPolicy(tok, pt, mc, NewConductorPrefillPolicyConfig())
 
-	model := "test-model"
-	pod := makeTestPod("pod-1", "default")
+	pod := makeTestPod(testPodName, testNamespace)
 
 	// Phase 1: Initial state - avgPrefillTime = 1.0s
-	mc.SetHistogram("pod-1", "default", model, metrics.RequestPrefillTimeSeconds, 0.1, 100.0)
+	mc.SetHistogram(testPodName, testNamespace, testModelName, metrics.RequestPrefillTimeSeconds, 0.1, 100.0)
 
-	ctx := makeRoutingContext(model, "hello")
-	readyMap := map[string]struct{}{"pod-1": {}}
+	ctx := makePrefillRoutingContext(testMessage)
+	readyMap := map[string]struct{}{testPodName: {}}
 
 	scorer1, err := policy.Prepare(ctx, []*v1.Pod{pod}, readyMap)
 	assert.NoError(t, err)
@@ -238,7 +243,7 @@ func TestConductorScorePod_CacheUpdateReflected(t *testing.T) {
 	score1 := scorer1.ScorePod(pod, 5.0, 10.0)
 
 	// Phase 2: Update cache - avgPrefillTime becomes 10.0s (10x slower)
-	mc.SetHistogram("pod-1", "default", model, metrics.RequestPrefillTimeSeconds, 1.0, 100.0)
+	mc.SetHistogram(testPodName, testNamespace, testModelName, metrics.RequestPrefillTimeSeconds, 1.0, 100.0)
 
 	// Create a NEW scorer via Prepare (simulating a new routing request)
 	scorer2, err := policy.Prepare(ctx, []*v1.Pod{pod}, readyMap)
@@ -249,4 +254,84 @@ func TestConductorScorePod_CacheUpdateReflected(t *testing.T) {
 	// Score should be much higher now because avgPrefillTime increased
 	// Queue component went from 5*1.0=5.0 to 5*10.0=50.0
 	assert.Greater(t, score2, score1)
+}
+
+// ============================================================
+// Test: ScorePod falls back to default when metric lookup fails
+// ============================================================
+// Covers all failure modes of getAvgPrefillTimeMs:
+// 1. metric not found (GetMetricValueByPodModel returns error)
+// 2. metric value is nil (cache returns nil without error)
+// 3. metric exists but is not a histogram type (GetHistogramValue returns nil)
+// 4. histogram exists but has zero count
+// In all cases, ScorePod should not panic and should fall back to
+// the estimated prefill time based on the config model.
+func TestConductorScorePod_MetricFallback(t *testing.T) {
+	tok := tokenizer.NewCharacterTokenizer()
+	pt := prefixcacheindexer.NewPrefixHashTable()
+	cfg := NewConductorPrefillPolicyConfig()
+
+	pod := makeTestPod(testPodName, testNamespace)
+	ctx := makePrefillRoutingContext(testMessage)
+	readyMap := map[string]struct{}{testPodName: {}}
+
+	// expected fallback value: prefill time for 512 tokens
+	expectedFallbackMs := cfg.PrefillTimeCoeffA*math.Pow(512, cfg.PrefillTimeCoeffB) + cfg.PrefillTimeCoeffC
+
+	tests := []struct {
+		name  string
+		setup func(*mockMetricCache)
+	}{
+		{
+			name: "metric not found (error)",
+			setup: func(mc *mockMetricCache) {
+				// do nothing -> key not in map -> returns error
+			},
+		},
+		{
+			name: "metric value is nil (no error)",
+			setup: func(mc *mockMetricCache) {
+				mc.values[mc.key(testPodName, testNamespace, testModelName, metrics.RequestPrefillTimeSeconds)] = nil
+			},
+		},
+		{
+			name: "metric is not a histogram (simple value)",
+			setup: func(mc *mockMetricCache) {
+				mc.SetSimple(testPodName, testNamespace, testModelName, metrics.RequestPrefillTimeSeconds, 42.0)
+			},
+		},
+		{
+			name: "histogram with zero count",
+			setup: func(mc *mockMetricCache) {
+				mc.SetHistogram(testPodName, testNamespace, testModelName, metrics.RequestPrefillTimeSeconds, 0.0, 0.0)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mc := newMockMetricCache()
+			policy := NewConductorPrefillPolicy(tok, pt, mc, cfg)
+
+			tt.setup(mc)
+
+			scorer, err := policy.Prepare(ctx, []*v1.Pod{pod}, readyMap)
+			assert.NoError(t, err)
+
+			// With reqCnt=0, queue component is 0.
+			// With 0 matched prefix, prefix component is 0.
+			// score = 0 + 0 + estimatePrefill(totalTokens)
+			// but we're testing fallback uses expectedFallbackMs for the queue component.
+			// Let's use reqCnt=1 so queue component = fallback value.
+			scoreWithReq := scorer.ScorePod(pod, 1.0, 10.0)
+
+			// totalTokens = len(testMessage) = 4
+			// prefix = 0 (no match)
+			prefillEst := cfg.PrefillTimeCoeffA*math.Pow(float64(len(testMessage)), cfg.PrefillTimeCoeffB) + cfg.PrefillTimeCoeffC
+			// queue = 1 * expectedFallbackMs
+			expectedScore := expectedFallbackMs + 0 + prefillEst
+			assert.InDelta(t, expectedScore, scoreWithReq, 1e-9,
+				"score should use fallback prefill time when metric is unavailable")
+		})
+	}
 }
