@@ -137,7 +137,7 @@ func validateScenario(scenario *Scenario) error {
 		if test.VKEDev && !test.FullStack {
 			return fmt.Errorf("vkeDev requires fullstack=true for %s", test.Name)
 		}
-		if err := validateSourceSelection(test); err != nil {
+		if err := validateProviderInputs(test); err != nil {
 			return err
 		}
 		if strings.TrimSpace(test.Engine.Type) == "" {
@@ -168,20 +168,6 @@ func normalizeProviderSelection(test *Test) error {
 		test.Provider = providerStringPtr(providerName)
 		return nil
 	}
-}
-
-func validateSourceSelection(test *Test) error {
-	localPath := strings.TrimSpace(test.LocalPath)
-	if localPath == "" {
-		return nil
-	}
-	if test.ProviderName() != "aibrix" {
-		return fmt.Errorf("localPath is only supported for provider aibrix in %s", test.Name)
-	}
-	if strings.TrimSpace(test.Version) != "" || strings.TrimSpace(test.Commit) != "" {
-		return fmt.Errorf("localPath cannot be combined with version or commit for %s", test.Name)
-	}
-	return nil
 }
 
 func populateBenchmarkMetadata(test *Test) error {
