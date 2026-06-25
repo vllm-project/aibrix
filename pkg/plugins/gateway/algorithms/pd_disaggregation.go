@@ -277,7 +277,7 @@ func NewPDRouter() (types.Router, error) {
 func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	readyPods := readyPodList.All()
 	// Validate engine consistency across all prefill pods
-	llmEngine, err := validateAndGetLLMEngine(readyPods)
+	llmEngine, err := ValidateAndGetLLMEngine(readyPods)
 	if err != nil {
 		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRouteValidateLLMEngineFail, "status_code": "400"})
@@ -973,7 +973,7 @@ func getLLMEngine(pod *v1.Pod, labelName string, defaultValue string) string {
 }
 
 // validateAndGetLLMEngine validates that all prefill pods use the same engine and returns it.
-func validateAndGetLLMEngine(prefillPods []*v1.Pod) (string, error) {
+func ValidateAndGetLLMEngine(prefillPods []*v1.Pod) (string, error) {
 	if len(prefillPods) == 0 {
 		return "", fmt.Errorf("no prefill pods provided")
 	}

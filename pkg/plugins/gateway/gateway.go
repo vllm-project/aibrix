@@ -426,17 +426,13 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	_, span = tracer.Start(ctx, "selectTargetPod")
 	defer span.End()
 
-	router, err := routing.Select(routeCtx)
-	if err != nil {
-		return "", err
-	}
-
 	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods for routing")
 	}
 	readyPods := utils.FilterRoutablePods(pods.All())
 
 	// filter pod by header 'external-filter'
+	var err error
 	readyPods, err = utils.FilterPodsByLabelSelector(readyPods, externalFilterExpr)
 	if err != nil {
 		return "", fmt.Errorf("filter pods by label selector failed: %v", err)
@@ -445,7 +441,21 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods for routing")
 	}
-	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 {
+
+	if routeCtx.Algorithm == routing.RouterPD {
+		engine, err := routing.ValidateAndGetLLMEngine(readyPods)
+		if err != nil {
+			return "", fmt.Errorf("engine validation failed for request %s: %w", routeCtx.RequestID, err)
+		}
+		routeCtx.Engine = engine
+	}
+
+	router, err := routing.Select(routeCtx)
+	if err != nil {
+		return "", err
+	}
+
+	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 && routeCtx.Algorithm != routing.RouterPD {
 		routeCtx.SetTargetPod(readyPods[0])
 		return routeCtx.TargetAddress(), nil
 	}
@@ -613,8 +623,10 @@ func (s *Server) responseErrorProcessing(ctx context.Context, routingCtx *types.
 func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routingCtx *types.RoutingContext, headers []*configPb.HeaderValueOption, respErrorCode int,
 	model, requestID, errMsg string) *extProcPb.ProcessingResponse {
 	var httprouteErr error
-	// if use pd route Algorithm, we don't check httproute status
-	if routingCtx == nil || routingCtx.Algorithm != routing.RouterPD {
+	// Match HandleRequestBody: HTTPRoute is only used when no explicit routing algorithm is set.
+	// Do not validate HTTPRoute on errors for least-request, pd, random, etc. (avoids misleading
+	// "httproute not found" appended to real upstream errors like 404).
+	if routingCtx == nil || routingCtx.Algorithm == routing.RouterNotSet {
 		httprouteErr = s.validateHTTPRouteStatus(ctx, model)
 	}
 
