@@ -307,8 +307,10 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 			klog.ErrorS(err, pdRoutePrefillRequestError, "request_id", ctx.RequestID)
 			return "", fmt.Errorf("prefill request failed for request %s: %w", ctx.RequestID, err)
 		}
-		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestSuccessTotal, &metrics.SimpleMetricValue{Value: 1.0},
-			map[string]string{"status": pdRoutePrefillRequestSuccess, "status_code": "200"})
+		if !engine.Resolve(llmEngine).IsAsync() {
+			metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestSuccessTotal, &metrics.SimpleMetricValue{Value: 1.0},
+				map[string]string{"status": pdRoutePrefillRequestSuccess, "status_code": "200"})
+		}
 	}
 
 	ctx.SetTargetPod(decodePod)

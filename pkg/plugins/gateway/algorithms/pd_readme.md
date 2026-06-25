@@ -41,7 +41,7 @@ Route(ctx, readyPodList)
      ├─► [prefillPod != nil]
      │        pendingDecodeTracker.AddPendingDecode(requestID, decodePod)
      │        doPrefillRequest(ctx, prefillPod, engine)
-     │              ├─ SGLang   → async goroutine (bootstrap handshake)
+     │              ├─ SGLang   → async goroutine (bootstrap handshake; Route does not wait for completion)
      │              ├─ vLLM     → sync, extract kv_transfer_params from response
      │              └─ TRT-LLM  → sync, extract disaggregated_params from response
      │
@@ -274,6 +274,11 @@ Gateway ──POST (async goroutine)──────────────�
 Gateway ──POST /v1/... (updated body)─────────────────────────────────────────────► Decode Pod
 ```
 
+For SGLang, `Route()` returning a decode pod means the gateway has dispatched
+the asynchronous prefill worker, not that the prefill HTTP request has already
+completed. Prefill success/failure metrics are emitted by the async worker after
+the prefill HTTP request returns.
+
 ### TensorRT-LLM
 
 ```
@@ -430,7 +435,7 @@ SGLang uses a bootstrap mechanism for prefill/decode coordination. The port is r
 | Metric | When |
 |--------|------|
 | `GatewayPrefillRequestFailTotal` | Engine validation fail, pod filter fail, prefill HTTP error |
-| `GatewayPrefillRequestSuccessTotal` | Prefill HTTP succeeded |
+| `GatewayPrefillRequestSuccessTotal` | Prefill HTTP succeeded. For SGLang, this is emitted asynchronously after the background prefill request completes, not when `Route()` returns. |
 | `PDSelectedPrefillPodTotal` | Prefill pod selected (per pod label) |
 | `PDSelectedDecodePodTotal` | Decode pod selected (per pod label) |
 
