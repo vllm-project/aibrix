@@ -65,6 +65,7 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 	handler := engine.Resolve(llmEngine)
 	payload, err := PreparePayload(routingCtx, prefillPod, llmEngine, handler)
 	if err != nil {
+		e.tracker.RemovePrefillRequest(routingCtx.RequestID)
 		return fmt.Errorf("failed to prepare prefill payload for request %s: %w", routingCtx.RequestID, err)
 	}
 
@@ -94,8 +95,8 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		completionFields = append([]interface{}{}, fields...)
 	}
 
-	// PrefillRequestTracker.AddPrefillRequest is called at pod selection time in
-	// filterPrefillDecodePods; this executor only removes the entry when prefill completes.
+	// AddPrefillRequest is called in finalPDScore at pod selection time;
+	// this executor removes the entry when prefill completes (or on PreparePayload failure above).
 	routingCtx.PrefillStartTime = time.Now()
 
 	if handler.IsAsync() {

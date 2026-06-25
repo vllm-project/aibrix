@@ -707,6 +707,9 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	if targetDecodePod == nil {
 		return nil, nil, fmt.Errorf("target decode pod is nil")
 	}
+
+	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, targetPrefillPod.Name)
+
 	if len(prefixHashes) > 0 {
 		r.enqueuePrefixUpdate(prefixHashes, routingCtx.Model, targetPrefillPod.Name)
 	}
