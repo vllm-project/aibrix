@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
+	"github.com/vllm-project/aibrix/apps/console/api/metrics"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	"github.com/vllm-project/aibrix/apps/console/api/planner/utils"
 	"k8s.io/klog/v2"
@@ -110,6 +111,8 @@ func (w *planningLoop) runWithTrigger() {
 }
 
 func (w *planningLoop) planOnce() {
+	cycleStart := time.Now().UTC()
+
 	// 1. Remove terminal jobs
 	w.removeTerminalJobs()
 
@@ -120,6 +123,7 @@ func (w *planningLoop) planOnce() {
 		PendingQueue:   w.planner.pendingQueue,
 	})
 	if err != nil {
+		metrics.Emitter.Counter(metricConsolePlannerError, 1, metrics.T("method", "plan_once"), metrics.T("reason", "policy_plan_failed"))
 		klog.Warningf("planning: policy failed: %v", err)
 		return
 	}
@@ -127,6 +131,11 @@ func (w *planningLoop) planOnce() {
 	// 3. Collect jobs from each queue and submit individual tasks
 	w.processPendingQueue()
 	w.processRunningQueue()
+
+	// 4. Emit queue gauges and cycle latency
+	metrics.Emitter.Gauge("console.planner.queue.pending.size", float32(w.planner.pendingQueue.Len()))
+	metrics.Emitter.Gauge("console.planner.queue.running.size", float32(w.planner.runningQueue.Len()))
+	metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, cycleStart, metrics.T("method", "planning_loop"))
 }
 
 func (w *planningLoop) processPendingQueue() {
