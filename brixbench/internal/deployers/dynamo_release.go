@@ -24,19 +24,47 @@ func (execCommandRunner) Run(ctx context.Context, name string, args ...string) (
 	return string(output), err
 }
 
+// DynamoTagSource validates Dynamo release tags without exposing the backing
+// source details to DynamoDeployer lifecycle code.
+type DynamoTagSource interface {
+	ValidateReleaseTag(ctx context.Context, version string) error
+}
+
+// GitDynamoTagSource validates Dynamo release tags against the upstream git
+// repository.
+type GitDynamoTagSource struct {
+	runner  commandRunner
+	repoURL string
+}
+
+var _ DynamoTagSource = (*GitDynamoTagSource)(nil)
+
+// NewGitDynamoTagSource creates the production Dynamo release tag source.
+func NewGitDynamoTagSource() *GitDynamoTagSource {
+	return &GitDynamoTagSource{
+		runner:  execCommandRunner{},
+		repoURL: dynamoRepoURL,
+	}
+}
+
+func (s *GitDynamoTagSource) ValidateReleaseTag(ctx context.Context, version string) error {
+	return validateDynamoReleaseTag(ctx, s.runner, s.repoURL, version)
+}
+
 // ValidateDynamoReleaseTag verifies that version is a stable Dynamo release tag
 // and that the exact tag exists in the upstream Dynamo repository.
 func ValidateDynamoReleaseTag(ctx context.Context, version string) error {
-	return validateDynamoReleaseTag(ctx, execCommandRunner{}, version)
+	return NewGitDynamoTagSource().ValidateReleaseTag(ctx, version)
 }
 
-func validateDynamoReleaseTag(ctx context.Context, runner commandRunner, version string) error {
+func validateDynamoReleaseTag(ctx context.Context, runner commandRunner, repoURL string, version string) error {
 	version = strings.TrimSpace(version)
 	if !stableDynamoReleaseTagPattern.MatchString(version) {
 		return fmt.Errorf("invalid Dynamo stable release tag %q: expected vMAJOR.MINOR.PATCH", version)
 	}
 
-	output, err := runner.Run(ctx, "git", "ls-remote", "--tags", "--refs", dynamoRepoURL, "refs/tags/"+version)
+	repoURL = strings.TrimSpace(repoURL)
+	output, err := runner.Run(ctx, "git", "ls-remote", "--tags", "--refs", repoURL, "refs/tags/"+version)
 	if err != nil {
 		output = strings.TrimSpace(output)
 		if output != "" {
@@ -45,7 +73,7 @@ func validateDynamoReleaseTag(ctx context.Context, runner commandRunner, version
 		return fmt.Errorf("failed to query Dynamo release tag %s: %w", version, err)
 	}
 	if !lsRemoteOutputHasExactTag(output, version) {
-		return fmt.Errorf("Dynamo release tag %s not found in ai-dynamo/dynamo", version)
+		return fmt.Errorf("Dynamo release tag %s not found in %s", version, repoURL)
 	}
 	return nil
 }

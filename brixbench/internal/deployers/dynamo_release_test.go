@@ -6,9 +6,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/vllm-project/aibrix/brixbench/internal/resolver"
 )
+
+const testDynamoRepoURL = "https://example.test/ai-dynamo/dynamo.git"
 
 type fakeCommandRunner struct {
 	output string
@@ -34,11 +34,11 @@ func TestValidateDynamoReleaseTagAcceptsExactRemoteTag(t *testing.T) {
 		output: "abc123\trefs/tags/v1.2.1\n",
 	}
 
-	if err := validateDynamoReleaseTag(context.Background(), runner, "v1.2.1"); err != nil {
+	if err := validateDynamoReleaseTag(context.Background(), runner, testDynamoRepoURL, "v1.2.1"); err != nil {
 		t.Fatalf("validateDynamoReleaseTag returned error: %v", err)
 	}
 
-	wantArgs := []string{"ls-remote", "--tags", "--refs", dynamoRepoURL, "refs/tags/v1.2.1"}
+	wantArgs := []string{"ls-remote", "--tags", "--refs", testDynamoRepoURL, "refs/tags/v1.2.1"}
 	if len(runner.calls) != 1 {
 		t.Fatalf("expected 1 command call, got %d", len(runner.calls))
 	}
@@ -50,33 +50,30 @@ func TestValidateDynamoReleaseTagAcceptsExactRemoteTag(t *testing.T) {
 	}
 }
 
-func TestValidateDynamoReleaseTagFromScenarioYAML(t *testing.T) {
-	t.Chdir("../../benchmark")
-
-	scenario, err := resolver.Resolve("testdata/scenarios/dynamo-hello-world.yaml")
-	if err != nil {
-		t.Fatalf("Resolve returned error: %v", err)
-	}
-	if len(scenario.Tests) != 1 {
-		t.Fatalf("expected 1 test, got %d", len(scenario.Tests))
-	}
-	version := scenario.Tests[0].Version
-	if version != "v1.2.1" {
-		t.Fatalf("expected normalized version v1.2.1, got %s", version)
-	}
-
+func TestGitDynamoTagSourceUsesConfiguredRunnerAndRepoURL(t *testing.T) {
 	runner := &fakeCommandRunner{
 		output: "abc123\trefs/tags/v1.2.1\n",
 	}
-	if err := validateDynamoReleaseTag(context.Background(), runner, version); err != nil {
-		t.Fatalf("validateDynamoReleaseTag returned error: %v", err)
+	tagSource := &GitDynamoTagSource{
+		runner:  runner,
+		repoURL: testDynamoRepoURL,
+	}
+
+	if err := tagSource.ValidateReleaseTag(context.Background(), "v1.2.1"); err != nil {
+		t.Fatalf("ValidateReleaseTag returned error: %v", err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 command call, got %d", len(runner.calls))
+	}
+	if runner.calls[0].args[3] != testDynamoRepoURL {
+		t.Fatalf("expected repo URL %s, got args %v", testDynamoRepoURL, runner.calls[0].args)
 	}
 }
 
 func TestValidateDynamoReleaseTagRejectsMissingRemoteTag(t *testing.T) {
 	runner := &fakeCommandRunner{}
 
-	err := validateDynamoReleaseTag(context.Background(), runner, "v1.2.1")
+	err := validateDynamoReleaseTag(context.Background(), runner, testDynamoRepoURL, "v1.2.1")
 	if err == nil {
 		t.Fatalf("expected missing tag error")
 	}
@@ -93,7 +90,7 @@ func TestValidateDynamoReleaseTagRejectsSimilarRemoteTagRefs(t *testing.T) {
 		}, "\n"),
 	}
 
-	err := validateDynamoReleaseTag(context.Background(), runner, "v1.2.1")
+	err := validateDynamoReleaseTag(context.Background(), runner, testDynamoRepoURL, "v1.2.1")
 	if err == nil {
 		t.Fatalf("expected missing exact tag error")
 	}
@@ -113,7 +110,7 @@ func TestValidateDynamoReleaseTagRejectsNonStableVersionBeforeGit(t *testing.T) 
 		t.Run(version, func(t *testing.T) {
 			runner := &fakeCommandRunner{}
 
-			err := validateDynamoReleaseTag(context.Background(), runner, version)
+			err := validateDynamoReleaseTag(context.Background(), runner, testDynamoRepoURL, version)
 			if err == nil {
 				t.Fatalf("expected invalid stable release tag error")
 			}
@@ -133,7 +130,7 @@ func TestValidateDynamoReleaseTagReturnsGitError(t *testing.T) {
 		err:    errors.New("exit status 128"),
 	}
 
-	err := validateDynamoReleaseTag(context.Background(), runner, "v1.2.1")
+	err := validateDynamoReleaseTag(context.Background(), runner, dynamoRepoURL, "v1.2.1")
 	if err == nil {
 		t.Fatalf("expected git error")
 	}
