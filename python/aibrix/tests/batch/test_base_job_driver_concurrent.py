@@ -203,6 +203,24 @@ def test_dispatch_kwargs_use_fixed_max_concurrency_when_adaptive_disabled():
     }
 
 
+def test_build_response_shapes_output_payload_model():
+    job = _make_job(total=1)
+    job.spec.aibrix = AibrixMetadata(model="requested-model")
+    driver = BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
+    driver._active_model_name = "served-model"
+
+    response = driver._build_response(
+        "req-0",
+        "job-1",
+        0,
+        job.spec,
+        {"id": "resp-1", "model": "served-model"},
+        None,
+    )
+
+    assert response["response"]["body"]["model"] == "requested-model"
+
+
 def _patch_storage(monkeypatch, requests, done: Optional[set[int]] = None):
     done = done or set()
     outputs = {}
