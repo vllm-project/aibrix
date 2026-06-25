@@ -43,8 +43,8 @@ func NewPrefillRequestTracker() *PrefillRequestTracker {
 }
 
 // AddPrefillRequest records that requestID has been assigned to podName and
-// increments that pod's active-request counter. Called at prefill pod selection time
-// so concurrent routing sees in-flight assignments. Must be paired with
+// increments that pod's active-request counter. Called when prefill dispatch
+// starts so concurrent routing sees in-flight assignments. Must be paired with
 // RemovePrefillRequest when prefill completes or the assignment is abandoned.
 func (t *PrefillRequestTracker) AddPrefillRequest(requestID, podName string) {
 	countInterface, _ := t.podRequestCounts.LoadOrStore(podName, &atomic.Int32{})

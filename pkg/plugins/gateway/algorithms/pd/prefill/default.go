@@ -65,7 +65,6 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 	handler := engine.Resolve(llmEngine)
 	payload, err := PreparePayload(routingCtx, prefillPod, llmEngine, handler)
 	if err != nil {
-		e.tracker.RemovePrefillRequest(routingCtx.RequestID)
 		return fmt.Errorf("failed to prepare prefill payload for request %s: %w", routingCtx.RequestID, err)
 	}
 
@@ -95,9 +94,8 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		completionFields = append([]interface{}{}, fields...)
 	}
 
-	// AddPrefillRequest is called in finalPDScore at pod selection time;
-	// this executor removes the entry when prefill completes (or on PreparePayload failure above).
 	routingCtx.PrefillStartTime = time.Now()
+	e.tracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name)
 
 	if handler.IsAsync() {
 		// SGLang uses a bootstrap handshake to coordinate KV transfer out-of-band;
