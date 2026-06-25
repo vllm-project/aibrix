@@ -112,6 +112,8 @@ func TestPDRouter_Route(t *testing.T) {
 			defer ts.Close()
 
 			ctx := types.NewRoutingContext(context.Background(), "test", "model", "message", "test-request", "user")
+			ctx.Engine = tt.llmEngine
+			ctx.ReqPath = testChatCompletionsPath
 			ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
 
 			result, err := r.Route(ctx, &utils.PodArray{Pods: tt.readyPods})
@@ -204,6 +206,7 @@ func TestPDRouter_RouteDoesNotEmitAsyncPrefillSuccessBeforeHTTPCompletes(t *test
 	parentCtx, cancelParent := context.WithCancel(context.Background())
 	defer cancelParent()
 	ctx := types.NewRoutingContext(parentCtx, RouterPD, "test-model", "test", "async-prefill-success", "user")
+	ctx.Engine = SGLangEngine
 	ctx.ReqPath = testChatCompletionsPath
 	ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
 
@@ -288,6 +291,7 @@ func TestPDRouter_RouteRecordsAsyncPrefillFailureWithoutSuccess(t *testing.T) {
 	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
 
 	ctx := types.NewRoutingContext(context.Background(), RouterPD, "test-model", "test", "async-prefill-fail", "user")
+	ctx.Engine = SGLangEngine
 	ctx.ReqPath = testChatCompletionsPath
 	ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
 
