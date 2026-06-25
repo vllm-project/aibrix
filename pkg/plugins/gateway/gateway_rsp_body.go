@@ -70,6 +70,9 @@ type OpenAIResponse struct {
 func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.RoutingContext, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 	arrival := time.Now()
+	if stream && routerCtx != nil && routerCtx.FirstTokenTime.IsZero() {
+		routerCtx.FirstTokenTime = arrival
+	}
 
 	var processingRes *extProcPb.ProcessingResponse
 	var promptTokens, completionTokens, totalTokens int64
@@ -330,6 +333,9 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 	cBucket := tokenBucketLabel(completionTokens)
 	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayPromptTokenBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": pBucket})
 	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayCompletionTokenBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": cBucket})
+	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayInputTokensTotal, &metrics.SimpleMetricValue{Value: float64(promptTokens)}, nil)
+	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayOutputTokensTotal, &metrics.SimpleMetricValue{Value: float64(completionTokens)}, nil)
+	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayRequestsWithUsageTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"has_usage": "true"})
 
 	if targetPod != nil {
 		outstandingRequestCount := math.Max(0, getRunningRequestsByPod(s, targetPod.Name, targetPod.Namespace)-1)
@@ -339,6 +345,9 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 	}
 
 	ttft := arrival.Sub(routingCtx.RequestTime)
+	if routingCtx.Stream && !routingCtx.FirstTokenTime.IsZero() {
+		ttft = routingCtx.FirstTokenTime.Sub(routingCtx.RequestTime)
+	}
 	if routingCtx.Stream {
 		ttftBucket := durationBucketLabel(ttft)
 		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTTFTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": ttftBucket})
@@ -377,9 +386,16 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 		}
 	} else if routingCtx.Algorithm != "" {
 		fields = append(fields, "routing_time_taken", routingCtx.GetRoutingDelay())
+		if routingCtx.Stream && completionTokens > 0 {
+			decodeTimeApprox := routingCtx.Elapsed(time.Now()) - ttft
+			if decodeTimeApprox > 0 {
+				tpot := time.Duration(decodeTimeApprox.Nanoseconds() / completionTokens)
+				metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTPOTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(tpot)})
+			}
+		}
 	}
 	fields = append(fields, "total_time_taken", routingCtx.Elapsed(time.Now()))
-	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTotalTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(routingCtx.Elapsed(time.Now()))})
+	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTotalTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": totalTimeBucketLabel(routingCtx.Elapsed(time.Now()))})
 	return fields
 }
 
@@ -399,11 +415,19 @@ func tokenBucketLabel(n int64) string {
 
 // Add duration bucketizer: ms buckets [0-1), [1-2), [2-5), [5-10), [20-50), [50-100), [100-200), [200-500), [500-1000), [1000-2000), [2000-5000), [5000+}
 func durationBucketLabel(d time.Duration) string {
-	ms := d.Milliseconds()
+	return msBucketLabel(d.Milliseconds(), []int64{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000})
+}
+
+// totalTimeBucketLabel buckets end-to-end request latency with coarser windows suited to full request duration.
+// Buckets: [0-100), [100-250), [250-500), [500-1000), [1000-5000), [5000-20000), [20000-60000), [60000+)
+func totalTimeBucketLabel(d time.Duration) string {
+	return msBucketLabel(d.Milliseconds(), []int64{100, 250, 500, 1000, 5000, 20000, 60000})
+}
+
+func msBucketLabel(ms int64, bounds []int64) string {
 	if ms < 0 {
 		ms = 0
 	}
-	bounds := []int64{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000}
 	low := int64(0)
 	for _, b := range bounds {
 		if ms < b {

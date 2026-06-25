@@ -50,6 +50,36 @@ func SetGaugeMetric(name string, help string, value float64, labelNames []string
 	SetGaugeMetricFnForTest(name, help, value, labelNames, labelValues...)
 }
 
+func DeleteGaugeMetricForPod(metricName string, routingCtx *types.RoutingContext, pod *v1.Pod, extras map[string]string) {
+	customGaugesMu.RLock()
+	gauge, ok := customGauges[metricName]
+	canonicalNames := customGaugeLabelNames[metricName]
+	customGaugesMu.RUnlock()
+	if !ok || gauge == nil {
+		return
+	}
+
+	var model string
+	if routingCtx != nil {
+		model = routingCtx.Model
+	}
+	labelNames, labelValues := buildMetricLabels(pod, model, extras)
+	if len(canonicalNames) == 0 {
+		_ = gauge.DeleteLabelValues(labelValues...)
+		return
+	}
+
+	labelMap := make(map[string]string, len(labelNames))
+	for i, ln := range labelNames {
+		labelMap[ln] = labelValues[i]
+	}
+	orderedValues := make([]string, len(canonicalNames))
+	for i, ln := range canonicalNames {
+		orderedValues[i] = labelMap[ln]
+	}
+	_ = gauge.DeleteLabelValues(orderedValues...)
+}
+
 func defaultSetGaugeMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
 	if len(labelNames) != len(labelValues) {
 		return
@@ -382,8 +412,15 @@ func generateDefaultMetricLabelsMap(pod *v1.Pod, model string) map[string]string
 		"model":              model,
 		"engine_type":        GetEngineType(*pod),
 		"roleset":            utils.GetPodEnv(pod, "ROLESET_NAME", ""),
-		"role":               utils.GetPodEnv(pod, "ROLE_NAME", ""),
+		"role":               resolvePodRole(pod),
 		"role_replica_index": utils.GetPodEnv(pod, "ROLE_REPLICA_INDEX", ""),
 		"gateway_pod":        gatewayPodName,
 	}
+}
+
+func resolvePodRole(pod *v1.Pod) string {
+	if role, ok := pod.Labels["role-name"]; ok && role != "" {
+		return role
+	}
+	return utils.GetPodEnv(pod, "ROLE_NAME", "")
 }

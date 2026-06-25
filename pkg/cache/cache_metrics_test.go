@@ -420,6 +420,81 @@ func TestInitPrometheusAPI_EndpointSet(t *testing.T) {
 // TestUpdatePodMetricsNonBlocking verifies that updatePodMetrics does not block
 // when the worker pool is saturated (channel buffer full). This prevents the
 // metrics refresh goroutine from stalling when workers are stuck on slow pods.
+func TestUpdateModelReplicaMetrics(t *testing.T) {
+	t.Setenv("POD_NAME", "gateway-0")
+
+	var emitted []map[string]string
+	originalFn := metrics.SetGaugeMetricFnForTest
+	defer func() { metrics.SetGaugeMetricFnForTest = originalFn }()
+	metrics.SetGaugeMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		if name != metrics.ModelReplicas {
+			return
+		}
+		labels := make(map[string]string, len(labelNames))
+		for i, ln := range labelNames {
+			labels[ln] = labelValues[i]
+		}
+		emitted = append(emitted, labels)
+	}
+
+	readyPod := func(name, model, role string, groupIndex string) *Pod {
+		labels := map[string]string{
+			modelLabel:       model,
+			pdRoleIdentifier: role,
+		}
+		if groupIndex != "" {
+			labels[podGroupIndex] = groupIndex
+		}
+		return &Pod{
+			Pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+					Labels:    labels,
+				},
+				Status: v1.PodStatus{
+					Phase: v1.PodRunning,
+					PodIP: "10.0.0.1",
+					Conditions: []v1.PodCondition{
+						{Type: v1.PodReady, Status: v1.ConditionTrue},
+					},
+				},
+			},
+		}
+	}
+
+	store := &Store{}
+	store.metaPods.Store("default/prefill-0", readyPod("prefill-0", "qwen3-8B", "prefill", "0"))
+	store.metaPods.Store("default/decode-0", readyPod("decode-0", "qwen3-8B", "decode", "0"))
+	store.metaPods.Store("default/prefill-worker", readyPod("prefill-worker", "qwen3-8B", "prefill", "1"))
+	store.metaPods.Store("default/unready", &Pod{
+		Pod: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "unready",
+				Namespace: "default",
+				Labels:    map[string]string{modelLabel: "qwen3-8B", pdRoleIdentifier: "prefill"},
+			},
+			Status: v1.PodStatus{Phase: v1.PodPending},
+		},
+	})
+
+	store.updateModelReplicaMetrics()
+	require.Len(t, emitted, 2)
+	require.Equal(t, "prefill", emitted[0]["role"])
+	require.Equal(t, "qwen3-8B", emitted[0]["model_name"])
+	require.Equal(t, "prefill-0", emitted[0]["pod"])
+	require.Equal(t, "decode", emitted[1]["role"])
+	require.Equal(t, "decode-0", emitted[1]["pod"])
+	require.Equal(t, 2, store.modelReplicaEmitted.Len())
+
+	store.metaPods.Delete("default/prefill-0")
+	emitted = nil
+	store.updateModelReplicaMetrics()
+	require.Len(t, emitted, 1)
+	require.Equal(t, "decode-0", emitted[0]["pod"])
+	require.Equal(t, 1, store.modelReplicaEmitted.Len())
+}
+
 func TestUpdatePodMetricsNonBlocking(t *testing.T) {
 	// Create a store with a tiny channel buffer and NO workers draining it
 	store := &Store{

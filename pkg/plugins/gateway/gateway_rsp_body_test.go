@@ -165,6 +165,32 @@ func TestDurationBucketLabel(t *testing.T) {
 	}
 }
 
+func TestTotalTimeBucketLabel(t *testing.T) {
+	tests := []struct {
+		name string
+		d    time.Duration
+		want string
+	}{
+		{"zero", 0, "0-100ms"},
+		{"50ms", 50 * time.Millisecond, "0-100ms"},
+		{"100ms", 100 * time.Millisecond, "100-250ms"},
+		{"250ms", 250 * time.Millisecond, "250-500ms"},
+		{"500ms", 500 * time.Millisecond, "500-1000ms"},
+		{"1s", time.Second, "1000-5000ms"},
+		{"5s", 5 * time.Second, "5000-20000ms"},
+		{"20s", 20 * time.Second, "20000-60000ms"},
+		{"30s", 30 * time.Second, "20000-60000ms"},
+		{"60s", 60 * time.Second, "60000ms+"},
+		{"90s", 90 * time.Second, "60000ms+"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := totalTimeBucketLabel(tt.d)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestProcessLanguageResponse_PartialChunk(t *testing.T) {
 	requestID := "test-partial-" + time.Now().Format("150405.000")
 	body := []byte(`{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`)
@@ -684,5 +710,108 @@ func TestHandleResponseBody_SSEParsing(t *testing.T) {
 
 			mockCache.AssertExpectations(t)
 		})
+	}
+}
+
+func TestRequestEndHelper_EmitsTokenUsageMetrics(t *testing.T) {
+	var counterCalls []struct {
+		name  string
+		value float64
+		extra map[string]string
+	}
+
+	originalFn := metrics.IncrementCounterMetricFnForTest
+	defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		extra := make(map[string]string, len(labelNames))
+		for i, ln := range labelNames {
+			extra[ln] = labelValues[i]
+		}
+		counterCalls = append(counterCalls, struct {
+			name  string
+			value float64
+			extra map[string]string
+		}{name: name, value: value, extra: extra})
+	}
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-1", "")
+	arrival := time.Now()
+
+	server.requestEndHelper(routerCtx, arrival, 100, 50, 150)
+
+	var inputTokens, outputTokens, requestsWithUsage float64
+	for _, call := range counterCalls {
+		switch call.name {
+		case metrics.GatewayInputTokensTotal:
+			inputTokens += call.value
+		case metrics.GatewayOutputTokensTotal:
+			outputTokens += call.value
+		case metrics.GatewayRequestsWithUsageTotal:
+			assert.Equal(t, "true", call.extra["has_usage"])
+			requestsWithUsage += call.value
+		}
+	}
+
+	assert.Equal(t, 100.0, inputTokens)
+	assert.Equal(t, 50.0, outputTokens)
+	assert.Equal(t, 1.0, requestsWithUsage)
+}
+
+func TestRequestEndHelper_EmitsTTFTForStreaming(t *testing.T) {
+	var counterCalls []struct {
+		name  string
+		extra map[string]string
+	}
+
+	originalFn := metrics.IncrementCounterMetricFnForTest
+	defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		extra := make(map[string]string, len(labelNames))
+		for i, ln := range labelNames {
+			extra[ln] = labelValues[i]
+		}
+		counterCalls = append(counterCalls, struct {
+			name  string
+			extra map[string]string
+		}{name: name, extra: extra})
+	}
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-1", "")
+	routerCtx.Stream = true
+	routerCtx.RequestTime = time.Now().Add(-500 * time.Millisecond)
+	routerCtx.FirstTokenTime = time.Now().Add(-200 * time.Millisecond)
+	arrival := time.Now()
+
+	server.requestEndHelper(routerCtx, arrival, 100, 50, 150)
+
+	var ttftCalls int
+	for _, call := range counterCalls {
+		if call.name == metrics.GatewayTTFTBucketTotal {
+			ttftCalls++
+			assert.Equal(t, "200-500ms", call.extra["bucket"])
+		}
+	}
+	assert.Equal(t, 1, ttftCalls)
+}
+
+func TestRequestEndHelper_SkipsTTFTForNonStreaming(t *testing.T) {
+	var counterCalls []string
+
+	originalFn := metrics.IncrementCounterMetricFnForTest
+	defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		counterCalls = append(counterCalls, name)
+	}
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-1", "")
+	arrival := time.Now()
+
+	server.requestEndHelper(routerCtx, arrival, 100, 50, 150)
+
+	for _, name := range counterCalls {
+		assert.NotEqual(t, metrics.GatewayTTFTBucketTotal, name)
 	}
 }
