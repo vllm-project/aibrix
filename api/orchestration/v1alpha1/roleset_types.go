@@ -178,6 +178,12 @@ type RoleSpec struct {
 	// +optional
 	DisruptionTolerance DisruptionTolerance `json:"disruptionTolerance,omitempty"`
 
+	// PodRecoveryPolicy defines how pods in the pod sets are recreated when pod failures happen.
+	// +kubebuilder:default=ReplaceUnhealthy
+	// +kubebuilder:validation:Enum={ReplaceUnhealthy,Recreate}
+	// +optional
+	PodRecoveryPolicy PodRecoveryPolicy `json:"podRecoveryPolicy,omitempty"`
+
 	// +optional
 	SchedulingStrategy *SchedulingStrategy `json:"schedulingStrategy,omitempty"`
 }
