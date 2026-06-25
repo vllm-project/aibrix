@@ -98,6 +98,7 @@ type RoutingContext struct {
 
 	PrefillStartTime time.Time // Time when prefill request is started.
 	PrefillEndTime   time.Time // Time consumed during prefill.
+	FirstTokenTime   time.Time // Time when the first response body chunk arrives (streaming TTFT).
 
 	// RespHeaders holds response headers that the router intends to set.
 	// These are typically used to propagate control information back to the client,
@@ -352,6 +353,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ReqBody = []byte{}
 	r.PrefillStartTime = time.Time{}
 	r.PrefillEndTime = time.Time{}
+	r.FirstTokenTime = time.Time{}
 	// RoutedTime will not be reset, it must before ReqeustTime at this time.
 
 	r.RespHeaders = map[string]string{}

@@ -89,6 +89,9 @@ const (
 	RealtimeNormalizedPendings         = "realtime_normalized_pendings"
 	RealtimeRunningRequestsDrainRate1m = "realtime_running_requests_drain_rate_1m"
 
+	// ModelReplicas tracks ready engine pods backing a model (1 per routable pod).
+	ModelReplicas = "model_replicas"
+
 	// error to read metrics from backend
 	PrometheusQueryFail       = "prometheus_query_fail"
 	LLMEngineMetricsQueryFail = "llm_engine_metrics_query_fail"
@@ -790,6 +793,14 @@ var (
 				Raw: Counter,
 			},
 			Description: "Total number of LLM engine metrics query failures",
+		},
+		ModelReplicas: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Ready engine pods serving a model (1 per routable pod)",
 		},
 	}
 )

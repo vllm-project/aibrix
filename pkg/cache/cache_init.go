@@ -124,6 +124,9 @@ type Store struct {
 	// from Redis, grouped by pod key (namespace/name) → []fields. Swapped atomically by
 	// initGatewaySnapshotSync. Readers call Load() to get map[string][]map[string]string.
 	gatewaySnapshotCache atomic.Value
+
+	// modelReplicaEmitted tracks pods currently exported via model_replicas for stale-series cleanup.
+	modelReplicaEmitted utils.SyncMap[string, modelReplicaState]
 }
 
 // Get retrieves the cache instance

@@ -69,6 +69,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 
 	routingCtx.Model = model
 	routingCtx.Message = message
+	routingCtx.Stream = stream
 	routingCtx.ReqBody = body.RequestBody.GetBody()
 
 	// early reject if model doesn't exist or no pods are ready

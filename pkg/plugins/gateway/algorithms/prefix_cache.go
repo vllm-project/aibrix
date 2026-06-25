@@ -329,12 +329,12 @@ func NewPrefixCacheRouter() (types.Router, error) {
 		router.kvSyncRouter = kvSyncRouter
 
 		if metrics := getPrefixCacheMetrics(); metrics != nil {
-			metrics.prefixCacheIndexerStatus.WithLabelValues("", "sync").Set(1)
-			metrics.prefixCacheIndexerStatus.WithLabelValues("", "local").Set(0)
+			metrics.prefixCacheIndexerStatus.WithLabelValues("_init_", "sync").Set(1)
+			metrics.prefixCacheIndexerStatus.WithLabelValues("_init_", "local").Set(0)
 		}
 	} else if metrics := getPrefixCacheMetrics(); metrics != nil {
-		metrics.prefixCacheIndexerStatus.WithLabelValues("", "local").Set(1)
-		metrics.prefixCacheIndexerStatus.WithLabelValues("", "sync").Set(0)
+		metrics.prefixCacheIndexerStatus.WithLabelValues("_init_", "local").Set(1)
+		metrics.prefixCacheIndexerStatus.WithLabelValues("_init_", "sync").Set(0)
 	}
 
 	return router, nil

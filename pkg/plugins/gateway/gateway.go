@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -89,26 +90,66 @@ type Server struct {
 }
 
 type processState struct {
-	ctx              context.Context
-	requestID        string
-	user             utils.User
-	rpm              int64
-	traceTerm        int64
-	respErrorCode    int
-	model            string
-	metricLabel      string
-	routerCtx        *types.RoutingContext
-	lastRespHeaders  []*configPb.HeaderValueOption
-	stream           bool
-	isRespError      bool
-	isGatewayRspDone bool
-	completed        bool
-	span             trace.Span
-	ttftSpan         trace.Span
+	ctx                  context.Context
+	requestID            string
+	user                 utils.User
+	rpm                  int64
+	traceTerm            int64
+	respErrorCode        int
+	model                string
+	metricLabel          string
+	routerCtx            *types.RoutingContext
+	lastRespHeaders      []*configPb.HeaderValueOption
+	stream               bool
+	isRespError          bool
+	isGatewayRspDone     bool
+	completed            bool
+	modelInFlightTracked bool
+	span                 trace.Span
+	ttftSpan             trace.Span
 }
 
 var podName = os.Getenv("POD_NAME")
 var tracer = otel.Tracer("envoy-ext-proc-server")
+var gatewayInFlightCount int64
+var gatewayModelInFlight sync.Map // model -> *int64
+
+func (st *processState) trackModelInFlight() {
+	if st.model == "" || st.modelInFlightTracked {
+		return
+	}
+	st.modelInFlightTracked = true
+	val, _ := gatewayModelInFlight.LoadOrStore(st.model, new(int64))
+	n := atomic.AddInt64(val.(*int64), 1)
+	metrics.SetGaugeMetric(
+		metrics.GatewayModelInFlight,
+		metrics.GetMetricHelp(metrics.GatewayModelInFlight),
+		float64(n),
+		[]string{"gateway_pod", "model"},
+		podName,
+		st.model,
+	)
+}
+
+func (st *processState) releaseModelInFlight() {
+	if !st.modelInFlightTracked || st.model == "" {
+		return
+	}
+	st.modelInFlightTracked = false
+	val, ok := gatewayModelInFlight.Load(st.model)
+	if !ok {
+		return
+	}
+	n := atomic.AddInt64(val.(*int64), -1)
+	metrics.SetGaugeMetric(
+		metrics.GatewayModelInFlight,
+		metrics.GetMetricHelp(metrics.GatewayModelInFlight),
+		float64(n),
+		[]string{"gateway_pod", "model"},
+		podName,
+		st.model,
+	)
+}
 
 func httpRouteCacheTTL() time.Duration {
 	if v := os.Getenv(envHTTPRouteCacheTTL); v != "" {
@@ -158,13 +199,18 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		requestID: uuid.New().String(),
 	}
 
+	n := atomic.AddInt64(&gatewayInFlightCount, 1)
+	metrics.SetGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), float64(n), []string{"gateway_pod"}, podName)
 	defer func() {
+		st.releaseModelInFlight()
 		if st.span != nil {
 			st.span.End()
 		}
 		if st.ttftSpan != nil {
 			st.ttftSpan.End()
 		}
+		remaining := atomic.AddInt64(&gatewayInFlightCount, -1)
+		metrics.SetGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), float64(remaining), []string{"gateway_pod"}, podName)
 	}()
 
 	klog.InfoS("processing request", "requestID", st.requestID)
@@ -360,6 +406,8 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 	default:
 		klog.InfoS("unknown request type", "requestID", st.requestID, "msg_type", fmt.Sprintf("%T", req.Request))
 	}
+
+	st.trackModelInFlight()
 
 	if resp == nil {
 		klog.ErrorS(nil, "no ProcessingResponse generated for message", "requestID", st.requestID, "msg_type", fmt.Sprintf("%T", req.Request))
