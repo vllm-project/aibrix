@@ -134,6 +134,10 @@ type Config struct {
 
 	// ErrorInjectionEnabled controls whether error injection is enabled.
 	ErrorInjectionEnabled bool
+
+	// Metrics holds the metrics configuration.
+	// When nil, no metrics backends are initialised and all emissions are no-ops.
+	Metrics *MetricsConfig
 }
 
 // Load reads configuration from environment variables and applies sensible defaults.
@@ -191,6 +195,7 @@ func Load() (*Config, error) {
 		AllowedOrigins:                      envOrDefault("ALLOWED_ORIGINS", ""),
 		DevMode:                             envBool("DEV_MODE", false),
 		ErrorInjectionEnabled:               envBool("ERROR_INJECTION_ENABLED", false),
+		Metrics:                             loadMetricsConfig(),
 	}, nil
 }
 
