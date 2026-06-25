@@ -73,12 +73,14 @@ MOCK_REQUEST_DURATION_SECONDS = float(
 
 # Extract the api_key argument and prepare for authentication
 api_key = None
-try:
-    index = sys.argv.index("--api_key")
-    if index + 1 < len(sys.argv):
-        api_key = sys.argv[index + 1]
-except ValueError:
-    pass
+for api_key_arg in ("--api_key", "--api-key"):
+    try:
+        index = sys.argv.index(api_key_arg)
+        if index + 1 < len(sys.argv):
+            api_key = sys.argv[index + 1]
+            break
+    except ValueError:
+        pass
 
 auth = HTTPTokenAuth(scheme="Bearer")
 

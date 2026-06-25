@@ -36,7 +36,7 @@ def load_mock_app(monkeypatch, argv):
 class LiveServer:
     def __init__(self, app):
         self.server = make_server("127.0.0.1", 0, app)
-        self.thread = threading.Thread(target=self.server.serve_forever)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     @property
     def base_url(self):
@@ -49,6 +49,7 @@ class LiveServer:
     def __exit__(self, exc_type, exc, tb):
         self.server.shutdown()
         self.thread.join(timeout=5)
+        self.server.server_close()
 
 
 def post_chat_completion(base_url, token=None):
@@ -91,5 +92,18 @@ def test_chat_completions_requires_matching_authorization_with_api_key(monkeypat
     assert missing_body["error"]["code"] == "invalid_api_key"
     assert wrong_status == 401
     assert wrong_body["error"]["code"] == "invalid_api_key"
+    assert correct_status == 200
+    assert correct_body["choices"][0]["message"]["content"]
+
+
+def test_chat_completions_requires_matching_authorization_with_api_key_alias(monkeypatch):
+    app = load_mock_app(monkeypatch, ["app.py", "--api-key", "secret"])
+
+    with LiveServer(app) as server:
+        missing_status, missing_body = post_chat_completion(server.base_url)
+        correct_status, correct_body = post_chat_completion(server.base_url, token="secret")
+
+    assert missing_status == 401
+    assert missing_body["error"]["code"] == "invalid_api_key"
     assert correct_status == 200
     assert correct_body["choices"][0]["message"]["content"]
