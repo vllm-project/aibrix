@@ -477,7 +477,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		}
 		maxThroughput = math.Max(maxThroughput, throughput)
 
-		gpuUsage, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.GPUCacheUsagePerc)
+		gpuUsage, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc)
 		if err != nil {
 			gpuUsage = &metrics.SimpleMetricValue{Value: 0}
 		}
@@ -707,6 +707,7 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	if targetDecodePod == nil {
 		return nil, nil, fmt.Errorf("target decode pod is nil")
 	}
+
 	if len(prefixHashes) > 0 {
 		r.enqueuePrefixUpdate(prefixHashes, routingCtx.Model, targetPrefillPod.Name)
 	}

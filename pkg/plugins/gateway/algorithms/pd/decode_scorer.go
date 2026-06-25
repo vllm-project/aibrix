@@ -65,7 +65,7 @@ var (
 type DecodePodInput struct {
 	RunningReqs     float64 // active decode requests on this pod (incl. pending)
 	Throughput      float64 // AvgGenerationThroughputToksPerS for the model
-	FreeGPUPercent  float64 // 100 - GPUCacheUsagePerc*100, floored at 0.1
+	FreeGPUPercent  float64 // 100 - KVCacheUsagePerc*100, floored at 0.1
 	MaxRequestCount float64 // max RunningReqs across the candidate decode pods
 	MaxThroughput   float64 // max Throughput across the candidate decode pods
 	MaxFreeGPUUsage float64 // max FreeGPUPercent across the candidate decode pods

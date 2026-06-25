@@ -94,8 +94,8 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 		completionFields = append([]interface{}{}, fields...)
 	}
 
-	e.tracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name)
 	routingCtx.PrefillStartTime = time.Now()
+	e.tracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name)
 
 	if handler.IsAsync() {
 		// SGLang uses a bootstrap handshake to coordinate KV transfer out-of-band;
