@@ -90,23 +90,23 @@ type Server struct {
 }
 
 type processState struct {
-	ctx                  context.Context
-	requestID            string
-	user                 utils.User
-	rpm                  int64
-	traceTerm            int64
-	respErrorCode        int
-	model                string
-	metricLabel          string
-	routerCtx            *types.RoutingContext
-	lastRespHeaders      []*configPb.HeaderValueOption
-	stream               bool
-	isRespError          bool
-	isGatewayRspDone     bool
-	completed            bool
-	modelInFlightTracked bool
-	span                 trace.Span
-	ttftSpan             trace.Span
+	ctx              context.Context
+	requestID        string
+	user             utils.User
+	rpm              int64
+	traceTerm        int64
+	respErrorCode    int
+	model            string
+	metricLabel      string
+	routerCtx        *types.RoutingContext
+	lastRespHeaders  []*configPb.HeaderValueOption
+	stream           bool
+	isRespError      bool
+	isGatewayRspDone bool
+	completed        bool
+	trackedModel     string
+	span             trace.Span
+	ttftSpan         trace.Span
 }
 
 var podName = os.Getenv("POD_NAME")
@@ -115,10 +115,13 @@ var gatewayInFlightCount int64
 var gatewayModelInFlight sync.Map // model -> *int64
 
 func (st *processState) trackModelInFlight() {
-	if st.model == "" || st.modelInFlightTracked {
+	if st.model == "" || st.trackedModel == st.model {
 		return
 	}
-	st.modelInFlightTracked = true
+	if st.trackedModel != "" {
+		st.releaseModelInFlight()
+	}
+	st.trackedModel = st.model
 	val, _ := gatewayModelInFlight.LoadOrStore(st.model, new(int64))
 	n := atomic.AddInt64(val.(*int64), 1)
 	metrics.SetGaugeMetric(
@@ -132,11 +135,12 @@ func (st *processState) trackModelInFlight() {
 }
 
 func (st *processState) releaseModelInFlight() {
-	if !st.modelInFlightTracked || st.model == "" {
+	if st.trackedModel == "" {
 		return
 	}
-	st.modelInFlightTracked = false
-	val, ok := gatewayModelInFlight.Load(st.model)
+	modelToRelease := st.trackedModel
+	st.trackedModel = ""
+	val, ok := gatewayModelInFlight.Load(modelToRelease)
 	if !ok {
 		return
 	}
@@ -147,7 +151,7 @@ func (st *processState) releaseModelInFlight() {
 		float64(n),
 		[]string{"gateway_pod", "model"},
 		podName,
-		st.model,
+		modelToRelease,
 	)
 }
 

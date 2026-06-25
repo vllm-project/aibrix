@@ -308,11 +308,15 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		ctx.RespHeaders[HeaderPrefillTargetPod] = prefillPod.Name
 		ctx.RespHeaders[HeaderPrefillTargetPodIP] = prefillPod.Status.PodIP
 
-		n := atomic.AddInt64(&pdPrefillOutstanding, 1)
-		metrics.SetGaugeMetric(metrics.GatewayPrefillOutstandingRequests, metrics.GetMetricHelp(metrics.GatewayPrefillOutstandingRequests), float64(n), []string{"gateway_pod"}, pdGatewayPodName)
-		err = r.doPrefillRequest(ctx, prefillPod, llmEngine)
-		remaining := atomic.AddInt64(&pdPrefillOutstanding, -1)
-		metrics.SetGaugeMetric(metrics.GatewayPrefillOutstandingRequests, metrics.GetMetricHelp(metrics.GatewayPrefillOutstandingRequests), float64(remaining), []string{"gateway_pod"}, pdGatewayPodName)
+		err = func() error {
+			n := atomic.AddInt64(&pdPrefillOutstanding, 1)
+			metrics.SetGaugeMetric(metrics.GatewayPrefillOutstandingRequests, metrics.GetMetricHelp(metrics.GatewayPrefillOutstandingRequests), float64(n), []string{"gateway_pod"}, pdGatewayPodName)
+			defer func() {
+				remaining := atomic.AddInt64(&pdPrefillOutstanding, -1)
+				metrics.SetGaugeMetric(metrics.GatewayPrefillOutstandingRequests, metrics.GetMetricHelp(metrics.GatewayPrefillOutstandingRequests), float64(remaining), []string{"gateway_pod"}, pdGatewayPodName)
+			}()
+			return r.doPrefillRequest(ctx, prefillPod, llmEngine)
+		}()
 
 		if err != nil {
 			metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},

@@ -127,7 +127,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, status_code) (rate(gateway_request_model_success_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, status_code) (max by (pod, model, status, status_code) (rate(gateway_request_model_success_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[5m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} success {{status_code}}",
@@ -140,7 +140,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, status_code) (rate(gateway_request_model_fail_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, status_code) (max by (pod, model, status, status_code) (rate(gateway_request_model_fail_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[5m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} fail {{status_code}}",
@@ -346,10 +346,10 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (exported_pod) (max by (exported_pod, model_name) (num_requests_running{model_name=~\"$model\"}))",
+          "expr": "sum(max by (exported_pod, model_name) (num_requests_running{model_name=~\"$model\", job=\"aibrix-gateway-plugins\", role=\"prefill\"} and on(exported_pod) model_replicas{model_name=~\"$model\", job=\"aibrix-gateway-plugins\", role=\"prefill\"} == 1))",
           "hide": false,
           "instant": false,
-          "legendFormat": "{{exported_pod}} running",
+          "legendFormat": "Prefill running",
           "range": true,
           "refId": "A"
         },
@@ -359,15 +359,67 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (exported_pod) (max by (exported_pod, model_name) (num_requests_waiting{model_name=~\"$model\"}))",
+          "expr": "sum(max by (exported_pod, model_name) (num_requests_running{model_name=~\"$model\", job=\"aibrix-gateway-plugins\", role=\"decode\"} and on(exported_pod) model_replicas{model_name=~\"$model\", job=\"aibrix-gateway-plugins\", role=\"decode\"} == 1))",
           "hide": false,
           "instant": false,
-          "legendFormat": "{{exported_pod}} waiting",
+          "legendFormat": "Decode running",
           "range": true,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(max by (exported_pod, model_name) (num_requests_waiting{model_name=~\"$model\", job=\"aibrix-gateway-plugins\", role=\"prefill\"} and on(exported_pod) model_replicas{model_name=~\"$model\", job=\"aibrix-gateway-plugins\", role=\"prefill\"} == 1))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "Prefill waiting",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(max by (exported_pod, model_name) (num_requests_waiting{model_name=~\"$model\", job=\"aibrix-gateway-plugins\", role=\"decode\"} and on(exported_pod) model_replicas{model_name=~\"$model\", job=\"aibrix-gateway-plugins\", role=\"decode\"} == 1))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "Decode waiting",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(max by (exported_pod, model_name) (num_requests_running{model_name=~\"$model\", job=\"aibrix-gateway-plugins\", role!~\"prefill|decode\"} and on(exported_pod) model_replicas{model_name=~\"$model\", job=\"aibrix-gateway-plugins\", role!~\"prefill|decode\"} == 1))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "Running",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(max by (exported_pod, model_name) (num_requests_waiting{model_name=~\"$model\", job=\"aibrix-gateway-plugins\", role!~\"prefill|decode\"} and on(exported_pod) model_replicas{model_name=~\"$model\", job=\"aibrix-gateway-plugins\", role!~\"prefill|decode\"} == 1))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "Waiting",
+          "range": true,
+          "refId": "F"
         }
       ],
-      "title": "Engine Queue Depth (Running / Waiting)",
+      "title": "Engine Queue Depth (Running / Waiting by Role)",
       "type": "timeseries"
     },
     {
