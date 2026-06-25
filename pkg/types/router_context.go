@@ -98,6 +98,7 @@ type RoutingContext struct {
 
 	PrefillStartTime time.Time // Time when prefill request is started.
 	PrefillEndTime   time.Time // Time consumed during prefill.
+	FirstTokenTime   time.Time // Time when the first response body chunk arrives (streaming TTFT).
 
 	// FirstTokenTime records the arrival time of the first response body chunk.
 	// Used to compute TTFT/KV-transfer time for streaming responses, where

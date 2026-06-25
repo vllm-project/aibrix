@@ -33,6 +33,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
 )
 
 const (
@@ -419,14 +420,68 @@ func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, s
 	return nil
 }
 
-func (c *Store) updateModelMetrics() {
-	// c.mu.Lock()
-	// defer c.mu.Unlock()
+type modelReplicaState struct {
+	pod       *v1.Pod
+	modelName string
+}
 
-	// if c.prometheusApi == nil {
-	// 	klog.V(4).InfoS("Prometheus api is not initialized, PROMETHEUS_ENDPOINT is not configured, skip fetching prometheus metrics")
-	// 	return
-	// }
+const pdRoleIdentifier = "role-name"
+
+func isPodWithHTTPServer(pod *v1.Pod) bool {
+	podGroupIndex, exists := pod.Labels[podGroupIndex]
+	if !exists {
+		return true
+	}
+	return podGroupIndex == "0"
+}
+
+func (c *Store) updateModelMetrics() {
+	c.updateModelReplicaMetrics()
+}
+
+// updateModelReplicaMetrics emits model_replicas=1 for each ready, routable engine pod and
+// removes stale series when pods leave the cache.
+func (c *Store) updateModelReplicaMetrics() {
+	active := make(map[string]struct{})
+
+	c.metaPods.Range(func(key string, metaPod *Pod) bool {
+		pod := metaPod.Pod
+		if pod == nil || !utils.FilterReadyPod(pod) || !isPodWithHTTPServer(pod) {
+			return true
+		}
+
+		modelName, ok := getModelNameFromPod(pod)
+		if !ok || modelName == "" {
+			return true
+		}
+
+		extras := map[string]string{"model_name": modelName}
+		metrics.EmitMetricToPrometheus(
+			&types.RoutingContext{Model: modelName},
+			pod,
+			metrics.ModelReplicas,
+			&metrics.SimpleMetricValue{Value: 1.0},
+			extras,
+		)
+		c.modelReplicaEmitted.Store(key, modelReplicaState{pod: pod, modelName: modelName})
+		active[key] = struct{}{}
+		return true
+	})
+
+	c.modelReplicaEmitted.Range(func(key string, state modelReplicaState) bool {
+		if _, ok := active[key]; ok {
+			return true
+		}
+		extras := map[string]string{"model_name": state.modelName}
+		metrics.DeleteGaugeMetricForPod(
+			metrics.ModelReplicas,
+			&types.RoutingContext{Model: state.modelName},
+			state.pod,
+			extras,
+		)
+		c.modelReplicaEmitted.Delete(key)
+		return true
+	})
 }
 
 func (c *Store) aggregateMetrics() {

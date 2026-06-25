@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"testing"
 	"time"
 
@@ -30,8 +31,10 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -1721,4 +1724,33 @@ func TestProcess_ShutdownWhileRecvBlocked(t *testing.T) {
 	}
 
 	mc.AssertExpectations(t)
+}
+
+func TestModelInFlightTracking(t *testing.T) {
+	var gauges []map[string]string
+	originalFn := metrics.SetGaugeMetricFnForTest
+	defer func() { metrics.SetGaugeMetricFnForTest = originalFn }()
+	metrics.SetGaugeMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		if name != metrics.GatewayModelInFlight {
+			return
+		}
+		labels := make(map[string]string, len(labelNames))
+		for i, ln := range labelNames {
+			labels[ln] = labelValues[i]
+		}
+		labels["_value"] = strconv.FormatFloat(value, 'f', -1, 64)
+		gauges = append(gauges, labels)
+	}
+
+	st := &processState{model: "qwen3-8B"}
+	st.trackModelInFlight()
+	st.trackModelInFlight() // idempotent
+	require.Len(t, gauges, 1)
+	require.Equal(t, "qwen3-8B", gauges[0]["model"])
+	require.Equal(t, "1", gauges[0]["_value"])
+
+	st.releaseModelInFlight()
+	st.releaseModelInFlight() // idempotent
+	require.Len(t, gauges, 2)
+	require.Equal(t, "0", gauges[1]["_value"])
 }
