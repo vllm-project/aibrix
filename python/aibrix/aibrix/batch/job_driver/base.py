@@ -55,6 +55,7 @@ from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobError,
     BatchJobErrorCode,
+    BatchJobSpec,
     BatchJobState,
     BatchUsage,
     ConditionType,
@@ -643,7 +644,7 @@ class BaseJobDriver:
                         )
 
                 response = self._build_response(
-                    custom_id, job_id, line_no, request_output, last_error
+                    custom_id, job_id, line_no, job.spec, request_output, last_error
                 )
                 await storage.write_job_output_data(job, line_no, response)
 
@@ -734,7 +735,7 @@ class BaseJobDriver:
                     self._accumulate_usage(job_id, custom_id, response.get("usage"))
 
             record = self._build_response(
-                custom_id, job_id, request_id, response, error
+                custom_id, job_id, request_id, job.spec, response, error
             )
             await storage.write_job_output_data(job, request_id, record)
             latest_job = await self._progress_manager.complete_job_request(
@@ -935,6 +936,19 @@ class BaseJobDriver:
         shaped["model"] = self._active_model_name
         return shaped
 
+    def _shape_output_payload(
+        self, payload: Dict[str, Any], jobSpec: BatchJobSpec
+    ) -> Dict[str, Any]:
+        """Adjust a request body before dispatch. Pins the request to the
+        runtime's served model when one is known (single-model backends like a
+        provisioned Deployment), so the input's ``model`` field can't misroute;
+        identity otherwise."""
+        if jobSpec.model is None:
+            return payload
+        shaped = dict(payload)
+        shaped["model"] = jobSpec.model
+        return shaped
+
     async def finalize_job(self, job: BatchJob) -> BatchJob:
         """Aggregate outputs (when this driver owns aggregation) and mark done."""
         assert job.status.state == BatchJobState.FINALIZING
@@ -954,6 +968,7 @@ class BaseJobDriver:
         custom_id: str,
         job_id: str,
         request_id: int,
+        job_spec: BatchJobSpec,
         request_output: Any = None,
         error: Optional[Exception] = None,
     ) -> dict[str, Any]:
@@ -974,6 +989,8 @@ class BaseJobDriver:
                 code=BatchJobErrorCode.INFERENCE_FAILED, message=str(error)
             )
         else:
+            if isinstance(request_output, dict):
+                request_output = self._shape_output_payload(request_output, job_spec)
             response["response"] = {
                 "status_code": 200,
                 "request_id": f"{job_id}-{request_id}",
