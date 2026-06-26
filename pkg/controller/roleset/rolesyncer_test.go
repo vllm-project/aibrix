@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -34,7 +35,12 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
 )
 
-const newHash = "new-hash"
+const (
+	newHash    = "new-hash"
+	oldHash    = "old-hash"
+	nginxImage = "nginx:v1"
+	nginxV2    = "nginx:v2"
+)
 
 var fakeComputeHashFunc = func(template *v1.PodTemplateSpec, collisionCount *int32) string {
 	return newHash
@@ -57,10 +63,15 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 		expectedDelete int
 	}{
 		{
-			name:           "Scale up from 0 to 3 replicas",
-			description:    "Should create 3 pods when scaling up from 0",
-			roleSet:        newTestRoleSet("test-roleset", "test-ns"),
-			role:           newTestRoleSpec("worker", 3, intStrPtr(intstr.FromString("25%")), intStrPtr(intstr.FromString("25%"))),
+			name:        "Scale up from 0 to 3 replicas",
+			description: "Should create 3 pods when scaling up from 0",
+			roleSet:     newTestRoleSet("test-roleset", "test-ns"),
+			role: newTestRoleSpec(
+				"worker",
+				3,
+				intStrPtr(intstr.FromString("25%")),
+				intStrPtr(intstr.FromString("25%")),
+			),
 			existingPods:   []*v1.Pod{},
 			expectedChange: true,
 			expectedCreate: 3,
@@ -72,7 +83,7 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 			roleSet:     newTestRoleSet("test-roleset", "test-ns"),
 			role:        newTestRoleSpec("worker", 2, intStrPtr(intstr.FromString("25%")), intStrPtr(intstr.FromString("25%"))),
 			existingPods: []*v1.Pod{
-				newTestPod("pod-1", "test-ns", "worker", "test-roleset", true, false),
+				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-2", "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-3", "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-4", "test-ns", "worker", "test-roleset", true, false),
@@ -87,7 +98,7 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 			roleSet: newTestRoleSet("test-roleset", "test-ns"),
 			role:    newTestRoleSpec("worker", 2, intStrPtr(intstr.FromString("25%")), intStrPtr(intstr.FromString("25%"))),
 			existingPods: []*v1.Pod{
-				newTestPod("pod-1", "test-ns", "worker", "test-roleset", true, false),
+				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-2", "test-ns", "worker", "test-roleset", true, false),
 			},
 			expectedChange: false,
@@ -100,7 +111,7 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 			roleSet: newTestRoleSet("test-roleset", "test-ns"),
 			role:    newTestRoleSpec("worker", 2, intStrPtr(intstr.FromString("25%")), intStrPtr(intstr.FromString("25%"))),
 			existingPods: []*v1.Pod{
-				newTestPod("pod-1", "test-ns", "worker", "test-roleset", true, false),
+				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-2", "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-terminated", "test-ns", "worker", "test-roleset", false, true),
 			},
@@ -119,7 +130,7 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 			roleSet: newTestRoleSet("test-roleset", "test-ns"),
 			role:    newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
-				newTestPod("pod-1", "test-ns", "worker", "test-roleset", true, false),
+				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-2", "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-3", "test-ns", "worker", "test-roleset", false, false), // not ready
 				newTestPod("pod-4", "test-ns", "worker", "test-roleset", false, false),
@@ -138,7 +149,7 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 			roleSet: newTestRoleSet("test-roleset", "test-ns"),
 			role:    newTestRoleSpec("worker", 5, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(0))),
 			existingPods: []*v1.Pod{
-				newTestPod("pod-1", "test-ns", "worker", "test-roleset", true, false),
+				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-2", "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-terminating", "test-ns", "worker", "test-roleset", true, true),
 			},
@@ -214,9 +225,9 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			roleSet:     newTestRoleSet("test-roleset", "test-ns"),
 			role:        newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
-				newTestPodWithHash("pod-1", "test-ns", true, false, "old-hash"),
-				newTestPodWithHash("pod-2", "test-ns", true, false, "old-hash"),
-				newTestPodWithHash("pod-3", "test-ns", true, false, "old-hash"),
+				newTestPodWithHash(testPodOne, "test-ns", true, false, oldHash),
+				newTestPodWithHash("pod-2", "test-ns", true, false, oldHash),
+				newTestPodWithHash("pod-3", "test-ns", true, false, oldHash),
 			},
 			expectedError:  false,
 			expectedCreate: 1,
@@ -228,9 +239,9 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			roleSet:     newTestRoleSet("test-roleset", "test-ns"),
 			role:        newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
-				newTestPodWithHash("pod-1", "test-ns", true, false, newHash),    // updated
-				newTestPodWithHash("pod-2", "test-ns", true, false, "old-hash"), // outdated
-				newTestPodWithHash("pod-3", "test-ns", true, false, "old-hash"), // outdated
+				newTestPodWithHash(testPodOne, "test-ns", true, false, newHash), // updated
+				newTestPodWithHash("pod-2", "test-ns", true, false, oldHash),    // outdated
+				newTestPodWithHash("pod-3", "test-ns", true, false, oldHash),    // outdated
 			},
 			expectedError:  false,
 			expectedCreate: 1,
@@ -242,7 +253,7 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			roleSet:     newTestRoleSet("test-roleset", "test-ns"),
 			role:        newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
-				newTestPodWithHash("pod-1", "test-ns", true, false, newHash),
+				newTestPodWithHash(testPodOne, "test-ns", true, false, newHash),
 				newTestPodWithHash("pod-2", "test-ns", true, false, newHash),
 				newTestPodWithHash("pod-3", "test-ns", true, false, newHash),
 			},
@@ -256,9 +267,9 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			roleSet:     newTestRoleSet("test-roleset", "test-ns"),
 			role:        newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
-				newTestPodWithHash("pod-1", "test-ns", true, false, newHash),     // updated & ready
-				newTestPodWithHash("pod-2", "test-ns", false, false, "old-hash"), // outdated & not ready
-				newTestPodWithHash("pod-3", "test-ns", true, false, "old-hash"),  // outdated & ready
+				newTestPodWithHash(testPodOne, "test-ns", true, false, newHash), // updated & ready
+				newTestPodWithHash("pod-2", "test-ns", false, false, oldHash),   // outdated & not ready
+				newTestPodWithHash("pod-3", "test-ns", true, false, oldHash),    // outdated & ready
 			},
 			expectedError:  false,
 			expectedCreate: 1,
@@ -270,9 +281,9 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			roleSet:     newTestRoleSet("test-roleset", "test-ns"),
 			role:        newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
-				newTestPodWithHash("pod-1", "test-ns", true, false, "old-hash"),
-				newTestPodWithHash("pod-2", "test-ns", true, false, "old-hash"),
-				newTestPodWithHash("pod-terminating", "test-ns", true, true, "old-hash"), // terminating
+				newTestPodWithHash(testPodOne, "test-ns", true, false, oldHash),
+				newTestPodWithHash("pod-2", "test-ns", true, false, oldHash),
+				newTestPodWithHash("pod-terminating", "test-ns", true, true, oldHash), // terminating
 			},
 			expectedError:  false,
 			expectedCreate: 2,
@@ -284,9 +295,9 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			roleSet:     newTestRoleSet("test-roleset", "test-ns"),
 			role:        newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
-				newTestPodWithHash("pod-1", "test-ns", true, false, "old-hash"),
-				newTestPodWithHash("pod-2", "test-ns", true, false, "old-hash"),
-				newTestPodWithHash("pod-3", "test-ns", true, false, "old-hash"),
+				newTestPodWithHash(testPodOne, "test-ns", true, false, oldHash),
+				newTestPodWithHash("pod-2", "test-ns", true, false, oldHash),
+				newTestPodWithHash("pod-3", "test-ns", true, false, oldHash),
 			},
 			expectedError:  false,
 			expectedCreate: 0,
@@ -298,9 +309,9 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			roleSet:     newTestRoleSet("test-roleset", "test-ns"),
 			role:        newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(0))),
 			existingPods: []*v1.Pod{
-				newTestPodWithHash("pod-1", "test-ns", true, false, "old-hash"),
-				newTestPodWithHash("pod-2", "test-ns", true, false, "old-hash"),
-				newTestPodWithHash("pod-3", "test-ns", true, false, "old-hash"),
+				newTestPodWithHash(testPodOne, "test-ns", true, false, oldHash),
+				newTestPodWithHash("pod-2", "test-ns", true, false, oldHash),
+				newTestPodWithHash("pod-3", "test-ns", true, false, oldHash),
 			},
 			expectedError:  false,
 			expectedCreate: 1,
@@ -356,6 +367,370 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 				expectedNetChange, netChange, tt.expectedCreate, tt.expectedDelete)
 		})
 	}
+}
+
+func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleUsesInPlaceForImageOnlyChange(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 1, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1)))
+	role.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType
+	role.Template.Spec.Containers[0].Image = nginxImage
+	oldRole := role.DeepCopy()
+
+	role.Template.Spec.Containers[0].Image = nginxV2
+	pod, err := buildRenderedPod(roleSet, oldRole, nil)
+	require.NoError(t, err)
+	pod.Name = testPodOne
+	pod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
+	pod.Status.Phase = v1.PodRunning
+	pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	pod.Status.ContainerStatuses = []v1.ContainerStatus{{
+		Name:  "master",
+		Image: nginxImage,
+		Ready: true,
+	}}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+
+	syncer := &StatelessRoleSyncer{
+		cli:             fakeClient,
+		computeHashFunc: fakeComputeHashFunc,
+	}
+
+	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+
+	pods := &v1.PodList{}
+	require.NoError(t, fakeClient.List(ctx, pods))
+	require.Len(t, pods.Items, 1)
+
+	updated := &v1.Pod{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
+	assert.Equal(t, nginxV2, updated.Spec.Containers[0].Image)
+	assert.Equal(t, oldHash, updated.Labels[constants.RoleTemplateHashLabelKey])
+	assert.Equal(t, newHash, updated.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey])
+}
+
+func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleFallsBackToRecreateForNonImageChange(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 1, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(1)))
+	role.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType
+	role.Template.Spec.Containers[0].Command = []string{"serve", "--version=v1"}
+	oldRole := role.DeepCopy()
+
+	role.Template.Spec.Containers[0].Command = []string{"serve", "--version=v2"}
+	pod, err := buildRenderedPod(roleSet, oldRole, nil)
+	require.NoError(t, err)
+	pod.Name = testPodOne
+	pod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
+	pod.Status.Phase = v1.PodRunning
+	pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	pod.Status.ContainerStatuses = []v1.ContainerStatus{{
+		Name:  "master",
+		Image: "nginx",
+		Ready: true,
+	}}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+
+	recorder := record.NewFakeRecorder(1)
+	syncer := &StatelessRoleSyncer{
+		cli:             fakeClient,
+		computeHashFunc: fakeComputeHashFunc,
+		recorder:        recorder,
+	}
+
+	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+
+	pods := &v1.PodList{}
+	require.NoError(t, fakeClient.List(ctx, pods))
+	require.Len(t, pods.Items, 1)
+
+	replacement := pods.Items[0]
+	assert.NotEqual(t, testPodOne, replacement.Name)
+	assert.Equal(t, []string{"serve", "--version=v2"}, replacement.Spec.Containers[0].Command)
+	assert.NotEqual(t, oldHash, replacement.Labels[constants.RoleTemplateHashLabelKey])
+	assert.NotContains(t, replacement.Annotations, constants.RoleInPlaceUpdateTargetHashAnnotationKey)
+
+	event := <-recorder.Events
+	assert.Contains(t, event, InPlaceFallbackEventType)
+	assert.Contains(t, event, "role worker pod pod-1 cannot be updated in place")
+	assert.Contains(t, event, "non-image pod fields changed")
+}
+
+func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleRespectsMaxUnavailable(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 2, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1)))
+	role.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType
+	role.Template.Spec.Containers[0].Image = nginxImage
+	oldRole := role.DeepCopy()
+
+	role.Template.Spec.Containers[0].Image = nginxV2
+	pod, err := buildRenderedPod(roleSet, oldRole, nil)
+	require.NoError(t, err)
+	pod.Name = testPodOne
+	pod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
+	pod.Status.Phase = v1.PodRunning
+	pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	pod.Status.ContainerStatuses = []v1.ContainerStatus{{
+		Name:  "master",
+		Image: nginxImage,
+		Ready: true,
+	}}
+	notReadyPod, err := buildRenderedPod(roleSet, oldRole, nil)
+	require.NoError(t, err)
+	notReadyPod.Name = "pod-2"
+	notReadyPod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
+	notReadyPod.Status.Phase = v1.PodRunning
+	notReadyPod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse}}
+	notReadyPod.Status.ContainerStatuses = []v1.ContainerStatus{{
+		Name:  "master",
+		Image: nginxImage,
+		Ready: false,
+	}}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod, notReadyPod).
+		Build()
+
+	syncer := &StatelessRoleSyncer{
+		cli:             fakeClient,
+		computeHashFunc: fakeComputeHashFunc,
+	}
+
+	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+
+	updated := &v1.Pod{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
+	assert.Equal(t, nginxImage, updated.Spec.Containers[0].Image)
+	assert.Equal(t, oldHash, updated.Labels[constants.RoleTemplateHashLabelKey])
+	assert.NotContains(t, updated.Annotations, constants.RoleInPlaceUpdateTargetHashAnnotationKey)
+
+	updatedNotReady := &v1.Pod{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(notReadyPod), updatedNotReady))
+	assert.Equal(t, nginxV2, updatedNotReady.Spec.Containers[0].Image)
+	assert.Equal(t, newHash, updatedNotReady.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey])
+}
+
+func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleWaitsForRuntimeImage(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 1, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1)))
+	role.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType
+	role.Template.Spec.Containers[0].Image = nginxV2
+
+	pod, err := buildRenderedPod(roleSet, role, nil)
+	require.NoError(t, err)
+	pod.Name = testPodOne
+	pod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
+	pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] = newHash
+	pod.Status.Phase = v1.PodRunning
+	pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	pod.Status.ContainerStatuses = []v1.ContainerStatus{{
+		Name:  "master",
+		Image: nginxImage,
+		Ready: true,
+	}}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+
+	syncer := &StatelessRoleSyncer{
+		cli:             fakeClient,
+		computeHashFunc: fakeComputeHashFunc,
+	}
+
+	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+
+	updated := &v1.Pod{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
+	assert.Equal(t, nginxV2, updated.Spec.Containers[0].Image)
+	assert.Equal(t, oldHash, updated.Labels[constants.RoleTemplateHashLabelKey])
+	assert.Equal(t, newHash, updated.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey])
+}
+
+func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleCountsInProgressReadyPodsAgainstBudget(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 2, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1)))
+	role.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType
+	role.Template.Spec.Containers[0].Image = nginxImage
+	oldRole := role.DeepCopy()
+	role.Template.Spec.Containers[0].Image = nginxV2
+
+	inProgressPod, err := buildRenderedPod(roleSet, role, nil)
+	require.NoError(t, err)
+	inProgressPod.Name = testPodOne
+	inProgressPod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
+	inProgressPod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] = newHash
+	inProgressPod.Status.Phase = v1.PodRunning
+	inProgressPod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	inProgressPod.Status.ContainerStatuses = []v1.ContainerStatus{{
+		Name:  "master",
+		Image: nginxImage,
+		Ready: true,
+	}}
+
+	waitingPod, err := buildRenderedPod(roleSet, oldRole, nil)
+	require.NoError(t, err)
+	waitingPod.Name = "pod-2"
+	waitingPod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
+	waitingPod.Status.Phase = v1.PodRunning
+	waitingPod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	waitingPod.Status.ContainerStatuses = []v1.ContainerStatus{{
+		Name:  "master",
+		Image: nginxImage,
+		Ready: true,
+	}}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(inProgressPod, waitingPod).
+		Build()
+
+	syncer := &StatelessRoleSyncer{
+		cli:             fakeClient,
+		computeHashFunc: fakeComputeHashFunc,
+	}
+
+	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+
+	updatedWaiting := &v1.Pod{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(waitingPod), updatedWaiting))
+	assert.Equal(t, nginxImage, updatedWaiting.Spec.Containers[0].Image)
+	assert.NotContains(t, updatedWaiting.Annotations, constants.RoleInPlaceUpdateTargetHashAnnotationKey)
+}
+
+func TestStatefulRoleSyncer_RolloutInPlaceIfPossible(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 1, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1)))
+	role.Stateful = true
+	role.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType
+	role.Template.Spec.Containers[0].Image = nginxImage
+	oldRole := role.DeepCopy()
+	role.Template.Spec.Containers[0].Image = nginxV2
+
+	index := 0
+	pod, err := buildRenderedPod(roleSet, oldRole, &index)
+	require.NoError(t, err)
+	pod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
+	pod.Status.Phase = v1.PodRunning
+	pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	pod.Status.ContainerStatuses = []v1.ContainerStatus{{
+		Name:  "master",
+		Image: nginxImage,
+		Ready: true,
+	}}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+
+	syncer := &StatefulRoleSyncer{
+		cli:             fakeClient,
+		computeHashFunc: fakeComputeHashFunc,
+	}
+
+	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+
+	updated := &v1.Pod{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
+	assert.Equal(t, nginxV2, updated.Spec.Containers[0].Image)
+	assert.Equal(t, oldHash, updated.Labels[constants.RoleTemplateHashLabelKey])
+	assert.Equal(t, newHash, updated.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey])
+}
+
+func TestStatefulRoleSyncer_RolloutInPlaceIfPossibleCountsInProgressReadyPodsAgainstBudget(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 2, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1)))
+	role.Stateful = true
+	role.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType
+	role.Template.Spec.Containers[0].Image = nginxImage
+	oldRole := role.DeepCopy()
+	role.Template.Spec.Containers[0].Image = nginxV2
+
+	firstIndex := 0
+	inProgressPod, err := buildRenderedPod(roleSet, role, &firstIndex)
+	require.NoError(t, err)
+	inProgressPod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
+	inProgressPod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] = newHash
+	inProgressPod.Status.Phase = v1.PodRunning
+	inProgressPod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	inProgressPod.Status.ContainerStatuses = []v1.ContainerStatus{{
+		Name:  "master",
+		Image: nginxImage,
+		Ready: true,
+	}}
+
+	secondIndex := 1
+	waitingPod, err := buildRenderedPod(roleSet, oldRole, &secondIndex)
+	require.NoError(t, err)
+	waitingPod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
+	waitingPod.Status.Phase = v1.PodRunning
+	waitingPod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	waitingPod.Status.ContainerStatuses = []v1.ContainerStatus{{
+		Name:  "master",
+		Image: nginxImage,
+		Ready: true,
+	}}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(inProgressPod, waitingPod).
+		Build()
+
+	syncer := &StatefulRoleSyncer{
+		cli:             fakeClient,
+		computeHashFunc: fakeComputeHashFunc,
+	}
+
+	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+
+	updatedWaiting := &v1.Pod{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(waitingPod), updatedWaiting))
+	assert.Equal(t, nginxImage, updatedWaiting.Spec.Containers[0].Image)
+	assert.NotContains(t, updatedWaiting.Annotations, constants.RoleInPlaceUpdateTargetHashAnnotationKey)
 }
 
 // Helper function to create a pod with specific template hash
@@ -422,7 +797,11 @@ func newTestPod(name, namespace, roleName, roleSetName string, ready, terminatin
 	return pod
 }
 
-func newTestRoleSpec(name string, replicas int32, maxSurge, maxUnavailable *intstr.IntOrString) *orchestrationv1alpha1.RoleSpec {
+func newTestRoleSpec(
+	name string,
+	replicas int32,
+	maxSurge, maxUnavailable *intstr.IntOrString,
+) *orchestrationv1alpha1.RoleSpec {
 	return &orchestrationv1alpha1.RoleSpec{
 		Name:     name,
 		Replicas: ptr.To(replicas),
