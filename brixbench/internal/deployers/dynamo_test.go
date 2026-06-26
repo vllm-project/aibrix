@@ -122,6 +122,9 @@ func TestGitDynamoReleaseSourcePrepareReleaseClonesAndReturnsChartPath(t *testin
 					}
 				},
 			},
+			{output: "true\n"},
+			{},
+			{},
 		},
 	}
 	source := &GitDynamoReleaseSource{
@@ -138,8 +141,8 @@ func TestGitDynamoReleaseSourcePrepareReleaseClonesAndReturnsChartPath(t *testin
 	}
 
 	wantCloneArgs := []string{"clone", "--depth=1", "--branch", "v1.2.1", testDynamoRepoURL, repoPath}
-	if len(runner.calls) != 2 {
-		t.Fatalf("expected 2 command calls, got %d", len(runner.calls))
+	if len(runner.calls) != 5 {
+		t.Fatalf("expected 5 command calls, got %d", len(runner.calls))
 	}
 	if runner.calls[1].name != "git" {
 		t.Fatalf("expected git command, got %s", runner.calls[1].name)
@@ -156,7 +159,16 @@ func TestGitDynamoReleaseSourcePrepareReleaseReusesExistingCheckout(t *testing.T
 		t.Fatalf("failed to create fake chart path: %v", err)
 	}
 	runner := &fakeCommandRunner{
-		output: "abc123\trefs/tags/v1.2.1\n",
+		responses: []fakeCommandResponse{
+			{output: "abc123\trefs/tags/v1.2.1\n"},
+			{},
+			{},
+			{},
+			{},
+			{output: "false\n"},
+			{},
+			{},
+		},
 	}
 	source := &GitDynamoReleaseSource{
 		runner:  runner,
@@ -170,8 +182,42 @@ func TestGitDynamoReleaseSourcePrepareReleaseReusesExistingCheckout(t *testing.T
 	if release.ChartPath != chartPath {
 		t.Fatalf("expected chart path %s, got %s", chartPath, release.ChartPath)
 	}
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected only tag validation command, got %d calls", len(runner.calls))
+	wantCalls := []fakeCommandCall{
+		{
+			name: "git",
+			args: []string{"ls-remote", "--tags", "--refs", testDynamoRepoURL, "refs/tags/v1.2.1"},
+		},
+		{
+			name: "git",
+			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "fetch", "--filter=blob:none", "--force", testDynamoRepoURL, "+refs/tags/v1.2.1:refs/tags/v1.2.1"},
+		},
+		{
+			name: "git",
+			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "checkout", "--force", "--detach", "v1.2.1^{commit}"},
+		},
+		{
+			name: "git",
+			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "reset", "--hard", "v1.2.1^{commit}"},
+		},
+		{
+			name: "git",
+			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "clean", "-ffdx"},
+		},
+		{
+			name: "git",
+			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "rev-parse", "--is-shallow-repository"},
+		},
+		{
+			name: "git",
+			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "fetch", "--filter=blob:none", testDynamoRepoURL, "+refs/heads/main:refs/remotes/origin/main"},
+		},
+		{
+			name: "git",
+			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "merge-base", "--is-ancestor", "v1.2.1^{commit}", "refs/remotes/origin/main"},
+		},
+	}
+	if !reflect.DeepEqual(runner.calls, wantCalls) {
+		t.Fatalf("expected calls %+v, got %+v", wantCalls, runner.calls)
 	}
 }
 
@@ -182,7 +228,16 @@ func TestGitDynamoReleaseSourcePrepareReleaseRejectsCheckoutWithoutChart(t *test
 		t.Fatalf("failed to create fake checkout: %v", err)
 	}
 	runner := &fakeCommandRunner{
-		output: "abc123\trefs/tags/v1.2.1\n",
+		responses: []fakeCommandResponse{
+			{output: "abc123\trefs/tags/v1.2.1\n"},
+			{},
+			{},
+			{},
+			{},
+			{output: "false\n"},
+			{},
+			{},
+		},
 	}
 	source := &GitDynamoReleaseSource{
 		runner:  runner,
@@ -196,8 +251,145 @@ func TestGitDynamoReleaseSourcePrepareReleaseRejectsCheckoutWithoutChart(t *test
 	if !strings.Contains(err.Error(), "chart path") {
 		t.Fatalf("expected chart path error, got %v", err)
 	}
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected only tag validation command, got %d calls", len(runner.calls))
+	if len(runner.calls) != 8 {
+		t.Fatalf("expected tag validation, sync, and reachability commands, got %d calls", len(runner.calls))
+	}
+}
+
+func TestSyncDynamoReleaseCheckoutReturnsCommandError(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{output: "fatal: not a git repository", err: errors.New("exit status 128")},
+		},
+	}
+
+	err := syncDynamoReleaseCheckout(context.Background(), runner, "/repo/.tmp/dynamo/v1.2.1", testDynamoRepoURL, "v1.2.1")
+	if err == nil {
+		t.Fatalf("expected sync error")
+	}
+	if !strings.Contains(err.Error(), "failed to sync Dynamo release tag v1.2.1") {
+		t.Fatalf("expected sync error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "fatal: not a git repository") {
+		t.Fatalf("expected command output in error, got %v", err)
+	}
+}
+
+func TestValidateDynamoReleaseReachableFromMainUnshallowsAndChecksAncestor(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{output: "true\n"},
+			{},
+			{},
+		},
+	}
+	repoPath := "/repo/.tmp/dynamo/v1.2.1"
+
+	if err := validateDynamoReleaseReachableFromMain(context.Background(), runner, repoPath, testDynamoRepoURL, "v1.2.1"); err != nil {
+		t.Fatalf("validateDynamoReleaseReachableFromMain returned error: %v", err)
+	}
+
+	wantCalls := []fakeCommandCall{
+		{
+			name: "git",
+			args: []string{"-C", repoPath, "rev-parse", "--is-shallow-repository"},
+		},
+		{
+			name: "git",
+			args: []string{"-C", repoPath, "fetch", "--filter=blob:none", "--unshallow", testDynamoRepoURL, "+refs/heads/main:refs/remotes/origin/main"},
+		},
+		{
+			name: "git",
+			args: []string{"-C", repoPath, "merge-base", "--is-ancestor", "v1.2.1^{commit}", "refs/remotes/origin/main"},
+		},
+	}
+	if !reflect.DeepEqual(runner.calls, wantCalls) {
+		t.Fatalf("expected calls %+v, got %+v", wantCalls, runner.calls)
+	}
+}
+
+func TestValidateDynamoReleaseReachableFromMainFetchesMainForNonShallowCheckout(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{output: "false\n"},
+			{},
+			{},
+		},
+	}
+	repoPath := "/repo/.tmp/dynamo/v1.2.1"
+
+	if err := validateDynamoReleaseReachableFromMain(context.Background(), runner, repoPath, testDynamoRepoURL, "v1.2.1"); err != nil {
+		t.Fatalf("validateDynamoReleaseReachableFromMain returned error: %v", err)
+	}
+
+	wantFetchArgs := []string{"-C", repoPath, "fetch", "--filter=blob:none", testDynamoRepoURL, "+refs/heads/main:refs/remotes/origin/main"}
+	if len(runner.calls) != 3 {
+		t.Fatalf("expected 3 command calls, got %d", len(runner.calls))
+	}
+	if !reflect.DeepEqual(runner.calls[1].args, wantFetchArgs) {
+		t.Fatalf("expected fetch args %v, got %v", wantFetchArgs, runner.calls[1].args)
+	}
+}
+
+func TestValidateDynamoReleaseReachableFromMainRejectsNonReachableTag(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{output: "false\n"},
+			{},
+			{err: errors.New("exit status 1")},
+		},
+	}
+
+	err := validateDynamoReleaseReachableFromMain(context.Background(), runner, "/repo/.tmp/dynamo/v1.2.1", testDynamoRepoURL, "v1.2.1")
+	if err == nil {
+		t.Fatalf("expected not reachable error")
+	}
+	if !strings.Contains(err.Error(), "not reachable from main") {
+		t.Fatalf("expected not reachable error, got %v", err)
+	}
+}
+
+func TestValidateDynamoReleaseReachableFromMainReturnsGitCommandError(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{output: "false\n"},
+			{output: "fatal: couldn't find remote ref main", err: errors.New("exit status 128")},
+		},
+	}
+
+	err := validateDynamoReleaseReachableFromMain(context.Background(), runner, "/repo/.tmp/dynamo/v1.2.1", testDynamoRepoURL, "v1.2.1")
+	if err == nil {
+		t.Fatalf("expected fetch error")
+	}
+	if !strings.Contains(err.Error(), "failed to fetch Dynamo main history") {
+		t.Fatalf("expected fetch error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "fatal: couldn't find remote ref main") {
+		t.Fatalf("expected command output in error, got %v", err)
+	}
+}
+
+func TestValidateDynamoReleaseReachableFromMainReturnsMergeBaseCommandError(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{output: "false\n"},
+			{},
+			{output: "fatal: not a valid object name", err: errors.New("exit status 128")},
+		},
+	}
+
+	err := validateDynamoReleaseReachableFromMain(context.Background(), runner, "/repo/.tmp/dynamo/v1.2.1", testDynamoRepoURL, "v1.2.1")
+	if err == nil {
+		t.Fatalf("expected merge-base error")
+	}
+	if strings.Contains(err.Error(), "not reachable from main") {
+		t.Fatalf("expected command error instead of not reachable error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "failed to validate Dynamo release tag v1.2.1 reachability from main") {
+		t.Fatalf("expected reachability command error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "fatal: not a valid object name") {
+		t.Fatalf("expected command output in error, got %v", err)
 	}
 }
 
