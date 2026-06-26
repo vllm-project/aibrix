@@ -27,7 +27,12 @@ from aibrix.batch.client.sources import (
     InClusterEndpointSource,
     PortForwardEndpointSource,
 )
-from aibrix.batch.job_driver import BaseJobDriver, DeploymentRuntime, ExternalRuntime
+from aibrix.batch.job_driver import (
+    BaseJobDriver,
+    DeploymentRuntime,
+    ExternalRuntime,
+    TerminateResult,
+)
 from aibrix.batch.job_driver.driver_factory import create_job_driver
 from aibrix.batch.job_driver.runtime.k8s_deployment import DeploymentHandle
 from aibrix.batch.job_entity import (
@@ -424,8 +429,8 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
 
     async def _execute_worker(_job_id):
         entered.set()
-        await asyncio.sleep(3600)
-        return progress_manager.job
+        await driver._runtime._stop_requested.wait()
+        raise asyncio.CancelledError
 
     async def _finalize_job(_job):
         raise AssertionError("finalize_job should not run after deletion")
@@ -437,7 +442,7 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
     task = asyncio.create_task(driver.execute(job.job_id))
     await asyncio.wait_for(entered.wait(), timeout=1)
     deleted = await driver.terminate(job)
-    assert deleted is True
+    assert deleted is TerminateResult.ACCEPTED
     await task
 
     assert core_api.deleted == [("default", "rendered-service")]

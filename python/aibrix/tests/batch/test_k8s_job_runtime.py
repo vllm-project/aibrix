@@ -131,9 +131,37 @@ async def test_teardown_deletes_job():
 async def test_deletion_cancels_wait():
     api = _FakeBatchV1Api()  # no terminal condition → would poll forever
     rt = _runtime(api)
-    await rt._provision(_job(), "jid")
-    # A job-deleted event for the active job must cancel the completion wait.
+    job = _job()
+    job.spec.opts = {}
+    wait_entered = asyncio.Event()
+    original_wait_until_done = rt._wait_until_done
+
+    async def _persist_runtime_ref(job, **kwargs):
+        del kwargs
+        return job
+
+    async def _wait_until_done(handle):
+        wait_entered.set()
+        return await original_wait_until_done(handle)
+
+    rt._persist_runtime_ref = _persist_runtime_ref
+    rt._wait_until_done = _wait_until_done
+
+    async def _run_session():
+        async with rt.session(job, "jid"):
+            await rt.await_completion()
+
+    # Start session
+    task = asyncio.create_task(_run_session())
+    # Wait until the session is inside await_completion(); otherwise terminate()
+    # could race ahead of the wait loop and make this cancellation assertion flaky.
+    await asyncio.wait_for(wait_entered.wait(), timeout=1)
+
+    # Trigger termination
     await rt.terminate(SimpleNamespace(job_id="jid"))
-    assert rt.cancelled() is True
+
     with pytest.raises(asyncio.CancelledError):
-        await rt._wait_until_done(rt._active_handle)
+        await task
+
+    assert rt.cancelled() is True
+    assert api.deleted == ["batch-job-1"]

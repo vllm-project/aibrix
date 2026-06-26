@@ -22,7 +22,12 @@ from aibrix.batch.client.sources import (
     InClusterEndpointSource,
     PortForwardEndpointSource,
 )
-from aibrix.batch.job_driver import BaseJobDriver, DeploymentRuntime, ExternalRuntime
+from aibrix.batch.job_driver import (
+    BaseJobDriver,
+    DeploymentRuntime,
+    ExternalRuntime,
+    TerminateResult,
+)
 from aibrix.batch.job_driver.driver_factory import create_job_driver
 from aibrix.batch.job_driver.runtime.k8s_deployment import DeploymentHandle
 from aibrix.batch.job_entity import (
@@ -386,7 +391,8 @@ async def test_k8s_deployment_runtime_terminate_cancels_session_and_tears_down()
     async def _blocked_wait_ready(handle):
         del handle
         wait_entered.set()
-        await asyncio.sleep(3600)
+        await runtime._stop_requested.wait()
+        raise asyncio.CancelledError
 
     runtime._wait_ready = _blocked_wait_ready
 
@@ -404,7 +410,7 @@ async def test_k8s_deployment_runtime_terminate_cancels_session_and_tears_down()
 
     deleted = await runtime.terminate(job)
 
-    assert deleted is True
+    assert deleted is TerminateResult.ACCEPTED
     with pytest.raises(asyncio.CancelledError):
         await task
     assert core_api.deleted == [("default", "rendered-service")]

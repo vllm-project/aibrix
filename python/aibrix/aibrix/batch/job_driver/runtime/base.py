@@ -177,9 +177,16 @@ class RuntimeBase:
         self._progress_manager: Optional[RunningJobs] = None
         self._stop_requested = asyncio.Event()
         self._stopped = asyncio.Event()
+        self._stop_job_id: Optional[str] = None
+        self._stopped_job_id: Optional[str] = None
 
     def cancelled(self) -> bool:
         return self._stopped.is_set()
+
+    def _stop_matches_job(self, job_id: Optional[str]) -> bool:
+        return job_id is not None and (
+            self._stop_job_id == job_id or self._stopped_job_id == job_id
+        )
 
     async def _reconnect(
         self, job: BatchJob, job_id: str, runtimeRef: JobRuntimeRef
@@ -222,15 +229,25 @@ class RuntimeBase:
 
     async def terminate(self, deleted_job: BatchJob) -> TerminateResult:
         """Handle job deletion events, no more job_entity_manager hijacks."""
-        deleted_job_id = deleted_job.job_id
-        if (
-            deleted_job_id
-            and deleted_job_id == self._active_job_id
-            and self._active_task is not None
+        # Runtime lifecycle state is mutated only by tasks scheduled onto the
+        # same event loop as the driver/runtime. Under that single-loop model,
+        # `terminate()` and `session()` cannot run concurrently in parallel, so
+        # a lock is intentionally not required here. Cross-loop/thread callers
+        # are unsupported and must synchronize externally before touching this
+        # runtime instance.
+        if self._stop_matches_job(deleted_job.job_id) and (
+            self._stop_requested.is_set() or self._stopped.is_set()
         ):
-            if self._stop_requested.is_set() or self._stopped.is_set():
-                return TerminateResult.ALREADY_REQUESTED
+            return TerminateResult.ALREADY_REQUESTED
 
+        if self._active_task is None:
+            if self._active_job_id not in (None, deleted_job.job_id):
+                return TerminateResult.REJECTED
+            self._stop_job_id = deleted_job.job_id
+            self._stop_requested.set()
+            return TerminateResult.ACCEPTED
+
+        if deleted_job.job_id == self._active_job_id:
             if (
                 self._progress_manager is not None
                 and deleted_job.status.check_condition(ConditionType.CANCELLED)
@@ -238,9 +255,10 @@ class RuntimeBase:
                 # Persist cancelling before the stop signal is raised so the
                 # driver reload path can observe the shared cancellation state.
                 await self._progress_manager.update_job_status(
-                    deleted_job_id,
+                    deleted_job.job_id,
                     deleted_job.status,
                 )
+            self._stop_job_id = deleted_job.job_id
             self._stop_requested.set()
             return TerminateResult.ACCEPTED
         return TerminateResult.REJECTED
@@ -252,14 +270,19 @@ class RuntimeBase:
         self._progress_manager = None
         self._stop_requested.clear()
         self._stopped.clear()
+        self._stop_job_id = None
+        self._stopped_job_id = None
 
     def _bind_active_session(
         self, job_id: str, progress_manager: Optional[RunningJobs] = None
     ) -> None:
         self._active_job_id = job_id
         self._active_task = asyncio.current_task()
-        self._stop_requested.clear()
-        self._stopped.clear()
+        if not self._stop_matches_job(job_id):
+            self._stop_requested.clear()
+            self._stopped.clear()
+            self._stop_job_id = None
+            self._stopped_job_id = None
         self._progress_manager = progress_manager
 
     def _unbind_active_session(self) -> None:
@@ -332,6 +355,8 @@ class RuntimeBase:
         self._active_job_id = job.job_id
         self._stop_requested.clear()
         self._stopped.clear()
+        self._stop_job_id = None
+        self._stopped_job_id = None
         handle = await self._reconnect(job, job.job_id, runtime_ref)
         if handle is None:
             self._active_job_id = None
@@ -355,6 +380,8 @@ class RuntimeBase:
             self._active_runtime = None
             self._stop_requested.clear()
             self._stopped.clear()
+            self._stop_job_id = None
+            self._stopped_job_id = None
 
     async def _persist_runtime_ref(
         self,
@@ -443,7 +470,12 @@ class RuntimeBase:
         handle = None
         max_attempts = self.session_retry_attempts + 1
         self._bind_active_session(job_id, progress_manager)
+        error: BaseException | None = None
         try:
+            if self._stop_requested.is_set() or self._stopped.is_set():
+                raise asyncio.CancelledError(
+                    f"runtime session already stopped for job {job_id}"
+                )
             for attempt in range(max_attempts):
                 try:
                     phase = (
@@ -507,12 +539,20 @@ class RuntimeBase:
                     runtimeRef = None
                     await self._sleep_before_session_retry(attempt)
             yield await self._connect(handle)
+        except BaseException as ex:
+            # Capture any exception that happens during the session lifecycle.
+            # Will raise it and be propagated to the caller after teardown.
+            error = ex
         finally:
             if handle is not None:
                 await self._teardown(handle)
             if self._stop_requested.is_set():
+                self._stopped_job_id = job_id
                 self._stopped.set()
             self._unbind_active_session()
+
+        if error is not None:
+            raise error
 
 
 class ExternalRuntime(RuntimeBase):

@@ -13,12 +13,14 @@
 # limitations under the License.
 """Unit tests for the Runtime seam + registry (job lifecycle axis A)."""
 
+import asyncio
 import inspect
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
+from aibrix.batch.job_driver.driver import TerminateResult
 from aibrix.batch.job_driver.runtime import (
     Endpoint,
     ExternalRuntime,
@@ -71,6 +73,13 @@ def _make_test_job(
         job_id=job_id,
         status=_FakeStatus(execution),
         spec=SimpleNamespace(opts=dict(opts or {})),
+    )
+
+
+def _make_deleted_job(job_id: str, *, cancelled: bool = False) -> object:
+    return SimpleNamespace(
+        job_id=job_id,
+        status=SimpleNamespace(check_condition=lambda *_: cancelled),
     )
 
 
@@ -181,6 +190,216 @@ async def test_runtime_base_teardown_runs_even_when_body_raises():
             raise ValueError("boom")
 
     assert torn_down == ["h"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_terminate_before_session_start_short_circuits_session():
+    calls: list[str] = []
+    runtime = _R(
+        provision=lambda job, job_id: calls.append(f"provision:{job_id}"),
+        wait_ready=lambda handle: calls.append(f"wait_ready:{handle}"),
+        connect=lambda handle: calls.append(f"connect:{handle}"),
+        teardown=lambda handle: calls.append(f"teardown:{handle}"),
+    )
+    job = _make_test_job(job_id="job-1")
+
+    deleted = await runtime.terminate(SimpleNamespace(job_id="job-1"))
+
+    assert deleted == TerminateResult.ACCEPTED
+    with pytest.raises(asyncio.CancelledError):
+        async with runtime.session(
+            job=job,
+            job_id="job-1",
+            progress_manager=_FakeProgressManager(),
+            worker_id_generator=_fake_worker_id_generator,
+        ):
+            pytest.fail("session body should not run after pre-start termination")
+
+    assert calls == []
+    assert runtime.cancelled() is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_session_with_new_id_clears_previous_stop_state():
+    runtime = _R()
+
+    deleted = await runtime.terminate(_make_deleted_job("job-1"))
+
+    assert deleted == TerminateResult.ACCEPTED
+    async with runtime.session(
+        job=_make_test_job(job_id="job-2"),
+        job_id="job-2",
+        progress_manager=_FakeProgressManager(),
+        worker_id_generator=_fake_worker_id_generator,
+    ) as endpoint:
+        assert endpoint.model_name == "m"
+        assert endpoint.source is None
+
+    assert runtime.cancelled() is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_terminate_different_id_outside_session_after_previous_outside_terminate():
+    runtime = _R()
+
+    deleted_first = await runtime.terminate(_make_deleted_job("job-1"))
+    deleted_second = await runtime.terminate(_make_deleted_job("job-2"))
+
+    assert deleted_first == TerminateResult.ACCEPTED
+    assert deleted_second == TerminateResult.ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_terminate_different_id_outside_session_after_session_succeeds():
+    runtime = _R()
+
+    async with runtime.session(
+        job=_make_test_job(job_id="job-1"),
+        job_id="job-1",
+        progress_manager=_FakeProgressManager(),
+        worker_id_generator=_fake_worker_id_generator,
+    ):
+        pass
+
+    deleted = await runtime.terminate(_make_deleted_job("job-2"))
+
+    assert deleted == TerminateResult.ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_terminate_different_id_outside_session_after_terminated_session_succeeds():
+    wait_entered = asyncio.Event()
+    runtime = _R()
+
+    async def _wait_ready(handle):
+        del handle
+        wait_entered.set()
+        await runtime._stop_requested.wait()
+        raise asyncio.CancelledError
+
+    runtime._wait_ready_hook = _wait_ready
+
+    async def _run_session():
+        async with runtime.session(
+            job=_make_test_job(job_id="job-1"),
+            job_id="job-1",
+            progress_manager=_FakeProgressManager(),
+            worker_id_generator=_fake_worker_id_generator,
+        ):
+            pytest.fail("session body should not run after in-session termination")
+
+    task = asyncio.create_task(_run_session())
+    await asyncio.wait_for(wait_entered.wait(), timeout=1)
+    deleted_inside = await runtime.terminate(_make_deleted_job("job-1"))
+
+    assert deleted_inside == TerminateResult.ACCEPTED
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    deleted_outside = await runtime.terminate(_make_deleted_job("job-2"))
+
+    assert deleted_outside == TerminateResult.ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_terminate_same_id_outside_session_after_terminated_session_is_duplicate():
+    wait_entered = asyncio.Event()
+    runtime = _R()
+
+    async def _wait_ready(handle):
+        del handle
+        wait_entered.set()
+        await runtime._stop_requested.wait()
+        raise asyncio.CancelledError
+
+    runtime._wait_ready_hook = _wait_ready
+
+    async def _run_session():
+        async with runtime.session(
+            job=_make_test_job(job_id="job-1"),
+            job_id="job-1",
+            progress_manager=_FakeProgressManager(),
+            worker_id_generator=_fake_worker_id_generator,
+        ):
+            pytest.fail("session body should not run after in-session termination")
+
+    task = asyncio.create_task(_run_session())
+    await asyncio.wait_for(wait_entered.wait(), timeout=1)
+    deleted_inside = await runtime.terminate(_make_deleted_job("job-1"))
+
+    assert deleted_inside == TerminateResult.ACCEPTED
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    deleted_outside = await runtime.terminate(_make_deleted_job("job-1"))
+
+    assert deleted_outside == TerminateResult.ALREADY_REQUESTED
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_terminate_same_id_inside_session_succeeds():
+    wait_entered = asyncio.Event()
+    runtime = _R()
+
+    async def _wait_ready(handle):
+        del handle
+        wait_entered.set()
+        await runtime._stop_requested.wait()
+        raise asyncio.CancelledError
+
+    runtime._wait_ready_hook = _wait_ready
+
+    async def _run_session():
+        async with runtime.session(
+            job=_make_test_job(job_id="job-1"),
+            job_id="job-1",
+            progress_manager=_FakeProgressManager(),
+            worker_id_generator=_fake_worker_id_generator,
+        ):
+            pytest.fail("session body should not run after in-session termination")
+
+    task = asyncio.create_task(_run_session())
+    await asyncio.wait_for(wait_entered.wait(), timeout=1)
+
+    deleted = await runtime.terminate(_make_deleted_job("job-1"))
+
+    assert deleted == TerminateResult.ACCEPTED
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert runtime.cancelled() is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_terminate_different_id_inside_session_is_rejected():
+    wait_entered = asyncio.Event()
+    allow_ready = asyncio.Event()
+    runtime = _R()
+
+    async def _wait_ready(handle):
+        del handle
+        wait_entered.set()
+        await allow_ready.wait()
+
+    runtime._wait_ready_hook = _wait_ready
+
+    async def _run_session():
+        async with runtime.session(
+            job=_make_test_job(job_id="job-1"),
+            job_id="job-1",
+            progress_manager=_FakeProgressManager(),
+            worker_id_generator=_fake_worker_id_generator,
+        ) as endpoint:
+            assert endpoint.model_name == "m"
+
+    task = asyncio.create_task(_run_session())
+    await asyncio.wait_for(wait_entered.wait(), timeout=1)
+
+    deleted = await runtime.terminate(_make_deleted_job("job-2"))
+
+    assert deleted == TerminateResult.REJECTED
+    allow_ready.set()
+    await task
+    assert runtime.cancelled() is False
 
 
 @pytest.mark.asyncio
