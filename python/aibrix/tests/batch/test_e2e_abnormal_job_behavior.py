@@ -44,6 +44,7 @@ from aibrix.batch.job_entity import (
 )
 from aibrix.context import InfrastructureContext
 from tests.batch.conftest import (
+    backend_has_feature,
     build_batch_request,
     build_e2e_test_app,
     create_batch_job,
@@ -1741,6 +1742,94 @@ async def test_job_cancellation_in_progress_during_init_runtime(
             )
             await e2e_test_app.state.batch_driver.clear_job(batch_id)
             batch_id = None
+
+
+@pytest.mark.asyncio
+async def test_job_cancellation_in_progress_during_service_discovery(
+    e2e_test_app,
+    test_backend,
+    monkeypatch,
+):
+    if not backend_has_feature(test_backend, "service_discovery"):
+        pytest.skip("This test requires service discovery support")
+
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 10)
+        debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
+        model_discovery = e2e_test_app.state.batch_driver._context.values[
+            "service_model_discovery"
+        ]
+        entered_discovery = asyncio.Event()
+        wait_slices: list[float] = []
+
+        async def blocked_wait_for_model_endpoints(
+            served_model_name: str,
+            timeout_seconds: float,
+            service_id: Optional[str] = None,
+            filter_tags: Optional[dict[str, str]] = None,
+            lookup_timeout_seconds: Optional[float] = None,
+            poll_interval_seconds: float = 1.0,
+        ):
+            del (
+                served_model_name,
+                service_id,
+                filter_tags,
+                lookup_timeout_seconds,
+                poll_interval_seconds,
+            )
+            entered_discovery.set()
+            wait_slices.append(timeout_seconds)
+            await asyncio.sleep(timeout_seconds)
+            raise TimeoutError("simulated discovery slice timeout")
+
+        monkeypatch.setattr(
+            model_discovery,
+            "wait_for_model_endpoints",
+            blocked_wait_for_model_endpoints,
+        )
+
+        batch_id = create_batch_job(
+            client,
+            input_file_id,
+            test_backend=test_backend,
+        )
+        try:
+            await asyncio.wait_for(entered_discovery.wait(), timeout=5)
+
+            status_during_discovery = client.get(f"/v1/batches/{batch_id}")
+            assert status_during_discovery.status_code == 200
+            assert status_during_discovery.json()["status"] == "in_progress"
+
+            cancel_response = client.post(f"/v1/batches/{batch_id}/cancel")
+            assert cancel_response.status_code == 200
+            assert cancel_response.json()["status"] == "cancelling"
+
+            final_status = await wait_for_status(
+                client, batch_id, "cancelled", max_polls=40, poll_interval=0.1
+            )
+            await wait_for_runtime_teardown_delta(
+                e2e_test_app,
+                test_backend,
+                debug_state,
+                expected_delta=1,
+            )
+            validate_batch_response(
+                final_status,
+                expected_status="cancelled",
+                expected_endpoint="/v1/chat/completions",
+                expected_in_progress_at=True,
+                expected_cancelling_at=True,
+                expected_cancelled_at=True,
+                expected_finalizing_at=True,
+                expected_completed_at=False,
+                expected_output_file_id=False,
+                expected_error_file_id=False,
+                expected_request_counts=True,
+            )
+            assert wait_slices, "caller should wait for discovery in short slices"
+            assert max(wait_slices) <= 1.0
+        finally:
+            await e2e_test_app.state.batch_driver.clear_job(batch_id)
 
 
 @pytest.mark.asyncio

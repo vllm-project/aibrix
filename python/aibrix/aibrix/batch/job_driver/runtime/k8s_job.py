@@ -181,7 +181,7 @@ class K8sJobRuntime(RuntimeBase):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._done_timeout
         while True:
-            if self._delete_requested.is_set():
+            if self._stop_requested.is_set():
                 raise asyncio.CancelledError("k8s job deleted")
             try:
                 k8s_job = await asyncio.to_thread(

@@ -305,8 +305,7 @@ class BaseJobDriver:
         except asyncio.CancelledError:
             # A provisioning runtime cancels the run when its job is deleted;
             # teardown already ran via the session. Conclude the accepted cancel
-            # here as well because cancellation can happen before
-            # _execute_job_in_runtime() enters its own stop/finalize path.
+            # here only after reloading the shared job state.
             if self._runtime.cancelled():
                 latest = await self._progress_manager.get_job(job_id)
                 if latest is None:
@@ -867,10 +866,7 @@ class BaseJobDriver:
                     return await self._finish_stopped_job(job)
                 job = await self.run_job(job.job_id, endpoint)
             except asyncio.CancelledError:
-                # A provisioning runtime cancels the run when its job is deleted;
-                # teardown already ran via the session.
-                # No error propagation to proceed to finalize.
-                self._log_cancelled(job.job_id)
+                raise
             except Exception as ex:  # noqa: BLE001 - finalize must still run
                 normalized_error = self._make_failure_error(ex)
                 self._log_failed(job.job_id, normalized_error)

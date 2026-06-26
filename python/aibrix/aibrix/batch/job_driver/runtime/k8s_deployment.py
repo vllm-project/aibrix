@@ -345,7 +345,7 @@ class DeploymentRuntime(RuntimeBase):
     ) -> None:
         deadline = asyncio.get_running_loop().time() + self._ready_timeout_seconds
         while True:
-            if self._delete_requested.is_set():
+            if self._stop_requested.is_set():
                 raise asyncio.CancelledError
             try:
                 deployment = await asyncio.to_thread(

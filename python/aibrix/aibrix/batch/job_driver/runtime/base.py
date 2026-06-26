@@ -106,8 +106,7 @@ class Runtime(Protocol):
     provisions: bool
 
     def cancelled(self) -> bool:
-        """True if teardown was triggered by job deletion (so the driver
-        swallows the resulting CancelledError instead of failing the job)."""
+        """True once delete-triggered teardown has fully finished."""
         ...
 
     def session(
@@ -176,10 +175,11 @@ class RuntimeBase:
         self._active_task: Optional[asyncio.Task[None]] = None
         self._active_runtime: Any | None = None
         self._progress_manager: Optional[RunningJobs] = None
-        self._delete_requested = asyncio.Event()
+        self._stop_requested = asyncio.Event()
+        self._stopped = asyncio.Event()
 
     def cancelled(self) -> bool:
-        return self._delete_requested.is_set()
+        return self._stopped.is_set()
 
     async def _reconnect(
         self, job: BatchJob, job_id: str, runtimeRef: JobRuntimeRef
@@ -228,21 +228,20 @@ class RuntimeBase:
             and deleted_job_id == self._active_job_id
             and self._active_task is not None
         ):
-            if self._delete_requested.is_set():
+            if self._stop_requested.is_set() or self._stopped.is_set():
                 return TerminateResult.ALREADY_REQUESTED
 
             if (
                 self._progress_manager is not None
                 and deleted_job.status.check_condition(ConditionType.CANCELLED)
             ):
-                # Persist cancelling before the delete signal is raised. Once
-                # `_delete_requested` is set, the active worker can race into its
-                # stop/finalizing path immediately.
+                # Persist cancelling before the stop signal is raised so the
+                # driver reload path can observe the shared cancellation state.
                 await self._progress_manager.update_job_status(
                     deleted_job_id,
                     deleted_job.status,
                 )
-            self._delete_requested.set()
+            self._stop_requested.set()
             return TerminateResult.ACCEPTED
         return TerminateResult.REJECTED
 
@@ -251,14 +250,16 @@ class RuntimeBase:
         self._active_task = None
         self._active_runtime = None
         self._progress_manager = None
-        self._delete_requested.clear()
+        self._stop_requested.clear()
+        self._stopped.clear()
 
     def _bind_active_session(
         self, job_id: str, progress_manager: Optional[RunningJobs] = None
     ) -> None:
         self._active_job_id = job_id
         self._active_task = asyncio.current_task()
-        self._delete_requested.clear()
+        self._stop_requested.clear()
+        self._stopped.clear()
         self._progress_manager = progress_manager
 
     def _unbind_active_session(self) -> None:
@@ -329,7 +330,8 @@ class RuntimeBase:
         # reconnects long enough to tear the backend down. Keep the tracked job
         # id for teardown/debugging, but do not re-bind the full active session.
         self._active_job_id = job.job_id
-        self._delete_requested.clear()
+        self._stop_requested.clear()
+        self._stopped.clear()
         handle = await self._reconnect(job, job.job_id, runtime_ref)
         if handle is None:
             self._active_job_id = None
@@ -351,7 +353,8 @@ class RuntimeBase:
         finally:
             self._active_job_id = None
             self._active_runtime = None
-            self._delete_requested.clear()
+            self._stop_requested.clear()
+            self._stopped.clear()
 
     async def _persist_runtime_ref(
         self,
@@ -507,6 +510,8 @@ class RuntimeBase:
         finally:
             if handle is not None:
                 await self._teardown(handle)
+            if self._stop_requested.is_set():
+                self._stopped.set()
             self._unbind_active_session()
 
 
