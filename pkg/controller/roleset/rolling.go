@@ -25,6 +25,7 @@ import (
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -35,7 +36,8 @@ type RollingManager interface {
 }
 
 type RollingManagerSequential struct {
-	cli client.Client
+	cli      client.Client
+	recorder record.EventRecorder
 }
 
 func (m *RollingManagerSequential) Next(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet) (err error) {
@@ -43,7 +45,7 @@ func (m *RollingManagerSequential) Next(ctx context.Context, roleSet *orchestrat
 	var scaling bool
 	for _, role := range roleSet.Spec.Roles {
 		klog.Infof("[RollingManagerSequential.Next] start to scale roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
-		s, err := GetRoleSyncer(m.cli, &role).Scale(ctx, roleSet, &role)
+		s, err := GetRoleSyncerWithRecorder(m.cli, &role, m.recorder).Scale(ctx, roleSet, &role)
 		if err != nil {
 			return err
 		}
@@ -76,11 +78,11 @@ func (m *RollingManagerSequential) Next(ctx context.Context, roleSet *orchestrat
 	// 3. do the rollout process for each role by order
 	for _, role := range sortedRoles {
 		klog.Infof("[RollingManagerSequential.Next] start to rollout roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
-		err := GetRoleSyncer(m.cli, &role).Rollout(ctx, roleSet, &role)
+		err := GetRoleSyncerWithRecorder(m.cli, &role, m.recorder).Rollout(ctx, roleSet, &role)
 		if err != nil {
 			return err
 		}
-		if ready, err := GetRoleSyncer(m.cli, &role).AllReady(ctx, roleSet, &role); err != nil {
+		if ready, err := GetRoleSyncerWithRecorder(m.cli, &role, m.recorder).AllReady(ctx, roleSet, &role); err != nil {
 			return err
 		} else if !ready {
 			// each time we only update one role in sequential mode
@@ -92,7 +94,8 @@ func (m *RollingManagerSequential) Next(ctx context.Context, roleSet *orchestrat
 }
 
 type RollingManagerParallel struct {
-	cli client.Client
+	cli      client.Client
+	recorder record.EventRecorder
 }
 
 func (m *RollingManagerParallel) Next(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet) (err error) {
@@ -100,7 +103,7 @@ func (m *RollingManagerParallel) Next(ctx context.Context, roleSet *orchestratio
 	var scaling bool
 	for _, role := range roleSet.Spec.Roles {
 		klog.Infof("[RollingManagerParallel.Next] start to scale roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
-		s, err := GetRoleSyncer(m.cli, &role).Scale(ctx, roleSet, &role)
+		s, err := GetRoleSyncerWithRecorder(m.cli, &role, m.recorder).Scale(ctx, roleSet, &role)
 		if err != nil {
 			return err
 		}
@@ -113,7 +116,7 @@ func (m *RollingManagerParallel) Next(ctx context.Context, roleSet *orchestratio
 	// 2. do the rollout process for each role
 	for _, role := range roleSet.Spec.Roles {
 		klog.Infof("[RollingManagerParallel.Next] start to rollout roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
-		err := GetRoleSyncer(m.cli, &role).Rollout(ctx, roleSet, &role)
+		err := GetRoleSyncerWithRecorder(m.cli, &role, m.recorder).Rollout(ctx, roleSet, &role)
 		if err != nil {
 			return err
 		}
@@ -122,7 +125,8 @@ func (m *RollingManagerParallel) Next(ctx context.Context, roleSet *orchestratio
 }
 
 type RollingManagerInterleave struct {
-	cli client.Client
+	cli      client.Client
+	recorder record.EventRecorder
 }
 
 // Interleaved rollout: update roles in alternating steps,
@@ -132,7 +136,7 @@ func (m *RollingManagerInterleave) Next(ctx context.Context, roleSet *orchestrat
 	var scaling bool
 	for _, role := range roleSet.Spec.Roles {
 		klog.Infof("[RollingManagerInterleave.Next] start to scale roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
-		s, err := GetRoleSyncer(m.cli, &role).Scale(ctx, roleSet, &role)
+		s, err := GetRoleSyncerWithRecorder(m.cli, &role, m.recorder).Scale(ctx, roleSet, &role)
 		if err != nil {
 			return err
 		}
@@ -150,7 +154,7 @@ func (m *RollingManagerInterleave) Next(ctx context.Context, roleSet *orchestrat
 
 	// Check the current step for each role and determine the minimum step across all roles as the global current step
 	for _, role := range roleSet.Spec.Roles {
-		allReady, currentRoleStep, err := GetRoleSyncer(m.cli, &role).CheckCurrentStep(ctx, roleSet, &role)
+		allReady, currentRoleStep, err := GetRoleSyncerWithRecorder(m.cli, &role, m.recorder).CheckCurrentStep(ctx, roleSet, &role)
 		if err != nil {
 			klog.Errorf("[RollingManagerInterleave.Next] Failed to get current step for role %s in roleset %s/%s: %v", role.Name, roleSet.Namespace, roleSet.Name, err)
 			continue
@@ -197,7 +201,7 @@ func (m *RollingManagerInterleave) Next(ctx context.Context, roleSet *orchestrat
 
 		// Only update roles that match the current global step.
 		// This ensures that faster roles wait until all roles complete the current step before proceeding.
-		err = GetRoleSyncer(m.cli, &role).RolloutByStep(ctx, roleSet, &role, currentStep)
+		err = GetRoleSyncerWithRecorder(m.cli, &role, m.recorder).RolloutByStep(ctx, roleSet, &role, currentStep)
 		if err != nil {
 			return err
 		}

@@ -104,19 +104,23 @@ func (r *RoleSetReconciler) syncPods(ctx context.Context, roleSet *orchestration
 	switch roleSet.Spec.UpdateStrategy {
 	case orchestrationv1alpha1.SequentialRoleSetStrategyType:
 		manager = &RollingManagerSequential{
-			cli: r.Client,
+			cli:      r.Client,
+			recorder: r.EventRecorder,
 		}
 	case orchestrationv1alpha1.ParallelRoleSetUpdateStrategyType:
 		manager = &RollingManagerParallel{
-			cli: r.Client,
+			cli:      r.Client,
+			recorder: r.EventRecorder,
 		}
 	case orchestrationv1alpha1.InterleaveRoleSetStrategyType:
 		manager = &RollingManagerInterleave{
-			cli: r.Client,
+			cli:      r.Client,
+			recorder: r.EventRecorder,
 		}
 	default:
 		manager = &RollingManagerSequential{
-			cli: r.Client,
+			cli:      r.Client,
+			recorder: r.EventRecorder,
 		}
 	}
 	return manager.Next(ctx, roleSet)
