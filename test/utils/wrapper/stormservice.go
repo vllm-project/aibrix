@@ -149,7 +149,10 @@ func (w *StormServiceWrapper) WithRole(name string, stateful bool, podGroupSize 
 		Replicas:     ptr.To(int32(1)),
 		UpgradeOrder: ptr.To(int32(1)),
 		PodGroupSize: podGroupSize,
-		Stateful:     stateful,
+		UpdateStrategy: orchestrationapi.RoleUpdateStrategy{
+			Type: orchestrationapi.RecreateRoleUpdateStrategyType,
+		},
+		Stateful: stateful,
 		Template: v1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels: map[string]string{
