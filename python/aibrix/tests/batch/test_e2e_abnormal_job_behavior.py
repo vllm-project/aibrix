@@ -35,7 +35,7 @@ from fastapi.testclient import TestClient
 
 import aibrix.batch.constant as constant
 from aibrix.batch.batch_manager import BatchManager
-from aibrix.batch.job_driver import JobDriver
+from aibrix.batch.job_driver import JobDriver, TerminateResult
 from aibrix.batch.job_entity import (
     BatchJobError,
     BatchJobErrorCode,
@@ -153,6 +153,16 @@ def backend_runtime_create_patch(test_backend):
     raise ValueError(f"Backend {test_backend} does not have a runtime create hook")
 
 
+def backend_uses_fake_provisioning_runtime(test_backend) -> bool:
+    return _backend(test_backend).has_feature("fake_provisioning_runtime")
+
+
+def backend_observes_restart_validation_runtime_delta(test_backend) -> bool:
+    return _backend(test_backend).has_feature(
+        "restart_validation_runtime_delta_observable"
+    )
+
+
 # Suppress metaservice manual crash log
 pytestmark = pytest.mark.filterwarnings(
     "ignore::pytest.PytestUnraisableExceptionWarning"
@@ -257,6 +267,7 @@ def force_batch_driver_crash_on_shutdown(monkeypatch, app) -> None:
         progress_manager=None,
         worker_id_generator=None,
     ):
+        self._bind_active_session(job_id, progress_manager)
         try:
             runtimeRef = self._load_runtime_ref(job)
             handle = None
@@ -337,10 +348,9 @@ def force_batch_driver_crash_on_shutdown(monkeypatch, app) -> None:
                     "simulate_crash_shutdown", False
                 ):
                     await self._teardown(handle)
-                elif handle is not None:
-                    for attr in ("_active_job_id", "_active_task", "_active_handle"):
-                        if hasattr(self, attr):
-                            setattr(self, attr, None)
+                elif handle is not None and hasattr(self, "_active_handle"):
+                    self._active_handle = None
+                self._unbind_active_session()
         except asyncio.CancelledError:
             raise
 
@@ -1030,11 +1040,9 @@ async def complete_job_after_restart(
         monkeypatch,
         preserve_redis_prefix=True,
     )
+    restarted_debug_state = capture_runtime_debug_state(restarted_app, test_backend)
     try:
         with create_test_client(restarted_app) as restarted_client:
-            restarted_debug_state = capture_runtime_debug_state(
-                restarted_app, test_backend
-            )
             final_status = await wait_for_status(
                 restarted_client,
                 batch_id,
@@ -1134,7 +1142,7 @@ class FailingBatchManager(BatchManager):
 
         return await super().admit(job_id)
 
-    async def cancel_job(self, job_id: str) -> bool:
+    async def cancel_job(self, job_id: str) -> TerminateResult:
         if self.stall_cancelling is not None:
             await asyncio.sleep(self.stall_cancelling)
 
@@ -1314,8 +1322,7 @@ async def test_job_processing_failure(e2e_test_app, test_backend):
                 expected_completed_at=False,
                 expected_errors=(
                     BatchJobErrorCode.INTERNAL_ERROR
-                    if _backend(test_backend).fake_runtime
-                    and backend_uses_deployment_provider(test_backend)
+                    if backend_uses_fake_provisioning_runtime(test_backend)
                     else BatchJobErrorCode.INFERENCE_FAILED
                 ),
                 expected_output_file_id=True,
@@ -1866,7 +1873,7 @@ async def test_job_cancellation_in_finalizing(e2e_test_app, test_backend):
 
                 # Step 5: Cancellation should not interrupt finalization once it has started
                 cancel_response = client.post(f"/v1/batches/{batch_id}/cancel")
-                assert cancel_response.status_code == 400
+                assert cancel_response.status_code == 200
 
                 # Step 6: Wait for final status and verify the job still completes
                 final_status = await wait_for_status(
@@ -2060,8 +2067,8 @@ async def test_job_restart_during_validation(
         )
         original_debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
 
-    expect_runtime_activity_on_restart = not backend_uses_deployment_provider(
-        test_backend
+    expect_runtime_activity_on_restart = (
+        backend_observes_restart_validation_runtime_delta(test_backend)
     )
 
     await complete_job_after_restart(

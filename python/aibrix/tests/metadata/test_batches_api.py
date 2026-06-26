@@ -295,26 +295,27 @@ class TestCancelBatch:
         # We only assert the synchronous "pending → cancellable" path here.
         # An in_progress batch's cancel is driven asynchronously through
         # the worker and is covered in tests/batch/test_e2e_*.
-        # If the local scheduler races the cancel and finalizes the job,
-        # cancel_job returns False and we get a 400; either outcome is a
-        # legitimate state of the local pipeline, so we allow both and
-        # assert wire-format correctness on each.
+        # If the local scheduler races the cancel and finalizes the job, the
+        # cancel API still returns 200 with the current batch state.
         with TestClient(create_test_app()) as client:
             create_response = _create_chat_batch(client)
             assert create_response.status_code == 200
             batch_id = create_response.json()["id"]
 
             response = client.post(f"/v1/batches/{batch_id}/cancel")
-            if response.status_code == 200:
-                body = response.json()
-                assert body["id"] == batch_id
-                assert body["status"] in {"cancelling", "cancelled"}
-                assert body.get("cancelling_at") is not None
-            else:
-                assert response.status_code == 400
-                assert (
-                    response.json()["error"]["message"] == "Batch cannot be cancelled"
-                )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["id"] == batch_id
+            assert body["status"] in {
+                "cancelling",
+                "cancelled",
+                "finalizing",
+                "completed",
+            }
+            if body["status"] in {"finalizing", "completed"}:
+                assert body["errors"] is not None
+                assert body["errors"]["data"][-1]["code"] == "cancel_rejected_error"
+                assert "cannot be cancelled" in body["errors"]["data"][-1]["message"]
 
 
 class TestListBatches:

@@ -617,7 +617,7 @@ E2E_BACKENDS: dict[str, E2ETestBackend] = {
             "aibrix_template": "mock-template",
             "provider": "deployment",
         },
-        features=("support_runtime", "fake_runtime"),
+        features=("support_runtime", "fake_runtime", "fake_provisioning_runtime"),
         runtime_debug_config={
             "teardown_calls_key": "deployment_teardown_calls",
             "endpoint_source_builds_key": "deployment_endpoint_source_builds",
@@ -704,8 +704,12 @@ def build_batch_request(
     if aibrix_profile:
         aibrix["profile"] = {"name": aibrix_profile}
     if provider:
-        if provider == "deployment":
-            aibrix["runtime"] = {"target": "Kubernetes"}
+        runtime_targets = {
+            "deployment": "Kubernetes",
+        }
+        runtime_target = runtime_targets.get(provider)
+        if runtime_target is not None:
+            aibrix["runtime"] = {"target": runtime_target}
         aibrix["resource_allocation"] = {
             "provision_id": "reservation-1",
             "provision_resource_deadline": 3600,

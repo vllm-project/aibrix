@@ -46,7 +46,11 @@ from aibrix.batch.job_driver.runtime import (
     RuntimeBase,
     register_runtime,
 )
-from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobErrorCode
+from aibrix.batch.job_entity import (
+    BatchJob,
+    BatchJobError,
+    BatchJobErrorCode,
+)
 from aibrix.batch.manifest import JobManifestRenderer
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
@@ -101,9 +105,6 @@ class K8sJobRuntime(RuntimeBase):
         self._poll_interval = poll_interval_seconds
         self._active_handle: Optional[K8sJobHandle] = None
 
-    def cancelled(self) -> bool:
-        return self._delete_requested.is_set()
-
     @property
     def active_handle(self) -> Optional[K8sJobHandle]:
         """The currently-provisioned job's handle, used by the self-hosting hooks."""
@@ -131,17 +132,9 @@ class K8sJobRuntime(RuntimeBase):
             "jobName": self._active_handle.job_name,
         }
 
-    async def terminate(self, deleted_job: BatchJob) -> bool:
-        if deleted_job.job_id and deleted_job.job_id == self._active_job_id:
-            self._delete_requested.set()
-        return True
-
     # ── Runtime phases ───────────────────────────────────────────────────
 
     async def _provision(self, job: BatchJob, job_id: str) -> K8sJobHandle:
-        self._active_job_id = job_id
-        self._delete_requested.clear()
-
         # session_id is a transient pre-job_id correlation token (set at create,
         # not preserved across the JobStore->metastore round-trip), so it is
         # None here. job_id is the durable identifier the deployment runtime

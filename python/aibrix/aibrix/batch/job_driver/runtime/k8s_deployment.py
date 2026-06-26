@@ -93,9 +93,6 @@ class DeploymentRuntime(RuntimeBase):
         self._core_v1_api = context.core_v1_api
         self._active_handle: Optional[DeploymentHandle] = None
 
-    def cancelled(self) -> bool:
-        return self._delete_requested.is_set()
-
     @staticmethod
     def _build_renderer(context: InfrastructureContext) -> DeploymentManifestRenderer:
         return DeploymentManifestRenderer(
@@ -169,9 +166,6 @@ class DeploymentRuntime(RuntimeBase):
             service_port=service_port,
             replicas=replicas,
         )
-        self._active_job_id = job_id
-        self._active_task = asyncio.current_task()
-        self._delete_requested.clear()
         self._active_handle = handle
         logger.info(
             "Reconnected Deployment runtime for batch job",
@@ -185,10 +179,6 @@ class DeploymentRuntime(RuntimeBase):
     # ── Runtime phases ───────────────────────────────────────────────────
 
     async def _provision(self, job: BatchJob, job_id: str) -> DeploymentHandle:
-        self._active_job_id = job_id
-        self._active_task = asyncio.current_task()
-        self._delete_requested.clear()
-
         if job.job_id is None:
             raise ValueError("job_id is required")
         if job.spec.aibrix is None or job.spec.model_template_name is None:
@@ -253,8 +243,6 @@ class DeploymentRuntime(RuntimeBase):
             await self._teardown_runtime(handle)
             if handle.source is not None:
                 await handle.source.aclose()
-        self._active_job_id = None
-        self._active_task = None
         self._active_handle = None
 
     # ── k8s helpers ──────────────────────────────────────────────────────

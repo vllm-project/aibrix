@@ -27,6 +27,7 @@ from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobEndpoint,
     BatchJobError,
+    BatchJobErrorCode,
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
@@ -652,11 +653,8 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
             raise HTTPException(status_code=404, detail="Batch not found")
 
         # Cancel the job. BatchManager.cancel_job signals the entity manager
-        # to persist the cancellation and stops execution.
-        success = await batch_driver.cancel_job(batch_id)
-        if not success:
-            logger.warning("Failed to cancel batch", batch_id=batch_id)  # type: ignore[call-arg]
-            raise HTTPException(status_code=400, detail="Batch cannot be cancelled")
+        # or live driver to persist the cancellation and stop execution.
+        terminate_result = await batch_driver.cancel_job(batch_id)
 
         # Get updated job status (store-first again).
         updated_job = await _resolve_batch_job(request, batch_id)
@@ -664,7 +662,26 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
             logger.error("Job not found after cancellation", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=500, detail="Internal server error")
 
-        logger.info("Batch cancelled successfully", batch_id=batch_id)  # type: ignore[call-arg]
+        if terminate_result.value == "rejected":
+            if updated_job.status.errors is None:
+                updated_job.status.errors = []
+            updated_job.status.errors.append(
+                BatchJobError(
+                    code=BatchJobErrorCode.CANCEL_REJECTED_ERROR,
+                    message=(
+                        "Batch cannot be cancelled in current state "
+                        f"'{updated_job.status.state.value}'"
+                    ),
+                    param="status",
+                )
+            )
+            logger.info(  # type: ignore[call-arg]
+                "Batch cancel request rejected by current state",
+                batch_id=batch_id,
+                state=updated_job.status.state,
+            )
+        else:
+            logger.info("Batch cancelled successfully", batch_id=batch_id)  # type: ignore[call-arg]
 
         return _batch_job_to_openai_response(updated_job)
 

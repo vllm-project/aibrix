@@ -53,11 +53,13 @@ from typing import (
 
 import aibrix.batch.constant as constant
 from aibrix.batch.client import EndpointSource
+from aibrix.batch.job_driver.driver import TerminateResult
 from aibrix.batch.job_driver.running_jobs import RunningJobs
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobError,
     BatchJobErrorCode,
+    ConditionType,
     JobRuntimeRef,
 )
 from aibrix.context import InfrastructureContext
@@ -132,7 +134,7 @@ class Runtime(Protocol):
         implement it."""
         ...
 
-    async def terminate(self, deleted_job: BatchJob) -> bool:
+    async def terminate(self, deleted_job: BatchJob) -> TerminateResult:
         """Terminate a job execution, no more job_entity_manager hijacks."""
         ...
 
@@ -173,10 +175,11 @@ class RuntimeBase:
         self._active_job_id: Optional[str] = None
         self._active_task: Optional[asyncio.Task[None]] = None
         self._active_runtime: Any | None = None
+        self._progress_manager: Optional[RunningJobs] = None
         self._delete_requested = asyncio.Event()
 
     def cancelled(self) -> bool:
-        return False
+        return self._delete_requested.is_set()
 
     async def _reconnect(
         self, job: BatchJob, job_id: str, runtimeRef: JobRuntimeRef
@@ -217,20 +220,51 @@ class RuntimeBase:
             "(Endpoint(source=None) + provisions=True)"
         )
 
-    async def terminate(self, deleted_job: BatchJob) -> bool:
+    async def terminate(self, deleted_job: BatchJob) -> TerminateResult:
         """Handle job deletion events, no more job_entity_manager hijacks."""
         deleted_job_id = deleted_job.job_id
-        if deleted_job_id and deleted_job_id == self._active_job_id:
+        if (
+            deleted_job_id
+            and deleted_job_id == self._active_job_id
+            and self._active_task is not None
+        ):
+            if self._delete_requested.is_set():
+                return TerminateResult.ALREADY_REQUESTED
+
+            if (
+                self._progress_manager is not None
+                and deleted_job.status.check_condition(ConditionType.CANCELLED)
+            ):
+                # Persist cancelling before the delete signal is raised. Once
+                # `_delete_requested` is set, the active worker can race into its
+                # stop/finalizing path immediately.
+                await self._progress_manager.update_job_status(
+                    deleted_job_id,
+                    deleted_job.status,
+                )
             self._delete_requested.set()
-            if self._active_task is not None and not self._active_task.done():
-                self._active_task.cancel()
-        return True
+            return TerminateResult.ACCEPTED
+        return TerminateResult.REJECTED
 
     def _reset_runtime_state(self) -> None:
         self._active_job_id = None
         self._active_task = None
         self._active_runtime = None
+        self._progress_manager = None
         self._delete_requested.clear()
+
+    def _bind_active_session(
+        self, job_id: str, progress_manager: Optional[RunningJobs] = None
+    ) -> None:
+        self._active_job_id = job_id
+        self._active_task = asyncio.current_task()
+        self._delete_requested.clear()
+        self._progress_manager = progress_manager
+
+    def _unbind_active_session(self) -> None:
+        self._active_job_id = None
+        self._active_task = None
+        self._progress_manager = None
 
     def _get_runtime_key(self, job: BatchJob) -> str:
         """Execution-key to locate execution ref."""
@@ -291,8 +325,14 @@ class RuntimeBase:
         if runtime_ref is None:
             return
 
+        # Recovery cleanup does not re-enter a live runtime session; it only
+        # reconnects long enough to tear the backend down. Keep the tracked job
+        # id for teardown/debugging, but do not re-bind the full active session.
+        self._active_job_id = job.job_id
+        self._delete_requested.clear()
         handle = await self._reconnect(job, job.job_id, runtime_ref)
         if handle is None:
+            self._active_job_id = None
             return
 
         try:
@@ -309,7 +349,9 @@ class RuntimeBase:
                 raise
             await self._teardown(handle)
         finally:
-            self._reset_runtime_state()
+            self._active_job_id = None
+            self._active_runtime = None
+            self._delete_requested.clear()
 
     async def _persist_runtime_ref(
         self,
@@ -397,6 +439,7 @@ class RuntimeBase:
         runtimeRef = self._load_runtime_ref(job)
         handle = None
         max_attempts = self.session_retry_attempts + 1
+        self._bind_active_session(job_id, progress_manager)
         try:
             for attempt in range(max_attempts):
                 try:
@@ -464,6 +507,7 @@ class RuntimeBase:
         finally:
             if handle is not None:
                 await self._teardown(handle)
+            self._unbind_active_session()
 
 
 class ExternalRuntime(RuntimeBase):

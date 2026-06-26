@@ -12,12 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
 
-from aibrix.batch.job_driver.runtime import Endpoint
 from aibrix.batch.job_entity import BatchJob
+
+if TYPE_CHECKING:
+    from aibrix.batch.job_driver.runtime import Endpoint
 
 
 class DriverReconnectState(str, Enum):
@@ -25,6 +29,12 @@ class DriverReconnectState(str, Enum):
     RESCHEDULE = "reschedule"
     UNSUPPORTED = "unsupported"
     INVALID = "invalid"
+
+
+class TerminateResult(str, Enum):
+    ACCEPTED = "accepted"
+    ALREADY_REQUESTED = "already_requested"
+    REJECTED = "rejected"
 
 
 @dataclass
@@ -88,6 +98,6 @@ class JobDriver(Protocol):
         """
         ...
 
-    async def terminate(self, deleted_job: BatchJob) -> bool:
+    async def terminate(self, deleted_job: BatchJob) -> TerminateResult:
         """Handle deletion for the bound job."""
         ...

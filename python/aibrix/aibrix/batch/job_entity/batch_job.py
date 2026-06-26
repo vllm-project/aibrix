@@ -79,6 +79,7 @@ class BatchJobErrorCode(str, Enum):
     VALIDATION_ERROR = "validation_error"
     INFERENCE_FAILED = "inference_failed"
     PREPARE_OUTPUT_ERROR = "prepare_output_failed"
+    CANCEL_REJECTED_ERROR = "cancel_rejected"
     FINALIZING_ERROR = "finalizing_failed"
     INTERNAL_ERROR = "internal_error"
     METASTORE_ERROR = "metastore_error"

@@ -50,6 +50,7 @@ from aibrix.batch.client import (
     InferenceRequest,
     RetryConfig,
 )
+from aibrix.batch.job_driver.driver import TerminateResult
 from aibrix.batch.job_driver.running_jobs import RunningJobs
 from aibrix.batch.job_driver.runtime import Endpoint, NoopRuntime, Runtime
 from aibrix.batch.job_entity import (
@@ -303,8 +304,14 @@ class BaseJobDriver:
             job = await self._execute_job_in_runtime(self._runtime, job)
         except asyncio.CancelledError:
             # A provisioning runtime cancels the run when its job is deleted;
-            # teardown already ran via the session. Swallow only then.
+            # teardown already ran via the session. Conclude the accepted cancel
+            # here as well because cancellation can happen before
+            # _execute_job_in_runtime() enters its own stop/finalize path.
             if self._runtime.cancelled():
+                latest = await self._progress_manager.get_job(job_id)
+                if latest is None:
+                    return
+                await self._finish_stopped_job(latest)
                 self._log_cancelled(job_id)
                 return
             raise
@@ -341,11 +348,24 @@ class BaseJobDriver:
                 failed_condition.message or "Job failed with an unspecified error"
             )
 
-    async def terminate(self, deleted_job: BatchJob) -> bool:
-        if self._runtime is not None:
-            return await self._runtime.terminate(deleted_job)
+    async def terminate(self, deleted_job: BatchJob) -> TerminateResult:
+        if (
+            deleted_job.status.finished
+            or deleted_job.status.state == BatchJobState.FINALIZING
+        ):
+            return TerminateResult.REJECTED
 
-        return True
+        result = TerminateResult.ACCEPTED
+        if self._runtime is not None:
+            result = await self._runtime.terminate(deleted_job)
+
+        # `deleted_job` carries the manager's optimistic cancelling status so
+        # the live path can observe cancel intent early and, if accepted,
+        # be persisted by the runtime directly. Once the runtime rejects
+        # termination, that conflicts with the optimistic assumption and
+        # `deleted_job` becomes obsolete.
+        # and must not be reinterpreted as acceptance from the driver layer.
+        return result
 
     # ── overridable options ──────────────────────────────────────────
 
@@ -504,7 +524,10 @@ class BaseJobDriver:
 
         # If finalizing is not needed, we still need to fill state gap between
         # in-progross and finalized manually
-        await self._progress_manager.mark_job_finalizing(job.job_id)
+        # Keep using the finalizing snapshot returned by the progress manager.
+        # Passing the pre-finalizing `job` object into mark_job_done() can race
+        # with manager/store updates and lose newer cancel conditions or counts.
+        job = await self._progress_manager.mark_job_finalizing(job.job_id)
         synced = await self._progress_manager.mark_job_done(job)
         self._log_completed(synced)
         return synced

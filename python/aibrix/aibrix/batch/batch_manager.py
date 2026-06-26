@@ -22,6 +22,7 @@ from aibrix.batch.client import EndpointSource
 from aibrix.batch.job_driver import (
     JobDriver,
     RunningJobs,
+    TerminateResult,
     create_job_driver,
 )
 from aibrix.batch.job_entity import (
@@ -287,7 +288,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
 
         return job.job_id
 
-    async def cancel_job(self, job_id: str) -> bool:
+    async def cancel_job(self, job_id: str) -> TerminateResult:
         """
         Cancel a job by job_id.
 
@@ -304,10 +305,11 @@ class BatchManager(RunningJobs, SchedulableJobs):
             job_id: The ID of the job to cancel
 
         Returns:
-            bool: True if cancellation was initiated successfully, False otherwise
+            TerminateResult: cancellation decision/result for the target job
         """
         # Check if job exists in any state
         job = None
+        job_driver = None
         job_in_progress = False
         if job_id in self._pending_jobs:
             job = self._pending_jobs[job_id]
@@ -316,14 +318,15 @@ class BatchManager(RunningJobs, SchedulableJobs):
             logger.debug("Job removed from a category", category="_pending_jobs")  # type: ignore[call-arg]
         elif job_id in self._in_progress_jobs:
             job = self._in_progress_jobs[job_id]
+            job_driver = job.job_driver
             job_in_progress = job.status.state == BatchJobState.IN_PROGRESS
         elif job_id in self._done_jobs:
             # Job is already done (completed, failed, expired, or cancelled)
             logger.debug("Job is already in final state", job_id=job_id)  # type: ignore[call-arg]
-            return False
+            return TerminateResult.REJECTED
         else:
             logger.warning("Job not found", job_id=job_id)  # type: ignore[call-arg]
-            return False
+            return TerminateResult.REJECTED
 
         # Check if job is finalizing
         # We allow CANCELLING job be signalled again.
@@ -331,12 +334,31 @@ class BatchManager(RunningJobs, SchedulableJobs):
             logger.info(  # type: ignore[call-arg]
                 "Job is finalizing", job_id=job_id, state=job.status.state
             )
-            return False
+            return TerminateResult.REJECTED
+        if job.status.state == BatchJobState.CANCELLING or job.status.check_condition(
+            ConditionType.CANCELLED
+        ):
+            return TerminateResult.ALREADY_REQUESTED
 
-        # Start cancel
+        # Keep cancel initiation on the live in-memory job/driver path.
+        # If we later decide to seed this from persisted state again, we must
+        # re-check the reloaded status before applying cancellation.
         job_cancelled = self._build_cancelled_job_update(job)
         cancelling_at = job_cancelled.status.cancelling_at
         assert cancelling_at is not None
+
+        if job_driver is not None:
+            terminate_result = await job_driver.terminate(job_cancelled)
+            if terminate_result == TerminateResult.REJECTED:
+                logger.info(  # type: ignore[call-arg]
+                    "Live job rejected cancellation",
+                    job_id=job_id,
+                    state=job_cancelled.status.state,
+                )
+                return TerminateResult.REJECTED
+            return terminate_result
+
+        # Fallback path
         job.status.state = BatchJobState.CANCELLING
         job.status.cancelling_at = cancelling_at
         job.status.conditions = job_cancelled.status.conditions
@@ -346,17 +368,14 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 "Job added to a category during cancelling", category="_pending_jobs"
             )  # type: ignore[call-arg]
 
-        # Job drivers might handle the job cancellation condition differently
-        # SimpleDriver will do nothing and let _job_entity_manager to handle the cancellation
-        # Other job drivers will cancel
         if self._job_entity_manager:
             # Signal the entity manager to cancel the job
             # The actual state update will be handled by job_updated_handler when called back
             await self._job_entity_manager.cancel_job(job_cancelled)
-            return True
+            return TerminateResult.ACCEPTED
 
         await self.job_updated_handler(job, job_cancelled)
-        return True
+        return TerminateResult.ACCEPTED
 
     async def delete_job(self, job_id: str) -> bool:
         """
@@ -733,7 +752,6 @@ class BatchManager(RunningJobs, SchedulableJobs):
 
     async def mark_job_validated(self, job_id: str, status: BatchJobStatus) -> BatchJob:
         meta_data = await self._meta_from_in_progress_job(job_id)
-
         validated = meta_data.copy(status)
         if validated.status.state == BatchJobState.VALIDATING:
             validated.status.in_progress_at = datetime.now(timezone.utc)
@@ -757,7 +775,6 @@ class BatchManager(RunningJobs, SchedulableJobs):
     ) -> BatchJob:
         # Cancel, failing, expiring will not move job out of in_progress state
         meta_data = await self._meta_from_in_progress_job(job_id)
-
         persisted = meta_data.copy()
         persisted.status.execution = status.execution
         # Set worker-wise status copies.
@@ -779,21 +796,32 @@ class BatchManager(RunningJobs, SchedulableJobs):
         if meta_data.status.state == BatchJobState.FINALIZING:
             return meta_data
 
-        persisted: BatchJob = meta_data
+        live_cancelled = (
+            meta_data.status.state == BatchJobState.CANCELLING
+            or meta_data.status.condition == ConditionType.CANCELLED
+        )
+        persisted: BatchJob = meta_data.copy()
         if self._job_entity_manager is not None:
-            # Reload status copies from backend to collect all (including left over) status copies.
-            loaded_job = await self._job_entity_manager.get_job(job_id)
-            if loaded_job is None:
-                logger.warning(
-                    "Job missing from entity manager during finalizing reload",
-                    job_id=job_id,
-                    state=meta_data.status.state,
-                )  # type: ignore[call-arg]
-                raise JobUnexpectedStateError(
-                    "Job missing from entity manager during finalizing reload",
-                    meta_data.status.state,
-                )
-            persisted = loaded_job
+            if live_cancelled:
+                # A live cancel request may already have updated the shared
+                # JobMetaInfo while store persistence is still in flight. In
+                # that boundary window, prefer the live state so finalizing does
+                # not overwrite a cancellation into completion.
+                persisted = meta_data.copy()
+            else:
+                # Reload status copies from backend to collect all (including left over) status copies.
+                loaded_job = await self._job_entity_manager.get_job(job_id)
+                if loaded_job is None:
+                    logger.warning(
+                        "Job missing from entity manager during finalizing reload",
+                        job_id=job_id,
+                        state=meta_data.status.state,
+                    )  # type: ignore[call-arg]
+                    raise JobUnexpectedStateError(
+                        "Job missing from entity manager during finalizing reload",
+                        meta_data.status.state,
+                    )
+                persisted = loaded_job
         else:
             persisted = meta_data.copy()
         if persisted.status.finalizing_at is None:

@@ -23,6 +23,7 @@ import pytest
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
 from aibrix.batch.batch_manager import BatchManager
+from aibrix.batch.job_driver import TerminateResult
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobEndpoint,
@@ -72,9 +73,23 @@ def _in_progress_meta_job(job_id: str, total_requests: int) -> JobMetaInfo:
 
 
 class _FakeJobDriver:
-    async def terminate(self, job: BatchJob) -> bool:
-        del job
-        return True
+    def __init__(
+        self,
+        terminate_result: TerminateResult = TerminateResult.ACCEPTED,
+        meta_job: JobMetaInfo | None = None,
+    ) -> None:
+        self.terminate_result = terminate_result
+        self.meta_job = meta_job
+        self.terminate_calls: list[str | None] = []
+
+    async def terminate(self, job: BatchJob) -> TerminateResult:
+        self.terminate_calls.append(job.job_id)
+        if (
+            self.terminate_result == TerminateResult.ACCEPTED
+            and self.meta_job is not None
+        ):
+            self.meta_job.status = job.status.model_copy(deep=True)
+        return self.terminate_result
 
 
 @pytest.mark.asyncio
@@ -101,7 +116,7 @@ async def test_local_job_cancellation():
 
     # Cancel the job
     result = await job_manager.cancel_job(job_id)
-    assert result is True
+    assert result == TerminateResult.ACCEPTED
 
     # Verify job moved to done state with cancelled status
     assert job_id not in job_manager._pending_jobs
@@ -123,7 +138,7 @@ async def test_cancel_nonexistent_job():
 
     # Try to cancel non-existent job
     result = await job_manager.cancel_job("nonexistent-job-id")
-    assert result is False
+    assert result == TerminateResult.REJECTED
 
 
 @pytest.mark.asyncio
@@ -149,7 +164,37 @@ async def test_cancel_job_already_done():
 
     # Try to cancel job that's already done
     result = await job_manager.cancel_job(job_id)
-    assert result is False  # Changed: done jobs now return False
+    assert result == TerminateResult.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_cancel_in_progress_job_calls_live_driver_terminate_before_persisting():
+    job_manager = _job_manager()
+    meta_job = _in_progress_meta_job("test-job-id-driver-cancel", total_requests=1)
+    driver = _FakeJobDriver(meta_job=meta_job)
+    meta_job._job_driver = driver
+    job_manager._in_progress_jobs[meta_job.job_id] = meta_job
+
+    result = await job_manager.cancel_job(meta_job.job_id)
+
+    assert result == TerminateResult.ACCEPTED
+    assert driver.terminate_calls == [meta_job.job_id]
+    assert meta_job.status.state == BatchJobState.CANCELLING
+
+
+@pytest.mark.asyncio
+async def test_cancel_in_progress_job_is_denied_when_live_driver_rejects_terminate():
+    job_manager = _job_manager()
+    meta_job = _in_progress_meta_job("test-job-id-driver-deny", total_requests=1)
+    driver = _FakeJobDriver(terminate_result=TerminateResult.REJECTED)
+    meta_job._job_driver = driver
+    job_manager._in_progress_jobs[meta_job.job_id] = meta_job
+
+    result = await job_manager.cancel_job(meta_job.job_id)
+
+    assert result == TerminateResult.REJECTED
+    assert driver.terminate_calls == [meta_job.job_id]
+    assert meta_job.status.state == BatchJobState.IN_PROGRESS
 
 
 @pytest.mark.asyncio

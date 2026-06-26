@@ -17,6 +17,7 @@ from aibrix.batch.job_driver.driver import (
     DriverReconnectResult,
     DriverReconnectState,
     JobDriver,
+    TerminateResult,
 )
 from aibrix.batch.job_driver.driver_factory import create_job_driver
 from aibrix.batch.job_driver.running_jobs import RunningJobs
@@ -37,6 +38,7 @@ __all__ = [
     "create_job_driver",
     "DriverReconnectResult",
     "DriverReconnectState",
+    "TerminateResult",
     "JobDriver",
     "BaseJobDriver",
     "DeploymentRuntime",
