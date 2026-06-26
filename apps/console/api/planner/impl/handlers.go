@@ -27,6 +27,7 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
+	"github.com/vllm-project/aibrix/apps/console/api/metrics"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
@@ -138,12 +139,15 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 		IdempotencyKey: jobID,
 	}
 
+	provStart := time.Now().UTC()
 	provResult, err := p.prov.Provision(ctx, provReq)
 	if err != nil {
 		klog.Warningf("[planner] Provision failed for job_id=%q: %v", jobID, err)
+		metrics.Emitter.Counter(metricConsolePlannerError, 1, metrics.T("method", "handle_provisioning"), metrics.T("reason", "provision_failed"))
 		p.markFailed(ctx, job, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInsufficientResources, err))
 		return
 	}
+	metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, provStart, metrics.T("method", "provision_create"))
 
 	if logger, ok := p.backend.(provisionResponseLogger); ok {
 		logger.LogProvisionResponse(jobID, provResult, *spec)
@@ -203,12 +207,14 @@ func handleResourcePreparing(p *Planner, job *queuedJob) {
 	job.mu.RUnlock()
 
 	// Query provision status
+	provStart := time.Now().UTC()
 	filter := &rmtypes.ListOptions{ProvisionIDs: &[]string{provisionID}}
 	results, err := p.prov.List(ctx, filter)
 	if err != nil {
 		klog.Warningf("[planner] list provision failed job_id=%q provision_id=%q: %v", jobID, provisionID, err)
 		return
 	}
+	metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, provStart, metrics.T("method", "provision_list"))
 
 	if len(results) == 0 {
 		p.markFailed(ctx, job, plannerapi.JobStatusResourceFailed, fmt.Errorf("provision %q not found", provisionID))
@@ -224,11 +230,18 @@ func handleResourcePreparing(p *Planner, job *queuedJob) {
 		job.allocatedResource = provResult
 		if !job.status.IsTerminal() && job.status == plannerapi.JobStatusResourcePreparing {
 			job.readyToSubmit = true
+			if !job.resourcePreparingAt.IsZero() {
+				metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, job.resourcePreparingAt, metrics.T("method", "provision"), metrics.T("status", string(provResult.Status)))
+			}
 			klog.Infof("[planner] job_id=%q provision ready, marked readyToSubmit", jobID)
 		}
 		job.mu.Unlock()
 
 	case rmtypes.ProvisionStatusFailed, rmtypes.ProvisionStatusReleasing, rmtypes.ProvisionStatusReleased, rmtypes.ProvisionStatusReleaseFailed:
+		if !job.resourcePreparingAt.IsZero() {
+			metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, job.resourcePreparingAt, metrics.T("method", "provision"), metrics.T("status", string(provResult.Status)))
+		}
+		metrics.Emitter.Counter(metricConsolePlannerError, 1, metrics.T("method", "handle_provisioning"), metrics.T("reason", string(provResult.Status)))
 		p.markFailed(ctx, job, plannerapi.JobStatusResourceFailed, fmt.Errorf("provision failed: %s", provResult.ErrorMessage))
 
 	default:
@@ -303,13 +316,16 @@ func submitToMDS(p *Planner, job *queuedJob) {
 		}
 	}
 
+	submitStart := time.Now().UTC()
 	batch, err := p.bc.CreateBatch(ctx, req.BatchParams, aibrix)
 	if err != nil {
 		klog.Warningf("[planner] CreateBatch failed job_id=%q: %v", jobID, err)
+		metrics.Emitter.Counter(metricConsolePlannerError, 1, metrics.T("method", "submit_to_mds"), metrics.T("reason", "create_batch_failed"))
 		p.markFailed(ctx, job, plannerapi.JobStatusSubmitFailed, err)
 		return
 	}
 
+	metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, submitStart, metrics.T("method", "create_batch"))
 	klog.Infof("[planner] CreateBatch called job_id=%q batch_id=%q", jobID, batch.ID)
 
 	job.mu.Lock()

@@ -51,6 +51,7 @@ import (
 
 	"github.com/vllm-project/aibrix/apps/console/api/common"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	"github.com/vllm-project/aibrix/apps/console/api/metrics"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
@@ -61,7 +62,8 @@ import (
 )
 
 const (
-	defaultListLimit = 20
+	defaultListLimit      = 20
+	metricConsoleJobError = "console.job.error"
 )
 
 var supportedCompletionWindows = map[string]struct{}{
@@ -316,6 +318,7 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 
 	job, err := h.planner.Enqueue(ctx, enqueueReq)
 	if err != nil {
+		metrics.Emitter.Counter(metricConsoleJobError, 1, metrics.T("method", "create"), metrics.T("reason", "enqueue_failed"))
 		return nil, mapPlannerError(err, "create batch")
 	}
 	return h.enrichJob(ctx, mergeJob(job, nil)), nil
@@ -361,13 +364,16 @@ func (h *JobHandler) CancelJob(ctx context.Context, req *pb.CancelJobRequest) (*
 
 	existing, err := h.planner.GetJob(ctx, req.Id)
 	if err != nil {
+		metrics.Emitter.Counter(metricConsoleJobError, 1, metrics.T("method", "cancel"), metrics.T("reason", "get_job_failed"))
 		return nil, mapPlannerError(err, "cancel batch")
 	}
 	if err := requireJobOwner(ctx, mergeJob(existing, nil), "cancel"); err != nil {
+		metrics.Emitter.Counter(metricConsoleJobError, 1, metrics.T("method", "cancel"), metrics.T("reason", "not_owner"))
 		return nil, err
 	}
 	job, err := h.planner.Cancel(ctx, req.Id)
 	if err != nil {
+		metrics.Emitter.Counter(metricConsoleJobError, 1, metrics.T("method", "cancel"), metrics.T("reason", "cancel_failed"))
 		return nil, mapPlannerError(err, "cancel batch")
 	}
 	return h.enrichJob(ctx, mergeJob(job, nil)), nil

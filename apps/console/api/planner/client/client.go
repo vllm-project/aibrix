@@ -29,11 +29,18 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
+	"github.com/vllm-project/aibrix/apps/console/api/metrics"
 	"github.com/vllm-project/aibrix/apps/console/api/utils"
+)
+
+const (
+	metricConsolePlannerError    = "console.planner.error"
+	metricConsolePlannerDuration = "console.planner.duration"
 )
 
 // =============================================================================
@@ -136,14 +143,17 @@ func (c *OpenAIBatchClient) CreateBatch(ctx context.Context, params openai.Batch
 		}
 	}
 
+	start := time.Now().UTC()
 	opts := buildExtraBodyOptions(aibrix)
 	batch, err := c.client.Batches.New(ctx, params, opts...)
 	if err != nil {
+		metrics.Emitter.Counter(metricConsolePlannerError, 1, metrics.T("method", "create_batch"))
 		// errors.Join preserves the inner *openai.Error so callers can
 		// errors.As it for HTTP-status-derived gRPC codes, while still
 		// matching ErrMDSSubmitFailed via errors.Is.
 		return nil, errors.Join(ErrMDSSubmitFailed, err)
 	}
+	metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, start, metrics.T("method", "create_batch"))
 	return batch, nil
 }
 
@@ -158,7 +168,14 @@ func (c *OpenAIBatchClient) GetBatch(ctx context.Context, batchID string) (*open
 		}
 	}
 
-	return c.client.Batches.Get(ctx, batchID)
+	start := time.Now().UTC()
+	batch, err := c.client.Batches.Get(ctx, batchID)
+	if err != nil {
+		metrics.Emitter.Counter(metricConsolePlannerError, 1, metrics.T("method", "get_batch"))
+		return nil, err
+	}
+	metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, start, metrics.T("method", "get_batch"))
+	return batch, nil
 }
 
 func (c *OpenAIBatchClient) CancelBatch(ctx context.Context, batchID string) (*openai.Batch, error) {
@@ -171,7 +188,14 @@ func (c *OpenAIBatchClient) CancelBatch(ctx context.Context, batchID string) (*o
 			return nil, err
 		}
 	}
-	return c.client.Batches.Cancel(ctx, batchID)
+	start := time.Now().UTC()
+	batch, err := c.client.Batches.Cancel(ctx, batchID)
+	if err != nil {
+		metrics.Emitter.Counter(metricConsolePlannerError, 1, metrics.T("method", "cancel_batch"))
+		return nil, err
+	}
+	metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, start, metrics.T("method", "cancel_batch"))
+	return batch, nil
 }
 
 func (c *OpenAIBatchClient) ListBatches(ctx context.Context, req *ListBatchesRequest) (*ListBatchesResponse, error) {
@@ -190,10 +214,13 @@ func (c *OpenAIBatchClient) ListBatches(ctx context.Context, req *ListBatchesReq
 			params.Limit = openai.Int(int64(req.Limit))
 		}
 	}
+	start := time.Now().UTC()
 	page, err := c.client.Batches.List(ctx, params)
 	if err != nil {
+		metrics.Emitter.Counter(metricConsolePlannerError, 1, metrics.T("method", "list_batches"))
 		return nil, err
 	}
+	metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, start, metrics.T("method", "list_batches"))
 	batches := make([]*openai.Batch, 0, len(page.Data))
 	for i := range page.Data {
 		batches = append(batches, &page.Data[i])
