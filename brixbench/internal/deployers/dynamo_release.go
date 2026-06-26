@@ -3,7 +3,9 @@ package deployers
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -24,37 +26,83 @@ func (execCommandRunner) Run(ctx context.Context, name string, args ...string) (
 	return string(output), err
 }
 
-// DynamoTagSource validates Dynamo release tags without exposing the backing
-// source details to DynamoDeployer lifecycle code.
-type DynamoTagSource interface {
-	ValidateReleaseTag(ctx context.Context, version string) error
+// DynamoRelease describes a prepared Dynamo release checkout.
+type DynamoRelease struct {
+	Version   string
+	RepoPath  string
+	ChartPath string
 }
 
-// GitDynamoTagSource validates Dynamo release tags against the upstream git
-// repository.
-type GitDynamoTagSource struct {
+// DynamoReleaseSource prepares Dynamo release artifacts without exposing the
+// backing source details to DynamoDeployer lifecycle code.
+type DynamoReleaseSource interface {
+	ValidateReleaseTag(ctx context.Context, version string) error
+	PrepareRelease(ctx context.Context, projectRoot string, version string) (*DynamoRelease, error)
+}
+
+// GitDynamoReleaseSource validates and prepares Dynamo releases from the
+// upstream git repository.
+type GitDynamoReleaseSource struct {
 	runner  commandRunner
 	repoURL string
 }
 
-var _ DynamoTagSource = (*GitDynamoTagSource)(nil)
+var _ DynamoReleaseSource = (*GitDynamoReleaseSource)(nil)
 
-// NewGitDynamoTagSource creates the production Dynamo release tag source.
-func NewGitDynamoTagSource() *GitDynamoTagSource {
-	return &GitDynamoTagSource{
+// NewGitDynamoReleaseSource creates the production Dynamo release source.
+func NewGitDynamoReleaseSource() *GitDynamoReleaseSource {
+	return &GitDynamoReleaseSource{
 		runner:  execCommandRunner{},
 		repoURL: dynamoRepoURL,
 	}
 }
 
-func (s *GitDynamoTagSource) ValidateReleaseTag(ctx context.Context, version string) error {
+func (s *GitDynamoReleaseSource) ValidateReleaseTag(ctx context.Context, version string) error {
 	return validateDynamoReleaseTag(ctx, s.runner, s.repoURL, version)
+}
+
+func (s *GitDynamoReleaseSource) PrepareRelease(ctx context.Context, projectRoot string, version string) (*DynamoRelease, error) {
+	version = strings.TrimSpace(version)
+	if err := s.ValidateReleaseTag(ctx, version); err != nil {
+		return nil, err
+	}
+
+	repoPath := filepath.Join(projectRoot, ".tmp", "dynamo", version)
+	chartPath := filepath.Join(repoPath, "deploy", "helm", "charts", "platform")
+	release := &DynamoRelease{
+		Version:   version,
+		RepoPath:  repoPath,
+		ChartPath: chartPath,
+	}
+
+	if pathExists(repoPath) {
+		if !dirExists(chartPath) {
+			return nil, fmt.Errorf("Dynamo release checkout %s exists but chart path %s was not found", repoPath, chartPath)
+		}
+		return release, nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create Dynamo release cache directory: %w", err)
+	}
+	output, err := s.runner.Run(ctx, "git", "clone", "--depth=1", "--branch", version, s.repoURL, repoPath)
+	if err != nil {
+		output = strings.TrimSpace(output)
+		if output != "" {
+			return nil, fmt.Errorf("failed to checkout Dynamo release %s: %w: %s", version, err, output)
+		}
+		return nil, fmt.Errorf("failed to checkout Dynamo release %s: %w", version, err)
+	}
+	if !dirExists(chartPath) {
+		return nil, fmt.Errorf("Dynamo release %s chart path %s was not found after checkout", version, chartPath)
+	}
+	return release, nil
 }
 
 // ValidateDynamoReleaseTag verifies that version is a stable Dynamo release tag
 // and that the exact tag exists in the upstream Dynamo repository.
 func ValidateDynamoReleaseTag(ctx context.Context, version string) error {
-	return NewGitDynamoTagSource().ValidateReleaseTag(ctx, version)
+	return NewGitDynamoReleaseSource().ValidateReleaseTag(ctx, version)
 }
 
 func validateDynamoReleaseTag(ctx context.Context, runner commandRunner, repoURL string, version string) error {
@@ -87,4 +135,14 @@ func lsRemoteOutputHasExactTag(output string, version string) bool {
 		}
 	}
 	return false
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }

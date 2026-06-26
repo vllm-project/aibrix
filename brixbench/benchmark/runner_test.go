@@ -121,6 +121,9 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 	result.ResolvedCommit = testCase.ResolvedCommit
 	if err != nil {
 		captureDeploymentArtifacts(t, ctx, deployer)
+		if deployer != nil {
+			teardownTestResources(t, ctx, deployer, defaultBenchmarkNamespace, testCase.Name)
+		}
 		result.Error = fmt.Sprintf("Deployment failed: %v", err)
 		return result, fmt.Errorf("Deployment failed: %w", err)
 	}
@@ -169,8 +172,8 @@ func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string
 		t.Log("Using LLM-d deployer")
 		// return nil, "", fmt.Errorf("LLM-d deployer not implemented")
 	case "dynamo":
+		deployer = deployers.NewDynamoDeployer()
 		t.Log("Using Dynamo deployer")
-		// return nil, "", fmt.Errorf("Dynamo deployer not implemented")
 	case "":
 		if testCase.Engine.Type != "vllm" {
 			return nil, "", fmt.Errorf("provider: null only supports engine.type=vllm, got %q", testCase.Engine.Type)
@@ -204,6 +207,9 @@ func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string
 	// Execute Deployment logic
 	if err := deployer.DeployControlPlane(ctx); err != nil {
 		return deployer, "", fmt.Errorf("failed to deploy control plane: %w", err)
+	}
+	if err := deployer.DeployGateway(ctx); err != nil {
+		return deployer, "", fmt.Errorf("failed to deploy gateway: %w", err)
 	}
 	if err := deployer.DeployEngine(ctx); err != nil {
 		return deployer, "", fmt.Errorf("failed to deploy engine: %w", err)
