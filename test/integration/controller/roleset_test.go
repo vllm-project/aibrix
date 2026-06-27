@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	volcanoschedv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
@@ -420,6 +421,124 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 								"default-order", "default:v2",
 								"Default order role (nil) should upgrade last")
 
+						},
+					},
+				},
+			},
+		),
+
+		ginkgo.Entry("handle roleset with volcano schedulingStrategy",
+			&testValidatingCase{
+				makeRoleSet: func() *orchestrationapi.RoleSet {
+					podTemplate := corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"app": "nginx",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "nginx",
+									Image: "nginx:latest",
+								},
+							},
+						},
+					}
+					schedulingStrategy := &orchestrationapi.SchedulingStrategy{
+						VolcanoSchedulingStrategy: &orchestrationapi.VolcanoSchedulingStrategySpec{MinMember: int32(1)},
+					}
+					return wrapper.MakeRoleSet("rs-normal").
+						Namespace(ns.Name).
+						SchedulingStrategyPodGroup(schedulingStrategy).
+						WithRole("master", 2, 0, podTemplate).
+						Obj()
+				},
+				updates: []*update{
+					{
+						updateFunc: func(rs *orchestrationapi.RoleSet) {
+							gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
+
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.RoleSetNameLabelKey,
+								rs.Name, 2)
+						},
+						checkFunc: func(ctx context.Context, k8sClient client.Client, rs *orchestrationapi.RoleSet) {
+							expectedLabels := map[string]string{
+								constants.RoleSetNameLabelKey: rs.Name,
+							}
+							podGroup := &volcanoschedv1beta1.PodGroup{}
+							podGroup.SetGroupVersionKind(volcanoschedv1beta1.SchemeGroupVersion.WithKind("PodGroup"))
+							minMember := rs.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinMember
+							// Validate pg CRD exists
+							validation.ValidatePodGroupCRDExist(ctx, dynamicClient, podGroup)
+							// Validate pg Spec
+							validation.ValidatePodGroupSpec(ctx, dynamicClient, podGroup, minMember,
+								rs.Namespace, rs.Name)
+							// Validate pg labels which is labelled by podSet controller
+							validation.ValidatePodGroupLabels(ctx, dynamicClient, podGroup, expectedLabels,
+								rs.Namespace, rs.Name)
+							// Validate pg count created by roleset
+							validation.ValidatePodGroupCount(ctx, dynamicClient, podGroup, rs.Namespace, 1)
+						},
+					},
+				},
+			},
+		),
+
+		ginkgo.Entry("handle each role with volcano schedulingStrategy",
+			&testValidatingCase{
+				makeRoleSet: func() *orchestrationapi.RoleSet {
+					podTemplate := corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"app": "nginx",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "nginx",
+									Image: "nginx:latest",
+								},
+							},
+						},
+					}
+					schedulingStrategy := &orchestrationapi.SchedulingStrategy{
+						VolcanoSchedulingStrategy: &orchestrationapi.VolcanoSchedulingStrategySpec{MinMember: int32(1)},
+					}
+					return wrapper.MakeRoleSet("rs-normal").
+						Namespace(ns.Name).
+						SchedulingStrategyPodGroup(schedulingStrategy).
+						WithRole("master", 2, 2, podTemplate).
+						WithRole("worker", 1, 2, podTemplate).
+						WithRoleSchedulingStrategy(schedulingStrategy).
+						Obj()
+				},
+				updates: []*update{
+					{
+						updateFunc: func(rs *orchestrationapi.RoleSet) {
+							gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
+
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.RoleSetNameLabelKey,
+								rs.Name, 3)
+						},
+						checkFunc: func(ctx context.Context, k8sClient client.Client, rs *orchestrationapi.RoleSet) {
+							expectedLabels := map[string]string{
+								constants.RoleSetNameLabelKey: rs.Name,
+							}
+							podGroup := &volcanoschedv1beta1.PodGroup{}
+							podGroup.SetGroupVersionKind(volcanoschedv1beta1.SchemeGroupVersion.WithKind("PodGroup"))
+							minMember := rs.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinMember
+							// Validate pg CRD exists
+							validation.ValidatePodGroupCRDExist(ctx, dynamicClient, podGroup)
+							// Validate pg Spec
+							validation.ValidatePodGroupSpec(ctx, dynamicClient, podGroup, minMember,
+								rs.Namespace, rs.Name)
+							// Validate pg labels which is labelled by podSet controller
+							validation.ValidatePodGroupLabels(ctx, dynamicClient, podGroup, expectedLabels,
+								rs.Namespace, rs.Name)
+							// Validate pg count created by roleset
+							validation.ValidatePodGroupCount(ctx, dynamicClient, podGroup, rs.Namespace, 3)
 						},
 					},
 				},
