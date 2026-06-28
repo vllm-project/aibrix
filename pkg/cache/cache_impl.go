@@ -209,9 +209,13 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 	// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
 	if ctx == nil {
 		return traceTerm
-	} else if !ctx.HasRouted() || !ctx.CanAddStats() {
+	} else if !ctx.HasRouted() {
+		return atomic.LoadInt64(&ctx.TraceTerm)
+	} else if !ctx.CanAddStats() {
+		ctx.WaitStatsAdded()
 		return atomic.LoadInt64(&ctx.TraceTerm)
 	} else {
+		defer ctx.MarkStatsAdded()
 		traceTerm = atomic.LoadInt64(&ctx.TraceTerm)
 		c.addPodStats(ctx, requestID)
 	}
