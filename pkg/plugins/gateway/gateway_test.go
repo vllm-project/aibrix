@@ -31,6 +31,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -74,7 +75,7 @@ func Test_ValidateRoutingStrategy(t *testing.T) {
 			expectedValidation: false,
 		},
 	}
-	cache.NewForTest()
+	cache.InitForTest()
 	routing.Init()
 	for _, tt := range tests {
 		_, currentValidation := routing.Validate(tt.routingStrategy)
@@ -583,6 +584,65 @@ func Test_selectTargetPod(t *testing.T) {
 	}
 }
 
+func Test_selectTargetPod_PDEngineValidation(t *testing.T) {
+	ready := func(name, ip, engine string) *v1.Pod {
+		labels := map[string]string{}
+		if engine != "" {
+			labels[constants.ModelLabelEngine] = engine
+		}
+		return &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
+			Status: v1.PodStatus{
+				PodIP:      ip,
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		}
+	}
+
+	t.Run("rejects mismatched engines before Route", func(t *testing.T) {
+		mockRouter := new(mockRouter)
+		routing.Register(routing.RouterPD, func() (types.Router, error) {
+			return mockRouter, nil
+		})
+		routing.Init()
+
+		server := &Server{}
+		routeCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, "test-model", "msg", "req-engine", "user")
+		pods := &utils.PodArray{Pods: []*v1.Pod{
+			ready("prefill-1", "10.0.0.1", "vllm"),
+			ready("decode-1", "10.0.0.2", "sglang"),
+		}}
+
+		_, err := server.selectTargetPod(context.Background(), routeCtx, pods, "")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "engine validation failed")
+		assert.Contains(t, err.Error(), "inconsistent LLM engines")
+		mockRouter.AssertNotCalled(t, "Route", mock.Anything, mock.Anything)
+	})
+
+	t.Run("sets engine on routing context when consistent", func(t *testing.T) {
+		mockRouter := new(mockRouter)
+		routing.Register(routing.RouterPD, func() (types.Router, error) {
+			return mockRouter, nil
+		})
+		routing.Init()
+		mockRouter.On("Route", mock.Anything, mock.Anything).Return("10.0.0.2:8000", nil)
+
+		server := &Server{}
+		routeCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, "test-model", "msg", "req-engine-ok", "user")
+		pods := &utils.PodArray{Pods: []*v1.Pod{
+			ready("prefill-1", "10.0.0.1", "vllm"),
+			ready("decode-1", "10.0.0.2", "vllm"),
+		}}
+
+		addr, err := server.selectTargetPod(context.Background(), routeCtx, pods, "")
+		assert.NoError(t, err)
+		assert.Equal(t, "10.0.0.2:8000", addr)
+		assert.Equal(t, "vllm", routeCtx.Engine)
+		mockRouter.AssertExpectations(t)
+	})
+}
+
 func TestValidateHTTPRouteStatus(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -906,6 +966,21 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 		mockGW.AssertExpectations(t)
 		mockGWV1.AssertExpectations(t)
 		mockHTTP.AssertExpectations(t)
+	})
+
+	t.Run("explicit routing skips httproute on error path", func(t *testing.T) {
+		mockGW := &MockGatewayClient{}
+		s := &Server{gatewayClient: mockGW}
+		rctx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "", "rid", "")
+		out := s.responseErrorProcessingWithHeaders(context.Background(), rctx, nil, 404, "m", "rid", `{"detail":"Not Found"}`)
+		ir := out.GetImmediateResponse()
+		if assert.NotNil(t, ir) {
+			var parsed map[string]any
+			assert.NoError(t, json.Unmarshal([]byte(ir.GetBody()), &parsed))
+			errObj := parsed["error"].(map[string]any)
+			assert.Equal(t, `{"detail":"Not Found"}`, errObj["message"])
+		}
+		mockGW.AssertNotCalled(t, "GatewayV1")
 	})
 
 	t.Run("503 maps to service_unavailable", func(t *testing.T) {

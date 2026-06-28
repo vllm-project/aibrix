@@ -34,6 +34,7 @@ import (
 
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/handler"
+	"github.com/vllm-project/aibrix/apps/console/api/metrics"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
@@ -48,17 +49,24 @@ import (
 
 // Server holds the gRPC and HTTP servers for the console backend.
 type Server struct {
-	grpcServer *grpc.Server
-	httpServer *http.Server
-	store      store.Store
-	cfg        *config.Config
-	auth       *middleware.AuthMiddleware
-	planner    plannerapi.Planner
-	injector   error_injection.Injector
+	grpcServer     *grpc.Server
+	httpServer     *http.Server
+	store          store.Store
+	cfg            *config.Config
+	auth           *middleware.AuthMiddleware
+	planner        plannerapi.Planner
+	injector       error_injection.Injector
+	metricsHandler http.Handler
 }
 
 // New creates a new console Server from configuration.
 func New(cfg *config.Config) *Server {
+	// Initialise metrics subsystem
+	_, metricsHandler, metricsErr := metrics.Setup(cfg)
+	if metricsErr != nil {
+		klog.Fatalf("Failed to setup metrics: %v", metricsErr)
+	}
+
 	// Initialize error injector first as it's needed by store and other components
 	var injector error_injection.Injector
 	var err error
@@ -115,10 +123,11 @@ func New(cfg *config.Config) *Server {
 	}
 
 	return &Server{
-		store:    s,
-		cfg:      cfg,
-		auth:     auth,
-		injector: injector,
+		store:          s,
+		cfg:            cfg,
+		auth:           auth,
+		injector:       injector,
+		metricsHandler: metricsHandler,
 	}
 }
 
@@ -226,6 +235,15 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 		return err
 	}
 
+	// Register Prometheus /metrics endpoint when enabled
+	if s.metricsHandler != nil {
+		if err := mux.HandlePath("GET", "/api/v1/metrics", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+			s.metricsHandler.ServeHTTP(w, r)
+		}); err != nil {
+			return err
+		}
+	}
+
 	// Build handler chain: CORS -> Auth -> Routes
 	var httpHandler http.Handler = mux
 	httpHandler = s.auth.Handler(httpHandler)
@@ -263,6 +281,11 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if s.store != nil {
 		if err := s.store.Close(); err != nil {
 			klog.Errorf("failed to close store: %v", err)
+		}
+	}
+	if metrics.Emitter != nil {
+		if err := metrics.Emitter.Close(); err != nil {
+			klog.Errorf("failed to close metrics emitter: %v", err)
 		}
 	}
 }

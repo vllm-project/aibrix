@@ -52,6 +52,63 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 			},
 			expectError: false,
 		},
+		"Kubernetes External Metrics Source": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					ScalingStrategy: autoscalingv1alpha1.APA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.EXTERNAL,
+							TargetMetric:     "aibrix_test_queue_depth",
+							TargetValue:      "40",
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		"Kubernetes Domain Metrics Source": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					ScalingStrategy: autoscalingv1alpha1.APA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.DOMAIN,
+							TargetMetric:     "aibrix_test_queue_depth",
+							TargetValue:      "40",
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		"Kubernetes External Metrics Source Requires TargetMetric": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-deployment",
+						Kind: "Deployment",
+					},
+					ScalingStrategy: autoscalingv1alpha1.APA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.EXTERNAL,
+							TargetValue:      "40",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "targetMetric",
+		},
 		"Zero Target Value": {
 			pa: &autoscalingv1alpha1.PodAutoscaler{
 				Spec: autoscalingv1alpha1.PodAutoscalerSpec{

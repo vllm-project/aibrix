@@ -40,6 +40,7 @@ const CONSOLE_METADATA_KEYS = new Set([
   'aibrix.console.template_name',
   'aibrix.console.template_version',
   'display_name',
+  'extra_body',
 ]);
 
 function formatTimestamp(unixSec?: number): string {

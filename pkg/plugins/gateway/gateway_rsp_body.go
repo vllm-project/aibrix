@@ -346,30 +346,34 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 
 	if routingCtx.Algorithm == "pd" {
 		routingTime := routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime)
-		prefillTime := routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime)
-		kvTransferTime := ttft - routingCtx.PrefillEndTime.Sub(routingCtx.RequestTime)
-		decodeTime := time.Since(routingCtx.PrefillEndTime)
 		fields = append(fields,
 			"routing_time_taken", routingTime,
-			"prefill_time_taken", prefillTime,
-			"kv_transfer_time_taken", kvTransferTime,
 			"ttft", ttft,
-			"decode_time_taken", decodeTime,
 		)
 		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayRoutingTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(routingTime)})
-		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayPrefillTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(prefillTime)})
-		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayKVTransferTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(kvTransferTime)})
-		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayDecodeTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(decodeTime)})
-		if ttft > ttftThreshold {
-			metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayFirstTokenDelayOver1sTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{
-				"request_id": requestID,
-				"p_bucket":   pBucket, "c_bucket": cBucket,
-				"routing_time_taken":     fmt.Sprintf("%v", routingTime),
-				"prefill_time_taken":     fmt.Sprintf("%v", prefillTime),
-				"kv_transfer_time_taken": fmt.Sprintf("%v", kvTransferTime),
-				"ttft":                   fmt.Sprintf("%v", ttft),
-				"decode_time_taken":      fmt.Sprintf("%v", decodeTime),
-			})
+		if !routingCtx.PrefillEndTime.IsZero() {
+			prefillTime := routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime)
+			kvTransferTime := ttft - routingCtx.PrefillEndTime.Sub(routingCtx.RequestTime)
+			decodeTime := time.Since(routingCtx.PrefillEndTime)
+			fields = append(fields,
+				"prefill_time_taken", prefillTime,
+				"kv_transfer_time_taken", kvTransferTime,
+				"decode_time_taken", decodeTime,
+			)
+			metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayPrefillTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(prefillTime)})
+			metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayKVTransferTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(kvTransferTime)})
+			metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayDecodeTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(decodeTime)})
+			if ttft > ttftThreshold {
+				metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayFirstTokenDelayOver1sTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{
+					"request_id": requestID,
+					"p_bucket":   pBucket, "c_bucket": cBucket,
+					"routing_time_taken":     fmt.Sprintf("%v", routingTime),
+					"prefill_time_taken":     fmt.Sprintf("%v", prefillTime),
+					"kv_transfer_time_taken": fmt.Sprintf("%v", kvTransferTime),
+					"ttft":                   fmt.Sprintf("%v", ttft),
+					"decode_time_taken":      fmt.Sprintf("%v", decodeTime),
+				})
+			}
 		}
 	} else if routingCtx.Algorithm != "" {
 		fields = append(fields, "routing_time_taken", routingCtx.GetRoutingDelay())

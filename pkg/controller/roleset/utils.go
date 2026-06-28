@@ -26,8 +26,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
@@ -494,11 +492,11 @@ func getRoleReplicas(role *orchestrationv1alpha1.RoleSpec) int32 {
 }
 
 func getRolePods(ctx context.Context, cli client.Client, namespace, roleSetName, roleName string) (pods []*v1.Pod, err error) {
-	roleSetRequirement, _ := labels.NewRequirement(constants.RoleSetNameLabelKey, selection.Equals, []string{roleSetName})
-	roleRequirement, _ := labels.NewRequirement(constants.RoleNameLabelKey, selection.Equals, []string{roleName})
-	labelSelector := labels.NewSelector().Add(*roleSetRequirement, *roleRequirement)
 	podList := &v1.PodList{}
-	if err = cli.List(ctx, podList, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
+	if err = cli.List(ctx, podList, client.InNamespace(namespace), client.MatchingLabels{
+		constants.RoleNameLabelKey:    roleName,
+		constants.RoleSetNameLabelKey: roleSetName,
+	}); err != nil {
 		return nil, err
 	}
 	for i := range podList.Items {

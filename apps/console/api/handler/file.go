@@ -27,15 +27,20 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
+	"github.com/vllm-project/aibrix/apps/console/api/metrics"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
-
-	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 )
 
 // fileHTTPClientTimeout bounds proxy requests to the metadata service so a slow
 // or hung upstream can't pin file handler goroutines indefinitely.
 const fileHTTPClientTimeout = 60 * time.Second
+
+const (
+	metricConsoleFileError    = "console.file.error"
+	metricConsoleFileDuration = "console.file.duration"
+)
 
 // FileHandler proxies file operations to the AIBrix metadata service.
 type FileHandler struct {
@@ -77,45 +82,52 @@ func (h *FileHandler) RegisterRoutes(mux *runtime.ServeMux) {
 
 // handleUpload proxies multipart file uploads to POST {metadataServiceURL}/v1/files.
 func (h *FileHandler) handleUpload(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	start := time.Now().UTC()
 	if h.injector != nil {
 		if err := h.injector.CheckPoint(r.Context(), error_injection.POINT_CONSOLE_UPLOAD_FILE); err != nil {
+			metrics.Emitter.Counter(metricConsoleFileError, 1, metrics.T("method", "upload"), metrics.T("reason", "injected"))
 			http.Error(w, err.Error(), convertInjectedErrorToHttpCode(err))
 			return
 		}
 	}
 	targetURL := h.metadataServiceURL + "/v1/files"
-	h.proxyRequest(w, r, "POST", targetURL)
+	h.proxyRequest(w, r, "POST", targetURL, "upload", start)
 }
 
 // handleList proxies file listing to GET {metadataServiceURL}/v1/files.
 func (h *FileHandler) handleList(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	start := time.Now().UTC()
 	targetURL := h.metadataServiceURL + "/v1/files"
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
 	}
-	h.proxyRequest(w, r, "GET", targetURL)
+	h.proxyRequest(w, r, "GET", targetURL, "list", start)
 }
 
 // handleGetMetadata proxies file metadata retrieval to GET {metadataServiceURL}/v1/files/{file_id}.
 func (h *FileHandler) handleGetMetadata(w http.ResponseWriter, r *http.Request, pathParams map[string]string) {
+	start := time.Now().UTC()
 	fileID := pathParams["file_id"]
 	targetURL := fmt.Sprintf("%s/v1/files/%s", h.metadataServiceURL, fileID)
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
 	}
-	h.proxyRequest(w, r, "GET", targetURL)
+	h.proxyRequest(w, r, "GET", targetURL, "get_metadata", start)
 }
 
 // handleDownloadContent proxies file content download to GET {metadataServiceURL}/v1/files/{file_id}/content.
 func (h *FileHandler) handleDownloadContent(w http.ResponseWriter, r *http.Request, pathParams map[string]string) {
+	start := time.Now().UTC()
 	if h.injector != nil {
 		if err := h.injector.CheckPoint(r.Context(), error_injection.POINT_CONSOLE_DOWNLOAD_FILE); err != nil {
+			metrics.Emitter.Counter(metricConsoleFileError, 1, metrics.T("method", "download"), metrics.T("reason", "injected"))
 			http.Error(w, err.Error(), convertInjectedErrorToHttpCode(err))
 			return
 		}
 	}
 	fileID := pathParams["file_id"]
 	if err := h.authorizeFileDownload(r.Context(), fileID); err != nil {
+		metrics.Emitter.Counter(metricConsoleFileError, 1, metrics.T("method", "download"), metrics.T("reason", "auth_failed"))
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.message), err.status)
 		return
 	}
@@ -123,7 +135,7 @@ func (h *FileHandler) handleDownloadContent(w http.ResponseWriter, r *http.Reque
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
 	}
-	h.proxyRequest(w, r, "GET", targetURL)
+	h.proxyRequest(w, r, "GET", targetURL, "download", start)
 }
 
 type fileAuthorizationError struct {
@@ -182,10 +194,15 @@ func (h *FileHandler) authorizeFileDownload(ctx context.Context, fileID string) 
 }
 
 // proxyRequest forwards an HTTP request to the target URL and copies the response back.
-func (h *FileHandler) proxyRequest(w http.ResponseWriter, r *http.Request, method, targetURL string) {
+func (h *FileHandler) proxyRequest(w http.ResponseWriter, r *http.Request, method, targetURL, op string, start time.Time) {
+	defer func() {
+		metrics.Duration(metrics.Emitter, metricConsoleFileDuration, start, metrics.T("method", op))
+	}()
+
 	proxyReq, err := http.NewRequestWithContext(r.Context(), method, targetURL, r.Body)
 	if err != nil {
 		klog.Errorf("Failed to create proxy request: %v", err)
+		metrics.Emitter.Counter(metricConsoleFileError, 1, metrics.T("method", op), metrics.T("reason", "create_request_failed"))
 		http.Error(w, `{"error":"failed to create proxy request"}`, http.StatusInternalServerError)
 		return
 	}
@@ -206,6 +223,7 @@ func (h *FileHandler) proxyRequest(w http.ResponseWriter, r *http.Request, metho
 	resp, err := h.httpClient.Do(proxyReq)
 	if err != nil {
 		klog.Errorf("Failed to proxy to metadata service: %v", err)
+		metrics.Emitter.Counter(metricConsoleFileError, 1, metrics.T("method", op), metrics.T("reason", "upstream_unreachable"))
 		http.Error(w, `{"error":"metadata service unreachable"}`, http.StatusBadGateway)
 		return
 	}

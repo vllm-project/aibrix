@@ -74,6 +74,13 @@ rules:
   - update
   - watch
 - apiGroups:
+  - external.metrics.k8s.io
+  resources:
+  - '*'
+  verbs:
+  - get
+  - list
+- apiGroups:
   - autoscaling.aibrix.ai
   resources:
   - podautoscalers

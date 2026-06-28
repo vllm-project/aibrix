@@ -35,12 +35,17 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/utils"
 
 	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
+	"github.com/vllm-project/aibrix/apps/console/api/metrics"
 )
 
 const (
 	defaultWorkerCount      = 10
 	defaultPlanningInterval = 60 * time.Second
 	defaultListJobsLimit    = 20
+
+	metricConsolePlannerDuration  = "console.planner.duration"
+	metricConsolePlannerError     = "console.planner.error"
+	metricConsolePlannerJobFailed = "console.planner.job.failed"
 )
 
 // Planner is an asynchronous implementation of plannerapi.Planner.
@@ -222,6 +227,8 @@ func (q *Planner) markFailed(ctx context.Context, job *queuedJob, status planner
 		job.canceledAt = now
 	}
 	job.mu.Unlock()
+
+	metrics.Emitter.Counter(metricConsolePlannerJobFailed, 1, metrics.T("status", string(status)))
 
 	q.persist(ctx, job)
 

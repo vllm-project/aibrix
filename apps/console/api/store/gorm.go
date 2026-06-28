@@ -36,6 +36,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	"github.com/vllm-project/aibrix/apps/console/api/metrics"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 	"google.golang.org/grpc/codes"
@@ -50,7 +51,9 @@ import (
 )
 
 const (
-	DefaultStoreListLimit = 50
+	DefaultStoreListLimit      = 50
+	metricConsoleStoreError    = "console.store.error"
+	metricConsoleStoreDuration = "console.store.duration"
 )
 
 // NewMySQLStore creates mysql-backed gorm store with auto-migrations.
@@ -244,6 +247,11 @@ func (s *GORMStore) DeleteDeployment(ctx context.Context, id string) error {
 }
 
 func (s *GORMStore) UpsertJob(ctx context.Context, rec *models.Job) error {
+	start := time.Now().UTC()
+	defer func() {
+		metrics.Duration(metrics.Emitter, metricConsoleStoreDuration, start, metrics.T("method", "upsert_job"))
+	}()
+
 	if s.injector != nil {
 		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_UPSERT_JOB); err != nil {
 			return err
@@ -256,12 +264,18 @@ func (s *GORMStore) UpsertJob(ctx context.Context, rec *models.Job) error {
 		Columns:   []clause.Column{{Name: "id"}},
 		UpdateAll: true,
 	}).Create(rec).Error; err != nil {
+		metrics.Emitter.Counter(metricConsoleStoreError, 1, metrics.T("method", "upsert_job"))
 		return status.Errorf(codes.Internal, "upsert job: %v", err)
 	}
 	return nil
 }
 
 func (s *GORMStore) GetJob(ctx context.Context, id string) (*models.Job, error) {
+	start := time.Now().UTC()
+	defer func() {
+		metrics.Duration(metrics.Emitter, metricConsoleStoreDuration, start, metrics.T("method", "get_job"))
+	}()
+
 	if s.injector != nil {
 		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_GET_JOB); err != nil {
 			return nil, err
@@ -278,6 +292,11 @@ func (s *GORMStore) GetJob(ctx context.Context, id string) (*models.Job, error) 
 }
 
 func (s *GORMStore) ListJobs(ctx context.Context, ids []string) (map[string]*models.Job, error) {
+	start := time.Now().UTC()
+	defer func() {
+		metrics.Duration(metrics.Emitter, metricConsoleStoreDuration, start, metrics.T("method", "list_jobs"))
+	}()
+
 	if s.injector != nil {
 		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_LIST_JOBS); err != nil {
 			return nil, err
@@ -298,6 +317,11 @@ func (s *GORMStore) ListJobs(ctx context.Context, ids []string) (map[string]*mod
 }
 
 func (s *GORMStore) ListJobsByBatchIDs(ctx context.Context, batchIDs []string) (map[string]*models.Job, error) {
+	start := time.Now().UTC()
+	defer func() {
+		metrics.Duration(metrics.Emitter, metricConsoleStoreDuration, start, metrics.T("method", "list_jobs_by_batch_ids"))
+	}()
+
 	out := make(map[string]*models.Job, len(batchIDs))
 	if len(batchIDs) == 0 {
 		return out, nil
@@ -318,6 +342,12 @@ func (s *GORMStore) ListJobsByDatasetID(ctx context.Context, fileID string) ([]*
 	if fileID == "" {
 		return nil, nil
 	}
+
+	start := time.Now().UTC()
+	defer func() {
+		metrics.Duration(metrics.Emitter, metricConsoleStoreDuration, start, metrics.T("method", "list_jobs_by_dataset_id"))
+	}()
+
 	var rows []models.Job
 	if err := s.db.WithContext(ctx).
 		Where("deleted = ?", false).
@@ -342,6 +372,11 @@ var terminalJobStatuses = []string{
 }
 
 func (s *GORMStore) ListNonTerminalJobs(ctx context.Context) ([]*models.Job, error) {
+	start := time.Now().UTC()
+	defer func() {
+		metrics.Duration(metrics.Emitter, metricConsoleStoreDuration, start, metrics.T("method", "list_non_terminal_jobs"))
+	}()
+
 	var rows []models.Job
 	if err := s.db.WithContext(ctx).
 		Where("deleted = ?", false).
@@ -359,6 +394,11 @@ func (s *GORMStore) ListNonTerminalJobs(ctx context.Context) ([]*models.Job, err
 // ListAllJobs lists all jobs with cursor-based pagination, sorted by created_at descending.
 // after is the job ID cursor - returns jobs created before this job.
 func (s *GORMStore) ListAllJobs(ctx context.Context, after string, limit int) ([]*models.Job, bool, error) {
+	start := time.Now().UTC()
+	defer func() {
+		metrics.Duration(metrics.Emitter, metricConsoleStoreDuration, start, metrics.T("method", "list_all_jobs"))
+	}()
+
 	q := s.db.WithContext(ctx).Model(&models.Job{}).
 		Where("deleted = ?", false).
 		Order("created_at DESC, id DESC")
@@ -771,6 +811,11 @@ func (s *GORMStore) ListQuotas(ctx context.Context, search string) ([]*pb.Quota,
 }
 
 func (s *GORMStore) GetProvision(ctx context.Context, provisionId string) (*types.ProvisionResult, error) {
+	start := time.Now().UTC()
+	defer func() {
+		metrics.Duration(metrics.Emitter, metricConsoleStoreDuration, start, metrics.T("method", "get_provision"))
+	}()
+
 	if s.injector != nil {
 		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_GET_PROVISION); err != nil {
 			return nil, err
@@ -793,6 +838,11 @@ func (s *GORMStore) GetProvision(ctx context.Context, provisionId string) (*type
 }
 
 func (s *GORMStore) GetProvisionByIdempotencyKey(ctx context.Context, idempotencyKey string) (*types.ProvisionResult, error) {
+	start := time.Now().UTC()
+	defer func() {
+		metrics.Duration(metrics.Emitter, metricConsoleStoreDuration, start, metrics.T("method", "get_provision_by_idempotency_key"))
+	}()
+
 	var rec models.ProvisionResult
 	if err := s.db.WithContext(ctx).First(&rec, "idempotency_key = ? AND deleted = ?", idempotencyKey, false).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -810,6 +860,11 @@ func (s *GORMStore) GetProvisionByIdempotencyKey(ctx context.Context, idempotenc
 }
 
 func (s *GORMStore) UpsertProvision(ctx context.Context, result *types.ProvisionResult) error {
+	start := time.Now().UTC()
+	defer func() {
+		metrics.Duration(metrics.Emitter, metricConsoleStoreDuration, start, metrics.T("method", "upsert_provision"))
+	}()
+
 	if s.injector != nil {
 		if err := s.injector.CheckPoint(ctx, error_injection.POINT_STORE_UPSERT_PROVISION); err != nil {
 			return err
@@ -840,13 +895,20 @@ func (s *GORMStore) UpsertProvision(ctx context.Context, result *types.Provision
 		Columns:   []clause.Column{{Name: "idempotency_key"}},
 		DoUpdates: clause.AssignmentColumns([]string{"provision_id", "provider", "region", "status", "payload", "updated_at", "deleted"}),
 	}).Create(&rec).Error; err != nil {
+		metrics.Emitter.Counter(metricConsoleStoreError, 1, metrics.T("method", "upsert_provision"))
 		return fmt.Errorf("failed to upsert provision result: %w", err)
 	}
 	return nil
 }
 
 func (s *GORMStore) UpdateProvisionStatus(ctx context.Context, provisionId string, pstatus types.ProvisionStatus) error {
+	start := time.Now().UTC()
+	defer func() {
+		metrics.Duration(metrics.Emitter, metricConsoleStoreDuration, start, metrics.T("method", "update_provision_status"))
+	}()
+
 	if err := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("provision_id = ? AND deleted = ?", provisionId, false).Updates(map[string]interface{}{"status": string(pstatus), "updated_at": time.Now().UTC()}).Error; err != nil {
+		metrics.Emitter.Counter(metricConsoleStoreError, 1, metrics.T("method", "update_provision_status"))
 		return fmt.Errorf("failed to update provision result status: %w", err)
 	}
 	return nil
@@ -868,6 +930,11 @@ func (s *GORMStore) ExistsProvision(ctx context.Context, provisionId string) (bo
 }
 
 func (s *GORMStore) ListProvisions(ctx context.Context, options *types.ListOptions) ([]*types.ProvisionResult, error) {
+	start := time.Now().UTC()
+	defer func() {
+		metrics.Duration(metrics.Emitter, metricConsoleStoreDuration, start, metrics.T("method", "list_provisions"))
+	}()
+
 	q := s.db.WithContext(ctx).Model(&models.ProvisionResult{}).Where("deleted = ?", false)
 	if options != nil {
 		if options.Status != nil {

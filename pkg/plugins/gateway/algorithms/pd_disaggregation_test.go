@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
@@ -48,6 +49,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 )
+
+const testChatCompletionsPath = "/v1/chat/completions"
 
 // scorePrefillWithDefaultPolicy runs scorePrefillPods using the router's configured prefill policy (tests / benchmarks).
 func scorePrefillWithDefaultPolicy(r *pdRouter, ctx *types.RoutingContext, pods []*v1.Pod) (map[string]*Scores, float64, []uint64) {
@@ -109,6 +112,8 @@ func TestPDRouter_Route(t *testing.T) {
 			defer ts.Close()
 
 			ctx := types.NewRoutingContext(context.Background(), "test", "model", "message", "test-request", "user")
+			ctx.Engine = tt.llmEngine
+			ctx.ReqPath = testChatCompletionsPath
 			ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
 
 			result, err := r.Route(ctx, &utils.PodArray{Pods: tt.readyPods})
@@ -121,6 +126,190 @@ func TestPDRouter_Route(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPDRouter_RouteDoesNotEmitAsyncPrefillSuccessBeforeHTTPCompletes(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	assert.NoError(t, err)
+	prefillPort := listenerPort(t, l)
+
+	releasePrefill := make(chan struct{})
+	releasedPrefill := false
+	prefillStarted := make(chan struct{})
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(prefillStarted)
+		<-releasePrefill
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	ts.Listener = l
+	ts.Start()
+	defer ts.Close()
+	defer func() {
+		if !releasedPrefill {
+			close(releasePrefill)
+		}
+	}()
+
+	successCounter, cleanup := metrics.SetupCounterMetricsForTest(
+		metrics.GatewayPrefillRequestSuccessTotal,
+		[]string{"gateway_pod", "model", "status", "status_code"},
+	)
+	defer cleanup()
+
+	pods := []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "prefill-1",
+				Labels: map[string]string{
+					PDRoleSetIdentifier:      "test",
+					PDRoleIdentifier:         "prefill",
+					LLMEngineIdentifier:      SGLangEngine,
+					constants.ModelLabelPort: prefillPort,
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP:      "127.0.0.1",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "decode-1",
+				Labels: map[string]string{
+					PDRoleSetIdentifier: "test",
+					PDRoleIdentifier:    "decode",
+					LLMEngineIdentifier: SGLangEngine,
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP:      "127.0.0.2",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+	}
+
+	tracker := pd.NewPrefillRequestTracker()
+	client := &http.Client{}
+	r := pdRouter{
+		cache:                 cache.NewForTest(),
+		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: tracker,
+		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
+		httpClient:            client,
+		selectionCounts:       map[string]int64{},
+	}
+	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
+	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
+
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	ctx := types.NewRoutingContext(parentCtx, RouterPD, "test-model", "test", "async-prefill-success", "user")
+	ctx.Engine = SGLangEngine
+	ctx.ReqPath = testChatCompletionsPath
+	ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
+
+	result, err := r.Route(ctx, &utils.PodArray{Pods: pods})
+
+	assert.NoError(t, err)
+	assert.Equal(t, "127.0.0.2:8000", result)
+	assert.Equal(t, 0.0, testutil.ToFloat64(successCounter.WithLabelValues("", "test-model", pdRoutePrefillRequestSuccess, "200")))
+
+	<-prefillStarted
+	cancelParent()
+	close(releasePrefill)
+	releasedPrefill = true
+	assert.Eventually(t, func() bool {
+		return testutil.ToFloat64(successCounter.WithLabelValues("", "test-model", pdRoutePrefillRequestSuccess, "200")) == 1.0
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestPDRouter_RouteRecordsAsyncPrefillFailureWithoutSuccess(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	assert.NoError(t, err)
+	prefillPort := listenerPort(t, l)
+
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("server error"))
+	}))
+	ts.Listener = l
+	ts.Start()
+	defer ts.Close()
+
+	failCounter, cleanup := metrics.SetupCounterMetricsForTest(
+		metrics.GatewayPrefillRequestFailTotal,
+		[]string{"gateway_pod", "model", "status", "status_code"},
+	)
+	defer cleanup()
+
+	pods := []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "prefill-1",
+				Labels: map[string]string{
+					PDRoleSetIdentifier:      "test",
+					PDRoleIdentifier:         "prefill",
+					LLMEngineIdentifier:      SGLangEngine,
+					constants.ModelLabelPort: prefillPort,
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP:      "127.0.0.1",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "decode-1",
+				Labels: map[string]string{
+					PDRoleSetIdentifier: "test",
+					PDRoleIdentifier:    "decode",
+					LLMEngineIdentifier: SGLangEngine,
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP:      "127.0.0.2",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+	}
+
+	tracker := pd.NewPrefillRequestTracker()
+	client := &http.Client{}
+	r := pdRouter{
+		cache:                 cache.NewForTest(),
+		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: tracker,
+		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
+		httpClient:            client,
+		selectionCounts:       map[string]int64{},
+	}
+	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
+	r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker, prefillRequestTimeout)
+
+	ctx := types.NewRoutingContext(context.Background(), RouterPD, "test-model", "test", "async-prefill-fail", "user")
+	ctx.Engine = SGLangEngine
+	ctx.ReqPath = testChatCompletionsPath
+	ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
+
+	result, err := r.Route(ctx, &utils.PodArray{Pods: pods})
+
+	assert.NoError(t, err)
+	assert.Equal(t, "127.0.0.2:8000", result)
+	assert.Eventually(t, func() bool {
+		return testutil.ToFloat64(failCounter.WithLabelValues("", "test-model", "http_error", "500")) == 1.0
+	}, time.Second, 10*time.Millisecond)
+}
+
+func listenerPort(t *testing.T, l net.Listener) string {
+	t.Helper()
+	_, port, err := net.SplitHostPort(l.Addr().String())
+	assert.NoError(t, err)
+	assert.NotEmpty(t, port)
+	return port
 }
 
 func TestFilterPrefillDecodePods(t *testing.T) {
@@ -767,7 +956,7 @@ func TestDoPrefillRequest(t *testing.T) {
 		return &types.RoutingContext{
 			RequestID: "test-request",
 			Model:     "test-model",
-			ReqPath:   "/v1/chat/completions",
+			ReqPath:   testChatCompletionsPath,
 			ReqBody:   []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`),
 			ReqHeaders: map[string]string{
 				"Authorization": "Bearer test-1234",
@@ -1342,7 +1531,7 @@ func TestVLLMIntegrationWithTestServer(t *testing.T) {
 	routingCtx := &types.RoutingContext{
 		RequestID:  "integration-test",
 		Model:      "test-model",
-		ReqPath:    "/v1/chat/completions",
+		ReqPath:    testChatCompletionsPath,
 		ReqBody:    []byte(`{"messages":[{"role":"user","content":"test"}]}`),
 		ReqHeaders: map[string]string{"Authorization": "Bearer test"},
 		Context:    context.Background(),
@@ -1472,7 +1661,7 @@ func TestTensorRTIntegrationWithTestServer(t *testing.T) {
 	routingCtx := &types.RoutingContext{
 		RequestID:  "integration-test",
 		Model:      "test-model",
-		ReqPath:    "/v1/chat/completions",
+		ReqPath:    testChatCompletionsPath,
 		ReqBody:    []byte(`{"messages":[{"role":"user","content":"test"}]}`),
 		ReqHeaders: map[string]string{"Authorization": "Bearer test"},
 		Context:    context.Background(),
@@ -1859,12 +2048,12 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 				"pod1": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 5},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.5},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 7},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 120},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.6},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.6},
 				},
 			},
 			expectTargetPod:        "",
@@ -1886,17 +2075,17 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 				"pod1": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 2},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.3},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.3},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 40},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 120},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.8},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.8},
 				},
 				"pod3": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 35},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 110},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.7},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.7},
 				},
 			},
 			expectTargetPod:        "pod1",
@@ -1920,12 +2109,12 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 				"pod1": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 10},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 50},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.4},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.4},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 12},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 3000},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.5},
 				},
 			},
 			expectTargetPod:        "pod1",
@@ -1949,12 +2138,12 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 				"pod1": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 10},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.4},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.4},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 12},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 200},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.5},
 				},
 			},
 			expectTargetPod:        "",
@@ -1977,12 +2166,12 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 				"pod1": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 0},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.2},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.2},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 5},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 120},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.3},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.3},
 				},
 			},
 			expectTargetPod:        "",
@@ -2021,12 +2210,12 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 				"pod1": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 5},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.95},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.95},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 7},
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 120},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 1.0},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 1.0},
 				},
 			},
 			expectTargetPod:        "",
@@ -2052,13 +2241,13 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 8},
 					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
 					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 200},
-					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.3},
+					metrics.KVCacheUsagePerc:                   &metrics.SimpleMetricValue{Value: 0.3},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 6},
 					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 0.3},
 					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 30},
-					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.5},
+					metrics.KVCacheUsagePerc:                   &metrics.SimpleMetricValue{Value: 0.5},
 				},
 			},
 			expectTargetPod:        "pod1",
@@ -2082,13 +2271,13 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 8},
 					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
 					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 200},
-					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.3},
+					metrics.KVCacheUsagePerc:                   &metrics.SimpleMetricValue{Value: 0.3},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 6},
 					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 1.5},
 					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 150},
-					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.4},
+					metrics.KVCacheUsagePerc:                   &metrics.SimpleMetricValue{Value: 0.4},
 				},
 			},
 			expectTargetPod:        "",
@@ -2111,13 +2300,13 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 					metrics.RealtimeNumRequestsRunning:         &metrics.SimpleMetricValue{Value: 8},
 					metrics.RealtimeRunningRequestsDrainRate1m: &metrics.SimpleMetricValue{Value: 2.0},
 					metrics.AvgGenerationThroughputToksPerS:    &metrics.SimpleMetricValue{Value: 200},
-					metrics.GPUCacheUsagePerc:                  &metrics.SimpleMetricValue{Value: 0.3},
+					metrics.KVCacheUsagePerc:                   &metrics.SimpleMetricValue{Value: 0.3},
 				},
 				"pod2": {
 					metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 6},
 					// RealtimeRunningRequestsDrainRate1m absent — unavailable
 					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 30},
-					metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.5},
 				},
 			},
 			expectTargetPod:        "",
@@ -2598,7 +2787,7 @@ func TestFilterPrefillDecodePods_CombinedPickImbalance(t *testing.T) {
 				metrics.DrainRate1m:                     &metrics.PrometheusMetricValue{Result: &drain100},
 				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 1},
 				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
-				metrics.GPUCacheUsagePerc:               &metrics.SimpleMetricValue{Value: 0.5},
+				metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.5},
 			}
 			metricsMap[combined.Name] = map[string]metrics.MetricValue{
 				metrics.NumRequestsWaiting:          &metrics.SimpleMetricValue{Value: tt.combinedWait},
