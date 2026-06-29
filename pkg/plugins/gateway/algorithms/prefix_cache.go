@@ -217,6 +217,13 @@ func (p *panicTokenizer) TokenizeInputText(text string) ([]byte, error) {
 		"Use the model-aware getTokenizerForRequest(ctx) helper method instead.")
 }
 
+func newTokenizer() tokenizer.Tokenizer {
+	if tokenizerType == tokenizerTypeTiktoken {
+		return tokenizer.NewTiktokenTokenizer()
+	}
+	return tokenizer.NewCharacterTokenizer()
+}
+
 func NewPrefixCacheRouter() (types.Router, error) {
 	// Initialize prefix cache metrics if enabled
 	if err := initializePrefixCacheMetrics(); err != nil {
@@ -271,12 +278,7 @@ func NewPrefixCacheRouter() (types.Router, error) {
 		}
 
 		// Create default tokenizer based on configured type
-		var defaultTokenizer tokenizer.Tokenizer
-		if tokenizerType == tokenizerTypeTiktoken {
-			defaultTokenizer = tokenizer.NewTiktokenTokenizer()
-		} else {
-			defaultTokenizer = tokenizer.NewCharacterTokenizer()
-		}
+		var defaultTokenizer = newTokenizer()
 		poolConfig.DefaultTokenizer = defaultTokenizer
 
 		// Create the pool
@@ -290,11 +292,7 @@ func NewPrefixCacheRouter() (types.Router, error) {
 		klog.Info("TokenizerPool initialized with remote tokenizer support")
 	} else {
 		// Fallback to local tokenizer (existing behavior when disabled)
-		if tokenizerType == tokenizerTypeTiktoken {
-			tokenizerObj = tokenizer.NewTiktokenTokenizer()
-		} else {
-			tokenizerObj = tokenizer.NewCharacterTokenizer()
-		}
+		tokenizerObj = newTokenizer()
 	}
 
 	// Log final configuration
