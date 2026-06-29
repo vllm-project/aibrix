@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -67,6 +68,12 @@ class ResourceAllocation(_Lenient):
         if isinstance(value, list):
             return value
         return [value]
+
+    def is_expiring(self) -> bool:
+        deadline = self.provision_resource_deadline
+        if deadline is None or deadline <= 0:
+            return False
+        return deadline <= int(datetime.now(timezone.utc).timestamp())
 
 
 class ClientRetryPolicy(_Strict):
@@ -160,6 +167,13 @@ class AibrixMetadata(_Strict):
 
     def to_metadata(self) -> "AibrixMetadata":
         return AibrixMetadata(**self.model_dump(exclude_none=True))
+
+    def is_expiring(self) -> bool:
+        return (
+            self.resource_allocation.is_expiring()
+            if self.resource_allocation is not None
+            else False
+        )
 
     @classmethod
     def from_extension_fields(

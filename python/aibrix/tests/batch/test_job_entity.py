@@ -1,12 +1,14 @@
 """Unit tests for BatchJobError and related job entity classes"""
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from aibrix.batch.job_entity import (
     AibrixMetadata,
+    BatchJob,
     BatchJobEndpoint,
     BatchJobError,
     BatchJobErrorCode,
@@ -16,6 +18,9 @@ from aibrix.batch.job_entity import (
     BatchProfileRef,
     ClientConfig,
     CompletionWindow,
+    Condition,
+    ConditionStatus,
+    ConditionType,
     JobAnnotationKey,
     JobRuntimeRef,
     ModelTemplateRef,
@@ -250,6 +255,102 @@ class TestBatchJobEntityCreation:
         assert restored.client is not None
         assert restored.client.retry_policy is not None
         assert restored.client.retry_policy.base_delay_seconds == 2
+
+    def test_resource_allocation_is_expiring_uses_deadline_timestamp(self):
+        now = int(datetime.now(timezone.utc).timestamp())
+        allocation = ResourceAllocation(
+            provision_id="reservation-1",
+            provision_resource_deadline=now - 1,
+        )
+
+        assert allocation.is_expiring() is True
+        assert (
+            ResourceAllocation(provision_resource_deadline=now + 3600).is_expiring()
+            is False
+        )
+        assert ResourceAllocation(provision_resource_deadline=0).is_expiring() is False
+
+    def test_aibrix_metadata_is_expiring_follows_resource_allocation(self):
+        now = int(datetime.now(timezone.utc).timestamp())
+        metadata = AibrixMetadata(
+            resource_allocation=ResourceAllocation(
+                provision_id="reservation-1",
+                provision_resource_deadline=now - 1,
+            )
+        )
+
+        assert metadata.is_expiring() is True
+        assert AibrixMetadata().is_expiring() is False
+
+    def test_batch_job_is_expiring_is_broader_than_status_expired(self):
+        job = BatchJob.new_local(
+            BatchJobSpec(
+                input_file_id="test-input-123",
+                endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+                completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+            )
+        )
+        job.status.add_condition(
+            Condition(
+                type=ConditionType.EXPIRED,
+                status=ConditionStatus.TRUE,
+                lastTransitionTime=datetime.now(timezone.utc),
+            )
+        )
+
+        assert job.is_expiring() is True
+        assert job.status.expired is False
+
+        job.status.state = BatchJobState.FINALIZED
+        assert job.status.expired is True
+
+    def test_batch_job_is_expiring_checks_completion_window_only(self):
+        now = int(datetime.now(timezone.utc).timestamp())
+        due_job = BatchJob(
+            typeMeta={"apiVersion": "batch/v1", "kind": "Job"},
+            metadata={"creationTimestamp": datetime.now(timezone.utc)},
+            spec=BatchJobSpec(
+                input_file_id="test-input-124",
+                endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+                completion_window=1,
+                aibrix=AibrixMetadata(
+                    resource_allocation=ResourceAllocation(
+                        provision_id="reservation-1",
+                        provision_resource_deadline=now + 3600,
+                    )
+                ),
+            ),
+            status=BatchJobStatus(
+                jobID="job-124",
+                state=BatchJobState.CREATED,
+                createdAt=datetime.now(timezone.utc) - timedelta(seconds=5),
+            ),
+        )
+
+        assert due_job.is_expiring() is True
+
+        fresh_job = BatchJob(
+            typeMeta={"apiVersion": "batch/v1", "kind": "Job"},
+            metadata={"creationTimestamp": datetime.now(timezone.utc)},
+            spec=BatchJobSpec(
+                input_file_id="test-input-125",
+                endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+                completion_window=3600,
+                aibrix=AibrixMetadata(
+                    resource_allocation=ResourceAllocation(
+                        provision_id="reservation-2",
+                        provision_resource_deadline=now - 1,
+                    )
+                ),
+            ),
+            status=BatchJobStatus(
+                jobID="job-125",
+                state=BatchJobState.CREATED,
+                createdAt=datetime.now(timezone.utc),
+            ),
+        )
+
+        assert fresh_job.is_expiring() is False
 
     def test_batch_job_status_execution_accepts_legacy_single_ref(self):
         status = BatchJobStatus.model_validate(

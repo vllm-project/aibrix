@@ -366,6 +366,23 @@ class BaseJobDriver:
         # and must not be reinterpreted as acceptance from the driver layer.
         return result
 
+    async def cleanup(self, job: BatchJob) -> None:
+        """Best-effort cleanup for a recovered or orphaned execution.
+
+        Expiration/cancellation can discover durable execution metadata even
+        when the original in-memory driver instance no longer exists. Recreated
+        drivers use this hook to tear down any reachable runtime and then clear
+        the durable execution ref so later recovery does not keep retrying a
+        stale runtime attachment.
+        """
+        await self._runtime.cleanup(job)
+        if job.job_id is None or job.status.execution is None:
+            return
+
+        cleared_status = job.status.model_copy(deep=True)
+        cleared_status.execution = None
+        await self._progress_manager.update_job_status(job.job_id, cleared_status)
+
     # ── overridable options ──────────────────────────────────────────
 
     def _should_resume_finalizing_job(self, job: BatchJob) -> bool:
@@ -495,6 +512,7 @@ class BaseJobDriver:
         return (
             job.status.state == BatchJobState.CANCELLING
             or job.status.cancelled
+            or job.status.check_condition(ConditionType.EXPIRED)
             or job.status.finished
         )
 

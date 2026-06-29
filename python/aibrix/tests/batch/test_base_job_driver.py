@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 import pytest
@@ -11,6 +13,9 @@ from aibrix.batch.job_entity import (
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    Condition,
+    ConditionStatus,
+    ConditionType,
     ObjectMeta,
     TypeMeta,
 )
@@ -46,6 +51,43 @@ def _make_driver(job: BatchJob) -> BaseJobDriver:
     return BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
 
 
+class _DeadlineStopRuntime:
+    provisions = True
+
+    def __init__(self) -> None:
+        self._deadline_reached = False
+
+    def cancelled(self) -> bool:
+        return False
+
+    def runtime_deadline_reached(self) -> bool:
+        return self._deadline_reached
+
+    def execution_key(self, job: BatchJob) -> str | None:
+        del job
+        return "fake"
+
+    @asynccontextmanager
+    async def session(self, job, job_id, **kwargs):
+        del job, job_id, kwargs
+        yield base_module.Endpoint(source=None)
+
+    async def on_prepared(self) -> None:
+        return None
+
+    async def await_completion(self):
+        self._deadline_reached = True
+        raise asyncio.CancelledError
+
+    async def terminate(self, deleted_job):
+        del deleted_job
+        return base_module.TerminateResult.REJECTED
+
+    async def cleanup(self, job):
+        del job
+        return None
+
+
 def _patch_validation(
     monkeypatch,
     *,
@@ -70,6 +112,20 @@ def _patch_validation(
 
 
 # ---- BaseJobDriver.validate_job owns semantic input validation. ----
+
+
+def test_should_stop_before_proceed_when_job_expired():
+    job = _make_job()
+    driver = _make_driver(job)
+    job.status.add_condition(
+        Condition(
+            type=ConditionType.EXPIRED,
+            status=ConditionStatus.TRUE,
+            lastTransitionTime=datetime.now(),
+        )
+    )
+
+    assert driver._should_stop_before_proceed(job) is True
 
 
 @pytest.mark.asyncio

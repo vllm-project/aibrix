@@ -643,6 +643,7 @@ class BatchJobStatus(_Strict):
 
     @property
     def expired(self) -> bool:
+        """Whether the job has already finalized in the expired state."""
         return self.finished and self.check_condition(ConditionType.EXPIRED)
 
     @property
@@ -821,6 +822,23 @@ class BatchJob(_Strict):
     def job_id(self) -> str:
         """Get the job ID."""
         return self.status.job_id
+
+    def is_expiring(self) -> bool:
+        """Whether the job should be treated as expiring now.
+
+        This is broader than ``BatchJobStatus.expired``: it covers jobs that
+        already carry an expired condition before finalization and jobs whose
+        completion window has elapsed. Runtime allocation deadlines are handled
+        by the runtime / driver path rather than by scheduler-driven job expiry.
+        ``BatchJobStatus.expired`` remains the terminal-state check for a
+        finalized expired job.
+        """
+        if self.status.condition == ConditionType.EXPIRED:
+            return True
+        return (
+            self.status.created_at.timestamp() + self.spec.completion_window
+            <= datetime.now(timezone.utc).timestamp()
+        )
 
 
 def aggregate_batch_usage(

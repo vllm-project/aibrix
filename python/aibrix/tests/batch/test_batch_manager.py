@@ -14,7 +14,7 @@
 
 import asyncio
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 import pytest
@@ -33,7 +33,10 @@ from aibrix.batch.job_entity import (
     BatchJobState,
     BatchJobStatus,
     CompletionWindow,
+    Condition,
+    ConditionStatus,
     ConditionType,
+    JobRuntimeRef,
     ObjectMeta,
     TypeMeta,
 )
@@ -43,6 +46,14 @@ from aibrix.context import InfrastructureContext
 
 def _job_manager() -> BatchManager:
     return BatchManager(InfrastructureContext())
+
+
+class _CapturingScheduler:
+    def __init__(self) -> None:
+        self.appended_job_ids: list[str] = []
+
+    def append_job(self, job_id: str) -> None:
+        self.appended_job_ids.append(job_id)
 
 
 def _in_progress_meta_job(job_id: str, total_requests: int) -> JobMetaInfo:
@@ -81,6 +92,7 @@ class _FakeJobDriver:
         self.terminate_result = terminate_result
         self.meta_job = meta_job
         self.terminate_calls: list[str | None] = []
+        self.cleanup_calls: list[str | None] = []
 
     async def terminate(self, job: BatchJob) -> TerminateResult:
         self.terminate_calls.append(job.job_id)
@@ -90,6 +102,9 @@ class _FakeJobDriver:
         ):
             self.meta_job.status = job.status.model_copy(deep=True)
         return self.terminate_result
+
+    async def cleanup(self, job: BatchJob) -> None:
+        self.cleanup_calls.append(job.job_id)
 
 
 @pytest.mark.asyncio
@@ -300,6 +315,94 @@ async def test_job_committed_handler_recovers_done_job_without_scheduling():
 
 
 @pytest.mark.asyncio
+async def test_job_committed_handler_expires_overdue_job_before_scheduling():
+    job_manager = _job_manager()
+    scheduler = _CapturingScheduler()
+    job_manager.set_scheduler(scheduler)
+
+    batch_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
+        metadata=ObjectMeta(
+            name="expired-before-scheduling",
+            namespace="default",
+            uid="expired-before-scheduling-uid",
+            creationTimestamp=datetime.now(),
+            resourceVersion=None,
+            deletionTimestamp=None,
+        ),
+        spec=BatchJobSpec(
+            input_file_id="expired-file",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=1,
+        ),
+        status=BatchJobStatus(
+            jobID="expired-before-scheduling-id",
+            state=BatchJobState.CREATED,
+            createdAt=datetime.now() - timedelta(seconds=5),
+        ),
+    )
+
+    result = await job_manager.job_committed_handler(batch_job)
+
+    assert result is True
+    assert scheduler.appended_job_ids == []
+    assert batch_job.job_id not in job_manager._pending_jobs
+    assert batch_job.job_id in job_manager._done_jobs
+    expired = job_manager._done_jobs[batch_job.job_id]
+    assert expired.status.finished
+    assert expired.status.condition == ConditionType.EXPIRED
+    assert expired.status.expired_at is not None
+
+
+@pytest.mark.asyncio
+async def test_job_committed_handler_finishes_unfinished_expired_job_before_scheduling():
+    job_manager = _job_manager()
+    scheduler = _CapturingScheduler()
+    job_manager.set_scheduler(scheduler)
+
+    batch_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
+        metadata=ObjectMeta(
+            name="expired-by-condition",
+            namespace="default",
+            uid="expired-by-condition-uid",
+            creationTimestamp=datetime.now(),
+            resourceVersion=None,
+            deletionTimestamp=None,
+        ),
+        spec=BatchJobSpec(
+            input_file_id="expired-condition-file",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        ),
+        status=BatchJobStatus(
+            jobID="expired-by-condition-id",
+            state=BatchJobState.CREATED,
+            createdAt=datetime.now(),
+        ),
+    )
+    batch_job.status.add_condition(
+        Condition(
+            type=ConditionType.EXPIRED,
+            status=ConditionStatus.TRUE,
+            lastTransitionTime=datetime.now(),
+        )
+    )
+
+    result = await job_manager.job_committed_handler(batch_job)
+
+    assert result is True
+    assert scheduler.appended_job_ids == []
+    assert batch_job.job_id not in job_manager._pending_jobs
+    assert batch_job.job_id in job_manager._done_jobs
+    expired = job_manager._done_jobs[batch_job.job_id]
+    assert expired.status.finished
+    assert expired.status.condition == ConditionType.EXPIRED
+    assert expired.status.expired_at is not None
+    assert len(expired.status.conditions or []) == 1
+
+
+@pytest.mark.asyncio
 async def test_validate_job_finalizes_worker_style_validation_failure(monkeypatch):
     # Manager coverage stops at the admit/finalize boundary: once
     # BaseJobDriver.validate_job raises, BatchManager must finalize the job
@@ -416,10 +519,13 @@ async def test_expire_job_finalizes_pending_job():
 
 
 @pytest.mark.asyncio
-async def test_expire_job_not_finalizes_admitted_job():
-    """Intended semantics: only pending jobs expire. A job that already left the
-    pending pool (admitted, racing with the cleanup snapshot) is not finalized —
-    it runs to completion."""
+async def test_expire_job_marks_admitted_job_expired_without_immediate_finalization():
+    """An admitted job is also allowed to expire.
+
+    The in-progress entry stays live so the runtime can observe the expired
+    condition and finish its stop/finalizing flow instead of being moved
+    straight to the done pool by the cleanup loop.
+    """
     job_manager = _job_manager()
     await job_manager.create_job(
         session_id="test-session-expire2",
@@ -440,11 +546,56 @@ async def test_expire_job_not_finalizes_admitted_job():
     assert job_id in job_manager._in_progress_jobs
     assert job_id not in job_manager._done_jobs
     expiring = job_manager._in_progress_jobs[job_id]
-    # TODO: Expiring behavior is questioning, review after abnormal cases.
     assert expiring.status.state == BatchJobState.IN_PROGRESS
     assert not expiring.status.finished
     assert expiring.status.expired_at is None
     assert expiring.status.condition == ConditionType.EXPIRED
+
+
+@pytest.mark.asyncio
+async def test_expire_job_terminates_live_driver_for_admitted_job():
+    job_manager = _job_manager()
+    meta_job = _in_progress_meta_job("test-job-id-expire-live-driver", total_requests=1)
+    meta_job.status.set_runtime_ref(
+        "fake",
+        JobRuntimeRef(driverType="fake", ownerRef="owner-1", attempt=1),
+    )
+    driver = _FakeJobDriver(meta_job=meta_job)
+    meta_job._job_driver = driver
+    job_manager._in_progress_jobs[meta_job.job_id] = meta_job
+
+    result = await job_manager.expire_job(meta_job.job_id)
+
+    assert result is True
+    assert driver.terminate_calls == [meta_job.job_id]
+    assert meta_job.status.condition == ConditionType.EXPIRED
+    assert meta_job.status.state == BatchJobState.IN_PROGRESS
+
+
+@pytest.mark.asyncio
+async def test_expire_job_cleans_orphaned_execution_when_driver_missing(monkeypatch):
+    job_manager = _job_manager()
+    meta_job = _in_progress_meta_job("test-job-id-expire-orphaned", total_requests=1)
+    meta_job.status.set_runtime_ref(
+        "fake",
+        JobRuntimeRef(driverType="fake", ownerRef="owner-2", attempt=1),
+    )
+    job_manager._in_progress_jobs[meta_job.job_id] = meta_job
+    cleanup_driver = _FakeJobDriver()
+
+    monkeypatch.setattr(
+        "aibrix.batch.batch_manager.create_job_driver",
+        lambda context, progress_manager, entity_manager, job, inference_client: (
+            cleanup_driver
+        ),
+    )
+
+    result = await job_manager.expire_job(meta_job.job_id)
+
+    assert result is True
+    assert cleanup_driver.cleanup_calls == [meta_job.job_id]
+    assert meta_job.status.condition == ConditionType.EXPIRED
+    assert meta_job.status.state == BatchJobState.IN_PROGRESS
 
 
 @pytest.mark.asyncio
@@ -853,6 +1004,7 @@ async def test_admit_persists_in_progress_transition(monkeypatch):
     class _RecordingEM(MockJobEntityManager):
         async def update_job_status(self, job: BatchJob) -> None:
             recorded.append(job.model_copy(deep=True))
+            await super().update_job_status(job)
 
     asyncio.get_running_loop().name = "test_admit_persists_in_progress"
     job_manager = _job_manager()
@@ -889,6 +1041,10 @@ async def test_admit_persists_in_progress_transition(monkeypatch):
         ),
     )
     job_manager._pending_jobs["admit-job-id"] = batch_job
+    assert job_manager._job_entity_manager is not None
+    job_manager._job_entity_manager.jobs["admit-job-id"] = batch_job.model_copy(
+        deep=True
+    )
 
     driver = await job_manager.admit("admit-job-id")
 
@@ -896,10 +1052,86 @@ async def test_admit_persists_in_progress_transition(monkeypatch):
     meta = job_manager._in_progress_jobs["admit-job-id"]
     assert meta.status.state == BatchJobState.IN_PROGRESS
     assert meta.status.in_progress_at is not None
-    # The transition was persisted exactly once, carrying IN_PROGRESS.
-    assert len(recorded) == 1
-    assert recorded[0].status.state == BatchJobState.IN_PROGRESS
-    assert recorded[0].status.in_progress_at is not None
+    # admit() may persist the initial VALIDATING snapshot before the
+    # validating->in-progress transition; the key regression guard is that an
+    # IN_PROGRESS snapshot is persisted during admit().
+    in_progress_updates = [
+        job for job in recorded if job.status.state == BatchJobState.IN_PROGRESS
+    ]
+    assert len(in_progress_updates) == 1
+    assert in_progress_updates[0].status.in_progress_at is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("recovered_state", "has_in_progress_at"),
+    [
+        (BatchJobState.IN_PROGRESS, True),
+        (BatchJobState.FINALIZING, True),
+    ],
+)
+async def test_admit_recovered_job_skips_validation_persist_roundtrip(
+    monkeypatch, recovered_state: BatchJobState, has_in_progress_at: bool
+):
+    recorded: List[BatchJob] = []
+    validate_calls: list[str] = []
+
+    class _RecordingEM(MockJobEntityManager):
+        async def update_job_status(self, job: BatchJob) -> None:
+            recorded.append(job.model_copy(deep=True))
+            await super().update_job_status(job)
+
+    class _RecoveredDriver:
+        async def validate_job(self, job: BatchJob) -> None:
+            validate_calls.append(job.job_id)
+
+    asyncio.get_running_loop().name = "test_admit_recovered_job"
+    job_manager = _job_manager()
+    await job_manager.set_job_entity_manager(_RecordingEM(delay=0.0))
+
+    fake_driver = _RecoveredDriver()
+    monkeypatch.setattr(
+        "aibrix.batch.batch_manager.create_job_driver",
+        lambda context, progress_manager, entity_manager, job, inference_client: (
+            fake_driver
+        ),
+    )
+
+    recovered_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
+        metadata=ObjectMeta(
+            name="recovered-job",
+            namespace="default",
+            uid="recovered-uid",
+            creationTimestamp=datetime.now(),
+        ),
+        spec=BatchJobSpec(
+            input_file_id="f-recovered",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        ),
+        status=BatchJobStatus(
+            jobID="recovered-job-id",
+            state=recovered_state,
+            createdAt=datetime.now(),
+            inProgressAt=datetime.now() if has_in_progress_at else None,
+        ),
+    )
+    job_manager._pending_jobs["recovered-job-id"] = recovered_job
+    assert job_manager._job_entity_manager is not None
+    job_manager._job_entity_manager.jobs["recovered-job-id"] = recovered_job.model_copy(
+        deep=True
+    )
+
+    driver = await job_manager.admit("recovered-job-id")
+
+    assert driver is fake_driver
+    assert validate_calls == []
+    assert recorded == []
+    assert "recovered-job-id" not in job_manager._pending_jobs
+    assert "recovered-job-id" in job_manager._in_progress_jobs
+    resumed = job_manager._in_progress_jobs["recovered-job-id"]
+    assert resumed.status.state == recovered_state
 
 
 @pytest.mark.asyncio

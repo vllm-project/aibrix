@@ -27,6 +27,9 @@ from aibrix.batch.job_entity import (
     BatchJobSpec,
     BatchJobState,
     CompletionWindow,
+    Condition,
+    ConditionStatus,
+    ConditionType,
 )
 from aibrix.batch.state import JobEntityManager, JobStore
 from aibrix.batch.storage import batch_metastore
@@ -431,6 +434,50 @@ async def test_job_store_start_bootstraps_unfinished_jobs(fake_metastore):
         == running_job.status.created_at
     )
     assert [job.job_id for job in restarted_commits] == [running_job.job_id]
+
+
+@pytest.mark.asyncio
+async def test_job_store_start_replays_unfinished_expired_jobs(fake_metastore):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+    committed_jobs = []
+
+    async def committed_handler(job):
+        committed_jobs.append(job)
+        return True
+
+    store.on_job_committed(committed_handler)
+
+    await store.submit_job("session-expired", _spec("input-expired"))
+    expired_job = committed_jobs.pop()
+    expired_job.status.add_condition(
+        Condition(
+            type=ConditionType.EXPIRED,
+            status=ConditionStatus.TRUE,
+            lastTransitionTime=expired_job.status.created_at,
+        )
+    )
+    await store.update_job_status(expired_job)
+
+    restarted_store = JobStore(storage_type=StorageType.LOCAL)
+    restarted_commits = []
+
+    async def restarted_committed_handler(job):
+        restarted_commits.append(job)
+        return True
+
+    restarted_store.on_job_committed(restarted_committed_handler)
+    restarted_store._refresh_interval_seconds = 3600
+
+    await restarted_store.start()
+    await restarted_store.stop()
+
+    assert [job.job_id for job in restarted_commits] == [expired_job.job_id]
+    assert expired_job.job_id in restarted_store.active_jobs
+    assert (
+        restarted_store.active_jobs[expired_job.job_id].status.condition
+        == ConditionType.EXPIRED
+    )
 
 
 @pytest.mark.asyncio

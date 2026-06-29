@@ -477,6 +477,16 @@ class BatchManager(RunningJobs, SchedulableJobs):
             )
             return False
 
+        if job.is_expiring():
+            logger.info(
+                "Expire committed job before scheduling",
+                job_id=job_id,
+                state=job.status.state,
+                condition=job.status.condition,
+            )  # type: ignore[call-arg]
+            await self.expire_job(job_id)
+            return True
+
         # Add to job scheduler if available (traditional workflow). Expiry is
         # derived from the registry's pending pool, so no due time is pushed.
         if self._job_scheduler:
@@ -694,22 +704,32 @@ class BatchManager(RunningJobs, SchedulableJobs):
             return None
 
         job = self._pending_jobs[job_id]
-        del self._pending_jobs[job_id]
-
-        meta_data = JobMetaInfo(job)
-        # In-place status update, will be reflected in the entity_manager if available.
-        if job.status.state == BatchJobState.CREATED or (
+        needs_validation = job.status.state == BatchJobState.CREATED or (
             job.status.state == BatchJobState.IN_PROGRESS
             and job.status.in_progress_at is None
-        ):
+        )
+        # Build the active JobMetaInfo from a deep copy so the validating
+        # transition does not mutate the still-pending store snapshot before the
+        # entity manager persists the CREATED -> VALIDATING update.
+        meta_data = JobMetaInfo(job.model_copy(deep=True))
+        # In-place status update, will be reflected in the entity_manager if available.
+        if needs_validation:
             # Only update state for first validation.
             meta_data.status.state = BatchJobState.VALIDATING
-        self._in_progress_jobs[job_id] = meta_data
-        logger.debug(
-            "Job moved to a new category",
-            old_category="_pending_jobs",
-            new_category="_in_progress_jobs",
-        )  # type: ignore[call-arg]
+        if needs_validation and self._job_entity_manager is not None:
+            # Persist the validating snapshot first so the entity manager's
+            # callback sees the job in the same category transition path that
+            # BatchManager expects: pending -> in_progress.
+            await self._job_entity_manager.update_job_status(meta_data)
+            meta_data = await self._meta_from_in_progress_job(job_id)
+        else:
+            del self._pending_jobs[job_id]
+            self._in_progress_jobs[job_id] = meta_data
+            logger.debug(
+                "Job moved to a new category",
+                old_category="_pending_jobs",
+                new_category="_in_progress_jobs",
+            )  # type: ignore[call-arg]
 
         try:
             job_driver = create_job_driver(
@@ -720,15 +740,16 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 self._endpoint_source,
             )
             meta_data._job_driver = job_driver
-            await job_driver.validate_job(meta_data.batch_job)
-            # Reload status since we expect validate_job will update and persist status.
-            if self._job_entity_manager is not None:
-                reloaded_job = await self._job_entity_manager.get_job(job_id)
-                if reloaded_job is not None:
-                    meta_data.metadata = (
-                        reloaded_job.metadata
-                    )  # Update resource version (as in k8s job)
-                    meta_data.status = reloaded_job.status  # Update status
+            if needs_validation:
+                await job_driver.validate_job(meta_data.batch_job)
+                # Reload status since we expect validate_job will update and persist status.
+                if self._job_entity_manager is not None:
+                    reloaded_job = await self._job_entity_manager.get_job(job_id)
+                    if reloaded_job is not None:
+                        meta_data.metadata = (
+                            reloaded_job.metadata
+                        )  # Update resource version (as in k8s job)
+                        meta_data.status = reloaded_job.status  # Update status
         except Exception as e:
             logger.error("Job validation failed", job_id=job_id, exc_info=True)  # type: ignore[call-arg]
             error = ensure_batch_job_error(e, BatchJobErrorCode.VALIDATION_ERROR)
@@ -959,12 +980,11 @@ class BatchManager(RunningJobs, SchedulableJobs):
         return job
 
     async def expire_job(self, job_id: str) -> bool:
-        """Expire a pending job whose completion window has passed: move it to
-        FINALIZED (condition: expired) and into the done pool, persisting the
-        status via the entity manager. Only pending (not-yet-admitted) jobs are
-        expired here — an admitted job runs to completion. Pending jobs are not
-        yet submitted to any execution backend, so the in-process scheduler is
-        the only component that can expire them.
+        """Expire a schedulable job whose completion window has passed.
+
+        Pending jobs finalize immediately into the done pool. In-progress jobs
+        persist the expired condition and then signal their live driver like the
+        cancellation flow, so execution stops before finalizing the expired job.
 
         Returns True if the job was expired. Called by the scheduler's cleanup
         loop, which makes the registry the single source of truth for expiry
@@ -985,25 +1005,54 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 existing_job.status.state,
             )
 
-        expired_at = datetime.now(timezone.utc)
-        # Job drivers might handle the job expiration condition differently
-        # SimpleDriver will do nothing and let _job_entity_manager to handle the expiration (mark_job_expired will not be called)
-        # Other job drivers will stop the job execution
-        old_job.status.add_condition(
-            Condition(
-                type=ConditionType.EXPIRED,
-                status=ConditionStatus.TRUE,
-                lastTransitionTime=expired_at,
-            )
-        )
-        job = old_job.copy()
-        if old_job.status.state != BatchJobState.IN_PROGRESS:
-            job.status.finalized_at = expired_at
-            job.status.expired_at = expired_at
-            job.status.state = BatchJobState.FINALIZED
+        if (
+            old_job.status.state == BatchJobState.IN_PROGRESS
+            and old_job.status.check_condition(ConditionType.EXPIRED)
+        ):
+            return True
 
-        if not await self.conclude_job(job, old_job):
+        job_expired = self._build_expired_job_update(old_job)
+        if old_job.status.state != BatchJobState.IN_PROGRESS:
+            expired_at = job_expired.status.expired_at
+            assert expired_at is not None
+            job_expired.status.finalized_at = expired_at
+            job_expired.status.state = BatchJobState.FINALIZED
+
+        if not await self.conclude_job(job_expired, old_job):
             return False
+
+        job_driver = getattr(old_job, "job_driver", None)
+        if job_driver is not None:
+            terminate_result = await job_driver.terminate(job_expired)
+            if terminate_result == TerminateResult.REJECTED:
+                logger.info(  # type: ignore[call-arg]
+                    "Live job rejected expiration termination",
+                    job_id=job_id,
+                    state=job_expired.status.state,
+                )
+                return False
+            logger.info("Job expired", job_id=job_id)  # type: ignore[call-arg]
+            return True
+
+        # The job may already have persisted durable execution metadata even if
+        # the original in-memory driver instance was lost (restart / recovery /
+        # category reload before the driver ref was rebound). In that orphaned
+        # state there is no live driver to terminate, but the provisioned
+        # runtime may still exist, so reconstruct a driver only to run the
+        # best-effort cleanup path and clear the stale execution ref.
+        if job_expired.status.execution is not None:
+            cleanup_driver = create_job_driver(
+                self._context,
+                self,
+                self._job_entity_manager,
+                old_job,
+                self._endpoint_source,
+            )
+            await cleanup_driver.cleanup(job_expired)
+            logger.info(
+                "Expired job cleaned orphaned execution",
+                job_id=job_id,
+            )  # type: ignore[call-arg]
 
         logger.info("Job expired", job_id=job_id)  # type: ignore[call-arg]
         return True
@@ -1106,3 +1155,18 @@ class BatchManager(RunningJobs, SchedulableJobs):
         else:
             job_cancelled.status.state = BatchJobState.CANCELLING
         return job_cancelled
+
+    def _build_expired_job_update(self, job: BatchJob) -> BatchJob:
+        expired_at = datetime.now(timezone.utc)
+        job_expired = job.copy()
+        if not job_expired.status.check_condition(ConditionType.EXPIRED):
+            job_expired.status.add_condition(
+                Condition(
+                    type=ConditionType.EXPIRED,
+                    status=ConditionStatus.TRUE,
+                    lastTransitionTime=expired_at,
+                )
+            )
+        if job.status.state != BatchJobState.IN_PROGRESS:
+            job_expired.status.expired_at = expired_at
+        return job_expired

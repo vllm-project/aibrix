@@ -23,10 +23,10 @@ These tests cover various failure modes and edge cases in the batch job lifecycl
 """
 
 import asyncio
-import logging
 import threading
 import warnings
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, TypeVar, Union, cast
 from unittest.mock import patch
 
@@ -35,12 +35,15 @@ from fastapi.testclient import TestClient
 
 import aibrix.batch.constant as constant
 from aibrix.batch.batch_manager import BatchManager
-from aibrix.batch.job_driver import JobDriver, TerminateResult
+from aibrix.batch.job_driver import BaseJobDriver, JobDriver, TerminateResult
 from aibrix.batch.job_entity import (
+    AibrixMetadata,
+    BatchJob,
     BatchJobError,
     BatchJobErrorCode,
     BatchJobSpec,
     BatchJobState,
+    ResourceAllocation,
 )
 from aibrix.context import InfrastructureContext
 from tests.batch.conftest import (
@@ -231,33 +234,42 @@ def inject_job_creation_opts(monkeypatch, app, injected_opts: Dict[str, str]) ->
     monkeypatch.setattr(manager, "create_job_with_spec", patched_create_job_with_spec)
 
 
+def inject_runtime_deadline(monkeypatch, app, offset_seconds: float) -> None:
+    manager = app.state.batch_driver.job_manager
+    original_create_job_with_spec = manager.create_job_with_spec
+
+    async def patched_create_job_with_spec(
+        session_id: str,
+        job_spec: BatchJobSpec,
+        timeout: float = 30.0,
+        initial_state: BatchJobState = BatchJobState.CREATED,
+        request_count: int = 0,
+    ) -> str:
+        aibrix = job_spec.aibrix or AibrixMetadata()
+        allocation = aibrix.resource_allocation or ResourceAllocation()
+        allocation.provision_resource_deadline = int(
+            datetime.now(timezone.utc).timestamp() + offset_seconds
+        )
+        aibrix.resource_allocation = allocation
+        job_spec.aibrix = aibrix
+        return await original_create_job_with_spec(
+            session_id, job_spec, timeout, initial_state, request_count
+        )
+
+    monkeypatch.setattr(manager, "create_job_with_spec", patched_create_job_with_spec)
+
+
 def force_batch_driver_crash_on_shutdown(monkeypatch, app) -> None:
     driver = app.state.batch_driver
+    original_stop = driver.stop
     import _pytest.unraisableexception as pytest_unraisableexception
 
-    from aibrix.batch import batch_scheduler as scheduler_module
     from aibrix.batch.job_driver.runtime.base import RuntimeBase
     from aibrix.batch.job_driver.runtime.base import logger as runtime_logger
 
     warnings.simplefilter("ignore", pytest.PytestUnraisableExceptionWarning)
     warnings.filterwarnings("ignore", category=pytest.PytestUnraisableExceptionWarning)
     pytest_unraisableexception.warnings.warn = lambda *args, **kwargs: None
-    logging.disable(logging.CRITICAL)
-
-    class _NullLogger:
-        def debug(self, *args, **kwargs):
-            pass
-
-        def info(self, *args, **kwargs):
-            pass
-
-        def warning(self, *args, **kwargs):
-            pass
-
-        def error(self, *args, **kwargs):
-            pass
-
-    scheduler_module.logger = cast(Any, _NullLogger())
 
     @asynccontextmanager
     async def patched_runtime_session(
@@ -379,13 +391,7 @@ def force_batch_driver_crash_on_shutdown(monkeypatch, app) -> None:
                     loop.set_exception_handler,
                     lambda _loop, _context: None,
                 )
-        if driver._scheduler is not None:
-            driver._scheduler.reset_runtime_state()
-        if driver._job_entity_manager is not None:
-            driver._job_entity_manager._refresh_task = None
-        driver._batch_manager.reset_runtime_state()
-        if async_thread_loop is not None:
-            async_thread_loop.stop()
+        await original_stop()
 
     monkeypatch.setattr(driver, "stop", patched_stop)
 
@@ -1228,7 +1234,8 @@ async def test_job_success_baseline(e2e_test_app, test_backend):
             await e2e_test_app.state.batch_driver.clear_job(batch_id)
             batch_id = None
         finally:
-            pass
+            if batch_id is not None:
+                await e2e_test_app.state.batch_driver.clear_job(batch_id)
 
 
 @pytest.mark.asyncio
@@ -2000,6 +2007,80 @@ async def test_job_cancellation_in_finalizing(e2e_test_app, test_backend):
 
 
 @pytest.mark.asyncio
+async def test_job_expiration_in_finalizing(e2e_test_app, test_backend):
+    """Batch completion-window expiry after entering FINALIZING should end as
+    expired, not completed."""
+    print("Test 6b: Job expiration during finalizing scenario")
+
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 2)
+
+        from aibrix.batch import storage as batch_storage
+
+        original_finalize = batch_storage.finalize_job_output_data
+
+        async def delayed_finalize(job):
+            await asyncio.sleep(3.0)
+            return await original_finalize(job)
+
+        failing_manager = FailingBatchManager(expiration=2)
+        original_manager = await swap_job_manager(e2e_test_app, failing_manager)
+        batch_id = None
+
+        try:
+            debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
+            batch_id = create_batch_job(
+                client, input_file_id, test_backend=test_backend
+            )
+
+            with patch(
+                "aibrix.batch.job_driver.base.storage.finalize_job_output_data",
+                side_effect=delayed_finalize,
+            ):
+                status_during_finalizing = await wait_for_status(
+                    client, batch_id, "finalizing", max_polls=40, poll_interval=0.5
+                )
+                assert status_during_finalizing["status"] == "finalizing"
+
+                final_status = await wait_for_status(
+                    client, batch_id, "expired", max_polls=40, poll_interval=0.5
+                )
+
+                validate_batch_response_with_runtime_teardown(
+                    final_status,
+                    e2e_test_app=e2e_test_app,
+                    test_backend=test_backend,
+                    batch_id=batch_id,
+                    debug_state=debug_state,
+                    expect_runtime_teardown=backend_expect_runtime_teardown(
+                        test_backend
+                    ),
+                    expected_status="expired",
+                    expected_completion_window="0h",
+                    expected_endpoint="/v1/chat/completions",
+                    expected_in_progress_at=True,
+                    expected_finalizing_at=True,
+                    expected_completed_at=False,
+                    expected_failed_at=False,
+                    expected_expired_at=True,
+                    expected_cancelled_at=False,
+                    expected_cancelling_at=False,
+                    expected_output_file_id=True,
+                    expected_error_file_id=True,
+                    expected_request_counts=True,
+                )
+
+                failing_manager.expiration = None
+                await run_follow_up_success_with_same_input(
+                    client, e2e_test_app, test_backend, input_file_id, 2
+                )
+        finally:
+            if batch_id is not None:
+                await e2e_test_app.state.batch_driver.clear_job(batch_id)
+            restore_job_manager(e2e_test_app, original_manager)
+
+
+@pytest.mark.asyncio
 async def test_job_expiration_during_validation(e2e_test_app, test_backend):
     """Test case 7: Create job, set expire to 1min and prevent validation, expired and report."""
     print("Test 7: Job expiration during validation scenario")
@@ -2090,36 +2171,56 @@ async def test_job_expiration_during_processing(e2e_test_app, test_backend):
         try:
             # Step 3: Create batch job with failing manager that injects fail_after metadata
             debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
-            batch_id = create_batch_job(
-                client, input_file_id, test_backend=test_backend
-            )
+            terminate_calls: list[str] = []
+            original_terminate = BaseJobDriver.terminate
 
-            # Step 4: Wait for job to start processing
-            await wait_for_status(client, batch_id, "in_progress", max_polls=10)
-            # Step 5: Wait for expiration to complete
-            final_status = await wait_for_status(
-                client, batch_id, "expired", max_polls=60, poll_interval=1.0
-            )
+            async def recording_terminate(
+                self, deleted_job: BatchJob
+            ) -> TerminateResult:
+                terminate_calls.append(deleted_job.job_id)
+                return await original_terminate(self, deleted_job)
 
-            # Step 7: Verify expired status using comprehensive validation
-            validate_batch_response_with_runtime_teardown(
-                final_status,
-                e2e_test_app=e2e_test_app,
-                test_backend=test_backend,
-                batch_id=batch_id,
-                debug_state=debug_state,
-                expect_runtime_teardown=backend_expect_runtime_teardown(test_backend),
-                expected_status="expired",
-                expected_endpoint="/v1/chat/completions",
-                expected_completion_window="0h",  # overrided to 2s
-                expected_in_progress_at=True,  # Should have started processing
-                expected_completed_at=False,
-                expected_expired_at=True,
-                expected_finalizing_at=True,  # Should have reached finalizing stage
-                expected_output_file_id=True,
-                expected_error_file_id=True,
-                expected_request_counts=True,
-            )
+            with patch.object(
+                BaseJobDriver,
+                "terminate",
+                new=recording_terminate,
+            ):
+                batch_id = create_batch_job(
+                    client, input_file_id, test_backend=test_backend
+                )
+
+                # Step 4: Wait for job to start processing
+                await wait_for_status(client, batch_id, "in_progress", max_polls=10)
+                # Step 5: Wait for expiration to complete
+                final_status = await wait_for_status(
+                    client, batch_id, "expired", max_polls=60, poll_interval=1.0
+                )
+
+                # Step 7: Verify expired status using comprehensive validation
+                validate_batch_response_with_runtime_teardown(
+                    final_status,
+                    e2e_test_app=e2e_test_app,
+                    test_backend=test_backend,
+                    batch_id=batch_id,
+                    debug_state=debug_state,
+                    expect_runtime_teardown=backend_expect_runtime_teardown(
+                        test_backend
+                    ),
+                    expected_status="expired",
+                    expected_endpoint="/v1/chat/completions",
+                    expected_completion_window="0h",  # overrided to 2s
+                    expected_in_progress_at=True,  # Should have started processing
+                    expected_completed_at=False,
+                    expected_expired_at=True,
+                    expected_finalizing_at=True,  # Should have reached finalizing stage
+                    expected_output_file_id=True,
+                    expected_error_file_id=True,
+                    expected_request_counts=True,
+                )
+                if backend_expect_runtime_teardown(test_backend):
+                    assert terminate_calls == [batch_id]
+                else:
+                    assert terminate_calls == []
 
             print(
                 "✅ Processing failure test with worker fail_after completed successfully"

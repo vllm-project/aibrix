@@ -101,3 +101,7 @@ class JobDriver(Protocol):
     async def terminate(self, deleted_job: BatchJob) -> TerminateResult:
         """Handle deletion for the bound job."""
         ...
+
+    async def cleanup(self, job: BatchJob) -> None:
+        """Best-effort runtime cleanup for externally recovered/orphaned work."""
+        ...
