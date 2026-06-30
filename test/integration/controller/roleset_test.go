@@ -635,30 +635,46 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 			Scope: orchestrationapi.TopologyRoleSetScope,
 			Key:   "kubernetes.io/hostname",
 		}
-		latest.Spec.Roles[0].Replicas = int32Ptr(2)
 		gomega.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
 
-		pods = waitForRolePods(ns.Name, rs.Name, role.Name, 2)
+		pods = waitForRolePods(ns.Name, rs.Name, role.Name, 1)
 		none, preferred, required = countPodsByTopologyAffinity(pods, "kubernetes.io/hostname", map[string]string{
 			constants.StormServiceNameLabelKey: "test-stormservice",
 			constants.RoleSetNameLabelKey:      rs.Name,
 		})
 		gomega.Expect(none).To(gomega.Equal(1))
+		gomega.Expect(preferred).To(gomega.Equal(0))
+		gomega.Expect(required).To(gomega.Equal(0))
+
+		pods = deletePodAndWaitForReplacement(ns.Name, rs.Name, role.Name, pods[0])
+		none, preferred, required = countPodsByTopologyAffinity(pods, "kubernetes.io/hostname", map[string]string{
+			constants.StormServiceNameLabelKey: "test-stormservice",
+			constants.RoleSetNameLabelKey:      rs.Name,
+		})
+		gomega.Expect(none).To(gomega.Equal(0))
 		gomega.Expect(preferred).To(gomega.Equal(1))
 		gomega.Expect(required).To(gomega.Equal(0))
 
 		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
 		latest.Spec.TopologyPolicy.Mode = orchestrationapi.TopologyPolicyRequired
-		latest.Spec.Roles[0].Replicas = int32Ptr(3)
 		gomega.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
 
-		pods = waitForRolePods(ns.Name, rs.Name, role.Name, 3)
+		pods = waitForRolePods(ns.Name, rs.Name, role.Name, 1)
 		none, preferred, required = countPodsByTopologyAffinity(pods, "kubernetes.io/hostname", map[string]string{
 			constants.StormServiceNameLabelKey: "test-stormservice",
 			constants.RoleSetNameLabelKey:      rs.Name,
 		})
-		gomega.Expect(none).To(gomega.Equal(1))
+		gomega.Expect(none).To(gomega.Equal(0))
 		gomega.Expect(preferred).To(gomega.Equal(1))
+		gomega.Expect(required).To(gomega.Equal(0))
+
+		pods = deletePodAndWaitForReplacement(ns.Name, rs.Name, role.Name, pods[0])
+		none, preferred, required = countPodsByTopologyAffinity(pods, "kubernetes.io/hostname", map[string]string{
+			constants.StormServiceNameLabelKey: "test-stormservice",
+			constants.RoleSetNameLabelKey:      rs.Name,
+		})
+		gomega.Expect(none).To(gomega.Equal(0))
+		gomega.Expect(preferred).To(gomega.Equal(0))
 		gomega.Expect(required).To(gomega.Equal(1))
 	})
 })
@@ -675,6 +691,26 @@ func waitForRolePods(namespace, roleSetName, roleName string, expected int) []co
 			},
 		)).To(gomega.Succeed())
 		g.Expect(podList.Items).To(gomega.HaveLen(expected))
+		pods = podList.Items
+	}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+	return pods
+}
+
+func deletePodAndWaitForReplacement(namespace, roleSetName, roleName string, oldPod corev1.Pod) []corev1.Pod {
+	gomega.Expect(k8sClient.Delete(ctx, &oldPod, client.GracePeriodSeconds(0))).To(gomega.Succeed())
+
+	var pods []corev1.Pod
+	gomega.Eventually(func(g gomega.Gomega) {
+		podList := &corev1.PodList{}
+		g.Expect(k8sClient.List(ctx, podList,
+			client.InNamespace(namespace),
+			client.MatchingLabels{
+				constants.RoleSetNameLabelKey: roleSetName,
+				constants.RoleNameLabelKey:    roleName,
+			},
+		)).To(gomega.Succeed())
+		g.Expect(podList.Items).To(gomega.HaveLen(1))
+		g.Expect(podList.Items[0].UID).ToNot(gomega.Equal(oldPod.UID))
 		pods = podList.Items
 	}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
 	return pods
