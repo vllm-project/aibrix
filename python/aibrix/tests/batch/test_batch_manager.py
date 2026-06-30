@@ -48,6 +48,10 @@ def _job_manager() -> BatchManager:
     return BatchManager(InfrastructureContext())
 
 
+def _set_current_loop_name(name: str) -> None:
+    setattr(asyncio.get_running_loop(), "name", name)
+
+
 class _CapturingScheduler:
     def __init__(self) -> None:
         self.appended_job_ids: list[str] = []
@@ -602,9 +606,7 @@ async def test_expire_job_cleans_orphaned_execution_when_driver_missing(monkeypa
 async def test_admit_job_persists_validated_request_count(monkeypatch):
     mock_entity_manager = MockJobEntityManager(delay=0.0)
 
-    asyncio.get_running_loop().name = (
-        "test_validate_job_persists_validated_request_count"
-    )
+    _set_current_loop_name("test_validate_job_persists_validated_request_count")
     job_manager = _job_manager()
     await job_manager.set_job_entity_manager(mock_entity_manager)
 
@@ -916,7 +918,7 @@ async def test_async_create_job():
     mock_entity_manager = MockJobEntityManager(delay=0.05)
 
     # Create job manager with entity manager
-    asyncio.get_running_loop().name = "test_async_create_job"
+    _set_current_loop_name("test_async_create_job")
     job_manager = _job_manager()
     await job_manager.set_job_entity_manager(mock_entity_manager)
 
@@ -966,7 +968,7 @@ async def test_expire_job_persists_via_entity_manager():
         async def update_job_status(self, job: BatchJob) -> None:
             recorded.append(job)
 
-    asyncio.get_running_loop().name = "test_expire_job_persists"
+    _set_current_loop_name("test_expire_job_persists")
     job_manager = _job_manager()
     await job_manager.set_job_entity_manager(_RecordingEM(delay=0.0))
 
@@ -1006,7 +1008,7 @@ async def test_admit_persists_in_progress_transition(monkeypatch):
             recorded.append(job.model_copy(deep=True))
             await super().update_job_status(job)
 
-    asyncio.get_running_loop().name = "test_admit_persists_in_progress"
+    _set_current_loop_name("test_admit_persists_in_progress")
     job_manager = _job_manager()
     await job_manager.set_job_entity_manager(_RecordingEM(delay=0.0))
 
@@ -1085,7 +1087,7 @@ async def test_admit_recovered_job_skips_validation_persist_roundtrip(
         async def validate_job(self, job: BatchJob) -> None:
             validate_calls.append(job.job_id)
 
-    asyncio.get_running_loop().name = "test_admit_recovered_job"
+    _set_current_loop_name("test_admit_recovered_job")
     job_manager = _job_manager()
     await job_manager.set_job_entity_manager(_RecordingEM(delay=0.0))
 
@@ -1104,6 +1106,8 @@ async def test_admit_recovered_job_skips_validation_persist_roundtrip(
             namespace="default",
             uid="recovered-uid",
             creationTimestamp=datetime.now(),
+            resourceVersion=None,
+            deletionTimestamp=None,
         ),
         spec=BatchJobSpec(
             input_file_id="f-recovered",
@@ -1118,7 +1122,7 @@ async def test_admit_recovered_job_skips_validation_persist_roundtrip(
         ),
     )
     job_manager._pending_jobs["recovered-job-id"] = recovered_job
-    assert job_manager._job_entity_manager is not None
+    assert isinstance(job_manager._job_entity_manager, MockJobEntityManager)
     job_manager._job_entity_manager.jobs["recovered-job-id"] = recovered_job.model_copy(
         deep=True
     )
@@ -1146,7 +1150,7 @@ async def test_finalizing_transition_persists():
         async def update_job_status(self, job: BatchJob) -> None:
             recorded.append(job.model_copy(deep=True))
 
-    asyncio.get_running_loop().name = "test_finalizing_persists"
+    _set_current_loop_name("test_finalizing_persists")
     job_manager = _job_manager()
     await job_manager.set_job_entity_manager(_RecordingEM(delay=0.0))
 
@@ -1190,7 +1194,7 @@ async def test_async_create_job_with_timeout():
     # Create mock entity manager with long delay (longer than timeout)
     mock_entity_manager = MockJobEntityManager(delay=2.0)
 
-    asyncio.get_running_loop().name = "test_async_create_job_with_timeout"
+    _set_current_loop_name("test_async_create_job_with_timeout")
     job_manager = _job_manager()
     await job_manager.set_job_entity_manager(mock_entity_manager)
 
@@ -1230,7 +1234,7 @@ async def test_async_create_job_throws_error():
     mock_entity_manager = MockJobEntityManager()
     mock_entity_manager.should_fail = True
 
-    asyncio.get_running_loop().name = "test_async_create_job_throws_error"
+    _set_current_loop_name("test_async_create_job_throws_error")
     job_manager = _job_manager()
     await job_manager.set_job_entity_manager(mock_entity_manager)
 
@@ -1258,7 +1262,7 @@ async def test_multiple_concurrent_job_creation():
     """Test creating multiple jobs concurrently."""
     mock_entity_manager = MockJobEntityManager(delay=0.1)
 
-    asyncio.get_running_loop().name = "test_multiple_concurrent_job_creation"
+    _set_current_loop_name("test_multiple_concurrent_job_creation")
     job_manager = _job_manager()
     await job_manager.set_job_entity_manager(mock_entity_manager)
 
