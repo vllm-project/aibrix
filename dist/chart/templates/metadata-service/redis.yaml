@@ -27,6 +27,13 @@ spec:
             - containerPort: 6379
           resources: {{ toYaml .Values.metadata.redis.container.resources | nindent 12 }}
           {{- if include "aibrix.redis.sharedHasPassword" . }}
+          # The official redis image ignores the REDIS_PASSWORD env var, so pass
+          # the password to redis-server explicitly. Without this the built-in
+          # master starts with no auth while clients send AUTH, producing
+          # "Client sent AUTH, but no password is set" errors (see #2396).
+          args:
+            - "--requirepass"
+            - "$(REDIS_PASSWORD)"
           env:
             - name: REDIS_PASSWORD
               valueFrom:
