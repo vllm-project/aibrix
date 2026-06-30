@@ -88,3 +88,24 @@ tests:
           value: "ZGRkZA=="
         documentIndex: 2
 
+  - it: should require auth on the built-in redis master when password enabled
+    set:
+      metadata.redis.enabled: true
+      metadata.redis.enablePassword: true
+      metadata.redis.password: "dddd"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - "--requirepass"
+            - "$(REDIS_PASSWORD)"
+        documentIndex: 0
+  - it: should not set redis master args when no password configured
+    set:
+      metadata.redis.enabled: true
+      metadata.redis.enablePassword: false
+      metadata.redis.password: ""
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].args
+        documentIndex: 0
