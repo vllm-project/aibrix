@@ -1004,7 +1004,7 @@ async def run_follow_up_success_with_same_input(
             expected_cancelled_at=False,
             expected_errors=False,
             expected_output_file_id=True,
-            expected_error_file_id=True,
+            expected_error_file_id=False,
             expected_request_counts={
                 "total": expected_total_requests,
                 "completed": expected_total_requests,
@@ -1080,7 +1080,7 @@ async def complete_job_after_restart(
                 expected_cancelled_at=False,
                 expected_errors=False,
                 expected_output_file_id=True,
-                expected_error_file_id=True,
+                expected_error_file_id=False,
                 expected_request_counts=(
                     expected_request_counts
                     if expected_request_counts is not None
@@ -1218,7 +1218,7 @@ async def test_job_success_baseline(e2e_test_app, test_backend):
                 expected_cancelled_at=False,
                 expected_errors=False,
                 expected_output_file_id=True,
-                expected_error_file_id=True,
+                expected_error_file_id=False,
                 expected_request_counts={
                     "total": 2,
                     "completed": 2,
@@ -1334,7 +1334,7 @@ async def test_job_processing_failure(e2e_test_app, test_backend):
                     else BatchJobErrorCode.INFERENCE_FAILED
                 ),
                 expected_output_file_id=True,
-                expected_error_file_id=True,
+                expected_error_file_id=False,
                 expected_request_counts=(
                     {
                         "total": 10,
@@ -1518,8 +1518,8 @@ async def test_job_finalizing_failure(e2e_test_app, test_backend):
                 expected_failed_at=True,  # Should have failure timestamp
                 expected_finalizing_at=True,  # Should have reached finalizing stage
                 expected_errors=BatchJobErrorCode.FINALIZING_ERROR,
-                expected_output_file_id=True,  # May or may not have output file
-                expected_error_file_id=True,  # May or may not have error file
+                expected_output_file_id=True,  # Successful requests produced output
+                expected_error_file_id=False,  # No requests failed -> no error file
                 expected_request_counts={  # Should reflect what's done before finalizing
                     "total": 2,
                     "completed": 2,
@@ -1911,7 +1911,7 @@ async def test_job_cancellation_in_progress(e2e_test_app, test_backend, monkeypa
                 expected_finalizing_at=True,  # Should have finalizing timestamp
                 expected_completed_at=False,
                 expected_output_file_id=True,
-                expected_error_file_id=True,
+                expected_error_file_id=False,
                 expected_request_counts=(
                     {"total": 10, "completed": 3, "failed": 0}
                     if expect_exact_request_counts
@@ -1994,7 +1994,7 @@ async def test_job_cancellation_in_finalizing(e2e_test_app, test_backend):
                     expected_cancelling_at=False,
                     expected_cancelled_at=False,
                     expected_output_file_id=True,  # Should have output file
-                    expected_error_file_id=True,  # Should have error file
+                    expected_error_file_id=False,  # No failures -> no error file
                     expected_request_counts=True,  # Should have request counts
                 )
                 print("  Job completed without cancelling finalization")
@@ -2066,7 +2066,7 @@ async def test_job_expiration_in_finalizing(e2e_test_app, test_backend):
                     expected_cancelled_at=False,
                     expected_cancelling_at=False,
                     expected_output_file_id=True,
-                    expected_error_file_id=True,
+                    expected_error_file_id=False,
                     expected_request_counts=True,
                 )
 
@@ -2214,10 +2214,14 @@ async def test_job_expiration_during_processing(e2e_test_app, test_backend):
                     expected_expired_at=True,
                     expected_finalizing_at=True,  # Should have reached finalizing stage
                     expected_output_file_id=True,
-                    expected_error_file_id=True,
+                    expected_error_file_id=False,
                     expected_request_counts=True,
                 )
-                assert terminate_calls == [batch_id]
+                # terminate is idempotent: the expiry and deletion paths can each
+                # invoke it for the same job, and the second call is rejected by the
+                # guard in BaseJobDriver.terminate. Assert it ran for this job and
+                # never for another, tolerating the benign retry.
+                assert terminate_calls and set(terminate_calls) == {batch_id}
 
             print(
                 "✅ Processing failure test with worker fail_after completed successfully"

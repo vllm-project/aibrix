@@ -31,8 +31,12 @@ from aibrix.batch.job_entity import (
     BatchJobState,
     BatchJobStatus,
     BatchProfileRef,
+    Condition,
+    ConditionStatus,
+    ConditionType,
     ModelTemplateRef,
     ObjectMeta,
+    RequestCountStats,
     ResourceAllocation,
     ResourceDetail,
     RuntimeSpec,
@@ -499,6 +503,102 @@ def test_batch_response_includes_input_aibrix_metadata():
     assert response.aibrix.client.retry_policy is not None
     assert response.aibrix.client.retry_policy.max_retries == 5
     assert response.model == "echo-template"
+
+
+def _minimal_batch_job(status: BatchJobStatus) -> BatchJob:
+    return BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="BatchJob"),
+        metadata=ObjectMeta(name="test-batch", namespace="default"),
+        spec=BatchJobSpec(
+            input_file_id="file-123",
+            endpoint="/v1/chat/completions",
+            completion_window=86400,
+        ),
+        status=status,
+    )
+
+
+def test_output_file_ids_hidden_until_finished():
+    """Mirror OpenAI: file ids stay null until the batch reaches a terminal state.
+
+    The ids are allocated upfront (so the worker can write into them), but the
+    underlying multipart upload is not downloadable until finalization, so we must
+    not surface them while the batch is still running.
+    """
+    created_at = datetime.now(timezone.utc)
+    for state in (
+        BatchJobState.CREATED,
+        BatchJobState.VALIDATING,
+        BatchJobState.IN_PROGRESS,
+        BatchJobState.FINALIZING,
+    ):
+        batch_job = _minimal_batch_job(
+            BatchJobStatus(
+                jobID="job-123",
+                state=state,
+                createdAt=created_at,
+                # Allocated upfront, but must not be exposed before termination.
+                outputFileID="out-file-1",
+                errorFileID="err-file-1",
+                tempOutputFileID="temp-out-1",
+                tempErrorFileID="temp-err-1",
+                requestCounts=RequestCountStats(total=2, completed=1, failed=1),
+            )
+        )
+        response = _batch_job_to_openai_response(batch_job)
+        assert response.output_file_id is None, f"leaked output_file_id in {state}"
+        assert response.error_file_id is None, f"leaked error_file_id in {state}"
+
+
+def _finalized_batch_job(*, completed: int, failed: int) -> BatchJob:
+    now = datetime.now(timezone.utc)
+    return _minimal_batch_job(
+        BatchJobStatus(
+            jobID="job-123",
+            state=BatchJobState.FINALIZED,
+            createdAt=now,
+            outputFileID="out-file-1",
+            errorFileID="err-file-1",
+            requestCounts=RequestCountStats(
+                total=completed + failed, completed=completed, failed=failed
+            ),
+            conditions=[
+                Condition(
+                    type=ConditionType.COMPLETED,
+                    status=ConditionStatus.TRUE,
+                    lastTransitionTime=now,
+                )
+            ],
+        )
+    )
+
+
+def test_output_file_ids_exposed_when_finished():
+    """A finalized job with both successes and failures surfaces both ids."""
+    response = _batch_job_to_openai_response(
+        _finalized_batch_job(completed=2, failed=1)
+    )
+    assert response.status == "completed"
+    assert response.output_file_id == "out-file-1"
+    assert response.error_file_id == "err-file-1"
+
+
+def test_error_file_id_hidden_when_no_failures():
+    """Mirror OpenAI: error_file_id stays null when nothing errored."""
+    response = _batch_job_to_openai_response(
+        _finalized_batch_job(completed=2, failed=0)
+    )
+    assert response.output_file_id == "out-file-1"
+    assert response.error_file_id is None
+
+
+def test_output_file_id_hidden_when_no_successes():
+    """No successful results means no output file to download."""
+    response = _batch_job_to_openai_response(
+        _finalized_batch_job(completed=0, failed=2)
+    )
+    assert response.output_file_id is None
+    assert response.error_file_id == "err-file-1"
 
 
 def test_get_batch_response_omits_none_fields_from_json(monkeypatch):
