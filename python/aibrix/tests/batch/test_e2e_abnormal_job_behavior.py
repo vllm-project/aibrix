@@ -2217,10 +2217,7 @@ async def test_job_expiration_during_processing(e2e_test_app, test_backend):
                     expected_error_file_id=True,
                     expected_request_counts=True,
                 )
-                if backend_expect_runtime_teardown(test_backend):
-                    assert terminate_calls == [batch_id]
-                else:
-                    assert terminate_calls == []
+                assert terminate_calls == [batch_id]
 
             print(
                 "✅ Processing failure test with worker fail_after completed successfully"
