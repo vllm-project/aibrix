@@ -217,11 +217,14 @@ class JobEntityManager(ABC):
             old_job = self._monitored_job_snapshots.get(job_id)
             if old_job is None:
                 self._monitored_job_snapshots[job_id] = snapshot
-                if not snapshot.status.finished:
+                if self._should_publish_committed(snapshot):
                     await self.job_committed(snapshot)
+                else:
+                    self._sync_active_job(snapshot)
                 continue
             if self._jobs_equal(old_job, snapshot):
                 self._monitored_job_snapshots[job_id] = snapshot
+                self._sync_active_job(snapshot)
                 continue
             self._monitored_job_snapshots[job_id] = snapshot
             await self.job_updated(old_job, snapshot)
@@ -248,7 +251,8 @@ class JobEntityManager(ABC):
                 continue
             snapshot = job.model_copy(deep=True)
             self._monitored_job_snapshots[job_id] = snapshot
-            if snapshot.status.finished:
+            if not self._should_publish_committed(snapshot):
+                self._sync_active_job(snapshot)
                 continue
             await self.job_committed(snapshot)
 
@@ -329,6 +333,9 @@ class JobEntityManager(ABC):
         return old_job.model_dump(
             mode="json", by_alias=True, exclude_none=True
         ) == new_job.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    def _should_publish_committed(self, job: BatchJob) -> bool:
+        return not job.status.finished
 
     # --- Command store (manager -> store): the abstract contract each backend
     #     implements. The manager calls these to mutate/read persisted jobs. ---

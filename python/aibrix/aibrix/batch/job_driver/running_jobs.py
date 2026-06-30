@@ -24,9 +24,9 @@ interface the driver calls; the manager answers the per-request calls below from
 each job's tracker. A driver never touches a tracker directly.
 """
 
-from typing import List, Optional, Protocol, Tuple, runtime_checkable
+from typing import Optional, Protocol, runtime_checkable
 
-from aibrix.batch.job_entity import BatchJob, BatchJobError
+from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobStatus
 
 
 @runtime_checkable
@@ -37,62 +37,33 @@ class RunningJobs(Protocol):
         """Get job by ID, or None if not found."""
         ...
 
-    async def get_job_next_request(self, job_id: str) -> Tuple[BatchJob, int]:
-        """Get the next request ID to execute.
+    async def mark_job_validated(self, job_id: str, status: BatchJobStatus) -> BatchJob:
+        """Persist validated job status changes for a job before execution.
 
-        Returns:
-            (BatchJob, next_request_id) or (BatchJob, -1) if the job is done.
+        Args:
+            job_id: Job identifier
+            status: BatchJob with status updated
 
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
+        Return:
+            Updated BatchJob
         """
         ...
 
-    async def complete_job_request(
-        self, job_id: str, req_id: int, failed: bool = False
+    async def update_job_status(self, job_id: str, status: BatchJobStatus) -> BatchJob:
+        """Persist non-local job status changes without overwriting newer lifecycle transitions."""
+        ...
+
+    async def update_job_local_status(
+        self, job_id: str, worker_id: str, status: BatchJobStatus
     ) -> BatchJob:
-        """Mark one request completed.
-
-        Used by concurrent single-worker execution, where completions can arrive
-        out of order and no next-request cursor should be returned.
-
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
-        """
+        """Persist a worker-local status snapshot for aggregation. This operation is thread-safe."""
         ...
 
-    async def mark_job_progress_and_get_next_request(
-        self, job_id: str, req_id: int
-    ) -> Tuple[BatchJob, int]:
-        """Mark a request completed and return the next request ID.
-
-        Returns:
-            (BatchJob, next_request_id) or (BatchJob, -1) if the job is done.
-
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
-        """
+    async def mark_job_finalizing(self, job_id: str) -> BatchJob:
+        """Transition a running job into finalizing."""
         ...
 
-    async def mark_jobs_progresses(
-        self, job_id: str, executed_requests: List[int]
-    ) -> BatchJob:
-        """Mark multiple requests completed.
-
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
-        """
-        ...
-
-    async def mark_job_total(self, job_id: str, total_requests: int) -> BatchJob:
-        """Mark the total number of requests for a job.
-
-        Raises:
-            JobUnexpectedStateError: If job is not in progress.
-        """
-        ...
-
-    async def mark_job_done(self, job_id: str) -> BatchJob:
+    async def mark_job_done(self, job: BatchJob) -> BatchJob:
         """Mark job completed.
 
         Raises:

@@ -166,7 +166,7 @@ class TestWorkerAccumulation:
                 "completion_tokens_details": {"reasoning_tokens": 10},
             },
         )
-        u = driver.get_accumulated_usage("j1")
+        u = driver._get_accumulated_usage("j1")
         assert u.input_tokens == 100
         assert u.output_tokens == 50
         assert u.total_tokens == 150
@@ -180,7 +180,7 @@ class TestWorkerAccumulation:
         driver._accumulate_usage(
             "j1", "r2", {"prompt_tokens": 200, "completion_tokens": 100}
         )
-        u = driver.get_accumulated_usage("j1")
+        u = driver._get_accumulated_usage("j1")
         assert u.input_tokens == 300
         assert u.output_tokens == 150
         assert u.total_tokens == 450
@@ -193,27 +193,27 @@ class TestWorkerAccumulation:
         driver._accumulate_usage(
             "j1", "r1", {"prompt_tokens": 999, "completion_tokens": 999}
         )
-        u = driver.get_accumulated_usage("j1")
+        u = driver._get_accumulated_usage("j1")
         assert u.input_tokens == 100
         assert u.output_tokens == 50
 
-    def test_per_job_isolation(self, driver):
+    def test_driver_reuse_resets_usage_state(self, driver):
         driver._accumulate_usage(
             "a", "r", {"prompt_tokens": 100, "completion_tokens": 0}
         )
         driver._accumulate_usage("b", "r", {"prompt_tokens": 5, "completion_tokens": 0})
-        assert driver.get_accumulated_usage("a").input_tokens == 100
-        assert driver.get_accumulated_usage("b").input_tokens == 5
+        assert driver._get_accumulated_usage("a") is None
+        assert driver._get_accumulated_usage("b").input_tokens == 5
 
     def test_no_op_when_usage_absent(self, driver):
         driver._accumulate_usage("j", "r", None)
         driver._accumulate_usage("j", "r", {})
-        assert driver.get_accumulated_usage("j") is None
+        assert driver._get_accumulated_usage("j") is None
 
     def test_embeddings_only_prompt_tokens(self, driver):
         """Embeddings endpoint responses carry prompt_tokens but no completion_tokens."""
         driver._accumulate_usage("emb", "e1", {"prompt_tokens": 50})
-        u = driver.get_accumulated_usage("emb")
+        u = driver._get_accumulated_usage("emb")
         assert u.input_tokens == 50
         assert u.output_tokens == 0
         assert u.total_tokens == 50
@@ -222,21 +222,21 @@ class TestWorkerAccumulation:
         driver._accumulate_usage(
             "j", "r", {"prompt_tokens": 10, "completion_tokens": 5}
         )
-        copy = driver.get_accumulated_usage("j")
+        copy = driver._get_accumulated_usage("j")
         copy.input_tokens = 99999  # mutate the copy
-        fresh = driver.get_accumulated_usage("j")
+        fresh = driver._get_accumulated_usage("j")
         assert fresh.input_tokens == 10  # internal state untouched
 
     def test_drop_state_releases_memory(self, driver):
         driver._accumulate_usage(
             "j", "r", {"prompt_tokens": 10, "completion_tokens": 5}
         )
-        assert driver.get_accumulated_usage("j") is not None
+        assert driver._get_accumulated_usage("j") is not None
         driver._drop_usage_state("j")
-        assert driver.get_accumulated_usage("j") is None
+        assert driver._get_accumulated_usage("j") is None
 
     def test_returns_none_for_unknown_job(self, driver):
-        assert driver.get_accumulated_usage("never-seen") is None
+        assert driver._get_accumulated_usage("never-seen") is None
 
     def test_non_numeric_token_count_treated_as_zero(self, driver):
         """Defensive: engine returns weird shape, should not crash."""
@@ -244,8 +244,8 @@ class TestWorkerAccumulation:
             "j", "r", {"prompt_tokens": None, "completion_tokens": None}
         )
         # No exception; usage stays at zero (no entry created)
-        assert driver.get_accumulated_usage("j") is not None
-        u = driver.get_accumulated_usage("j")
+        assert driver._get_accumulated_usage("j") is not None
+        u = driver._get_accumulated_usage("j")
         assert u.input_tokens == 0
         assert u.output_tokens == 0
 

@@ -14,7 +14,7 @@
 
 
 # The following are all constants.
-import os
+from aibrix import envs
 
 # Cadence (seconds) of the scheduler's expiry/cleanup loop.
 EXPIRE_INTERVAL: float = 1
@@ -27,7 +27,7 @@ SCHEDULE_IDLE_INTERVAL: float = 1
 # This is the job pool size in job scheduler.
 # It should be proportional to resource size in the backend.
 # Can be configured via AIBRIX_BATCH_JOB_POOL_SIZE environment variable.
-DEFAULT_JOB_POOL_SIZE = int(os.environ.get("AIBRIX_BATCH_JOB_POOL_SIZE", "10"))
+DEFAULT_JOB_POOL_SIZE = envs.BATCH_JOB_POOL_SIZE
 
 # Validate job pool size
 if not (1 <= DEFAULT_JOB_POOL_SIZE <= 100):
@@ -36,6 +36,8 @@ if not (1 <= DEFAULT_JOB_POOL_SIZE <= 100):
     )
 
 # Job opts are for testing purpose.
+BATCH_OPTS_FAIL_INIT_RUNTIME = "fail_init_runtime"
+BATCH_OPTS_FAIL_PREPARATION = "fail_preparation"
 BATCH_OPTS_FAIL_AFTER_N_REQUESTS = "fail_after_n_requests"
 
 # Runtime selection moved to the RuntimeTarget enum
