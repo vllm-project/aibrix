@@ -508,7 +508,13 @@ def test_batch_response_includes_input_aibrix_metadata():
 def _minimal_batch_job(status: BatchJobStatus) -> BatchJob:
     return BatchJob(
         typeMeta=TypeMeta(apiVersion="batch/v1", kind="BatchJob"),
-        metadata=ObjectMeta(name="test-batch", namespace="default"),
+        metadata=ObjectMeta(
+            name="test-batch",
+            namespace="default",
+            resourceVersion=None,
+            creationTimestamp=None,
+            deletionTimestamp=None,
+        ),
         spec=BatchJobSpec(
             input_file_id="file-123",
             endpoint="/v1/chat/completions",

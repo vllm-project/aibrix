@@ -508,9 +508,16 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
     #   - output_file_id is exposed only when there are successful results, and
     #     error_file_id only when at least one request failed (OpenAI leaves the
     #     error file null when nothing errored).
+    # rc is non-Optional (default_factory), but guard defensively to match the
+    # check at the request_counts conversion above and stay safe if it ever
+    # becomes nullable.
     rc = status.request_counts
-    output_file_id = status.output_file_id if status.finished and rc.completed > 0 else None
-    error_file_id = status.error_file_id if status.finished and rc.failed > 0 else None
+    output_file_id = (
+        status.output_file_id if status.finished and rc and rc.completed > 0 else None
+    )
+    error_file_id = (
+        status.error_file_id if status.finished and rc and rc.failed > 0 else None
+    )
 
     return BatchResponse(
         id=status.job_id,
