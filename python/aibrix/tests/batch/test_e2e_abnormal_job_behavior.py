@@ -65,7 +65,7 @@ TEST_OPTS_DELAY_BEFORE_FINALIZE_SHUTDOWN_SECONDS = (
 TEST_OPTS_DELAY_AFTER_FINALIZE_SHUTDOWN_SECONDS = (
     "delay_after_finalize_shutdown_seconds"
 )
-_ORIGINAL_RUNTIME_DELAY_SEND_ONE: Any = None
+_ORIGINAL_RUNTIME_DELAY_SEND: Any = None
 _PATCHED_RUNTIME_DELAY_SECONDS = 0.0
 
 
@@ -517,6 +517,44 @@ def install_pending_after_n_requests_barrier(
     return entered_pending, release_pending
 
 
+def pin_job_concurrency_to_serial(
+    monkeypatch, test_backend, *, per_request_delay: float = 0.0
+) -> None:
+    """Make request-persistence barriers deterministic for timing tests."""
+    target_driver = backend_runtime_driver_class(test_backend)
+
+    async def serial_execute_worker(self, job_id):
+        if self._engine is None:
+            raise RuntimeError(
+                "JobDriver was constructed without an engine; execute_worker "
+                "requires one."
+            )
+
+        job, stopped = await self._is_job_stopped(job_id)
+        if stopped:
+            return await self._finish_stopped_job(job)
+        return await self._execute_worker_serial(job)
+
+    monkeypatch.setattr(
+        target_driver,
+        "execute_worker",
+        serial_execute_worker,
+    )
+
+    if per_request_delay <= 0:
+        return
+
+    from aibrix.batch.client.engine import DispatchEngine
+
+    original_send = DispatchEngine._send_with_failover
+
+    async def delayed_send(self, request):
+        await asyncio.sleep(per_request_delay)
+        return await original_send(self, request)
+
+    monkeypatch.setattr(DispatchEngine, "_send_with_failover", delayed_send)
+
+
 async def wait_for_status(
     client: TestClient,
     batch_id: str,
@@ -924,7 +962,7 @@ def verify_runtime_restart_completion_teardown(
 def set_runtime_inference_delay(
     e2e_test_app, test_backend: str, delay_seconds: float
 ) -> Optional[float]:
-    global _ORIGINAL_RUNTIME_DELAY_SEND_ONE, _PATCHED_RUNTIME_DELAY_SECONDS
+    global _ORIGINAL_RUNTIME_DELAY_SEND, _PATCHED_RUNTIME_DELAY_SECONDS
 
     from aibrix.batch.client.engine import DispatchEngine
 
@@ -932,23 +970,23 @@ def set_runtime_inference_delay(
     original_delay = values.get("endpoint_source_delay_seconds", 0.0)
     values["endpoint_source_delay_seconds"] = delay_seconds
 
-    original_send_one = _ORIGINAL_RUNTIME_DELAY_SEND_ONE
-    if original_send_one is None:
-        _ORIGINAL_RUNTIME_DELAY_SEND_ONE = DispatchEngine.send_one
-        original_send_one = _ORIGINAL_RUNTIME_DELAY_SEND_ONE
+    original_send = _ORIGINAL_RUNTIME_DELAY_SEND
+    if original_send is None:
+        _ORIGINAL_RUNTIME_DELAY_SEND = DispatchEngine._send_with_failover
+        original_send = _ORIGINAL_RUNTIME_DELAY_SEND
 
     if delay_seconds > 0:
         _PATCHED_RUNTIME_DELAY_SECONDS = delay_seconds
-        if DispatchEngine.send_one is original_send_one:
+        if DispatchEngine._send_with_failover is original_send:
 
-            async def delayed_send_one(self, request):
+            async def delayed_send(self, request):
                 await asyncio.sleep(_PATCHED_RUNTIME_DELAY_SECONDS)
-                return await original_send_one(self, request)
+                return await original_send(self, request)
 
-            cast(Any, DispatchEngine).send_one = delayed_send_one
+            cast(Any, DispatchEngine)._send_with_failover = delayed_send
     else:
         _PATCHED_RUNTIME_DELAY_SECONDS = 0.0
-        cast(Any, DispatchEngine).send_one = original_send_one
+        cast(Any, DispatchEngine)._send_with_failover = original_send
 
     # Dry-run local/redis backends reuse a singleton NoopEndpointSource that
     # captures EchoChannel(delay=...) at app construction time. Update the live
@@ -1843,6 +1881,7 @@ async def test_job_cancellation_in_progress_during_service_discovery(
 async def test_job_cancellation_in_progress(e2e_test_app, test_backend, monkeypatch):
     """Test case 5: Create job, cancel during in progress, finalizing, validate finalized result."""
     print("Test 5: Job cancellation during processing scenario")
+    pin_job_concurrency_to_serial(monkeypatch, test_backend, per_request_delay=0.3)
     entered_pending, release_pending = install_pending_after_n_requests_barrier(
         monkeypatch,
         e2e_test_app,
@@ -2150,9 +2189,12 @@ async def test_job_expiration_during_validation(e2e_test_app, test_backend):
 
 
 @pytest.mark.asyncio
-async def test_job_expiration_during_processing(e2e_test_app, test_backend):
+async def test_job_expiration_during_processing(
+    e2e_test_app, test_backend, monkeypatch
+):
     """Test case 8: Create job, set expire to 1min, expired during in progress, finalizing, validate result."""
     print("Test 8: Job expiration during processing scenario")
+    pin_job_concurrency_to_serial(monkeypatch, test_backend)
 
     with create_test_client(e2e_test_app) as client:
         input_file_id = upload_batch_input_file(client, 3)
@@ -2293,6 +2335,7 @@ async def test_job_restart_during_in_progress(
         pytest.skip("Restart phase recovery is not covered for this backend")
 
     # Test setup
+    pin_job_concurrency_to_serial(monkeypatch, test_backend)
     force_batch_driver_crash_on_shutdown(monkeypatch, e2e_test_app)
     entered_pending, _ = install_pending_after_n_requests_barrier(
         monkeypatch,

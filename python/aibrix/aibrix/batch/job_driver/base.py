@@ -953,10 +953,10 @@ class BaseJobDriver:
 
         Sending requests is delegated to the dispatch engine: the engine owns
         endpoint resolution, failover, and concurrency. Jobs with a known total
-        use the concurrent engine loop only when the engine advertises parallel
-        capacity and there is no serial-only compatibility option enabled.
-        Unknown-total jobs keep the serial cursor because input EOF discovery is
-        part of that protocol.
+        use the concurrent engine loop so client concurrency settings are
+        honored even when the source currently advertises one endpoint.
+        Unknown-total jobs keep the serial cursor because input EOF discovery
+        is part of that protocol.
         """
         if self._engine is None:
             raise RuntimeError(
@@ -971,10 +971,7 @@ class BaseJobDriver:
         if stopped:
             return await self._finish_stopped_job(job)
 
-        if (
-            job.status.request_counts.total > 0
-            and (await self._engine.capacity()).count > 1
-        ):
+        if job.status.request_counts.total > 0:
             return await self._execute_worker_concurrent(job)
 
         return await self._execute_worker_serial(job)
