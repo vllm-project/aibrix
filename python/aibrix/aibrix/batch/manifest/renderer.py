@@ -29,7 +29,7 @@ override merging.
   5. apply_per_batch()      -- annotations, file IDs, deadline, name
 
 Currently supports:
-  - engine.type in {vllm, mock}
+  - engine.type in {vllm, sglang, mock}
   - deployment_mode == dedicated
 
 Templates are provider-agnostic: K8s defaults (namespace, serviceAccount)
