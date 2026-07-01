@@ -500,6 +500,25 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
     else:
         state = status.state.value
 
+    # Mirror OpenAI's batch object contract for the result file ids. We allocate
+    # them upfront so the worker can stream into them, but they must not surface
+    # until they are real, downloadable files:
+    #   - both stay null through validating/in_progress/finalizing (the multipart
+    #     upload is only completed during finalization), and
+    #   - output_file_id is exposed only when there are successful results, and
+    #     error_file_id only when at least one request failed (OpenAI leaves the
+    #     error file null when nothing errored).
+    # rc is non-Optional (default_factory), but guard defensively to match the
+    # check at the request_counts conversion above and stay safe if it ever
+    # becomes nullable.
+    rc = status.request_counts
+    output_file_id = (
+        status.output_file_id if status.finished and rc and rc.completed > 0 else None
+    )
+    error_file_id = (
+        status.error_file_id if status.finished and rc and rc.failed > 0 else None
+    )
+
     return BatchResponse(
         id=status.job_id,
         endpoint=spec.endpoint,
@@ -508,8 +527,8 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
         input_file_id=spec.input_file_id,
         completion_window=completion_window,
         status=state,
-        output_file_id=status.output_file_id,
-        error_file_id=status.error_file_id,
+        output_file_id=output_file_id,
+        error_file_id=error_file_id,
         created_at=created_at_unix,
         in_progress_at=dt_to_unix(status.in_progress_at),
         expires_at=created_at_unix + spec.completion_window,
