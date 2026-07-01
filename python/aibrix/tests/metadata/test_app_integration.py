@@ -34,7 +34,6 @@ def _args(**overrides):
         "enable_k8s_support": True,
         "disable_batch_api": True,
         "disable_file_api": True,
-        "job_store_provider": None,
         "dry_run": False,
     }
     defaults.update(overrides)

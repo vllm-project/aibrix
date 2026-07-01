@@ -223,17 +223,76 @@ func sortRoleSetByReadiness(roleSets []*orchestrationv1alpha1.RoleSet) {
 	})
 }
 
-// Sorts role sets: old revisions before new, and within the same revision, not-ready before ready.
-func sortRoleSetByRevision(roleSets []*orchestrationv1alpha1.RoleSet, updatedRevision string) {
-	sort.Slice(roleSets, func(i, j int) bool {
-		if isRoleSetMatchRevision(roleSets[i], updatedRevision) {
-			return false
-		} else if isRoleSetMatchRevision(roleSets[j], updatedRevision) {
-			return true
-		} else {
-			return !utils.IsRoleSetReady(roleSets[i])
+type roleSetOrderRule func(a, b *orchestrationv1alpha1.RoleSet) int
+
+const (
+	roleSetOrderBefore = -1
+	roleSetOrderSame   = 0
+	roleSetOrderAfter  = 1
+)
+
+func sortRoleSetsByRules(roleSets []*orchestrationv1alpha1.RoleSet, rules ...roleSetOrderRule) {
+	sort.SliceStable(roleSets, func(i, j int) bool {
+		for _, rule := range rules {
+			switch rule(roleSets[i], roleSets[j]) {
+			case roleSetOrderBefore:
+				return true
+			case roleSetOrderAfter:
+				return false
+			}
 		}
+		return false
 	})
+}
+
+func orderNilBeforeNonNil(a, b *orchestrationv1alpha1.RoleSet) int {
+	if a == nil && b == nil {
+		return roleSetOrderSame
+	}
+	if a == nil {
+		return roleSetOrderBefore
+	}
+	if b == nil {
+		return roleSetOrderAfter
+	}
+	return roleSetOrderSame
+}
+
+func orderOldRevisionBeforeUpdated(updatedRevision string) roleSetOrderRule {
+	return func(a, b *orchestrationv1alpha1.RoleSet) int {
+		aUpdated := isRoleSetMatchRevision(a, updatedRevision)
+		bUpdated := isRoleSetMatchRevision(b, updatedRevision)
+		if aUpdated == bUpdated {
+			return roleSetOrderSame
+		}
+		if !aUpdated && bUpdated {
+			return roleSetOrderBefore
+		}
+		return roleSetOrderAfter
+	}
+}
+
+func orderNotReadyBeforeReady(a, b *orchestrationv1alpha1.RoleSet) int {
+	aReady := utils.IsRoleSetReady(a)
+	bReady := utils.IsRoleSetReady(b)
+	if aReady == bReady {
+		return roleSetOrderSame
+	}
+	if !aReady && bReady {
+		return roleSetOrderBefore
+	}
+	return roleSetOrderAfter
+}
+
+// Sorts role sets: old revisions before new, and within the same revision class,
+// not-ready before ready. Equivalent items keep their existing relative order.
+func sortRoleSetByRevision(roleSets []*orchestrationv1alpha1.RoleSet, updatedRevision string) {
+	sortRoleSetsByRules(
+		roleSets,
+		orderNilBeforeNonNil,
+		orderOldRevisionBeforeUpdated(updatedRevision),
+		orderNotReadyBeforeReady,
+	)
 }
 
 // isServiceEqual compares two Kubernetes Service objects for equality

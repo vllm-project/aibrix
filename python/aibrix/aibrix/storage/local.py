@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import os
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
@@ -148,14 +149,31 @@ class LocalStorage(BaseStorage2):
 
     def _write_file(self, path: Path, reader: Reader) -> None:
         """Write data to file (synchronous helper)."""
-        if reader.is_binary():
-            # Write as bytes
-            with open(path, "wb") as f:
-                f.write(bytes(reader))
-        else:
-            # Write as text string
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(str(reader))
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
+        try:
+            if reader.is_binary():
+                with os.fdopen(fd, "wb") as f:
+                    f.write(bytes(reader))
+                    f.flush()
+                    os.fsync(f.fileno())
+            else:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(str(reader))
+                    f.flush()
+                    os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            raise
 
     async def _store_metadata(
         self,
@@ -513,8 +531,25 @@ class LocalStorage(BaseStorage2):
         """Write JSON data to file (synchronous helper)."""
         import json
 
-        with open(path, "w") as f:
-            json.dump(data, f)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            raise
 
     def _read_json_file(self, path: Path) -> dict:
         """Read JSON data from file (synchronous helper)."""

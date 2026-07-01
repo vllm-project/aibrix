@@ -27,9 +27,12 @@ named component instead of three loose dicts on the god object.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from aibrix.batch.job_entity import BatchJob
+
+if TYPE_CHECKING:
+    from aibrix.batch.state.job_meta_info import JobMetaInfo
 
 
 class BatchRegistry:
@@ -37,7 +40,7 @@ class BatchRegistry:
         # CREATED, awaiting scheduling.
         self._pending: Dict[str, BatchJob] = {}
         # Active; entries are JobMetaInfo (BatchJob + tracker + driver).
-        self._in_progress: Dict[str, BatchJob] = {}
+        self._in_progress: Dict[str, JobMetaInfo] = {}
         # Terminal (completed / failed / expired / cancelled).
         self._done: Dict[str, BatchJob] = {}
 
@@ -46,7 +49,7 @@ class BatchRegistry:
         return self._pending
 
     @property
-    def in_progress(self) -> Dict[str, BatchJob]:
+    def in_progress(self) -> Dict[str, JobMetaInfo]:
         return self._in_progress
 
     @property

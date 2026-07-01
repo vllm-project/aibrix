@@ -44,7 +44,7 @@ from aibrix.batch.client.concurrency import (
 )
 from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
 from aibrix.batch.client.policy import FIFO, RoundRobin, Router, Scheduler
-from aibrix.batch.client.source import EndpointSource
+from aibrix.batch.client.source import CapacitySignal, EndpointSource
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -192,6 +192,11 @@ class DispatchEngine:
     async def send_one(self, request: InferenceRequest) -> Response:
         """Single shot: pick an endpoint, send, fail over on error."""
         return await self._send_with_failover(request)
+
+    async def capacity(self) -> CapacitySignal:
+        """Expose the source's advertised concurrency capacity to callers that
+        need to choose between serial and concurrent orchestration."""
+        return await self._source.capacity()
 
     async def run(
         self,

@@ -38,7 +38,14 @@ def _make_job(options: dict):
     """Minimal BatchJob stand-in exposing job.spec.aibrix.runtime.options."""
     runtime = type("R", (), {"options": options})
     aibrix = type("A", (), {"runtime": runtime})
-    return type("Job", (), {"spec": type("S", (), {"aibrix": aibrix})})()
+    return type(
+        "Job",
+        (),
+        {
+            "spec": type("S", (), {"aibrix": aibrix}),
+            "status": types.SimpleNamespace(get_runtime_ref=lambda key: None),
+        },
+    )()
 
 
 def test_parse_conn_info_reads_options():
@@ -212,6 +219,7 @@ def test_runpod_runtime_is_ssh_launch():
     rt = create_runtime("RunPod", job=None, context=None, entity_manager=None)
     assert isinstance(rt, SSHLaunchRuntime)
     assert rt.provisions is True
+    assert rt._get_runtime_key(_make_job({})) == "runpod"
 
 
 # --- LambdaCloud bare-VM bootstrap ------------------------------------------
@@ -236,6 +244,71 @@ def test_lambda_runtime_is_ssh_launch():
     rt = create_runtime("LambdaCloud", job=None, context=None, entity_manager=None)
     assert isinstance(rt, SSHLaunchRuntime)
     assert rt.provisions is True
+    assert rt._get_runtime_key(_lambda_job()) == "lambda-cloud"
+
+
+@pytest.mark.asyncio
+async def test_runpod_build_runtime_ref_uses_active_handle(monkeypatch):
+    rt = RunPodRuntime()
+    fake_conn = Mock()
+    fake_conn.run = AsyncMock()
+    monkeypatch.setattr(rt, "_connect_ssh", AsyncMock(return_value=fake_conn))
+
+    job = _make_job(
+        {
+            "host": "1.2.3.4",
+            "ssh_port": 40022,
+            "ssh_user": "root",
+            "http_base_url": "https://pod-8000.proxy.runpod.net",
+            "model": "m",
+            "vllm_args": ["--max-model-len", "4096"],
+        }
+    )
+    await rt._provision(job, "job_rp")
+
+    runtime_ref = rt._build_runtime_ref(job)
+
+    assert runtime_ref is not None
+    assert runtime_ref.driver_type == "runpod"
+    assert runtime_ref.owner_ref == "root@1.2.3.4:40022"
+    assert runtime_ref.reconnect_payload == {
+        "host": "1.2.3.4",
+        "sshPort": 40022,
+        "sshUser": "root",
+        "httpBaseUrl": "https://pod-8000.proxy.runpod.net",
+        "model": "m",
+        "vllmArgs": ["--max-model-len", "4096"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_lambda_build_runtime_ref_includes_image(monkeypatch):
+    from aibrix.batch.job_driver.runtime.lambda_cloud import LambdaCloudRuntime
+
+    rt = LambdaCloudRuntime()
+    fake_conn = Mock()
+    fake_conn.run = AsyncMock()
+    fake_listener = Mock(get_port=Mock(return_value=54321))
+    fake_conn.forward_local_port = AsyncMock(return_value=fake_listener)
+    monkeypatch.setattr(rt, "_connect_ssh", AsyncMock(return_value=fake_conn))
+
+    job = _lambda_job({"image": "vllm/vllm-openai:v0.8.5"})
+    await rt._provision(job, "job_lambda")
+
+    runtime_ref = rt._build_runtime_ref(job)
+
+    assert runtime_ref is not None
+    assert runtime_ref.driver_type == "lambda-cloud"
+    assert runtime_ref.owner_ref == "ubuntu@5.6.7.8:22"
+    assert runtime_ref.reconnect_payload == {
+        "host": "5.6.7.8",
+        "sshPort": 22,
+        "sshUser": "ubuntu",
+        "httpBaseUrl": "http://5.6.7.8:8000",
+        "model": "Qwen/Qwen2.5-0.5B-Instruct",
+        "vllmArgs": [],
+        "image": "vllm/vllm-openai:v0.8.5",
+    }
 
 
 def test_runpod_bootstrap_is_empty():

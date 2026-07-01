@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from kubernetes.client import ApiException
 
@@ -43,10 +43,10 @@ from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobError,
     BatchJobErrorCode,
+    JobRuntimeRef,
     ResourceDetail,
 )
 from aibrix.batch.manifest import DeploymentManifestRenderer
-from aibrix.batch.state import JobEntityManager
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
 
@@ -78,20 +78,10 @@ class DeploymentRuntime(RuntimeBase):
     def __init__(
         self,
         context: InfrastructureContext,
-        entity_manager: JobEntityManager,
         renderer: Optional[DeploymentManifestRenderer] = None,
         ready_timeout_seconds: int = 300,
     ) -> None:
-        if entity_manager is None:
-            # The factory forwards entity_manager unconditionally; a
-            # provisioning runtime needs it for delete-driven cancellation.
-            # Fail clearly here instead of an opaque NoneType error below.
-            raise BatchJobError(
-                BatchJobErrorCode.INVALID_DRIVER,
-                "Kubernetes provider requires a job entity manager",
-            )
-        self._context = context
-        self._entity_manager = entity_manager
+        super().__init__(context, ready_timeout_seconds)
         self._renderer = renderer or self._build_renderer(context)
         if context.apps_v1_api is None or context.core_v1_api is None:
             raise BatchJobError(
@@ -101,17 +91,7 @@ class DeploymentRuntime(RuntimeBase):
             )
         self._apps_v1_api = context.apps_v1_api
         self._core_v1_api = context.core_v1_api
-        self._ready_timeout_seconds = ready_timeout_seconds
-        self._mgr_deleted_handler = entity_manager.on_job_deleted(
-            self._job_deleted_handler
-        )
-        self._active_job_id: Optional[str] = None
-        self._active_task: Optional[asyncio.Task] = None
         self._active_handle: Optional[DeploymentHandle] = None
-        self._delete_requested = asyncio.Event()
-
-    def cancelled(self) -> bool:
-        return self._delete_requested.is_set()
 
     @staticmethod
     def _build_renderer(context: InfrastructureContext) -> DeploymentManifestRenderer:
@@ -119,24 +99,86 @@ class DeploymentRuntime(RuntimeBase):
             context.template_registry, context.profile_registry
         )
 
-    async def _job_deleted_handler(self, deleted_job: BatchJob) -> bool:
-        deleted_job_id = deleted_job.job_id
-        if deleted_job_id and deleted_job_id == self._active_job_id:
-            self._delete_requested.set()
-            if self._active_task is not None and not self._active_task.done():
-                self._active_task.cancel()
+    def _get_runtime_key(self, job: BatchJob) -> str:
+        del job
+        return "k8s-deployment"
 
-        if self._mgr_deleted_handler is None:
-            return True
-        return await self._mgr_deleted_handler(deleted_job)
+    def _get_runtime_owner_ref(self, job: BatchJob) -> Optional[str]:
+        del job
+        if self._active_handle is None:
+            return None
+        return f"{self._active_handle.namespace}/{self._active_handle.deployment_name}"
+
+    def _get_runtime_reconnect_payload(
+        self,
+        job: BatchJob,
+    ) -> Optional[Dict[str, Any]]:
+        payload = super()._get_runtime_reconnect_payload(job) or {}
+        if self._active_handle is None:
+            return None if not payload else payload
+        payload.update(
+            {
+                "namespace": self._active_handle.namespace,
+                "deploymentName": self._active_handle.deployment_name,
+                "serviceName": self._active_handle.service_name,
+                "modelName": self._active_handle.model_name,
+                "baseUrl": self._active_handle.base_url,
+                "servicePort": self._active_handle.service_port,
+                "replicas": self._active_handle.replicas,
+            }
+        )
+        return payload
+
+    async def _reconnect(
+        self, job: BatchJob, job_id: str, execution: JobRuntimeRef
+    ) -> DeploymentHandle | None:
+        del job
+        reconnect_payload = execution.reconnect_payload or {}
+        namespace = reconnect_payload.get("namespace")
+        deployment_name = reconnect_payload.get("deploymentName")
+        service_name = reconnect_payload.get("serviceName")
+        model_name = reconnect_payload.get("modelName")
+        base_url = reconnect_payload.get("baseUrl")
+        service_port = reconnect_payload.get("servicePort")
+        replicas = reconnect_payload.get("replicas")
+        if not (
+            isinstance(namespace, str)
+            and namespace
+            and isinstance(deployment_name, str)
+            and deployment_name
+            and isinstance(service_name, str)
+            and service_name
+            and isinstance(model_name, str)
+            and model_name
+            and isinstance(base_url, str)
+            and base_url
+            and isinstance(service_port, int)
+            and isinstance(replicas, int)
+        ):
+            return None
+
+        handle = DeploymentHandle(
+            namespace=namespace,
+            deployment_name=deployment_name,
+            service_name=service_name,
+            model_name=model_name,
+            base_url=base_url,
+            service_port=service_port,
+            replicas=replicas,
+        )
+        self._active_handle = handle
+        logger.info(
+            "Reconnected Deployment runtime for batch job",
+            job_id=job_id,
+            namespace=handle.namespace,
+            deployment=handle.deployment_name,
+            service=handle.service_name,
+        )  # type: ignore[call-arg]
+        return handle
 
     # ── Runtime phases ───────────────────────────────────────────────────
 
     async def _provision(self, job: BatchJob, job_id: str) -> DeploymentHandle:
-        self._active_job_id = job_id
-        self._active_task = asyncio.current_task()
-        self._delete_requested.clear()
-
         if job.job_id is None:
             raise ValueError("job_id is required")
         if job.spec.aibrix is None or job.spec.model_template_name is None:
@@ -201,8 +243,6 @@ class DeploymentRuntime(RuntimeBase):
             await self._teardown_runtime(handle)
             if handle.source is not None:
                 await handle.source.aclose()
-        self._active_job_id = None
-        self._active_task = None
         self._active_handle = None
 
     # ── k8s helpers ──────────────────────────────────────────────────────
@@ -305,7 +345,7 @@ class DeploymentRuntime(RuntimeBase):
     ) -> None:
         deadline = asyncio.get_running_loop().time() + self._ready_timeout_seconds
         while True:
-            if self._delete_requested.is_set():
+            if self._stop_requested.is_set():
                 raise asyncio.CancelledError
             try:
                 deployment = await asyncio.to_thread(
@@ -370,5 +410,5 @@ class DeploymentRuntime(RuntimeBase):
 
 register_runtime(
     "Kubernetes",
-    lambda *, context, entity_manager, **_: DeploymentRuntime(context, entity_manager),
+    lambda *, context, **_: DeploymentRuntime(context),
 )

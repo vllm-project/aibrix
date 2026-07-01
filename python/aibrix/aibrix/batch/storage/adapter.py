@@ -338,11 +338,8 @@ class BatchStorageAdapter:
         )  # type: ignore[call-arg]
 
         # 4. Update job object with calculated request counts if they differ.
-        # ``total`` is preserved when set at job creation (validated input
-        # line count). Only infer it from metastore in the legacy "discover
-        # while streaming" path where no upfront count was available;
-        # otherwise an inconsistency (e.g. a missing per-request marker)
-        # would silently rewrite a known-correct ``total``.
+        # Preserve the validated input total when it is larger, but allow
+        # metastore truth to grow a stale lower total after restart recovery.
         if (
             job.status.request_counts.total != total
             or job.status.request_counts.launched != launched
@@ -362,7 +359,7 @@ class BatchStorageAdapter:
                 new_failed=failed,
             )  # type: ignore[call-arg]
 
-            if job.status.request_counts.total == 0:
+            if total > job.status.request_counts.total:
                 job.status.request_counts.total = total
             job.status.request_counts.launched = launched
             job.status.request_counts.completed = completed

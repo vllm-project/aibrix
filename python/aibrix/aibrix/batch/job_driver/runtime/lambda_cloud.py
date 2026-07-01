@@ -57,6 +57,10 @@ class LambdaCloudRuntime(SSHLaunchRuntime):
         super().__init__(**kwargs)
         self._default_image = default_image
 
+    def _get_runtime_key(self, job) -> str:
+        del job
+        return "lambda-cloud"
+
     def _bootstrap_commands(self, info: SSHConnInfo) -> List[str]:
         """Verify Docker is usable before launch. Lambda ships Docker + the
         NVIDIA Container Toolkit, but the ``ubuntu`` user is not in the docker

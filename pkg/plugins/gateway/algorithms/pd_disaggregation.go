@@ -38,7 +38,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
-	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -164,10 +163,12 @@ func (r *pdRouter) effectiveScorePolicies(routingCtx *types.RoutingContext) (pd.
 			prefill = pd.NewLeastRequestPrefillPolicy()
 		case pd.PrefillScorePolicyPrefixCache:
 			prefill = newPrefixCachePrefillPolicy(r.prefixCacheIndexer)
+		case pd.PrefillScorePolicyConductor:
+			prefill = newConductorPrefillPolicy(r.prefixCacheIndexer, r.cache)
 		default:
 			klog.InfoS("unknown prefillScorePolicy in routingConfig, keeping env-based policy",
 				"request_id", routingCtx.RequestID, "value", s,
-				"valid", []string{pd.PrefillScorePolicyPrefixCache, pd.PrefillScorePolicyLeastRequest})
+				"valid", []string{pd.PrefillScorePolicyPrefixCache, pd.PrefillScorePolicyLeastRequest, pd.PrefillScorePolicyConductor})
 			prefill = r.prefillPolicy
 		}
 	}
@@ -205,13 +206,11 @@ type pdRouter struct {
 }
 
 func newPrefixCachePrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable) pd.PrefillScorePolicy {
-	var tok tokenizer.Tokenizer
-	if tokenizerType == tokenizerTypeTiktoken {
-		tok = tokenizer.NewTiktokenTokenizer()
-	} else {
-		tok = tokenizer.NewCharacterTokenizer()
-	}
-	return pd.NewPrefixCachePrefillPolicy(tok, sharedPrefixTable)
+	return pd.NewPrefixCachePrefillPolicy(newTokenizer(), sharedPrefixTable)
+}
+
+func newConductorPrefillPolicy(sharedPrefixTable *prefixcacheindexer.PrefixHashTable, metricCache cache.MetricCache) pd.PrefillScorePolicy {
+	return pd.NewConductorPrefillPolicy(newTokenizer(), sharedPrefixTable, metricCache, pd.NewConductorPrefillPolicyConfig())
 }
 
 func NewPDRouter() (types.Router, error) {
@@ -229,10 +228,12 @@ func NewPDRouter() (types.Router, error) {
 		policy = pd.NewLeastRequestPrefillPolicy()
 	case pd.PrefillScorePolicyPrefixCache:
 		policy = newPrefixCachePrefillPolicy(sharedPrefixTable)
+	case pd.PrefillScorePolicyConductor:
+		policy = newConductorPrefillPolicy(sharedPrefixTable, c)
 	default:
 		klog.InfoS("pd_router unknown AIBRIX_PREFILL_SCORE_POLICY, using prefix_cache",
 			"value", aibrixPrefillScorePolicy,
-			"valid", []string{pd.PrefillScorePolicyPrefixCache, pd.PrefillScorePolicyLeastRequest})
+			"valid", []string{pd.PrefillScorePolicyPrefixCache, pd.PrefillScorePolicyLeastRequest, pd.PrefillScorePolicyConductor})
 		policy = newPrefixCachePrefillPolicy(sharedPrefixTable)
 	}
 	klog.InfoS("pd_router prefill score policy", "policy", policy.Name())

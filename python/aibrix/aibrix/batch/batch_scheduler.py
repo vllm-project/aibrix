@@ -102,11 +102,17 @@ class BatchScheduler:
         return None
 
     async def expire_jobs(self):
-        # Derive past-due jobs from the registry's pending pool (the single
-        # source of truth) rather than a duplicated due-time list. The deadline
-        # is recomputed per job: created_at + completion_window.
+        # Derive past-due jobs from schedulable pools rather than a duplicated
+        # due-time list. The deadline is recomputed per job:
+        # created_at + completion_window.
         now = time.time()
-        for job in await self._job_progress_manager.list_pending():
+        seen_job_ids = set()
+        schedulable_jobs = list(await self._job_progress_manager.list_pending())
+        schedulable_jobs.extend(await self._job_progress_manager.list_in_progress())
+        for job in schedulable_jobs:
+            if job.job_id in seen_job_ids:
+                continue
+            seen_job_ids.add(job.job_id)
             created_at = job.status.created_at
             if created_at is None:
                 continue

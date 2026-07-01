@@ -1,7 +1,8 @@
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from aibrix.batch.job_entity.base import _Lenient, _Strict
 
@@ -58,6 +59,21 @@ class ResourceAllocation(_Lenient):
     provision_id: Optional[str] = None
     provision_resource_deadline: Optional[int] = None
     resource_details: Optional[List[ResourceDetail]] = None
+
+    @field_validator("resource_details", mode="before")
+    @classmethod
+    def normalize_resource_details(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return value
+        return [value]
+
+    def is_expiring(self) -> bool:
+        deadline = self.provision_resource_deadline
+        if deadline is None or deadline <= 0:
+            return False
+        return deadline <= int(datetime.now(timezone.utc).timestamp())
 
 
 class ClientRetryPolicy(_Strict):
@@ -151,6 +167,13 @@ class AibrixMetadata(_Strict):
 
     def to_metadata(self) -> "AibrixMetadata":
         return AibrixMetadata(**self.model_dump(exclude_none=True))
+
+    def is_expiring(self) -> bool:
+        return (
+            self.resource_allocation.is_expiring()
+            if self.resource_allocation is not None
+            else False
+        )
 
     @classmethod
     def from_extension_fields(
