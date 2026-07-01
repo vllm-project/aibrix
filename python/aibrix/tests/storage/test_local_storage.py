@@ -158,8 +158,8 @@ class TestLocalStorage:
             after_key=first_page[-1],
         )
 
-        assert first_page == ["after/file1.txt", "after/file2.txt"]
-        assert second_page == ["after/file3.txt"]
+        assert first_page == ["after/file3.txt", "after/file2.txt"]
+        assert second_page == ["after/file1.txt"]
 
         for key in test_files:
             await local_storage.delete_object(key)
@@ -178,17 +178,17 @@ class TestLocalStorage:
         await local_storage.put_object("other:zzz", b"c")
 
         keys, _ = await local_storage.list_objects(prefix="batchjob:")
-        assert sorted(keys) == ["batchjob:abc", "batchjob:def"]
+        assert keys == ["batchjob:def", "batchjob:abc"]
 
         # A delimiter must not break flat-prefix matching.
         keys2, _ = await local_storage.list_objects(prefix="batchjob:", delimiter=":")
-        assert sorted(keys2) == ["batchjob:abc", "batchjob:def"]
+        assert keys2 == ["batchjob:def", "batchjob:abc"]
 
         for key in ("batchjob:abc", "batchjob:def", "other:zzz"):
             await local_storage.delete_object(key)
 
     @pytest.mark.asyncio
-    async def test_list_batchjob_prefix_orders_by_created_at_desc(
+    async def test_list_prefix_orders_by_created_at_desc(
         self, local_storage: LocalStorage
     ):
         keys = ["batchjob:job-b", "batchjob:job-a", "batchjob:job-c"]

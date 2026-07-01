@@ -37,6 +37,7 @@ from aibrix.metadata.core import HTTPXClientWrapper
 from aibrix.metadata.setting import settings
 from aibrix.metadata.store import RedisMetadataStore
 from aibrix.storage import create_storage
+from aibrix.storage.redis_upgrade import maybe_upgrade_storage
 
 logger = init_logger(__name__)
 router = APIRouter()
@@ -116,6 +117,14 @@ async def liveness_check():
 async def readiness_check(request: Request):
     # Check if metadata store is ready
     try:
+        if getattr(request.app.state, "storage_upgrade_in_progress", False):
+            return JSONResponse(
+                content={
+                    "status": "not ready",
+                    "error": "storage upgrade in progress",
+                },
+                status_code=503,
+            )
         if hasattr(request.app.state, "metadata_store"):
             ping_ok = await request.app.state.metadata_store.ping()
             if not ping_ok:
@@ -160,6 +169,7 @@ async def status_check(request: Request):
 async def lifespan(app: FastAPI):
     # Code executed on startup
     logger.info("Initializing FastAPI app...")
+    app.state.storage_upgrade_in_progress = True
 
     # Initialize metadata store (abstraction over Redis) only if not already set
     # (e.g., tests may pre-configure a mock store before lifespan runs)
@@ -170,6 +180,12 @@ async def lifespan(app: FastAPI):
         # that haven't migrated to the MetadataStore interface yet
         app.state.redis_client = metadata_store.client
         logger.info("Metadata store initialized")
+
+    try:
+        for storage in _iter_upgrade_candidate_storages(app):
+            await maybe_upgrade_storage(storage)
+    finally:
+        app.state.storage_upgrade_in_progress = False
 
     if hasattr(app.state, "httpx_client_wrapper"):
         app.state.httpx_client_wrapper.start()
@@ -188,6 +204,31 @@ async def lifespan(app: FastAPI):
     elif hasattr(app.state, "redis_client"):
         await app.state.redis_client.aclose()  # type: ignore[attr-defined]
         logger.info("Redis client closed")
+
+
+def _iter_upgrade_candidate_storages(app: FastAPI):
+    seen_ids: set[int] = set()
+
+    def _yield_once(storage):
+        if storage is None:
+            return
+        storage_id = id(storage)
+        if storage_id in seen_ids:
+            return
+        seen_ids.add(storage_id)
+        yield storage
+
+    if hasattr(app.state, "storage"):
+        yield from _yield_once(app.state.storage)
+
+    try:
+        from aibrix.batch.storage import batch_metastore, batch_storage
+
+        if batch_storage.p_storage is not None:
+            yield from _yield_once(batch_storage.p_storage.storage)
+        yield from _yield_once(batch_metastore.p_metastore)
+    except Exception:
+        logger.exception("Failed to inspect batch storages for upgrade")  # type: ignore[call-arg]
 
 
 def build_app(args: argparse.Namespace, params={}):

@@ -195,6 +195,34 @@ class BatchManager(RunningJobs, SchedulableJobs):
         meta_job.status = job.status
         return meta_job
 
+    def _normalize_recovered_in_progress_job_for_cleanup(
+        self, job_id: str, job: BatchJob
+    ) -> JobMetaInfo | BatchJob:
+        """Move a recovered active job into the in-progress registry if needed.
+
+        Restart/bootstrap can temporarily stage a persisted ``IN_PROGRESS`` job
+        in ``_pending_jobs`` before scheduler admission rebuilds the runtime
+        state. Expire/cancel cleanup paths operate on the in-progress registry,
+        so normalize that recovered shape before persisting status updates or
+        clearing durable execution metadata.
+        """
+
+        if job.status.state != BatchJobState.IN_PROGRESS:
+            return job
+        if job_id in self._in_progress_jobs:
+            return self._in_progress_jobs[job_id]
+        if job_id not in self._pending_jobs:
+            return job
+
+        meta_data = self._as_job_meta(job)
+        del self._pending_jobs[job_id]
+        self._in_progress_jobs[job_id] = meta_data
+        logger.debug(
+            "Normalized recovered in-progress job for cleanup",
+            job_id=job_id,
+        )  # type: ignore[call-arg]
+        return meta_data
+
     async def set_job_entity_manager(
         self, job_entity_manager: JobEntityManager
     ) -> None:
@@ -903,7 +931,10 @@ class BatchManager(RunningJobs, SchedulableJobs):
             state=job.status.state,
         )  # type: ignore[call-arg]
 
-        job = meta_data.copy(job.status)
+        # Copy the target status snapshot so the live in-progress JobMetaInfo is
+        # not mutated to FINALIZED before job_updated_handler computes the old
+        # category transition.
+        job = meta_data.copy(job.status.model_copy(deep=True))
         finalized_at = datetime.now(timezone.utc)
         job.status.finalized_at = finalized_at
         # Do not override existing condition. Fill up locally for data integrity in case apply_job_changes does nothing
@@ -1010,6 +1041,8 @@ class BatchManager(RunningJobs, SchedulableJobs):
             and old_job.status.check_condition(ConditionType.EXPIRED)
         ):
             return True
+
+        old_job = self._normalize_recovered_in_progress_job_for_cleanup(job_id, old_job)
 
         job_expired = self._build_expired_job_update(old_job)
         if old_job.status.state != BatchJobState.IN_PROGRESS:

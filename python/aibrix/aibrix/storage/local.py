@@ -299,7 +299,6 @@ class LocalStorage(BaseStorage2):
         for keys that were stored without an extension.
         """
         _METADATA_SUFFIX = ".metadata"
-        _BATCH_JOB_PREFIX = "batchjob:"
 
         def _list_files():
             # Parse continuation token as offset (default to 0)
@@ -316,10 +315,7 @@ class LocalStorage(BaseStorage2):
             # directory path — so flat keys like ``batchjob:<id>`` are found by
             # a partial prefix such as ``batchjob:`` (directory descent missed
             # them, returning nothing for any non-directory prefix).
-            entries: list[str] = []
-            batch_job_entries: list[tuple[str, Optional[datetime]]] = []
-            seen: set[str] = set()
-            batch_job_ordering = delimiter is None and prefix == _BATCH_JOB_PREFIX
+            entry_created_at: dict[str, Optional[datetime]] = {}
             for item in self.base_path.rglob("*" + _METADATA_SUFFIX):
                 if not item.is_file():
                     continue
@@ -338,27 +334,24 @@ class LocalStorage(BaseStorage2):
                     )
                 else:
                     entry = key
-                if entry not in seen:
-                    seen.add(entry)
-                    if batch_job_ordering:
-                        batch_job_entries.append(
-                            (entry, self._read_metadata_created_at(item))
-                        )
-                    else:
-                        entries.append(entry)
+                created_at = self._read_metadata_created_at(item)
+                previous_created_at = entry_created_at.get(entry)
+                if previous_created_at is None or (
+                    created_at is not None and created_at > previous_created_at
+                ):
+                    entry_created_at[entry] = created_at
 
-            if batch_job_ordering:
-                batch_job_entries.sort(key=lambda entry: entry[0])
-                batch_job_entries.sort(
-                    key=lambda entry: (
-                        entry[1].timestamp() if entry[1] is not None else float("-inf")
-                    ),
-                    reverse=True,
-                )
-                entries = [entry for entry, _ in batch_job_entries]
-            else:
-                # Sort for consistent pagination
-                entries.sort()
+            sorted_entries = sorted(
+                entry_created_at.items(),
+                key=lambda entry: entry[0],
+            )
+            sorted_entries.sort(
+                key=lambda entry: (
+                    entry[1].timestamp() if entry[1] is not None else float("-inf")
+                ),
+                reverse=True,
+            )
+            entries = [entry for entry, _ in sorted_entries]
 
             if continuation_token is None and after_key:
                 try:

@@ -59,8 +59,9 @@ class JobStore(JobEntityManager):
         if job_id in self.active_jobs and not force_reload:
             return self.active_jobs[job_id]
         job = await get_batch_job(job_id)
+        await self._publish_active_job_on_cache_miss(job)
         if job is not None and not job.status.finished:
-            self.active_jobs[job_id] = job
+            return self.active_jobs.get(job_id, job)
         return job
 
     async def list_jobs(

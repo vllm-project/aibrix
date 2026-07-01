@@ -310,6 +310,23 @@ class JobEntityManager(ABC):
             return
         self._monitored_job_snapshots[job.job_id] = job.model_copy(deep=True)
 
+    async def _publish_active_job_on_cache_miss(self, job: Optional[BatchJob]) -> None:
+        """Republish an active job discovered outside bootstrap/refresh.
+
+        A direct ``get_job()`` read can discover an unfinished job that was not
+        restored into the manager during startup recovery. In that case, publish
+        the same committed event the refresh/bootstrap path would have emitted.
+        """
+
+        if job is None or job.job_id is None or job.status.finished:
+            return
+        if (
+            job.job_id in self.active_jobs
+            or job.job_id in self._monitored_job_snapshots
+        ):
+            return
+        await self.job_committed(job.model_copy(deep=True))
+
     def _forget_job(self, job_id: Optional[str]) -> None:
         if job_id is None:
             return

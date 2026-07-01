@@ -40,7 +40,6 @@ from aibrix.batch.job_entity import (
     RuntimeSpec,
 )
 from aibrix.batch.manifest import RenderError
-from aibrix.batch.storage.batch_metastore import get_batch_job
 from aibrix.batch.template import (
     BatchProfile,
     ModelDeploymentTemplate,
@@ -611,17 +610,13 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
 
 
 async def _resolve_batch_job(request: Request, batch_id: str) -> Optional[BatchJob]:
-    """Resolve a BatchJob by id, metastore-first with BatchManager fallback.
+    """Resolve a BatchJob by id through the BatchDriver.
 
-    The batch metastore is the source of truth. The fallback to the driver's
-    in-memory pool covers the brief window after POST before the store write
-    is observable, since the metadata service seeds the BatchManager pool
-    synchronously on create.
+    Reads flow through the BatchDriver so an unfinished job that exists only in
+    the metastore can be republished into the manager's runtime pools if restart
+    recovery missed it. The driver still covers the brief POST -> store window
+    because freshly created jobs are seeded into the in-memory pools first.
     """
-    job = await get_batch_job(batch_id)
-    if job is not None:
-        return job
-
     batch_driver: BatchDriver = request.app.state.batch_driver
     return await batch_driver.get_job(batch_id)
 

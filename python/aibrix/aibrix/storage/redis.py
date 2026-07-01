@@ -32,12 +32,15 @@ class RedisStorage(BaseStorage2):
     - Hierarchical key support using Redis sets (e.g., "xxx/yyy" creates set "xxx:index")
     - Simple get/put/delete operations
     - List operations that work with Redis structures
-    - Timestamp-ordered listing: list_objects returns keys ordered by creation timestamp
+    - Timestamp-ordered listing: version 2 stores descending-order scores while
+      preserving the existing pagination and rank logic
 
     Timestamp Tracking:
     - All keys are tracked in "timestamps:all" sorted set with creation time as score
     - Hierarchical keys are also tracked in "timestamps:{parent}" sorted sets
-    - list_objects returns keys in chronological order (oldest first)
+    - Version 1 stored positive timestamps (oldest-first ordering)
+    - Version 2 stores negative timestamps so the existing ascending zset
+      pagination returns newest-first results
     - Timestamps are cleaned up automatically when objects are deleted
     """
 
@@ -156,8 +159,16 @@ class RedisStorage(BaseStorage2):
             # Conditional SET failed (NX or XX condition not met)
             return False
 
-        # Store creation timestamp for ordering (only if SET succeeded)
-        timestamp = time.time()
+        # Version 2 stores negative timestamps so the existing ascending zset
+        # pagination yields descending created_at order without changing ranks.
+        existing_timestamp = await redis_client.zscore("timestamps:all", key)
+        if existing_timestamp is None:
+            # Preserve created_at ordering across overwrites. Batch jobs are
+            # updated in place many times, and rewriting the score here would
+            # silently turn "created_at desc" listing into "last_updated desc".
+            timestamp = -time.time()
+        else:
+            timestamp = float(existing_timestamp)
         await redis_client.zadd("timestamps:all", {key: timestamp})
 
         # If hierarchical, add to parent list and track timestamp
@@ -252,7 +263,7 @@ class RedisStorage(BaseStorage2):
 
         Returns:
             Tuple of (object_keys, next_continuation_token)
-            - object_keys: List of object keys ordered by creation timestamp (oldest first)
+            - object_keys: List of object keys ordered by created_at descending.
             - next_continuation_token: String offset for next page (None if no more pages)
         """
         redis_client = await self._get_redis()
@@ -285,7 +296,8 @@ class RedisStorage(BaseStorage2):
                 start = offset
                 end = offset + limit - 1 if limit is not None else -1
 
-                # Get members ordered by timestamp (oldest first) with pagination
+                # Version 2 stores descending-order scores, so ascending zrange
+                # now returns newest-first without altering pagination logic.
                 members_with_scores = await redis_client.zrange(
                     timestamp_key, start, end, withscores=False
                 )
@@ -294,7 +306,6 @@ class RedisStorage(BaseStorage2):
                 # Check if there are more items for next page
                 has_more = False
                 if limit is not None and len(members) == limit:
-                    # Check if there's at least one more item after this page
                     next_item = await redis_client.zrange(
                         timestamp_key, start + limit, start + limit, withscores=False
                     )
@@ -305,7 +316,6 @@ class RedisStorage(BaseStorage2):
                 all_members: list[str] = [
                     member.decode("utf-8") for member in members_raw
                 ]
-
                 if continuation_token is None and after_key:
                     if delimiter and after_key.startswith(f"{prefix}{delimiter}"):
                         after_member = after_key[len(f"{prefix}{delimiter}") :]

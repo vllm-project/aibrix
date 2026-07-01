@@ -371,17 +371,31 @@ class BaseJobDriver:
 
         Expiration/cancellation can discover durable execution metadata even
         when the original in-memory driver instance no longer exists. Recreated
-        drivers use this hook to tear down any reachable runtime and then clear
-        the durable execution ref so later recovery does not keep retrying a
-        stale runtime attachment.
+        drivers use this hook to tear down any reachable runtime, clear the
+        durable execution ref, and then continue the normal stopped-job finish
+        path so recovery does not strand an expired/cancelled job in-progress.
         """
         await self._runtime.cleanup(job)
-        if job.job_id is None or job.status.execution is None:
+
+        current_job = job
+
+        if job.status.execution is not None:
+            cleared_status = job.status.model_copy(deep=True)
+            cleared_status.execution = None
+            current_job = await self._progress_manager.update_job_status(
+                job.job_id, cleared_status
+            )
+        else:
+            reloaded_job = await self._progress_manager.get_job(job.job_id)
+            if reloaded_job is not None:
+                current_job = reloaded_job
+
+        if current_job.status.finished:
+            return
+        if not self._should_stop_before_proceed(current_job):
             return
 
-        cleared_status = job.status.model_copy(deep=True)
-        cleared_status.execution = None
-        await self._progress_manager.update_job_status(job.job_id, cleared_status)
+        await self._finish_stopped_job(current_job)
 
     # ── overridable options ──────────────────────────────────────────
 
