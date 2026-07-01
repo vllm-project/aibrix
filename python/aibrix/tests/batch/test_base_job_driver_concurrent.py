@@ -76,7 +76,8 @@ class _SlowChannel:
         self.peak = max(self.peak, self.inflight)
         await asyncio.sleep(0.01)
         self.inflight -= 1
-        if request.ref[0] in self._fail_indices:
+        request_id = request.ref[0] if isinstance(request.ref, tuple) else request.ref
+        if request_id in self._fail_indices:
             raise InferenceError(
                 InferenceErrorCode.TRANSPORT_ERROR,
                 "injected failure",
@@ -275,6 +276,29 @@ async def test_execute_worker_uses_concurrent_dispatch_for_known_total(monkeypat
     assert result.status.usage.input_tokens == 4
     assert result.status.usage.output_tokens == 8
     assert result.status.usage.total_tokens == 12
+
+
+@pytest.mark.asyncio
+async def test_execute_worker_honors_client_concurrency_for_single_endpoint(
+    monkeypatch,
+):
+    job = _make_job(total=4)
+    job.spec.aibrix = AibrixMetadata(
+        client={"max_concurrency": 4, "adaptive_concurrency": False}
+    )
+    driver, channel = _driver(job, capacity=1)
+    requests = [
+        {"_request_index": i, "custom_id": f"req-{i}", "body": {"i": i}}
+        for i in range(4)
+    ]
+    outputs, _ = _patch_storage(monkeypatch, requests)
+
+    result = await driver.execute_worker(job.job_id)
+
+    assert result.status.state == BatchJobState.IN_PROGRESS
+    assert result.status.request_counts.completed == 4
+    assert set(outputs) == {0, 1, 2, 3}
+    assert channel.peak > 1
 
 
 @pytest.mark.asyncio
