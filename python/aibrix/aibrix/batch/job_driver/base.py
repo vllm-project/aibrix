@@ -1429,7 +1429,11 @@ class BaseJobDriver:
             logger.debug("Finalized job", job_id=job.job_id)  # type: ignore[call-arg]
             self._log_completed(synced)
         except Exception as e:
-            logger.error("Error finalizing job output data: %s", e)  # type: ignore[call-arg]
+            logger.error(
+                "Error finalizing job output data",
+                job_id=job.job_id,
+                error=str(e),
+            )  # type: ignore[call-arg]
             raise BatchJobError(
                 BatchJobErrorCode.FINALIZING_ERROR,
                 message=str(e),

@@ -578,6 +578,26 @@ async def test_expire_job_terminates_live_driver_for_admitted_job():
 
 
 @pytest.mark.asyncio
+async def test_expire_job_skips_already_finalizing_job():
+    job_manager = _job_manager()
+    meta_job = _in_progress_meta_job("test-job-id-expire-finalizing", total_requests=1)
+    meta_job.status.state = BatchJobState.FINALIZING
+    meta_job.status.finalizing_at = datetime.now()
+    driver = _FakeJobDriver(meta_job=meta_job)
+    meta_job._job_driver = driver
+    job_manager._in_progress_jobs[meta_job.job_id] = meta_job
+
+    result = await job_manager.expire_job(meta_job.job_id)
+
+    assert result is False
+    assert driver.terminate_calls == []
+    assert meta_job.job_id in job_manager._in_progress_jobs
+    assert meta_job.job_id not in job_manager._done_jobs
+    assert meta_job.status.state == BatchJobState.FINALIZING
+    assert meta_job.status.condition is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("job_id", "owner_ref", "initial_bucket"),
     [

@@ -1016,6 +1016,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
         Pending jobs finalize immediately into the done pool. In-progress jobs
         persist the expired condition and then signal their live driver like the
         cancellation flow, so execution stops before finalizing the expired job.
+        Jobs that have already entered FINALIZING are past the interruption
+        point; expiration is rejected so the in-flight terminalization can
+        complete consistently.
 
         Returns True if the job was expired. Called by the scheduler's cleanup
         loop, which makes the registry the single source of truth for expiry
@@ -1042,10 +1045,18 @@ class BatchManager(RunningJobs, SchedulableJobs):
         ):
             return True
 
+        if old_job.status.state == BatchJobState.FINALIZING:
+            logger.info(
+                "Job already finalizing, skipping expiration",
+                job_id=job_id,
+                state=old_job.status.state,
+            )  # type: ignore[call-arg]
+            return False
+
         old_job = self._normalize_recovered_in_progress_job_for_cleanup(job_id, old_job)
 
         job_expired = self._build_expired_job_update(old_job)
-        if old_job.status.state != BatchJobState.IN_PROGRESS:
+        if old_job.status.state in (BatchJobState.CREATED, BatchJobState.VALIDATING):
             expired_at = job_expired.status.expired_at
             assert expired_at is not None
             job_expired.status.finalized_at = expired_at
