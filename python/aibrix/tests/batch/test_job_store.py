@@ -33,7 +33,8 @@ from aibrix.batch.job_entity import (
 )
 from aibrix.batch.state import JobEntityManager, JobStore
 from aibrix.batch.storage import batch_metastore
-from aibrix.storage import StorageType
+from aibrix.storage import StorageConfig, StorageType
+from aibrix.storage.types import StorageListOrdering
 
 
 class FakeMetastore:
@@ -89,6 +90,9 @@ class FakeMetastore:
 
     def get_type(self) -> StorageType:
         return self.storage_type
+
+    def get_list_ordering(self) -> StorageListOrdering:
+        return StorageListOrdering.CREATED_AT_DESC
 
 
 @pytest.fixture
@@ -562,15 +566,46 @@ async def test_job_store_recovery_does_not_stop_early_without_time_ordering(
 
 def test_batch_metastore_initialize_errors_for_unsupported_ordering_backend():
     with pytest.raises(
-        RuntimeError,
-        match="cannot list batch jobs in descending created_at order",
+        ValueError,
+        match="List ordering created_at_desc is not supported by s3 storage",
     ):
-        batch_metastore.initialize_batch_metastore(StorageType.S3)
+        batch_metastore.initialize_batch_metastore(
+            StorageType.S3,
+            {"bucket_name": "test-bucket"},
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="List ordering created_at_desc is not supported by tos storage",
+    ):
+        batch_metastore.initialize_batch_metastore(
+            StorageType.TOS,
+            {
+                "bucket_name": "test-bucket",
+                "access_key": "key",
+                "secret_key": "secret",
+                "endpoint": "http://example.com",
+                "region": "cn-beijing",
+            },
+        )
 
 
-def test_batch_metastore_supports_desc_listing_for_local_and_redis():
-    assert batch_metastore.supports_created_at_desc_batch_job_listing(StorageType.LOCAL)
-    assert batch_metastore.supports_created_at_desc_batch_job_listing(StorageType.REDIS)
-    assert not batch_metastore.supports_created_at_desc_batch_job_listing(
-        StorageType.S3
+def test_batch_metastore_initialize_merges_config_and_defaults_ordering(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("STORAGE_LOCAL_PATH", str(tmp_path))
+    monkeypatch.setattr(batch_metastore, "p_metastore", None)
+
+    config = StorageConfig(max_retries=11)
+    batch_metastore.initialize_batch_metastore(
+        StorageType.LOCAL,
+        {"config": config},
     )
+
+    assert batch_metastore.p_metastore is not None
+    assert batch_metastore.p_metastore.config.max_retries == 11
+    assert (
+        batch_metastore.p_metastore.get_list_ordering()
+        == StorageListOrdering.CREATED_AT_DESC
+    )
+    assert config.list_ordering is None

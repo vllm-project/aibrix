@@ -2032,6 +2032,7 @@ async def test_job_cancellation_in_finalizing(e2e_test_app, test_backend):
                     expected_finalizing_at=True,  # Should have reached finalizing
                     expected_cancelling_at=False,
                     expected_cancelled_at=False,
+                    expected_errors="cancel_rejected",
                     expected_output_file_id=True,  # Should have output file
                     expected_error_file_id=False,  # No failures -> no error file
                     expected_request_counts=True,  # Should have request counts

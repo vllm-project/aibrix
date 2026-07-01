@@ -21,9 +21,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
-from aibrix.storage.base import PutObjectOptions, StorageConfig, StorageType
+from aibrix.storage.base import (
+    PutObjectOptions,
+    StorageConfig,
+    StorageType,
+)
 from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
+from aibrix.storage.types import StorageListOrdering
 from aibrix.storage.utils import ObjectMetadata, _sanitize_key, generate_filename
 
 LOCAL_STORAGE_PATH_VAR = "STORAGE_LOCAL_PATH"
@@ -91,6 +96,10 @@ class LocalStorage(BaseStorage2):
             Type of storage, set to StorageType.LOCAL
         """
         return StorageType.LOCAL
+
+    @classmethod
+    def get_supported_list_orderings(cls) -> tuple[StorageListOrdering, ...]:
+        return (StorageListOrdering.CREATED_AT_DESC,)
 
     async def put_object(
         self,

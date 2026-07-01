@@ -20,7 +20,7 @@ from .local import LocalStorage
 from .reader import Reader, SizeExceededError
 from .s3 import S3Storage
 from .tos import TOSStorage
-from .types import StorageType
+from .types import StorageListOrdering, StorageType
 from .utils import ObjectMetadata, generate_filename
 
 if TYPE_CHECKING:
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 __all__ = [
     "BaseStorage",
     "StorageConfig",
+    "StorageListOrdering",
     "StorageType",
     "create_storage",
     "create_storage_from_env",

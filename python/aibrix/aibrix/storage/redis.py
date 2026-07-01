@@ -17,9 +17,14 @@ import time
 from typing import BinaryIO, Optional, TextIO, Union
 
 import aibrix.client.redis as redis
-from aibrix.storage.base import PutObjectOptions, StorageConfig, StorageType
+from aibrix.storage.base import (
+    PutObjectOptions,
+    StorageConfig,
+    StorageType,
+)
 from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
+from aibrix.storage.types import StorageListOrdering
 from aibrix.storage.utils import ObjectMetadata
 
 
@@ -60,6 +65,10 @@ class RedisStorage(BaseStorage2):
             Type of storage, set to StorageType.REDIS
         """
         return StorageType.REDIS
+
+    @classmethod
+    def get_supported_list_orderings(cls) -> tuple[StorageListOrdering, ...]:
+        return (StorageListOrdering.CREATED_AT_DESC,)
 
     async def _get_redis(self) -> redis.AsyncRedis:
         """Get Redis connection, creating it if necessary."""

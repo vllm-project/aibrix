@@ -14,6 +14,7 @@
 
 import asyncio
 import os
+from dataclasses import replace
 from datetime import datetime
 from typing import Callable, Optional, Tuple
 
@@ -25,9 +26,10 @@ from aibrix.batch.job_entity import (
     aggregate_batch_job_status,
 )
 from aibrix.logger import init_logger
-from aibrix.storage import BaseStorage, StorageType, create_storage
+from aibrix.storage import BaseStorage, StorageConfig, StorageType, create_storage
 from aibrix.storage.base import PutObjectOptionsBuilder
 from aibrix.storage.local import LOCAL_STORAGE_PATH_VAR
+from aibrix.storage.types import StorageListOrdering
 
 logger = init_logger(__name__)
 
@@ -54,12 +56,6 @@ def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
     if storage_type == StorageType.AUTO and envs.STORAGE_REDIS_AVAILABLE:
         storage_type = StorageType.REDIS
 
-    if not supports_created_at_desc_batch_job_listing(storage_type):
-        raise RuntimeError(
-            f"Metastore backend {storage_type.value} cannot list batch jobs "
-            "in descending created_at order."
-        )
-
     # The LOCAL metastore lives under the configured storage root, so a dev/test
     # run that isolates STORAGE_LOCAL_PATH isolates the metastore too (rather
     # than sharing one cwd-relative ``.metastore``). Other substrates (redis /
@@ -69,10 +65,45 @@ def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
 
     # Create new storage instance and wrap with adapter
     try:
+        create_params = dict(params or {})
+        requested_config = create_params.pop("config", None)
+        if requested_config is None:
+            requested_config = StorageConfig()
+        elif not isinstance(requested_config, StorageConfig):
+            raise TypeError("params['config'] must be a StorageConfig instance")
+        if requested_config.list_ordering is None:
+            requested_config = replace(
+                requested_config,
+                list_ordering=StorageListOrdering.CREATED_AT_DESC,
+            )
+        elif requested_config.list_ordering != StorageListOrdering.CREATED_AT_DESC:
+            logger.warning(
+                "Metastore backend must use created_at-desc list ordering; overriding requested ordering.",
+                storage=storage_type.value,
+                old_ordering=requested_config.list_ordering.value,
+                new_ordering=StorageListOrdering.CREATED_AT_DESC.value,
+            )
+            requested_config = replace(
+                requested_config,
+                list_ordering=StorageListOrdering.CREATED_AT_DESC,
+            )
+
         logger.info(
-            "Initializing batch metastore", storage_type=storage_type, params=params
+            "Initializing batch metastore",
+            storage_type=storage_type,
+            config=requested_config,
+            params=create_params,
         )  # type: ignore[call-arg]
-        p_metastore = create_storage(storage_type, base_path=base_path, **params)
+        # Metastore scans require created_at-desc ordering. Backends that do not
+        # support that contract reject the selected StorageConfig during
+        # create_storage()/storage initialization.
+        storage = create_storage(
+            storage_type,
+            config=requested_config,
+            base_path=base_path,
+            **create_params,
+        )
+        p_metastore = storage
     except Exception as e:
         logger.error("Failed to initialize metastore", error=str(e))  # type: ignore[call-arg]
         raise
@@ -348,13 +379,6 @@ async def list_batch_jobs(
         for index, job in zip(uncached_indices, fetched_jobs):
             jobs[index] = job
     return [job for job in jobs if job is not None]
-
-
-def supports_created_at_desc_batch_job_listing(
-    storage_type: Optional[StorageType] = None,
-) -> bool:
-    metastore_type = storage_type or get_metastore_type()
-    return metastore_type in {StorageType.LOCAL, StorageType.REDIS}
 
 
 async def list_metastore_keys(
