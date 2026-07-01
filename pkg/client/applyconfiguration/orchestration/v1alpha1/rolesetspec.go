@@ -27,6 +27,7 @@ type RoleSetSpecApplyConfiguration struct {
 	Roles              []RoleSpecApplyConfiguration                     `json:"roles,omitempty"`
 	UpdateStrategy     *orchestrationv1alpha1.RoleSetUpdateStrategyType `json:"updateStrategy,omitempty"`
 	SchedulingStrategy *SchedulingStrategyApplyConfiguration            `json:"schedulingStrategy,omitempty"`
+	TopologyPolicy     *TopologyPolicyApplyConfiguration                `json:"topologyPolicy,omitempty"`
 }
 
 // RoleSetSpecApplyConfiguration constructs a declarative configuration of the RoleSetSpec type for use with
@@ -61,5 +62,13 @@ func (b *RoleSetSpecApplyConfiguration) WithUpdateStrategy(value orchestrationv1
 // If called multiple times, the SchedulingStrategy field is set to the value of the last call.
 func (b *RoleSetSpecApplyConfiguration) WithSchedulingStrategy(value *SchedulingStrategyApplyConfiguration) *RoleSetSpecApplyConfiguration {
 	b.SchedulingStrategy = value
+	return b
+}
+
+// WithTopologyPolicy sets the TopologyPolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the TopologyPolicy field is set to the value of the last call.
+func (b *RoleSetSpecApplyConfiguration) WithTopologyPolicy(value *TopologyPolicyApplyConfiguration) *RoleSetSpecApplyConfiguration {
+	b.TopologyPolicy = value
 	return b
 }
