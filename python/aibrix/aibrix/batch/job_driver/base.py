@@ -904,7 +904,7 @@ class BaseJobDriver:
         * self-hosting (``endpoint.source is None`` and the runtime provisions):
           the worker dispatches inside its own compute (a k8s Job), so the
           control plane sends nothing and instead awaits the runtime to finish,
-          then moves to FINALIZING for output aggregation.
+          then finalizes to aggregate the output the worker wrote.
         """
         if endpoint.source is None and self._runtime.provisions:
             return await self._await_self_hosted_run(job_id)
@@ -925,8 +925,12 @@ class BaseJobDriver:
                 or completion.reason
                 or "self-hosted job failed",
             )
-        job.status.state = BatchJobState.FINALIZING
-        return job
+        # The worker ran in worker_mode: it wrote its output parts and the
+        # per-request done markers but did not finalize. This driver owns
+        # aggregation, so finalize assembles the output/error files from the
+        # surviving markers and records the real request_counts / usage before
+        # marking the job done.
+        return await self.finalize_job(job)
 
     # ── shared phases ────────────────────────────────────────────────────
 
