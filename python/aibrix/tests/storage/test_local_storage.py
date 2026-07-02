@@ -168,23 +168,22 @@ class TestLocalStorage:
     async def test_list_with_flat_string_prefix(self, local_storage: LocalStorage):
         """list_objects matches a STRING prefix, not just a directory path.
 
-        Flat root-level keys like ``batchjob:<id>`` (no '/') must be found by a
-        partial prefix such as ``batchjob:`` — this is the JobStore.list_jobs
-        recovery contract on a LOCAL metastore. The old directory-descent
+        Flat root-level keys like ``flatkey:<id>`` (no '/') must be found by a
+        partial prefix such as ``flatkey:``. The old directory-descent
         implementation returned nothing for any non-directory prefix.
         """
-        await local_storage.put_object("batchjob:abc", b"a")
-        await local_storage.put_object("batchjob:def", b"b")
+        await local_storage.put_object("flatkey:abc", b"a")
+        await local_storage.put_object("flatkey:def", b"b")
         await local_storage.put_object("other:zzz", b"c")
 
-        keys, _ = await local_storage.list_objects(prefix="batchjob:")
-        assert keys == ["batchjob:def", "batchjob:abc"]
+        keys, _ = await local_storage.list_objects(prefix="flatkey:")
+        assert keys == ["flatkey:def", "flatkey:abc"]
 
         # A delimiter must not break flat-prefix matching.
-        keys2, _ = await local_storage.list_objects(prefix="batchjob:", delimiter=":")
-        assert keys2 == ["batchjob:def", "batchjob:abc"]
+        keys2, _ = await local_storage.list_objects(prefix="flatkey:", delimiter=":")
+        assert keys2 == ["flatkey:def", "flatkey:abc"]
 
-        for key in ("batchjob:abc", "batchjob:def", "other:zzz"):
+        for key in ("flatkey:abc", "flatkey:def", "other:zzz"):
             await local_storage.delete_object(key)
 
     @pytest.mark.asyncio

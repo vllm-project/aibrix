@@ -321,9 +321,8 @@ class LocalStorage(BaseStorage2):
             # Recover every stored key by enumerating the sidecar ``.metadata``
             # files anywhere under base_path. ``prefix`` is matched as an
             # S3-style string prefix (``key.startswith(prefix)``), NOT as a
-            # directory path — so flat keys like ``batchjob:<id>`` are found by
-            # a partial prefix such as ``batchjob:`` (directory descent missed
-            # them, returning nothing for any non-directory prefix).
+            # directory path, so both hierarchical keys like ``batchjob/<id>``
+            # and flat keys like ``flatkey:<id>`` are discovered correctly.
             entry_created_at: dict[str, Optional[datetime]] = {}
             for item in self.base_path.rglob("*" + _METADATA_SUFFIX):
                 if not item.is_file():

@@ -98,7 +98,7 @@ class FakeMetastore:
 @pytest.fixture
 def fake_metastore(monkeypatch):
     """In-memory stand-in for the metastore — the single document store the
-    JobStore delegates to (keyed ``batchjob:<id>`` like the real one)."""
+    JobStore delegates to (keyed ``batchjob/<id>`` like the real one)."""
     store = FakeMetastore()
     calls = []
 
@@ -319,18 +319,18 @@ async def test_batch_metastore_list_metastore_keys_supports_pagination(fake_meta
     JobStore(storage_type=StorageType.LOCAL)
 
     for suffix in ("001", "002", "003"):
-        await store.put_object(f"batchjob:{suffix}", "{}")
+        await store.put_object(f"batchjob/{suffix}", "{}")
 
     first_page, next_token = await batch_metastore.list_metastore_keys(
-        "batchjob:", limit=2
+        "batchjob/", delimiter="/", limit=2
     )
     second_page, final_token = await batch_metastore.list_metastore_keys(
-        "batchjob:", limit=2, continuation_token=next_token
+        "batchjob/", delimiter="/", limit=2, continuation_token=next_token
     )
 
-    assert first_page == ["batchjob:001", "batchjob:002"]
+    assert first_page == ["batchjob/001", "batchjob/002"]
     assert next_token == "2"
-    assert second_page == ["batchjob:003"]
+    assert second_page == ["batchjob/003"]
     assert final_token is None
 
 
