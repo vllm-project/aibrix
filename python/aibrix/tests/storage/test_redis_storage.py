@@ -27,6 +27,7 @@ from aibrix.storage.redis_upgrade import (
     REDIS_STORAGE_VERSION_V2,
     ensure_redis_storage_version,
     get_redis_storage_version,
+    upgrade_redis_storage_to_v3,
     verify_redis_storage_v3,
 )
 from aibrix.storage.types import StorageListOrdering
@@ -576,22 +577,60 @@ async def test_ensure_redis_storage_version_upgrades_v2_batch_keys_to_v3(monkeyp
         == b'{"job_id":"job-a"}'
     )
     assert "batchstatus_copies:job-a:worker-1" not in fake_redis.objects
-    assert (
-        fake_redis.objects["batchstatus_copies:job-a/worker-1"]
-        == fake_redis.values["batchstatus_copies:job-a/worker-1"]
-        == b'{"state":"running"}'
-    )
     assert fake_redis.zsets["timestamps:all"] == {
         "batchjob/job-a": 100.0,
-        "batchstatus_copies:job-a/worker-1": 90.0,
         "other:key": 50.0,
     }
     assert fake_redis.sets["batchjob:index"] == {"job-a"}
     assert fake_redis.zsets["timestamps:batchjob"] == {"job-a": 100.0}
-    assert fake_redis.sets["batchstatus_copies:job-a:index"] == {"worker-1"}
-    assert fake_redis.zsets["timestamps:batchstatus_copies:job-a"] == {"worker-1": 90.0}
+    assert "batchstatus_copies:job-a/worker-1" not in fake_redis.objects
+    assert "batchstatus_copies:job-a:index" not in fake_redis.sets
+    assert "timestamps:batchstatus_copies:job-a" not in fake_redis.zsets
 
     await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_redis_storage_to_v3_removes_slash_worker_id_indexes():
+    fake_redis = _FakeRedisForUpgrade()
+    fake_redis.objects = {
+        "batchstatus_copies:job-a/cluster-a/default/workload-1": b'{"state":"running"}'
+    }
+    fake_redis.values.update(fake_redis.objects)
+    fake_redis.zsets = {
+        "timestamps:all": {
+            "batchstatus_copies:job-a/cluster-a/default/workload-1": -90.0,
+        },
+        "timestamps:batchstatus_copies:job-a": {
+            "cluster-a/default/workload-1": -90.0,
+        },
+        "timestamps:batchstatus_copies:job-a/cluster-a": {
+            "default/workload-1": -90.0,
+        },
+    }
+    fake_redis.sets = {
+        "batchstatus_copies:job-a:index": {"cluster-a/default/workload-1"},
+        "batchstatus_copies:job-a/cluster-a:index": {"default/workload-1"},
+    }
+
+    await upgrade_redis_storage_to_v3(fake_redis)
+
+    assert (
+        "batchstatus_copies:job-a/cluster-a/default/workload-1"
+        not in fake_redis.objects
+    )
+    assert (
+        "batchstatus_copies:job-a/cluster-a-default-workload-1"
+        not in fake_redis.objects
+    )
+    assert (
+        "timestamps:all" not in fake_redis.zsets
+        or fake_redis.zsets["timestamps:all"] == {}
+    )
+    assert "batchstatus_copies:job-a:index" not in fake_redis.sets
+    assert "batchstatus_copies:job-a/cluster-a:index" not in fake_redis.sets
+    assert "timestamps:batchstatus_copies:job-a" not in fake_redis.zsets
+    assert "timestamps:batchstatus_copies:job-a/cluster-a" not in fake_redis.zsets
 
 
 @pytest.mark.asyncio
@@ -600,19 +639,14 @@ async def test_verify_redis_storage_v3_accepts_consistent_indexes():
     fake_redis.zsets = {
         "timestamps:all": {
             "batchjob/job-a": 100.0,
-            "batchstatus_copies:job-a/worker-1": 90.0,
             "other:key": 50.0,
         },
         "timestamps:batchjob": {
             "job-a": 100.0,
         },
-        "timestamps:batchstatus_copies:job-a": {
-            "worker-1": 90.0,
-        },
     }
     fake_redis.sets = {
         "batchjob:index": {"job-a"},
-        "batchstatus_copies:job-a:index": {"worker-1"},
     }
 
     await verify_redis_storage_v3(fake_redis)
@@ -634,6 +668,19 @@ async def test_verify_redis_storage_v3_rejects_parent_index_mismatch():
     }
 
     with pytest.raises(RuntimeError, match="parent index mismatch"):
+        await verify_redis_storage_v3(fake_redis)
+
+
+@pytest.mark.asyncio
+async def test_verify_redis_storage_v3_rejects_status_copy_entries():
+    fake_redis = _FakeRedisForUpgrade()
+    fake_redis.zsets = {
+        "timestamps:all": {
+            "batchstatus_copies:job-a/cluster-a/default/workload-1": 90.0,
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="must be removed during upgrade"):
         await verify_redis_storage_v3(fake_redis)
 
 

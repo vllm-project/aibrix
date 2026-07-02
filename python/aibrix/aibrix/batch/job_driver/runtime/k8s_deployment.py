@@ -107,7 +107,7 @@ class DeploymentRuntime(RuntimeBase):
         del job
         if self._active_handle is None:
             return None
-        return f"{self._active_handle.namespace}/{self._active_handle.deployment_name}"
+        return f"{self._active_handle.namespace}:{self._active_handle.deployment_name}"
 
     def _get_runtime_reconnect_payload(
         self,

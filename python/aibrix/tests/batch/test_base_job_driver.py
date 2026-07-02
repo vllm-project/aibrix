@@ -51,6 +51,15 @@ def _make_driver(job: BatchJob) -> BaseJobDriver:
     return BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
 
 
+def test_assign_worker_id_normalizes_runtime_owner_ref_slashes():
+    driver = BaseJobDriver(progress_manager=None)
+    driver._worker_token = "token1234"
+
+    worker_id = driver._assign_worker_id("cluster-a/default/workload-1")
+
+    assert worker_id == "cluster-a-default-workload-1-token1234"
+
+
 class _DeadlineStopRuntime:
     provisions = True
 

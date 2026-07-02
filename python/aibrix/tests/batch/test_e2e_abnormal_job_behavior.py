@@ -97,6 +97,28 @@ def backend_expect_runtime_teardown(test_backend) -> bool:
     return _backend(test_backend).fake_runtime
 
 
+def backend_uses_redis_metastore(test_backend) -> bool:
+    return _backend(test_backend).metastore_type.value == "redis"
+
+
+def backend_status_wait_kwargs(
+    test_backend, *, expected_status: str
+) -> dict[str, float | int]:
+    if not backend_uses_redis_metastore(test_backend):
+        return {}
+    if expected_status == "in_progress":
+        return {"max_polls": 60, "poll_interval": 0.5}
+    if expected_status in {"completed", "cancelled"}:
+        return {"max_polls": 240, "poll_interval": 0.5}
+    return {}
+
+
+def backend_prepare_entry_timeout_seconds(test_backend) -> float:
+    if backend_uses_redis_metastore(test_backend):
+        return 20.0
+    return 5.0
+
+
 def backend_expect_exact_request_counts(test_backend) -> bool:
     return _backend(test_backend).max_concurrency == 1
 
@@ -559,6 +581,7 @@ async def wait_for_status(
     client: TestClient,
     batch_id: str,
     expected_status: str,
+    *,
     extra_expected_fields: Optional[Union[str, List[str]]] = None,
     max_polls: int = 20,
     poll_interval: float = 0.5,
@@ -1014,13 +1037,31 @@ async def run_follow_up_success_with_same_input(
 ) -> None:
     debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
     batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
+    in_progress_wait_kwargs = {
+        "max_polls": 30,
+        "poll_interval": 0.5,
+        **backend_status_wait_kwargs(test_backend, expected_status="in_progress"),
+    }
+    completed_wait_kwargs = {
+        "max_polls": 60,
+        "poll_interval": 0.5,
+        **backend_status_wait_kwargs(test_backend, expected_status="completed"),
+    }
 
     try:
         await wait_for_status(
-            client, batch_id, "in_progress", max_polls=30, poll_interval=0.5
+            client,
+            batch_id,
+            "in_progress",
+            max_polls=int(in_progress_wait_kwargs["max_polls"]),
+            poll_interval=float(in_progress_wait_kwargs["poll_interval"]),
         )
         final_status = await wait_for_status(
-            client, batch_id, "completed", max_polls=60, poll_interval=0.5
+            client,
+            batch_id,
+            "completed",
+            max_polls=int(completed_wait_kwargs["max_polls"]),
+            poll_interval=float(completed_wait_kwargs["poll_interval"]),
         )
 
         validate_batch_response_with_runtime_teardown(
@@ -1083,7 +1124,6 @@ async def complete_job_after_restart(
         test_backend,
         tmp_path,
         monkeypatch,
-        preserve_redis_prefix=True,
     )
     restarted_debug_state = capture_runtime_debug_state(restarted_app, test_backend)
     try:
@@ -1234,8 +1274,20 @@ async def test_job_success_baseline(e2e_test_app, test_backend):
         batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
 
         try:
-            await wait_for_status(client, batch_id, "in_progress")
-            final_status = await wait_for_status(client, batch_id, "completed")
+            await wait_for_status(
+                client,
+                batch_id,
+                "in_progress",
+                **backend_status_wait_kwargs(
+                    test_backend, expected_status="in_progress"
+                ),
+            )
+            final_status = await wait_for_status(
+                client,
+                batch_id,
+                "completed",
+                **backend_status_wait_kwargs(test_backend, expected_status="completed"),
+            )
 
             validate_batch_response_with_runtime_teardown(
                 final_status,
@@ -1661,7 +1713,10 @@ async def test_job_cancellation_in_progress_before_preparation(
 
             try:
                 # Step 3: Wait until the job is pinned inside prepare_job
-                await asyncio.wait_for(entered_preparation.wait(), timeout=5)
+                await asyncio.wait_for(
+                    entered_preparation.wait(),
+                    timeout=backend_prepare_entry_timeout_seconds(test_backend),
+                )
 
                 # Step 4: Verify the job is pending in progress before preparation completes
                 status_during_prepare = client.get(f"/v1/batches/{batch_id}")
@@ -1676,7 +1731,15 @@ async def test_job_cancellation_in_progress_before_preparation(
                 release_preparation.set()
 
                 final_status = await wait_for_status(
-                    client, batch_id, "cancelled", max_polls=40, poll_interval=0.5
+                    client,
+                    batch_id,
+                    "cancelled",
+                    **(
+                        {"max_polls": 40, "poll_interval": 0.5}
+                        | backend_status_wait_kwargs(
+                            test_backend, expected_status="cancelled"
+                        )
+                    ),
                 )
 
                 # Step 7: Verify cancelled status using comprehensive validation
