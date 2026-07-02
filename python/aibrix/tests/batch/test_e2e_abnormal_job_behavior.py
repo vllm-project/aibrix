@@ -581,6 +581,7 @@ async def wait_for_status(
     client: TestClient,
     batch_id: str,
     expected_status: str,
+    *,
     extra_expected_fields: Optional[Union[str, List[str]]] = None,
     max_polls: int = 20,
     poll_interval: float = 0.5,
@@ -1036,27 +1037,31 @@ async def run_follow_up_success_with_same_input(
 ) -> None:
     debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
     batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
+    in_progress_wait_kwargs = {
+        "max_polls": 30,
+        "poll_interval": 0.5,
+        **backend_status_wait_kwargs(test_backend, expected_status="in_progress"),
+    }
+    completed_wait_kwargs = {
+        "max_polls": 60,
+        "poll_interval": 0.5,
+        **backend_status_wait_kwargs(test_backend, expected_status="completed"),
+    }
 
     try:
         await wait_for_status(
             client,
             batch_id,
             "in_progress",
-            **(
-                {"max_polls": 30, "poll_interval": 0.5}
-                | backend_status_wait_kwargs(
-                    test_backend, expected_status="in_progress"
-                )
-            ),
+            max_polls=int(in_progress_wait_kwargs["max_polls"]),
+            poll_interval=float(in_progress_wait_kwargs["poll_interval"]),
         )
         final_status = await wait_for_status(
             client,
             batch_id,
             "completed",
-            **(
-                {"max_polls": 60, "poll_interval": 0.5}
-                | backend_status_wait_kwargs(test_backend, expected_status="completed")
-            ),
+            max_polls=int(completed_wait_kwargs["max_polls"]),
+            poll_interval=float(completed_wait_kwargs["poll_interval"]),
         )
 
         validate_batch_response_with_runtime_teardown(
