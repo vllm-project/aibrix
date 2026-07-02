@@ -366,7 +366,8 @@ class BatchWorker:
             # the driver the per-job RunningJobs surface it needs, and the worker
             # dispatches against its own pod-local engine. execute runs
             # prepare(skipped — the metadata service already prepared the output
-            # files) -> run_job -> finalize, and re-raises on failure
+            # files) -> run_job; finalize is skipped in worker_mode and left to
+            # the metadata service. It re-raises on failure
             # (BaseJobDriver._reraise_on_failure=True).
             job_id = batch_job.job_id
             if job_id is None:
@@ -375,9 +376,16 @@ class BatchWorker:
             runner = SingleJobRunner(batch_job)
             if self.llm_engine_base_url is None:
                 raise RuntimeError("engine base url not resolved")
+            # worker_mode keeps this pod out of finalization: it dispatches
+            # requests and writes its output parts and per-request done markers,
+            # but leaves aggregation to the metadata service. Finalizing here
+            # would consume the markers and complete the multipart upload inside
+            # the Job, so the coordinator would then aggregate against emptied
+            # markers and overwrite the output with zero counts (#2263).
             driver = BaseJobDriver(
                 runner,
                 ExternalRuntime(GatewayEndpointSource(self.llm_engine_base_url)),
+                worker_mode=True,
             )
             logger.info("Executing batch job", job_id=job_id)  # type: ignore[call-arg]
             await driver.execute(job_id)
