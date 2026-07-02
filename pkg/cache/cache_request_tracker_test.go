@@ -18,10 +18,16 @@ package cache
 
 import (
 	"context"
+	"runtime"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // mockRequestTracker implements RequestTracker for testing
@@ -77,6 +83,108 @@ func TestDoneRequestCount_NilContext(t *testing.T) {
 		assert.NotNil(t, tracker.lastCtx, "tracker should receive valid context")
 		assert.Equal(t, "test-model", tracker.lastCtx.Model)
 	})
+}
+
+type blockingPendingLoadProvider struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingPendingLoadProvider() *blockingPendingLoadProvider {
+	return &blockingPendingLoadProvider{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (p *blockingPendingLoadProvider) Cap() float64 {
+	return 1.0
+}
+
+func (p *blockingPendingLoadProvider) GetUtilization(_ *types.RoutingContext, _ *v1.Pod) (float64, error) {
+	return 0, nil
+}
+
+func (p *blockingPendingLoadProvider) GetConsumption(_ *types.RoutingContext, _ *v1.Pod) (float64, error) {
+	p.once.Do(func() {
+		close(p.entered)
+	})
+	<-p.release
+	return 0.25, nil
+}
+
+func TestAddRequestCount_WaitsForConcurrentStatsUpdate(t *testing.T) {
+	const model = "test-model"
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-1",
+			Namespace: "default",
+		},
+		Status: v1.PodStatus{PodIP: "1.0.0.1"},
+	}
+
+	store := InitWithPods(NewForTest(), []*v1.Pod{pod}, model)
+	provider := newBlockingPendingLoadProvider()
+	store.pendingLoadProvider = provider
+
+	ctx := types.NewRoutingContext(context.Background(), "test-algorithm", model, "message", "request-id", "")
+	ctx.SetTargetPod(pod)
+
+	firstDone := make(chan struct{})
+	go func() {
+		store.AddRequestCount(ctx, ctx.RequestID, model)
+		close(firstDone)
+	}()
+
+	select {
+	case <-provider.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first AddRequestCount did not start stats update")
+	}
+
+	secondStarted := make(chan struct{})
+	secondDone := make(chan struct{})
+	go func() {
+		close(secondStarted)
+		store.AddRequestCount(ctx, ctx.RequestID, model)
+		close(secondDone)
+	}()
+
+	select {
+	case <-secondStarted:
+	case <-time.After(time.Second):
+		t.Fatal("second AddRequestCount goroutine did not start")
+	}
+
+	returnedBeforeStatsUpdate := false
+	deadline := time.After(100 * time.Millisecond)
+pollEarlyReturn:
+	for {
+		select {
+		case <-secondDone:
+			returnedBeforeStatsUpdate = true
+			break pollEarlyReturn
+		case <-deadline:
+			break pollEarlyReturn
+		default:
+			runtime.Gosched()
+		}
+	}
+
+	close(provider.release)
+	<-firstDone
+	if !returnedBeforeStatsUpdate {
+		<-secondDone
+	}
+
+	if returnedBeforeStatsUpdate {
+		t.Fatal("concurrent AddRequestCount returned before in-flight stats update completed")
+	}
+
+	pendingLoad, err := store.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNormalizedPendings)
+	assert.NoError(t, err)
+	assert.Equal(t, 0.25, pendingLoad.GetSimpleValue())
 }
 
 // TestDoneRequestTrace_NilContext verifies that DoneRequestTrace handles nil context

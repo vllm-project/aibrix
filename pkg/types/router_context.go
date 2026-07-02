@@ -36,8 +36,9 @@ var (
 
 const (
 	statusInitial = iota // 0: initial state
-	statusAdded          // 1: added
-	statusDone           // 2: done
+	statusAdding         // 1: update in progress
+	statusAdded          // 2: added
+	statusDone           // 3: done
 )
 
 type RequestFeatures []float64
@@ -118,6 +119,7 @@ type RoutingContext struct {
 	tokens       []int           // Cache of tokenized prompts
 	predictor    OutputPredictor // OutputPredictor gained from cache
 	statsUpdated int32           // Use to flag if in-memory realtime statistics has been updated for the request.
+	statsAdded   chan struct{}   // Closed once in-memory realtime statistics has been updated for the request.
 	traceAdded   int32           // Use to flag if trace has been added to cache
 
 	// Fields for unit tests
@@ -289,12 +291,27 @@ func (r *RoutingContext) HasError() bool {
 	return pod == nil && r.getError() != nil
 }
 
-// CanAddStats returns true if the first time trying update in-memory realtime statistics.
+// CanAddStats returns true if the caller won the right to update in-memory realtime statistics.
 func (r *RoutingContext) CanAddStats() bool {
-	return atomic.CompareAndSwapInt32(&r.statsUpdated, statusInitial, statusAdded)
+	return atomic.CompareAndSwapInt32(&r.statsUpdated, statusInitial, statusAdding)
+}
+
+// MarkStatsAdded marks that the in-memory realtime statistics update has completed.
+func (r *RoutingContext) MarkStatsAdded() {
+	atomic.StoreInt32(&r.statsUpdated, statusAdded)
+	close(r.statsAdded)
+}
+
+// WaitStatsAdded waits for an in-flight stats update to complete.
+func (r *RoutingContext) WaitStatsAdded() {
+	statsAdded := r.statsAdded
+	if atomic.LoadInt32(&r.statsUpdated) == statusAdding {
+		<-statsAdded
+	}
 }
 
 func (r *RoutingContext) CanDoneStats() bool {
+	r.WaitStatsAdded()
 	return atomic.CompareAndSwapInt32(&r.statsUpdated, statusAdded, statusDone)
 }
 
@@ -364,6 +381,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.tokens = nil
 	r.predictor = nil
 	r.statsUpdated = statusInitial
+	r.statsAdded = make(chan struct{})
 }
 
 func (r *RoutingContext) debugWait() {
