@@ -234,12 +234,24 @@ class BatchStorageAdapter:
             request_index: Index of the request being processed
             output_data: Single result dictionary
         """
-        assert (
+        has_required_files = (
             job.status.output_file_id
             and job.status.error_file_id
             and job.status.temp_output_file_id
             and job.status.temp_error_file_id
         )
+        if not has_required_files:
+            logger.error(
+                "Missing batch output file metadata before writing request result",
+                job_id=job.job_id,
+                request_index=request_index,
+                output_file_id=job.status.output_file_id,
+                error_file_id=job.status.error_file_id,
+                temp_output_file_id=job.status.temp_output_file_id,
+                temp_error_file_id=job.status.temp_error_file_id,
+                state=job.status.state.value,
+            )  # type: ignore[call-arg]
+        assert has_required_files
 
         # output_data["error"] may be a BatchJobError when inference
         # fails (see job_driver.create_response_record). The class

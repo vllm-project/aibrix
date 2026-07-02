@@ -96,7 +96,7 @@ async def test_build_runtime_ref_uses_job_handle_metadata():
 
     assert runtime_ref is not None
     assert runtime_ref.driver_type == "k8s-job"
-    assert runtime_ref.owner_ref == "ns-x/batch-job-1"
+    assert runtime_ref.owner_ref == "ns-x:batch-job-1"
     assert runtime_ref.reconnect_payload == {
         "namespace": "ns-x",
         "jobName": "batch-job-1",

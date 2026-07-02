@@ -493,9 +493,12 @@ class BaseJobDriver:
         return job_id
 
     def _assign_worker_id(self, runtime_key: Optional[str]) -> str:
+        normalized_runtime_key = (
+            runtime_key.replace("/", "-") if runtime_key is not None else None
+        )
         self._worker_id = (
-            f"{runtime_key}-{self._worker_token}"
-            if runtime_key is not None
+            f"{normalized_runtime_key}-{self._worker_token}"
+            if normalized_runtime_key is not None
             else self._worker_token
         )
         return self._worker_id
