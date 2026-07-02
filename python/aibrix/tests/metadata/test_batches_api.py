@@ -314,7 +314,7 @@ class TestCancelBatch:
             }
             if body["status"] in {"finalizing", "completed"}:
                 assert body["errors"] is not None
-                assert body["errors"]["data"][-1]["code"] == "cancel_rejected_error"
+                assert body["errors"]["data"][-1]["code"] == "cancel_rejected"
                 assert "cannot be cancelled" in body["errors"]["data"][-1]["message"]
 
 

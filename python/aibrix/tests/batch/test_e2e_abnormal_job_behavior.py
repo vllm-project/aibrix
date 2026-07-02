@@ -2032,6 +2032,7 @@ async def test_job_cancellation_in_finalizing(e2e_test_app, test_backend):
                     expected_finalizing_at=True,  # Should have reached finalizing
                     expected_cancelling_at=False,
                     expected_cancelled_at=False,
+                    expected_errors="cancel_rejected",
                     expected_output_file_id=True,  # Should have output file
                     expected_error_file_id=False,  # No failures -> no error file
                     expected_request_counts=True,  # Should have request counts
@@ -2047,8 +2048,8 @@ async def test_job_cancellation_in_finalizing(e2e_test_app, test_backend):
 
 @pytest.mark.asyncio
 async def test_job_expiration_in_finalizing(e2e_test_app, test_backend):
-    """Batch completion-window expiry after entering FINALIZING should end as
-    expired, not completed."""
+    """Batch completion-window expiry after entering FINALIZING should not
+    interrupt terminalization; the job still completes."""
     print("Test 6b: Job expiration during finalizing scenario")
 
     with create_test_client(e2e_test_app) as client:
@@ -2082,7 +2083,7 @@ async def test_job_expiration_in_finalizing(e2e_test_app, test_backend):
                 assert status_during_finalizing["status"] == "finalizing"
 
                 final_status = await wait_for_status(
-                    client, batch_id, "expired", max_polls=40, poll_interval=0.5
+                    client, batch_id, "completed", max_polls=40, poll_interval=0.5
                 )
 
                 validate_batch_response_with_runtime_teardown(
@@ -2094,14 +2095,14 @@ async def test_job_expiration_in_finalizing(e2e_test_app, test_backend):
                     expect_runtime_teardown=backend_expect_runtime_teardown(
                         test_backend
                     ),
-                    expected_status="expired",
+                    expected_status="completed",
                     expected_completion_window="0h",
                     expected_endpoint="/v1/chat/completions",
                     expected_in_progress_at=True,
                     expected_finalizing_at=True,
-                    expected_completed_at=False,
+                    expected_completed_at=True,
                     expected_failed_at=False,
-                    expected_expired_at=True,
+                    expected_expired_at=False,
                     expected_cancelled_at=False,
                     expected_cancelling_at=False,
                     expected_output_file_id=True,

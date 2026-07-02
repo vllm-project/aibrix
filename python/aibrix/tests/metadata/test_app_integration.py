@@ -207,3 +207,22 @@ def test_ready_endpoint():
 
     data = response.json()
     assert data["status"] == "ready"
+
+
+def test_ready_endpoint_reports_storage_upgrade_in_progress():
+    args = _args(
+        enable_k8s_support=False,
+        disable_batch_api=True,
+        disable_file_api=True,
+    )
+
+    app = build_app(args)
+    app.state.storage_upgrade_in_progress = True
+    test_client = TestClient(app)
+
+    response = test_client.get("/readyz")
+    assert response.status_code == 503
+
+    data = response.json()
+    assert data["status"] == "not ready"
+    assert data["error"] == "storage upgrade in progress"

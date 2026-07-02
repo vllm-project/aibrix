@@ -23,7 +23,7 @@ import pytest
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
 from aibrix.batch.batch_manager import BatchManager
-from aibrix.batch.job_driver import TerminateResult
+from aibrix.batch.job_driver import BaseJobDriver, TerminateResult
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobEndpoint,
@@ -42,6 +42,7 @@ from aibrix.batch.job_entity import (
 )
 from aibrix.batch.state import JobEntityManager, JobMetaInfo
 from aibrix.context import InfrastructureContext
+from tests.fake.batch_runtime import FakeRuntime
 
 
 def _job_manager() -> BatchManager:
@@ -577,15 +578,51 @@ async def test_expire_job_terminates_live_driver_for_admitted_job():
 
 
 @pytest.mark.asyncio
-async def test_expire_job_cleans_orphaned_execution_when_driver_missing(monkeypatch):
+async def test_expire_job_skips_already_finalizing_job():
     job_manager = _job_manager()
-    meta_job = _in_progress_meta_job("test-job-id-expire-orphaned", total_requests=1)
-    meta_job.status.set_runtime_ref(
-        "fake",
-        JobRuntimeRef(driverType="fake", ownerRef="owner-2", attempt=1),
-    )
+    meta_job = _in_progress_meta_job("test-job-id-expire-finalizing", total_requests=1)
+    meta_job.status.state = BatchJobState.FINALIZING
+    meta_job.status.finalizing_at = datetime.now()
+    driver = _FakeJobDriver(meta_job=meta_job)
+    meta_job._job_driver = driver
     job_manager._in_progress_jobs[meta_job.job_id] = meta_job
-    cleanup_driver = _FakeJobDriver()
+
+    result = await job_manager.expire_job(meta_job.job_id)
+
+    assert result is False
+    assert driver.terminate_calls == []
+    assert meta_job.job_id in job_manager._in_progress_jobs
+    assert meta_job.job_id not in job_manager._done_jobs
+    assert meta_job.status.state == BatchJobState.FINALIZING
+    assert meta_job.status.condition is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("job_id", "owner_ref", "initial_bucket"),
+    [
+        ("test-job-id-expire-orphaned", "owner-2", "in_progress"),
+        ("test-job-id-expire-recovered-pending", "owner-3", "pending"),
+    ],
+)
+async def test_expired_job_cleans_up_during_recovery(
+    monkeypatch,
+    job_id: str,
+    owner_ref: str,
+    initial_bucket: str,
+):
+    job_manager = _job_manager()
+    recovered_job = _in_progress_meta_job(job_id, total_requests=1)
+    recovered_job.status.set_runtime_ref(
+        "fake",
+        JobRuntimeRef(driverType="fake", ownerRef=owner_ref, attempt=1),
+    )
+    if initial_bucket == "pending":
+        job_manager._pending_jobs[recovered_job.job_id] = recovered_job
+    else:
+        job_manager._in_progress_jobs[recovered_job.job_id] = recovered_job
+    cleanup_runtime = FakeRuntime()
+    cleanup_driver = BaseJobDriver(job_manager, cleanup_runtime, recovered_job)
 
     monkeypatch.setattr(
         "aibrix.batch.batch_manager.create_job_driver",
@@ -594,12 +631,23 @@ async def test_expire_job_cleans_orphaned_execution_when_driver_missing(monkeypa
         ),
     )
 
-    result = await job_manager.expire_job(meta_job.job_id)
+    result = await job_manager.expire_job(recovered_job.job_id)
 
     assert result is True
-    assert cleanup_driver.cleanup_calls == [meta_job.job_id]
-    assert meta_job.status.condition == ConditionType.EXPIRED
-    assert meta_job.status.state == BatchJobState.IN_PROGRESS
+    assert cleanup_runtime.cleanup_job_ids == [recovered_job.job_id]
+    assert cleanup_runtime.teardown_handles == ["fake-handle"]
+    assert recovered_job.job_id not in job_manager._pending_jobs
+    assert recovered_job.job_id not in job_manager._in_progress_jobs
+    assert recovered_job.job_id in job_manager._done_jobs
+    assert job_manager._done_jobs[recovered_job.job_id].status.execution is None
+    assert (
+        job_manager._done_jobs[recovered_job.job_id].status.condition
+        == ConditionType.EXPIRED
+    )
+    assert (
+        job_manager._done_jobs[recovered_job.job_id].status.state
+        == BatchJobState.FINALIZED
+    )
 
 
 @pytest.mark.asyncio
@@ -844,7 +892,13 @@ class MockJobEntityManager(JobEntityManager):
         self, job_id: str, force_reload: bool = False
     ) -> Optional[BatchJob]:
         """Mock get_job implementation."""
-        return self.jobs.get(job_id)
+        if job_id in self.active_jobs and not force_reload:
+            return self.active_jobs[job_id]
+        job = self.jobs.get(job_id)
+        await self._publish_active_job_on_cache_miss(job)
+        if job is not None and not job.status.finished:
+            return self.active_jobs.get(job_id, job)
+        return job
 
     async def update_job_ready(self, job: BatchJob) -> None:
         """Mock update_job_ready implementation."""
@@ -954,6 +1008,44 @@ async def test_async_create_job():
 
     # Verify the future was cleaned up
     assert session_id not in job_manager._bridge._creating_jobs
+
+
+@pytest.mark.asyncio
+async def test_get_job_republishes_untracked_entity_manager_job():
+    _set_current_loop_name("test_get_job_republishes")
+    entity_manager = MockJobEntityManager(delay=0.0)
+    job_manager = _job_manager()
+    await job_manager.set_job_entity_manager(entity_manager)
+    scheduler = _CapturingScheduler()
+    job_manager.set_scheduler(scheduler)
+
+    batch_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
+        metadata=ObjectMeta(
+            name="recovery-job",
+            namespace="default",
+            uid="recovery-uid",
+            creationTimestamp=datetime.now(),
+        ),
+        spec=BatchJobSpec(
+            input_file_id="f-recovery",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        ),
+        status=BatchJobStatus(
+            jobID="recovery-job-id",
+            state=BatchJobState.IN_PROGRESS,
+            createdAt=datetime.now(),
+        ),
+    )
+    entity_manager.jobs[batch_job.job_id] = batch_job
+
+    resolved_job = await job_manager.get_job(batch_job.job_id)
+
+    assert resolved_job is not None
+    assert resolved_job.job_id == batch_job.job_id
+    assert batch_job.job_id in scheduler.appended_job_ids
+    assert batch_job.job_id in job_manager._pending_jobs
 
 
 @pytest.mark.asyncio

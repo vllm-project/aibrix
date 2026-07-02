@@ -20,6 +20,16 @@ import pytest
 
 import aibrix.client.redis as redis_client
 from aibrix.storage import RedisStorage, StorageType, create_storage
+from aibrix.storage.base import StorageConfig
+from aibrix.storage.redis_upgrade import (
+    REDIS_STORAGE_LATEST_VERSION,
+    REDIS_STORAGE_VERSION_KEY,
+    REDIS_STORAGE_VERSION_V2,
+    ensure_redis_storage_version,
+    get_redis_storage_version,
+    verify_redis_storage_v3,
+)
+from aibrix.storage.types import StorageListOrdering
 
 
 def _test_redis_connectivity():
@@ -66,6 +76,220 @@ requires_redis = pytest.mark.skipif(
 def get_redis_storage(**kwargs):
     """Helper to create Redis storage with environment-based configuration."""
     return create_storage(StorageType.REDIS, **kwargs)
+
+
+class _FakeRedisForListObjects:
+    def __init__(self, keys_in_created_at_asc: list[str]):
+        self._keys_asc = [key.encode("utf-8") for key in keys_in_created_at_asc]
+        self._hierarchical_zsets: dict[str, list[bytes]] = {}
+        self._existing_keys: set[str] = set()
+
+    def with_hierarchical_index(
+        self, prefix: str, members_in_created_at_asc: list[str]
+    ):
+        self._existing_keys.add(f"{prefix}:index")
+        self._existing_keys.add(f"timestamps:{prefix}")
+        self._hierarchical_zsets[f"timestamps:{prefix}"] = [
+            member.encode("utf-8") for member in members_in_created_at_asc
+        ]
+        return self
+
+    async def exists(self, key: str) -> bool:
+        return key in self._existing_keys
+
+    async def zrange(
+        self,
+        key: str,
+        start: int,
+        end: int,
+        withscores: bool = False,
+    ):
+        assert withscores is False
+        if key == "timestamps:all":
+            if end == -1:
+                return self._keys_asc[start:]
+            return self._keys_asc[start : end + 1]
+
+        members = self._hierarchical_zsets[key]
+        if end == -1:
+            return members[start:]
+        return members[start : end + 1]
+
+    async def zrevrange(
+        self,
+        key: str,
+        start: int,
+        end: int,
+        withscores: bool = False,
+        score_cast_func=float,
+    ):
+        assert withscores is False
+        if key == "timestamps:all":
+            members = list(reversed(self._keys_asc))
+            if end == -1:
+                return members[start:]
+            return members[start : end + 1]
+
+        members = list(reversed(self._hierarchical_zsets[key]))
+        if end == -1:
+            return members[start:]
+        return members[start : end + 1]
+
+    async def zrank(self, key: str, member: str):
+        members = [item.decode("utf-8") for item in self._hierarchical_zsets[key]]
+        try:
+            return members.index(member)
+        except ValueError:
+            return None
+
+    async def zrevrank(self, key: str, member: str):
+        if key == "timestamps:all":
+            members = [item.decode("utf-8") for item in reversed(self._keys_asc)]
+        else:
+            members = [
+                item.decode("utf-8") for item in reversed(self._hierarchical_zsets[key])
+            ]
+        try:
+            return members.index(member)
+        except ValueError:
+            return None
+
+
+class _FakeRedisForUpgrade:
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+        self.values: dict[str, bytes] = {}
+        self.sets: dict[str, set[str]] = {}
+        self.zscore_calls = 0
+        self.zsets: dict[str, dict[str, float]] = {
+            "timestamps:all": {
+                "batch/job_001": 10.0,
+                "batch/job_002": 30.0,
+                "flat-key": 20.0,
+            },
+            "timestamps:batch": {
+                "job_001": 10.0,
+                "job_002": 30.0,
+            },
+        }
+
+    async def get(self, key: str):
+        return self.values.get(key)
+
+    async def set(
+        self,
+        key: str,
+        value,
+        ex=None,
+        px=None,
+        nx: bool = False,
+        xx: bool = False,
+    ):
+        if nx and key in self.objects:
+            return None
+        if xx and key not in self.objects:
+            return None
+        if isinstance(value, str):
+            value = value.encode("utf-8")
+        self.objects[key] = value
+        self.values[key] = value
+        return True
+
+    async def zscore(self, key: str, member: str):
+        self.zscore_calls += 1
+        return self.zsets.get(key, {}).get(member)
+
+    async def zrevrank(self, key: str, member: str):
+        members = sorted(
+            self.zsets.get(key, {}).items(), key=lambda item: item[1], reverse=True
+        )
+        names = [name for name, _ in members]
+        try:
+            return names.index(member)
+        except ValueError:
+            return None
+
+    async def zrange(self, key: str, start: int, end: int, withscores: bool = False):
+        members = sorted(self.zsets.get(key, {}).items(), key=lambda item: item[1])
+        if end == -1:
+            sliced = members[start:]
+        else:
+            sliced = members[start : end + 1]
+        if withscores:
+            return [(member.encode("utf-8"), score) for member, score in sliced]
+        return [member.encode("utf-8") for member, _ in sliced]
+
+    async def zrevrange(
+        self,
+        key: str,
+        start: int,
+        end: int,
+        withscores: bool = False,
+        score_cast_func=float,
+    ):
+        members = sorted(
+            self.zsets.get(key, {}).items(), key=lambda item: item[1], reverse=True
+        )
+        if end == -1:
+            sliced = members[start:]
+        else:
+            sliced = members[start : end + 1]
+        if withscores:
+            return [(member.encode("utf-8"), score) for member, score in sliced]
+        return [member.encode("utf-8") for member, _ in sliced]
+
+    async def zadd(
+        self, key: str, mapping: dict[str, float], nx: bool = False, **_kwargs
+    ):
+        zset = self.zsets.setdefault(key, {})
+        added = 0
+        for member, score in mapping.items():
+            if nx and member in zset:
+                continue
+            if member not in zset:
+                added += 1
+            zset[member] = float(score)
+        return added
+
+    async def exists(self, key: str) -> bool:
+        return (
+            key in self.objects
+            or key in self.values
+            or key in self.zsets
+            or key in self.sets
+        )
+
+    async def sadd(self, key: str, *members: str):
+        self.sets.setdefault(key, set()).update(members)
+        return len(members)
+
+    async def smembers(self, key: str):
+        return {member.encode("utf-8") for member in self.sets.get(key, set())}
+
+    async def delete(self, *names: str):
+        removed = 0
+        for name in names:
+            removed += int(self.objects.pop(name, None) is not None)
+            self.values.pop(name, None)
+            self.zsets.pop(name, None)
+            self.sets.pop(name, None)
+        return removed
+
+    async def zrem(self, key: str, *values: str):
+        zset = self.zsets.get(key, {})
+        removed = 0
+        for value in values:
+            removed += int(zset.pop(value, None) is not None)
+        return removed
+
+    async def srem(self, key: str, *values: str):
+        members = self.sets.get(key, set())
+        removed = 0
+        for value in values:
+            if value in members:
+                members.remove(value)
+                removed += 1
+        return removed
 
 
 @pytest.mark.asyncio
@@ -140,6 +364,358 @@ def test_pagination_parameters():
     assert sig.parameters["continuation_token"].default is None
 
 
+@pytest.mark.asyncio
+async def test_list_objects_returns_created_at_desc_order(monkeypatch):
+    storage = RedisStorage()
+    fake_redis = _FakeRedisForListObjects(
+        [
+            "batchjob:job-b",
+            "other:key",
+            "batchjob:job-a",
+            "batchjob:job-c",
+        ]
+    )
+
+    async def fake_get_redis():
+        return fake_redis
+
+    monkeypatch.setattr(storage, "_get_redis", fake_get_redis)
+
+    all_keys, _ = await storage.list_objects()
+    first_page, _ = await storage.list_objects(prefix="batchjob:", limit=2)
+    second_page, _ = await storage.list_objects(
+        prefix="batchjob:",
+        limit=2,
+        after_key=first_page[-1],
+    )
+    delimited_keys, _ = await storage.list_objects(prefix="batchjob:", delimiter=":")
+
+    assert all_keys == [
+        "batchjob:job-c",
+        "batchjob:job-a",
+        "other:key",
+        "batchjob:job-b",
+    ]
+    assert first_page == ["batchjob:job-c", "batchjob:job-a"]
+    assert second_page == ["batchjob:job-b"]
+    assert delimited_keys == ["batchjob:job-c", "batchjob:job-a", "batchjob:job-b"]
+
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_list_objects_supports_trailing_delimiter_prefix(monkeypatch):
+    storage = RedisStorage()
+    fake_redis = _FakeRedisForListObjects([]).with_hierarchical_index(
+        "batchjob",
+        ["job-b", "job-a", "job-c"],
+    )
+
+    async def fake_get_redis():
+        return fake_redis
+
+    monkeypatch.setattr(storage, "_get_redis", fake_get_redis)
+
+    first_page, next_token = await storage.list_objects(
+        prefix="batchjob/",
+        delimiter="/",
+        limit=2,
+    )
+    second_page, final_token = await storage.list_objects(
+        prefix="batchjob/",
+        delimiter="/",
+        limit=2,
+        continuation_token=next_token,
+    )
+
+    assert first_page == ["batchjob/job-c", "batchjob/job-a"]
+    assert next_token == "2"
+    assert second_page == ["batchjob/job-b"]
+    assert final_token is None
+
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_list_objects_supports_created_at_asc_order(monkeypatch):
+    storage = RedisStorage(
+        config=StorageConfig(list_ordering=StorageListOrdering.CREATED_AT_ASC)
+    )
+    fake_redis = _FakeRedisForListObjects(
+        [
+            "batchjob:job-b",
+            "other:key",
+            "batchjob:job-a",
+            "batchjob:job-c",
+        ]
+    )
+
+    async def fake_get_redis():
+        return fake_redis
+
+    monkeypatch.setattr(storage, "_get_redis", fake_get_redis)
+
+    all_keys, _ = await storage.list_objects()
+    first_page, _ = await storage.list_objects(prefix="batchjob:", limit=2)
+    second_page, _ = await storage.list_objects(
+        prefix="batchjob:",
+        limit=2,
+        after_key=first_page[-1],
+    )
+
+    assert all_keys == [
+        "batchjob:job-b",
+        "other:key",
+        "batchjob:job-a",
+        "batchjob:job-c",
+    ]
+    assert first_page == ["batchjob:job-b", "batchjob:job-a"]
+    assert second_page == ["batchjob:job-c"]
+
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_storage_version_defaults_to_v1_without_version_key():
+    fake_redis = _FakeRedisForUpgrade()
+
+    version = await get_redis_storage_version(fake_redis)
+
+    assert version == 1
+
+
+@pytest.mark.asyncio
+async def test_ensure_redis_storage_version_upgrades_v1_indexes(monkeypatch):
+    storage = RedisStorage()
+    fake_redis = _FakeRedisForUpgrade()
+
+    async def fake_get_redis():
+        return fake_redis
+
+    monkeypatch.setattr(storage, "_get_redis", fake_get_redis)
+
+    version = await ensure_redis_storage_version(storage)
+
+    assert version == REDIS_STORAGE_LATEST_VERSION
+    assert fake_redis.values[REDIS_STORAGE_VERSION_KEY] == b"3"
+    assert fake_redis.zsets["timestamps:all"] == {
+        "batch/job_001": 10.0,
+        "batch/job_002": 30.0,
+        "flat-key": 20.0,
+    }
+    assert fake_redis.zsets["timestamps:batch"] == {
+        "job_001": 10.0,
+        "job_002": 30.0,
+    }
+
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_ensure_redis_storage_version_upgrades_v1_directly_to_v3(monkeypatch):
+    storage = RedisStorage()
+    fake_redis = _FakeRedisForUpgrade()
+
+    async def fake_get_redis():
+        return fake_redis
+
+    async def fail_if_called(_redis_client):
+        raise AssertionError("v1 -> v2 upgrade should be skipped when upgrading to v3")
+
+    monkeypatch.setattr(storage, "_get_redis", fake_get_redis)
+    monkeypatch.setattr(
+        "aibrix.storage.redis_upgrade.upgrade_redis_storage_v1_to_v2",
+        fail_if_called,
+        raising=False,
+    )
+
+    version = await ensure_redis_storage_version(storage)
+
+    assert version == REDIS_STORAGE_LATEST_VERSION
+    assert fake_redis.values[REDIS_STORAGE_VERSION_KEY] == b"3"
+
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_ensure_redis_storage_version_upgrades_v2_batch_keys_to_v3(monkeypatch):
+    storage = RedisStorage()
+    fake_redis = _FakeRedisForUpgrade()
+    fake_redis.values[REDIS_STORAGE_VERSION_KEY] = str(REDIS_STORAGE_VERSION_V2).encode(
+        "utf-8"
+    )
+    fake_redis.objects.update(
+        {
+            "batchjob:job-a": b'{"job_id":"job-a"}',
+            "batchstatus_copies:job-a:worker-1": b'{"state":"running"}',
+            "other:key": b"other",
+        }
+    )
+    fake_redis.values.update(fake_redis.objects)
+    fake_redis.zsets = {
+        "timestamps:all": {
+            "batchjob:job-a": -100.0,
+            "batchstatus_copies:job-a:worker-1": -90.0,
+            "other:key": -50.0,
+        }
+    }
+
+    async def fake_get_redis():
+        return fake_redis
+
+    monkeypatch.setattr(storage, "_get_redis", fake_get_redis)
+
+    version = await ensure_redis_storage_version(storage)
+
+    assert version == REDIS_STORAGE_LATEST_VERSION
+    assert fake_redis.values[REDIS_STORAGE_VERSION_KEY] == b"3"
+    assert "batchjob:job-a" not in fake_redis.objects
+    assert (
+        fake_redis.objects["batchjob/job-a"]
+        == fake_redis.values["batchjob/job-a"]
+        == b'{"job_id":"job-a"}'
+    )
+    assert "batchstatus_copies:job-a:worker-1" not in fake_redis.objects
+    assert (
+        fake_redis.objects["batchstatus_copies:job-a/worker-1"]
+        == fake_redis.values["batchstatus_copies:job-a/worker-1"]
+        == b'{"state":"running"}'
+    )
+    assert fake_redis.zsets["timestamps:all"] == {
+        "batchjob/job-a": 100.0,
+        "batchstatus_copies:job-a/worker-1": 90.0,
+        "other:key": 50.0,
+    }
+    assert fake_redis.sets["batchjob:index"] == {"job-a"}
+    assert fake_redis.zsets["timestamps:batchjob"] == {"job-a": 100.0}
+    assert fake_redis.sets["batchstatus_copies:job-a:index"] == {"worker-1"}
+    assert fake_redis.zsets["timestamps:batchstatus_copies:job-a"] == {"worker-1": 90.0}
+
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_verify_redis_storage_v3_accepts_consistent_indexes():
+    fake_redis = _FakeRedisForUpgrade()
+    fake_redis.zsets = {
+        "timestamps:all": {
+            "batchjob/job-a": 100.0,
+            "batchstatus_copies:job-a/worker-1": 90.0,
+            "other:key": 50.0,
+        },
+        "timestamps:batchjob": {
+            "job-a": 100.0,
+        },
+        "timestamps:batchstatus_copies:job-a": {
+            "worker-1": 90.0,
+        },
+    }
+    fake_redis.sets = {
+        "batchjob:index": {"job-a"},
+        "batchstatus_copies:job-a:index": {"worker-1"},
+    }
+
+    await verify_redis_storage_v3(fake_redis)
+
+
+@pytest.mark.asyncio
+async def test_verify_redis_storage_v3_rejects_parent_index_mismatch():
+    fake_redis = _FakeRedisForUpgrade()
+    fake_redis.zsets = {
+        "timestamps:all": {
+            "batchjob/job-a": 100.0,
+        },
+        "timestamps:batchjob": {
+            "job-a": 100.0,
+        },
+    }
+    fake_redis.sets = {
+        "batchjob:index": set(),
+    }
+
+    with pytest.raises(RuntimeError, match="parent index mismatch"):
+        await verify_redis_storage_v3(fake_redis)
+
+
+@pytest.mark.asyncio
+async def test_put_object_preserves_created_at_order_on_overwrite(monkeypatch):
+    storage = RedisStorage()
+    fake_redis = _FakeRedisForUpgrade()
+    fake_redis.zsets = {"timestamps:all": {}}
+
+    async def fake_get_redis():
+        return fake_redis
+
+    times = iter([100.0, 200.0, 300.0])
+
+    monkeypatch.setattr(storage, "_get_redis", fake_get_redis)
+    monkeypatch.setattr("aibrix.storage.redis.time.time", lambda: next(times))
+
+    await storage.put_object("batchjob:job-a", b"v1")
+    await storage.put_object("batchjob:job-b", b"v1")
+    await storage.put_object("batchjob:job-a", b"v2")
+
+    keys, _ = await storage.list_objects(prefix="batchjob:")
+
+    assert fake_redis.zsets["timestamps:all"] == {
+        "batchjob:job-a": 100.0,
+        "batchjob:job-b": 200.0,
+    }
+    assert fake_redis.zscore_calls == 0
+    assert keys == ["batchjob:job-b", "batchjob:job-a"]
+
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_put_object_preserves_parent_timestamp_order_on_hierarchical_overwrite(
+    monkeypatch,
+):
+    storage = RedisStorage()
+    fake_redis = _FakeRedisForUpgrade()
+    fake_redis.zsets = {"timestamps:all": {}}
+
+    async def fake_get_redis():
+        return fake_redis
+
+    times = iter([100.0, 200.0])
+
+    monkeypatch.setattr(storage, "_get_redis", fake_get_redis)
+    monkeypatch.setattr("aibrix.storage.redis.time.time", lambda: next(times))
+
+    await storage.put_object("batchjob/job-a", b"v1")
+    await storage.put_object("batchjob/job-a", b"v2")
+
+    assert fake_redis.zscore_calls == 1
+    assert fake_redis.zsets["timestamps:all"] == {"batchjob/job-a": 100.0}
+    assert fake_redis.sets["batchjob:index"] == {"job-a"}
+    assert fake_redis.zsets["timestamps:batchjob"] == {"job-a": 100.0}
+
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_put_object_skips_zscore_on_first_insert(monkeypatch):
+    storage = RedisStorage()
+    fake_redis = _FakeRedisForUpgrade()
+    fake_redis.zsets = {"timestamps:all": {}}
+
+    async def fake_get_redis():
+        return fake_redis
+
+    monkeypatch.setattr(storage, "_get_redis", fake_get_redis)
+    monkeypatch.setattr("aibrix.storage.redis.time.time", lambda: 123.0)
+
+    await storage.put_object("batchjob/job-a", b"v1")
+
+    assert fake_redis.zscore_calls == 0
+    assert fake_redis.zsets["timestamps:all"] == {"batchjob/job-a": 123.0}
+    assert fake_redis.sets["batchjob:index"] == {"job-a"}
+    assert fake_redis.zsets["timestamps:batchjob"] == {"job-a": 123.0}
+
+    await storage.close()
+
+
 # Integration tests - enabled when Redis is available
 @requires_redis
 @pytest.mark.asyncio
@@ -200,23 +776,19 @@ async def test_redis_hierarchical_operations():
 
 @requires_redis
 @pytest.mark.asyncio
-async def test_redis_timestamp_ordering():
-    """Test that list_objects returns keys ordered by creation timestamp (requires Redis running)."""
+async def test_redis_default_ordering_is_created_at_desc():
+    """Test that default Redis listing order is newest-first."""
     storage = get_redis_storage()
     try:
-        # Put objects with slight delays to ensure different timestamps
         await storage.put_object("test_key_3", b"third")
         await asyncio.sleep(0.01)  # Small delay
         await storage.put_object("test_key_1", b"first")
         await asyncio.sleep(0.01)
         await storage.put_object("test_key_2", b"second")
 
-        # List all objects - should be ordered by creation time
         objects, _ = await storage.list_objects()
 
-        # Should be ordered by creation timestamp: test_key_3, test_key_1, test_key_2
-        assert objects.index("test_key_3") < objects.index("test_key_1")
-        assert objects.index("test_key_1") < objects.index("test_key_2")
+        assert objects == ["test_key_2", "test_key_1", "test_key_3"]
 
         # Clean up
         await storage.delete_object("test_key_1")
@@ -229,8 +801,8 @@ async def test_redis_timestamp_ordering():
 
 @requires_redis
 @pytest.mark.asyncio
-async def test_redis_hierarchical_timestamp_ordering():
-    """Test hierarchical key timestamp ordering (requires Redis running)."""
+async def test_redis_hierarchical_ordering_is_created_at_desc():
+    """Test hierarchical Redis listing order is newest-first."""
     storage = get_redis_storage()
     try:
         # Put hierarchical objects with delays
@@ -243,13 +815,10 @@ async def test_redis_hierarchical_timestamp_ordering():
         await asyncio.sleep(0.01)
         await storage.put_object("batch2/job_001", b"job data 1")
 
-        # List batch objects - should be ordered by creation time
         objects, _ = await storage.list_objects("batch", "/")
 
-        # Should be ordered by creation timestamp
         assert len(objects) == 3
-        assert objects.index("batch/job_003") < objects.index("batch/job_001")
-        assert objects.index("batch/job_001") < objects.index("batch/job_002")
+        assert objects == ["batch/job_002", "batch/job_001", "batch/job_003"]
 
         # Clean up
         await storage.delete_object("batch/job_001")
@@ -279,7 +848,7 @@ async def test_redis_token_pagination():
         # Test token-based pagination
         page1, token1 = await storage.list_objects(limit=3)
         page2, token2 = await storage.list_objects(limit=3, continuation_token=token1)
-        page3, token3 = await storage.list_objects(limit=3, continuation_token=token2)
+        page3, _ = await storage.list_objects(limit=3, continuation_token=token2)
 
         # Should have 3 items each (except maybe last page)
         assert len(page1) == 3
@@ -291,7 +860,7 @@ async def test_redis_token_pagination():
         assert token2 is not None
         # Last page might have more items or not
 
-        # Should be in timestamp order and not overlap
+        # Should preserve the same created_at-desc order as a full listing
         all_paginated = page1 + page2 + page3
         all_objects, _ = await storage.list_objects()
         assert all_paginated[:9] == all_objects[:9]  # First 9 should match
@@ -330,7 +899,7 @@ async def test_redis_hierarchical_token_pagination():
 
         # Test token-based pagination on hierarchical objects
         page1, token1 = await storage.list_objects("batch", "/", limit=4)
-        page2, token2 = await storage.list_objects(
+        page2, _ = await storage.list_objects(
             "batch", "/", limit=4, continuation_token=token1
         )
 
@@ -358,7 +927,7 @@ async def test_redis_hierarchical_token_pagination():
 @requires_redis
 @pytest.mark.asyncio
 async def test_redis_hierarchical_after_key_pagination():
-    """Test hierarchical after_key pagination uses timestamp ordering."""
+    """Test hierarchical after_key pagination follows created_at-desc ordering."""
     storage = get_redis_storage()
     try:
         test_keys = [f"batch/after_job_{i:03d}" for i in range(4)]

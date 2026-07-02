@@ -14,6 +14,7 @@
 
 import asyncio
 import os
+from dataclasses import replace
 from datetime import datetime
 from typing import Callable, Optional, Tuple
 
@@ -25,9 +26,10 @@ from aibrix.batch.job_entity import (
     aggregate_batch_job_status,
 )
 from aibrix.logger import init_logger
-from aibrix.storage import BaseStorage, StorageType, create_storage
+from aibrix.storage import BaseStorage, StorageConfig, StorageType, create_storage
 from aibrix.storage.base import PutObjectOptionsBuilder
 from aibrix.storage.local import LOCAL_STORAGE_PATH_VAR
+from aibrix.storage.types import StorageListOrdering
 
 logger = init_logger(__name__)
 
@@ -35,9 +37,29 @@ p_metastore: Optional[BaseStorage] = None
 NUM_REQUESTS_PER_READ = 1024
 STATUS_REQUEST_LOCKING = "processing"
 METASTORE_LIST_PAGE_SIZE = 1000
-JOB_KEY_PREFIX = "batchjob:"
-JOB_STATUS_COPIES_PREFIX = "batchstatus_copies:"
+JOB_KEY_PREFIX = "batchjob"
+JOB_STATUS_COPIES_PREFIX = "batchstatus_copies:%s"
 OLDEST_UNFINISHED_JOB_CREATED_AT_KEY = "batchjob_meta:oldest_unfinished_created_at"
+
+
+def _job_key(batch_id: str) -> str:
+    return f"{JOB_KEY_PREFIX}/{batch_id}"
+
+
+def _job_list_prefix() -> str:
+    return f"{JOB_KEY_PREFIX}/"
+
+
+def _status_copies_parent_key(batch_id: str) -> str:
+    return JOB_STATUS_COPIES_PREFIX % batch_id
+
+
+def _status_copies_list_prefix(batch_id: str) -> str:
+    return f"{_status_copies_parent_key(batch_id)}/"
+
+
+def _status_copy_key(batch_id: str, worker_id: str) -> str:
+    return f"{_status_copies_list_prefix(batch_id)}{worker_id}"
 
 
 def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
@@ -54,12 +76,6 @@ def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
     if storage_type == StorageType.AUTO and envs.STORAGE_REDIS_AVAILABLE:
         storage_type = StorageType.REDIS
 
-    if not supports_created_at_desc_batch_job_listing(storage_type):
-        raise RuntimeError(
-            f"Metastore backend {storage_type.value} cannot list batch jobs "
-            "in descending created_at order."
-        )
-
     # The LOCAL metastore lives under the configured storage root, so a dev/test
     # run that isolates STORAGE_LOCAL_PATH isolates the metastore too (rather
     # than sharing one cwd-relative ``.metastore``). Other substrates (redis /
@@ -69,10 +85,45 @@ def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
 
     # Create new storage instance and wrap with adapter
     try:
+        create_params = dict(params or {})
+        requested_config = create_params.pop("config", None)
+        if requested_config is None:
+            requested_config = StorageConfig()
+        elif not isinstance(requested_config, StorageConfig):
+            raise TypeError("params['config'] must be a StorageConfig instance")
+        if requested_config.list_ordering is None:
+            requested_config = replace(
+                requested_config,
+                list_ordering=StorageListOrdering.CREATED_AT_DESC,
+            )
+        elif requested_config.list_ordering != StorageListOrdering.CREATED_AT_DESC:
+            logger.warning(
+                "Metastore backend must use created_at-desc list ordering; overriding requested ordering.",
+                storage=storage_type.value,
+                old_ordering=requested_config.list_ordering.value,
+                new_ordering=StorageListOrdering.CREATED_AT_DESC.value,
+            )
+            requested_config = replace(
+                requested_config,
+                list_ordering=StorageListOrdering.CREATED_AT_DESC,
+            )
+
         logger.info(
-            "Initializing batch metastore", storage_type=storage_type, params=params
+            "Initializing batch metastore",
+            storage_type=storage_type,
+            config=requested_config,
+            params=create_params,
         )  # type: ignore[call-arg]
-        p_metastore = create_storage(storage_type, base_path=base_path, **params)
+        # Metastore scans require created_at-desc ordering. Backends that do not
+        # support that contract reject the selected StorageConfig during
+        # create_storage()/storage initialization.
+        storage = create_storage(
+            storage_type,
+            config=requested_config,
+            base_path=base_path,
+            **create_params,
+        )
+        p_metastore = storage
     except Exception as e:
         logger.error("Failed to initialize metastore", error=str(e))  # type: ignore[call-arg]
         raise
@@ -221,7 +272,7 @@ async def unlock_request(key: str, status: str) -> bool:
 
 
 async def put_batch_job(batch_id: str, job: BatchJob) -> None:
-    """Persist a BatchJob document under ``JOB_KEY_PREFIX<id>``.
+    """Persist a BatchJob document under ``JOB_KEY_PREFIX/<id>``.
 
     Last-writer-wins. When the metastore is Redis-backed this is a
     single SET; on file-backed metastores it is a small object write.
@@ -235,17 +286,15 @@ async def put_batch_job(batch_id: str, job: BatchJob) -> None:
             continue
 
         status_json = status_copy.model_dump_json(by_alias=True, exclude_none=True)
-        await set_metadata(
-            f"{JOB_STATUS_COPIES_PREFIX}{batch_id}:{worker_id}", status_json
-        )
+        await set_metadata(_status_copy_key(batch_id, worker_id), status_json)
     # Store the main status document
     payload = job_to_store.model_dump_json(by_alias=True, exclude_none=True)
-    await set_metadata(f"{JOB_KEY_PREFIX}{batch_id}", payload)
+    await set_metadata(_job_key(batch_id), payload)
 
 
 async def get_batch_job(batch_id: str) -> Optional[BatchJob]:
     """Fetch a BatchJob document or ``None`` if absent."""
-    raw, exists = await get_metadata(f"{JOB_KEY_PREFIX}{batch_id}")
+    raw, exists = await get_metadata(_job_key(batch_id))
     if not exists:
         return None
     job = BatchJob.model_validate_json(raw)
@@ -258,13 +307,15 @@ async def get_batch_job(batch_id: str) -> Optional[BatchJob]:
 
     # Load updated status copies
     status_copies = {}
-    prefix = f"{JOB_STATUS_COPIES_PREFIX}{batch_id}:"
-    keys = await list_metastore_all_keys(prefix)
-    storage_keys = [key if key.startswith(prefix) else f"{prefix}{key}" for key in keys]
+    prefix = _status_copies_list_prefix(batch_id)
+    # Keep the trailing "/" in the listing prefix so every backend treats this
+    # as "list children under this namespace". Redis normalizes either form,
+    # but local/object-style listings would otherwise collapse to a common prefix.
+    keys = await list_metastore_all_keys(prefix, delimiter="/")
     metadata_results = await asyncio.gather(
-        *(get_metadata(storage_key) for storage_key in storage_keys)
+        *(get_metadata(storage_key) for storage_key in keys)
     )
-    for storage_key, (status_json, exists) in zip(storage_keys, metadata_results):
+    for storage_key, (status_json, exists) in zip(keys, metadata_results):
         if exists:
             worker_id = storage_key[len(prefix) :]
             status_copies[worker_id] = BatchJobStatusCopy.model_validate_json(
@@ -281,15 +332,14 @@ async def get_batch_job(batch_id: str) -> Optional[BatchJob]:
 async def delete_batch_job(batch_id: str) -> None:
     """Remove the BatchJob document. Silent no-op if absent."""
     try:
-        prefix = f"{JOB_STATUS_COPIES_PREFIX}{batch_id}:"
-        for key in await list_metastore_all_keys(prefix):
+        prefix = _status_copies_list_prefix(batch_id)
+        for key in await list_metastore_all_keys(prefix, delimiter="/"):
             try:
-                storage_key = key if key.startswith(prefix) else f"{prefix}{key}"
-                await delete_metadata(storage_key)
+                await delete_metadata(key)
             except FileNotFoundError:
                 continue
 
-        await delete_metadata(f"{JOB_KEY_PREFIX}{batch_id}")
+        await delete_metadata(_job_key(batch_id))
     except FileNotFoundError:
         return
 
@@ -323,11 +373,12 @@ async def list_batch_jobs(
 ) -> list[BatchJob]:
     """List BatchJob documents using backend-native created-time ordering."""
     keys, _ = await list_metastore_keys(
-        JOB_KEY_PREFIX,
-        after_key=f"{JOB_KEY_PREFIX}{after}" if after is not None else None,
+        _job_list_prefix(),
+        delimiter="/",
+        after_key=_job_key(after) if after is not None else None,
         limit=limit,
     )
-    job_ids = [key.removeprefix(JOB_KEY_PREFIX) for key in keys]
+    job_ids = [key.removeprefix(_job_list_prefix()) for key in keys]
     jobs: list[Optional[BatchJob]] = [None] * len(job_ids)
     uncached_indices: list[int] = []
     uncached_job_ids: list[str] = []
@@ -350,15 +401,9 @@ async def list_batch_jobs(
     return [job for job in jobs if job is not None]
 
 
-def supports_created_at_desc_batch_job_listing(
-    storage_type: Optional[StorageType] = None,
-) -> bool:
-    metastore_type = storage_type or get_metastore_type()
-    return metastore_type in {StorageType.LOCAL, StorageType.REDIS}
-
-
 async def list_metastore_keys(
     prefix: str,
+    delimiter: Optional[str] = None,
     continuation_token: Optional[str] = None,
     limit: int = METASTORE_LIST_PAGE_SIZE,
     after_key: Optional[str] = None,
@@ -384,13 +429,16 @@ async def list_metastore_keys(
 
     return await p_metastore.list_objects(
         prefix=prefix,
+        delimiter=delimiter,
         continuation_token=continuation_token,
         limit=limit,
         after_key=after_key,
     )
 
 
-async def list_metastore_all_keys(prefix: str) -> list[str]:
+async def list_metastore_all_keys(
+    prefix: str, delimiter: Optional[str] = None
+) -> list[str]:
     """List all metastore keys matching the given prefix.
 
 
@@ -414,6 +462,7 @@ async def list_metastore_all_keys(prefix: str) -> list[str]:
     while True:
         batch_keys, continuation_token = await p_metastore.list_objects(
             prefix=prefix,
+            delimiter=delimiter,
             continuation_token=continuation_token,
             limit=METASTORE_LIST_PAGE_SIZE,  # Process in batches of 1000
         )
