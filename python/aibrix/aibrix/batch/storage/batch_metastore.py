@@ -245,6 +245,30 @@ async def lock_request(key: str, expiration_seconds: int = 3600) -> bool:
     )
 
 
+def is_request_locking_supported() -> bool:
+    """Whether the active metastore can lock requests.
+
+    Request locking relies on both TTL (to auto-expire stale locks) and
+    set-if-not-exists (NX) semantics. Backends that lack either -- notably the
+    LOCAL filesystem metastore used for dev/test runs -- cannot lock requests,
+    so callers should process every request without dedup instead of attempting
+    a lock per request (which would raise ``ValueError`` every time).
+
+    Returns:
+        True if the metastore supports request locking, False otherwise
+
+    Raises:
+        RuntimeError: If metastore has not been initialized
+    """
+    if p_metastore is None:
+        raise RuntimeError(
+            "Batch metastore not initialized. Call initialize_batch_metastore() first."
+        )
+    return (
+        p_metastore.is_ttl_supported() and p_metastore.is_set_if_not_exists_supported()
+    )
+
+
 async def is_request_done(key: str) -> bool:
     """Check if a request is done.
 

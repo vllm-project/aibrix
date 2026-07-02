@@ -102,10 +102,21 @@ async def test_read_job_next_input_data_keeps_locking_behavior(mock_storage):
         ]
     )
 
-    with patch(
-        "aibrix.batch.storage.adapter.lock_request",
-        AsyncMock(return_value=True),
-    ) as mock_lock:
+    # read_job_next_input_data probes is_request_locking_supported() once up
+    # front; force it True here so we exercise the per-request locking path and
+    # confirm the probe optimization doesn't skip lock_request when locking is
+    # available. (The probe reads the process metastore, which isn't initialized
+    # in unit tests, so it must be patched.)
+    with (
+        patch(
+            "aibrix.batch.storage.adapter.is_request_locking_supported",
+            return_value=True,
+        ),
+        patch(
+            "aibrix.batch.storage.adapter.lock_request",
+            AsyncMock(return_value=True),
+        ) as mock_lock,
+    ):
         requests = [
             item async for item in adapter.read_job_next_input_data(job, start_index=0)
         ]

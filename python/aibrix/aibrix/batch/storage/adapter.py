@@ -25,6 +25,7 @@ from aibrix.batch.storage.batch_metastore import (
     delete_metadata,
     get_metadata,
     is_request_done,
+    is_request_locking_supported,
     list_metastore_keys,
     lock_request,
     unlock_request,
@@ -91,6 +92,17 @@ class BatchStorageAdapter:
         """
         idx = start_index
         done = 0  # Track done requests so far
+        # Locking relies on TTL + set-if-not-exists, which some metastore
+        # backends (e.g. the LOCAL dev/test metastore) do not support. Probe
+        # once up front so we don't emit an identical "locking not supported"
+        # warning for every request in the job.
+        locking_supported = is_request_locking_supported()
+        if not locking_supported:
+            logger.info(
+                "Metastore does not support request locking; "
+                "processing all requests without dedup",
+                job_id=job.job_id,
+            )  # type:ignore[call-arg]
         # Use 'async for' to iterate and 'yield' each item.
         async for line in self.storage.readline_iter(
             job.spec.input_file_id, start_index
@@ -101,19 +113,25 @@ class BatchStorageAdapter:
 
             # Try to lock this request before processing.
             lock_key = self._get_request_meta_output_key(job, idx)
-            try:
-                # Try to acquire lock with configurable expiration
-                locked = await lock_request(
-                    lock_key, expiration_seconds=envs.INFERENCE_TASK_TIMEOUT
-                )
-            except Exception as e:
-                logger.warning(
-                    "Error on locking request in the job, assuming locking not supported",
-                    job_id=job.job_id,
-                    line_no=idx,
-                    error=e,
-                )  # type:ignore[call-arg]
+            if not locking_supported:
+                # Locking is unavailable on this backend; process every request
+                # without dedup, preserving the previous behavior (minus the
+                # per-request warning, which we already logged once above).
                 locked = True
+            else:
+                try:
+                    # Try to acquire lock with configurable expiration
+                    locked = await lock_request(
+                        lock_key, expiration_seconds=envs.INFERENCE_TASK_TIMEOUT
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Error on locking request in the job, assuming locking not supported",
+                        job_id=job.job_id,
+                        line_no=idx,
+                        error=e,
+                    )  # type:ignore[call-arg]
+                    locked = True
 
             if locked:
                 request_data = json.loads(line)
