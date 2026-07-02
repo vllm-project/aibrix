@@ -36,6 +36,8 @@ const (
 
 	RoleSetIndexAnnotationKey    = "stormservice.orchestration.aibrix.ai/roleset-index"
 	RoleSetRevisionAnnotationKey = "stormservice.orchestration.aibrix.ai/revision"
+	// RoleInPlaceUpdateTargetHashAnnotationKey records the desired role template hash while a pod image is being updated in place.
+	RoleInPlaceUpdateTargetHashAnnotationKey = "stormservice.orchestration.aibrix.ai/in-place-update-target-hash"
 	// RoleReplicaIndexAnnotationKey is originally used, to support label filter rank 0 pod, we add label support but keep this annotation for backward compatibility.
 	RoleReplicaIndexAnnotationKey = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	// RoleRevisionAnnotationPrefix is used to store per-role revision info in RoleSet annotations

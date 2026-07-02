@@ -426,4 +426,118 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 			},
 		),
 	)
+
+	ginkgo.It("updates role pod image in place without replacing the pod", func() {
+		int32Ptr := func(i int32) *int32 { return &i }
+		maxSurge := intstr.FromInt32(0)
+		maxUnavailable := intstr.FromInt32(1)
+		role := orchestrationapi.RoleSpec{
+			Name:     prefill,
+			Replicas: int32Ptr(1),
+			Template: validation.MakePodTemplate(prefillImageVersionV1),
+			UpdateStrategy: orchestrationapi.RoleUpdateStrategy{
+				Type:           orchestrationapi.InPlaceIfPossibleRoleUpdateStrategyType,
+				MaxSurge:       &maxSurge,
+				MaxUnavailable: &maxUnavailable,
+			},
+		}
+		rs := wrapper.MakeRoleSet("in-place-update-test").
+			Namespace(ns.Name).
+			UpdateStrategy(orchestrationapi.ParallelRoleSetUpdateStrategyType).
+			WithRoleAdvanced(role).
+			Obj()
+
+		gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
+		validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.RoleSetNameLabelKey, rs.Name, 1)
+
+		initialPod := waitForSingleRolePod(ctx, k8sClient, ns.Name, rs.Name, prefill)
+		initialName := initialPod.Name
+		initialUID := initialPod.UID
+		initialHash := initialPod.Labels[constants.RoleTemplateHashLabelKey]
+		markPodReadyWithRuntimeImage(ctx, k8sClient, initialPod, prefillImageVersionV1)
+
+		validation.WaitForRolesReady(ctx, k8sClient, rs, []string{prefill})
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.RoleSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+			latest.Spec.Roles[0].Template.Spec.Containers[0].Image = prefillImageVersionV2
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+
+		var targetHash string
+		gomega.Eventually(func(g gomega.Gomega) {
+			pod, err := getSingleRolePod(ctx, k8sClient, ns.Name, rs.Name, prefill)
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			g.Expect(pod.Name).To(gomega.Equal(initialName))
+			g.Expect(pod.UID).To(gomega.Equal(initialUID))
+			g.Expect(pod.Spec.Containers[0].Image).To(gomega.Equal(prefillImageVersionV2))
+			g.Expect(pod.Labels[constants.RoleTemplateHashLabelKey]).To(gomega.Equal(initialHash))
+			g.Expect(pod.Annotations).To(gomega.HaveKey(constants.RoleInPlaceUpdateTargetHashAnnotationKey))
+			targetHash = pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey]
+		}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+
+		patchedPod := waitForSingleRolePod(ctx, k8sClient, ns.Name, rs.Name, prefill)
+		markPodReadyWithRuntimeImage(ctx, k8sClient, patchedPod, prefillImageVersionV2)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			pod, err := getSingleRolePod(ctx, k8sClient, ns.Name, rs.Name, prefill)
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			g.Expect(pod.Name).To(gomega.Equal(initialName))
+			g.Expect(pod.UID).To(gomega.Equal(initialUID))
+			g.Expect(pod.Labels[constants.RoleTemplateHashLabelKey]).To(gomega.Equal(targetHash))
+			g.Expect(pod.Annotations).NotTo(gomega.HaveKey(constants.RoleInPlaceUpdateTargetHashAnnotationKey))
+		}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+	})
 })
+
+func waitForSingleRolePod(
+	ctx context.Context,
+	k8sClient client.Client,
+	namespace, roleSetName, roleName string,
+) *corev1.Pod {
+	var pod *corev1.Pod
+	gomega.Eventually(func(g gomega.Gomega) {
+		var err error
+		pod, err = getSingleRolePod(ctx, k8sClient, namespace, roleSetName, roleName)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+	}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
+	return pod
+}
+
+func getSingleRolePod(
+	ctx context.Context,
+	k8sClient client.Client,
+	namespace, roleSetName, roleName string,
+) (*corev1.Pod, error) {
+	pods := &corev1.PodList{}
+	if err := k8sClient.List(ctx, pods,
+		client.InNamespace(namespace),
+		client.MatchingLabels{
+			constants.RoleSetNameLabelKey: roleSetName,
+			constants.RoleNameLabelKey:    roleName,
+		}); err != nil {
+		return nil, err
+	}
+	if len(pods.Items) != 1 {
+		return nil, fmt.Errorf("expected 1 pod for RoleSet %q role %q, got %d",
+			roleSetName, roleName, len(pods.Items))
+	}
+	return pods.Items[0].DeepCopy(), nil
+}
+
+func markPodReadyWithRuntimeImage(ctx context.Context, k8sClient client.Client, pod *corev1.Pod, image string) {
+	gomega.Eventually(func(g gomega.Gomega) {
+		latest := &corev1.Pod{}
+		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), latest)).To(gomega.Succeed())
+		validation.MakePodReady(latest)
+		latest.Status.ContainerStatuses = []corev1.ContainerStatus{
+			{
+				Name:  latest.Spec.Containers[0].Name,
+				Image: image,
+				Ready: true,
+			},
+		}
+		g.Expect(k8sClient.Status().Update(ctx, latest)).To(gomega.Succeed())
+	}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+}

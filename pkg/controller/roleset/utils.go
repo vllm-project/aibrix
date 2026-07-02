@@ -46,9 +46,10 @@ const (
 	ProgressingConditionType = "Progressing"
 	FailureConditionType     = "Failure"
 
-	PodGroupSyncedEventType = "PodGroupSynced"
-	PodSyncedEventType      = "PodSynced"
-	FailureEventType        = "Failure"
+	PodGroupSyncedEventType  = "PodGroupSynced"
+	PodSyncedEventType       = "PodSynced"
+	InPlaceFallbackEventType = "InPlaceFallback"
+	FailureEventType         = "Failure"
 )
 
 // GetReadyReplicaCountForRole returns the number of ready roleSets corresponding to the given replica sets.

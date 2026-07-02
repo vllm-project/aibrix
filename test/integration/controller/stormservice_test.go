@@ -26,6 +26,7 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -252,7 +253,179 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 		),
 		// TODO: add more test cases for different update strategies, stateful services, etc.
 	)
+
+	ginkgo.DescribeTable("updates role pod image in place without replacing the pod",
+		func(nameSuffix string, roleUpdateStrategy orchestrationapi.RoleUpdateStrategyType) {
+			int32Ptr := func(i int32) *int32 { return &i }
+			maxSurge := intstr.FromInt32(0)
+			maxUnavailable := intstr.FromInt32(1)
+			matchLabel := map[string]string{"app": fmt.Sprintf("stormservice-%s", nameSuffix)}
+			role := orchestrationapi.RoleSpec{
+				Name:     prefill,
+				Replicas: int32Ptr(1),
+				Template: validation.MakePodTemplate(prefillImageVersionV1),
+				UpdateStrategy: orchestrationapi.RoleUpdateStrategy{
+					Type:           roleUpdateStrategy,
+					MaxSurge:       &maxSurge,
+					MaxUnavailable: &maxUnavailable,
+				},
+			}
+			roleSetSpec := &orchestrationapi.RoleSetSpec{
+				UpdateStrategy: orchestrationapi.ParallelRoleSetUpdateStrategyType,
+				Roles:          []orchestrationapi.RoleSpec{role},
+			}
+			ss := wrapper.MakeStormService(fmt.Sprintf("stormservice-%s", nameSuffix)).
+				Namespace(ns.Name).
+				Replicas(ptr.To(int32(1))).
+				Selector(metav1.SetAsLabelSelector(matchLabel)).
+				UpdateStrategyType(orchestrationapi.InPlaceUpdateStormServiceStrategyType).
+				RoleSetTemplateMeta(metav1.ObjectMeta{Labels: matchLabel}, roleSetSpec).
+				Obj()
+
+			gomega.Expect(k8sClient.Create(ctx, ss)).To(gomega.Succeed())
+			validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.StormServiceNameLabelKey, ss.Name, 1)
+
+			initialPod := waitForSingleStormServiceRolePod(ctx, k8sClient, ns.Name, ss.Name, prefill)
+			initialName := initialPod.Name
+			initialUID := initialPod.UID
+			initialHash := initialPod.Labels[constants.RoleTemplateHashLabelKey]
+			initialRoleRevision := initialPod.Labels[constants.RoleRevisionLabelKey]
+			markPodReadyWithRuntimeImage(ctx, k8sClient, initialPod, prefillImageVersionV1)
+
+			validation.ValidateStormServiceStatus(ctx, k8sClient, ss, 1, 1, 0, 1, 1, 1, true)
+
+			gomega.Eventually(func(g gomega.Gomega) {
+				latest := &orchestrationapi.StormService{}
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), latest)).To(gomega.Succeed())
+				latest.Spec.Template.Spec.Roles[0].Template.Spec.Containers[0].Image = prefillImageVersionV2
+				g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+			}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+
+			var targetHash string
+			gomega.Eventually(func(g gomega.Gomega) {
+				pod, err := getSingleStormServiceRolePod(ctx, k8sClient, ns.Name, ss.Name, prefill)
+				g.Expect(err).ToNot(gomega.HaveOccurred())
+				g.Expect(pod.Name).To(gomega.Equal(initialName))
+				g.Expect(pod.UID).To(gomega.Equal(initialUID))
+				g.Expect(pod.Spec.Containers[0].Image).To(gomega.Equal(prefillImageVersionV2))
+				g.Expect(pod.Labels[constants.RoleTemplateHashLabelKey]).To(gomega.Equal(initialHash))
+				g.Expect(pod.Labels[constants.RoleRevisionLabelKey]).To(gomega.Equal(initialRoleRevision))
+				g.Expect(pod.Annotations).To(gomega.HaveKey(constants.RoleInPlaceUpdateTargetHashAnnotationKey))
+				targetHash = pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey]
+			}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+
+			patchedPod := waitForSingleStormServiceRolePod(ctx, k8sClient, ns.Name, ss.Name, prefill)
+			markPodReadyWithRuntimeImage(ctx, k8sClient, patchedPod, prefillImageVersionV2)
+
+			gomega.Eventually(func(g gomega.Gomega) {
+				pod, err := getSingleStormServiceRolePod(ctx, k8sClient, ns.Name, ss.Name, prefill)
+				g.Expect(err).ToNot(gomega.HaveOccurred())
+				g.Expect(pod.Name).To(gomega.Equal(initialName))
+				g.Expect(pod.UID).To(gomega.Equal(initialUID))
+				g.Expect(pod.Labels[constants.RoleTemplateHashLabelKey]).To(gomega.Equal(targetHash))
+				g.Expect(pod.Labels[constants.RoleRevisionLabelKey]).To(gomega.Equal("2"))
+				g.Expect(pod.Annotations).NotTo(gomega.HaveKey(constants.RoleInPlaceUpdateTargetHashAnnotationKey))
+			}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+
+			validation.ValidateStormServiceStatus(ctx, k8sClient, ss, 1, 1, 0, 1, 1, 1, true)
+		},
+		ginkgo.Entry("InPlaceIfPossible", "in-place-if-possible", orchestrationapi.InPlaceIfPossibleRoleUpdateStrategyType),
+	)
+
+	ginkgo.It("falls back to replacing the pod when InPlaceIfPossible cannot update in place", func() {
+		int32Ptr := func(i int32) *int32 { return &i }
+		maxSurge := intstr.FromInt32(0)
+		maxUnavailable := intstr.FromInt32(1)
+		matchLabel := map[string]string{"app": "stormservice-in-place-fallback"}
+		role := orchestrationapi.RoleSpec{
+			Name:     prefill,
+			Replicas: int32Ptr(1),
+			Template: validation.MakePodTemplate(prefillImageVersionV1),
+			UpdateStrategy: orchestrationapi.RoleUpdateStrategy{
+				Type:           orchestrationapi.InPlaceIfPossibleRoleUpdateStrategyType,
+				MaxSurge:       &maxSurge,
+				MaxUnavailable: &maxUnavailable,
+			},
+		}
+		role.Template.Spec.Containers[0].Command = []string{"serve", "--version=v1"}
+		roleSetSpec := &orchestrationapi.RoleSetSpec{
+			UpdateStrategy: orchestrationapi.ParallelRoleSetUpdateStrategyType,
+			Roles:          []orchestrationapi.RoleSpec{role},
+		}
+		ss := wrapper.MakeStormService("stormservice-in-place-fallback").
+			Namespace(ns.Name).
+			Replicas(ptr.To(int32(1))).
+			Selector(metav1.SetAsLabelSelector(matchLabel)).
+			UpdateStrategyType(orchestrationapi.InPlaceUpdateStormServiceStrategyType).
+			RoleSetTemplateMeta(metav1.ObjectMeta{Labels: matchLabel}, roleSetSpec).
+			Obj()
+
+		gomega.Expect(k8sClient.Create(ctx, ss)).To(gomega.Succeed())
+		validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.StormServiceNameLabelKey, ss.Name, 1)
+
+		initialPod := waitForSingleStormServiceRolePod(ctx, k8sClient, ns.Name, ss.Name, prefill)
+		initialUID := initialPod.UID
+		markPodReadyWithRuntimeImage(ctx, k8sClient, initialPod, prefillImageVersionV1)
+
+		validation.ValidateStormServiceStatus(ctx, k8sClient, ss, 1, 1, 0, 1, 1, 1, true)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.StormService{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), latest)).To(gomega.Succeed())
+			latest.Spec.Template.Spec.Roles[0].Template.Spec.Containers[0].Command = []string{"serve", "--version=v2"}
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+
+		var replacementPod *corev1.Pod
+		gomega.Eventually(func(g gomega.Gomega) {
+			pod, err := getSingleStormServiceRolePod(ctx, k8sClient, ns.Name, ss.Name, prefill)
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			g.Expect(pod.UID).NotTo(gomega.Equal(initialUID))
+			g.Expect(pod.Spec.Containers[0].Command).To(gomega.Equal([]string{"serve", "--version=v2"}))
+			g.Expect(pod.Labels[constants.RoleRevisionLabelKey]).To(gomega.Equal("2"))
+			g.Expect(pod.Annotations).NotTo(gomega.HaveKey(constants.RoleInPlaceUpdateTargetHashAnnotationKey))
+			replacementPod = pod
+		}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
+
+		markPodReadyWithRuntimeImage(ctx, k8sClient, replacementPod, prefillImageVersionV1)
+		validation.ValidateStormServiceStatus(ctx, k8sClient, ss, 1, 1, 0, 1, 1, 1, true)
+	})
 })
+
+func waitForSingleStormServiceRolePod(
+	ctx context.Context,
+	k8sClient client.Client,
+	namespace, stormServiceName, roleName string,
+) *corev1.Pod {
+	var pod *corev1.Pod
+	gomega.Eventually(func(g gomega.Gomega) {
+		var err error
+		pod, err = getSingleStormServiceRolePod(ctx, k8sClient, namespace, stormServiceName, roleName)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+	}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
+	return pod
+}
+
+func getSingleStormServiceRolePod(
+	ctx context.Context,
+	k8sClient client.Client,
+	namespace, stormServiceName, roleName string,
+) (*corev1.Pod, error) {
+	pods := &corev1.PodList{}
+	if err := k8sClient.List(ctx, pods,
+		client.InNamespace(namespace),
+		client.MatchingLabels{
+			constants.StormServiceNameLabelKey: stormServiceName,
+			constants.RoleNameLabelKey:         roleName,
+		}); err != nil {
+		return nil, err
+	}
+	if len(pods.Items) != 1 {
+		return nil, fmt.Errorf("expected 1 pod for StormService %q role %q, got %d",
+			stormServiceName, roleName, len(pods.Items))
+	}
+	return pods.Items[0].DeepCopy(), nil
+}
 
 func listStormServiceRoleSets(ctx context.Context, k8sClient client.Client,
 	ns, ssName string,
