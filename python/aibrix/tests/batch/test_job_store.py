@@ -26,6 +26,7 @@ from aibrix.batch.job_entity import (
     BatchJobEndpoint,
     BatchJobSpec,
     BatchJobState,
+    BatchJobStatusCopy,
     CompletionWindow,
     Condition,
     ConditionStatus,
@@ -165,6 +166,49 @@ async def test_job_store_submit_persists_to_metastore_and_fires_committed(
     assert persisted_job is not None
     assert persisted_job.job_id == committed_job.job_id
     assert [job.job_id for job in listed_jobs] == [committed_job.job_id]
+
+
+@pytest.mark.asyncio
+async def test_status_copy_worker_id_encoding_is_reversible(monkeypatch):
+    store = FakeMetastore()
+    monkeypatch.setattr(batch_metastore, "p_metastore", store)
+
+    job = BatchJob.new_local(spec=_spec(), request_count=1)
+    assert job.job_id is not None
+    job.status.state = BatchJobState.IN_PROGRESS
+    job.status.status_copies = {
+        "cluster-a/default/workload-1": BatchJobStatusCopy(
+            state=BatchJobState.IN_PROGRESS,
+            updated=True,
+        )
+    }
+
+    await batch_metastore.put_batch_job(job.job_id, job)
+
+    status_copy_keys = [
+        key
+        for key in store.objects
+        if key.startswith(f"batchstatus_copies:{job.job_id}/")
+    ]
+    assert status_copy_keys == [
+        f"batchstatus_copies:{job.job_id}/cluster-a%2Fdefault%2Fworkload-1"
+    ]
+
+    loaded = await batch_metastore.get_batch_job(job.job_id)
+
+    assert loaded is not None
+    assert loaded.status.status_copies is not None
+    assert list(loaded.status.status_copies) == ["cluster-a/default/workload-1"]
+    assert (
+        batch_metastore._normalize_status_copy_worker_id("cluster-a/default/workload-1")
+        == "cluster-a%2Fdefault%2Fworkload-1"
+    )
+    assert (
+        batch_metastore._decode_status_copy_worker_id(
+            "cluster-a%2Fdefault%2Fworkload-1"
+        )
+        == "cluster-a/default/workload-1"
+    )
 
 
 @pytest.mark.asyncio

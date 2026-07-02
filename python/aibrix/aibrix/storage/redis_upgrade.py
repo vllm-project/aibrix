@@ -87,6 +87,18 @@ def _remap_batch_metastore_key_to_v3(key: str) -> str:
     return key
 
 
+def _status_copy_parent_keys_for_cleanup(*keys: str) -> set[str]:
+    parent_keys: set[str] = set()
+    for key in keys:
+        if not key.startswith(_OLD_BATCH_STATUS_COPIES_PREFIX):
+            continue
+        slash_index = key.find("/")
+        while slash_index != -1:
+            parent_keys.add(key[:slash_index])
+            slash_index = key.find("/", slash_index + 1)
+    return parent_keys
+
+
 async def verify_redis_storage_v3(redis_client: Any) -> None:
     """Validate that Redis storage indexes match the v3 invariants.
 
@@ -111,6 +123,12 @@ async def verify_redis_storage_v3(redis_client: Any) -> None:
         if migrated_key != key:
             raise RuntimeError(
                 f"Redis storage v3 verification failed: legacy key still present {key!r}"
+            )
+
+        if key.startswith(_OLD_BATCH_STATUS_COPIES_PREFIX):
+            raise RuntimeError(
+                "Redis storage v3 verification failed: batch status copy entries "
+                f"must be removed during upgrade, found {key!r}"
             )
 
         if "/" not in key:
@@ -213,6 +231,7 @@ async def upgrade_redis_storage_to_v3(redis_client: Any) -> None:
     global_mapping: dict[str, float] = {}
     parent_mappings: dict[str, dict[str, float]] = {}
     parent_members: dict[str, set[str]] = {}
+    status_copy_parent_keys: set[str] = set()
 
     for member, score in timestamp_entries:
         key = _decode_redis_value(member)
@@ -220,6 +239,15 @@ async def upgrade_redis_storage_to_v3(redis_client: Any) -> None:
             continue
         migrated_key = _remap_batch_metastore_key_to_v3(key)
         normalized_score = _normalize_created_at_score(float(score))
+        if migrated_key.startswith(_OLD_BATCH_STATUS_COPIES_PREFIX):
+            status_copy_parent_keys.update(
+                _status_copy_parent_keys_for_cleanup(key, migrated_key)
+            )
+            if key != migrated_key:
+                await redis_client.delete(key, migrated_key)
+            else:
+                await redis_client.delete(key)
+            continue
 
         if migrated_key != key:
             payload = await redis_client.get(key)
@@ -245,6 +273,9 @@ async def upgrade_redis_storage_to_v3(redis_client: Any) -> None:
     await redis_client.delete("timestamps:all")
     for score_chunk in _chunk_mapping(global_mapping, _ZADD_CHUNK_SIZE):
         await redis_client.zadd("timestamps:all", score_chunk)
+
+    for parent_key in status_copy_parent_keys:
+        await redis_client.delete(f"{parent_key}:index", f"timestamps:{parent_key}")
 
     for parent_key, mapping in parent_mappings.items():
         await redis_client.delete(f"{parent_key}:index", f"timestamps:{parent_key}")

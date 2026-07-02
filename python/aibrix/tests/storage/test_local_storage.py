@@ -218,6 +218,50 @@ class TestLocalStorage:
             await local_storage.delete_object(key)
 
     @pytest.mark.asyncio
+    async def test_hierarchical_keys_with_colon_parent_are_supported(
+        self, local_storage: LocalStorage
+    ):
+        key = "batchstatus_copies:job-1/cluster-a"
+
+        await local_storage.put_object(key, b"payload")
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchstatus_copies:job-1/",
+            delimiter="/",
+        )
+        assert objects == [key]
+        assert await local_storage.object_exists(key)
+
+        await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_recursive_list_preserves_nested_subfolders(
+        self, local_storage: LocalStorage
+    ):
+        key = "batchstatus_copies:job-1/cluster-a/default/workload-1"
+
+        await local_storage.put_object(key, b"payload")
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchstatus_copies:job-1/",
+        )
+        assert objects == [key]
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchstatus_copies:job-1/cluster-a/",
+        )
+        assert objects == [key]
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchstatus_copies:job-1/cluster-a/default/",
+        )
+        assert objects == [key]
+
+        assert await local_storage.object_exists(key)
+
+        await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
     async def test_concurrent_operations(self, local_storage: LocalStorage):
         """Test concurrent read/write operations."""
         import asyncio

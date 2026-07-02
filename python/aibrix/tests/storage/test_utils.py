@@ -259,6 +259,10 @@ class TestSanitizeKey:
                 f"Expected {expected} but got {result} for {input_key}"
             )
 
+    def test_colons_are_percent_encoded_per_path_segment(self):
+        result = _sanitize_key("batchstatus_copies:job-1/cluster-a")
+        assert result == "batchstatus_copies%3Ajob-1/cluster-a"
+
     def test_tilde_handling(self):
         """Test handling of tilde characters in paths."""
         test_cases = [
