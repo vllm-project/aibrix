@@ -114,10 +114,10 @@ class BatchStorageAdapter:
             # Try to lock this request before processing.
             lock_key = self._get_request_meta_output_key(job, idx)
             if not locking_supported:
-                # Locking is unavailable, but a previous (interrupted) run may
-                # have already completed this request. Skip those so job
-                # recovery/resumption does not reprocess them from the start.
-                locked = not await is_request_done(lock_key)
+                # Locking is unavailable on this backend; process every request
+                # without dedup, preserving the previous behavior (minus the
+                # per-request warning, which we already logged once above).
+                locked = True
             else:
                 try:
                     # Try to acquire lock with configurable expiration
