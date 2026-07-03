@@ -181,8 +181,11 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 		// ignore traceTerm
 		tracker.AddRequestCount(ctx, requestID, modelName)
 	}
-	// Current implementation assumes AddRequestCount() will not be called concurrently.
-	// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
+	// Queue-based routers call AddRequestCount once before enqueueing a request.
+	// That initializes trace/model-level counters before queueRouter.serve can see
+	// the RoutingContext. Later calls for the same routed request may happen from
+	// Route() and serve() concurrently, but CanAddTrace keeps this block
+	// idempotent and the trace term is already stored on the context.
 	if ctx == nil || ctx.CanAddTrace() {
 		if c.enableTracing {
 			success := false
@@ -205,8 +208,11 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 		}
 	}
 
-	// Current implementation assumes AddRequestCount() will not be called concurrently.
-	// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
+	// After a queue-based router assigns a target pod, queueRouter.serve records
+	// pod-level realtime stats. Route() also calls AddRequestCount after waiting
+	// for TargetPod() so those stats are visible before Route() returns. Either
+	// goroutine may win CanAddStats; concurrent callers wait for that in-flight
+	// stats update to complete and then return the trace term from the context.
 	if ctx == nil {
 		return traceTerm
 	} else if !ctx.HasRouted() {
