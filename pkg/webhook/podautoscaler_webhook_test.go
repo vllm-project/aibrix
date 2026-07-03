@@ -169,6 +169,29 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 			expectError: true,
 			errorMsg:    "must be a valid number",
 		},
+		"HPA Does Not Support Role Subtarget": {
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Name: "test-stormservice",
+						Kind: "StormService",
+					},
+					SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{
+						RoleName: "decode",
+					},
+					ScalingStrategy: autoscalingv1alpha1.HPA,
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{
+							MetricSourceType: autoscalingv1alpha1.RESOURCE,
+							TargetMetric:     "cpu",
+							TargetValue:      "50",
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "subTargetSelector",
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

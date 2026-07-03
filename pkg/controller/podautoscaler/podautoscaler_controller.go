@@ -422,6 +422,12 @@ func (r *PodAutoscalerReconciler) validateScalingStrategy(pa *autoscalingv1alpha
 	if !checkValidAutoscalingStrategy(pa.Spec.ScalingStrategy) {
 		return invalid(ReasonInvalidScalingStrategy, "Unsupported scalingStrategy; must be one of HPA/KPA/APA.")
 	}
+	if pa.Spec.ScalingStrategy == autoscalingv1alpha1.HPA &&
+		pa.Spec.SubTargetSelector != nil &&
+		pa.Spec.SubTargetSelector.RoleName != "" {
+		return invalid(ReasonInvalidScalingStrategy,
+			"subTargetSelector.roleName is not supported with scalingStrategy=HPA; use APA or KPA for StormService role-level autoscaling.")
+	}
 	return validOK()
 }
 
