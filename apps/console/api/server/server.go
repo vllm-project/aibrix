@@ -184,14 +184,18 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	// Propagate the AuthMiddleware-injected UserInfo onto outgoing gRPC
 	// metadata so gRPC handlers
 	mux := runtime.NewServeMux(runtime.WithMetadata(func(_ context.Context, r *http.Request) metadata.MD {
+		pairs := []string{}
 		u := middleware.GetUser(r.Context())
-		if u == nil {
+		if u != nil {
+			pairs = append(pairs, middleware.MetadataUserEmail, u.Email, middleware.MetadataUserID, u.ID)
+		}
+		if v := r.URL.Query().Get("include_deployment"); v != "" {
+			pairs = append(pairs, "x-aibrix-include-deployment", v)
+		}
+		if len(pairs) == 0 {
 			return nil
 		}
-		return metadata.Pairs(
-			middleware.MetadataUserEmail, u.Email,
-			middleware.MetadataUserID, u.ID,
-		)
+		return metadata.Pairs(pairs...)
 	}))
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 

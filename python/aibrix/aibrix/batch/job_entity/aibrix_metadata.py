@@ -156,6 +156,17 @@ class ResolvedModelTemplate(_Strict):
     spec: Dict[str, Any] = Field(default_factory=dict)
 
 
+class DeploymentDetail(_Lenient):
+    """Side-channel deployment detail attached to BatchResponse.deployment.
+
+    No fixed fields — each DeploymentDetailProvider implementation defines its
+    own structure. API callers receive the environment-specific result via JSON
+    serialization.
+    """
+
+    pass
+
+
 class AibrixMetadata(_Strict):
     job_id: Optional[str] = None
     resource_allocation: Optional[ResourceAllocation] = None
@@ -164,6 +175,7 @@ class AibrixMetadata(_Strict):
     profile: Optional[BatchProfileRef] = None
     model: Optional[str] = None
     client: Optional[ClientConfig] = None
+    deployment: Optional[DeploymentDetail] = None
 
     def to_metadata(self) -> "AibrixMetadata":
         return AibrixMetadata(**self.model_dump(exclude_none=True))

@@ -149,6 +149,7 @@ func (s *GORMStore) loadDemoJobs() error {
 	jobs := map[string]*pb.Job{
 		"batch_demo_27a6ee2c": {
 			Id:               "batch_demo_27a6ee2c",
+			BatchId:          "batch_id_demo_27a6ee2c",
 			Object:           "batch",
 			Endpoint:         "/v1/chat/completions",
 			Model:            "Llama 3.3 70B Instruct",
@@ -169,6 +170,7 @@ func (s *GORMStore) loadDemoJobs() error {
 		},
 		"batch_demo_a0b13ef5": {
 			Id:               "batch_demo_a0b13ef5",
+			BatchId:          "batch_id_demo_a0b13ef5",
 			Object:           "batch",
 			Endpoint:         "/v1/chat/completions",
 			Model:            "GLM-5",
@@ -198,6 +200,11 @@ func (s *GORMStore) loadDemoJobs() error {
 			Model: pbJob.Model,
 		}
 
+		// Add mock deployment detail for the in_progress demo job
+		if jobID == "batch_demo_a0b13ef5" {
+			aibrixExtraBody.Deployment = json.RawMessage(mockDemoDeploymentDetail())
+		}
+
 		if aibrixJSON, err := json.Marshal(aibrixExtraBody); err == nil {
 			if pbJob.ExtraBody == nil {
 				pbJob.ExtraBody = make(map[string]string)
@@ -214,6 +221,215 @@ func (s *GORMStore) loadDemoJobs() error {
 		}
 	}
 	return nil
+}
+
+// mockDemoDeploymentDetail returns a JSON string mimicking the response
+// from DemoDeploymentDetailProvider._get_deployment_detail().
+func mockDemoDeploymentDetail() string {
+	type cluster struct {
+		Zone            string `json:"zone,omitempty"`
+		PhysicalCluster string `json:"physical_cluster"`
+		LogicalCluster  string `json:"logical_cluster,omitempty"`
+		IDC             string `json:"idc,omitempty"`
+	}
+
+	type pod struct {
+		Name            string  `json:"name"`
+		Cluster         cluster `json:"cluster"`
+		Phase           string  `json:"phase"`
+		PodIP           string  `json:"pod_ip"`
+		PodIPv6         string  `json:"pod_ipv6,omitempty"`
+		HostIPv4        string  `json:"host_ipv4,omitempty"`
+		HostIPv6        string  `json:"host_ipv6,omitempty"`
+		Node            string  `json:"node"`
+		NodeName        string  `json:"node_name"`
+		CreatedAt       string  `json:"created_at"`
+		ContainerStatus string  `json:"container_status"`
+		Ports           any     `json:"ports"`
+		Healthy         bool    `json:"healthy"`
+		Monitoring      string  `json:"monitoring"`
+	}
+
+	type workload struct {
+		ID            string  `json:"id"`
+		Name          string  `json:"name"`
+		Type          string  `json:"type"`
+		SaleMode      string  `json:"sale_mode"`
+		Role          string  `json:"role"`
+		Phase         string  `json:"phase"`
+		Cluster       cluster `json:"cluster"`
+		Replicas      int     `json:"replicas"`
+		Image         string  `json:"image"`
+		Resources     any     `json:"resources"`
+		ResourcePool  string  `json:"resource_pool"`
+		NodeSelectors any     `json:"node_selectors"`
+		Pods          []pod   `json:"pods"`
+		Healthy       bool    `json:"healthy"`
+		YAML          string  `json:"yaml"`
+	}
+
+	type detail struct {
+		Type       string     `json:"type"`
+		JobID      string     `json:"job_id"`
+		JobName    string     `json:"job_name"`
+		PSM        string     `json:"psm"`
+		Workloads  []workload `json:"workloads"`
+		Monitoring string     `json:"monitoring"`
+		Grafana    string     `json:"grafana"`
+	}
+
+	d := detail{
+		Type:    "demo",
+		JobID:   "batch_demo_a0b13ef5",
+		JobName: "gsm-8k-20260118-v2",
+		PSM:     "inf.aibrix.inference_workers",
+		Workloads: []workload{
+			{
+				ID:       "dd036bc9-639a-47ca-a704-69b18004ae52",
+				Name:     "inf-aibrix-inference-workers-0a669de6-mi",
+				Type:     "DeploymentWorkload",
+				SaleMode: "spot",
+				Role:     "default",
+				Phase:    "synced",
+				Cluster: cluster{
+					Zone:            "Demo-North",
+					PhysicalCluster: "DemoPhys",
+					LogicalCluster:  "ai-mix",
+					IDC:             "YX",
+				},
+				Replicas: 1,
+				Image:    "hub.demo.org/base/demo:torch2.10_0611",
+				Resources: map[string]any{
+					"cpu":    map[string]string{"request": "22", "limit": "22"},
+					"memory": map[string]string{"request": "102400Mi", "limit": "102400Mi"},
+					"gpu":    map[string]string{"request": "1", "limit": "1"},
+				},
+				ResourcePool:  "demo-3530-yx-demophys-ai.mix-default",
+				NodeSelectors: map[string]any{},
+				Pods: []pod{
+					{
+						Name: "inf-aibrix-inference-workers-0a669de6-mi-7d4f8b6c9-xk2p1",
+						Cluster: cluster{
+							Zone:            "Demo-North",
+							PhysicalCluster: "DemoPhys",
+							LogicalCluster:  "ai-mix",
+							IDC:             "YX",
+						},
+						Phase:           "Running",
+						PodIP:           "10.58.112.33",
+						Node:            "10.58.112.1",
+						NodeName:        "10-58-112-1",
+						CreatedAt:       "2026-07-02T08:15:30+08:00",
+						ContainerStatus: "Running",
+						Ports: []map[string]any{
+							{"nodePort": 11252, "port": 11252, "protocol": "TCP"},
+							{"nodePort": 9955, "port": 9955, "protocol": "TCP"},
+						},
+						Healthy:    true,
+						Monitoring: "https://cloud.demo.net/monitor?from=now-1h&to=now",
+					},
+				},
+				Healthy: true,
+				YAML: `kind: DeploymentWorkload
+apiVersion: core.tce.byted.org/v1alpha1
+metadata:
+  name: inf-aibrix-inference-workers-0a669de6-mi
+  namespace: default
+spec:
+  deployStrategy:
+    replicas: 1
+  podBase:
+    containers:
+      - name: inf-aibrix-inference-workers-0a669de6-mi
+        image: hub.demo.org/base/demo:torch2.10_0611
+`,
+			},
+			{
+				ID:       "6a3380202b8c07c30385ea2a",
+				Name:     "inf-aibrix-inference-workers-6c320664-de",
+				Type:     "DeploymentWorkload",
+				SaleMode: "scheduled",
+				Role:     "default",
+				Phase:    "rollingUpdating",
+				Cluster: cluster{
+					Zone:            "Demo-East",
+					PhysicalCluster: "Federation",
+					LogicalCluster:  "ai",
+					IDC:             "XX",
+				},
+				Replicas: 2,
+				Image:    "hub.demo.org/base/demo:torch2.10_0611",
+				Resources: map[string]any{
+					"cpu":    map[string]string{"request": "22", "limit": "22"},
+					"memory": map[string]string{"request": "102400Mi", "limit": "102400Mi"},
+					"gpu":    map[string]string{"request": "1", "limit": "1"},
+				},
+				ResourcePool:  "demo-3530-yx-federation-default-default",
+				NodeSelectors: map[string]any{},
+				Pods: []pod{
+					{
+						Name: "inf-aibrix-inference-workers-6c320664-de-5e9a7c3b1-mn4vt",
+						Cluster: cluster{
+							Zone:            "Demo-North3",
+							PhysicalCluster: "DemoPhys3",
+							LogicalCluster:  "default",
+							IDC:             "LF",
+						},
+						Phase:           "Running",
+						PodIP:           "10.58.96.17",
+						Node:            "10.58.96.2",
+						NodeName:        "10-58-96-2",
+						CreatedAt:       "2026-07-02T08:12:10+08:00",
+						ContainerStatus: "Running",
+						Ports: []map[string]any{
+							{"nodePort": 11469, "port": 11469, "protocol": "TCP"},
+							{"nodePort": 10827, "port": 10827, "protocol": "TCP"},
+							{"nodePort": 9484, "port": 9484, "protocol": "TCP"},
+						},
+						Healthy:    true,
+						Monitoring: "https://cloud.demo.net/monitor?from=now-1h&to=now",
+					},
+					{
+						Name: "inf-aibrix-inference-workers-6c320664-de-5e9a7c3b1-qw8ry",
+						Cluster: cluster{
+							Zone:            "Demo-North5",
+							PhysicalCluster: "DemoPhys5",
+							LogicalCluster:  "default",
+							IDC:             "HH",
+						},
+						Phase:           "Pending",
+						PodIP:           "",
+						Node:            "",
+						NodeName:        "",
+						CreatedAt:       "2026-07-02T09:30:00+08:00",
+						ContainerStatus: "Pending",
+						Ports:           []any{},
+						Healthy:         false,
+						Monitoring:      "https://cloud.demo.net/monitor?from=now-1h&to=now",
+					},
+				},
+				Healthy: false,
+				YAML: `kind: DeploymentWorkload
+apiVersion: core.tce.byted.org/v1alpha1
+metadata:
+  name: inf-aibrix-inference-workers-6c320664-de
+  namespace: default
+spec:
+  deployStrategy:
+    replicas: 2
+  podBase:
+    containers:
+      - name: inf-aibrix-inference-workers-6c320664-de
+        image: hub.demo.org/base/demo:torch2.10_0611
+`,
+			},
+		},
+		Monitoring: "https://cloud.demo.net/monitor?from=now-1h&to=now",
+		Grafana:    "https://grafana.demo.org/service-monitoring-dashboard?orgId=1&refresh=1m&from=now-3h&to=now&var-idc=*&var-service=123",
+	}
+
+	b, _ := json.Marshal(d)
+	return string(b)
 }
 
 func (s *GORMStore) loadDemoModels() error {

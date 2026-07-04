@@ -17,6 +17,8 @@ limitations under the License.
 package client
 
 import (
+	"encoding/json"
+
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 )
 
@@ -60,4 +62,5 @@ type AIBrixExtraBody struct {
 	ModelTemplate      *plannerapi.ModelTemplateRef `json:"model_template,omitempty"`
 	Model              string                       `json:"model,omitempty"`
 	Client             *plannerapi.ClientConfig     `json:"client,omitempty"`
+	Deployment         json.RawMessage              `json:"deployment,omitempty"`
 }
