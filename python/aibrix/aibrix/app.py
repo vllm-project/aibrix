@@ -37,6 +37,7 @@ from aibrix.openapi.protocol import (
     UnloadLoraAdapterRuntimeRequest,
 )
 from aibrix.runtime.artifact_service import ArtifactDelegationService
+from aibrix.runtime.model_runtime_api import model_runtime_router
 
 logger = init_logger(__name__)
 router = APIRouter()
@@ -103,6 +104,12 @@ def mount_metrics(app: FastAPI):
     logger.info(
         f"AIBrix to scrape metrics from {scrape_endpoint}, use {engine} standard rules"
     )
+
+    # Runtime model KV-density: resident model count + per-model kvcached usage,
+    # read live from /dev/shm at scrape time.
+    from aibrix.runtime.model_runtime_metrics import ModelRuntimeKVCollector
+
+    REGISTRY.register(ModelRuntimeKVCollector())
 
     # Add prometheus asgi middleware to route /metrics requests
     metrics_route = Mount("/metrics", make_asgi_app(registry=REGISTRY))
@@ -240,6 +247,11 @@ async def list_model(request: Optional[ListModelRequest] = None):
         return JSONResponse(content=response.model_dump(), status_code=response.code)
 
     return JSONResponse(status_code=200, content=response.model_dump())
+
+
+# Runtime model lifecycle endpoints used by ModelClaim and future full-model
+# control-plane integrations.
+router.include_router(model_runtime_router)
 
 
 @router.get("/healthz")
