@@ -516,7 +516,7 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 // maxFreeGPUUsage from the same pass (maxima include all pods, including those without metrics).
 // maxRequestCount and maxThroughput are floored at 1 and maxFreeGPUUsage is floored at 1 so
 // that scoreDecodePods normalization denominators are always positive. The caller narrows
-// prefillPods to the selected pod's roleset. KV cache headroom uses KVCacheUsagePerc only
+// prefillPods to the selected pod's roleset. KV cache headroom uses KVCacheUsagePerc
 // (missing metric is treated as 0% usage = 100% free).
 func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filteredDecodePods []*v1.Pod) (*v1.Pod, float64, float64, float64, map[string]float64, map[string]float64, map[string]float64) {
 	podRequestCounts := make(map[string]float64)
@@ -565,10 +565,11 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		}
 
 		kvUsage, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc)
-		if err != nil {
-			kvUsage = &metrics.SimpleMetricValue{Value: 0}
+		kvUsageVal := float64(0)
+		if err == nil {
+			kvUsageVal = kvUsage.GetSimpleValue()
 		}
-		podFreeGpuUsage[pod.Name] = math.Round(100 - kvUsage.GetSimpleValue()*100)
+		podFreeGpuUsage[pod.Name] = math.Round(100 - kvUsageVal*100)
 		if podFreeGpuUsage[pod.Name] <= 0 {
 			podFreeGpuUsage[pod.Name] = 0.1
 		}

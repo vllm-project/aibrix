@@ -19,7 +19,7 @@ Client Request
      ▼
 Route(ctx, readyPodList)
      │
-     ├─► validateAndGetLLMEngine()
+     ├─► ValidateAndGetLLMEngine()
      │        Ensure all pods use the same engine (vllm / sglang / trtllm)
      │
      ├─► filterPrefillDecodePods()
@@ -251,7 +251,7 @@ Controlled by `AIBRIX_DECODE_SCORE_POLICY`, or overridden per request via **`rou
 Metrics are pulled from the cache per pod (same maps as `loadImbalanceSelectDecodePod`):
 - `RealtimeNumRequestsRunning` + `PendingDecodeTracker` count
 - `AvgGenerationThroughputToksPerS` (per model)
-- `KVCacheUsagePerc` (free = 100 − usage%; falls back to deprecated `GPUCacheUsagePerc`)
+- `KVCacheUsagePerc` (free = 100 − usage%)
 
 **Cold-start gate**: if at least one pod has `RealtimeNumRequestsRunning`, pods that lack it are given a neutral **cold-start score** (`1.0 + pending_decode_count`) rather than full policy scoring. When *no* pod has that metric yet, all pods are scored normally.
 
@@ -428,7 +428,7 @@ collectAndBucketPods()
     └─ Bucket pass: per roleset, keep pods whose bucket covers promptLength
                     only when BOTH prefill and decode sides match (half-pairs excluded)
 
-If bucket-filtered lists are non-empty, they replace the unfiltered prefill/decode lists.
+If both bucket-filtered lists are non-empty, they replace the unfiltered prefill/decode lists atomically so the sides stay roleset-aligned.
 ```
 
 ### No-match guard and combined fallback

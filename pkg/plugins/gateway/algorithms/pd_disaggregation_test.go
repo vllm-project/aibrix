@@ -115,7 +115,6 @@ func TestPDRouter_Route(t *testing.T) {
 			ctx.Engine = tt.llmEngine
 			ctx.ReqPath = testChatCompletionsPath
 			ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
-			ctx.Engine = tt.llmEngine
 
 			result, err := r.Route(ctx, &utils.PodArray{Pods: tt.readyPods})
 
@@ -210,7 +209,6 @@ func TestPDRouter_RouteDoesNotEmitAsyncPrefillSuccessBeforeHTTPCompletes(t *test
 	ctx.Engine = SGLangEngine
 	ctx.ReqPath = testChatCompletionsPath
 	ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
-	ctx.Engine = SGLangEngine
 
 	result, err := r.Route(ctx, &utils.PodArray{Pods: pods})
 
@@ -296,7 +294,6 @@ func TestPDRouter_RouteRecordsAsyncPrefillFailureWithoutSuccess(t *testing.T) {
 	ctx.Engine = SGLangEngine
 	ctx.ReqPath = testChatCompletionsPath
 	ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
-	ctx.Engine = SGLangEngine
 
 	result, err := r.Route(ctx, &utils.PodArray{Pods: pods})
 
