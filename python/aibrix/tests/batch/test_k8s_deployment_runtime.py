@@ -285,7 +285,7 @@ async def test_k8s_deployment_runtime_builds_execution_ref_with_current_payload_
 
     assert execution is not None
     assert execution.driver_type == "k8s-deployment"
-    assert execution.owner_ref == "default/rendered-deployment"
+    assert execution.owner_ref == "default:rendered-deployment"
     assert execution.reconnect_payload == {
         "namespace": "default",
         "deploymentName": "rendered-deployment",
@@ -307,7 +307,7 @@ async def test_k8s_deployment_runtime_reconnect_accepts_current_payload_keys():
         job.job_id,
         JobRuntimeRef(
             driverType="k8s-deployment",
-            ownerRef="default/rendered-deployment",
+            ownerRef="default:rendered-deployment",
             reconnectPayload={
                 "namespace": "default",
                 "deploymentName": "rendered-deployment",
