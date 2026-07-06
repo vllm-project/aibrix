@@ -31,17 +31,21 @@ from aibrix.batch.job_entity import (
     BatchJobState,
     BatchJobStatus,
     BatchProfileRef,
+    Condition,
+    ConditionStatus,
+    ConditionType,
     ModelTemplateRef,
     ObjectMeta,
+    RequestCountStats,
     ResourceAllocation,
     ResourceDetail,
     RuntimeSpec,
     TypeMeta,
 )
+from aibrix.batch.storage.input_validation import validate_request_body_for_endpoint
 from aibrix.metadata.api.v1.batch import (
     BatchSpec,
     _batch_job_to_openai_response,
-    _validate_request_body_for_endpoint,
 )
 from aibrix.metadata.api.v1.batch import (
     router as batch_router,
@@ -127,20 +131,20 @@ class TestEndpointBodyValidation:
             "model": "gpt-3.5-turbo",
             "messages": [{"role": "user", "content": "Hello"}],
         }
-        result = _validate_request_body_for_endpoint(body, "/v1/chat/completions", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/chat/completions", 1)
         assert result is None
 
     def test_chat_completions_missing_messages(self):
         """Test chat completions body without messages fails."""
         body = {"model": "gpt-3.5-turbo"}
-        result = _validate_request_body_for_endpoint(body, "/v1/chat/completions", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/chat/completions", 1)
         assert result is not None
         assert "messages" in result
 
     def test_chat_completions_messages_not_array(self):
         """Test chat completions body with non-array messages fails."""
         body = {"model": "gpt-3.5-turbo", "messages": "not an array"}
-        result = _validate_request_body_for_endpoint(body, "/v1/chat/completions", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/chat/completions", 1)
         assert result is not None
         assert "messages" in result
         assert "list" in result
@@ -148,52 +152,52 @@ class TestEndpointBodyValidation:
     def test_completions_valid_body_string_prompt(self):
         """Test valid completions body with string prompt passes."""
         body = {"model": "gpt-3.5-turbo", "prompt": "Hello world"}
-        result = _validate_request_body_for_endpoint(body, "/v1/completions", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/completions", 1)
         assert result is None
 
     def test_completions_valid_body_array_prompt(self):
         """Test valid completions body with array prompt passes."""
         body = {"model": "gpt-3.5-turbo", "prompt": ["Hello", "World"]}
-        result = _validate_request_body_for_endpoint(body, "/v1/completions", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/completions", 1)
         assert result is None
 
     def test_completions_missing_prompt(self):
         """Test completions body without prompt fails."""
         body = {"model": "gpt-3.5-turbo"}
-        result = _validate_request_body_for_endpoint(body, "/v1/completions", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/completions", 1)
         assert result is not None
         assert "prompt" in result
 
     def test_completions_invalid_prompt_type(self):
         """Test completions body with invalid prompt type fails."""
         body = {"model": "gpt-3.5-turbo", "prompt": 123}
-        result = _validate_request_body_for_endpoint(body, "/v1/completions", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/completions", 1)
         assert result is not None
         assert "prompt" in result
 
     def test_embeddings_valid_body_string_input(self):
         """Test valid embeddings body with string input passes."""
         body = {"model": "text-embedding-ada-002", "input": "Hello world"}
-        result = _validate_request_body_for_endpoint(body, "/v1/embeddings", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/embeddings", 1)
         assert result is None
 
     def test_embeddings_valid_body_array_input(self):
         """Test valid embeddings body with array input passes."""
         body = {"model": "text-embedding-ada-002", "input": ["Hello", "World"]}
-        result = _validate_request_body_for_endpoint(body, "/v1/embeddings", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/embeddings", 1)
         assert result is None
 
     def test_embeddings_missing_input(self):
         """Test embeddings body without input fails."""
         body = {"model": "text-embedding-ada-002"}
-        result = _validate_request_body_for_endpoint(body, "/v1/embeddings", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/embeddings", 1)
         assert result is not None
         assert "input" in result
 
     def test_embeddings_missing_model(self):
         """Test embeddings body without model fails."""
         body = {"input": "Hello world"}
-        result = _validate_request_body_for_endpoint(body, "/v1/embeddings", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/embeddings", 1)
         assert result is not None
         assert "model" in result
 
@@ -204,7 +208,7 @@ class TestEndpointBodyValidation:
             "query": "What is AI?",
             "documents": ["AI is...", "Machine learning is..."],
         }
-        result = _validate_request_body_for_endpoint(body, "/v1/rerank", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/rerank", 1)
         assert result is None
 
     def test_rerank_missing_query(self):
@@ -213,7 +217,7 @@ class TestEndpointBodyValidation:
             "model": "reranker-v1",
             "documents": ["doc1", "doc2"],
         }
-        result = _validate_request_body_for_endpoint(body, "/v1/rerank", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/rerank", 1)
         assert result is not None
         assert "query" in result
 
@@ -223,7 +227,7 @@ class TestEndpointBodyValidation:
             "model": "reranker-v1",
             "query": "What is AI?",
         }
-        result = _validate_request_body_for_endpoint(body, "/v1/rerank", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/rerank", 1)
         assert result is not None
         assert "documents" in result
 
@@ -234,7 +238,7 @@ class TestEndpointBodyValidation:
             "query": "What is AI?",
             "documents": "not an array",
         }
-        result = _validate_request_body_for_endpoint(body, "/v1/rerank", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/rerank", 1)
         assert result is not None
         assert "documents" in result
         assert "list" in result
@@ -242,7 +246,7 @@ class TestEndpointBodyValidation:
     def test_unknown_endpoint_passes(self):
         """Test that unknown endpoints skip body validation."""
         body = {"anything": "goes"}
-        result = _validate_request_body_for_endpoint(body, "/v1/unknown", 1)
+        result = validate_request_body_for_endpoint(body, "/v1/unknown", 1)
         assert result is None
 
 
@@ -501,6 +505,108 @@ def test_batch_response_includes_input_aibrix_metadata():
     assert response.model == "echo-template"
 
 
+def _minimal_batch_job(status: BatchJobStatus) -> BatchJob:
+    return BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="BatchJob"),
+        metadata=ObjectMeta(
+            name="test-batch",
+            namespace="default",
+            resourceVersion=None,
+            creationTimestamp=None,
+            deletionTimestamp=None,
+        ),
+        spec=BatchJobSpec(
+            input_file_id="file-123",
+            endpoint="/v1/chat/completions",
+            completion_window=86400,
+        ),
+        status=status,
+    )
+
+
+def test_output_file_ids_hidden_until_finished():
+    """Mirror OpenAI: file ids stay null until the batch reaches a terminal state.
+
+    The ids are allocated upfront (so the worker can write into them), but the
+    underlying multipart upload is not downloadable until finalization, so we must
+    not surface them while the batch is still running.
+    """
+    created_at = datetime.now(timezone.utc)
+    for state in (
+        BatchJobState.CREATED,
+        BatchJobState.VALIDATING,
+        BatchJobState.IN_PROGRESS,
+        BatchJobState.FINALIZING,
+    ):
+        batch_job = _minimal_batch_job(
+            BatchJobStatus(
+                jobID="job-123",
+                state=state,
+                createdAt=created_at,
+                # Allocated upfront, but must not be exposed before termination.
+                outputFileID="out-file-1",
+                errorFileID="err-file-1",
+                tempOutputFileID="temp-out-1",
+                tempErrorFileID="temp-err-1",
+                requestCounts=RequestCountStats(total=2, completed=1, failed=1),
+            )
+        )
+        response = _batch_job_to_openai_response(batch_job)
+        assert response.output_file_id is None, f"leaked output_file_id in {state}"
+        assert response.error_file_id is None, f"leaked error_file_id in {state}"
+
+
+def _finalized_batch_job(*, completed: int, failed: int) -> BatchJob:
+    now = datetime.now(timezone.utc)
+    return _minimal_batch_job(
+        BatchJobStatus(
+            jobID="job-123",
+            state=BatchJobState.FINALIZED,
+            createdAt=now,
+            outputFileID="out-file-1",
+            errorFileID="err-file-1",
+            requestCounts=RequestCountStats(
+                total=completed + failed, completed=completed, failed=failed
+            ),
+            conditions=[
+                Condition(
+                    type=ConditionType.COMPLETED,
+                    status=ConditionStatus.TRUE,
+                    lastTransitionTime=now,
+                )
+            ],
+        )
+    )
+
+
+def test_output_file_ids_exposed_when_finished():
+    """A finalized job with both successes and failures surfaces both ids."""
+    response = _batch_job_to_openai_response(
+        _finalized_batch_job(completed=2, failed=1)
+    )
+    assert response.status == "completed"
+    assert response.output_file_id == "out-file-1"
+    assert response.error_file_id == "err-file-1"
+
+
+def test_error_file_id_hidden_when_no_failures():
+    """Mirror OpenAI: error_file_id stays null when nothing errored."""
+    response = _batch_job_to_openai_response(
+        _finalized_batch_job(completed=2, failed=0)
+    )
+    assert response.output_file_id == "out-file-1"
+    assert response.error_file_id is None
+
+
+def test_output_file_id_hidden_when_no_successes():
+    """No successful results means no output file to download."""
+    response = _batch_job_to_openai_response(
+        _finalized_batch_job(completed=0, failed=2)
+    )
+    assert response.output_file_id is None
+    assert response.error_file_id == "err-file-1"
+
+
 def test_get_batch_response_omits_none_fields_from_json(monkeypatch):
     created_at = datetime.now(timezone.utc)
     batch_job = BatchJob(
@@ -510,6 +616,19 @@ def test_get_batch_response_omits_none_fields_from_json(monkeypatch):
             input_file_id="file-123",
             endpoint="/v1/chat/completions",
             completion_window=86400,
+            aibrix=AibrixMetadata(
+                job_id="planner-job-1",
+                resource_allocation=ResourceAllocation(
+                    provision_id="reservation-1",
+                    provision_resource_deadline=123,
+                    resource_details=[
+                        ResourceDetail(
+                            endpoint_cluster="cluster-a",
+                            replica=1,
+                        )
+                    ],
+                ),
+            ),
         ),
         status=BatchJobStatus(
             jobID="job-123",
@@ -552,6 +671,9 @@ def test_get_batch_response_omits_none_fields_from_json(monkeypatch):
         "message": "workload already exists",
     }
 
+    resource = payload["aibrix"]["resource_allocation"]["resource_details"][0]
+    assert resource == {"endpoint_cluster": "cluster-a", "replica": 1}
+
 
 @pytest.mark.parametrize(
     "endpoint,body",
@@ -584,7 +706,7 @@ def test_get_batch_response_omits_none_fields_from_json(monkeypatch):
 )
 def test_all_endpoints_accept_valid_bodies(endpoint, body):
     """Parametrized test: all endpoints accept their valid bodies."""
-    result = _validate_request_body_for_endpoint(body, endpoint, 1)
+    result = validate_request_body_for_endpoint(body, endpoint, 1)
     assert result is None, f"Unexpected error for {endpoint}: {result}"
 
 

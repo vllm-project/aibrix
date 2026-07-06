@@ -13,21 +13,30 @@
 # limitations under the License.
 
 import argparse
+import copy
+import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 import boto3
 import pytest
 import yaml
+from fastapi.testclient import TestClient
 from kubernetes import client, config
 
+import aibrix.batch.job_driver.runtime.k8s_deployment as deployment_runtime_module
+from aibrix.batch.client.sources import NoopEndpointSource
 from aibrix.logger import init_logger
 from aibrix.metadata.app import build_app
 from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
 
 logger = init_logger(__name__)
+ORIGINAL_DEPLOYMENT_TEARDOWN_RUNTIME = (
+    deployment_runtime_module.DeploymentRuntime._teardown_runtime
+)
 
 
 @pytest.fixture(scope="session")
@@ -310,7 +319,7 @@ def ensure_job_rbac(job_rbac):
 
 
 def create_test_app(
-    enable_k8s_support: bool = True,
+    enable_k8s_support: bool = False,
     storage_type: StorageType = StorageType.LOCAL,
     metastore_type: StorageType = StorageType.LOCAL,
     params: Optional[Dict[str, Any]] = None,
@@ -346,6 +355,435 @@ def create_test_app(
     # RESTORE settings
     settings.STORAGE_TYPE, settings.METASTORE_TYPE = oldStorage, oldMetaStore
     return app
+
+
+class MockMetadataStore:
+    client = None
+
+    async def ping(self) -> bool:
+        return True
+
+    async def close(self) -> None:
+        return None
+
+
+class FastNoopEndpointSource(NoopEndpointSource):
+    def __init__(self, context):
+        self._context = context
+        super().__init__(
+            delay=context.values.get(
+                "endpoint_source_delay_seconds",
+                0.0,
+            )
+        )
+
+
+class ParallelNoopEndpointSource(FastNoopEndpointSource):
+    def __init__(self, context, capacity: int):
+        super().__init__(context)
+        self._capacity = capacity
+
+
+class FakeDeploymentAppsV1Api:
+    def __init__(self):
+        self.created: list[tuple[str, dict[str, Any]]] = []
+        self.deleted: list[tuple[str, str]] = []
+        self._existing: set[tuple[str, str]] = set()
+
+    def create_namespaced_deployment(self, namespace: str, body: dict[str, Any]):
+        self.created.append((namespace, body))
+        self._existing.add((namespace, body["metadata"]["name"]))
+
+    def read_namespaced_deployment_status(self, name: str, namespace: str):
+        if (namespace, name) not in self._existing:
+            raise client.ApiException(status=404)
+        return SimpleNamespace(status=SimpleNamespace(available_replicas=1))
+
+    def delete_namespaced_deployment(self, name: str, namespace: str):
+        if (namespace, name) not in self._existing:
+            raise client.ApiException(status=404)
+        self.deleted.append((namespace, name))
+        self._existing.remove((namespace, name))
+
+
+class FakeDeploymentCoreV1Api:
+    def __init__(self):
+        self.created: list[tuple[str, dict[str, Any]]] = []
+        self.deleted: list[tuple[str, str]] = []
+        self._existing: set[tuple[str, str]] = set()
+
+    def create_namespaced_service(self, namespace: str, body: dict[str, Any]):
+        self.created.append((namespace, body))
+        self._existing.add((namespace, body["metadata"]["name"]))
+
+    def read_namespaced_service(self, name: str, namespace: str):
+        if (namespace, name) not in self._existing:
+            raise client.ApiException(status=404)
+        return SimpleNamespace(metadata=SimpleNamespace(name=name, namespace=namespace))
+
+    def delete_namespaced_service(self, name: str, namespace: str):
+        if (namespace, name) not in self._existing:
+            raise client.ApiException(status=404)
+        self.deleted.append((namespace, name))
+        self._existing.remove((namespace, name))
+
+
+class FakeDeploymentRenderer:
+    def render(
+        self,
+        job_id: str,
+        spec,
+        prividerSpec,
+    ):
+        deployment_name = f"batch-{job_id[:8]}-engine"
+        return {
+            "deployment": {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {
+                    "name": deployment_name,
+                    "namespace": "default",
+                    "labels": {"model.aibrix.ai/name": deployment_name},
+                },
+                "spec": {
+                    "replicas": 1,
+                    "selector": {
+                        "matchLabels": {
+                            "app": deployment_name,
+                            "model.aibrix.ai/name": deployment_name,
+                        }
+                    },
+                    "template": {
+                        "metadata": {
+                            "labels": {
+                                "app": deployment_name,
+                                "model.aibrix.ai/name": deployment_name,
+                            }
+                        },
+                        "spec": {"containers": [{"name": "llm-engine"}]},
+                    },
+                },
+            },
+            "service": {
+                "apiVersion": "v1",
+                "kind": "Service",
+                "metadata": {
+                    "name": deployment_name,
+                    "namespace": "default",
+                    "labels": {"model.aibrix.ai/name": deployment_name},
+                },
+                "spec": {
+                    "selector": {"model.aibrix.ai/name": deployment_name},
+                    "ports": [{"port": 8000, "targetPort": 8000}],
+                    "type": "ClusterIP",
+                },
+            },
+        }
+
+
+def configure_local_metastore_deployment_backend(app, monkeypatch) -> None:
+    context = app.state.batch_driver._context
+    shared_state = getattr(monkeypatch, "_aibrix_fake_deployment_backend_state", None)
+    if shared_state is None:
+        shared_state = {
+            "apps_v1_api": FakeDeploymentAppsV1Api(),
+            "core_v1_api": FakeDeploymentCoreV1Api(),
+            "deployment_teardown_calls": [],
+            "deployment_endpoint_source_builds": [],
+        }
+        setattr(monkeypatch, "_aibrix_fake_deployment_backend_state", shared_state)
+
+    apps_v1_api = shared_state["apps_v1_api"]
+    core_v1_api = shared_state["core_v1_api"]
+    context.apps_v1_api = apps_v1_api
+    context.core_v1_api = core_v1_api
+    context.values["deployment_apps_v1_api"] = apps_v1_api
+    context.values["deployment_core_v1_api"] = core_v1_api
+    context.values["deployment_teardown_calls"] = shared_state[
+        "deployment_teardown_calls"
+    ]
+    context.values["deployment_endpoint_source_builds"] = shared_state[
+        "deployment_endpoint_source_builds"
+    ]
+
+    monkeypatch.setattr(
+        deployment_runtime_module.DeploymentRuntime,
+        "_build_renderer",
+        staticmethod(lambda context: FakeDeploymentRenderer()),
+    )
+
+    def _build_test_endpoint_source(self, handle):
+        self._context.values["deployment_endpoint_source_builds"].append(
+            handle.deployment_name
+        )
+        return FastNoopEndpointSource(self._context)
+
+    async def _recording_teardown(self, runtime):
+        self._context.values["deployment_teardown_calls"].append(
+            {
+                "job_id": self._active_job_id,
+                "deployment_name": runtime.deployment_name,
+            }
+        )
+        return await ORIGINAL_DEPLOYMENT_TEARDOWN_RUNTIME(self, runtime)
+
+    monkeypatch.setattr(
+        deployment_runtime_module.DeploymentRuntime,
+        "_build_endpoint_source",
+        _build_test_endpoint_source,
+    )
+    monkeypatch.setattr(
+        deployment_runtime_module.DeploymentRuntime,
+        "_teardown_runtime",
+        _recording_teardown,
+    )
+
+
+ENDPOINT_SAMPLE_BODIES = {
+    "/v1/chat/completions": {
+        "model": "gpt-3.5-turbo-0125",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello world!"},
+        ],
+        "max_tokens": 1000,
+    },
+    "/v1/completions": {
+        "model": "gpt-3.5-turbo-0125",
+        "prompt": "Once upon a time",
+        "max_tokens": 100,
+    },
+    "/v1/embeddings": {
+        "model": "text-embedding-ada-002",
+        "input": "The food was delicious and the waiter was friendly.",
+    },
+    "/v1/rerank": {
+        "model": "reranker-v1",
+        "query": "What is deep learning?",
+        "documents": [
+            "Deep learning is a subset of machine learning.",
+            "The weather is nice today.",
+            "Neural networks are inspired by the brain.",
+        ],
+    },
+}
+
+
+class E2ETestBackend(str):
+    request_kwargs: dict[str, str]
+    features: frozenset[str]
+    runtime_debug_config: Optional[dict[str, str]]
+    max_concurrency: int
+
+    def __new__(
+        cls,
+        name: str,
+        *,
+        request_kwargs: Optional[dict[str, str]] = None,
+        features: tuple[str, ...] = (),
+        runtime_debug_config: Optional[dict[str, str]] = None,
+        max_concurrency: int = 1,
+    ):
+        backend = str.__new__(cls, name)
+        backend.request_kwargs = dict(request_kwargs or {})
+        backend.features = frozenset(features)
+        backend.runtime_debug_config = (
+            dict(runtime_debug_config) if runtime_debug_config is not None else None
+        )
+        backend.max_concurrency = max_concurrency
+        return backend
+
+    def has_feature(self, feature: str) -> bool:
+        return feature in self.features
+
+    @property
+    def support_runtime(self) -> bool:
+        return self.has_feature("support_runtime")
+
+    @property
+    def fake_runtime(self) -> bool:
+        return self.has_feature("fake_runtime")
+
+
+E2E_BACKENDS: dict[str, E2ETestBackend] = {
+    "local_metastore_job": E2ETestBackend("local_metastore_job"),
+    "local_metastore_job_parallel": E2ETestBackend(
+        "local_metastore_job_parallel",
+        max_concurrency=5,
+    ),
+    "local_job_using_deployment": E2ETestBackend(
+        "local_job_using_deployment",
+        request_kwargs={
+            "aibrix_template": "mock-template",
+            "provider": "deployment",
+        },
+        features=("support_runtime", "fake_runtime", "fake_provisioning_runtime"),
+        runtime_debug_config={
+            "teardown_calls_key": "deployment_teardown_calls",
+            "endpoint_source_builds_key": "deployment_endpoint_source_builds",
+            "runtime_create_target_key": "deployment_apps_v1_api",
+            "runtime_create_attr": "created",
+            "runtime_delete_target_key": "deployment_apps_v1_api",
+            "runtime_delete_attr": "deleted",
+        },
+    ),
+}
+
+
+def get_e2e_backend(test_backend: str | E2ETestBackend) -> E2ETestBackend:
+    if isinstance(test_backend, E2ETestBackend):
+        return test_backend
+    return E2E_BACKENDS[test_backend]
+
+
+def backend_has_feature(test_backend: str | E2ETestBackend, feature: str) -> bool:
+    return get_e2e_backend(test_backend).has_feature(feature)
+
+
+def select_e2e_backends(
+    metafunc,
+    keyword_backends: list[str],
+    default_backend: str = "local_metastore_job",
+):
+    if "test_backend" not in metafunc.fixturenames:
+        return
+
+    keyword = metafunc.config.option.keyword or ""
+    selected_backend = get_e2e_backend(default_backend)
+    for backend in keyword_backends:
+        if backend in keyword:
+            selected_backend = get_e2e_backend(backend)
+            break
+
+    metafunc.parametrize(
+        "test_backend",
+        [pytest.param(selected_backend, id=selected_backend)],
+    )
+
+
+def generate_batch_input_data(
+    num_requests: int = 3, endpoint: str = "/v1/chat/completions"
+) -> str:
+    sample_body = ENDPOINT_SAMPLE_BODIES.get(endpoint)
+    if sample_body is None:
+        raise ValueError(
+            f"No sample body defined for endpoint '{endpoint}'. "
+            f"Supported: {list(ENDPOINT_SAMPLE_BODIES.keys())}"
+        )
+
+    lines = []
+    for i in range(num_requests):
+        request = {
+            "custom_id": f"request-{i + 1}",
+            "method": "POST",
+            "url": endpoint,
+            "body": copy.deepcopy(sample_body),
+        }
+        lines.append(json.dumps(request))
+
+    return "\n".join(lines)
+
+
+def build_batch_request(
+    input_file_id: str,
+    endpoint: str = "/v1/chat/completions",
+    *,
+    completion_window: str = "24h",
+    aibrix_template: str | None = None,
+    aibrix_profile: str | None = None,
+    provider: str | None = None,
+) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "input_file_id": input_file_id,
+        "endpoint": endpoint,
+        "completion_window": completion_window,
+    }
+    aibrix: dict[str, Any] = {}
+    if aibrix_template:
+        aibrix["model_template"] = {"name": aibrix_template}
+    if aibrix_profile:
+        aibrix["profile"] = {"name": aibrix_profile}
+    if provider:
+        runtime_targets = {
+            "deployment": "Kubernetes",
+        }
+        runtime_target = runtime_targets.get(provider)
+        if runtime_target is not None:
+            aibrix["runtime"] = {"target": runtime_target}
+        aibrix["resource_allocation"] = {
+            "provision_id": "reservation-1",
+            "provision_resource_deadline": 3600,
+            "resource_details": [
+                {
+                    "endpoint_cluster": "cluster-a",
+                    "gpu_type": "H100",
+                    "replica": 1,
+                }
+            ],
+        }
+    if aibrix:
+        request["aibrix"] = aibrix
+    return request
+
+
+def e2e_batch_request_kwargs(test_backend: str | E2ETestBackend) -> dict[str, str]:
+    return dict(get_e2e_backend(test_backend).request_kwargs)
+
+
+def create_test_client(app) -> TestClient:
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def upload_batch_input_file(
+    client: TestClient,
+    num_requests: int,
+    endpoint: str = "/v1/chat/completions",
+    filename: str = "test_input.jsonl",
+) -> str:
+    upload_response = client.post(
+        "/v1/files",
+        files={
+            "file": (
+                filename,
+                generate_batch_input_data(num_requests, endpoint=endpoint),
+                "application/jsonl",
+            )
+        },
+        data={"purpose": "batch"},
+    )
+    assert upload_response.status_code == 200, upload_response.text
+    return upload_response.json()["id"]
+
+
+def create_batch_job(
+    client: TestClient,
+    input_file_id: str,
+    endpoint: str = "/v1/chat/completions",
+    *,
+    test_backend: str | None = None,
+    completion_window: str = "24h",
+    aibrix_template: str | None = None,
+    aibrix_profile: str | None = None,
+    provider: str | None = None,
+) -> str:
+    if test_backend is not None:
+        backend_kwargs = e2e_batch_request_kwargs(test_backend)
+        aibrix_template = aibrix_template or backend_kwargs.get("aibrix_template")
+        aibrix_profile = aibrix_profile or backend_kwargs.get("aibrix_profile")
+        provider = provider or backend_kwargs.get("provider")
+    batch_response = client.post(
+        "/v1/batches",
+        json=build_batch_request(
+            input_file_id,
+            endpoint,
+            completion_window=completion_window,
+            aibrix_template=aibrix_template,
+            aibrix_profile=aibrix_profile,
+            provider=provider,
+        ),
+    )
+    assert batch_response.status_code == 200, batch_response.text
+    return batch_response.json()["id"]
 
 
 @pytest.fixture(scope="session")
@@ -422,23 +860,54 @@ def template_configmaps(
                 raise
 
 
-@pytest.fixture(scope="function")
-def test_app(
-    k8s_config,
-    test_s3_bucket,
-    s3_credentials_secret,
-    redis_config_available,
-    ensure_job_rbac,
-    template_configmaps,
+def build_e2e_test_app(
+    request,
+    test_backend: str | E2ETestBackend,
+    tmp_path,
     monkeypatch,
+    *,
+    preserve_redis_prefix: bool = False,
 ):
-    monkeypatch.setenv(
-        "WORKER_REDIS_HOST", "aibrix-redis-master.aibrix-system.svc.cluster.local"
-    )
-    monkeypatch.setenv("WORKER_REDIS_PORT", os.environ.get("REDIS_PORT", "6379"))
-    return create_test_app(
-        enable_k8s_support=True,
-        storage_type=StorageType.S3,
-        metastore_type=StorageType.REDIS,
-        params={"bucket_name": test_s3_bucket},
+    test_backend = get_e2e_backend(test_backend)
+    monkeypatch.chdir(tmp_path)
+    del request, preserve_redis_prefix
+
+    if test_backend in {"local_metastore_job", "local_metastore_job_parallel"}:
+        app = create_test_app(
+            storage_type=StorageType.LOCAL,
+            metastore_type=StorageType.LOCAL,
+            dry_run=True,
+        )
+        app.state.metadata_store = MockMetadataStore()
+        app.state.redis_client = None
+        if test_backend == "local_metastore_job_parallel":
+            endpoint_source = ParallelNoopEndpointSource(
+                app.state.batch_driver._context,
+                capacity=test_backend.max_concurrency,
+            )
+            app.state.batch_driver._endpoint_source = endpoint_source
+            app.state.batch_driver.job_manager.set_endpoint_source(endpoint_source)
+        return app
+
+    if test_backend == "local_job_using_deployment":
+        app = create_test_app(
+            storage_type=StorageType.LOCAL,
+            metastore_type=StorageType.LOCAL,
+            dry_run=False,
+        )
+        app.state.metadata_store = MockMetadataStore()
+        app.state.redis_client = None
+        configure_local_metastore_deployment_backend(app, monkeypatch)
+        return app
+
+    raise ValueError(f"Unsupported e2e backend: {test_backend}")
+
+
+@pytest.fixture(scope="function")
+def e2e_test_app(request, test_backend, tmp_path, monkeypatch):
+    return build_e2e_test_app(
+        request,
+        test_backend,
+        tmp_path,
+        monkeypatch,
     )

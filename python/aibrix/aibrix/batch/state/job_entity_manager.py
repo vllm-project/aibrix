@@ -217,11 +217,14 @@ class JobEntityManager(ABC):
             old_job = self._monitored_job_snapshots.get(job_id)
             if old_job is None:
                 self._monitored_job_snapshots[job_id] = snapshot
-                if not snapshot.status.finished:
+                if self._should_publish_committed(snapshot):
                     await self.job_committed(snapshot)
+                else:
+                    self._sync_active_job(snapshot)
                 continue
             if self._jobs_equal(old_job, snapshot):
                 self._monitored_job_snapshots[job_id] = snapshot
+                self._sync_active_job(snapshot)
                 continue
             self._monitored_job_snapshots[job_id] = snapshot
             await self.job_updated(old_job, snapshot)
@@ -248,7 +251,8 @@ class JobEntityManager(ABC):
                 continue
             snapshot = job.model_copy(deep=True)
             self._monitored_job_snapshots[job_id] = snapshot
-            if snapshot.status.finished:
+            if not self._should_publish_committed(snapshot):
+                self._sync_active_job(snapshot)
                 continue
             await self.job_committed(snapshot)
 
@@ -306,6 +310,23 @@ class JobEntityManager(ABC):
             return
         self._monitored_job_snapshots[job.job_id] = job.model_copy(deep=True)
 
+    async def _publish_active_job_on_cache_miss(self, job: Optional[BatchJob]) -> None:
+        """Republish an active job discovered outside bootstrap/refresh.
+
+        A direct ``get_job()`` read can discover an unfinished job that was not
+        restored into the manager during startup recovery. In that case, publish
+        the same committed event the refresh/bootstrap path would have emitted.
+        """
+
+        if job is None or job.job_id is None or job.status.finished:
+            return
+        if (
+            job.job_id in self.active_jobs
+            or job.job_id in self._monitored_job_snapshots
+        ):
+            return
+        await self.job_committed(job.model_copy(deep=True))
+
     def _forget_job(self, job_id: Optional[str]) -> None:
         if job_id is None:
             return
@@ -329,6 +350,9 @@ class JobEntityManager(ABC):
         return old_job.model_dump(
             mode="json", by_alias=True, exclude_none=True
         ) == new_job.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    def _should_publish_committed(self, job: BatchJob) -> bool:
+        return not job.status.finished
 
     # --- Command store (manager -> store): the abstract contract each backend
     #     implements. The manager calls these to mutate/read persisted jobs. ---

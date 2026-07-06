@@ -57,9 +57,9 @@ class _Lenient(BaseModel):
 class EngineType(str, Enum):
     """Supported inference engines.
 
-    Currently the renderer only ships a VLLM adapter; other types are
-    accepted by the schema but rejected at render time until their
-    adapters land.
+    Currently the renderer ships VLLM, SGLang, and mock adapters; other
+    types are accepted by the schema but rejected at render time until
+    their adapters land.
     """
 
     VLLM = "vllm"
@@ -82,7 +82,7 @@ class EngineInvocation(str, Enum):
 class EngineSpec(_Strict):
     """Configuration for the inference engine container.
 
-    Today VLLM with HTTP_SERVER invocation is fully supported.
+    Today VLLM and SGLang with HTTP_SERVER invocation are supported.
     Other engine types pass through the schema but require their own
     adapters to be implemented.
     """

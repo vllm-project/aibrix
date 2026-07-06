@@ -57,10 +57,8 @@ def _runtime(api):
     ctx = SimpleNamespace(
         batch_v1_api=api, template_registry=None, profile_registry=None
     )
-    em = SimpleNamespace(on_job_deleted=lambda handler: None)
     return K8sJobRuntime(
         ctx,
-        em,
         renderer=_FakeRenderer(),
         done_timeout_seconds=2,
         poll_interval_seconds=0,
@@ -68,7 +66,12 @@ def _runtime(api):
 
 
 def _job():
-    return SimpleNamespace(session_id="sess", spec=SimpleNamespace(), job_id="jid")
+    return SimpleNamespace(
+        session_id="sess",
+        spec=SimpleNamespace(),
+        job_id="jid",
+        status=SimpleNamespace(get_runtime_ref=lambda key: None),
+    )
 
 
 @pytest.mark.asyncio
@@ -80,6 +83,24 @@ async def test_provision_creates_suspended_job():
     namespace, body = api.created[0]
     assert namespace == "ns-x"
     assert body["spec"]["suspend"] is True
+
+
+@pytest.mark.asyncio
+async def test_build_runtime_ref_uses_job_handle_metadata():
+    api = _FakeBatchV1Api()
+    runtime = _runtime(api)
+    job = _job()
+
+    await runtime._provision(job, "jid")
+    runtime_ref = runtime._build_runtime_ref(job)
+
+    assert runtime_ref is not None
+    assert runtime_ref.driver_type == "k8s-job"
+    assert runtime_ref.owner_ref == "ns-x/batch-job-1"
+    assert runtime_ref.reconnect_payload == {
+        "namespace": "ns-x",
+        "jobName": "batch-job-1",
+    }
 
 
 @pytest.mark.asyncio
@@ -110,9 +131,37 @@ async def test_teardown_deletes_job():
 async def test_deletion_cancels_wait():
     api = _FakeBatchV1Api()  # no terminal condition → would poll forever
     rt = _runtime(api)
-    await rt._provision(_job(), "jid")
-    # A job-deleted event for the active job must cancel the completion wait.
-    await rt._job_deleted_handler(SimpleNamespace(job_id="jid"))
-    assert rt.cancelled() is True
+    job = _job()
+    job.spec.opts = {}
+    wait_entered = asyncio.Event()
+    original_wait_until_done = rt._wait_until_done
+
+    async def _persist_runtime_ref(job, **kwargs):
+        del kwargs
+        return job
+
+    async def _wait_until_done(handle):
+        wait_entered.set()
+        return await original_wait_until_done(handle)
+
+    rt._persist_runtime_ref = _persist_runtime_ref
+    rt._wait_until_done = _wait_until_done
+
+    async def _run_session():
+        async with rt.session(job, "jid"):
+            await rt.await_completion()
+
+    # Start session
+    task = asyncio.create_task(_run_session())
+    # Wait until the session is inside await_completion(); otherwise terminate()
+    # could race ahead of the wait loop and make this cancellation assertion flaky.
+    await asyncio.wait_for(wait_entered.wait(), timeout=1)
+
+    # Trigger termination
+    await rt.terminate(SimpleNamespace(job_id="jid"))
+
     with pytest.raises(asyncio.CancelledError):
-        await rt._wait_until_done(rt._active_handle)
+        await task
+
+    assert rt.cancelled() is True
+    assert api.deleted == ["batch-job-1"]

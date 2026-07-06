@@ -27,7 +27,12 @@ from aibrix.batch.client.sources import (
     InClusterEndpointSource,
     PortForwardEndpointSource,
 )
-from aibrix.batch.job_driver import BaseJobDriver, DeploymentRuntime, ExternalRuntime
+from aibrix.batch.job_driver import (
+    BaseJobDriver,
+    DeploymentRuntime,
+    ExternalRuntime,
+    TerminateResult,
+)
 from aibrix.batch.job_driver.driver_factory import create_job_driver
 from aibrix.batch.job_driver.runtime.k8s_deployment import DeploymentHandle
 from aibrix.batch.job_entity import (
@@ -38,6 +43,9 @@ from aibrix.batch.job_entity import (
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    Condition,
+    ConditionStatus,
+    ConditionType,
     ObjectMeta,
     TypeMeta,
 )
@@ -92,6 +100,33 @@ class FakeProgressManager:
             return False
         self.validated_job_ids.append(job_id)
         return True
+
+    async def update_job_local_status(self, job_id: str, worker_id: str, status):
+        del job_id, worker_id
+        self.job.status = status
+        return self.job
+
+    async def mark_job_finalizing(self, job_id: str):
+        del job_id
+        self.job.status.state = BatchJobState.FINALIZING
+        if self.job.status.finalizing_at is None:
+            self.job.status.finalizing_at = datetime.now(timezone.utc)
+        return self.job
+
+    async def mark_job_done(self, job: BatchJob):
+        if job.status.condition is None:
+            job.status.add_condition(
+                Condition(
+                    type=ConditionType.COMPLETED,
+                    status=ConditionStatus.TRUE,
+                    lastTransitionTime=datetime.now(timezone.utc),
+                )
+            )
+        job.status.state = BatchJobState.FINALIZED
+        job.status.finalized_at = datetime.now(timezone.utc)
+        job.status.completed_at = job.status.finalized_at
+        self.job = job
+        return self.job
 
     async def mark_job_failed(self, job_id: str, error):
         self.failed_messages.append(str(error))
@@ -259,7 +294,8 @@ def _make_deployment_driver(
     """The converged driver: BaseJobDriver wired to a DeploymentRuntime. The
     deployment-owns-the-run behaviors (no re-raise, always aggregate, internal
     default failure) are derived from DeploymentRuntime.provisions=True."""
-    runtime = DeploymentRuntime(context, entity_manager, renderer)
+    del entity_manager
+    runtime = DeploymentRuntime(context, renderer=renderer)
     return BaseJobDriver(progress_manager, runtime)
 
 
@@ -324,6 +360,13 @@ async def test_deployment_driver_creates_runtime_and_finalizes_with_temp_files()
         called["base_url"] = driver._runtime._active_handle.base_url
         called["model_name"] = driver._active_model_name
         progress_manager.job.status.state = BatchJobState.FINALIZING
+        progress_manager.job.status.add_condition(
+            Condition(
+                type=ConditionType.COMPLETED,
+                status=ConditionStatus.TRUE,
+                lastTransitionTime=datetime.now(timezone.utc),
+            )
+        )
         return progress_manager.job
 
     async def _finalize_job(_job):
@@ -386,8 +429,8 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
 
     async def _execute_worker(_job_id):
         entered.set()
-        await asyncio.sleep(3600)
-        return progress_manager.job
+        await driver._runtime._stop_requested.wait()
+        raise asyncio.CancelledError
 
     async def _finalize_job(_job):
         raise AssertionError("finalize_job should not run after deletion")
@@ -398,8 +441,8 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
 
     task = asyncio.create_task(driver.execute(job.job_id))
     await asyncio.wait_for(entered.wait(), timeout=1)
-    deleted = await driver._runtime._job_deleted_handler(job)
-    assert deleted is True
+    deleted = await driver.terminate(job)
+    assert deleted is TerminateResult.ACCEPTED
     await task
 
     assert core_api.deleted == [("default", "rendered-service")]
@@ -525,12 +568,13 @@ async def test_create_job_driver_passes_infrastructure_context_to_deployment_run
     """
     job = _make_job()
     entity_manager = FakeEntityManager()
+    context = _make_infrastructure_context(
+        apps_v1_api="apps-api",
+        core_v1_api="core-api",
+    )
 
     driver = create_job_driver(
-        _make_infrastructure_context(
-            apps_v1_api="apps-api",
-            core_v1_api="core-api",
-        ),
+        context,
         progress_manager=FakeProgressManager(job),
         entity_manager=entity_manager,
         job=job,
@@ -538,9 +582,10 @@ async def test_create_job_driver_passes_infrastructure_context_to_deployment_run
 
     runtime = driver._runtime
     assert isinstance(runtime, DeploymentRuntime)
+    assert runtime._context is context
     assert runtime._apps_v1_api == "apps-api"
     assert runtime._core_v1_api == "core-api"
-    assert runtime._entity_manager is entity_manager
+    assert runtime._renderer is not None
 
 
 @pytest.mark.asyncio
@@ -614,19 +659,17 @@ async def test_provisioning_runtime_drives_converged_failure_policy():
     """A provisioning runtime makes the base driver own the whole run: no
     re-raise, always aggregate, internal default failure. This is the
     load-bearing replacement for the old DeploymentJobDriver overrides."""
-    runtime = DeploymentRuntime(_make_infrastructure_context(), FakeEntityManager())
+    runtime = DeploymentRuntime(_make_infrastructure_context())
     driver = BaseJobDriver(FakeProgressManager(_make_job()), runtime)
     assert driver._reraise_on_failure is False
-    assert driver._aggregate_always is True
     assert driver._default_failure_code == BatchJobErrorCode.INTERNAL_ERROR
 
 
 def test_standalone_runtime_drives_inline_failure_policy():
     """A non-provisioning runtime is the scheduler-driven inline path: re-raise,
-    aggregate only when this driver prepared, inference default failure."""
+    inference default failure."""
     driver = BaseJobDriver(FakeProgressManager(_make_job()), ExternalRuntime(None))
     assert driver._reraise_on_failure is True
-    assert driver._aggregate_always is False
     assert driver._default_failure_code == BatchJobErrorCode.INFERENCE_FAILED
 
 
@@ -642,16 +685,16 @@ def test_factory_unknown_provider_raises_invalid_driver():
     assert excinfo.value.code == BatchJobErrorCode.INVALID_DRIVER
 
 
-def test_factory_kubernetes_without_entity_manager_raises_invalid_driver():
+def test_factory_kubernetes_without_entity_manager_still_creates_runtime():
     job = SimpleNamespace(spec=SimpleNamespace(runtime_target="Kubernetes"))
-    with pytest.raises(BatchJobError) as excinfo:
-        create_job_driver(
-            _make_infrastructure_context(),
-            FakeProgressManager(_make_job()),
-            entity_manager=None,
-            job=job,
-        )
-    assert excinfo.value.code == BatchJobErrorCode.INVALID_DRIVER
+    driver = create_job_driver(
+        _make_infrastructure_context(),
+        FakeProgressManager(_make_job()),
+        entity_manager=None,
+        job=job,
+    )
+    assert isinstance(driver, BaseJobDriver)
+    assert isinstance(driver._runtime, DeploymentRuntime)
 
 
 def test_factory_kubernetes_without_k8s_context_raises_invalid_driver():

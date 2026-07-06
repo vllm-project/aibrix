@@ -24,6 +24,7 @@ import aibrix.batch.job_driver.runtime.runpod  # noqa: F401,E402  RunPod
 from aibrix.batch.client import EndpointSource
 from aibrix.batch.job_driver.base import BaseJobDriver
 from aibrix.batch.job_driver.driver import JobDriver
+from aibrix.batch.job_driver.running_jobs import RunningJobs
 from aibrix.batch.job_driver.runtime import (  # noqa: E402
     create_runtime,
     registered_runtimes,
@@ -33,7 +34,7 @@ from aibrix.batch.job_entity import (  # noqa: E402
     BatchJobError,
     BatchJobErrorCode,
 )
-from aibrix.batch.state import JobEntityManager, RunningJobs  # noqa: E402
+from aibrix.batch.state import JobEntityManager  # noqa: E402
 from aibrix.context import InfrastructureContext  # noqa: E402
 from aibrix.logger import init_logger  # noqa: E402
 
@@ -78,7 +79,6 @@ def create_job_driver(
             runtime_target,
             job=job,
             context=context,
-            entity_manager=entity_manager,
             endpoint_source=endpoint_source,
         )
     except KeyError as exc:

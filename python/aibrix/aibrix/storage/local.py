@@ -16,13 +16,19 @@ import asyncio
 import hashlib
 import os
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
-from aibrix.storage.base import PutObjectOptions, StorageConfig, StorageType
+from aibrix.storage.base import (
+    PutObjectOptions,
+    StorageConfig,
+    StorageType,
+)
 from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
+from aibrix.storage.types import StorageListOrdering
 from aibrix.storage.utils import ObjectMetadata, _sanitize_key, generate_filename
 
 LOCAL_STORAGE_PATH_VAR = "STORAGE_LOCAL_PATH"
@@ -91,6 +97,10 @@ class LocalStorage(BaseStorage2):
         """
         return StorageType.LOCAL
 
+    @classmethod
+    def get_supported_list_orderings(cls) -> tuple[StorageListOrdering, ...]:
+        return (StorageListOrdering.CREATED_AT_DESC,)
+
     async def put_object(
         self,
         key: str,
@@ -148,14 +158,31 @@ class LocalStorage(BaseStorage2):
 
     def _write_file(self, path: Path, reader: Reader) -> None:
         """Write data to file (synchronous helper)."""
-        if reader.is_binary():
-            # Write as bytes
-            with open(path, "wb") as f:
-                f.write(bytes(reader))
-        else:
-            # Write as text string
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(str(reader))
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
+        try:
+            if reader.is_binary():
+                with os.fdopen(fd, "wb") as f:
+                    f.write(bytes(reader))
+                    f.flush()
+                    os.fsync(f.fileno())
+            else:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(str(reader))
+                    f.flush()
+                    os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            raise
 
     async def _store_metadata(
         self,
@@ -281,7 +308,6 @@ class LocalStorage(BaseStorage2):
         for keys that were stored without an extension.
         """
         _METADATA_SUFFIX = ".metadata"
-        _BATCH_JOB_PREFIX = "batchjob:"
 
         def _list_files():
             # Parse continuation token as offset (default to 0)
@@ -295,13 +321,9 @@ class LocalStorage(BaseStorage2):
             # Recover every stored key by enumerating the sidecar ``.metadata``
             # files anywhere under base_path. ``prefix`` is matched as an
             # S3-style string prefix (``key.startswith(prefix)``), NOT as a
-            # directory path — so flat keys like ``batchjob:<id>`` are found by
-            # a partial prefix such as ``batchjob:`` (directory descent missed
-            # them, returning nothing for any non-directory prefix).
-            entries: list[str] = []
-            batch_job_entries: list[tuple[str, Optional[datetime]]] = []
-            seen: set[str] = set()
-            batch_job_ordering = delimiter is None and prefix == _BATCH_JOB_PREFIX
+            # directory path, so both hierarchical keys like ``batchjob/<id>``
+            # and flat keys like ``flatkey:<id>`` are discovered correctly.
+            entry_created_at: dict[str, Optional[datetime]] = {}
             for item in self.base_path.rglob("*" + _METADATA_SUFFIX):
                 if not item.is_file():
                     continue
@@ -320,27 +342,24 @@ class LocalStorage(BaseStorage2):
                     )
                 else:
                     entry = key
-                if entry not in seen:
-                    seen.add(entry)
-                    if batch_job_ordering:
-                        batch_job_entries.append(
-                            (entry, self._read_metadata_created_at(item))
-                        )
-                    else:
-                        entries.append(entry)
+                created_at = self._read_metadata_created_at(item)
+                previous_created_at = entry_created_at.get(entry)
+                if previous_created_at is None or (
+                    created_at is not None and created_at > previous_created_at
+                ):
+                    entry_created_at[entry] = created_at
 
-            if batch_job_ordering:
-                batch_job_entries.sort(key=lambda entry: entry[0])
-                batch_job_entries.sort(
-                    key=lambda entry: (
-                        entry[1].timestamp() if entry[1] is not None else float("-inf")
-                    ),
-                    reverse=True,
-                )
-                entries = [entry for entry, _ in batch_job_entries]
-            else:
-                # Sort for consistent pagination
-                entries.sort()
+            sorted_entries = sorted(
+                entry_created_at.items(),
+                key=lambda entry: entry[0],
+            )
+            sorted_entries.sort(
+                key=lambda entry: (
+                    entry[1].timestamp() if entry[1] is not None else float("-inf")
+                ),
+                reverse=True,
+            )
+            entries = [entry for entry, _ in sorted_entries]
 
             if continuation_token is None and after_key:
                 try:
@@ -513,8 +532,25 @@ class LocalStorage(BaseStorage2):
         """Write JSON data to file (synchronous helper)."""
         import json
 
-        with open(path, "w") as f:
-            json.dump(data, f)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            raise
 
     def _read_json_file(self, path: Path) -> dict:
         """Read JSON data from file (synchronous helper)."""

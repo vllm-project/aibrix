@@ -104,6 +104,28 @@ def _mock_template(name="mock"):
     }
 
 
+def _sglang_template(name="sglang-prod", count=1, **engine_args):
+    return {
+        "name": name,
+        "version": "v1",
+        "status": "active",
+        "spec": {
+            "engine": {
+                "type": "sglang",
+                "version": "0.4.6",
+                "image": "lmsysorg/sglang:latest",
+                "serve_args": ["--port=8000"],
+            },
+            "model_source": {"type": "huggingface", "uri": "Qwen/Qwen2.5-7B"},
+            "accelerator": {"type": "H100-SXM-80GB", "count": count},
+            "parallelism": {"tp": count},
+            "engine_args": engine_args,
+            "supported_endpoints": ["/v1/chat/completions"],
+            "deployment_mode": "dedicated",
+        },
+    }
+
+
 def _profile(name="default-profile"):
     spec = {
         "scheduling": {"completion_window": "24h"},
@@ -208,6 +230,41 @@ class TestRendererHappyPath:
         args = " ".join(engine["args"])
         assert "--tensor-parallel-size 4" in args
         assert "--max-num-batched-tokens 32768" in args
+        assert "--enable-prefix-caching" in args
+
+    def test_sglang_template_renders_launch_args(self, renderer_factory):
+        template = _sglang_template(
+            count=4,
+            max_model_len=32768,
+            max_num_seqs=64,
+            gpu_memory_utilization=0.9,
+            block_size=16,
+            enable_prefix_caching=True,
+        )
+        template["spec"]["parallelism"] = {"tp": 2, "pp": 2}
+
+        r = renderer_factory(
+            templates=[template],
+            profiles=[_profile()],
+        )
+
+        m = r.render(
+            session_id="s1",
+            spec=_spec(model_template="sglang-prod"),
+            job_name="batch-sglang",
+        )
+        engine = _engine_container(m)
+        args = " ".join(engine["args"])
+
+        assert engine["image"] == "lmsysorg/sglang:latest"
+        assert engine["ports"][0]["containerPort"] == 8000
+        assert "--model-path Qwen/Qwen2.5-7B" in args
+        assert "--tp 2" in args
+        assert "--pp 2" in args
+        assert "--context-length 32768" in args
+        assert "--max-running-requests 64" in args
+        assert "--mem-fraction-static 0.9" in args
+        assert "--block-size 16" in args
         assert "--enable-prefix-caching" in args
 
     def test_mock_template_no_gpu_resources(self, renderer_factory):
@@ -481,6 +538,7 @@ class TestRendererRoundtrip:
             profile_overrides={"scheduling": {"max_concurrency": 16}},
         )
         spec.metadata = {"team": "x"}
+        spec.opts = {"priority": "high", "max_retries": "3"}
         m = r.render(session_id="s1", spec=spec)
         extracted = BatchJobTransformer._extract_batch_job_spec(
             m["spec"]["template"]["metadata"]["annotations"], m["spec"]
@@ -493,6 +551,7 @@ class TestRendererRoundtrip:
         assert extracted.model_template_version == "v1"
         assert extracted.profile_name == "vllm-profile"
         assert extracted.metadata == {"team": "x"}
+        assert extracted.opts == {"priority": "high", "max_retries": "3"}
         assert extracted.template_overrides == {"engine_args": {"max_num_seqs": 512}}
         assert extracted.profile_overrides == {"scheduling": {"max_concurrency": 16}}
 

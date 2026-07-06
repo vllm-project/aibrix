@@ -39,6 +39,7 @@ from aibrix.batch.storage.batch_metastore import (
     put_batch_job,
 )
 from aibrix.metadata.setting import settings
+from aibrix.storage.types import StorageListOrdering
 
 
 class JobStore(JobEntityManager):
@@ -59,8 +60,9 @@ class JobStore(JobEntityManager):
         if job_id in self.active_jobs and not force_reload:
             return self.active_jobs[job_id]
         job = await get_batch_job(job_id)
+        await self._publish_active_job_on_cache_miss(job)
         if job is not None and not job.status.finished:
-            self.active_jobs[job_id] = job
+            return self.active_jobs.get(job_id, job)
         return job
 
     async def list_jobs(
@@ -80,7 +82,11 @@ class JobStore(JobEntityManager):
         )
 
     def _supports_created_at_desc_recovery_ordering(self) -> bool:
-        return batch_metastore.supports_created_at_desc_batch_job_listing()
+        return (
+            batch_metastore.p_metastore is not None
+            and batch_metastore.p_metastore.get_list_ordering()
+            == StorageListOrdering.CREATED_AT_DESC
+        )
 
     async def submit_job(
         self, session_id: str, job_spec: BatchJobSpec, request_count: int = 0

@@ -28,6 +28,13 @@ from typing import List, Union
 import pytest
 
 from aibrix.storage.base import BaseStorage
+from aibrix.storage.types import StorageListOrdering
+
+
+def _ordered_keys_for_backend(storage: BaseStorage, keys: list[str]) -> list[str]:
+    if storage.get_list_ordering() == StorageListOrdering.CREATED_AT_DESC:
+        return list(reversed(keys))
+    return sorted(keys)
 
 
 class TestStorageFunctionality:
@@ -230,9 +237,10 @@ class TestStorageFunctionality:
             continuation_token=continuation_token,
         )
 
-        assert first_page == test_objects[:2]
+        expected_order = _ordered_keys_for_backend(storage, test_objects)
+        assert first_page == expected_order[:2]
         assert continuation_token is not None
-        assert second_page == test_objects[2:]
+        assert second_page == expected_order[2:]
         assert next_token is None
 
         for key in test_objects:
@@ -258,8 +266,9 @@ class TestStorageFunctionality:
             after_key=first_page[-1],
         )
 
-        assert first_page == test_objects[:2]
-        assert second_page == test_objects[2:]
+        expected_order = _ordered_keys_for_backend(storage, test_objects)
+        assert first_page == expected_order[:2]
+        assert second_page == expected_order[2:]
         assert next_token is None
 
         for key in test_objects:

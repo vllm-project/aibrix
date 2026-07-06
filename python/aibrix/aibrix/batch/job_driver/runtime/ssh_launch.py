@@ -129,6 +129,7 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
         )
         self._ssh_connect_timeout_s = ssh_connect_timeout_s
         self._ssh_connect_retry_interval_s = ssh_connect_retry_interval_s
+        self._active_handle: Optional[SSHHandle] = None
 
     def _options(self, job: BatchJob) -> dict:
         aibrix = getattr(job.spec, "aibrix", None)
@@ -137,6 +138,33 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
 
     def _base_url(self, handle: SSHHandle) -> str:
         return (handle.endpoint_url or handle.info.http_base_url).rstrip("/")
+
+    def _get_runtime_owner_ref(self, job: BatchJob) -> Optional[str]:
+        del job
+        if self._active_handle is None:
+            return None
+        info = self._active_handle.info
+        return f"{info.ssh_user}@{info.host}:{info.ssh_port}"
+
+    def _get_runtime_reconnect_payload(
+        self,
+        job: BatchJob,
+    ) -> Optional[dict[str, Any]]:
+        del job
+        if self._active_handle is None:
+            return None
+        info = self._active_handle.info
+        payload: dict[str, Any] = {
+            "host": info.host,
+            "sshPort": info.ssh_port,
+            "sshUser": info.ssh_user,
+            "httpBaseUrl": info.http_base_url,
+            "model": info.model,
+            "vllmArgs": list(info.vllm_args),
+        }
+        if info.image is not None:
+            payload["image"] = info.image
+        return payload
 
     async def _wait_ready(self, handle: SSHHandle) -> None:
         url = self._base_url(handle) + "/health"
@@ -229,6 +257,7 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
             handle.endpoint_url = f"http://127.0.0.1:{listener.get_port()}"
         else:
             handle.endpoint_url = info.http_base_url
+        self._active_handle = handle
         return handle
 
     async def _teardown(self, handle: Optional[SSHHandle]) -> None:
@@ -240,3 +269,5 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
             if handle.listener is not None:
                 handle.listener.close()
             handle.conn.close()
+            if self._active_handle is handle:
+                self._active_handle = None

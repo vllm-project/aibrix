@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -27,6 +27,7 @@ import httpx
 import aibrix.batch.constant as constant
 from aibrix.batch.client import GatewayEndpointSource
 from aibrix.batch.job_driver.base import BaseJobDriver
+from aibrix.batch.job_driver.running_jobs import RunningJobs
 from aibrix.batch.job_driver.runtime import ExternalRuntime
 from aibrix.batch.job_entity import (
     AibrixMetadata,
@@ -84,7 +85,7 @@ class LLMHealthChecker:
         return False
 
 
-class SingleJobRunner:
+class SingleJobRunner(RunningJobs):
     """A minimal ``RunningJobs`` for executing ONE batch job in-process (the
     batch worker pod).
 
@@ -103,53 +104,9 @@ class SingleJobRunner:
     async def get_job(self, job_id: str) -> Optional[BatchJob]:
         return self._meta if job_id == self._meta.job_id else None
 
-    async def get_job_next_request(self, job_id: str) -> Tuple[BatchJob, int]:
-        return self._meta, self._meta.next_request_id()
-
-    async def complete_job_request(
-        self, job_id: str, req_id: int, failed: bool = False
-    ) -> BatchJob:
-        async with self._meta._async_lock:
-            total = self._meta.status.request_counts.total
-            if req_id < 0 or req_id >= total:
-                raise ValueError(f"invalid request_id: {req_id}")
-            self._meta.complete_one_request(req_id, failed=failed)
-            return self._meta
-
-    async def mark_job_progress_and_get_next_request(
-        self, job_id: str, req_id: int
-    ) -> Tuple[BatchJob, int]:
-        self._meta.complete_one_request(req_id)
-        return self._meta, self._meta.next_request_id()
-
-    async def mark_jobs_progresses(
-        self, job_id: str, executed_requests: List[int]
-    ) -> BatchJob:
-        total = self._meta.status.request_counts.total
-        for req_id in executed_requests:
-            if req_id < 0 or req_id > total:
-                logger.error(  # type: ignore[call-arg]
-                    "Mark job progress failed - request index out of boundary",
-                    job_id=job_id,
-                    req_id=req_id,
-                    total=total,
-                )
-                continue
-            self._meta.complete_one_request(req_id)
-        return self._meta
-
-    async def mark_job_total(self, job_id: str, total_requests: int) -> BatchJob:
-        # Mirrors BatchManager.mark_job_total -> mark_job_progress(total+1): the
-        # (total+1) sentinel tells the tracker the total is now known.
-        req_id = total_requests + 1
-        if req_id < 0 or req_id > self._meta.status.request_counts.total:
-            raise ValueError(f"invalid request_id: {req_id}")
-        self._meta.complete_one_request(req_id)
-        return self._meta
-
-    async def mark_job_done(self, job_id: str) -> BatchJob:
-        job = self._meta
-        if job.status.state != BatchJobState.FINALIZING:
+    async def mark_job_done(self, job: BatchJob) -> BatchJob:
+        meta = self._meta
+        if meta.status.state != BatchJobState.FINALIZING:
             raise RuntimeError(f"Job is not in finalizing state: {job.status.state}")
         job.status.completed_at = datetime.now(timezone.utc)
         job.status.finalized_at = job.status.completed_at
@@ -162,7 +119,30 @@ class SingleJobRunner:
                 )
             )
         job.status.state = BatchJobState.FINALIZED
-        return job
+        meta.status = job.status
+        return meta
+
+    async def mark_job_validated(self, job_id: str, status: BatchJobStatus) -> BatchJob:
+        del job_id
+        self._meta.status = status
+        return self._meta
+
+    async def update_job_status(self, job_id: str, status: BatchJobStatus) -> BatchJob:
+        del job_id
+        self._meta.status = status
+        return self._meta
+
+    async def update_job_local_status(
+        self, job_id: str, worker_id: str, status: BatchJobStatus
+    ) -> BatchJob:
+        del job_id, worker_id
+        self._meta.status = status
+        return self._meta
+
+    async def mark_job_finalizing(self, job_id: str) -> BatchJob:
+        del job_id
+        self._meta.status.state = BatchJobState.FINALIZING
+        return self._meta
 
     async def mark_job_failed(self, job_id: str, ex: BatchJobError) -> BatchJob:
         job = self._meta
