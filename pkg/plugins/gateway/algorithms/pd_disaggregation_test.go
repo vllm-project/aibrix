@@ -2760,7 +2760,6 @@ func TestFilterPrefillDecodePods_SelectCorrectBucketPods(t *testing.T) {
 	assert.NotNil(t, decode)
 	assert.Equal(t, "prefill-ok", prefill.Name)
 	assert.Equal(t, "decode-ok", decode.Name)
-	assert.Equal(t, int32(1), r.prefillRequestTracker.GetPrefillRequestCountsForPods([]*v1.Pod{prefill})[prefill.Name])
 }
 
 func TestFilterPrefillDecodePods_CombinedFallbackBucketing(t *testing.T) {
@@ -2791,6 +2790,59 @@ func TestFilterPrefillDecodePods_CombinedFallbackBucketing(t *testing.T) {
 	assert.NotNil(t, decode)
 	assert.Equal(t, "combined-1", decode.Name)
 	assert.Equal(t, 0, r.prefillRequestTracker.GetPrefillRequestCountsForPod("prefill-ok"))
+}
+
+func TestFilterPrefillDecodePods_BucketDecodeDownFallbackToCombined(t *testing.T) {
+	old := aibrixPromptLengthBucketing
+	aibrixPromptLengthBucketing = true
+	defer func() { aibrixPromptLengthBucketing = old }()
+
+	r := pdRouter{
+		cache:                 cache.NewForTest(),
+		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: pd.NewPrefillRequestTracker(),
+		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
+		httpClient:            &http.Client{},
+		selectionCounts:       map[string]int64{},
+	}
+
+	// Build a prompt that tokenizes to exactly 20 tokens (medium bucket: 16–32).
+	mediumPrompt := ""
+	for len(mediumPrompt) < 4096 {
+		tokens, err := utils.TokenizeInputText(mediumPrompt)
+		if err != nil {
+			t.Fatalf("tokenize: %v", err)
+		}
+		if len(tokens) == 20 {
+			break
+		}
+		mediumPrompt += "a"
+	}
+	tokens, err := utils.TokenizeInputText(mediumPrompt)
+	if err != nil {
+		t.Fatalf("tokenize: %v", err)
+	}
+	if len(tokens) != 20 {
+		t.Fatalf("expected 20 tokens, got %d", len(tokens))
+	}
+
+	configShort := pdConfigAnnotation(0, 15, false)
+	configMedium := pdConfigAnnotation(16, 32, false)
+	configCombined := pdConfigAnnotation(0, 0, true)
+
+	shortPrefill := makePDPod("prefill-short", "rs-short", "prefill", map[string]string{constants.ModelAnnoConfig: configShort})
+	shortDecode := makePDPod("decode-short", "rs-short", "decode", map[string]string{constants.ModelAnnoConfig: configShort})
+	medPrefill := makePDPod("prefill-med", "rs-med", "prefill", map[string]string{constants.ModelAnnoConfig: configMedium})
+	// Medium decode is down — only prefill remains.
+	combined := makePDPod("combined-1", "rs-comb", "combined", map[string]string{constants.ModelAnnoConfig: configCombined})
+
+	ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", mediumPrompt, "req-decode-down", "user")
+	prefill, decode, err := r.filterPrefillDecodePods(ctx, []*v1.Pod{shortPrefill, shortDecode, medPrefill, combined})
+	assert.NoError(t, err)
+	assert.Nil(t, prefill, "combined routing should not set a prefill pod")
+	assert.NotNil(t, decode)
+	assert.Equal(t, "combined-1", decode.Name)
 }
 
 func TestFilterPrefillDecodePods_NoBucketMatchNoCombined(t *testing.T) {

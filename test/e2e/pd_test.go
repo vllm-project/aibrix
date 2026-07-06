@@ -20,11 +20,13 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // assertPDDisaggregation sends a single PD-routed chat completion for the given model and
@@ -101,10 +103,90 @@ func TestPDDisaggregationTRTLLM(t *testing.T) {
 		"TRT-LLM")
 }
 
+// assertPDDisaggregationAfterPodDeletion deletes one pod for modelName and roleLabel,
+// waits for the gateway to notice, then verifies PD-routed requests still succeed via
+// remaining pods (requires at least two matching pods, i.e. 2x1P1D for that model).
+func assertPDDisaggregationAfterPodDeletion(t *testing.T, roleLabel, modelName, prompt, requestErrMsg string) {
+	t.Helper()
+	ctx := context.Background()
+	k8sClient, _ := initializeClient(ctx, t)
+
+	initialPods, err := k8sClient.CoreV1().Pods("default").List(ctx, v1.ListOptions{})
+	require.NoError(t, err)
+	initialCount := len(initialPods.Items)
+
+	labelSelector := "role-name=" + roleLabel + ",model.aibrix.ai/name=" + modelName
+	rolePods, err := k8sClient.CoreV1().Pods("default").List(ctx, v1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(rolePods.Items), 2,
+		"expected at least two %s pods for model %s (2x1P1D); selector=%q", roleLabel, modelName, labelSelector)
+
+	podToDelete := rolePods.Items[0].Name
+	t.Logf("deleting %s pod for model %s: %s", roleLabel, modelName, podToDelete)
+
+	require.NoError(t, k8sClient.CoreV1().Pods("default").Delete(ctx, podToDelete, v1.DeleteOptions{}))
+
+	t.Cleanup(func() {
+		validateAllPodsAreReady(t, k8sClient, initialCount)
+		waitForPDDisaggregationRouting(t, modelName)
+		t.Logf("%s pod %s has been recreated and cluster is back to %d pods", roleLabel, podToDelete, initialCount)
+	})
+
+	// Give the gateway time to detect the pod is gone.
+	time.Sleep(3 * time.Second)
+
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+
+	for i := 0; i < 10; i++ {
+		_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+			Messages: []openai.ChatCompletionMessageParamUnion{
+				openai.UserMessage(prompt),
+			},
+			Model: modelName,
+		})
+		require.NoError(t, err, requestErrMsg, i)
+
+		decodePod := dst.Header.Get("target-pod")
+		prefillPod := dst.Header.Get("prefill-target-pod")
+		assert.NotEmpty(t, decodePod, "request %d: target-pod header must be set", i)
+		assert.NotEmpty(t, prefillPod, "request %d: prefill-target-pod header must be set", i)
+		assert.NotEqual(t, prefillPod, decodePod, "request %d: prefill and decode pods should differ", i)
+		if roleLabel == "prefill" {
+			assert.NotEqual(t, podToDelete, prefillPod,
+				"request %d: should not route to deleted prefill pod %s", i, podToDelete)
+		} else {
+			assert.NotEqual(t, podToDelete, decodePod,
+				"request %d: should not route to deleted decode pod %s", i, podToDelete)
+		}
+		t.Logf("request %d — prefill: %s, decode: %s", i, prefillPod, decodePod)
+	}
+}
+
+// TestPDDisaggregationVLLMPrefillPodFailure verifies that with 2x1P1D setup, taking down one
+// prefill pod still allows 10 requests to succeed via the remaining complete roleset.
+func TestPDDisaggregationVLLMPrefillPodFailure(t *testing.T) {
+	assertPDDisaggregationAfterPodDeletion(t, "prefill", modelNameVLLM,
+		"PD prefill-pod-failure resilience test",
+		"request %d failed after prefill pod deletion")
+}
+
+// TestPDDisaggregationVLLMDecodePodFailure verifies that with 2x1P1D setup, taking down one
+// decode pod still allows 10 requests to succeed via the remaining complete roleset.
+func TestPDDisaggregationVLLMDecodePodFailure(t *testing.T) {
+	assertPDDisaggregationAfterPodDeletion(t, "decode", modelNameVLLM,
+		"PD decode-pod-failure resilience test",
+		"request %d failed after decode pod deletion")
+}
+
 // TestPDDisaggregationVLLMMultipleRequests sends several requests to verify that the
 // PD router consistently selects valid prefill/decode pod pairs across requests.
 func TestPDDisaggregationVLLMMultipleRequests(t *testing.T) {
 	const iterations = 5
+
+	waitForPDDisaggregationRouting(t, modelNameVLLM)
 
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))

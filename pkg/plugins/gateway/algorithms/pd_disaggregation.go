@@ -286,11 +286,10 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		return "", fmt.Errorf("failed to filter prefill/decode pods for request %s: %w", ctx.RequestID, err)
 	}
 
+	r.pendingDecodeTracker.AddPendingDecode(ctx.RequestID, decodePod.Name)
+	defer r.pendingDecodeTracker.RemovePendingDecode(ctx.RequestID)
+
 	if prefillPod != nil {
-		// filterPrefillDecodePods registered pending prefill/decode during selection so
-		// concurrent requests see up-to-date counts. Always clean up pending decode when
-		// this request completes.
-		defer r.pendingDecodeTracker.RemovePendingDecode(ctx.RequestID)
 
 		klog.InfoS("selected prefill/decode pods", "request_id", ctx.RequestID, "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)
 		if ctx.RespHeaders == nil {
@@ -298,6 +297,7 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		}
 		ctx.RespHeaders[HeaderPrefillTargetPod] = prefillPod.Name
 		ctx.RespHeaders[HeaderPrefillTargetPodIP] = prefillPod.Status.PodIP
+		r.prefillRequestTracker.AddPrefillRequest(ctx.RequestID, prefillPod.Name)
 		err = r.doPrefillRequest(ctx, prefillPod, ctx.Engine)
 		if err != nil {
 			// Remove is a no-op if the executor already cleaned up (e.g. sync HTTP failure).
@@ -343,18 +343,16 @@ type Scores struct {
 //
 //  4. Prefill load-imbalance fast path — if outstanding prefill counts are skewed
 //     beyond aibrixPrefillLoadImbalanceMinSpread, narrow to the single least-loaded
-//     prefill pod and align decodePods to its roleset.
+//     prefill pod and align decodePods to its roleset. Continues to step 5.
 //
 //  5. Decode load-imbalance fast path — three ordered checks (request-count spread,
 //     throughput spread, drain-rate ratio); the first that fires narrows decodePods
-//     to a single pod and aligns prefillPods to its roleset.
+//     to a single pod and aligns prefillPods to its roleset. Steps 4 and 5 are
+//     independent: both can fire on the same request if both prefill and decode are
+//     imbalanced, with each narrowing its own side of the pair.
 //
 //  6. Score remaining candidates — scorePrefillPods and scoreDecodePods evaluate
 //     every roleset; finalPDScore picks the roleset with the lowest combined score.
-//
-//  7. Tracker registration — AddPrefillRequest and AddPendingDecode are called on
-//     the selected pods before returning so concurrent Route calls see up-to-date
-//     counts immediately.
 func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
 	var promptLength int
 	if aibrixPromptLengthBucketing {
@@ -431,27 +429,24 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		return nil, nil, err
 	}
 
-	// Register pending prefill/decode immediately after selection so concurrent routing
-	// calls read up-to-date counts when evaluating load imbalance and scoring.
-	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, selectedPrefill.Name)
-	r.pendingDecodeTracker.AddPendingDecode(routingCtx.RequestID, selectedDecode.Name)
 	return selectedPrefill, selectedDecode, nil
 }
 
 // loadImbalanceSelectPrefillPod is a fast path that runs before scorePrefillPods when
 // outstanding prefill load is visibly skewed across readyPods.
 //
-// podRequestCount holds per-pod active prefill counts from PrefillRequestTracker (in-flight
-// prefill HTTP requests not yet completed). readyPods is shuffled before evaluation so ties
-// among least-loaded pods are broken randomly.
+// podRequestCount holds per-pod active prefill counts from PrefillRequestTracker for
+// in-flight prefill HTTP calls from other concurrent requests. The current request is
+// not counted yet — it is registered by the caller after selection completes.
+// readyPods is shuffled before evaluation so ties among equally-loaded pods are broken
+// randomly rather than by map iteration order.
 //
-// If max(count) − min(count) is greater than aibrixPrefillLoadImbalanceMinSpread, returns
-// one pod tied for the minimum count and imbalance=true. Otherwise returns nil, false.
-// An empty podRequestCount map always returns nil, false.
+// Returns one pod tied for the minimum count and imbalance=true when
+// max(count) − min(count) > aibrixPrefillLoadImbalanceMinSpread (strictly greater than).
+// Otherwise returns nil, false. An empty podRequestCount map always returns nil, false.
 //
-// The caller (filterPrefillDecodePods) narrows decodePods to the selected pod's roleset.
-// PrefillRequestTracker is updated after finalPDScore (not inside this function); counts
-// seen here include requests that have been assigned a prefill pod but not yet completed.
+// The caller (filterPrefillDecodePods) narrows decodePods to the selected pod's roleset
+// so that prefill and decode remain aligned to the same roleset pair after this step.
 func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequestCount map[string]int32) (*v1.Pod, bool) {
 	var imbalance bool
 	var targetPod *v1.Pod
@@ -499,11 +494,13 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 // (each runs only if the previous did not return):
 //
 //  1. Request imbalance: among pods that report RealtimeNumRequestsRunning, compute
-//     effective count = running + PendingDecodeTracker pending count for that pod. If
-//     max − min effective count is at least aibrixDecodeLoadImbalanceMinSpread, return the
-//     least-loaded metric-bearing pod. Pods without a running-request metric are excluded
-//     from the spread (their pending count is still stored in podRequestCounts for scoring)
-//     so freshly restarted pods are not treated as idle and given a thundering herd.
+//     effective count = running + PendingDecodeTracker pending count for that pod.
+//     Pending counts come from concurrent Route calls that have registered
+//     AddPendingDecode but not yet returned. If max − min effective count is at least
+//     aibrixDecodeLoadImbalanceMinSpread, return the least-loaded metric-bearing pod.
+//     Pods without a running-request metric are excluded from the spread (their pending
+//     count is still stored in podRequestCounts for scoring) so freshly restarted pods
+//     are not treated as idle and given a thundering herd.
 //
 //  2. Throughput spread: among pods that report AvgGenerationThroughputToksPerS (per model),
 //     if max − min throughput exceeds aibrixDecodeThroughputImbalanceMinSpread, return the
@@ -517,7 +514,10 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 // Returns nil when none of the checks fire; the caller falls through to scoreDecodePods with
 // the collected maps. A non-nil pod return also carries maxRequestCount, maxThroughput, and
 // maxFreeGPUUsage from the same pass (maxima include all pods, including those without metrics).
-// The caller narrows prefillPods to the selected pod's roleset.
+// maxRequestCount and maxThroughput are floored at 1 and maxFreeGPUUsage is floored at 1 so
+// that scoreDecodePods normalization denominators are always positive. The caller narrows
+// prefillPods to the selected pod's roleset. KV cache headroom uses KVCacheUsagePerc only
+// (missing metric is treated as 0% usage = 100% free).
 func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filteredDecodePods []*v1.Pod) (*v1.Pod, float64, float64, float64, map[string]float64, map[string]float64, map[string]float64) {
 	podRequestCounts := make(map[string]float64)
 	podThroughputs := make(map[string]float64)
@@ -620,17 +620,21 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 }
 
 // scorePrefillPods scores candidate prefill pods with prefillPolicy after any imbalance
-// fast path has narrowed the list. readyPods are shuffled before scoring.
+// fast path has narrowed the list. prefillPods are shuffled before scoring so ties
+// within a roleset are broken randomly.
 //
-// Active prefill counts come from PrefillRequestTracker. Pods whose count exceeds
-// mean + standardDeviationFactor×stddev (AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR)
-// are skipped as overloaded. Each remaining pod is scored via prefillPolicy; the
-// lowest-scoring pod per roleset (PDRoleSetIdentifier) is kept.
+// Active prefill counts come from PrefillRequestTracker (in-flight prefill HTTP from
+// other concurrent requests; the current request is not counted yet). Pods whose count
+// exceeds mean + standardDeviationFactor×stddev
+// (AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR) are skipped as overloaded. When
+// every pod in a roleset is filtered this way, that roleset has no entry in the
+// returned map and finalPDScore will not be able to select it.
 //
 // Returns a per-roleset score map, maxPrefillScore (the maximum score among all pods
 // scored in this pass, used by finalPDScore for normalization), and prefix hashes
-// from the policy's Prepare step for asynchronous prefix-cache updates. Returns
-// nil, 0, nil when Prepare fails.
+// from the policy's Prepare step for asynchronous prefix-cache updates.
+// Returns nil, 0, nil when Prepare fails (distinct from an empty map, which means
+// all pods were filtered by the stddev check).
 //
 // Policy resolution: the policy argument, then r.prefillPolicy, then prefix_cache.
 func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, prefillPolicy pd.PrefillScorePolicy) (map[string]*Scores, float64, []uint64) {
@@ -703,10 +707,11 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 // nil, the caller still passes the maps built during that pass.
 //
 // Policy resolution: the policy argument, then r.decodePolicy, then load_balancing.
-// When at least one pod reports both RealtimeNumRequestsRunning and
-// AvgGenerationThroughputToksPerS, pods missing either metric are skipped so
-// freshly restarted pods are not favored with zero load. If no pod has both metrics,
-// all pods are scored (cold-start fallback).
+// When at least one pod reports RealtimeNumRequestsRunning, pods missing that metric
+// receive a cold-start score (1.0 + PendingDecodeTracker pending count) instead of
+// full policy scoring. podRequestCounts include pending decode from concurrent Route
+// calls that have registered AddPendingDecode. If no pod has the running-request metric,
+// all pods are scored normally.
 //
 // Lower score is better. The lowest-scoring pod per roleset is kept in DecodeScoreRun.
 // PerRoleset. Invalid (NaN) scores from the primary policy are retried once with
@@ -737,10 +742,12 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 	utils.CryptoShuffle(filteredDecodePods)
 
 	anyMetricsReady := false
+	metricsReadyByPod := make(map[string]bool, len(filteredDecodePods))
 	for _, pod := range filteredDecodePods {
-		if r.decodePodMetricsReady(routingCtx, pod) {
+		ready := r.decodePodMetricsReady(routingCtx, pod)
+		metricsReadyByPod[pod.Name] = ready
+		if ready {
 			anyMetricsReady = true
-			break
 		}
 	}
 
@@ -749,7 +756,7 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 
 	for _, pod := range filteredDecodePods {
 		rolesetName := pod.Labels[PDRoleSetIdentifier]
-		if anyMetricsReady && !r.decodePodMetricsReady(routingCtx, pod) {
+		if anyMetricsReady && !metricsReadyByPod[pod.Name] {
 			// Cold-start: assign a neutral score (1.0 = idle warm pod) plus gateway-tracked
 			// pending requests so the roleset competes fairly instead of being excluded entirely.
 			// Once the pod's first request completes and metrics arrive, it transitions to full scoring.
@@ -801,17 +808,19 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 		}
 	}
 
-	perRolesetBest := make([]string, 0, len(out.PerRoleset))
-	for roleset, pick := range out.PerRoleset {
-		perRolesetBest = append(perRolesetBest, fmt.Sprintf("%s:%s=%.4f", roleset, pick.Pod.Name, pick.Score))
+	if klog.V(4).Enabled() {
+		perRolesetBest := make([]string, 0, len(out.PerRoleset))
+		for roleset, pick := range out.PerRoleset {
+			perRolesetBest = append(perRolesetBest, fmt.Sprintf("%s:%s=%.4f", roleset, pick.Pod.Name, pick.Score))
+		}
+		sort.Strings(perRolesetBest)
+		klog.V(4).InfoS("decode_score_summary",
+			"request_id", routingCtx.RequestID, "policy", policyName,
+			"fallback_used", out.FallbackUsed, "any_metrics_ready", anyMetricsReady,
+			"scored", strings.Join(scoredPods, " "), "skipped", strings.Join(skippedPods, " "),
+			"per_roleset_best", strings.Join(perRolesetBest, " "),
+		)
 	}
-	sort.Strings(perRolesetBest)
-	klog.V(4).InfoS("decode_score_summary",
-		"request_id", routingCtx.RequestID, "policy", policyName,
-		"fallback_used", out.FallbackUsed, "any_metrics_ready", anyMetricsReady,
-		"scored", strings.Join(scoredPods, " "), "skipped", strings.Join(skippedPods, " "),
-		"per_roleset_best", strings.Join(perRolesetBest, " "),
-	)
 
 	return out
 }
@@ -829,12 +838,17 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 // Lower combined score wins. Ties retain whichever roleset was last seen with that
 // score (map iteration order). Emits per-roleset final_score V(4) logs.
 //
-// Returns an error when decodeRun.Err is set, when no roleset has both sides scored
-// (target prefill or decode pod nil), or when prefillScores is empty. On success,
-// enqueues a prefix-cache update when prefixHashes is non-empty, increments internal
-// selection counters, and emits PDSelectedPrefillPodTotal / PDSelectedDecodePodTotal.
-// The caller registers the chosen prefill/decode pods with PrefillRequestTracker and
-// PendingDecodeTracker after return.
+// Error cases:
+//   - decodeRun.Err is set: decode scoring failed upstream.
+//   - prefillScores is nil: Prepare failed in scorePrefillPods.
+//   - prefillScores is non-nil but empty: all prefill pods were filtered by the stddev
+//     check, leaving no eligible prefill candidate; targetPrefillPod stays nil.
+//   - prefillScores is non-empty but no roleset has a matching decode entry: the
+//     roleset sets are disjoint after load-imbalance alignment; targetDecodePod stays nil.
+//
+// On success, enqueues a prefix-cache update when prefixHashes is non-empty, increments
+// internal selection counters, and emits PDSelectedPrefillPodTotal / PDSelectedDecodePodTotal.
+// Does not update request trackers; Route registers them after pod selection returns.
 func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	prefixHashes []uint64,
 	prefillScores map[string]*Scores, maxPrefillScore float64,
@@ -1107,25 +1121,14 @@ func isCombinedPod(routingCtx *types.RoutingContext, pod *v1.Pod) bool {
 	return pdCfg.Combined
 }
 
+// decodePodMetricsReady reports whether RealtimeNumRequestsRunning is available for pod.
+// Used by scoreDecodePods to gate cold-start scoring vs full policy scoring.
 func (r *pdRouter) decodePodMetricsReady(ctx *types.RoutingContext, pod *v1.Pod) bool {
 	if r == nil || r.cache == nil || ctx == nil || pod == nil {
 		return false
 	}
 	_, runningErr := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
 	return runningErr == nil
-}
-
-// decodePodKVCacheUsagePerc returns KV cache utilization (0–1). vLLM exposes
-// vllm:kv_cache_usage_perc; older engines may still publish gpu_cache_usage_perc.
-func (r *pdRouter) decodePodKVCacheUsagePerc(ctx *types.RoutingContext, pod *v1.Pod) (metrics.MetricValue, error) {
-	if r == nil || r.cache == nil || ctx == nil || pod == nil {
-		return nil, fmt.Errorf("kv cache metric unavailable")
-	}
-	kv, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc)
-	if err == nil {
-		return kv, nil
-	}
-	return r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.GPUCacheUsagePerc)
 }
 
 func getLLMEngine(pod *v1.Pod, labelName string, defaultValue string) string {
