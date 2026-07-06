@@ -32,23 +32,16 @@ from aibrix.batch.job_driver.runtime import (
     registered_runtimes,
 )
 from aibrix.batch.job_driver.runtime import base as runtime_base_mod
-from aibrix.batch.job_entity import BatchJobError, BatchJobErrorCode, JobRuntimeRef
+from aibrix.batch.job_entity import (
+    BatchJobError,
+    BatchJobErrorCode,
+    BatchJobState,
+    BatchJobStatus,
+    BatchJobStatusCopy,
+    JobRuntimeRef,
+    RequestCountStats,
+)
 from aibrix.context import InfrastructureContext
-
-
-class _FakeStatus:
-    def __init__(self, execution: dict[str, JobRuntimeRef] | None = None) -> None:
-        self._execution = dict(execution or {})
-
-    def get_runtime_ref(self, execution_key: str) -> JobRuntimeRef | None:
-        return self._execution.get(execution_key)
-
-    def model_copy(self, deep: bool = True) -> "_FakeStatus":
-        del deep
-        return _FakeStatus(self._execution)
-
-    def set_runtime_ref(self, execution_key: str, execution_ref: JobRuntimeRef) -> None:
-        self._execution[execution_key] = execution_ref
 
 
 class _FakeProgressManager:
@@ -66,12 +59,23 @@ def _fake_worker_id_generator(owner_ref: str) -> str:
 def _make_test_job(
     job_id: str = "j",
     *,
+    status: BatchJobStatus | None = None,
     execution: dict[str, JobRuntimeRef] | None = None,
+    request_counts: RequestCountStats | None = None,
+    usage=None,
     opts: dict[str, object] | None = None,
 ) -> object:
     return SimpleNamespace(
         job_id=job_id,
-        status=_FakeStatus(execution),
+        status=status
+        or BatchJobStatus(
+            jobID=job_id,
+            state=BatchJobState.CREATED,
+            createdAt=datetime.now(timezone.utc),
+            requestCounts=request_counts or RequestCountStats(),
+            usage=usage,
+            execution=execution,
+        ),
         spec=SimpleNamespace(opts=dict(opts or {})),
     )
 
@@ -718,6 +722,63 @@ async def test_runtime_base_session_raises_if_execution_tracking_not_bound():
     ):
         async with runtime.session(job=job, job_id="job-1"):
             pytest.fail("session should fail before entering body")
+
+
+@pytest.mark.asyncio
+async def test_persist_runtime_ref_resets_new_worker_local_counts():
+    class _CapturingProgressManager:
+        def __init__(self) -> None:
+            self.last_status: BatchJobStatus | None = None
+            self.last_worker_id: str | None = None
+            self.execution: dict[str, JobRuntimeRef] | None = None
+            self.status_copy: BatchJobStatusCopy | None = None
+
+        async def update_job_local_status(
+            self, job_id: str, worker_id: str, status: BatchJobStatus
+        ):
+            assert job_id == "job-1"
+            self.last_worker_id = worker_id
+            self.last_status = status
+            self.execution = status.execution
+            self.status_copy = BatchJobStatusCopy.from_status(status)
+            return SimpleNamespace(job_id=job_id, status=status)
+
+    class _PersistingRuntime(_R):
+        def _build_runtime_ref(self, job):
+            del job
+            return JobRuntimeRef(
+                driverType="base",
+                ownerRef="owner-ref",
+            )
+
+    progress_manager = _CapturingProgressManager()
+    job = _make_test_job(
+        job_id="job-1",
+        request_counts=RequestCountStats(
+            total=10000,
+            launched=3166,
+            completed=3152,
+            failed=0,
+        ),
+        usage={"total_tokens": 1},
+    )
+    runtime = _PersistingRuntime()
+
+    persisted = await runtime._persist_runtime_ref(
+        job,
+        progress_manager=progress_manager,
+        worker_id_generator=_fake_worker_id_generator,
+    )
+
+    assert progress_manager.last_worker_id == "owner-ref-worker-1"
+    assert progress_manager.execution is not None
+    assert progress_manager.status_copy is not None
+    assert progress_manager.status_copy.request_counts.total == 0
+    assert progress_manager.status_copy.request_counts.launched == 0
+    assert progress_manager.status_copy.request_counts.completed == 0
+    assert progress_manager.status_copy.request_counts.failed == 0
+    assert progress_manager.status_copy.usage is None
+    assert persisted.status is progress_manager.last_status
 
 
 @pytest.mark.asyncio
