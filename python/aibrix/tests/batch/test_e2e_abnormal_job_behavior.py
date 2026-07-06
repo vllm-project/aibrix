@@ -201,7 +201,7 @@ def pytest_generate_tests(metafunc):
         [
             "local_metastore_job_parallel",
             "local_job_using_deployment",
-            "k8s_job",
+            "local_job_using_k8s_job",
         ],
         default_backend="local_metastore_job",
     )
