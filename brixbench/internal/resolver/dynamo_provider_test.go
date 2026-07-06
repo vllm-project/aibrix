@@ -1,14 +1,21 @@
 package resolver
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestValidateDynamoSourceSelection(t *testing.T) {
+	valuesFile := filepath.Join(t.TempDir(), "platform-values.yaml")
+	if err := os.WriteFile(valuesFile, []byte("nats: {}\n"), 0o644); err != nil {
+		t.Fatalf("failed to write platform values: %v", err)
+	}
 	test := Test{
-		Name:    "dynamo",
-		Version: "1.2.1",
+		Name:     "dynamo",
+		Version:  "1.2.1",
+		Platform: Platform{ValuesFile: " " + valuesFile + " "},
 	}
 
 	if err := validateDynamoSourceSelection(&test); err != nil {
@@ -16,6 +23,9 @@ func TestValidateDynamoSourceSelection(t *testing.T) {
 	}
 	if test.Version != "v1.2.1" {
 		t.Fatalf("expected normalized version v1.2.1, got %s", test.Version)
+	}
+	if test.Platform.ValuesFile != valuesFile {
+		t.Fatalf("expected trimmed platform values file %s, got %s", valuesFile, test.Platform.ValuesFile)
 	}
 }
 
@@ -82,6 +92,41 @@ func TestValidateDynamoSourceSelectionRejectsNonStableVersion(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "expected stable semver") {
 				t.Fatalf("expected stable semver error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateDynamoSourceSelectionRejectsInvalidPlatformValuesFile(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		valuesFile string
+		want       string
+	}{
+		{
+			name:       "missing values file",
+			valuesFile: filepath.Join(t.TempDir(), "missing.yaml"),
+			want:       "platform.valuesFile not found",
+		},
+		{
+			name:       "reference path",
+			valuesFile: filepath.Join(".tmp", "dynamo-reference", "platform-values.yaml"),
+			want:       "must not reference .tmp/dynamo-reference",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			test := Test{
+				Name:     "dynamo",
+				Version:  "v1.2.1",
+				Platform: Platform{ValuesFile: tc.valuesFile},
+			}
+
+			err := validateDynamoSourceSelection(&test)
+			if err == nil {
+				t.Fatalf("expected error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
 			}
 		})
 	}

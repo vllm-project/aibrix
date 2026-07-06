@@ -1,31 +1,10 @@
-# vLLM Disaggregated Serving (4P8D) - Dynamo CRD
+# vLLM Disaggregated Serving (1P1D) - Dynamo CRD
 #
-# Purpose: Deploy Qwen3-32B model with 4 Prefill + 8 Decode (TP=4) on Dynamo
-#          v1.2.0-deepseek-v4-dev.3 + vLLM v0.21.0
-# Usage:   kubectl apply -f qwen3-32b-round-robin-4p8d.yaml -n brixbench-dynamo
+# Purpose: Smoke-test Qwen3-8B with 1 Prefill + 1 Decode (TP=2) on Dynamo.
+# Usage:   kubectl apply -n brixbench-dynamo -f qwen3-8b-round-robin-1p1d-tp2.yaml
 #
-# Configuration:
-#   - Frontend: HTTP API server (OpenAI compatible) - Node 192.168.0.7
-#   - VllmDecodeWorker: 8 replicas (token generation) - Node 192.168.0.7
-#   - VllmPrefillWorker: 4 replicas (prompt processing) - Node 192.168.0.6
-#
-# GPU Allocation:
-#   - 192.168.0.6: 16 GPU (Prefill, 4 replicas x TP=4)
-#   - 192.168.0.7: 32 GPU (Decode, 8 replicas x TP=4)
-#   Total: 48 GPU
-#
-# Fixed parameters for brixbench parity with AIBrix qwen3-32b smoke:
-#   MODEL=Qwen3-32B, SERVED_MODEL_NAME=qwen3-32b,
-#   ROUTER_MODE=round-robin, MAX_MODEL_LEN=40960, GPU_MEM_UTIL=0.90, TP=4
-#
-# Dynamo 1.x changes (vs 0.9.1):
-#   - --is-{prefill,decode}-worker -> --disaggregation-mode {prefill,decode}
-#   - --kv-transfer-config is REQUIRED for disaggregation-mode=prefill, and
-#     the decode side also needs it to receive KV blocks over NIXL.
-#   - --enable-local-indexer is no longer a CLI flag (auto-enabled when
-#     --durable-kv-events is not set).
-#   - Prefill workers publish KV cache events to NATS via --kv-events-config
-#     for KV-aware routing (router-mode=kv).
+# This fixture keeps cluster-specific values in YAML, not in the Go deployer:
+# PVC, image, imagePullSecret, nodeSelector, RDMA annotation, and UCX/NIXL env.
 
 apiVersion: nvidia.com/v1alpha1
 kind: DynamoGraphDeployment
@@ -56,7 +35,7 @@ spec:
             - -c
           args:
             - |
-              export MODEL=Qwen3-32B
+              export MODEL=Qwen3-8B
               export ROUTER_MODE=round-robin
               python3 -m dynamo.frontend \
                 --model-path /models/$MODEL \
@@ -67,21 +46,18 @@ spec:
       dynamoNamespace: vllm-dynamo
       componentType: worker
       subComponentType: decode
-      replicas: 8
+      replicas: 1
       extraPodMetadata:
         annotations:
-          # Inject Volcengine RDMA CNI as a secondary interface so UCX can use
-          # InfiniBand for cross-node KV transfers (NIXL falls back to TCP-only
-          # UCX without this, which then fails to register CUDA VRAM).
           k8s.volcengine.com/pod-networks: |
             [{"cniConf":{"name":"rdma"}}]
       resources:
         limits:
-          gpu: "4"
+          gpu: "2"
           custom:
             "vke.volcengine.com/rdma": "1"
         requests:
-          gpu: "4"
+          gpu: "2"
           custom:
             "vke.volcengine.com/rdma": "1"
       volumeMounts:
@@ -97,10 +73,6 @@ spec:
             - /bin/sh
             - -c
           securityContext:
-            # Image default user is 'dynamo' (non-root) which cannot raise
-            # RLIMIT_MEMLOCK above 64 KiB. UCX/IB needs unlimited locked
-            # memory to allocate completion queues, so run as root and add
-            # SYS_RESOURCE so `ulimit -l unlimited` in args succeeds.
             runAsUser: 0
             capabilities:
               add:
@@ -113,11 +85,11 @@ spec:
               export LD_LIBRARY_PATH=/opt/nvidia/nvda_nixl/lib64:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
               export PATH=$PATH:/usr/local/nvidia/bin:/usr/local/nvidia/lib64
               /sbin/ldconfig
-              export MODEL=Qwen3-32B
-              export SERVED_MODEL_NAME=qwen3-32b
-              export MAX_MODEL_LEN=40960
+              export MODEL=Qwen3-8B
+              export SERVED_MODEL_NAME=qwen3-8b
+              export MAX_MODEL_LEN=16384
               export GPU_MEM_UTIL=0.90
-              export TP=4
+              export TP=2
               python3 -m dynamo.vllm \
                 --model /models/$MODEL \
                 --served-model-name $SERVED_MODEL_NAME \
@@ -135,13 +107,7 @@ spec:
             - name: HF_HUB_OFFLINE
               value: "1"
             - name: CUDA_VISIBLE_DEVICES
-              value: "0,1,2,3"
-            # UCX must be told to include CUDA transports explicitly. With
-            # UCX_TLS="^gga" the wheel's UCX selects only IB rc transports for
-            # the NIXL agent, then registerMem on a CUDA buffer fails with
-            # "VRAM memory is detected as host by UCX". List values match the
-            # dynamo recipe at recipes/qwen3-32b-fp8/vllm/disagg/deploy.yaml,
-            # which is the upstream proven setup for NIXL+vLLM disagg.
+              value: "0,1"
             - name: UCX_TLS
               value: "rc_x,rc,cuda_copy,cuda_ipc,tcp"
             - name: UCX_IB_ADDR_TYPE
@@ -150,10 +116,6 @@ spec:
               value: "get_zcopy"
             - name: UCX_RNDV_THRESH
               value: "0"
-            # Disable UCX's memory-type cache. With it on (default), the
-            # wheel's UCX classifies CUDA pointers as host memory at the
-            # registerMem call, breaking NIXL VRAM registration on this
-            # NVIDIA driver 535 / NIXL UCX runtime combination.
             - name: UCX_MEMTYPE_CACHE
               value: "n"
             - name: GLOO_SOCKET_IFNAME
@@ -169,21 +131,18 @@ spec:
       dynamoNamespace: vllm-dynamo
       componentType: worker
       subComponentType: prefill
-      replicas: 4
+      replicas: 1
       extraPodMetadata:
         annotations:
-          # Inject Volcengine RDMA CNI as a secondary interface so UCX can use
-          # InfiniBand for cross-node KV transfers (NIXL falls back to TCP-only
-          # UCX without this, which then fails to register CUDA VRAM).
           k8s.volcengine.com/pod-networks: |
             [{"cniConf":{"name":"rdma"}}]
       resources:
         limits:
-          gpu: "4"
+          gpu: "2"
           custom:
             "vke.volcengine.com/rdma": "1"
         requests:
-          gpu: "4"
+          gpu: "2"
           custom:
             "vke.volcengine.com/rdma": "1"
       volumeMounts:
@@ -193,14 +152,12 @@ spec:
         nodeSelector:
           kubernetes.io/hostname: "192.168.0.6"
         mainContainer:
+          image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/ai-dynamo-vllm-runtime:1.2.0
+          workingDir: /workspace
           command:
             - /bin/sh
             - -c
           securityContext:
-            # Image default user is 'dynamo' (non-root) which cannot raise
-            # RLIMIT_MEMLOCK above 64 KiB. UCX/IB needs unlimited locked
-            # memory to allocate completion queues, so run as root and add
-            # SYS_RESOURCE so `ulimit -l unlimited` in args succeeds.
             runAsUser: 0
             capabilities:
               add:
@@ -213,11 +170,11 @@ spec:
               export LD_LIBRARY_PATH=/opt/nvidia/nvda_nixl/lib64:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
               export PATH=$PATH:/usr/local/nvidia/bin:/usr/local/nvidia/lib64
               /sbin/ldconfig
-              export MODEL=Qwen3-32B
-              export SERVED_MODEL_NAME=qwen3-32b
-              export MAX_MODEL_LEN=40960
+              export MODEL=Qwen3-8B
+              export SERVED_MODEL_NAME=qwen3-8b
+              export MAX_MODEL_LEN=16384
               export GPU_MEM_UTIL=0.90
-              export TP=4
+              export TP=2
               python3 -m dynamo.vllm \
                 --model /models/$MODEL \
                 --served-model-name $SERVED_MODEL_NAME \
@@ -236,13 +193,7 @@ spec:
             - name: HF_HUB_OFFLINE
               value: "1"
             - name: CUDA_VISIBLE_DEVICES
-              value: "0,1,2,3"
-            # UCX must be told to include CUDA transports explicitly. With
-            # UCX_TLS="^gga" the wheel's UCX selects only IB rc transports for
-            # the NIXL agent, then registerMem on a CUDA buffer fails with
-            # "VRAM memory is detected as host by UCX". List values match the
-            # dynamo recipe at recipes/qwen3-32b-fp8/vllm/disagg/deploy.yaml,
-            # which is the upstream proven setup for NIXL+vLLM disagg.
+              value: "0,1"
             - name: UCX_TLS
               value: "rc_x,rc,cuda_copy,cuda_ipc,tcp"
             - name: UCX_IB_ADDR_TYPE
@@ -251,10 +202,6 @@ spec:
               value: "get_zcopy"
             - name: UCX_RNDV_THRESH
               value: "0"
-            # Disable UCX's memory-type cache. With it on (default), the
-            # wheel's UCX classifies CUDA pointers as host memory at the
-            # registerMem call, breaking NIXL VRAM registration on this
-            # NVIDIA driver 535 / NIXL UCX runtime combination.
             - name: UCX_MEMTYPE_CACHE
               value: "n"
             - name: GLOO_SOCKET_IFNAME

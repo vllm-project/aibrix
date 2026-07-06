@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vllm-project/aibrix/brixbench/internal/resolver"
 )
@@ -30,6 +32,24 @@ type fakeCommandResponse struct {
 	output string
 	err    error
 	after  func()
+}
+
+func wantDynamoHelmArgs(t *testing.T, projectRoot string, helmArgs ...string) []string {
+	t.Helper()
+
+	stateDir := filepath.Join(projectRoot, ".tmp", dynamoHelmStateDirName)
+	configDir := filepath.Join(stateDir, "config")
+	cacheDir := filepath.Join(stateDir, "cache")
+	dataDir := filepath.Join(stateDir, "data")
+	args := []string{
+		"HELM_CONFIG_HOME=" + configDir,
+		"HELM_CACHE_HOME=" + cacheDir,
+		"HELM_DATA_HOME=" + dataDir,
+		"HELM_REPOSITORY_CONFIG=" + filepath.Join(configDir, "repositories.yaml"),
+		"HELM_REPOSITORY_CACHE=" + filepath.Join(cacheDir, "repository"),
+		"helm",
+	}
+	return append(args, helmArgs...)
 }
 
 func (r *fakeCommandRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
@@ -65,6 +85,115 @@ func (s *fakeDynamoReleaseSource) PrepareRelease(ctx context.Context, projectRoo
 	s.projectRoot = projectRoot
 	s.version = version
 	return s.release, s.err
+}
+
+func writeDynamoGraphManifest(t *testing.T, namespace string, name string, components ...string) string {
+	t.Helper()
+	if len(components) == 0 {
+		components = []string{"Frontend", "VllmDecodeWorker"}
+	}
+
+	var b strings.Builder
+	b.WriteString("apiVersion: nvidia.com/v1alpha1\n")
+	b.WriteString("kind: DynamoGraphDeployment\n")
+	b.WriteString("metadata:\n")
+	if name != "" {
+		b.WriteString("  name: " + name + "\n")
+	}
+	if namespace != "" {
+		b.WriteString("  namespace: " + namespace + "\n")
+	}
+	b.WriteString("spec:\n")
+	b.WriteString("  services:\n")
+	for _, component := range components {
+		b.WriteString("    " + component + ":\n")
+		b.WriteString("      componentType: worker\n")
+	}
+
+	path := filepath.Join(t.TempDir(), "dynamo-graph.yaml")
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatalf("failed to write Dynamo graph manifest: %v", err)
+	}
+	return path
+}
+
+func writeDynamoChartLock(t *testing.T, chartPath string) {
+	t.Helper()
+	content := `dependencies:
+- name: dynamo-operator
+  repository: file://components/operator
+  version: 1.2.1
+- name: nats
+  repository: https://nats-io.github.io/k8s/helm/charts/
+  version: 1.3.2
+- name: etcd
+  repository: https://charts.bitnami.com/bitnami
+  version: 12.0.18
+- name: kai-scheduler
+  repository: oci://ghcr.io/kai-scheduler/kai-scheduler
+  version: v0.13.4
+`
+	if err := os.MkdirAll(chartPath, 0o755); err != nil {
+		t.Fatalf("failed to create chart path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(chartPath, "Chart.lock"), []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write Chart.lock: %v", err)
+	}
+}
+
+func writeDynamoChartYAML(t *testing.T, chartPath string) {
+	t.Helper()
+	content := `apiVersion: v2
+name: dynamo-platform
+dependencies:
+- name: dynamo-operator
+  repository: file://components/operator
+  version: 1.2.1
+- name: nats
+  repository: https://nats-io.github.io/k8s/helm/charts/
+  version: 1.3.2
+- name: etcd
+  repository: https://charts.bitnami.com/bitnami
+  version: 12.0.18
+- name: kai-scheduler
+  repository: oci://ghcr.io/kai-scheduler/kai-scheduler
+  version: v0.13.4
+`
+	if err := os.MkdirAll(chartPath, 0o755); err != nil {
+		t.Fatalf("failed to create chart path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(chartPath, "Chart.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write Chart.yaml: %v", err)
+	}
+}
+
+func dynamoServiceListJSON(items string) string {
+	return `{"items":[` + items + `]}`
+}
+
+func dynamoServiceJSON(name string, ports ...int) string {
+	var b strings.Builder
+	b.WriteString(`{"metadata":{"name":"`)
+	b.WriteString(name)
+	b.WriteString(`"},"spec":{"clusterIP":"10.96.0.42","ports":[`)
+	for i, port := range ports {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`{"port":`)
+		b.WriteString(strconv.Itoa(port))
+		b.WriteString("}")
+	}
+	b.WriteString(`]}}`)
+	return b.String()
+}
+
+func dynamoPodListJSON(count int) string {
+	items := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		items = append(items, `{}`)
+	}
+	return `{"items":[` + strings.Join(items, ",") + `]}`
 }
 
 func TestValidateDynamoReleaseTagAcceptsExactRemoteTag(t *testing.T) {
@@ -122,9 +251,9 @@ func TestGitDynamoReleaseSourcePrepareReleaseClonesAndReturnsChartPath(t *testin
 					}
 				},
 			},
-			{output: "true\n"},
 			{},
-			{},
+			{output: "abc123\n"},
+			{output: "abc123\n"},
 		},
 	}
 	source := &GitDynamoReleaseSource{
@@ -165,9 +294,9 @@ func TestGitDynamoReleaseSourcePrepareReleaseReusesExistingCheckout(t *testing.T
 			{},
 			{},
 			{},
-			{output: "false\n"},
 			{},
-			{},
+			{output: "abc123\n"},
+			{output: "abc123\n"},
 		},
 	}
 	source := &GitDynamoReleaseSource{
@@ -205,15 +334,15 @@ func TestGitDynamoReleaseSourcePrepareReleaseReusesExistingCheckout(t *testing.T
 		},
 		{
 			name: "git",
-			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "rev-parse", "--is-shallow-repository"},
+			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "fetch", "--filter=blob:none", testDynamoRepoURL, "+refs/heads/release/1.2.1:refs/remotes/origin/release/1.2.1"},
 		},
 		{
 			name: "git",
-			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "fetch", "--filter=blob:none", testDynamoRepoURL, "+refs/heads/main:refs/remotes/origin/main"},
+			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "rev-parse", "v1.2.1^{commit}"},
 		},
 		{
 			name: "git",
-			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "merge-base", "--is-ancestor", "v1.2.1^{commit}", "refs/remotes/origin/main"},
+			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "rev-parse", "refs/remotes/origin/release/1.2.1^{commit}"},
 		},
 	}
 	if !reflect.DeepEqual(runner.calls, wantCalls) {
@@ -234,9 +363,9 @@ func TestGitDynamoReleaseSourcePrepareReleaseRejectsCheckoutWithoutChart(t *test
 			{},
 			{},
 			{},
-			{output: "false\n"},
 			{},
-			{},
+			{output: "abc123\n"},
+			{output: "abc123\n"},
 		},
 	}
 	source := &GitDynamoReleaseSource{
@@ -275,32 +404,32 @@ func TestSyncDynamoReleaseCheckoutReturnsCommandError(t *testing.T) {
 	}
 }
 
-func TestValidateDynamoReleaseReachableFromMainUnshallowsAndChecksAncestor(t *testing.T) {
+func TestValidateDynamoReleaseMatchesReleaseBranchFetchesBranchAndComparesCommits(t *testing.T) {
 	runner := &fakeCommandRunner{
 		responses: []fakeCommandResponse{
-			{output: "true\n"},
 			{},
-			{},
+			{output: "abc123\n"},
+			{output: "abc123\n"},
 		},
 	}
 	repoPath := "/repo/.tmp/dynamo/v1.2.1"
 
-	if err := validateDynamoReleaseReachableFromMain(context.Background(), runner, repoPath, testDynamoRepoURL, "v1.2.1"); err != nil {
-		t.Fatalf("validateDynamoReleaseReachableFromMain returned error: %v", err)
+	if err := validateDynamoReleaseMatchesReleaseBranch(context.Background(), runner, repoPath, testDynamoRepoURL, "v1.2.1"); err != nil {
+		t.Fatalf("validateDynamoReleaseMatchesReleaseBranch returned error: %v", err)
 	}
 
 	wantCalls := []fakeCommandCall{
 		{
 			name: "git",
-			args: []string{"-C", repoPath, "rev-parse", "--is-shallow-repository"},
+			args: []string{"-C", repoPath, "fetch", "--filter=blob:none", testDynamoRepoURL, "+refs/heads/release/1.2.1:refs/remotes/origin/release/1.2.1"},
 		},
 		{
 			name: "git",
-			args: []string{"-C", repoPath, "fetch", "--filter=blob:none", "--unshallow", testDynamoRepoURL, "+refs/heads/main:refs/remotes/origin/main"},
+			args: []string{"-C", repoPath, "rev-parse", "v1.2.1^{commit}"},
 		},
 		{
 			name: "git",
-			args: []string{"-C", repoPath, "merge-base", "--is-ancestor", "v1.2.1^{commit}", "refs/remotes/origin/main"},
+			args: []string{"-C", repoPath, "rev-parse", "refs/remotes/origin/release/1.2.1^{commit}"},
 		},
 	}
 	if !reflect.DeepEqual(runner.calls, wantCalls) {
@@ -308,85 +437,58 @@ func TestValidateDynamoReleaseReachableFromMainUnshallowsAndChecksAncestor(t *te
 	}
 }
 
-func TestValidateDynamoReleaseReachableFromMainFetchesMainForNonShallowCheckout(t *testing.T) {
+func TestValidateDynamoReleaseMatchesReleaseBranchRejectsMismatchedCommit(t *testing.T) {
 	runner := &fakeCommandRunner{
 		responses: []fakeCommandResponse{
-			{output: "false\n"},
 			{},
-			{},
+			{output: "abc123\n"},
+			{output: "def456\n"},
 		},
 	}
 	repoPath := "/repo/.tmp/dynamo/v1.2.1"
 
-	if err := validateDynamoReleaseReachableFromMain(context.Background(), runner, repoPath, testDynamoRepoURL, "v1.2.1"); err != nil {
-		t.Fatalf("validateDynamoReleaseReachableFromMain returned error: %v", err)
-	}
-
-	wantFetchArgs := []string{"-C", repoPath, "fetch", "--filter=blob:none", testDynamoRepoURL, "+refs/heads/main:refs/remotes/origin/main"}
-	if len(runner.calls) != 3 {
-		t.Fatalf("expected 3 command calls, got %d", len(runner.calls))
-	}
-	if !reflect.DeepEqual(runner.calls[1].args, wantFetchArgs) {
-		t.Fatalf("expected fetch args %v, got %v", wantFetchArgs, runner.calls[1].args)
-	}
-}
-
-func TestValidateDynamoReleaseReachableFromMainRejectsNonReachableTag(t *testing.T) {
-	runner := &fakeCommandRunner{
-		responses: []fakeCommandResponse{
-			{output: "false\n"},
-			{},
-			{err: errors.New("exit status 1")},
-		},
-	}
-
-	err := validateDynamoReleaseReachableFromMain(context.Background(), runner, "/repo/.tmp/dynamo/v1.2.1", testDynamoRepoURL, "v1.2.1")
+	err := validateDynamoReleaseMatchesReleaseBranch(context.Background(), runner, repoPath, testDynamoRepoURL, "v1.2.1")
 	if err == nil {
-		t.Fatalf("expected not reachable error")
+		t.Fatalf("expected mismatched release branch error")
 	}
-	if !strings.Contains(err.Error(), "not reachable from main") {
-		t.Fatalf("expected not reachable error, got %v", err)
+	if !strings.Contains(err.Error(), "does not match release/1.2.1") {
+		t.Fatalf("expected mismatched release branch error, got %v", err)
 	}
 }
 
-func TestValidateDynamoReleaseReachableFromMainReturnsGitCommandError(t *testing.T) {
+func TestValidateDynamoReleaseMatchesReleaseBranchReturnsFetchCommandError(t *testing.T) {
 	runner := &fakeCommandRunner{
 		responses: []fakeCommandResponse{
-			{output: "false\n"},
-			{output: "fatal: couldn't find remote ref main", err: errors.New("exit status 128")},
+			{output: "fatal: couldn't find remote ref release/1.2.1", err: errors.New("exit status 128")},
 		},
 	}
 
-	err := validateDynamoReleaseReachableFromMain(context.Background(), runner, "/repo/.tmp/dynamo/v1.2.1", testDynamoRepoURL, "v1.2.1")
+	err := validateDynamoReleaseMatchesReleaseBranch(context.Background(), runner, "/repo/.tmp/dynamo/v1.2.1", testDynamoRepoURL, "v1.2.1")
 	if err == nil {
 		t.Fatalf("expected fetch error")
 	}
-	if !strings.Contains(err.Error(), "failed to fetch Dynamo main history") {
+	if !strings.Contains(err.Error(), "failed to fetch Dynamo release branch release/1.2.1") {
 		t.Fatalf("expected fetch error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "fatal: couldn't find remote ref main") {
+	if !strings.Contains(err.Error(), "fatal: couldn't find remote ref release/1.2.1") {
 		t.Fatalf("expected command output in error, got %v", err)
 	}
 }
 
-func TestValidateDynamoReleaseReachableFromMainReturnsMergeBaseCommandError(t *testing.T) {
+func TestValidateDynamoReleaseMatchesReleaseBranchReturnsRevParseCommandError(t *testing.T) {
 	runner := &fakeCommandRunner{
 		responses: []fakeCommandResponse{
-			{output: "false\n"},
 			{},
 			{output: "fatal: not a valid object name", err: errors.New("exit status 128")},
 		},
 	}
 
-	err := validateDynamoReleaseReachableFromMain(context.Background(), runner, "/repo/.tmp/dynamo/v1.2.1", testDynamoRepoURL, "v1.2.1")
+	err := validateDynamoReleaseMatchesReleaseBranch(context.Background(), runner, "/repo/.tmp/dynamo/v1.2.1", testDynamoRepoURL, "v1.2.1")
 	if err == nil {
-		t.Fatalf("expected merge-base error")
+		t.Fatalf("expected rev-parse error")
 	}
-	if strings.Contains(err.Error(), "not reachable from main") {
-		t.Fatalf("expected command error instead of not reachable error, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "failed to validate Dynamo release tag v1.2.1 reachability from main") {
-		t.Fatalf("expected reachability command error, got %v", err)
+	if !strings.Contains(err.Error(), "failed to resolve Dynamo release tag v1.2.1 commit") {
+		t.Fatalf("expected rev-parse command error, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "fatal: not a valid object name") {
 		t.Fatalf("expected command output in error, got %v", err)
@@ -481,6 +583,7 @@ func TestLsRemoteOutputHasExactTag(t *testing.T) {
 }
 
 func TestDynamoDeployerInitializeStoresConfig(t *testing.T) {
+	manifest := writeDynamoGraphManifest(t, "", "vllm-dynamo")
 	deployer := &DynamoDeployer{
 		releaseSource: &fakeDynamoReleaseSource{},
 		runner:        &fakeCommandRunner{},
@@ -490,7 +593,7 @@ func TestDynamoDeployerInitializeStoresConfig(t *testing.T) {
 		Namespace:   "brixbench-adhoc",
 		LogDir:      "/tmp/logs",
 		ProjectRoot: "/repo",
-		EnginePath:  "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml",
+		EnginePath:  manifest,
 		TestCase: &resolver.Test{
 			Version: "v1.2.1",
 		},
@@ -499,35 +602,118 @@ func TestDynamoDeployerInitializeStoresConfig(t *testing.T) {
 		t.Fatalf("Initialize returned error: %v", err)
 	}
 
-	if deployer.namespace != "brixbench-adhoc" {
-		t.Fatalf("expected namespace brixbench-adhoc, got %s", deployer.namespace)
+	if deployer.namespace != "brixbench-dynamo" {
+		t.Fatalf("expected namespace brixbench-dynamo, got %s", deployer.namespace)
 	}
 	if deployer.version != "v1.2.1" {
 		t.Fatalf("expected version v1.2.1, got %s", deployer.version)
 	}
-	if deployer.engineManifest != "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml" {
+	if deployer.engineManifest != manifest {
 		t.Fatalf("unexpected engine manifest %s", deployer.engineManifest)
 	}
 	if deployer.projectRoot != "/repo" {
 		t.Fatalf("expected project root /repo, got %s", deployer.projectRoot)
 	}
+	if deployer.graphName != "vllm-dynamo" {
+		t.Fatalf("expected graph name vllm-dynamo, got %s", deployer.graphName)
+	}
+	if deployer.effectiveNS != "brixbench-dynamo" {
+		t.Fatalf("expected effective namespace brixbench-dynamo, got %s", deployer.effectiveNS)
+	}
 }
 
-func TestDynamoDeployerDeployControlPlanePreparesReleaseAndInstallsHelmChart(t *testing.T) {
+func TestDynamoDeployerInitializeAcceptsMatchingManifestNamespace(t *testing.T) {
+	manifest := writeDynamoGraphManifest(t, "brixbench-dynamo", "vllm-dynamo")
+	deployer := &DynamoDeployer{
+		releaseSource: &fakeDynamoReleaseSource{},
+		runner:        &fakeCommandRunner{},
+	}
+
+	err := deployer.Initialize(context.Background(), Config{
+		Namespace:   "brixbench-dynamo",
+		ProjectRoot: "/repo",
+		EnginePath:  manifest,
+		TestCase: &resolver.Test{
+			Version: "v1.2.1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize returned error: %v", err)
+	}
+	if deployer.effectiveNS != "brixbench-dynamo" {
+		t.Fatalf("expected effective namespace brixbench-dynamo, got %s", deployer.effectiveNS)
+	}
+}
+
+func TestDynamoDeployerInitializeRejectsMismatchedManifestNamespace(t *testing.T) {
+	manifest := writeDynamoGraphManifest(t, "other-namespace", "vllm-dynamo")
+	deployer := &DynamoDeployer{
+		releaseSource: &fakeDynamoReleaseSource{},
+		runner:        &fakeCommandRunner{},
+	}
+
+	err := deployer.Initialize(context.Background(), Config{
+		Namespace:   "brixbench-dynamo",
+		ProjectRoot: "/repo",
+		EnginePath:  manifest,
+		TestCase: &resolver.Test{
+			Version: "v1.2.1",
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected namespace mismatch error")
+	}
+	if !strings.Contains(err.Error(), "must match benchmark namespace") {
+		t.Fatalf("expected namespace mismatch error, got %v", err)
+	}
+}
+
+func TestDynamoDeployerInitializeRejectsMissingGraphName(t *testing.T) {
+	manifest := writeDynamoGraphManifest(t, "", "")
+	deployer := &DynamoDeployer{
+		releaseSource: &fakeDynamoReleaseSource{},
+		runner:        &fakeCommandRunner{},
+	}
+
+	err := deployer.Initialize(context.Background(), Config{
+		Namespace:   "brixbench-dynamo",
+		ProjectRoot: "/repo",
+		EnginePath:  manifest,
+		TestCase: &resolver.Test{
+			Version: "v1.2.1",
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected missing metadata.name error")
+	}
+	if !strings.Contains(err.Error(), "metadata.name is required") {
+		t.Fatalf("expected missing metadata.name error, got %v", err)
+	}
+}
+
+func TestDynamoDeployerDeployControlPlanePreparesReleaseBuildsDependenciesAndInstallsHelmChart(t *testing.T) {
+	projectRoot := t.TempDir()
+	chartPath := filepath.Join(t.TempDir(), "deploy", "helm", "charts", "platform")
+	platformValues := filepath.Join(t.TempDir(), "platform-values.yaml")
+	if err := os.WriteFile(platformValues, []byte("nats: {}\n"), 0o644); err != nil {
+		t.Fatalf("failed to write platform values: %v", err)
+	}
+	writeDynamoChartLock(t, chartPath)
 	releaseSource := &fakeDynamoReleaseSource{
 		release: &DynamoRelease{
 			Version:   "v1.2.1",
-			RepoPath:  "/repo/.tmp/dynamo/v1.2.1",
-			ChartPath: "/repo/.tmp/dynamo/v1.2.1/deploy/helm/charts/platform",
+			RepoPath:  filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"),
+			ChartPath: chartPath,
 		},
 	}
 	runner := &fakeCommandRunner{}
 	deployer := &DynamoDeployer{
-		namespace:     "brixbench-adhoc",
-		projectRoot:   "/repo",
-		version:       "v1.2.1",
-		releaseSource: releaseSource,
-		runner:        runner,
+		namespace:      "brixbench-dynamo",
+		projectRoot:    projectRoot,
+		version:        "v1.2.1",
+		platformValues: platformValues,
+		releaseSource:  releaseSource,
+		runner:         runner,
 	}
 
 	if err := deployer.DeployControlPlane(context.Background()); err != nil {
@@ -536,35 +722,225 @@ func TestDynamoDeployerDeployControlPlanePreparesReleaseAndInstallsHelmChart(t *
 	if releaseSource.calls != 1 {
 		t.Fatalf("expected PrepareRelease to be called once, got %d", releaseSource.calls)
 	}
-	if releaseSource.projectRoot != "/repo" || releaseSource.version != "v1.2.1" {
+	if releaseSource.projectRoot != projectRoot || releaseSource.version != "v1.2.1" {
 		t.Fatalf("unexpected PrepareRelease args: projectRoot=%s version=%s", releaseSource.projectRoot, releaseSource.version)
 	}
 	if deployer.release != releaseSource.release {
 		t.Fatalf("expected deployer release to be recorded")
 	}
 
-	wantArgs := []string{
-		"upgrade", "--install", "dynamo-platform", "/repo/.tmp/dynamo/v1.2.1/deploy/helm/charts/platform",
-		"-n", "brixbench-adhoc",
+	wantDependencyBuildArgs := []string{
+		"dependency", "build", "--skip-refresh", chartPath,
+	}
+	wantInstallArgs := []string{
+		"upgrade", "--install", "dynamo-platform", chartPath,
+		"-n", "brixbench-dynamo",
 		"--create-namespace",
+		"--set", "dynamo-operator.namespaceRestriction.enabled=true",
+		"-f", platformValues,
+		"--set", "global.security.allowInsecureImages=true",
+		"--no-hooks",
 		"--wait",
 		"--timeout", "10m",
 	}
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected 1 command call, got %d", len(runner.calls))
+	wantRepoAddBitnamiArgs := []string{
+		"repo", "add", "dynamo-https-charts-bitnami-com-bitnami", "https://charts.bitnami.com/bitnami", "--force-update",
 	}
-	if runner.calls[0].name != "helm" {
-		t.Fatalf("expected helm command, got %s", runner.calls[0].name)
+	wantRepoAddNATSArgs := []string{
+		"repo", "add", "dynamo-https-nats-io-github-io-k8s-helm-charts", "https://nats-io.github.io/k8s/helm/charts/", "--force-update",
 	}
-	if !reflect.DeepEqual(runner.calls[0].args, wantArgs) {
-		t.Fatalf("expected args %v, got %v", wantArgs, runner.calls[0].args)
+	if len(runner.calls) != 8 {
+		t.Fatalf("expected 8 command calls, got %d", len(runner.calls))
+	}
+	if runner.calls[0].name != "bash" {
+		t.Fatalf("expected namespace bootstrap command, got %s", runner.calls[0].name)
+	}
+	if runner.calls[1].name != "kubectl" || !reflect.DeepEqual(runner.calls[1].args, []string{"get", "secret", "aibrix-registry-secret", "-n", "brixbench-dynamo"}) {
+		t.Fatalf("expected registry secret check, got %+v", runner.calls[1])
+	}
+	if runner.calls[2].name != "kubectl" || runner.calls[2].args[0] != "apply" {
+		t.Fatalf("expected PV/PVC apply command, got %+v", runner.calls[2])
+	}
+	if runner.calls[3].name != "kubectl" || runner.calls[3].args[0] != "apply" {
+		t.Fatalf("expected MPI secret apply command, got %+v", runner.calls[3])
+	}
+	if runner.calls[4].name != "env" {
+		t.Fatalf("expected env command, got %s", runner.calls[4].name)
+	}
+	if !reflect.DeepEqual(runner.calls[4].args, wantDynamoHelmArgs(t, projectRoot, wantRepoAddBitnamiArgs...)) {
+		t.Fatalf("expected args %v, got %v", wantRepoAddBitnamiArgs, runner.calls[4].args)
+	}
+	if runner.calls[5].name != "env" {
+		t.Fatalf("expected env command, got %s", runner.calls[5].name)
+	}
+	if !reflect.DeepEqual(runner.calls[5].args, wantDynamoHelmArgs(t, projectRoot, wantRepoAddNATSArgs...)) {
+		t.Fatalf("expected args %v, got %v", wantRepoAddNATSArgs, runner.calls[5].args)
+	}
+	if runner.calls[6].name != "env" {
+		t.Fatalf("expected env command, got %s", runner.calls[6].name)
+	}
+	if !reflect.DeepEqual(runner.calls[6].args, wantDynamoHelmArgs(t, projectRoot, wantDependencyBuildArgs...)) {
+		t.Fatalf("expected args %v, got %v", wantDependencyBuildArgs, runner.calls[6].args)
+	}
+	if runner.calls[7].name != "env" {
+		t.Fatalf("expected env command, got %s", runner.calls[7].name)
+	}
+	if !reflect.DeepEqual(runner.calls[7].args, wantDynamoHelmArgs(t, projectRoot, wantInstallArgs...)) {
+		t.Fatalf("expected args %v, got %v", wantInstallArgs, runner.calls[7].args)
+	}
+}
+
+func TestDynamoDeployerDeployControlPlaneRetriesRetryableHelmRepoFailures(t *testing.T) {
+	projectRoot := t.TempDir()
+	chartPath := filepath.Join(t.TempDir(), "deploy", "helm", "charts", "platform")
+	writeDynamoChartLock(t, chartPath)
+	releaseSource := &fakeDynamoReleaseSource{
+		release: &DynamoRelease{
+			Version:   "v1.2.1",
+			RepoPath:  filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"),
+			ChartPath: chartPath,
+		},
+	}
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{},
+			{},
+			{},
+			{},
+			{output: "Get \"https://charts.bitnami.com/bitnami/index.yaml\": EOF", err: errors.New("exit status 1")},
+			{},
+			{output: "Get \"https://nats-io.github.io/k8s/helm/charts/index.yaml\": EOF", err: errors.New("exit status 1")},
+			{},
+			{},
+			{},
+		},
+	}
+	deployer := &DynamoDeployer{
+		namespace:     "brixbench-dynamo",
+		projectRoot:   projectRoot,
+		version:       "v1.2.1",
+		releaseSource: releaseSource,
+		runner:        runner,
+	}
+
+	if err := deployer.DeployControlPlane(context.Background()); err != nil {
+		t.Fatalf("DeployControlPlane returned error: %v", err)
+	}
+
+	if len(runner.calls) != 10 {
+		t.Fatalf("expected 10 command calls, got %d", len(runner.calls))
+	}
+	if !reflect.DeepEqual(runner.calls[4].args, runner.calls[5].args) {
+		t.Fatalf("expected retry to repeat repo add args, got %+v then %+v", runner.calls[4], runner.calls[5])
+	}
+	if !reflect.DeepEqual(runner.calls[6].args, runner.calls[7].args) {
+		t.Fatalf("expected retry to repeat repo add args, got %+v then %+v", runner.calls[6], runner.calls[7])
+	}
+}
+
+func TestDynamoDeployerDeployControlPlaneContinuesWithoutRegistrySecret(t *testing.T) {
+	t.Setenv("DYNAMO_REGISTRY_USERNAME", "")
+	t.Setenv("DYNAMO_REGISTRY_PASSWORD", "")
+
+	projectRoot := t.TempDir()
+	chartPath := filepath.Join(t.TempDir(), "deploy", "helm", "charts", "platform")
+	writeDynamoChartLock(t, chartPath)
+	releaseSource := &fakeDynamoReleaseSource{
+		release: &DynamoRelease{
+			Version:   "v1.2.1",
+			RepoPath:  filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"),
+			ChartPath: chartPath,
+		},
+	}
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{},
+			{err: errors.New("secret not found")},
+			{},
+			{},
+			{},
+			{},
+			{},
+			{},
+		},
+	}
+	deployer := &DynamoDeployer{
+		namespace:     "brixbench-dynamo",
+		projectRoot:   projectRoot,
+		version:       "v1.2.1",
+		releaseSource: releaseSource,
+		runner:        runner,
+	}
+
+	if err := deployer.DeployControlPlane(context.Background()); err != nil {
+		t.Fatalf("DeployControlPlane returned error: %v", err)
+	}
+	if deployer.registrySecret {
+		t.Fatalf("expected registrySecret=false when secret and credentials are absent")
+	}
+	if len(runner.calls) != 8 {
+		t.Fatalf("expected 8 command calls, got %d", len(runner.calls))
+	}
+	if runner.calls[2].name == "bash" {
+		t.Fatalf("did not expect registry secret creation command")
+	}
+
+	content, err := os.ReadFile(deployer.platformValues)
+	if err != nil {
+		t.Fatalf("failed to read generated platform values: %v", err)
+	}
+	values := string(content)
+	for _, forbidden := range []string{"imagePullSecrets", "existingSecretName", "useKubernetesSecret"} {
+		if strings.Contains(values, forbidden) {
+			t.Fatalf("generated platform values should not contain %q without registry secret:\n%s", forbidden, values)
+		}
+	}
+}
+
+func TestReadDynamoHelmDependencyReposFiltersFileAndOCIRepos(t *testing.T) {
+	chartPath := filepath.Join(t.TempDir(), "deploy", "helm", "charts", "platform")
+	writeDynamoChartLock(t, chartPath)
+
+	repos, err := readDynamoHelmDependencyRepos(chartPath)
+	if err != nil {
+		t.Fatalf("readDynamoHelmDependencyRepos returned error: %v", err)
+	}
+
+	wantRepos := []dynamoHelmRepo{
+		{
+			Alias: "dynamo-https-charts-bitnami-com-bitnami",
+			URL:   "https://charts.bitnami.com/bitnami",
+		},
+		{
+			Alias: "dynamo-https-nats-io-github-io-k8s-helm-charts",
+			URL:   "https://nats-io.github.io/k8s/helm/charts/",
+		},
+	}
+	if !reflect.DeepEqual(repos, wantRepos) {
+		t.Fatalf("expected repos %+v, got %+v", wantRepos, repos)
+	}
+}
+
+func TestReadDynamoHelmDependencyReposFallsBackToChartYAML(t *testing.T) {
+	chartPath := filepath.Join(t.TempDir(), "deploy", "helm", "charts", "platform")
+	writeDynamoChartYAML(t, chartPath)
+
+	repos, err := readDynamoHelmDependencyRepos(chartPath)
+	if err != nil {
+		t.Fatalf("readDynamoHelmDependencyRepos returned error: %v", err)
+	}
+
+	if len(repos) != 2 {
+		t.Fatalf("expected 2 HTTP repos, got %+v", repos)
 	}
 }
 
 func TestDynamoDeployerDeployEngineAppliesUserManifest(t *testing.T) {
+	manifest := writeDynamoGraphManifest(t, "", "vllm-dynamo")
 	runner := &fakeCommandRunner{}
 	deployer := &DynamoDeployer{
-		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml",
+		namespace:      "brixbench-dynamo",
+		engineManifest: manifest,
 		runner:         runner,
 	}
 
@@ -572,9 +948,9 @@ func TestDynamoDeployerDeployEngineAppliesUserManifest(t *testing.T) {
 		t.Fatalf("DeployEngine returned error: %v", err)
 	}
 
-	wantArgs := []string{"apply", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml"}
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected 1 command call, got %d", len(runner.calls))
+	wantArgs := []string{"apply", "-n", "brixbench-dynamo", "-f", manifest}
+	if len(runner.calls) != 7 {
+		t.Fatalf("expected 7 command calls, got %d", len(runner.calls))
 	}
 	if runner.calls[0].name != "kubectl" {
 		t.Fatalf("expected kubectl command, got %s", runner.calls[0].name)
@@ -584,11 +960,215 @@ func TestDynamoDeployerDeployEngineAppliesUserManifest(t *testing.T) {
 	}
 }
 
+func TestDynamoDeployerGetGatewayEndpointDiscoversFrontendServiceByLabel(t *testing.T) {
+	runner := &fakeCommandRunner{
+		output: dynamoServiceListJSON(dynamoServiceJSON("vllm-dynamo-frontend", 8080, 8000)),
+	}
+	deployer := &DynamoDeployer{
+		graphName:   "vllm-dynamo",
+		effectiveNS: "brixbench-dynamo",
+		runner:      runner,
+	}
+
+	endpoint, err := deployer.GetGatewayEndpoint(context.Background())
+	if err != nil {
+		t.Fatalf("GetGatewayEndpoint returned error: %v", err)
+	}
+	wantEndpoint := "http://10.96.0.42:8000"
+	if endpoint != wantEndpoint {
+		t.Fatalf("expected endpoint %s, got %s", wantEndpoint, endpoint)
+	}
+	wantArgs := []string{"get", "svc", "-n", "brixbench-dynamo", "-l", "nvidia.com/dynamo-component=Frontend", "-o", "json"}
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 command call, got %d", len(runner.calls))
+	}
+	if !reflect.DeepEqual(runner.calls[0].args, wantArgs) {
+		t.Fatalf("expected args %v, got %v", wantArgs, runner.calls[0].args)
+	}
+}
+
+func TestDynamoDeployerGetGatewayEndpointFallsBackToGraphFrontendServiceName(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{output: dynamoServiceListJSON("")},
+			{output: dynamoServiceJSON("vllm-dynamo-frontend", 9000)},
+		},
+	}
+	deployer := &DynamoDeployer{
+		graphName:   "vllm-dynamo",
+		effectiveNS: "brixbench-dynamo",
+		runner:      runner,
+	}
+
+	endpoint, err := deployer.GetGatewayEndpoint(context.Background())
+	if err != nil {
+		t.Fatalf("GetGatewayEndpoint returned error: %v", err)
+	}
+	wantEndpoint := "http://10.96.0.42:9000"
+	if endpoint != wantEndpoint {
+		t.Fatalf("expected endpoint %s, got %s", wantEndpoint, endpoint)
+	}
+	wantFallbackArgs := []string{"get", "svc", "vllm-dynamo-frontend", "-n", "brixbench-dynamo", "-o", "json"}
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected 2 command calls, got %d", len(runner.calls))
+	}
+	if !reflect.DeepEqual(runner.calls[1].args, wantFallbackArgs) {
+		t.Fatalf("expected fallback args %v, got %v", wantFallbackArgs, runner.calls[1].args)
+	}
+}
+
+func TestDynamoDeployerGetGatewayEndpointRejectsMultipleLabelServices(t *testing.T) {
+	runner := &fakeCommandRunner{
+		output: dynamoServiceListJSON(strings.Join([]string{
+			dynamoServiceJSON("frontend-a", 8000),
+			dynamoServiceJSON("frontend-b", 8000),
+		}, ",")),
+	}
+	deployer := &DynamoDeployer{
+		graphName:   "vllm-dynamo",
+		effectiveNS: "brixbench-dynamo",
+		runner:      runner,
+	}
+
+	_, err := deployer.GetGatewayEndpoint(context.Background())
+	if err == nil {
+		t.Fatalf("expected multiple service error")
+	}
+	if !strings.Contains(err.Error(), "multiple Dynamo Frontend services") {
+		t.Fatalf("expected multiple service error, got %v", err)
+	}
+}
+
+func TestDynamoDeployerGetGatewayEndpointRejectsAmbiguousPorts(t *testing.T) {
+	runner := &fakeCommandRunner{
+		output: dynamoServiceListJSON(dynamoServiceJSON("vllm-dynamo-frontend", 8080, 9000)),
+	}
+	deployer := &DynamoDeployer{
+		graphName:   "vllm-dynamo",
+		effectiveNS: "brixbench-dynamo",
+		runner:      runner,
+	}
+
+	_, err := deployer.GetGatewayEndpoint(context.Background())
+	if err == nil {
+		t.Fatalf("expected ambiguous port error")
+	}
+	if !strings.Contains(err.Error(), "multiple ports") {
+		t.Fatalf("expected ambiguous port error, got %v", err)
+	}
+}
+
+func TestDynamoDeployerWaitForReadyWaitsForFrontendAndWorkerPods(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{output: dynamoServiceListJSON(dynamoServiceJSON("vllm-dynamo-frontend", 8000))},
+			{output: dynamoPodListJSON(1)},
+			{},
+			{output: dynamoPodListJSON(1)},
+			{},
+			{output: dynamoPodListJSON(1)},
+			{},
+		},
+	}
+	deployer := &DynamoDeployer{
+		graphName:   "vllm-dynamo",
+		components:  []string{"Frontend", "VllmDecodeWorker", "VllmPrefillWorker"},
+		effectiveNS: "brixbench-dynamo",
+		runner:      runner,
+	}
+
+	if err := deployer.WaitForReady(context.Background()); err != nil {
+		t.Fatalf("WaitForReady returned error: %v", err)
+	}
+
+	wantCalls := []fakeCommandCall{
+		{
+			name: "kubectl",
+			args: []string{"get", "svc", "-n", "brixbench-dynamo", "-l", "nvidia.com/dynamo-component=Frontend", "-o", "json"},
+		},
+		{
+			name: "kubectl",
+			args: []string{"get", "pod", "-n", "brixbench-dynamo", "-l", "nvidia.com/dynamo-component=Frontend", "-o", "json"},
+		},
+		{
+			name: "kubectl",
+			args: []string{"wait", "--for=condition=Ready", "pod", "-n", "brixbench-dynamo", "-l", "nvidia.com/dynamo-component=Frontend", "--timeout=10m"},
+		},
+		{
+			name: "kubectl",
+			args: []string{"get", "pod", "-n", "brixbench-dynamo", "-l", "nvidia.com/dynamo-component=VllmDecodeWorker", "-o", "json"},
+		},
+		{
+			name: "kubectl",
+			args: []string{"wait", "--for=condition=Ready", "pod", "-n", "brixbench-dynamo", "-l", "nvidia.com/dynamo-component=VllmDecodeWorker", "--timeout=10m"},
+		},
+		{
+			name: "kubectl",
+			args: []string{"get", "pod", "-n", "brixbench-dynamo", "-l", "nvidia.com/dynamo-component=VllmPrefillWorker", "-o", "json"},
+		},
+		{
+			name: "kubectl",
+			args: []string{"wait", "--for=condition=Ready", "pod", "-n", "brixbench-dynamo", "-l", "nvidia.com/dynamo-component=VllmPrefillWorker", "--timeout=10m"},
+		},
+	}
+	if !reflect.DeepEqual(runner.calls, wantCalls) {
+		t.Fatalf("expected calls %+v, got %+v", wantCalls, runner.calls)
+	}
+}
+
+func TestDynamoDeployerWaitForFrontendServicePollsUntilCreated(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{output: dynamoServiceListJSON("")},
+			{err: errors.New("not found")},
+			{output: dynamoServiceListJSON(dynamoServiceJSON("vllm-dynamo-frontend", 8000))},
+		},
+	}
+	deployer := &DynamoDeployer{
+		graphName:   "vllm-dynamo",
+		effectiveNS: "brixbench-dynamo",
+		runner:      runner,
+	}
+
+	serviceName, port, err := deployer.waitForDynamoFrontendService(context.Background(), time.Second, time.Millisecond)
+	if err != nil {
+		t.Fatalf("waitForDynamoFrontendService returned error: %v", err)
+	}
+	if serviceName != "vllm-dynamo-frontend" || port != 8000 {
+		t.Fatalf("unexpected service %s port %d", serviceName, port)
+	}
+	if len(runner.calls) != 3 {
+		t.Fatalf("expected 3 command calls, got %d", len(runner.calls))
+	}
+}
+
+func TestDynamoDeployerWaitForComponentPodsPollsUntilCreated(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{output: dynamoPodListJSON(0)},
+			{output: dynamoPodListJSON(1)},
+		},
+	}
+	deployer := &DynamoDeployer{
+		effectiveNS: "brixbench-dynamo",
+		runner:      runner,
+	}
+
+	if err := deployer.waitForDynamoComponentPods(context.Background(), "VllmDecodeWorker", time.Second, time.Millisecond); err != nil {
+		t.Fatalf("waitForDynamoComponentPods returned error: %v", err)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected 2 command calls, got %d", len(runner.calls))
+	}
+}
+
 func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *testing.T) {
+	projectRoot := t.TempDir()
 	runner := &fakeCommandRunner{}
 	deployer := &DynamoDeployer{
-		namespace:      "brixbench-adhoc",
+		namespace:      "brixbench-dynamo",
 		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml",
+		projectRoot:    projectRoot,
 		runner:         runner,
 	}
 
@@ -599,27 +1179,39 @@ func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *t
 	wantCalls := []fakeCommandCall{
 		{
 			name: "kubectl",
-			args: []string{"patch", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml", "--type=merge", "-p", `{"metadata":{"finalizers":[]}}`},
+			args: []string{"patch", "-n", "brixbench-dynamo", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml", "--type=merge", "-p", `{"metadata":{"finalizers":[]}}`},
 		},
 		{
 			name: "kubectl",
-			args: []string{"patch", "dynamocomponentdeployments.nvidia.com", "--all", "-n", "brixbench-adhoc", "--type=merge", "-p", `{"metadata":{"finalizers":[]}}`},
+			args: []string{"get", "dynamocomponentdeployments.nvidia.com", "-n", "brixbench-dynamo", "-o", "name"},
 		},
 		{
 			name: "kubectl",
-			args: []string{"delete", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml", "--ignore-not-found", "--wait=false"},
-		},
-		{
-			name: "helm",
-			args: []string{"uninstall", "dynamo-platform", "-n", "brixbench-adhoc", "--ignore-not-found", "--wait", "--timeout", "5m"},
+			args: []string{"delete", "-n", "brixbench-dynamo", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml", "--ignore-not-found", "--wait=false"},
 		},
 		{
 			name: "kubectl",
-			args: []string{"delete", "namespace", "brixbench-adhoc", "--ignore-not-found"},
+			args: []string{"delete", "podmonitor", "dynamo-vllm-worker-metrics", "dynamo-vllm-frontend-metrics", "-n", "brixbench-dynamo", "--ignore-not-found"},
+		},
+		{
+			name: "env",
+			args: wantDynamoHelmArgs(t, projectRoot, "uninstall", "dynamo-platform", "-n", "brixbench-dynamo", "--ignore-not-found", "--wait", "--timeout", "5m"),
 		},
 		{
 			name: "kubectl",
-			args: []string{"wait", "--for=delete", "namespace/brixbench-adhoc", "--timeout=10m"},
+			args: []string{"delete", "pvc", "--all", "-n", "brixbench-dynamo", "--ignore-not-found"},
+		},
+		{
+			name: "kubectl",
+			args: []string{"patch", "pv", "models-pv-brixbench-dynamo", "--type=json", "-p", `[{"op":"remove","path":"/spec/claimRef"}]`},
+		},
+		{
+			name: "kubectl",
+			args: []string{"delete", "namespace", "brixbench-dynamo", "--ignore-not-found"},
+		},
+		{
+			name: "kubectl",
+			args: []string{"wait", "--for=delete", "namespace/brixbench-dynamo", "--timeout=10m"},
 		},
 	}
 	if !reflect.DeepEqual(runner.calls, wantCalls) {
@@ -632,15 +1224,16 @@ func TestDynamoDeployerTeardownIgnoresCleanupErrors(t *testing.T) {
 		err: errors.New("cleanup failed"),
 	}
 	deployer := &DynamoDeployer{
-		namespace:      "brixbench-adhoc",
+		namespace:      "brixbench-dynamo",
 		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml",
+		projectRoot:    t.TempDir(),
 		runner:         runner,
 	}
 
 	if err := deployer.Teardown(context.Background()); err != nil {
 		t.Fatalf("Teardown returned error: %v", err)
 	}
-	if len(runner.calls) != 6 {
-		t.Fatalf("expected 6 cleanup commands, got %d", len(runner.calls))
+	if len(runner.calls) != 9 {
+		t.Fatalf("expected 9 cleanup commands, got %d", len(runner.calls))
 	}
 }

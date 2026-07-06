@@ -1,9 +1,9 @@
 Scenario: dynamo-hello-world
 Tests:
-  - name: dynamo-v1.2.1-qwen3-32b-round-robin-4p8d
+  - name: dynamo-v1.2.1-qwen3-8b-round-robin-1p1d-tp2
     provider: dynamo
     version: 1.2.1
     engine:
       type: vllm
-      manifest: testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml
-    benchmark: testdata/benchmarks/vllm-chat-smoke.yaml
+      manifest: testdata/deployments/dynamo/qwen3-8b-round-robin-1p1d-tp2.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke-qwen3-8b.yaml

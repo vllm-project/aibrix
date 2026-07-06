@@ -46,6 +46,10 @@ type Gateway struct {
 	Image     GatewayImageConfig `yaml:"image"`
 }
 
+type Platform struct {
+	ValuesFile string `yaml:"valuesFile"`
+}
+
 type benchmarkMetadata struct {
 	Kind string `yaml:"kind"`
 }
@@ -63,6 +67,7 @@ type Test struct {
 	Engine                 Engine   `yaml:"engine"`
 	Benchmark              string   `yaml:"benchmark"`
 	Gateway                Gateway  `yaml:"gateway"`
+	Platform               Platform `yaml:"platform"`
 	WorkspacePath          string   `yaml:"-"`
 	ResolvedCommit         string   `yaml:"-"`
 	ResolvedVersion        string   `yaml:"-"`

@@ -94,10 +94,11 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 	}
 
 	result.BenchmarkKind = testCase.BenchmarkKind
+	benchmarkNamespace := benchmarkNamespaceForTestCase(testCase)
 
 	if resetBeforeTestEnabled() {
-		namespaceResetDone := progressStep(t, "reset benchmark namespace %s for %s", defaultBenchmarkNamespace, testCase.Name)
-		if resetErr := resetBenchmarkNamespace(ctx, defaultBenchmarkNamespace); resetErr != nil {
+		namespaceResetDone := progressStep(t, "reset benchmark namespace %s for %s", benchmarkNamespace, testCase.Name)
+		if resetErr := resetBenchmarkNamespace(ctx, benchmarkNamespace); resetErr != nil {
 			result.Error = fmt.Sprintf("Benchmark namespace reset failed: %v", resetErr)
 			return result, fmt.Errorf("Benchmark namespace reset failed: %w", resetErr)
 		}
@@ -110,19 +111,19 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 		}
 		preflightDone()
 	} else {
-		progressLog(t, "Skipping benchmark namespace reset before %s; namespace %s will be reused", testCase.Name, defaultBenchmarkNamespace)
+		progressLog(t, "Skipping benchmark namespace reset before %s; namespace %s will be reused", testCase.Name, benchmarkNamespace)
 	}
 
 	caseLogDir := caseLogRoot(scenarioLogRoot, testCase.Name)
 	deployDone := progressStep(t, "deploy control plane and engine for %s", testCase.Name)
-	deployer, gatewayURL, err := setupAndRunDeployment(ctx, t, projectRoot, &testCase, defaultBenchmarkNamespace, caseLogDir)
+	deployer, gatewayURL, err := setupAndRunDeployment(ctx, t, projectRoot, &testCase, benchmarkNamespace, caseLogDir)
 	result.Version = testCase.Version
 	result.Commit = testCase.Commit
 	result.ResolvedCommit = testCase.ResolvedCommit
 	if err != nil {
 		captureDeploymentArtifacts(t, ctx, deployer)
 		if deployer != nil {
-			teardownTestResources(t, ctx, deployer, defaultBenchmarkNamespace, testCase.Name)
+			teardownTestResources(t, ctx, deployer, benchmarkNamespace, testCase.Name)
 		}
 		result.Error = fmt.Sprintf("Deployment failed: %v", err)
 		return result, fmt.Errorf("Deployment failed: %w", err)
@@ -130,13 +131,13 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 	result.GatewayURL = gatewayURL
 	deployDone()
 	if cleanupAfterTestEnabled() {
-		defer teardownTestResources(t, ctx, deployer, defaultBenchmarkNamespace, testCase.Name)
+		defer teardownTestResources(t, ctx, deployer, benchmarkNamespace, testCase.Name)
 	} else {
-		progressLog(t, "Skipping cleanup after %s; benchmark namespace %s will be left in place", testCase.Name, defaultBenchmarkNamespace)
+		progressLog(t, "Skipping cleanup after %s; benchmark namespace %s will be left in place", testCase.Name, benchmarkNamespace)
 	}
-	defer captureCasePodLogs(t, ctx, &testCase, defaultBenchmarkNamespace, caseLogDir)
+	defer captureCasePodLogs(t, ctx, &testCase, benchmarkNamespace, caseLogDir)
 
-	configureBenchmarkEnvironment(t, testCase.Name, testCase.ProviderName(), defaultBenchmarkNamespace, gatewayURL)
+	configureBenchmarkEnvironment(t, testCase.Name, testCase.ProviderName(), benchmarkNamespace, gatewayURL)
 	progressLog(t, "Gateway endpoint for %s: %s", testCase.Name, gatewayURL)
 
 	benchmarkDone := progressStep(t, "run benchmark and export metrics for %s", testCase.Name)
@@ -159,6 +160,13 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 
 	progressLog(t, "Successfully ran test for %s", testCase.Name)
 	return result, nil
+}
+
+func benchmarkNamespaceForTestCase(testCase resolver.Test) string {
+	if testCase.ProviderName() == "dynamo" {
+		return deployers.DynamoBenchmarkNamespace
+	}
+	return defaultBenchmarkNamespace
 }
 
 func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string, testCase *resolver.Test, benchmarkNamespace string, caseLogDir string) (deployers.Deployer, string, error) {
@@ -199,6 +207,7 @@ func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string
 		GatewayImageTag:        testCase.GatewayImageTag,
 		GatewayEnv:             testCase.Gateway.Env,
 		GatewayResourceFiles:   testCase.Gateway.Resources,
+		PlatformValuesFile:     testCase.Platform.ValuesFile,
 		TestCase:               testCase,
 	}); err != nil {
 		return nil, "", fmt.Errorf("failed to initialize deployer: %w", err)

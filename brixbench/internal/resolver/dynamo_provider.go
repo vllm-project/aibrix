@@ -2,6 +2,8 @@ package resolver
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -17,6 +19,9 @@ func validateDynamoSourceSelection(test *Test) error {
 	}
 	if len(test.ControlPlane) > 0 {
 		return fmt.Errorf("provider dynamo installs control plane from release version; controlplane is not supported for %s", test.Name)
+	}
+	if err := validateDynamoPlatformValuesFile(test); err != nil {
+		return err
 	}
 
 	normalizedVersion, err := normalizeDynamoVersion(test.Version)
@@ -39,4 +44,31 @@ func normalizeDynamoVersion(version string) (string, error) {
 		normalized = "v" + normalized
 	}
 	return normalized, nil
+}
+
+func validateDynamoPlatformValuesFile(test *Test) error {
+	valuesFile := strings.TrimSpace(test.Platform.ValuesFile)
+	if valuesFile == "" {
+		return nil
+	}
+	test.Platform.ValuesFile = valuesFile
+
+	cleanPath := filepath.ToSlash(filepath.Clean(valuesFile))
+	if cleanPath == ".tmp/dynamo-reference" ||
+		strings.HasPrefix(cleanPath, ".tmp/dynamo-reference/") ||
+		strings.Contains(cleanPath, "/.tmp/dynamo-reference/") {
+		return fmt.Errorf("provider dynamo platform.valuesFile must not reference .tmp/dynamo-reference for %s", test.Name)
+	}
+
+	info, err := os.Stat(valuesFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("provider dynamo platform.valuesFile not found for %s: %s", test.Name, valuesFile)
+		}
+		return fmt.Errorf("failed to inspect provider dynamo platform.valuesFile for %s: %w", test.Name, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("provider dynamo platform.valuesFile must be a file for %s: %s", test.Name, valuesFile)
+	}
+	return nil
 }

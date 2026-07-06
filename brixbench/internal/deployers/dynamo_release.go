@@ -2,7 +2,6 @@ package deployers
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -80,7 +79,7 @@ func (s *GitDynamoReleaseSource) PrepareRelease(ctx context.Context, projectRoot
 		if err := syncDynamoReleaseCheckout(ctx, s.runner, repoPath, s.repoURL, version); err != nil {
 			return nil, err
 		}
-		if err := validateDynamoReleaseReachableFromMain(ctx, s.runner, repoPath, s.repoURL, version); err != nil {
+		if err := validateDynamoReleaseMatchesReleaseBranch(ctx, s.runner, repoPath, s.repoURL, version); err != nil {
 			return nil, err
 		}
 		if !dirExists(chartPath) {
@@ -100,7 +99,7 @@ func (s *GitDynamoReleaseSource) PrepareRelease(ctx context.Context, projectRoot
 		}
 		return nil, fmt.Errorf("failed to checkout Dynamo release %s: %w", version, err)
 	}
-	if err := validateDynamoReleaseReachableFromMain(ctx, s.runner, repoPath, s.repoURL, version); err != nil {
+	if err := validateDynamoReleaseMatchesReleaseBranch(ctx, s.runner, repoPath, s.repoURL, version); err != nil {
 		return nil, err
 	}
 	if !dirExists(chartPath) {
@@ -169,67 +168,46 @@ func syncDynamoReleaseCheckout(ctx context.Context, runner commandRunner, repoPa
 	return nil
 }
 
-func validateDynamoReleaseReachableFromMain(ctx context.Context, runner commandRunner, repoPath string, repoURL string, version string) error {
-	shallow, err := isGitShallowRepository(ctx, runner, repoPath)
-	if err != nil {
-		return err
-	}
-
-	fetchArgs := []string{"-C", repoPath, "fetch", "--filter=blob:none"}
-	if shallow {
-		fetchArgs = append(fetchArgs, "--unshallow")
-	}
-	fetchArgs = append(fetchArgs, repoURL, "+refs/heads/main:refs/remotes/origin/main")
-	if output, err := runner.Run(ctx, "git", fetchArgs...); err != nil {
+func validateDynamoReleaseMatchesReleaseBranch(ctx context.Context, runner commandRunner, repoPath string, repoURL string, version string) error {
+	branchName := dynamoReleaseBranchName(version)
+	remoteBranchRef := "refs/remotes/origin/" + branchName
+	if output, err := runner.Run(ctx, "git", "-C", repoPath, "fetch", "--filter=blob:none", repoURL, "+refs/heads/"+branchName+":"+remoteBranchRef); err != nil {
 		output = strings.TrimSpace(output)
 		if output != "" {
-			return fmt.Errorf("failed to fetch Dynamo main history for %s: %w: %s", version, err, output)
+			return fmt.Errorf("failed to fetch Dynamo release branch %s for tag %s: %w: %s", branchName, version, err, output)
 		}
-		return fmt.Errorf("failed to fetch Dynamo main history for %s: %w", version, err)
+		return fmt.Errorf("failed to fetch Dynamo release branch %s for tag %s: %w", branchName, version, err)
 	}
 
-	output, err := runner.Run(ctx, "git", "-C", repoPath, "merge-base", "--is-ancestor", version+"^{commit}", "refs/remotes/origin/main")
+	tagCommit, err := gitRevParse(ctx, runner, repoPath, version+"^{commit}")
 	if err != nil {
-		output = strings.TrimSpace(output)
-		if isGitExitStatusOne(err) {
-			if output != "" {
-				return fmt.Errorf("Dynamo release tag %s is not reachable from main: %s", version, output)
-			}
-			return fmt.Errorf("Dynamo release tag %s is not reachable from main", version)
-		}
-		if output != "" {
-			return fmt.Errorf("failed to validate Dynamo release tag %s reachability from main: %w: %s", version, err, output)
-		}
-		return fmt.Errorf("failed to validate Dynamo release tag %s reachability from main: %w", version, err)
+		return fmt.Errorf("failed to resolve Dynamo release tag %s commit: %w", version, err)
+	}
+	branchCommit, err := gitRevParse(ctx, runner, repoPath, remoteBranchRef+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("failed to resolve Dynamo release branch %s commit: %w", branchName, err)
+	}
+
+	if tagCommit != branchCommit {
+		return fmt.Errorf("Dynamo release tag %s commit %s does not match %s commit %s", version, tagCommit, branchName, branchCommit)
 	}
 	return nil
 }
 
-func isGitShallowRepository(ctx context.Context, runner commandRunner, repoPath string) (bool, error) {
-	output, err := runner.Run(ctx, "git", "-C", repoPath, "rev-parse", "--is-shallow-repository")
+func dynamoReleaseBranchName(version string) string {
+	return "release/" + strings.TrimPrefix(strings.TrimSpace(version), "v")
+}
+
+func gitRevParse(ctx context.Context, runner commandRunner, repoPath string, ref string) (string, error) {
+	output, err := runner.Run(ctx, "git", "-C", repoPath, "rev-parse", ref)
 	if err != nil {
 		output = strings.TrimSpace(output)
 		if output != "" {
-			return false, fmt.Errorf("failed to determine Dynamo checkout shallow state at %s: %w: %s", repoPath, err, output)
+			return "", fmt.Errorf("failed to resolve git ref %s in %s: %w: %s", ref, repoPath, err, output)
 		}
-		return false, fmt.Errorf("failed to determine Dynamo checkout shallow state at %s: %w", repoPath, err)
+		return "", fmt.Errorf("failed to resolve git ref %s in %s: %w", ref, repoPath, err)
 	}
-	switch strings.TrimSpace(strings.ToLower(output)) {
-	case "true":
-		return true, nil
-	case "false":
-		return false, nil
-	default:
-		return false, fmt.Errorf("unexpected Dynamo checkout shallow state at %s: %q", repoPath, strings.TrimSpace(output))
-	}
-}
-
-func isGitExitStatusOne(err error) bool {
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode() == 1
-	}
-	return strings.TrimSpace(err.Error()) == "exit status 1"
+	return strings.TrimSpace(output), nil
 }
 
 func lsRemoteOutputHasExactTag(output string, version string) bool {
