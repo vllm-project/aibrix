@@ -20,6 +20,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
+from urllib.parse import unquote
 
 from aibrix.storage.base import (
     PutObjectOptions,
@@ -327,9 +328,10 @@ class LocalStorage(BaseStorage2):
             for item in self.base_path.rglob("*" + _METADATA_SUFFIX):
                 if not item.is_file():
                     continue
-                key = item.relative_to(self.base_path).as_posix()[
+                encoded_key = item.relative_to(self.base_path).as_posix()[
                     : -len(_METADATA_SUFFIX)
                 ]
+                key = "/".join(unquote(part) for part in encoded_key.split("/"))
                 if not key.startswith(prefix):
                     continue
                 if delimiter:

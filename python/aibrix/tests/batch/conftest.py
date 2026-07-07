@@ -13,9 +13,14 @@
 # limitations under the License.
 
 import argparse
+import asyncio
 import copy
 import json
 import os
+import re
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
@@ -27,7 +32,15 @@ from fastapi.testclient import TestClient
 from kubernetes import client, config
 
 import aibrix.batch.job_driver.runtime.k8s_deployment as deployment_runtime_module
+import aibrix.batch.job_driver.runtime.k8s_job as k8s_job_runtime_module
+import aibrix.client.redis as redis_client
+from aibrix import envs
 from aibrix.batch.client.sources import NoopEndpointSource
+from aibrix.batch.job_driver.base import BaseJobDriver
+from aibrix.batch.job_driver.runtime import ExternalRuntime
+from aibrix.batch.job_entity import BatchJob
+from aibrix.batch.manifest import JobManifestRenderer
+from aibrix.batch.worker import SingleJobRunner
 from aibrix.logger import init_logger
 from aibrix.metadata.app import build_app
 from aibrix.metadata.setting import settings
@@ -113,27 +126,75 @@ def s3_config_available():
 
 
 @pytest.fixture(scope="session")
-def redis_config_available():
-    """Check if S3 configuration is available locally."""
-    # Check for AWS credentials
-    if os.getenv("REDIS_HOST") is None:
-        pytest.skip("Redis configuration not available")
-
-    import redis
-
+def redis_available():
+    """Test whether Redis connectivity is available for batch tests."""
     try:
-        client = redis.Redis(
-            host=os.environ.get("REDIS_HOST", "localhost"),
-            port=int(os.environ.get("REDIS_PORT", "6379")),
-            db=int(os.environ.get("REDIS_DB", "0")),
-            password=os.environ.get("REDIS_PASSWORD"),
-            socket_connect_timeout=2,
-            socket_timeout=2,
-            decode_responses=True,
-        )
-        client.ping()
-    except Exception as e:
-        pytest.skip(f"Redis access not available: {e}")
+
+        def verify_connection():
+            async def ping():
+                client = redis_client.get_redis_client(test=True)
+                try:
+                    return await client.ping()
+                finally:
+                    await client.aclose()
+
+            return asyncio.run(ping())
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(verify_connection)
+            try:
+                ping_result = future.result(timeout=10)
+                if not ping_result:
+                    raise RuntimeError(
+                        f"Redis ping returned unexpected falsy result: {ping_result!r}"
+                    )
+            except FutureTimeoutError as ex:
+                pytest.skip(
+                    "Redis access not available: Redis connectivity check timed out after 10 seconds "
+                    f"({type(ex).__name__})"
+                )
+            except Exception as ex:  # noqa: BLE001
+                pytest.skip(f"Redis access not available: {ex}")
+    except ImportError as ex:
+        pytest.skip(f"Redis access not available: {ex}")
+    except Exception as ex:  # noqa: BLE001
+        pytest.skip(f"Redis access not available: {ex}")
+
+
+async def _delete_prefixed_redis_keys(redis_prefix: str) -> int:
+    client = redis_client.get_redis_client(test=True)
+    try:
+        timestamps_all_key = f"{redis_prefix}:timestamps:all"
+        timestamp_members = await client.zrange(timestamps_all_key, 0, -1)
+        object_keys = [
+            member.decode("utf-8") if isinstance(member, bytes) else str(member)
+            for member in timestamp_members
+        ]
+
+        cleanup_keys = {timestamps_all_key}
+        for object_key in object_keys:
+            cleanup_keys.add(object_key)
+            relative_key = object_key.removeprefix(f"{redis_prefix}:")
+            if "/" not in relative_key:
+                continue
+            parent_key, _ = relative_key.rsplit("/", 1)
+            cleanup_keys.add(f"{redis_prefix}:{parent_key}:index")
+            cleanup_keys.add(f"{redis_prefix}:timestamps:{parent_key}")
+
+        if cleanup_keys:
+            await client.delete(*sorted(cleanup_keys))
+        return len(cleanup_keys)
+    finally:
+        await client.aclose()
+
+
+def cleanup_test_redis_prefix(redis_prefix: str) -> None:
+    deleted = asyncio.run(_delete_prefixed_redis_keys(redis_prefix))
+    logger.info(  # type: ignore[call-arg]
+        "Cleaned test Redis prefix",
+        redis_prefix=redis_prefix,
+        deleted_keys=deleted,
+    )
 
 
 @pytest.fixture(scope="session")
@@ -481,6 +542,47 @@ class FakeDeploymentRenderer:
         }
 
 
+class FakeBatchV1Api:
+    """In-process stand-in for ``kubernetes.client.BatchV1Api`` used by the
+    local ``KubernetesJob`` backend. A Job stays without a terminal condition
+    until ``mark_complete`` flips it to ``Complete``; the fake worker run does
+    that once it has written the job's output, so the runtime's poll loop
+    observes completion exactly as it would against a real cluster."""
+
+    def __init__(self):
+        self.created: list[tuple[str, dict[str, Any]]] = []
+        self.deleted: list[tuple[str, str]] = []
+        self._conditions: dict[tuple[str, str], list[Any]] = {}
+
+    def create_namespaced_job(self, namespace: str, body: dict[str, Any]):
+        name = body["metadata"]["name"]
+        self.created.append((namespace, body))
+        self._conditions[(namespace, name)] = []
+
+    def patch_namespaced_job(self, name: str, namespace: str, body: dict[str, Any]):
+        if (namespace, name) not in self._conditions:
+            raise client.ApiException(status=404)
+
+    def read_namespaced_job_status(self, name: str, namespace: str):
+        conditions = self._conditions.get((namespace, name))
+        if conditions is None:
+            raise client.ApiException(status=404)
+        return SimpleNamespace(status=SimpleNamespace(conditions=conditions))
+
+    def delete_namespaced_job(
+        self, name: str, namespace: str, propagation_policy: str | None = None
+    ):
+        if (namespace, name) not in self._conditions:
+            raise client.ApiException(status=404)
+        self.deleted.append((namespace, name))
+        self._conditions.pop((namespace, name))
+
+    def mark_complete(self, namespace: str, name: str):
+        self._conditions[(namespace, name)] = [
+            SimpleNamespace(type="Complete", status="True", reason="", message="")
+        ]
+
+
 def configure_local_metastore_deployment_backend(app, monkeypatch) -> None:
     context = app.state.batch_driver._context
     shared_state = getattr(monkeypatch, "_aibrix_fake_deployment_backend_state", None)
@@ -539,6 +641,83 @@ def configure_local_metastore_deployment_backend(app, monkeypatch) -> None:
     )
 
 
+def configure_local_metastore_k8s_job_backend(app, monkeypatch) -> None:
+    context = app.state.batch_driver._context
+    fake_api = FakeBatchV1Api()
+    context.values["k8s_job_batch_v1_api"] = fake_api
+    context.values["k8s_job_teardown_calls"] = []
+
+    # K8sJobRuntime reads batch_v1_api off the context, but the slotted
+    # InfrastructureContext has no such field, so the runtime falls back to
+    # constructing a real BatchV1Api(). Patch the constructor to hand every
+    # runtime the fake instead — no cluster is reachable in the local backend.
+    monkeypatch.setattr(
+        k8s_job_runtime_module.k8s_client,
+        "BatchV1Api",
+        lambda *args, **kwargs: fake_api,
+    )
+
+    # A real render resolves template/profile ConfigMaps that the local
+    # backend never applies, so return a minimal suspended-Job manifest.
+    def _render(self, session_id, spec, prepared_job=None, **kwargs):
+        job_id = getattr(prepared_job, "job_id", None) or session_id
+        job_name = f"batch-{job_id[:8]}-worker"
+        return {
+            "metadata": {"name": job_name, "namespace": "default"},
+            "spec": {"suspend": True},
+        }
+
+    monkeypatch.setattr(JobManifestRenderer, "render", _render)
+
+    original_on_prepared = k8s_job_runtime_module.K8sJobRuntime.on_prepared
+
+    async def _run_self_hosted_worker(self):
+        # Un-suspend first (the real hook), then stand in for the Job's pod:
+        # run the worker in worker_mode so it writes the output parts and
+        # per-request done markers but leaves finalization to the coordinator,
+        # exactly as the real KubernetesJob worker does. The coordinator then
+        # aggregates the surviving markers in finalize_job.
+        await original_on_prepared(self)
+        job_id = self._active_job_id
+        job = await self._progress_manager.get_job(job_id)
+        worker_job = BatchJob(
+            sessionID=job.session_id,
+            typeMeta=job.type_meta,
+            metadata=job.metadata,
+            spec=job.spec,
+            status=job.status.model_copy(deep=True),
+        )
+        worker = BaseJobDriver(
+            SingleJobRunner(worker_job),
+            ExternalRuntime(FastNoopEndpointSource(context)),
+            worker_mode=True,
+        )
+        await worker.execute(job_id)
+        handle = self.active_handle
+        fake_api.mark_complete(handle.namespace, handle.job_name)
+
+    monkeypatch.setattr(
+        k8s_job_runtime_module.K8sJobRuntime,
+        "on_prepared",
+        _run_self_hosted_worker,
+    )
+
+    original_teardown = k8s_job_runtime_module.K8sJobRuntime._teardown
+
+    async def _recording_teardown(self, handle):
+        if handle is not None:
+            context.values["k8s_job_teardown_calls"].append(
+                {"job_id": self._active_job_id, "job_name": handle.job_name}
+            )
+        return await original_teardown(self, handle)
+
+    monkeypatch.setattr(
+        k8s_job_runtime_module.K8sJobRuntime,
+        "_teardown",
+        _recording_teardown,
+    )
+
+
 ENDPOINT_SAMPLE_BODIES = {
     "/v1/chat/completions": {
         "model": "gpt-3.5-turbo-0125",
@@ -574,6 +753,8 @@ class E2ETestBackend(str):
     features: frozenset[str]
     runtime_debug_config: Optional[dict[str, str]]
     max_concurrency: int
+    storage_type: StorageType
+    metastore_type: StorageType
 
     def __new__(
         cls,
@@ -583,6 +764,8 @@ class E2ETestBackend(str):
         features: tuple[str, ...] = (),
         runtime_debug_config: Optional[dict[str, str]] = None,
         max_concurrency: int = 1,
+        storage_type: StorageType = StorageType.LOCAL,
+        metastore_type: StorageType = StorageType.LOCAL,
     ):
         backend = str.__new__(cls, name)
         backend.request_kwargs = dict(request_kwargs or {})
@@ -591,10 +774,25 @@ class E2ETestBackend(str):
             dict(runtime_debug_config) if runtime_debug_config is not None else None
         )
         backend.max_concurrency = max_concurrency
+        backend.storage_type = storage_type
+        backend.metastore_type = metastore_type
         return backend
 
     def has_feature(self, feature: str) -> bool:
         return feature in self.features
+
+    def with_metastore(self, metastore_type: StorageType) -> "E2ETestBackend":
+        if self.metastore_type == metastore_type:
+            return self
+        return type(self)(
+            str(self),
+            request_kwargs=self.request_kwargs,
+            features=tuple(self.features),
+            runtime_debug_config=self.runtime_debug_config,
+            max_concurrency=self.max_concurrency,
+            storage_type=self.storage_type,
+            metastore_type=metastore_type,
+        )
 
     @property
     def support_runtime(self) -> bool:
@@ -604,9 +802,41 @@ class E2ETestBackend(str):
     def fake_runtime(self) -> bool:
         return self.has_feature("fake_runtime")
 
+    @property
+    def uses_runtime(self) -> bool:
+        return "_using_" in str(self)
+
+    @property
+    def runtime_name(self) -> Optional[str]:
+        if not self.uses_runtime:
+            return None
+        return str(self).split("_using_", 1)[1]
+
+    @property
+    def dry_run(self) -> bool:
+        return not self.uses_runtime
+
+    @property
+    def requires_fake_runtime(self) -> bool:
+        return self.uses_runtime and (
+            self.storage_type == StorageType.LOCAL
+            or self.metastore_type == StorageType.LOCAL
+        )
+
+    @property
+    def pytest_id(self) -> str:
+        parts = [str(self)]
+        if self.storage_type != StorageType.LOCAL:
+            parts.append(f"{self.storage_type.value}_storage")
+        if self.metastore_type != StorageType.LOCAL:
+            parts.append(f"{self.metastore_type.value}_metastore")
+        return "_".join(parts)
+
 
 E2E_BACKENDS: dict[str, E2ETestBackend] = {
-    "local_metastore_job": E2ETestBackend("local_metastore_job"),
+    "local_metastore_job": E2ETestBackend(
+        "local_metastore_job",
+    ),
     "local_metastore_job_parallel": E2ETestBackend(
         "local_metastore_job_parallel",
         max_concurrency=5,
@@ -627,6 +857,37 @@ E2E_BACKENDS: dict[str, E2ETestBackend] = {
             "runtime_delete_attr": "deleted",
         },
     ),
+    # Self-hosting KubernetesJob backend on local storage/metastore, backed by
+    # a fake BatchV1Api. The worker runs in-process in worker_mode, so this
+    # exercises the coordinator-side finalize path the deployment backend does
+    # not reach (the deployment fake dispatches from the control plane).
+    "local_job_using_k8s_job": E2ETestBackend(
+        "local_job_using_k8s_job",
+        request_kwargs={
+            "aibrix_template": "mock-template",
+            "provider": "k8s_job",
+        },
+        features=("support_runtime", "fake_runtime", "fake_provisioning_runtime"),
+    ),
+    # Example backend configuration for implementing e2e Kubernetes Job tests.
+    # This documents the intended shape of a real k8s-job backend:
+    # TOS-backed storage with a Redis-backed metastore.
+    # NOTE: runtime_debug_config is intentionally omitted here. The deployment
+    # debug keys above are not correct for K8s Job. A developer should add a
+    # real fake/debug K8s Job backend first (for example, wiring BatchV1Api
+    # create/delete handles plus job-specific teardown/endpoint-source state
+    # into batch_driver._context.values), then set runtime_debug_config to
+    # those K8s Job-specific keys.
+    # "job_using_k8s_job": E2ETestBackend(
+    #     "job_using_k8s_job",
+    #     request_kwargs={
+    #         "aibrix_template": "mock-template",
+    #         "provider": "k8s_job",
+    #     },
+    #     features=("support_runtime"),
+    #     storage_type=StorageType.TOS,
+    #     metastore_type=StorageType.REDIS,
+    # ),
 }
 
 
@@ -638,6 +899,16 @@ def get_e2e_backend(test_backend: str | E2ETestBackend) -> E2ETestBackend:
 
 def backend_has_feature(test_backend: str | E2ETestBackend, feature: str) -> bool:
     return get_e2e_backend(test_backend).has_feature(feature)
+
+
+def apply_e2e_backend_keyword_overrides(
+    test_backend: E2ETestBackend, keyword: str
+) -> E2ETestBackend:
+    # Keyword modifiers are applied after base backend selection so they
+    # override whatever defaults the E2ETestBackend entry started with.
+    if "redis_metastore" in keyword:
+        test_backend = test_backend.with_metastore(StorageType.REDIS)
+    return test_backend
 
 
 def select_e2e_backends(
@@ -655,9 +926,11 @@ def select_e2e_backends(
             selected_backend = get_e2e_backend(backend)
             break
 
+    selected_backend = apply_e2e_backend_keyword_overrides(selected_backend, keyword)
+
     metafunc.parametrize(
         "test_backend",
-        [pytest.param(selected_backend, id=selected_backend)],
+        [pytest.param(selected_backend, id=selected_backend.pytest_id)],
     )
 
 
@@ -706,6 +979,7 @@ def build_batch_request(
     if provider:
         runtime_targets = {
             "deployment": "Kubernetes",
+            "k8s_job": "KubernetesJob",
         }
         runtime_target = runtime_targets.get(provider)
         if runtime_target is not None:
@@ -865,42 +1139,64 @@ def build_e2e_test_app(
     test_backend: str | E2ETestBackend,
     tmp_path,
     monkeypatch,
-    *,
-    preserve_redis_prefix: bool = False,
 ):
     test_backend = get_e2e_backend(test_backend)
     monkeypatch.chdir(tmp_path)
-    del request, preserve_redis_prefix
-
-    if test_backend in {"local_metastore_job", "local_metastore_job_parallel"}:
-        app = create_test_app(
-            storage_type=StorageType.LOCAL,
-            metastore_type=StorageType.LOCAL,
-            dry_run=True,
-        )
-        app.state.metadata_store = MockMetadataStore()
-        app.state.redis_client = None
-        if test_backend == "local_metastore_job_parallel":
-            endpoint_source = ParallelNoopEndpointSource(
-                app.state.batch_driver._context,
-                capacity=test_backend.max_concurrency,
+    if (
+        test_backend.storage_type == StorageType.REDIS
+        or test_backend.metastore_type == StorageType.REDIS
+    ):
+        request.getfixturevalue("redis_available")
+        redis_prefix = getattr(request.node, "_aibrix_test_redis_prefix", None)
+        if redis_prefix is None:
+            node_id = re.sub(r"[^A-Za-z0-9_]+", "_", request.node.nodeid).strip("_")
+            redis_prefix = f"pytest_{node_id}_{uuid.uuid4().hex[:8]}"
+            setattr(request.node, "_aibrix_test_redis_prefix", redis_prefix)
+        if not getattr(request.node, "_aibrix_test_redis_cleanup_registered", False):
+            request.addfinalizer(
+                lambda prefix=redis_prefix: cleanup_test_redis_prefix(prefix)
             )
-            app.state.batch_driver._endpoint_source = endpoint_source
-            app.state.batch_driver.job_manager.set_endpoint_source(endpoint_source)
-        return app
+            setattr(request.node, "_aibrix_test_redis_cleanup_registered", True)
+        monkeypatch.setenv("DB_REDIS_PREFIX", redis_prefix)
+        monkeypatch.setattr(envs, "DB_REDIS_PREFIX", redis_prefix)
+    app = create_test_app(
+        storage_type=test_backend.storage_type,
+        metastore_type=test_backend.metastore_type,
+        dry_run=test_backend.dry_run,
+    )
+    app.state.metadata_store = MockMetadataStore()
+    app.state.redis_client = None
 
-    if test_backend == "local_job_using_deployment":
-        app = create_test_app(
-            storage_type=StorageType.LOCAL,
-            metastore_type=StorageType.LOCAL,
-            dry_run=False,
+    if test_backend == "local_metastore_job_parallel":
+        endpoint_source = ParallelNoopEndpointSource(
+            app.state.batch_driver._context,
+            capacity=test_backend.max_concurrency,
         )
-        app.state.metadata_store = MockMetadataStore()
-        app.state.redis_client = None
-        configure_local_metastore_deployment_backend(app, monkeypatch)
+        app.state.batch_driver._endpoint_source = endpoint_source
+        app.state.batch_driver.job_manager.set_endpoint_source(endpoint_source)
         return app
 
-    raise ValueError(f"Unsupported e2e backend: {test_backend}")
+    if not test_backend.uses_runtime:
+        return app
+
+    if test_backend.requires_fake_runtime:
+        if not test_backend.fake_runtime:
+            raise ValueError(
+                f"Backend {test_backend} must declare fake_runtime for local storage/metastore tests"
+            )
+
+        if test_backend.runtime_name == "deployment":
+            configure_local_metastore_deployment_backend(app, monkeypatch)
+            return app
+        elif test_backend.runtime_name == "k8s_job":
+            configure_local_metastore_k8s_job_backend(app, monkeypatch)
+            return app
+
+        raise ValueError(
+            f"Unsupported fake runtime backend: {test_backend.runtime_name}"
+        )
+
+    return app
 
 
 @pytest.fixture(scope="function")

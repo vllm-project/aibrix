@@ -59,8 +59,10 @@ from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobError,
     BatchJobErrorCode,
+    BatchJobStatus,
     ConditionType,
     JobRuntimeRef,
+    RequestCountStats,
 )
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
@@ -399,7 +401,10 @@ class RuntimeBase:
                 "progress_manager and worker_id_generator when starting a runtime session "
                 "for a batch job"
             )
-        status = job.status.model_copy(deep=True)
+        status: BatchJobStatus = job.status.model_copy(deep=True)
+        # This update should not update request_counts and usage
+        status.request_counts = RequestCountStats()
+        status.usage = None
         status.set_runtime_ref(
             self._get_runtime_key(job),
             execution_ref,

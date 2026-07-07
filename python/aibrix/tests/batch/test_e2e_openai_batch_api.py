@@ -88,6 +88,7 @@ def pytest_generate_tests(metafunc):
         metafunc,
         [
             "local_job_using_deployment",
+            "local_job_using_k8s_job",
         ],
     )
 
@@ -123,11 +124,11 @@ def backend_batch_request(
 
 
 def backend_request_count(test_backend: str) -> int:
-    return 10 if test_backend == "k8s_job" else 3
+    return 10 if test_backend == "local_job_using_k8s_job" else 3
 
 
 def backend_max_polls(test_backend: str) -> int:
-    return 120 if test_backend == "k8s_job" else 20
+    return 120 if test_backend == "local_job_using_k8s_job" else 20
 
 
 async def wait_for_completed_batch(
@@ -278,7 +279,7 @@ async def test_openai_batch_api_success_workflow(e2e_test_app, test_backend):
             output_file_id = assert_completed_batch(completed_batch, expected_requests)
             await download_and_verify_output(client, output_file_id, expected_requests)
 
-            if test_backend == "k8s_job":
+            if test_backend == "local_job_using_k8s_job":
                 assert isinstance(completed_batch["in_progress_at"], int)
                 assert isinstance(completed_batch["finalizing_at"], int)
                 assert isinstance(completed_batch["completed_at"], int)
