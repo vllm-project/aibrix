@@ -18,6 +18,8 @@ package rayclusterreplicaset
 
 import (
 	"reflect"
+	"sort"
+	"strconv"
 
 	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -26,6 +28,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/klog/v2"
+)
+
+const rayClusterDeletionCostAnnotation = "controller.kubernetes.io/pod-deletion-cost"
+
+type rayClusterOrderRule func(a, b *rayclusterv1.RayCluster) int
+
+const (
+	rayClusterOrderBefore = -1
+	rayClusterOrderSame   = 0
+	rayClusterOrderAfter  = 1
 )
 
 // NewCondition creates a new replicaset condition.
@@ -108,6 +120,91 @@ func filterActiveClusters(clusters []rayclusterv1.RayCluster) []rayclusterv1.Ray
 	}
 
 	return activeClusters
+}
+
+func sortRayClustersForScaleDown(clusters []rayclusterv1.RayCluster) {
+	sortRayClustersByRules(
+		clusters,
+		orderRayClusterNotReadyBeforeReady,
+		orderRayClusterLowerDeletionCostBeforeHigher,
+		orderRayClusterOlderCreationTimestampBeforeNewer,
+		orderRayClusterNamespacedName,
+	)
+}
+
+func sortRayClustersByRules(clusters []rayclusterv1.RayCluster, rules ...rayClusterOrderRule) {
+	sort.SliceStable(clusters, func(i, j int) bool {
+		for _, rule := range rules {
+			switch rule(&clusters[i], &clusters[j]) {
+			case rayClusterOrderBefore:
+				return true
+			case rayClusterOrderAfter:
+				return false
+			}
+		}
+		return false
+	})
+}
+
+func orderRayClusterNotReadyBeforeReady(a, b *rayclusterv1.RayCluster) int {
+	aReady := rayclusterutil.IsRayClusterReady(a)
+	bReady := rayclusterutil.IsRayClusterReady(b)
+	if aReady == bReady {
+		return rayClusterOrderSame
+	}
+	if !aReady && bReady {
+		return rayClusterOrderBefore
+	}
+	return rayClusterOrderAfter
+}
+
+func orderRayClusterLowerDeletionCostBeforeHigher(a, b *rayclusterv1.RayCluster) int {
+	aCost := getRayClusterDeletionCost(a)
+	bCost := getRayClusterDeletionCost(b)
+	if aCost == bCost {
+		return rayClusterOrderSame
+	}
+	if aCost < bCost {
+		return rayClusterOrderBefore
+	}
+	return rayClusterOrderAfter
+}
+
+func orderRayClusterOlderCreationTimestampBeforeNewer(a, b *rayclusterv1.RayCluster) int {
+	if a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+		return rayClusterOrderSame
+	}
+	if a.CreationTimestamp.Before(&b.CreationTimestamp) {
+		return rayClusterOrderBefore
+	}
+	return rayClusterOrderAfter
+}
+
+func orderRayClusterNamespacedName(a, b *rayclusterv1.RayCluster) int {
+	if a.Namespace != b.Namespace {
+		if a.Namespace < b.Namespace {
+			return rayClusterOrderBefore
+		}
+		return rayClusterOrderAfter
+	}
+	if a.Name == b.Name {
+		return rayClusterOrderSame
+	}
+	if a.Name < b.Name {
+		return rayClusterOrderBefore
+	}
+	return rayClusterOrderAfter
+}
+
+func getRayClusterDeletionCost(cluster *rayclusterv1.RayCluster) int {
+	if cluster == nil || cluster.Annotations == nil {
+		return 0
+	}
+	cost, err := strconv.Atoi(cluster.Annotations[rayClusterDeletionCostAnnotation])
+	if err != nil {
+		return 0
+	}
+	return cost
 }
 
 func isClusterActive(c rayclusterv1.RayCluster) bool {
