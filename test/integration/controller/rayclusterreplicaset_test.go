@@ -186,9 +186,20 @@ func setIntegrationRayClusterReadinessAndDeletionCost(
 			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
 		}
 		if ready {
+			now := metav1.Now()
 			latest.Status.Conditions = []metav1.Condition{
-				{Type: string(rayv1.RayClusterProvisioned), Status: metav1.ConditionTrue},
-				{Type: string(rayv1.HeadPodReady), Status: metav1.ConditionTrue},
+				{
+					Type:               string(rayv1.RayClusterProvisioned),
+					Status:             metav1.ConditionTrue,
+					Reason:             "TestReady",
+					LastTransitionTime: now,
+				},
+				{
+					Type:               string(rayv1.HeadPodReady),
+					Status:             metav1.ConditionTrue,
+					Reason:             "TestReady",
+					LastTransitionTime: now,
+				},
 			}
 			latest.Status.DesiredWorkerReplicas = 1
 			latest.Status.ReadyWorkerReplicas = 1
