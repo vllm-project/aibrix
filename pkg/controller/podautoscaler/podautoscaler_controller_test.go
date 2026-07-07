@@ -136,6 +136,43 @@ func TestValidateMetricsSourcesRequiresTargetMetricForK8sExternalMetrics(t *test
 	}
 }
 
+func TestValidateSpecRejectsHPARoleSubtarget(t *testing.T) {
+	r := &PodAutoscalerReconciler{}
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				Name: "test-stormservice",
+				Kind: "StormService",
+			},
+			SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{
+				RoleName: "decode",
+			},
+			MinReplicas:     ptr.To(int32(1)),
+			MaxReplicas:     5,
+			ScalingStrategy: autoscalingv1alpha1.HPA,
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					MetricSourceType: autoscalingv1alpha1.RESOURCE,
+					TargetMetric:     "cpu",
+					TargetValue:      "50",
+				},
+			},
+		},
+	}
+
+	result := r.validateSpec(pa)
+
+	if result.Valid {
+		t.Fatal("expected HPA with subTargetSelector.roleName to be invalid")
+	}
+	if result.Reason != ReasonInvalidScalingStrategy {
+		t.Fatalf("expected reason=%s, got %s", ReasonInvalidScalingStrategy, result.Reason)
+	}
+	if result.Message != "subTargetSelector.roleName is not supported with scalingStrategy=HPA; use APA or KPA for StormService role-level autoscaling." {
+		t.Fatalf("unexpected message: %s", result.Message)
+	}
+}
+
 // ---- helpers ----
 
 func buildPod(ns, name string, lbls map[string]string) *corev1.Pod {
