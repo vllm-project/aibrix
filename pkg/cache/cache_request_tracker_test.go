@@ -18,10 +18,13 @@ package cache
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/types"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // mockRequestTracker implements RequestTracker for testing
@@ -30,6 +33,27 @@ type mockRequestTracker struct {
 	doneCalled      bool
 	doneTraceCalled bool
 	lastCtx         *types.RoutingContext
+}
+
+func requestTrackerTestPod(name, namespace, model, ip string) *v1.Pod {
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				modelIdentifier: model,
+			},
+		},
+		Status: v1.PodStatus{
+			PodIP: ip,
+			Conditions: []v1.PodCondition{
+				{
+					Type:   v1.PodReady,
+					Status: v1.ConditionTrue,
+				},
+			},
+		},
+	}
 }
 
 func (m *mockRequestTracker) AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) int64 {
@@ -176,4 +200,116 @@ func TestContextCancellation_RealWorldScenario(t *testing.T) {
 			cache.DoneRequestCount(nil, "test-request", "test-model", 0)
 		}, "should handle nil context gracefully")
 	})
+}
+
+func TestDoneRequestCountAfterSameNamePodRecreationDoesNotDecrementNewPod(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+		podName   = "decode-0"
+		requestID = "request-before-recreate"
+	)
+
+	cache := NewForTest()
+	oldPod := requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1")
+	cache.addPod(oldPod)
+	oldMetaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+	assert.True(t, ok)
+
+	routingCtx := types.NewRoutingContext(context.Background(), "least-request", modelName, "", requestID, "")
+	routingCtx.SetTargetPod(oldPod)
+
+	traceTerm := cache.AddRequestCount(routingCtx, requestID, modelName)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&oldMetaPod.runningRequests))
+
+	cache.deletePod(oldPod)
+	newPod := requestTrackerTestPod(podName, namespace, modelName, "10.0.0.2")
+	cache.addPod(newPod)
+	newMetaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+	assert.True(t, ok)
+	assert.NotSame(t, oldMetaPod, newMetaPod)
+
+	cache.DoneRequestCount(routingCtx, requestID, modelName, traceTerm)
+
+	assert.Equal(t, int32(0), atomic.LoadInt32(&oldMetaPod.runningRequests))
+	assert.Equal(t, int32(0), atomic.LoadInt32(&newMetaPod.runningRequests))
+}
+
+func TestDoneRequestWithNilContextCleansPreviouslyAddedPodStats(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		done func(cache *Store, requestID, modelName string, traceTerm int64)
+	}{
+		{
+			name: "DoneRequestCount",
+			done: func(cache *Store, requestID, modelName string, traceTerm int64) {
+				cache.DoneRequestCount(nil, requestID, modelName, traceTerm)
+			},
+		},
+		{
+			name: "DoneRequestTrace",
+			done: func(cache *Store, requestID, modelName string, traceTerm int64) {
+				cache.DoneRequestTrace(nil, requestID, modelName, 10, 20, traceTerm)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			const (
+				modelName = "test-model"
+				namespace = "default"
+				podName   = "decode-0"
+				requestID = "request-with-nil-done-context"
+			)
+
+			cache := NewForTest()
+			pod := requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1")
+			cache.addPod(pod)
+			metaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+			assert.True(t, ok)
+
+			routingCtx := types.NewRoutingContext(context.Background(), "least-request", modelName, "", requestID, "")
+			routingCtx.SetTargetPod(pod)
+
+			traceTerm := cache.AddRequestCount(routingCtx, requestID, modelName)
+			assert.Equal(t, int32(1), atomic.LoadInt32(&metaPod.runningRequests))
+			assert.Equal(t, 1, cache.podStats.Len())
+
+			tt.done(cache, requestID, modelName, traceTerm)
+
+			assert.Equal(t, int32(0), atomic.LoadInt32(&metaPod.runningRequests))
+			assert.Equal(t, 0, cache.podStats.Len())
+		})
+	}
+}
+
+func TestDoubleCleanupOnlyDecrementsPodStatsOnce(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+		podName   = "decode-0"
+		requestID = "request-with-double-cleanup"
+	)
+
+	cache := NewForTest()
+	pod := requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1")
+	cache.addPod(pod)
+	metaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+	assert.True(t, ok)
+
+	routingCtx := types.NewRoutingContext(context.Background(), "least-request", modelName, "", requestID, "")
+	routingCtx.SetTargetPod(pod)
+
+	traceTerm := cache.AddRequestCount(routingCtx, requestID, modelName)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&metaPod.runningRequests))
+	assert.Equal(t, 1, cache.podStats.Len())
+
+	cache.DoneRequestTrace(routingCtx, requestID, modelName, 10, 20, traceTerm)
+	assert.Equal(t, int32(0), atomic.LoadInt32(&metaPod.runningRequests))
+	assert.Equal(t, 0, cache.podStats.Len())
+
+	assert.NotPanics(t, func() {
+		cache.DoneRequestCount(routingCtx, requestID, modelName, traceTerm)
+	})
+	assert.Equal(t, int32(0), atomic.LoadInt32(&metaPod.runningRequests))
+	assert.Equal(t, 0, cache.podStats.Len())
 }
