@@ -24,9 +24,17 @@ interface the driver calls; the manager answers the per-request calls below from
 each job's tracker. A driver never touches a tracker directly.
 """
 
-from typing import Optional, Protocol, runtime_checkable
+from typing import Collection, Final, Literal, Optional, Protocol, runtime_checkable
 
 from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobStatus
+
+LocalStatusKey = Literal["state", "errors", "request_counts", "usage", "execution"]
+LOCAL_STATUS_COPY_KEYS: Final[frozenset[LocalStatusKey]] = frozenset(
+    {"state", "errors", "request_counts", "usage"}
+)
+LOCAL_STATUS_UPDATE_KEYS: Final[frozenset[LocalStatusKey]] = frozenset(
+    {*LOCAL_STATUS_COPY_KEYS, "execution"}
+)
 
 
 @runtime_checkable
@@ -54,9 +62,18 @@ class RunningJobs(Protocol):
         ...
 
     async def update_job_local_status(
-        self, job_id: str, worker_id: str, status: BatchJobStatus
+        self,
+        job_id: str,
+        worker_id: str,
+        status: BatchJobStatus,
+        update_keys: Collection[LocalStatusKey] | None = None,
     ) -> BatchJob:
-        """Persist a worker-local status snapshot for aggregation. This operation is thread-safe."""
+        """Persist selected worker-local status fields for aggregation.
+
+        ``update_keys`` limits the fields applied from ``status``. When omitted,
+        implementations should preserve the historical "update all local fields"
+        behavior.
+        """
         ...
 
     async def mark_job_finalizing(self, job_id: str) -> BatchJob:

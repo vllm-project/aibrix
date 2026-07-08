@@ -138,7 +138,7 @@ async def test_deletion_cancels_wait():
 
     async def _persist_runtime_ref(job, **kwargs):
         del kwargs
-        return job
+        return job, None
 
     async def _wait_until_done(handle):
         wait_entered.set()

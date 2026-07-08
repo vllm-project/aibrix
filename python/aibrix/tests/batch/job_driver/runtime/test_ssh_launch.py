@@ -151,6 +151,39 @@ async def test_wait_ready_times_out():
 
 
 @pytest.mark.asyncio
+async def test_check_liveness_accepts_healthy_endpoint():
+    rt = RunPodRuntime()
+
+    async def healthy(url, *a, **k):
+        del url, a, k
+
+        class R:
+            status_code = 200
+
+        return R()
+
+    with patch("httpx.AsyncClient.get", new=AsyncMock(side_effect=healthy)):
+        await rt._check_liveness(_handle())
+
+
+@pytest.mark.asyncio
+async def test_check_liveness_rejects_unhealthy_endpoint():
+    rt = RunPodRuntime()
+
+    async def unhealthy(url, *a, **k):
+        del url, a, k
+
+        class R:
+            status_code = 503
+
+        return R()
+
+    with patch("httpx.AsyncClient.get", new=AsyncMock(side_effect=unhealthy)):
+        with pytest.raises(RuntimeError, match="returned 503"):
+            await rt._check_liveness(_handle())
+
+
+@pytest.mark.asyncio
 async def test_provision_connects_and_launches(monkeypatch):
     rt = RunPodRuntime()
     fake_conn = Mock()

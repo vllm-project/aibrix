@@ -166,7 +166,10 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
             payload["image"] = info.image
         return payload
 
-    async def _wait_ready(self, handle: SSHHandle) -> None:
+    async def _wait_ready(
+        self, handle: SSHHandle, wait_mode: str = "provision"
+    ) -> None:
+        del wait_mode
         url = self._base_url(handle) + "/health"
         loop = asyncio.get_event_loop()
         deadline = loop.time() + self._ready_timeout_s
@@ -183,6 +186,18 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
                         f"vLLM not ready at {url} after {self._ready_timeout_s}s"
                     )
                 await asyncio.sleep(self._poll_interval_s)
+
+    async def _check_liveness(self, handle: SSHHandle) -> None:
+        url = self._base_url(handle) + "/health"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                resp = await client.get(url)
+            except Exception as ex:
+                raise RuntimeError(f"vLLM liveness check failed at {url}: {ex}") from ex
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"vLLM liveness check returned {resp.status_code} at {url}"
+            )
 
     async def _connect(self, handle: SSHHandle) -> Endpoint:
         # Origin only (no path); HttpChannel does urljoin(base_url, path).

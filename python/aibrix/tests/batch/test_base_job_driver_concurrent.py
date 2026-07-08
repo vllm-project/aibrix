@@ -379,7 +379,8 @@ async def test_execute_worker_stats_fallback_preserves_failed_count(monkeypatch)
     _patch_storage(monkeypatch, requests)
     persisted_statuses = []
 
-    async def update_job_local_status(job_id, worker_id, status):
+    async def update_job_local_status(job_id, worker_id, status, update_keys=None):
+        del update_keys
         persisted_statuses.append(status.model_copy(deep=True))
         updated = job.model_copy(deep=True)
         updated.status = status.model_copy(deep=True)

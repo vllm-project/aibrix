@@ -13,9 +13,10 @@
 # limitations under the License.
 
 import asyncio
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Collection, Dict, List, Optional, Tuple, cast
 
 from aibrix.batch.batch_scheduler import BatchScheduler
 from aibrix.batch.client import EndpointSource
@@ -24,6 +25,11 @@ from aibrix.batch.job_driver import (
     RunningJobs,
     TerminateResult,
     create_job_driver,
+)
+from aibrix.batch.job_driver.running_jobs import (
+    LOCAL_STATUS_COPY_KEYS,
+    LOCAL_STATUS_UPDATE_KEYS,
+    LocalStatusKey,
 )
 from aibrix.batch.job_entity import (
     BatchJob,
@@ -732,7 +738,10 @@ class BatchManager(RunningJobs, SchedulableJobs):
             return None
 
         job = self._pending_jobs[job_id]
-        needs_validation = job.status.state == BatchJobState.CREATED or (
+        needs_validation = job.status.state in {
+            BatchJobState.CREATED,
+            BatchJobState.VALIDATING,
+        } or (
             job.status.state == BatchJobState.IN_PROGRESS
             and job.status.in_progress_at is None
         )
@@ -820,19 +829,52 @@ class BatchManager(RunningJobs, SchedulableJobs):
         return updated
 
     async def update_job_local_status(
-        self, job_id: str, worker_id: str, status: BatchJobStatus
+        self,
+        job_id: str,
+        worker_id: str,
+        status: BatchJobStatus,
+        update_keys: Collection[LocalStatusKey] | None = None,
     ) -> BatchJob:
         # Cancel, failing, expiring will not move job out of in_progress state
         meta_data = await self._meta_from_in_progress_job(job_id)
         persisted = meta_data.copy()
-        persisted.status.execution = status.execution
-        # Set worker-wise status copies.
-        if persisted.status.status_copies is None:
-            persisted.status.status_copies = {}
-        persisted.status.status_copies[worker_id] = BatchJobStatusCopy.from_status(
-            status
+        keys = (
+            set(LOCAL_STATUS_UPDATE_KEYS) if update_keys is None else set(update_keys)
         )
-        persisted.status.status_copies[worker_id].updated = True
+        unknown_keys = keys.difference(LOCAL_STATUS_UPDATE_KEYS)
+        if unknown_keys:
+            raise ValueError(
+                f"Unsupported local status update keys: {sorted(unknown_keys)}"
+            )
+
+        if "execution" in keys:
+            persisted.status.execution = copy.deepcopy(status.execution)
+
+        copy_keys = keys.intersection(LOCAL_STATUS_COPY_KEYS)
+        if copy_keys:
+            # Only touch worker-local copies when worker-local fields changed.
+            if persisted.status.status_copies is None:
+                persisted.status.status_copies = {}
+            status_copy = persisted.status.status_copies.get(worker_id)
+            if status_copy is None:
+                status_copy = BatchJobStatusCopy.from_status(status)
+                persisted.status.status_copies[worker_id] = status_copy
+            else:
+                if "state" in copy_keys:
+                    status_copy.state = status.state
+                if "errors" in copy_keys:
+                    status_copy.errors = copy.deepcopy(status.errors)
+                if "request_counts" in copy_keys:
+                    status_copy.request_counts = status.request_counts.model_copy(
+                        deep=True
+                    )
+                if "usage" in copy_keys:
+                    status_copy.usage = (
+                        status.usage.model_copy(deep=True)
+                        if status.usage is not None
+                        else None
+                    )
+            status_copy.updated = True
         persisted.status = aggregate_batch_job_status(persisted.status)
 
         if self._job_entity_manager is not None:

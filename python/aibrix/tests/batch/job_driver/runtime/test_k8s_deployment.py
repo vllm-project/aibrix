@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from kubernetes.client import ApiException
 
 from aibrix.batch.client.sources import (
     InClusterEndpointSource,
@@ -329,6 +330,65 @@ async def test_k8s_deployment_runtime_reconnect_accepts_current_payload_keys():
 
 
 @pytest.mark.asyncio
+async def test_k8s_deployment_runtime_check_liveness_accepts_ready_deployment():
+    runtime = _make_runtime(apps_v1_api=FakeAppsV1Api(available_replicas=1))
+
+    await runtime._check_liveness(
+        DeploymentHandle(
+            namespace="default",
+            deployment_name="rendered-deployment",
+            service_name="rendered-service",
+            model_name="rendered-model",
+            base_url="http://rendered-service.default.svc.cluster.local:8000",
+            service_port=8000,
+            replicas=1,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_k8s_deployment_runtime_check_liveness_accepts_existing_unready_deployment():
+    runtime = _make_runtime(apps_v1_api=FakeAppsV1Api(available_replicas=0))
+
+    await runtime._check_liveness(
+        DeploymentHandle(
+            namespace="default",
+            deployment_name="rendered-deployment",
+            service_name="rendered-service",
+            model_name="rendered-model",
+            base_url="http://rendered-service.default.svc.cluster.local:8000",
+            service_port=8000,
+            replicas=1,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_k8s_deployment_runtime_check_liveness_reports_missing_deployment():
+    class _MissingAppsV1Api(FakeAppsV1Api):
+        def read_namespaced_deployment_status(self, name: str, namespace: str):
+            del name, namespace
+            raise ApiException(status=404, reason="Not Found")
+
+    runtime = _make_runtime(apps_v1_api=_MissingAppsV1Api())
+
+    with pytest.raises(BatchJobError) as exc_info:
+        await runtime._check_liveness(
+            DeploymentHandle(
+                namespace="default",
+                deployment_name="rendered-deployment",
+                service_name="rendered-service",
+                model_name="rendered-model",
+                base_url="http://rendered-service.default.svc.cluster.local:8000",
+                service_port=8000,
+                replicas=1,
+            )
+        )
+
+    assert exc_info.value.code == BatchJobErrorCode.RESOURCE_NOTFOUND_ERROR
+
+
+@pytest.mark.asyncio
 async def test_k8s_deployment_runtime_connect_uses_in_cluster_source(monkeypatch):
     runtime = _make_runtime(renderer=FakeRenderer())
     handle = DeploymentHandle(
@@ -381,15 +441,15 @@ async def test_k8s_deployment_runtime_terminate_cancels_session_and_tears_down()
         renderer=FakeRenderer(),
     )
 
-    async def _update_job_local_status(job_id, worker_id, status):
-        del worker_id
+    async def _update_job_local_status(job_id, worker_id, status, update_keys=None):
+        del worker_id, update_keys
         return SimpleNamespace(job_id=job_id, status=status)
 
     progress_manager = SimpleNamespace(update_job_local_status=_update_job_local_status)
     wait_entered = asyncio.Event()
 
-    async def _blocked_wait_ready(handle):
-        del handle
+    async def _blocked_wait_ready(handle, wait_mode="provision"):
+        del handle, wait_mode
         wait_entered.set()
         await runtime._stop_requested.wait()
         raise asyncio.CancelledError
