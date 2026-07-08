@@ -47,7 +47,7 @@ from aibrix.batch.template import (
     ProfileRegistry,
     TemplateRegistry,
 )
-from aibrix.context import get_deployment_detail_provider
+from aibrix.context import InfrastructureContext, get_deployment_detail_provider
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -631,7 +631,9 @@ async def _resolve_batch_job(request: Request, batch_id: str) -> Optional[BatchJ
     return await batch_driver.get_job(batch_id)
 
 
-async def _query_deployment_detail(job: BatchJob) -> Optional[DeploymentDetail]:
+async def _query_deployment_detail(
+    ctx: InfrastructureContext, job: BatchJob
+) -> Optional[DeploymentDetail]:
     """Query the deployment detail for a batch job via side-channel provider."""
     try:
         runtime_target = job.spec.runtime_target
@@ -642,7 +644,7 @@ async def _query_deployment_detail(job: BatchJob) -> Optional[DeploymentDetail]:
         if provider is None:
             return None
 
-        detail_dict = await provider.get_deployment_detail(job)
+        detail_dict = await provider.get_deployment_detail(ctx, job)
         if detail_dict is None:
             return None
 
@@ -681,7 +683,8 @@ async def get_batch(
 
         deployment = None
         if include_deployment:
-            deployment = await _query_deployment_detail(job)
+            ctx = request.app.state.infrastructure_context
+            deployment = await _query_deployment_detail(ctx, job)
 
         return _batch_job_to_openai_response(job, deployment)
     except HTTPException:
