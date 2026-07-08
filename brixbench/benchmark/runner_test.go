@@ -26,6 +26,7 @@ import (
 
 	"github.com/vllm-project/aibrix/brixbench/internal/deployers"
 	"github.com/vllm-project/aibrix/brixbench/internal/drivers"
+	"github.com/vllm-project/aibrix/brixbench/internal/monitoring"
 	"github.com/vllm-project/aibrix/brixbench/internal/observability"
 	"github.com/vllm-project/aibrix/brixbench/internal/resolver"
 )
@@ -209,6 +210,15 @@ func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string
 	}
 	if err := deployer.WaitForReady(ctx); err != nil {
 		return deployer, "", fmt.Errorf("engine not ready: %w", err)
+	}
+	if err := monitoring.Ensure(ctx, monitoring.Config{
+		Namespace: benchmarkNamespace,
+		Provider:  testCase.ProviderName(),
+		Engine:    testCase.Engine.Type,
+		Enabled:   podMonitoringEnabled(),
+		Strict:    podMonitoringStrictEnabled(),
+	}); err != nil {
+		return deployer, "", fmt.Errorf("pod monitoring setup failed: %w", err)
 	}
 
 	// Get dynamically assigned Gateway IP/URL

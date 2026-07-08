@@ -185,6 +185,40 @@ Metrics export is disabled by default.
 - With `BENCHMARK_PUSHGATEWAY_URL`, the runner enables the Pushgateway exporter.
 - The current Pushgateway exporter returns an explicit not-implemented error until real export behavior is implemented.
 
+## Workload PodMonitoring
+
+The runner creates Prometheus Operator `PodMonitor` resources for benchmark
+workloads after the serving deployment becomes ready. This is separate from the
+benchmark result Pushgateway export above: PodMonitoring lets Prometheus or VMP
+scrape serving workload `/metrics` endpoints for Grafana dashboards.
+
+PodMonitoring is enabled by default. Disable it with either option:
+
+```bash
+BENCHMARK_POD_MONITORING=false go test -v ./benchmark -run TestAIBrixBenchmarkSuite -count=1
+go test -v ./benchmark -run TestAIBrixBenchmarkSuite -benchmark.pod-monitoring=false -count=1
+```
+
+By default, missing PodMonitor CRDs or apply permission errors are logged as
+warnings so benchmark execution can continue. Use strict mode when dashboard
+metric collection is required for validation:
+
+```bash
+BENCHMARK_POD_MONITORING_STRICT=true go test -v ./benchmark -run TestAIBrixBenchmarkSuite -count=1
+```
+
+Created PodMonitors are labeled with `volcengine.vmp=true` and
+`brixbench.aibrix.ai/managed=true`. For the integrated benchmark dashboard,
+select datasource `AIBrix_Benchmark` and keep `vllm_job` as `All`; plain vLLM
+and AIBrix StormService vLLM metrics are relabeled to `job=brixbench-vllm`.
+
+Useful checks:
+
+```bash
+kubectl get podmonitor -n brixbench-adhoc -l brixbench.aibrix.ai/managed=true
+kubectl get podmonitor brixbench-aibrix-vllm-metrics -n brixbench-adhoc -o yaml
+```
+
 ## Artifacts
 
 Run artifacts are written under:
