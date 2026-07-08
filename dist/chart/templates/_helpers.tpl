@@ -171,7 +171,7 @@ Create the name of the metadata service service account
 
 {{- if and
   (dig "auth" "bearerToken" "" .Values.gatewayPlugin)
-  (hasKey .Values.gatewayPlugin.container.envs "AIBRIX_AUTH_BEARER_TOKEN") -}}
+  (hasKey (dig "container" "envs" dict .Values.gatewayPlugin) "AIBRIX_AUTH_BEARER_TOKEN") -}}
 {{- fail "gatewayPlugin.auth.bearerToken and gatewayPlugin.container.envs.AIBRIX_AUTH_BEARER_TOKEN are mutually exclusive; configure the gateway API key in only one place." -}}
 {{- end -}}
 
