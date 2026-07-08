@@ -73,7 +73,9 @@ func Ensure(ctx context.Context, config Config) error {
 
 	for _, manifest := range manifests {
 		if _, err := config.run(ctx, manifest, "apply", "-f", "-"); err != nil {
-			return config.handleError("failed to apply benchmark PodMonitor", err)
+			if err := config.handleError("failed to apply benchmark PodMonitor", err); err != nil {
+				return err
+			}
 		}
 	}
 	fmt.Printf("[benchmark] PodMonitoring configured in namespace %s\n", config.Namespace)
@@ -82,6 +84,9 @@ func Ensure(ctx context.Context, config Config) error {
 
 // Cleanup deletes PodMonitors created by brixbench.
 func Cleanup(ctx context.Context, namespace string) error {
+	if strings.TrimSpace(namespace) == "" {
+		return fmt.Errorf("namespace is required for Cleanup")
+	}
 	config := Config{Namespace: namespace, Enabled: true}
 	_, err := config.run(ctx, "", "delete", "podmonitor", "-n", namespace, "-l", managedLabelSelector, "--ignore-not-found")
 	if err != nil {
@@ -138,7 +143,9 @@ func (config Config) labelDynamoChartPodMonitors(ctx context.Context) error {
 			continue
 		}
 		if _, err := config.run(ctx, "", "label", "podmonitor", name, "-n", config.Namespace, "volcengine.vmp=true", "--overwrite"); err != nil {
-			return config.handleError(fmt.Sprintf("failed to label Dynamo chart PodMonitor %s", name), err)
+			if err := config.handleError(fmt.Sprintf("failed to label Dynamo chart PodMonitor %s", name), err); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

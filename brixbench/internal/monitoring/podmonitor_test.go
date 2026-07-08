@@ -181,6 +181,36 @@ func TestEnsureAppliesPlainVLLMManifest(t *testing.T) {
 	}
 }
 
+func TestEnsureContinuesApplyingManifestsAfterNonStrictFailure(t *testing.T) {
+	var applyCommands int
+	err := Ensure(context.Background(), Config{
+		Namespace: "brixbench-adhoc",
+		Provider:  "dynamo",
+		Engine:    "vllm",
+		Enabled:   true,
+		Strict:    false,
+		Runner: func(ctx context.Context, stdin string, args ...string) (string, error) {
+			joined := strings.Join(args, " ")
+			if joined == `get podmonitor -n brixbench-adhoc -o jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}` {
+				return "", nil
+			}
+			if joined == "apply -f -" {
+				applyCommands++
+				if applyCommands == 1 {
+					return "", errors.New("apply failed")
+				}
+			}
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected non-strict apply failure to continue, got %v", err)
+	}
+	if applyCommands != 3 {
+		t.Fatalf("expected all 3 Dynamo manifests to be applied, got %d", applyCommands)
+	}
+}
+
 func TestEnsureLabelsExistingDynamoChartPodMonitor(t *testing.T) {
 	var commands []recordedCommand
 	err := Ensure(context.Background(), Config{
@@ -212,5 +242,44 @@ func TestEnsureLabelsExistingDynamoChartPodMonitor(t *testing.T) {
 	}
 	if labelCommands != 2 {
 		t.Fatalf("expected 2 Dynamo chart label commands, got %d: %#v", labelCommands, commands)
+	}
+}
+
+func TestEnsureContinuesLabelingDynamoPodMonitorsAfterNonStrictFailure(t *testing.T) {
+	var labelCommands []string
+	err := Ensure(context.Background(), Config{
+		Namespace: "brixbench-adhoc",
+		Provider:  "dynamo",
+		Engine:    "vllm",
+		Enabled:   true,
+		Strict:    false,
+		Runner: func(ctx context.Context, stdin string, args ...string) (string, error) {
+			joined := strings.Join(args, " ")
+			if joined == `get podmonitor -n brixbench-adhoc -o jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}` {
+				return "dynamo-frontend\ndynamo-worker\n", nil
+			}
+			if strings.HasPrefix(joined, "label podmonitor dynamo-") {
+				labelCommands = append(labelCommands, joined)
+				if strings.Contains(joined, "dynamo-frontend") {
+					return "", errors.New("label failed")
+				}
+			}
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected non-strict label failure to continue, got %v", err)
+	}
+	if len(labelCommands) != 2 {
+		t.Fatalf("expected both Dynamo PodMonitors to be labeled, got %d: %#v", len(labelCommands), labelCommands)
+	}
+	if !strings.Contains(labelCommands[1], "dynamo-worker") {
+		t.Fatalf("expected labeling to continue to dynamo-worker, got %#v", labelCommands)
+	}
+}
+
+func TestCleanupRejectsEmptyNamespace(t *testing.T) {
+	if err := Cleanup(context.Background(), " "); err == nil {
+		t.Fatalf("expected empty namespace cleanup to fail")
 	}
 }
