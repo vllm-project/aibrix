@@ -19,6 +19,8 @@ package benchmark
 import (
 	"errors"
 	"testing"
+
+	"github.com/vllm-project/aibrix/brixbench/internal/resolver"
 )
 
 func TestFallbackGatewayEndpointMissing(t *testing.T) {
@@ -70,5 +72,37 @@ func TestResolveGatewayEndpointFailsWithoutDetectedEndpointOrOverride(t *testing
 	_, err := resolveGatewayEndpoint("", errors.New("lookup failed"))
 	if err == nil {
 		t.Fatal("resolveGatewayEndpoint() expected error, got nil")
+	}
+}
+
+func TestShouldRunStormServicePreflightOnlyForAIBrix(t *testing.T) {
+	aibrixProvider := "aibrix"
+	dynamoProvider := "dynamo"
+	for _, tc := range []struct {
+		name string
+		test resolver.Test
+		want bool
+	}{
+		{
+			name: "aibrix",
+			test: resolver.Test{Provider: &aibrixProvider},
+			want: true,
+		},
+		{
+			name: "dynamo",
+			test: resolver.Test{Provider: &dynamoProvider},
+			want: false,
+		},
+		{
+			name: "null provider",
+			test: resolver.Test{},
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldRunStormServicePreflight(tc.test); got != tc.want {
+				t.Fatalf("shouldRunStormServicePreflight() = %t, want %t", got, tc.want)
+			}
+		})
 	}
 }

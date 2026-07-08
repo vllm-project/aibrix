@@ -1164,7 +1164,12 @@ func TestDynamoDeployerWaitForComponentPodsPollsUntilCreated(t *testing.T) {
 
 func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *testing.T) {
 	projectRoot := t.TempDir()
-	runner := &fakeCommandRunner{}
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{},
+			{output: "dynamocomponentdeployment.nvidia.com/vllm-dynamo-frontend\n"},
+		},
+	}
 	deployer := &DynamoDeployer{
 		namespace:      "brixbench-dynamo",
 		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml",
@@ -1187,7 +1192,19 @@ func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *t
 		},
 		{
 			name: "kubectl",
+			args: []string{"patch", "dynamocomponentdeployment.nvidia.com/vllm-dynamo-frontend", "-n", "brixbench-dynamo", "--type=merge", "-p", `{"metadata":{"finalizers":[]}}`},
+		},
+		{
+			name: "kubectl",
 			args: []string{"delete", "-n", "brixbench-dynamo", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml", "--ignore-not-found", "--wait=false"},
+		},
+		{
+			name: "kubectl",
+			args: []string{"delete", "dynamocomponentdeployment.nvidia.com/vllm-dynamo-frontend", "-n", "brixbench-dynamo", "--ignore-not-found", "--wait=false"},
+		},
+		{
+			name: "kubectl",
+			args: []string{"wait", "--for=delete", "dynamocomponentdeployment.nvidia.com/vllm-dynamo-frontend", "-n", "brixbench-dynamo", "--timeout=2m"},
 		},
 		{
 			name: "kubectl",
@@ -1235,5 +1252,80 @@ func TestDynamoDeployerTeardownIgnoresCleanupErrors(t *testing.T) {
 	}
 	if len(runner.calls) != 9 {
 		t.Fatalf("expected 9 cleanup commands, got %d", len(runner.calls))
+	}
+}
+
+func TestDynamoDeployerCaptureArtifactsWritesClusterStateAndManifest(t *testing.T) {
+	logDir := t.TempDir()
+	projectRoot := t.TempDir()
+	manifest := writeDynamoGraphManifest(t, "brixbench-dynamo", "vllm-dynamo")
+	runner := &fakeCommandRunner{output: "captured\n"}
+	deployer := &DynamoDeployer{
+		namespace:      "brixbench-dynamo",
+		effectiveNS:    "brixbench-dynamo",
+		logDir:         logDir,
+		projectRoot:    projectRoot,
+		engineManifest: manifest,
+		runner:         runner,
+	}
+
+	if err := deployer.CaptureArtifacts(context.Background()); err != nil {
+		t.Fatalf("CaptureArtifacts returned error: %v", err)
+	}
+
+	artifactDir := filepath.Join(logDir, "dynamo-artifacts")
+	for _, name := range []string{
+		"pods.yaml",
+		"services.yaml",
+		"events.yaml",
+		"dynamographdeployments.yaml",
+		"dynamocomponentdeployments.yaml",
+		"deployments.yaml",
+		"statefulsets.yaml",
+		"frontend-logs.txt",
+		"component-logs.txt",
+		"helm-status.txt",
+		"engine-manifest.yaml",
+	} {
+		if _, err := os.Stat(filepath.Join(artifactDir, name)); err != nil {
+			t.Fatalf("expected artifact %s: %v", name, err)
+		}
+	}
+	if len(runner.calls) != 10 {
+		t.Fatalf("expected 10 capture commands, got %d", len(runner.calls))
+	}
+	wantHelmStatusArgs := wantDynamoHelmArgs(t, projectRoot, "status", dynamoPlatformHelmReleaseName, "-n", "brixbench-dynamo")
+	if runner.calls[9].name != "env" || !reflect.DeepEqual(runner.calls[9].args, wantHelmStatusArgs) {
+		t.Fatalf("expected helm status capture, got %+v", runner.calls[9])
+	}
+	content, err := os.ReadFile(filepath.Join(artifactDir, "engine-manifest.yaml"))
+	if err != nil {
+		t.Fatalf("failed to read copied engine manifest: %v", err)
+	}
+	if !strings.Contains(string(content), "kind: DynamoGraphDeployment") {
+		t.Fatalf("expected copied engine manifest, got:\n%s", string(content))
+	}
+}
+
+func TestDynamoDeployerCaptureArtifactsRecordsCaptureFailures(t *testing.T) {
+	logDir := t.TempDir()
+	runner := &fakeCommandRunner{err: errors.New("kubectl unavailable")}
+	deployer := &DynamoDeployer{
+		namespace:   "brixbench-dynamo",
+		logDir:      logDir,
+		projectRoot: t.TempDir(),
+		runner:      runner,
+	}
+
+	if err := deployer.CaptureArtifacts(context.Background()); err != nil {
+		t.Fatalf("CaptureArtifacts returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(logDir, "dynamo-artifacts", "pods.yaml"))
+	if err != nil {
+		t.Fatalf("failed to read failure artifact: %v", err)
+	}
+	if !strings.Contains(string(content), "capture failed") {
+		t.Fatalf("expected capture failure to be recorded, got:\n%s", string(content))
 	}
 }

@@ -227,10 +227,6 @@ func (d *DynamoDeployer) GetGatewayEndpoint(ctx context.Context) (string, error)
 	return fmt.Sprintf("http://%s:%d", host, port), nil
 }
 
-func (d *DynamoDeployer) CaptureArtifacts(ctx context.Context) error {
-	return nil
-}
-
 func (d *DynamoDeployer) Teardown(ctx context.Context) error {
 	namespace := d.effectiveNS
 	if namespace == "" {
@@ -244,8 +240,9 @@ func (d *DynamoDeployer) Teardown(ctx context.Context) error {
 		args = append(args, "-f", d.engineManifest, "--type=merge", "-p", dynamoClearFinalizersPatch)
 		d.runDynamoCleanupCommand(ctx, "patch-dynamo-graph-deployment-finalizers", "kubectl", args...)
 	}
+	componentDeployments := []string{}
 	if strings.TrimSpace(namespace) != "" {
-		d.patchDynamoComponentDeploymentFinalizers(ctx, namespace)
+		componentDeployments = d.patchDynamoComponentDeploymentFinalizers(ctx, namespace)
 	}
 	if strings.TrimSpace(d.engineManifest) != "" {
 		args := []string{"delete"}
@@ -256,6 +253,7 @@ func (d *DynamoDeployer) Teardown(ctx context.Context) error {
 		d.runDynamoCleanupCommand(ctx, "delete-dynamo-graph-deployment", "kubectl", args...)
 	}
 	if strings.TrimSpace(namespace) != "" {
+		d.deleteDynamoComponentDeployments(ctx, namespace, componentDeployments)
 		d.runDynamoCleanupCommand(ctx, "delete-dynamo-fallback-podmonitors", "kubectl", "delete", "podmonitor", "dynamo-vllm-worker-metrics", "dynamo-vllm-frontend-metrics", "-n", namespace, "--ignore-not-found")
 		d.runDynamoHelmCleanupCommand(ctx, "uninstall-dynamo-platform", "uninstall", dynamoPlatformHelmReleaseName, "-n", namespace, "--ignore-not-found", "--wait", "--timeout", "5m")
 		d.runDynamoCleanupCommand(ctx, "delete-dynamo-pvcs", "kubectl", "delete", "pvc", "--all", "-n", namespace, "--ignore-not-found")
@@ -466,18 +464,38 @@ nats:
 `, imagePullSecrets, dynamoDefaultOperatorImageRepository, dynamoDefaultOperatorImageTag, dockerRegistry, dynamoMPISecretName, dynamoRegistryServer, dynamoRegistryServer)
 }
 
-func (d *DynamoDeployer) patchDynamoComponentDeploymentFinalizers(ctx context.Context, namespace string) {
+func (d *DynamoDeployer) patchDynamoComponentDeploymentFinalizers(ctx context.Context, namespace string) []string {
 	output, err := d.captureDynamoCommand(ctx, "list-dynamo-component-deployments", "kubectl", "get", "dynamocomponentdeployments.nvidia.com", "-n", namespace, "-o", "name")
 	if err != nil {
 		fmt.Printf("Warning: Dynamo cleanup step list-dynamo-component-deployments failed: %v\n", err)
-		return
+		return nil
 	}
+	names := []string{}
 	for _, name := range strings.Fields(output) {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
+		names = append(names, name)
 		d.runDynamoCleanupCommand(ctx, "patch-dynamo-component-deployment-finalizers-"+name, "kubectl", "patch", name, "-n", namespace, "--type=merge", "-p", dynamoClearFinalizersPatch)
+	}
+	return names
+}
+
+func (d *DynamoDeployer) deleteDynamoComponentDeployments(ctx context.Context, namespace string, names []string) {
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		d.runDynamoCleanupCommand(ctx, "delete-dynamo-component-deployment-"+name, "kubectl", "delete", name, "-n", namespace, "--ignore-not-found", "--wait=false")
+	}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		d.runDynamoCleanupCommand(ctx, "wait-delete-dynamo-component-deployment-"+name, "kubectl", "wait", "--for=delete", name, "-n", namespace, "--timeout=2m")
 	}
 }
 

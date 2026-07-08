@@ -88,7 +88,7 @@ spec:
               export MODEL=Qwen3-8B
               export SERVED_MODEL_NAME=qwen3-8b
               export MAX_MODEL_LEN=16384
-              export GPU_MEM_UTIL=0.90
+              export GPU_MEM_UTIL=0.30
               export TP=2
               python3 -m dynamo.vllm \
                 --model /models/$MODEL \
@@ -173,7 +173,7 @@ spec:
               export MODEL=Qwen3-8B
               export SERVED_MODEL_NAME=qwen3-8b
               export MAX_MODEL_LEN=16384
-              export GPU_MEM_UTIL=0.90
+              export GPU_MEM_UTIL=0.30
               export TP=2
               python3 -m dynamo.vllm \
                 --model /models/$MODEL \

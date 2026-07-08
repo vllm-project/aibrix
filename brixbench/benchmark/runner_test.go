@@ -104,12 +104,14 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 		}
 		namespaceResetDone()
 
-		preflightDone := progressStep(t, "check existing StormService resources for %s", testCase.Name)
-		if preflightErr := ensureStormServicesCleared(ctx); preflightErr != nil {
-			result.Error = fmt.Sprintf("StormService preflight failed: %v", preflightErr)
-			return result, fmt.Errorf("StormService preflight failed: %w", preflightErr)
+		if shouldRunStormServicePreflight(testCase) {
+			preflightDone := progressStep(t, "check existing StormService resources for %s", testCase.Name)
+			if preflightErr := ensureStormServicesCleared(ctx); preflightErr != nil {
+				result.Error = fmt.Sprintf("StormService preflight failed: %v", preflightErr)
+				return result, fmt.Errorf("StormService preflight failed: %w", preflightErr)
+			}
+			preflightDone()
 		}
-		preflightDone()
 	} else {
 		progressLog(t, "Skipping benchmark namespace reset before %s; namespace %s will be reused", testCase.Name, benchmarkNamespace)
 	}
@@ -167,6 +169,10 @@ func benchmarkNamespaceForTestCase(testCase resolver.Test) string {
 		return deployers.DynamoBenchmarkNamespace
 	}
 	return defaultBenchmarkNamespace
+}
+
+func shouldRunStormServicePreflight(testCase resolver.Test) bool {
+	return testCase.ProviderName() == "aibrix"
 }
 
 func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string, testCase *resolver.Test, benchmarkNamespace string, caseLogDir string) (deployers.Deployer, string, error) {
