@@ -226,3 +226,88 @@ func Test_handleRequestHeaders(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
+	t.Run("valid bearer token is accepted and preserved for upstream", func(t *testing.T) {
+		server := &Server{
+			apiKeyAuth: &apiKeyAuthConfig{
+				token: "secret-1",
+			},
+		}
+
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extProcPb.HttpHeaders{
+					Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+						{Key: "Authorization", RawValue: []byte("Bearer secret-1")},
+						{Key: pathKey, RawValue: []byte(PathCompletions)},
+						{Key: HeaderRoutingStrategy, RawValue: []byte("random")},
+					}},
+				},
+			},
+		}
+
+		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", req)
+
+		assert.Nil(t, resp.GetImmediateResponse())
+		assert.Equal(t, utils.User{}, user)
+		assert.EqualValues(t, 0, rpm)
+		assert.Equal(t, PathCompletions, routingCtx.ReqPath)
+		assert.Equal(t, map[string]string{"Authorization": "Bearer secret-1", HeaderRoutingStrategy: "random"}, routingCtx.ReqHeaders)
+		assert.Empty(t, resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetRemoveHeaders())
+	})
+
+	t.Run("missing bearer token is rejected", func(t *testing.T) {
+		server := &Server{
+			apiKeyAuth: &apiKeyAuthConfig{
+				token: "secret-1",
+			},
+		}
+
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extProcPb.HttpHeaders{
+					Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+						{Key: pathKey, RawValue: []byte(PathCompletions)},
+					}},
+				},
+			},
+		}
+
+		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", req)
+
+		assert.Equal(t, envoyTypePb.StatusCode_Unauthorized, resp.GetImmediateResponse().GetStatus().GetCode())
+		assert.Equal(t, utils.User{}, user)
+		assert.EqualValues(t, 0, rpm)
+		assert.Nil(t, routingCtx)
+		assert.Contains(t, resp.GetImmediateResponse().GetBody(), ErrorCodeInvalidAPIKey)
+		assert.Contains(t, resp.GetImmediateResponse().GetBody(), `"param":"api_key"`)
+	})
+
+	t.Run("non-bearer authorization header is rejected", func(t *testing.T) {
+		server := &Server{
+			apiKeyAuth: &apiKeyAuthConfig{
+				token: "secret-1",
+			},
+		}
+
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extProcPb.HttpHeaders{
+					Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+						{Key: "Authorization", RawValue: []byte("secret-1")},
+						{Key: pathKey, RawValue: []byte(PathCompletions)},
+					}},
+				},
+			},
+		}
+
+		resp, user, rpm, routingCtx := server.HandleRequestHeaders(context.Background(), "test-request-id", req)
+
+		assert.Equal(t, envoyTypePb.StatusCode_Unauthorized, resp.GetImmediateResponse().GetStatus().GetCode())
+		assert.Equal(t, utils.User{}, user)
+		assert.EqualValues(t, 0, rpm)
+		assert.Nil(t, routingCtx)
+		assert.Contains(t, resp.GetImmediateResponse().GetBody(), ErrorCodeInvalidAPIKey)
+	})
+}

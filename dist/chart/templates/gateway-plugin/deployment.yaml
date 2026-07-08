@@ -92,6 +92,10 @@ spec:
                   name: {{ include "aibrix.fullname" . }}-redis
                   key: {{ include "aibrix.redis.connectionPasswordKey" (dict "component" "gatewayPlugin") }}
             {{- end }}
+            {{- if .Values.gatewayPlugin.auth.bearerToken }}
+            - name: AIBRIX_AUTH_BEARER_TOKEN
+              value: {{ .Values.gatewayPlugin.auth.bearerToken | quote }}
+            {{- end }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:
