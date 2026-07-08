@@ -642,10 +642,26 @@ async def test_expire_job_skips_already_finalizing_job():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("job_id", "owner_ref", "initial_bucket"),
+    ("job_id", "owner_ref", "initial_bucket", "recovered_state"),
     [
-        ("test-job-id-expire-orphaned", "owner-2", "in_progress"),
-        ("test-job-id-expire-recovered-pending", "owner-3", "pending"),
+        (
+            "test-job-id-expire-orphaned",
+            "owner-2",
+            "in_progress",
+            BatchJobState.IN_PROGRESS,
+        ),
+        (
+            "test-job-id-expire-recovered-pending",
+            "owner-3",
+            "pending",
+            BatchJobState.IN_PROGRESS,
+        ),
+        (
+            "test-job-id-expire-recovered-cancelling",
+            "owner-4",
+            "pending",
+            BatchJobState.CANCELLING,
+        ),
     ],
 )
 async def test_expired_job_cleans_up_during_recovery(
@@ -653,9 +669,11 @@ async def test_expired_job_cleans_up_during_recovery(
     job_id: str,
     owner_ref: str,
     initial_bucket: str,
+    recovered_state: BatchJobState,
 ):
     job_manager = _job_manager()
     recovered_job = _in_progress_meta_job(job_id, total_requests=1)
+    recovered_job.status.state = recovered_state
     recovered_job.status.set_runtime_ref(
         "fake",
         JobRuntimeRef(driverType="fake", ownerRef=owner_ref, attempt=1),
