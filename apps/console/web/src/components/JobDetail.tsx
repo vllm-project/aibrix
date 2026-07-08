@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   AlertTriangle,
+  Boxes,
   CheckCircle,
   ChevronLeft,
   Clock,
@@ -18,7 +19,8 @@ import {
   getBatchTiming,
 } from '../utils/batchProduct';
 import { copyToClipboard } from '../utils/clipboard';
-import { Job, JobEvent, JobStatus } from '../data/mockData';
+import { Job, JobEvent, JobStatus, JobDeploymentDetail } from '../data/mockData';
+import { DeploymentDetailCard } from './jobDeploymentDetail';
 
 interface JobDetailProps {
   jobId: string | null;
@@ -163,6 +165,26 @@ function visibleMetadata(job: Job): [string, string][] {
     .sort(([a], [b]) => a.localeCompare(b));
 }
 
+function parseDeploymentDetail(job: Job): JobDeploymentDetail | null {
+  const extraBody = job.extraBody;
+  if (!extraBody) return null;
+
+  const aibrixRaw = extraBody['aibrix'];
+  if (aibrixRaw) {
+    try {
+      const aibrix = JSON.parse(aibrixRaw);
+      if (aibrix.deployment) {
+        const parsed = typeof aibrix.deployment === 'string' ? JSON.parse(aibrix.deployment) : aibrix.deployment;
+        if (parsed && typeof parsed === 'object' && parsed.type) {
+          return parsed as JobDeploymentDetail;
+        }
+      }
+    } catch { /* not valid JSON */ }
+  }
+
+  return null;
+}
+
 function statusClass(s: JobStatus): string {
   switch (s) {
     case 'completed':
@@ -188,6 +210,8 @@ function statusClass(s: JobStatus): string {
 
 export function JobDetail({ jobId, onBack }: JobDetailProps) {
   const [job, setJob] = useState<Job | null>(null);
+  const [deploymentDetail, setDeploymentDetail] = useState<JobDeploymentDetail | null>(null);
+  const hasDeploymentDetail = useRef(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
@@ -215,16 +239,22 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
     if (!jobId) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    hasDeploymentDetail.current = false;
 
     const fetchJob = (initial: boolean) => {
       if (initial) {
         setLoading(true);
         setLoadError(null);
       }
-      getJob(jobId)
+      getJob(jobId, { includeDeployment: !hasDeploymentDetail.current })
         .then(j => {
           if (cancelled) return;
           setJob(j);
+          const detail = parseDeploymentDetail(j);
+          if (detail) {
+            setDeploymentDetail(detail);
+            hasDeploymentDetail.current = true;
+          }
           if (!terminalStatus(j.status)) {
             timer = setTimeout(() => fetchJob(false), 5000);
           }
@@ -543,6 +573,28 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                   <div className="text-2xl">{formatNumber(usage.outputTokens)}</div>
                 </div>
               </div>
+            </div>
+          )}
+
+          {deploymentDetail && (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <Boxes className="w-5 h-5 text-teal-600" />
+                <h2 className="text-lg">Deployment</h2>
+              </div>
+              <DeploymentDetailCard
+                detail={deploymentDetail}
+                onRefresh={async () => {
+                  if (!jobId) return null;
+                  const j = await getJob(jobId, { includeDeployment: true });
+                  setJob(j);
+                  const detail = parseDeploymentDetail(j);
+                  if (detail) {
+                    setDeploymentDetail(detail);
+                  }
+                  return j;
+                }}
+              />
             </div>
           )}
         </div>

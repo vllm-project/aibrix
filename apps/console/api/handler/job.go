@@ -158,6 +158,15 @@ func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job
 		}
 	}
 
+	// Propagate include_deployment from HTTP query param through gRPC
+	// metadata to the batch client, which passes it as a query param to
+	// the MDS get_batch endpoint.
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if vals := md.Get("x-aibrix-include-deployment"); len(vals) > 0 {
+			ctx = common.WithIncludeDeployment(ctx, strings.EqualFold(vals[0], "true"))
+		}
+	}
+
 	job, err := h.planner.GetJob(ctx, req.Id)
 	if err != nil {
 		// Dev fallback: return the demo job if MDS is unreachable.
@@ -167,6 +176,9 @@ func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job
 			}); ok {
 				if demoJob, found := dev.GetDemoJob(req.Id); found {
 					klog.Warningf("MDS unreachable, falling back to demo job %s: %v", req.Id, err)
+					if !common.IncludeDeploymentFromCtx(ctx) {
+						demoJob = stripDeploymentFromExtraBody(demoJob)
+					}
 					return demoJob, nil
 				}
 			}
@@ -970,6 +982,32 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// stripDeploymentFromExtraBody removes the "deployment" key from the
+// aibrix extra body JSON when the caller did not request deployment detail.
+func stripDeploymentFromExtraBody(job *pb.Job) *pb.Job {
+	if job == nil || len(job.ExtraBody) == 0 {
+		return job
+	}
+	raw, ok := job.ExtraBody[common.AIBrixExtraBodyField]
+	if !ok || raw == "" {
+		return job
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return job
+	}
+	if _, exists := m["deployment"]; !exists {
+		return job
+	}
+	delete(m, "deployment")
+	cleaned, err := json.Marshal(m)
+	if err != nil {
+		return job
+	}
+	job.ExtraBody[common.AIBrixExtraBodyField] = string(cleaned)
+	return job
 }
 
 func unixOrZero(t time.Time) int64 {

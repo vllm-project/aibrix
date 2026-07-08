@@ -27,6 +27,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/apps/console/api/common"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	pu "github.com/vllm-project/aibrix/apps/console/api/planner/utils"
@@ -388,6 +389,7 @@ func (q *Planner) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, er
 	if jobID == "" {
 		return nil, fmt.Errorf("%w: empty job_id", plannerapi.ErrInvalidJob)
 	}
+
 	q.mu.RLock()
 	job, ok := q.jobs[jobID]
 	if !ok {
@@ -403,8 +405,16 @@ func (q *Planner) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, er
 	terminalAt := terminalTime(job)
 	// The running worker will poll MDS and update the batch if it changes.
 	batch := job.batch
+	batchID := job.batchID
 	state := jobStateSnapshot(job)
 	job.mu.RUnlock()
+
+	// This is a case where we need to get deployment details from MDS.
+	if batchID != "" && common.IncludeDeploymentFromCtx(ctx) {
+		if newBatch, err := q.bc.GetBatch(ctx, batchID); err == nil {
+			batch = newBatch
+		}
+	}
 
 	return &plannerapi.Job{
 		JobID: jobID,
