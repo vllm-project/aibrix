@@ -17,6 +17,7 @@
 from typing import Any, Dict, Optional, Protocol, runtime_checkable
 
 from aibrix.batch.job_entity import BatchJob
+from aibrix.context.infra import InfrastructureContext
 
 
 @runtime_checkable
@@ -28,7 +29,9 @@ class DeploymentDetailProvider(Protocol):
     (open envelope) and serializes it to JSON for the caller.
     """
 
-    async def get_deployment_detail(self, job: BatchJob) -> Optional[Dict[str, Any]]:
+    async def get_deployment_detail(
+        self, context: InfrastructureContext, job: BatchJob
+    ) -> Optional[Dict[str, Any]]:
         """Query deployment detail for a batch job.
 
         Returns a dict (not a typed model) so different backends can return
