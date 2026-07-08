@@ -201,19 +201,21 @@ class BatchManager(RunningJobs, SchedulableJobs):
         meta_job.status = job.status
         return meta_job
 
-    def _normalize_recovered_in_progress_job_for_cleanup(
+    def _normalize_recovered_active_job_for_cleanup(
         self, job_id: str, job: BatchJob
     ) -> JobMetaInfo | BatchJob:
         """Move a recovered active job into the in-progress registry if needed.
 
-        Restart/bootstrap can temporarily stage a persisted ``IN_PROGRESS`` job
-        in ``_pending_jobs`` before scheduler admission rebuilds the runtime
-        state. Expire/cancel cleanup paths operate on the in-progress registry,
-        so normalize that recovered shape before persisting status updates or
-        clearing durable execution metadata.
+        Restart/bootstrap can temporarily stage a persisted active job in
+        ``_pending_jobs`` on first sight because recovery defers runtime
+        reattachment until after the scheduler is rebuilt. Cleanup paths later
+        operate on the in-progress registry, so normalize that recovered shape
+        before persisting status updates or clearing durable execution
+        metadata.
         """
 
-        if job.status.state != BatchJobState.IN_PROGRESS:
+        category, _ = self._categorize_jobs(job, first_seen=False)
+        if category is not self._in_progress_jobs:
             return job
         if job_id in self._in_progress_jobs:
             return self._in_progress_jobs[job_id]
@@ -224,8 +226,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
         del self._pending_jobs[job_id]
         self._in_progress_jobs[job_id] = meta_data
         logger.debug(
-            "Normalized recovered in-progress job for cleanup",
+            "Normalized recovered active job for cleanup",
             job_id=job_id,
+            state=job.status.state,
         )  # type: ignore[call-arg]
         return meta_data
 
@@ -1095,7 +1098,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
             )  # type: ignore[call-arg]
             return False
 
-        old_job = self._normalize_recovered_in_progress_job_for_cleanup(job_id, old_job)
+        old_job = self._normalize_recovered_active_job_for_cleanup(job_id, old_job)
 
         job_expired = self._build_expired_job_update(old_job)
         if old_job.status.state in (BatchJobState.CREATED, BatchJobState.VALIDATING):
