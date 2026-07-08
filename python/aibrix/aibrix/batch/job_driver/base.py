@@ -40,7 +40,6 @@ from datetime import datetime, timezone
 from math import isfinite
 from typing import Any, Dict, Iterable, Optional, Set, Tuple
 
-import aibrix.batch.constant as constant
 import aibrix.batch.storage as storage
 from aibrix.batch.client import (
     DispatchEngine,
@@ -51,6 +50,14 @@ from aibrix.batch.client import (
     RetryConfig,
 )
 from aibrix.batch.job_driver.driver import TerminateResult
+from aibrix.batch.job_driver.error_injection import (
+    ACTION_INTERRUPT_RUNTIME,
+    BREAKPOINT_AFTER_N_REQUESTS,
+    BREAKPOINT_PREPARATION,
+    JobDriverErrorInjectionEvent,
+    JobDriverErrorInjectionRaisedAction,
+    JobDriverErrorInjector,
+)
 from aibrix.batch.job_driver.running_jobs import RunningJobs
 from aibrix.batch.job_driver.runtime import Endpoint, NoopRuntime, Runtime
 from aibrix.batch.job_entity import (
@@ -236,6 +243,7 @@ class BaseJobDriver:
         self._usage_counted_ids: Set[str] = set()
         self._request_counts: Optional[RequestCountStats] = None
         self._launched_request_ids: Set[int] = set()
+        self._error_injection = JobDriverErrorInjector(job)
         self._usage_lock = asyncio.Lock()
 
     # ── protocol methods ──────────────────────────────────────────
@@ -291,6 +299,7 @@ class BaseJobDriver:
         if job is None:
             self._log_missing_job(job_id)
             return
+        self._set_error_injection(job)
 
         if self._should_resume_finalizing_job(job):
             job = await self._resume_finalizing_job(job)
@@ -315,6 +324,16 @@ class BaseJobDriver:
                 return
             raise
         except Exception as e:
+            latest = await self._progress_manager.get_job(job_id)
+            if latest is not None and latest.status.finished:
+                logger.info(
+                    "Ignoring late execution error because job already finished",
+                    job_id=job_id,
+                    state=latest.status.state.value,
+                    error=str(e),
+                )  # type: ignore[call-arg]
+                self._log_completed(latest)
+                return
             # Guard mark_job_failed: if it raises (e.g. the job is no
             # longer in_progress) the exception must not escape and tear
             # down the loop, stranding all future jobs.
@@ -883,6 +902,7 @@ class BaseJobDriver:
             job.job_id,
             progress_manager=self._progress_manager,
             worker_id_generator=self._assign_worker_id,
+            error_injection=self._ensure_error_injection(job),
         ) as endpoint:
             self._engine = (
                 DispatchEngine(
@@ -957,13 +977,17 @@ class BaseJobDriver:
     async def prepare_job(self, job: BatchJob) -> BatchJob:
         """Prepare job output files by creating multipart uploads."""
         logger.debug("Preparing job output files")  # type: ignore[call-arg]
+        self._ensure_error_injection(job)
         job, stopped = await self._is_job_stopped(job.job_id)
         if stopped:
             # Simply return and leave caller to handle interruption.
             return job
 
         # Handle preparation failure injection
-        self._maybe_fail_preparation(job)
+        await self._apply_error_injection_breakpoint(
+            job,
+            BREAKPOINT_PREPARATION,
+        )
         job = await storage.prepare_job_ouput_files(job)
         job = await self._progress_manager.update_job_status(job.job_id, job.status)
         logger.debug("Job output files prepared")  # type: ignore[call-arg]
@@ -991,6 +1015,7 @@ class BaseJobDriver:
         job, stopped = await self._is_job_stopped(job_id)
         if stopped:
             return await self._finish_stopped_job(job)
+        self._ensure_error_injection(job)
 
         if job.status.request_counts.total > 0:
             return await self._execute_worker_concurrent(job)
@@ -1025,8 +1050,6 @@ class BaseJobDriver:
                 "Resuming job", job_id=job_id, request_id=line_no, opts=job.spec.opts
             )  # type: ignore[call-arg]
 
-        fail_after_n_requests = self._parse_fail_after_n_requests(job)
-
         processed_requests = 0
         # The loop is necessary in cases of job driver lock a request but unable to process it (complete or fail), e.g., server crash.
         while line_no >= 0:
@@ -1045,20 +1068,11 @@ class BaseJobDriver:
                     job, [completed_task.result()]
                 )
                 processed_requests += completed
-
-                # fail_after_n_requests injection check
-                if fail_after_n_requests is not None:
-                    if processed_requests >= fail_after_n_requests:
-                        logger.info(
-                            "Triggering artificial failure due to fail_after_n_requests",
-                            job_id=job_id,
-                            processed_requests=processed_requests,
-                            fail_after_n_requests=fail_after_n_requests,
-                        )  # type: ignore[call-arg]
-                        raise RuntimeError(
-                            f"Artificial failure triggered after processing {processed_requests} requests "
-                            f"(fail_after_n_requests={fail_after_n_requests})"
-                        )
+                await self._apply_error_injection_breakpoint(
+                    job,
+                    BREAKPOINT_AFTER_N_REQUESTS,
+                    n=processed_requests,
+                )
 
                 # After-task job interruption check
                 # Since job is reload during _sync_completed_request_tasks, no reloading neeaded.
@@ -1102,9 +1116,7 @@ class BaseJobDriver:
             asyncio.Queue()
         )
         start_index = await self._get_next_pass_start(job)
-        fail_after_n_requests = self._parse_fail_after_n_requests(job)
         processed_requests = 0
-        fail_after_triggered = False
         if start_index < 0:
             logger.warning(
                 "Job has something wrong with metadata in batch manager, nothing left to execute",
@@ -1140,6 +1152,13 @@ class BaseJobDriver:
                 async for request_input in storage.read_job_next_request(
                     job, start_index
                 ):
+                    # Mirror the serial worker: before pulling the next request
+                    # into dispatch, observe the latest persisted job state so
+                    # cancel / expire / restart stop future scheduling promptly.
+                    job, stopped = await self._is_job_stopped(job_id)
+                    if stopped:
+                        return
+
                     request_id = request_input.pop("_request_index", -1)
                     if request_id < 0:
                         continue
@@ -1166,6 +1185,8 @@ class BaseJobDriver:
                 if reloaded_job is None:
                     raise RuntimeError(f"Job metadata missing for {job_id}")
                 job = reloaded_job
+                if self._should_stop_before_proceed(job):
+                    return
                 start_index = await self._get_next_pass_start(job)
                 local_request_counts = self._get_local_request_counts(job_id)
                 if start_index < 0 and local_request_counts.total > 0:
@@ -1214,7 +1235,7 @@ class BaseJobDriver:
             response: Optional[dict[str, Any]],
             error: Optional[InferenceError],
         ) -> None:
-            nonlocal job, processed_requests, fail_after_triggered
+            nonlocal job, processed_requests
             request_id, custom_id = request.ref
             if error is None and isinstance(response, dict):
                 async with self._usage_lock:
@@ -1226,16 +1247,11 @@ class BaseJobDriver:
             await storage.write_job_output_data(job, request_id, record)
             await completed_request_ids.put((request_id, error is not None))
             processed_requests += 1
-            if (
-                not fail_after_triggered
-                and fail_after_n_requests is not None
-                and processed_requests >= fail_after_n_requests
-            ):
-                fail_after_triggered = True
-                raise RuntimeError(
-                    f"Artificial failure triggered after processing {processed_requests} requests "
-                    f"(fail_after_n_requests={fail_after_n_requests})"
-                )
+            await self._apply_error_injection_breakpoint(
+                job,
+                BREAKPOINT_AFTER_N_REQUESTS,
+                n=processed_requests,
+            )
 
         stats = DispatchStats()
         telemetry_interval = _telemetry_interval_seconds()
@@ -1261,8 +1277,13 @@ class BaseJobDriver:
             )
         finally:
             await completed_request_ids.put(None)
-            with contextlib.suppress(asyncio.CancelledError):
-                await sync_task
+            if not sync_task.done():
+                try:
+                    await asyncio.wait_for(sync_task, timeout=2.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    sync_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await sync_task
             if telemetry_task is not None:
                 telemetry_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -1364,42 +1385,43 @@ class BaseJobDriver:
         normalized = str(value).strip().lower()
         return normalized not in {"", "0", "false", "no", "off"}
 
-    def _maybe_fail_preparation(self, job: BatchJob) -> None:
-        """Inject a preparation failure when test opts request it.
-
-        This is overridable because subclasses may prepare outputs differently
-        or need backend-specific failure codes for preparation-stage faults.
-        """
-        if not self._opt_enabled(job, constant.BATCH_OPTS_FAIL_PREPARATION):
-            return
-        raise BatchJobError(
-            code=BatchJobErrorCode.PREPARE_OUTPUT_ERROR,
-            message=(
-                "Artificial preparation failure triggered "
-                f"({constant.BATCH_OPTS_FAIL_PREPARATION})"
-            ),
+    def _set_error_injection(self, job: BatchJob) -> JobDriverErrorInjector:
+        self._error_injection = JobDriverErrorInjector(
+            job,
+            raise_helpers={
+                ACTION_INTERRUPT_RUNTIME: JobDriverErrorInjectionRaisedAction,
+            },
         )
+        return self._error_injection
 
-    def _parse_fail_after_n_requests(self, job: BatchJob) -> Optional[int]:
-        """Parse the test-only fail-after counter from job opts.
+    def _ensure_error_injection(self, job: BatchJob) -> JobDriverErrorInjector:
+        if self._error_injection.job_id != job.job_id:
+            return self._set_error_injection(job)
+        return self._error_injection
 
-        Subclasses override this when request accounting or failure injection
-        should key off different option names or counting semantics.
-        """
-        if (
-            not job.spec.opts
-            or constant.BATCH_OPTS_FAIL_AFTER_N_REQUESTS not in job.spec.opts
-        ):
-            return None
+    async def _apply_error_injection_breakpoint(
+        self,
+        job: BatchJob,
+        breakpoint: str,
+        **kwargs: Any,
+    ) -> None:
         try:
-            return int(job.spec.opts[constant.BATCH_OPTS_FAIL_AFTER_N_REQUESTS])
-        except (ValueError, TypeError):
-            logger.warning(
-                "Invalid fail_after_n_requests value, ignoring",
-                job_id=job.job_id,
-                value=job.spec.opts[constant.BATCH_OPTS_FAIL_AFTER_N_REQUESTS],
-            )  # type: ignore[call-arg]
-            return None
+            self._ensure_error_injection(job).raise_for_breakpoint(breakpoint, **kwargs)
+        except JobDriverErrorInjectionRaisedAction as exc:
+            await self._apply_error_injection_event(job, exc.event)
+
+    async def _apply_error_injection_event(
+        self,
+        job: BatchJob,
+        event: JobDriverErrorInjectionEvent,
+    ) -> None:
+        if event.action == ACTION_INTERRUPT_RUNTIME:
+            await self._runtime.cleanup(job)
+            return
+        raise RuntimeError(
+            f"Unexpected helper-raised error injection action {event.action} "
+            f"for {event.opt_key}"
+        )
 
     def _shape_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Adjust a request body before dispatch. Pins the request to the

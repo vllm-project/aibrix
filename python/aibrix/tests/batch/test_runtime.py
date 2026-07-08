@@ -22,6 +22,8 @@ import pytest
 
 from aibrix.batch.job_driver.driver import TerminateResult
 from aibrix.batch.job_driver.runtime import (
+    RUNTIME_WAIT_MODE_PROVISION,
+    RUNTIME_WAIT_MODE_RECONNECT,
     Endpoint,
     ExternalRuntime,
     NoopRuntime,
@@ -46,9 +48,9 @@ from aibrix.context import InfrastructureContext
 
 class _FakeProgressManager:
     async def update_job_local_status(
-        self, job_id: str, worker_id: str, status
+        self, job_id: str, worker_id: str, status, update_keys=None
     ) -> object:
-        del worker_id
+        del worker_id, update_keys
         return SimpleNamespace(job_id=job_id, status=status)
 
 
@@ -101,12 +103,14 @@ class _R(RuntimeBase):
         *,
         provision=None,
         wait_ready=None,
+        check_liveness=None,
         connect=None,
         teardown=None,
     ) -> None:
         super().__init__(InfrastructureContext())
         self._provision_hook = provision
         self._wait_ready_hook = wait_ready
+        self._check_liveness_hook = check_liveness
         self._connect_hook = connect
         self._teardown_hook = teardown
 
@@ -115,10 +119,20 @@ class _R(RuntimeBase):
             return "handle"
         return await _maybe_await(self._provision_hook(job, job_id))
 
-    async def _wait_ready(self, handle):
+    async def _wait_ready(self, handle, wait_mode="provision"):
         if self._wait_ready_hook is None:
             return None
+        parameters = inspect.signature(self._wait_ready_hook).parameters
+        if "wait_mode" in parameters:
+            return await _maybe_await(
+                self._wait_ready_hook(handle, wait_mode=wait_mode)
+            )
         return await _maybe_await(self._wait_ready_hook(handle))
+
+    async def _check_liveness(self, handle):
+        if self._check_liveness_hook is None:
+            return await super()._check_liveness(handle)
+        return await _maybe_await(self._check_liveness_hook(handle))
 
     async def _connect(self, handle):
         if self._connect_hook is None:
@@ -407,6 +421,34 @@ async def test_runtime_base_terminate_different_id_inside_session_is_rejected():
 
 
 @pytest.mark.asyncio
+async def test_runtime_base_session_passes_reconnect_wait_mode_on_reconnect_attempt():
+    execution = JobRuntimeRef(driverType="base", reconnectPayload={})
+    job = _make_test_job(job_id="job-1", execution={"base": execution})
+    wait_calls: list[tuple[str, str]] = []
+
+    class _ReconnectRuntime(_R):
+        async def _reconnect(self, job, job_id, runtime_ref):
+            del job, job_id
+            assert runtime_ref is execution
+            return "reconnected-handle"
+
+    async def _wait_ready(handle, *, wait_mode=RUNTIME_WAIT_MODE_PROVISION):
+        wait_calls.append((handle, wait_mode))
+
+    runtime = _ReconnectRuntime(wait_ready=_wait_ready)
+
+    async with runtime.session(
+        job=job,
+        job_id="job-1",
+        progress_manager=_FakeProgressManager(),
+        worker_id_generator=_fake_worker_id_generator,
+    ) as endpoint:
+        assert endpoint.model_name == "m"
+
+    assert wait_calls == [("reconnected-handle", RUNTIME_WAIT_MODE_RECONNECT)]
+
+
+@pytest.mark.asyncio
 async def test_runtime_base_session_retries_provision_with_exponential_backoff(
     monkeypatch,
 ):
@@ -562,9 +604,6 @@ async def test_runtime_base_session_ignores_teardown_failure_during_retry(
             raise RuntimeError("teardown failed")
 
     class _RetryRuntime(_R):
-        def _should_retry_wait_ready(self, exc: Exception) -> bool:
-            return isinstance(exc, _RetryableReadyError)
-
         def _should_teardown_failed_wait_ready(self, exc: Exception) -> bool:
             del exc
             return True
@@ -608,6 +647,130 @@ async def test_runtime_base_session_ignores_teardown_failure_during_retry(
 
 
 @pytest.mark.asyncio
+async def test_runtime_base_session_periodically_checks_liveness_and_surfaces_failure():
+    third_check_started = asyncio.Event()
+    calls: list[tuple[str, str]] = []
+
+    async def _check_liveness(handle):
+        calls.append(("check_liveness", handle))
+        if len(calls) == 3:
+            third_check_started.set()
+        raise RuntimeError("runtime lost")
+
+    async def _teardown(handle):
+        calls.append(("teardown", handle))
+
+    class _LivenessRuntime(_R):
+        session_liveness_check_interval_s = 0.01
+
+    runtime = _LivenessRuntime(
+        check_liveness=_check_liveness,
+        teardown=_teardown,
+    )
+
+    with pytest.raises(RuntimeError, match="runtime lost"):
+        async with runtime.session(
+            job=_make_test_job(job_id="job-1"),
+            job_id="job-1",
+            progress_manager=_FakeProgressManager(),
+            worker_id_generator=_fake_worker_id_generator,
+        ):
+            await asyncio.wait_for(third_check_started.wait(), timeout=1)
+            await asyncio.sleep(1)
+
+    assert calls == [
+        ("check_liveness", "handle"),
+        ("check_liveness", "handle"),
+        ("check_liveness", "handle"),
+        ("teardown", "handle"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_session_liveness_uses_runtime_failure_threshold_override():
+    second_check_started = asyncio.Event()
+    calls: list[tuple[str, str]] = []
+
+    async def _check_liveness(handle):
+        calls.append(("check_liveness", handle))
+        if len(calls) == 2:
+            second_check_started.set()
+        raise RuntimeError("runtime lost")
+
+    async def _teardown(handle):
+        calls.append(("teardown", handle))
+
+    class _LivenessRuntime(_R):
+        session_liveness_check_interval_s = 0.01
+        session_liveness_failure_threshold = 2
+
+    runtime = _LivenessRuntime(
+        check_liveness=_check_liveness,
+        teardown=_teardown,
+    )
+
+    with pytest.raises(RuntimeError, match="runtime lost"):
+        async with runtime.session(
+            job=_make_test_job(job_id="job-1"),
+            job_id="job-1",
+            progress_manager=_FakeProgressManager(),
+            worker_id_generator=_fake_worker_id_generator,
+        ):
+            await asyncio.wait_for(second_check_started.wait(), timeout=1)
+            await asyncio.sleep(1)
+
+    assert calls == [
+        ("check_liveness", "handle"),
+        ("check_liveness", "handle"),
+        ("teardown", "handle"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_session_liveness_uses_global_failure_threshold(
+    monkeypatch,
+):
+    second_check_started = asyncio.Event()
+    calls: list[tuple[str, str]] = []
+
+    async def _check_liveness(handle):
+        calls.append(("check_liveness", handle))
+        if len(calls) == 2:
+            second_check_started.set()
+        raise RuntimeError("runtime lost")
+
+    async def _teardown(handle):
+        calls.append(("teardown", handle))
+
+    class _LivenessRuntime(_R):
+        session_liveness_check_interval_s = 0.01
+
+    monkeypatch.setattr(
+        runtime_base_mod.envs, "BATCH_SESSION_LIVENESS_FAILURE_THRESHOLD", 2
+    )
+    runtime = _LivenessRuntime(
+        check_liveness=_check_liveness,
+        teardown=_teardown,
+    )
+
+    with pytest.raises(RuntimeError, match="runtime lost"):
+        async with runtime.session(
+            job=_make_test_job(job_id="job-1"),
+            job_id="job-1",
+            progress_manager=_FakeProgressManager(),
+            worker_id_generator=_fake_worker_id_generator,
+        ):
+            await asyncio.wait_for(second_check_started.wait(), timeout=1)
+            await asyncio.sleep(1)
+
+    assert calls == [
+        ("check_liveness", "handle"),
+        ("check_liveness", "handle"),
+        ("teardown", "handle"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_runtime_base_session_reprovisions_after_reconnect_not_found(
     monkeypatch,
 ):
@@ -638,7 +801,7 @@ async def test_runtime_base_session_reprovisions_after_reconnect_not_found(
         assert worker_id_generator is not None
         assert worker_id_generator("base") == "base-worker-1"
         calls.append(("persist", job.job_id))
-        return job
+        return job, "base-worker-1"
 
     async def _wait_ready(handle):
         calls.append(("wait_ready", handle))
@@ -725,20 +888,26 @@ async def test_runtime_base_session_raises_if_execution_tracking_not_bound():
 
 
 @pytest.mark.asyncio
-async def test_persist_runtime_ref_resets_new_worker_local_counts():
+async def test_persist_runtime_ref_updates_execution_only():
     class _CapturingProgressManager:
         def __init__(self) -> None:
             self.last_status: BatchJobStatus | None = None
             self.last_worker_id: str | None = None
+            self.last_update_keys = None
             self.execution: dict[str, JobRuntimeRef] | None = None
             self.status_copy: BatchJobStatusCopy | None = None
 
         async def update_job_local_status(
-            self, job_id: str, worker_id: str, status: BatchJobStatus
+            self,
+            job_id: str,
+            worker_id: str,
+            status: BatchJobStatus,
+            update_keys=None,
         ):
             assert job_id == "job-1"
             self.last_worker_id = worker_id
             self.last_status = status
+            self.last_update_keys = update_keys
             self.execution = status.execution
             self.status_copy = BatchJobStatusCopy.from_status(status)
             return SimpleNamespace(job_id=job_id, status=status)
@@ -764,12 +933,13 @@ async def test_persist_runtime_ref_resets_new_worker_local_counts():
     )
     runtime = _PersistingRuntime()
 
-    persisted = await runtime._persist_runtime_ref(
+    persisted, worker_id = await runtime._persist_runtime_ref(
         job,
         progress_manager=progress_manager,
         worker_id_generator=_fake_worker_id_generator,
     )
 
+    assert worker_id == "owner-ref-worker-1"
     assert progress_manager.last_worker_id == "owner-ref-worker-1"
     assert progress_manager.execution is not None
     assert progress_manager.status_copy is not None
@@ -778,7 +948,55 @@ async def test_persist_runtime_ref_resets_new_worker_local_counts():
     assert progress_manager.status_copy.request_counts.completed == 0
     assert progress_manager.status_copy.request_counts.failed == 0
     assert progress_manager.status_copy.usage is None
+    assert progress_manager.last_update_keys == {"execution"}
     assert persisted.status is progress_manager.last_status
+
+
+@pytest.mark.asyncio
+async def test_session_clears_runtime_ref_with_execution_only_update():
+    class _CapturingProgressManager:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, BatchJobStatus, object]] = []
+
+        async def update_job_local_status(
+            self,
+            job_id: str,
+            worker_id: str,
+            status: BatchJobStatus,
+            update_keys=None,
+        ):
+            self.calls.append((worker_id, status.model_copy(deep=True), update_keys))
+            return SimpleNamespace(job_id=job_id, status=status)
+
+    class _PersistingRuntime(_R):
+        def _build_runtime_ref(self, job):
+            del job
+            return JobRuntimeRef(
+                driverType="base",
+                ownerRef="owner-ref",
+            )
+
+    progress_manager = _CapturingProgressManager()
+    runtime = _PersistingRuntime()
+    job = _make_test_job(job_id="job-1")
+
+    async with runtime.session(
+        job=job,
+        job_id="job-1",
+        progress_manager=progress_manager,
+        worker_id_generator=_fake_worker_id_generator,
+    ):
+        pass
+
+    assert len(progress_manager.calls) == 2
+    first_worker_id, first_status, first_update_keys = progress_manager.calls[0]
+    second_worker_id, second_status, second_update_keys = progress_manager.calls[1]
+    assert first_worker_id == "owner-ref-worker-1"
+    assert first_status.get_runtime_ref("base") is not None
+    assert first_update_keys == {"execution"}
+    assert second_worker_id == "owner-ref-worker-1"
+    assert second_status.execution is None
+    assert second_update_keys == {"execution"}
 
 
 @pytest.mark.asyncio

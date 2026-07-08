@@ -116,6 +116,9 @@ STORAGE_REDIS_PASSWORD = os.getenv("STORAGE_REDIS_PASSWORD") or os.getenv(
 DB_REDIS_PREFIX = os.getenv("DB_REDIS_PREFIX", "")
 
 BATCH_JOB_POOL_SIZE = int(os.getenv("AIBRIX_BATCH_JOB_POOL_SIZE", "10"))
+BATCH_SESSION_LIVENESS_FAILURE_THRESHOLD = int(
+    os.getenv("AIBRIX_BATCH_SESSION_LIVENESS_FAILURE_THRESHOLD", "3")
+)
 
 # Metric Standardizing Related Config
 # Scrape config

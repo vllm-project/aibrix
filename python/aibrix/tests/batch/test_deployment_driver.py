@@ -101,8 +101,10 @@ class FakeProgressManager:
         self.validated_job_ids.append(job_id)
         return True
 
-    async def update_job_local_status(self, job_id: str, worker_id: str, status):
-        del job_id, worker_id
+    async def update_job_local_status(
+        self, job_id: str, worker_id: str, status, update_keys=None
+    ):
+        del job_id, worker_id, update_keys
         self.job.status = status
         return self.job
 

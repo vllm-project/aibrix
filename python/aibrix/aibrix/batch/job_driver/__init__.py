@@ -20,7 +20,12 @@ from aibrix.batch.job_driver.driver import (
     TerminateResult,
 )
 from aibrix.batch.job_driver.driver_factory import create_job_driver
-from aibrix.batch.job_driver.running_jobs import RunningJobs
+from aibrix.batch.job_driver.running_jobs import (
+    LOCAL_STATUS_COPY_KEYS,
+    LOCAL_STATUS_UPDATE_KEYS,
+    LocalStatusKey,
+    RunningJobs,
+)
 from aibrix.batch.job_driver.runtime import (
     Completion,
     Endpoint,
@@ -52,4 +57,7 @@ __all__ = [
     "Completion",
     "Endpoint",
     "RunningJobs",
+    "LocalStatusKey",
+    "LOCAL_STATUS_COPY_KEYS",
+    "LOCAL_STATUS_UPDATE_KEYS",
 ]

@@ -35,6 +35,9 @@ import aibrix.batch.job_driver.runtime.k8s_deployment as deployment_runtime_modu
 import aibrix.batch.job_driver.runtime.k8s_job as k8s_job_runtime_module
 import aibrix.client.redis as redis_client
 from aibrix import envs
+from aibrix.batch.client.channel import EchoChannel
+from aibrix.batch.client.engine import DispatchEngine
+from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
 from aibrix.batch.client.sources import NoopEndpointSource
 from aibrix.batch.job_driver.base import BaseJobDriver
 from aibrix.batch.job_driver.runtime import ExternalRuntime
@@ -50,6 +53,75 @@ logger = init_logger(__name__)
 ORIGINAL_DEPLOYMENT_TEARDOWN_RUNTIME = (
     deployment_runtime_module.DeploymentRuntime._teardown_runtime
 )
+
+
+def pin_job_concurrency_to_serial(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    per_request_delay: float = 0.0,
+) -> None:
+    """Opt a test into the serial worker path; concurrent remains the default."""
+
+    async def serial_execute_worker(self, job_id):
+        if self._engine is None:
+            raise RuntimeError(
+                "JobDriver was constructed without an engine; execute_worker "
+                "requires one."
+            )
+
+        job, stopped = await self._is_job_stopped(job_id)
+        if stopped:
+            return await self._finish_stopped_job(job)
+        return await self._execute_worker_serial(job)
+
+    monkeypatch.setattr(
+        BaseJobDriver,
+        "execute_worker",
+        serial_execute_worker,
+    )
+
+    if per_request_delay <= 0:
+        return
+
+    original_send = DispatchEngine._send_with_failover
+
+    async def delayed_send(self, request):
+        await asyncio.sleep(per_request_delay)
+        return await original_send(self, request)
+
+    monkeypatch.setattr(DispatchEngine, "_send_with_failover", delayed_send)
+
+
+@pytest.fixture
+def serial_worker(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    per_request_delay = float(getattr(request, "param", 0.0) or 0.0)
+    pin_job_concurrency_to_serial(
+        monkeypatch,
+        per_request_delay=per_request_delay,
+    )
+
+
+def _keyword_enables_serial_worker(keyword: str) -> bool:
+    return "serial_worker" in keyword
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        item.extra_keyword_matches.add("serial_worker")
+
+
+@pytest.fixture(autouse=True)
+def keyword_serial_worker(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if "test_backend" not in request.fixturenames:
+        return
+    test_backend = get_e2e_backend(request.getfixturevalue("test_backend"))
+    if not test_backend.serial_worker:
+        return
+    pin_job_concurrency_to_serial(monkeypatch)
 
 
 @pytest.fixture(scope="session")
@@ -429,7 +501,7 @@ class MockMetadataStore:
 
 
 class FastNoopEndpointSource(NoopEndpointSource):
-    def __init__(self, context):
+    def __init__(self, context, *, availability_check=None, channel_id: str = "echo"):
         self._context = context
         super().__init__(
             delay=context.values.get(
@@ -437,12 +509,42 @@ class FastNoopEndpointSource(NoopEndpointSource):
                 0.0,
             )
         )
+        self._channel = InterruptibleEchoChannel(
+            delay=context.values.get("endpoint_source_delay_seconds", 0.0),
+            availability_check=availability_check,
+            id=channel_id,
+        )
 
 
 class ParallelNoopEndpointSource(FastNoopEndpointSource):
-    def __init__(self, context, capacity: int):
-        super().__init__(context)
+    def __init__(self, context, capacity: int, *, availability_check=None):
+        super().__init__(context, availability_check=availability_check)
         self._capacity = capacity
+
+
+class InterruptibleEchoChannel(EchoChannel):
+    """Echo requests while the fake runtime endpoint remains available."""
+
+    def __init__(
+        self,
+        *,
+        delay: float = 0.0,
+        availability_check=None,
+        id: str = "echo",
+    ) -> None:
+        super().__init__(delay=delay, id=id)
+        self._availability_check = availability_check
+
+    async def send(self, request):
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        if callable(self._availability_check) and not self._availability_check():
+            raise InferenceError(
+                InferenceErrorCode.NO_ENDPOINT,
+                f"fake runtime endpoint {self.id} is unavailable",
+                retryable=False,
+            )
+        return request.payload
 
 
 class FakeDeploymentAppsV1Api:
@@ -466,6 +568,9 @@ class FakeDeploymentAppsV1Api:
         self.deleted.append((namespace, name))
         self._existing.remove((namespace, name))
 
+    def deployment_exists(self, namespace: str, name: str) -> bool:
+        return (namespace, name) in self._existing
+
 
 class FakeDeploymentCoreV1Api:
     def __init__(self):
@@ -487,6 +592,9 @@ class FakeDeploymentCoreV1Api:
             raise client.ApiException(status=404)
         self.deleted.append((namespace, name))
         self._existing.remove((namespace, name))
+
+    def service_exists(self, namespace: str, name: str) -> bool:
+        return (namespace, name) in self._existing
 
 
 class FakeDeploymentRenderer:
@@ -618,7 +726,14 @@ def configure_local_metastore_deployment_backend(app, monkeypatch) -> None:
         self._context.values["deployment_endpoint_source_builds"].append(
             handle.deployment_name
         )
-        return FastNoopEndpointSource(self._context)
+        return FastNoopEndpointSource(
+            self._context,
+            availability_check=lambda: (
+                apps_v1_api.deployment_exists(handle.namespace, handle.deployment_name)
+                and core_v1_api.service_exists(handle.namespace, handle.deployment_name)
+            ),
+            channel_id=handle.deployment_name,
+        )
 
     async def _recording_teardown(self, runtime):
         self._context.values["deployment_teardown_calls"].append(
@@ -755,6 +870,7 @@ class E2ETestBackend(str):
     max_concurrency: int
     storage_type: StorageType
     metastore_type: StorageType
+    serial_worker: bool
 
     def __new__(
         cls,
@@ -766,6 +882,7 @@ class E2ETestBackend(str):
         max_concurrency: int = 1,
         storage_type: StorageType = StorageType.LOCAL,
         metastore_type: StorageType = StorageType.LOCAL,
+        serial_worker: bool = False,
     ):
         backend = str.__new__(cls, name)
         backend.request_kwargs = dict(request_kwargs or {})
@@ -776,6 +893,7 @@ class E2ETestBackend(str):
         backend.max_concurrency = max_concurrency
         backend.storage_type = storage_type
         backend.metastore_type = metastore_type
+        backend.serial_worker = serial_worker
         return backend
 
     def has_feature(self, feature: str) -> bool:
@@ -792,6 +910,21 @@ class E2ETestBackend(str):
             max_concurrency=self.max_concurrency,
             storage_type=self.storage_type,
             metastore_type=metastore_type,
+            serial_worker=self.serial_worker,
+        )
+
+    def with_serial_worker(self, serial_worker: bool = True) -> "E2ETestBackend":
+        if self.serial_worker == serial_worker:
+            return self
+        return type(self)(
+            str(self),
+            request_kwargs=self.request_kwargs,
+            features=tuple(self.features),
+            runtime_debug_config=self.runtime_debug_config,
+            max_concurrency=self.max_concurrency,
+            storage_type=self.storage_type,
+            metastore_type=self.metastore_type,
+            serial_worker=serial_worker,
         )
 
     @property
@@ -830,16 +963,14 @@ class E2ETestBackend(str):
             parts.append(f"{self.storage_type.value}_storage")
         if self.metastore_type != StorageType.LOCAL:
             parts.append(f"{self.metastore_type.value}_metastore")
-        return "_".join(parts)
+        if self.serial_worker:
+            parts.append("serial_worker")
+        return "][".join(parts)
 
 
 E2E_BACKENDS: dict[str, E2ETestBackend] = {
     "local_metastore_job": E2ETestBackend(
         "local_metastore_job",
-    ),
-    "local_metastore_job_parallel": E2ETestBackend(
-        "local_metastore_job_parallel",
-        max_concurrency=5,
     ),
     "local_job_using_deployment": E2ETestBackend(
         "local_job_using_deployment",
@@ -908,6 +1039,8 @@ def apply_e2e_backend_keyword_overrides(
     # override whatever defaults the E2ETestBackend entry started with.
     if "redis_metastore" in keyword:
         test_backend = test_backend.with_metastore(StorageType.REDIS)
+    if _keyword_enables_serial_worker(keyword):
+        test_backend = test_backend.with_serial_worker()
     return test_backend
 
 
@@ -1166,15 +1299,6 @@ def build_e2e_test_app(
     )
     app.state.metadata_store = MockMetadataStore()
     app.state.redis_client = None
-
-    if test_backend == "local_metastore_job_parallel":
-        endpoint_source = ParallelNoopEndpointSource(
-            app.state.batch_driver._context,
-            capacity=test_backend.max_concurrency,
-        )
-        app.state.batch_driver._endpoint_source = endpoint_source
-        app.state.batch_driver.job_manager.set_endpoint_source(endpoint_source)
-        return app
 
     if not test_backend.uses_runtime:
         return app
