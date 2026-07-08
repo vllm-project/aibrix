@@ -213,7 +213,7 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 		return atomic.LoadInt64(&ctx.TraceTerm)
 	} else {
 		traceTerm = atomic.LoadInt64(&ctx.TraceTerm)
-		c.addPodStats(ctx, requestID)
+		c.addPodStats(ctx, requestID, modelName)
 	}
 	return traceTerm
 }
@@ -232,8 +232,8 @@ func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, mo
 		// ignore traceTerm
 		tracker.DoneRequestCount(ctx, requestID, modelName, traceTerm)
 	}
-	if ctx != nil && ctx.CanDoneStats() {
-		c.donePodStats(ctx, requestID)
+	if ctx == nil || ctx.CanDoneStats() {
+		c.donePodStats(ctx, requestID, modelName)
 	}
 
 	meta, ok := c.metaModels.Load(modelName)
@@ -262,8 +262,8 @@ func (c *Store) DoneRequestTrace(ctx *types.RoutingContext, requestID string, mo
 		tracker.DoneRequestTrace(ctx, requestID, modelName, inputTokens, outputTokens, traceTerm)
 	}
 
-	if ctx != nil && ctx.CanDoneStats() {
-		c.donePodStats(ctx, requestID)
+	if ctx == nil || ctx.CanDoneStats() {
+		c.donePodStats(ctx, requestID, modelName)
 	}
 
 	meta, ok := c.metaModels.Load(modelName)
