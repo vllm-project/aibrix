@@ -169,6 +169,12 @@ Create the name of the metadata service service account
 {{- fail "built-in Redis does not support component-specific passwords; use metadata.redis.enablePassword/password for shared built-in Redis auth or disable built-in Redis for external Redis passwords." -}}
 {{- end -}}
 
+{{- if and
+  (dig "auth" "bearerToken" "" .Values.gatewayPlugin)
+  (hasKey (dig "container" "envs" dict .Values.gatewayPlugin) "AIBRIX_AUTH_BEARER_TOKEN") -}}
+{{- fail "gatewayPlugin.auth.bearerToken and gatewayPlugin.container.envs.AIBRIX_AUTH_BEARER_TOKEN are mutually exclusive; configure the gateway API key in only one place." -}}
+{{- end -}}
+
 {{- end -}}
 
 {{/*

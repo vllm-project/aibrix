@@ -64,6 +64,8 @@ gatewayPlugin:
     redis:
       host: aibrix-redis-master
       port: 6379
+  auth:
+    bearerToken: ""
   messageTimeout: "60s"
   extProc:
     backendSettings:
