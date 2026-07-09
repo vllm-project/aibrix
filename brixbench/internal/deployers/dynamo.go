@@ -56,20 +56,21 @@ const dynamoModelProbeTimeout = 10 * time.Minute
 // DynamoDeployer deploys Dynamo platform releases and user-provided
 // DynamoGraphDeployment manifests.
 type DynamoDeployer struct {
-	namespace      string
-	logDir         string
-	projectRoot    string
-	version        string
-	engineManifest string
-	platformValues string
-	graphName      string
-	components     []string
-	effectiveNS    string
-	modelName      string
-	registrySecret bool
-	releaseSource  DynamoReleaseSource
-	runner         commandRunner
-	release        *DynamoRelease
+	namespace         string
+	logDir            string
+	projectRoot       string
+	version           string
+	engineManifest    string
+	platformValues    string
+	graphName         string
+	components        []string
+	componentReplicas map[string]int
+	effectiveNS       string
+	modelName         string
+	registrySecret    bool
+	releaseSource     DynamoReleaseSource
+	runner            commandRunner
+	release           *DynamoRelease
 }
 
 var _ Deployer = (*DynamoDeployer)(nil)
@@ -500,10 +501,11 @@ func (d *DynamoDeployer) deleteDynamoComponentDeployments(ctx context.Context, n
 }
 
 type dynamoGraphManifestMetadata struct {
-	Name       string
-	Namespace  string
-	Components []string
-	RawContent string
+	Name              string
+	Namespace         string
+	Components        []string
+	ComponentReplicas map[string]int
+	RawContent        string
 }
 
 func (d *DynamoDeployer) ensureDynamoGraphMetadata() error {
@@ -534,6 +536,7 @@ func (d *DynamoDeployer) loadDynamoGraphMetadata() error {
 
 	d.graphName = metadata.Name
 	d.components = metadata.Components
+	d.componentReplicas = metadata.ComponentReplicas
 	d.effectiveNS = effectiveNS
 	d.modelName = inferDynamoModelNameFromManifest(metadata.RawContent)
 	return nil
@@ -554,7 +557,9 @@ func readDynamoGraphManifestMetadata(path string) (*dynamoGraphManifestMetadata,
 				Namespace string `yaml:"namespace"`
 			} `yaml:"metadata"`
 			Spec struct {
-				Services map[string]any `yaml:"services"`
+				Services map[string]struct {
+					Replicas int `yaml:"replicas"`
+				} `yaml:"services"`
 			} `yaml:"spec"`
 		}
 		if err := decoder.Decode(&doc); err != nil {
@@ -567,18 +572,25 @@ func readDynamoGraphManifestMetadata(path string) (*dynamoGraphManifestMetadata,
 			continue
 		}
 		components := make([]string, 0, len(doc.Spec.Services))
-		for name := range doc.Spec.Services {
+		componentReplicas := make(map[string]int, len(doc.Spec.Services))
+		for name, service := range doc.Spec.Services {
 			name = strings.TrimSpace(name)
 			if name != "" {
 				components = append(components, name)
+				replicas := service.Replicas
+				if replicas < 1 {
+					replicas = 1
+				}
+				componentReplicas[name] = replicas
 			}
 		}
 		sort.Strings(components)
 		return &dynamoGraphManifestMetadata{
-			Name:       strings.TrimSpace(doc.Metadata.Name),
-			Namespace:  strings.TrimSpace(doc.Metadata.Namespace),
-			Components: components,
-			RawContent: string(content),
+			Name:              strings.TrimSpace(doc.Metadata.Name),
+			Namespace:         strings.TrimSpace(doc.Metadata.Namespace),
+			Components:        components,
+			ComponentReplicas: componentReplicas,
+			RawContent:        string(content),
 		}, nil
 	}
 	return nil, fmt.Errorf("Dynamo engine manifest %s must contain a DynamoGraphDeployment", path)
@@ -886,26 +898,39 @@ func (d *DynamoDeployer) waitForDynamoFrontendService(ctx context.Context, timeo
 }
 
 func (d *DynamoDeployer) waitForDynamoComponentReady(ctx context.Context, component string) error {
-	if err := d.waitForDynamoComponentPods(ctx, component, dynamoReadinessTimeout, dynamoReadinessPollInterval); err != nil {
+	expectedReplicas := d.expectedDynamoComponentReplicas(component)
+	if err := d.waitForDynamoComponentPods(ctx, component, expectedReplicas, dynamoReadinessTimeout, dynamoReadinessPollInterval); err != nil {
 		return err
 	}
 	return d.runDynamoCommand(ctx, "wait-dynamo-"+component+"-pods-ready", "kubectl", "wait", "--for=condition=Ready", "pod", "-n", d.effectiveNS, "-l", dynamoFrontendComponentLabel+"="+component, "--timeout=10m")
 }
 
-func (d *DynamoDeployer) waitForDynamoComponentPods(ctx context.Context, component string, timeout time.Duration, interval time.Duration) error {
+func (d *DynamoDeployer) expectedDynamoComponentReplicas(component string) int {
+	if d.componentReplicas != nil {
+		if replicas := d.componentReplicas[component]; replicas > 0 {
+			return replicas
+		}
+	}
+	return 1
+}
+
+func (d *DynamoDeployer) waitForDynamoComponentPods(ctx context.Context, component string, expectedReplicas int, timeout time.Duration, interval time.Duration) error {
+	if expectedReplicas < 1 {
+		expectedReplicas = 1
+	}
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for {
 		output, err := d.captureDynamoCommand(ctx, "get-dynamo-"+component+"-pods", "kubectl", "get", "pod", "-n", d.effectiveNS, "-l", dynamoFrontendComponentLabel+"="+component, "-o", "json")
 		if err == nil {
-			hasPods, parseErr := parseDynamoPodListHasItems(output)
+			podCount, parseErr := parseDynamoPodListItemCount(output)
 			if parseErr != nil {
 				return parseErr
 			}
-			if hasPods {
+			if podCount >= expectedReplicas {
 				return nil
 			}
-			lastErr = fmt.Errorf("no pods found")
+			lastErr = fmt.Errorf("found %d pod(s), need %d", podCount, expectedReplicas)
 		} else {
 			lastErr = err
 		}
@@ -918,14 +943,14 @@ func (d *DynamoDeployer) waitForDynamoComponentPods(ctx context.Context, compone
 	}
 }
 
-func parseDynamoPodListHasItems(output string) (bool, error) {
+func parseDynamoPodListItemCount(output string) (int, error) {
 	var podList struct {
 		Items []json.RawMessage `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(output), &podList); err != nil {
-		return false, fmt.Errorf("failed to parse Dynamo pod list: %w", err)
+		return 0, fmt.Errorf("failed to parse Dynamo pod list: %w", err)
 	}
-	return len(podList.Items) > 0, nil
+	return len(podList.Items), nil
 }
 
 func sleepOrContextDone(ctx context.Context, interval time.Duration) error {

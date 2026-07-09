@@ -668,6 +668,48 @@ func TestDynamoDeployerInitializeRejectsMismatchedManifestNamespace(t *testing.T
 	}
 }
 
+func TestDynamoDeployerInitializeReadsComponentReplicas(t *testing.T) {
+	manifest := filepath.Join(t.TempDir(), "dynamo-graph.yaml")
+	content := `apiVersion: nvidia.com/v1alpha1
+kind: DynamoGraphDeployment
+metadata:
+  name: vllm-dynamo
+spec:
+  services:
+    Frontend:
+      replicas: 1
+    VllmDecodeWorker:
+      replicas: 8
+    VllmPrefillWorker:
+      replicas: 4
+`
+	if err := os.WriteFile(manifest, []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write manifest: %v", err)
+	}
+	deployer := &DynamoDeployer{
+		releaseSource: &fakeDynamoReleaseSource{},
+		runner:        &fakeCommandRunner{},
+	}
+
+	err := deployer.Initialize(context.Background(), Config{
+		Namespace:   "brixbench-dynamo",
+		ProjectRoot: "/repo",
+		EnginePath:  manifest,
+		TestCase: &resolver.Test{
+			Version: "v1.2.1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize returned error: %v", err)
+	}
+	if got := deployer.expectedDynamoComponentReplicas("VllmDecodeWorker"); got != 8 {
+		t.Fatalf("expected decode replicas 8, got %d", got)
+	}
+	if got := deployer.expectedDynamoComponentReplicas("VllmPrefillWorker"); got != 4 {
+		t.Fatalf("expected prefill replicas 4, got %d", got)
+	}
+}
+
 func TestDynamoDeployerInitializeRejectsMissingGraphName(t *testing.T) {
 	manifest := writeDynamoGraphManifest(t, "", "")
 	deployer := &DynamoDeployer{
@@ -1154,7 +1196,27 @@ func TestDynamoDeployerWaitForComponentPodsPollsUntilCreated(t *testing.T) {
 		runner:      runner,
 	}
 
-	if err := deployer.waitForDynamoComponentPods(context.Background(), "VllmDecodeWorker", time.Second, time.Millisecond); err != nil {
+	if err := deployer.waitForDynamoComponentPods(context.Background(), "VllmDecodeWorker", 1, time.Second, time.Millisecond); err != nil {
+		t.Fatalf("waitForDynamoComponentPods returned error: %v", err)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected 2 command calls, got %d", len(runner.calls))
+	}
+}
+
+func TestDynamoDeployerWaitForComponentPodsWaitsForExpectedReplicaCount(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{output: dynamoPodListJSON(1)},
+			{output: dynamoPodListJSON(3)},
+		},
+	}
+	deployer := &DynamoDeployer{
+		effectiveNS: "brixbench-dynamo",
+		runner:      runner,
+	}
+
+	if err := deployer.waitForDynamoComponentPods(context.Background(), "VllmDecodeWorker", 3, time.Second, time.Millisecond); err != nil {
 		t.Fatalf("waitForDynamoComponentPods returned error: %v", err)
 	}
 	if len(runner.calls) != 2 {
