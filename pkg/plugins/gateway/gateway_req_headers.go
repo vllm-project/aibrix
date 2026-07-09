@@ -48,7 +48,6 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	var errRes *extProcPb.ProcessingResponse
 	var routingCtx *types.RoutingContext
 	var reqConfigProfile string
-	var presentedAPIKey string
 
 	_, span := tracer.Start(ctx, "HandleRequestHeaders")
 	defer span.End()
@@ -63,7 +62,6 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			requestPath = string(n.RawValue)
 		case authorizationKey:
 			reqHeaders[n.Key] = string(n.RawValue)
-			presentedAPIKey = string(n.RawValue)
 		case HeaderExternalFilter:
 			reqHeaders[n.Key] = string(n.RawValue)
 		case contentTypeKey:
@@ -80,15 +78,25 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		}
 	}
 
-	if s.apiKeyAuth != nil && s.apiKeyAuth.token != "" && !s.apiKeyAuth.isAuthorized(presentedAPIKey) {
-		klog.V(2).InfoS("rejecting request with invalid gateway API key", "requestID", requestID, "header", "Authorization")
-		return generateErrorResponse(
-			envoyTypePb.StatusCode_Unauthorized,
-			nil,
-			"Incorrect API key provided",
-			ErrorCodeInvalidAPIKey,
-			"api_key",
-		), utils.User{}, rpm, nil
+	// check API key
+	if s.apiKeyAuth != nil && s.apiKeyAuth.token != "" {
+		authHeaderValue := ""
+		for key, value := range reqHeaders {
+			if strings.EqualFold(key, authorizationKey) {
+				authHeaderValue = value
+				break
+			}
+		}
+		if !s.apiKeyAuth.isAuthorized(authHeaderValue) {
+			klog.V(2).InfoS("rejecting request with invalid gateway API key", "requestID", requestID, "header", "Authorization")
+			return generateErrorResponse(
+				envoyTypePb.StatusCode_Unauthorized,
+				nil,
+				"Incorrect API key provided",
+				ErrorCodeInvalidAPIKey,
+				"api_key",
+			), utils.User{}, rpm, nil
+		}
 	}
 
 	if username != "" {

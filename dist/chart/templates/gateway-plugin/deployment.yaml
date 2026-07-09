@@ -95,7 +95,10 @@ spec:
             {{- $bearerToken := dig "auth" "bearerToken" "" .Values.gatewayPlugin }}
             {{- if $bearerToken }}
             - name: AIBRIX_AUTH_BEARER_TOKEN
-              value: {{ $bearerToken | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "aibrix.fullname" . }}-gateway-plugin-auth
+                  key: bearer-token
             {{- end }}
             - name: POD_NAME
               valueFrom:

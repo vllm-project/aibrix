@@ -96,7 +96,7 @@ gatewayPlugin:
       port: 6379
       password: ""
   auth:
-    # Sets the AIBRIX_AUTH_BEARER_TOKEN environment variable for the gateway plugin.
+    # Creates a Secret-backed AIBRIX_AUTH_BEARER_TOKEN environment variable for the gateway plugin.
     # NOTE: This is managed exclusively via this field. Do NOT add
     # AIBRIX_AUTH_BEARER_TOKEN to the 'gatewayPlugin.container.envs' map below,
     # as it will result in duplicate environment variables in the manifest.

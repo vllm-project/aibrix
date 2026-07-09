@@ -1,17 +1,25 @@
-suite: Test Gateway Plugin Auth Env Rendering
+suite: Test Gateway Plugin Auth Secret Rendering
 templates:
+  - gateway-plugin/secret.yaml
   - gateway-plugin/deployment.yaml
 tests:
-  - it: should inject bearer token env when configured
+  - it: should render auth secret and inject bearer token env when configured
     set:
       gatewayPlugin.auth.bearerToken: "test-bearer-token"
     asserts:
+      - equal:
+          path: data.bearer-token
+          value: "dGVzdC1iZWFyZXItdG9rZW4="
+        documentIndex: 0
       - contains:
           path: spec.template.spec.containers[0].env
           content:
             name: AIBRIX_AUTH_BEARER_TOKEN
-            value: "test-bearer-token"
-        documentIndex: 0
+            valueFrom:
+              secretKeyRef:
+                name: RELEASE-NAME-aibrix-gateway-plugin-auth
+                key: bearer-token
+        documentIndex: 1
 ---
 suite: Test Gateway Plugin Auth Validation
 templates:
