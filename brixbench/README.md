@@ -212,6 +212,20 @@ Created PodMonitors are labeled with `volcengine.vmp=true` and
 select datasource `AIBrix_Benchmark` and keep `vllm_job` as `All`; plain vLLM
 and AIBrix StormService vLLM metrics are relabeled to `job=brixbench-vllm`.
 
+Custom engine manifests must expose the metrics-serving container port with the
+name expected by the generated PodMonitor. For vLLM and AIBrix vLLM profiles,
+brixbench generates PodMonitors with `podMetricsEndpoints.port: http`, so the
+serving container must declare a named port:
+
+```yaml
+ports:
+- name: http
+  containerPort: 8000
+```
+
+Without this named container port, the PodMonitor resource may be created
+successfully, but Prometheus Operator may not discover a valid scrape target.
+
 Useful checks:
 
 ```bash
