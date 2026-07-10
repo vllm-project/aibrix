@@ -33,6 +33,7 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/vllm-project/aibrix/apps/console/api/common"
 	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
 	"github.com/vllm-project/aibrix/apps/console/api/metrics"
 	"github.com/vllm-project/aibrix/apps/console/api/utils"
@@ -169,7 +170,11 @@ func (c *OpenAIBatchClient) GetBatch(ctx context.Context, batchID string) (*open
 	}
 
 	start := time.Now().UTC()
-	batch, err := c.client.Batches.Get(ctx, batchID)
+	var opts []option.RequestOption
+	if common.IncludeDeploymentFromCtx(ctx) {
+		opts = append(opts, option.WithQuery("include_deployment", "true"))
+	}
+	batch, err := c.client.Batches.Get(ctx, batchID, opts...)
 	if err != nil {
 		metrics.Emitter.Counter(metricConsolePlannerError, 1, metrics.T("method", "get_batch"))
 		return nil, err

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
+import copy
 import json
 import os
 import signal
@@ -19,7 +20,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Collection, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -27,7 +28,11 @@ import httpx
 import aibrix.batch.constant as constant
 from aibrix.batch.client import GatewayEndpointSource
 from aibrix.batch.job_driver.base import BaseJobDriver
-from aibrix.batch.job_driver.running_jobs import RunningJobs
+from aibrix.batch.job_driver.running_jobs import (
+    LOCAL_STATUS_UPDATE_KEYS,
+    LocalStatusKey,
+    RunningJobs,
+)
 from aibrix.batch.job_driver.runtime import ExternalRuntime
 from aibrix.batch.job_entity import (
     AibrixMetadata,
@@ -133,10 +138,35 @@ class SingleJobRunner(RunningJobs):
         return self._meta
 
     async def update_job_local_status(
-        self, job_id: str, worker_id: str, status: BatchJobStatus
+        self,
+        job_id: str,
+        worker_id: str,
+        status: BatchJobStatus,
+        update_keys: Collection[LocalStatusKey] | None = None,
     ) -> BatchJob:
         del job_id, worker_id
-        self._meta.status = status
+        keys = (
+            set(LOCAL_STATUS_UPDATE_KEYS) if update_keys is None else set(update_keys)
+        )
+        unknown_keys = keys.difference(LOCAL_STATUS_UPDATE_KEYS)
+        if unknown_keys:
+            raise ValueError(
+                f"Unsupported local status update keys: {sorted(unknown_keys)}"
+            )
+        if "state" in keys:
+            self._meta.status.state = status.state
+        if "errors" in keys:
+            self._meta.status.errors = copy.deepcopy(status.errors)
+        if "request_counts" in keys:
+            self._meta.status.request_counts = status.request_counts.model_copy(
+                deep=True
+            )
+        if "usage" in keys:
+            self._meta.status.usage = (
+                status.usage.model_copy(deep=True) if status.usage is not None else None
+            )
+        if "execution" in keys:
+            self._meta.status.execution = copy.deepcopy(status.execution)
         return self._meta
 
     async def mark_job_finalizing(self, job_id: str) -> BatchJob:
@@ -366,7 +396,8 @@ class BatchWorker:
             # the driver the per-job RunningJobs surface it needs, and the worker
             # dispatches against its own pod-local engine. execute runs
             # prepare(skipped — the metadata service already prepared the output
-            # files) -> run_job -> finalize, and re-raises on failure
+            # files) -> run_job; finalize is skipped in worker_mode and left to
+            # the metadata service. It re-raises on failure
             # (BaseJobDriver._reraise_on_failure=True).
             job_id = batch_job.job_id
             if job_id is None:
@@ -375,9 +406,16 @@ class BatchWorker:
             runner = SingleJobRunner(batch_job)
             if self.llm_engine_base_url is None:
                 raise RuntimeError("engine base url not resolved")
+            # worker_mode keeps this pod out of finalization: it dispatches
+            # requests and writes its output parts and per-request done markers,
+            # but leaves aggregation to the metadata service. Finalizing here
+            # would consume the markers and complete the multipart upload inside
+            # the Job, so the coordinator would then aggregate against emptied
+            # markers and overwrite the output with zero counts (#2263).
             driver = BaseJobDriver(
                 runner,
                 ExternalRuntime(GatewayEndpointSource(self.llm_engine_base_url)),
+                worker_mode=True,
             )
             logger.info("Executing batch job", job_id=job_id)  # type: ignore[call-arg]
             await driver.execute(job_id)

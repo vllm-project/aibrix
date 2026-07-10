@@ -1,0 +1,34 @@
+suite: Test Gateway Plugin Auth Secret Rendering
+templates:
+  - gateway-plugin/secret.yaml
+  - gateway-plugin/deployment.yaml
+tests:
+  - it: should render auth secret and inject bearer token env when configured
+    set:
+      gatewayPlugin.auth.bearerToken: "test-bearer-token"
+    asserts:
+      - equal:
+          path: data.bearer-token
+          value: "dGVzdC1iZWFyZXItdG9rZW4="
+        documentIndex: 0
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AIBRIX_AUTH_BEARER_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: RELEASE-NAME-aibrix-gateway-plugin-auth
+                key: bearer-token
+        documentIndex: 1
+---
+suite: Test Gateway Plugin Auth Validation
+templates:
+  - validate.yaml
+tests:
+  - it: should fail when auth bearer token and manual env are both configured
+    set:
+      gatewayPlugin.auth.bearerToken: "test-bearer-token"
+      gatewayPlugin.container.envs.AIBRIX_AUTH_BEARER_TOKEN: "duplicate-token"
+    asserts:
+      - failedTemplate:
+          errorMessage: "gatewayPlugin.auth.bearerToken and gatewayPlugin.container.envs.AIBRIX_AUTH_BEARER_TOKEN are mutually exclusive; configure the gateway API key in only one place."

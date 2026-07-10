@@ -13,7 +13,8 @@
 # limitations under the License.
 """KubernetesJob backend: a self-hosting Runtime under the converged
 BaseJobDriver. The base execute phase awaits the provisioned Job to completion
-(source=None + provisions) then moves to FINALIZING; on_prepared un-suspends."""
+(source=None + provisions) then finalizes to aggregate the worker's output;
+on_prepared un-suspends."""
 
 from types import SimpleNamespace
 
@@ -52,6 +53,14 @@ class _FakePM:
     async def get_job(self, job_id):
         return self._job
 
+    async def mark_job_finalizing(self, job_id):
+        self._job.status.state = BatchJobState.FINALIZING
+        return self._job
+
+    async def mark_job_done(self, job):
+        job.status.state = BatchJobState.FINALIZED
+        return job
+
 
 def _job():
     return SimpleNamespace(
@@ -60,12 +69,31 @@ def _job():
 
 
 @pytest.mark.asyncio
-async def test_execute_waits_then_moves_to_finalizing_on_success():
+async def test_self_hosted_run_finalizes_on_success(monkeypatch):
+    """A successful self-hosted run aggregates the worker's output through
+    finalize_job, so the persisted job records the real request_counts / usage
+    instead of only flipping to FINALIZING with the stale in-memory copy (#2263).
+    The worker ran in worker_mode and left the per-request done markers intact
+    for this aggregation."""
     job = _job()
     rt = _FakeRuntime(Completion(succeeded=True))
     driver = BaseJobDriver(_FakePM(job), rt)
+
+    aggregated = []
+
+    async def _record_finalize(j):
+        aggregated.append(j)
+
+    monkeypatch.setattr(
+        "aibrix.batch.job_driver.base.storage.finalize_job_output_data",
+        _record_finalize,
+        raising=False,
+    )
+
     result = await driver.run_job("jid", Endpoint(source=None))
-    assert result.status.state == BatchJobState.FINALIZING
+
+    assert aggregated == [job]
+    assert result.status.state == BatchJobState.FINALIZED
 
 
 @pytest.mark.asyncio

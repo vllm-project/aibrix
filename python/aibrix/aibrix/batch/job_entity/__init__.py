@@ -17,6 +17,7 @@ from aibrix.batch.job_entity.aibrix_metadata import (
     BatchProfileRef,
     ClientConfig,
     ClientRetryPolicy,
+    DeploymentDetail,
     ModelTemplateRef,
     ResolvedModelTemplate,
     ResourceAllocation,
@@ -56,6 +57,7 @@ from aibrix.batch.job_entity.k8s_transformer import (
 
 __all__ = [
     "AibrixMetadata",
+    "DeploymentDetail",
     "ModelTemplateRef",
     "ResourceAllocation",
     "RuntimeSpec",

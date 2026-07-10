@@ -74,6 +74,7 @@ class DeploymentRuntime(RuntimeBase):
     """Provision a Deployment+Service per job, reach it over HTTP, tear it down."""
 
     provisions = True
+    session_liveness_failure_threshold = 1
 
     def __init__(
         self,
@@ -107,7 +108,7 @@ class DeploymentRuntime(RuntimeBase):
         del job
         if self._active_handle is None:
             return None
-        return f"{self._active_handle.namespace}/{self._active_handle.deployment_name}"
+        return f"{self._active_handle.namespace}:{self._active_handle.deployment_name}"
 
     def _get_runtime_reconnect_payload(
         self,
@@ -227,12 +228,34 @@ class DeploymentRuntime(RuntimeBase):
         )  # type: ignore[call-arg]
         return handle
 
-    async def _wait_ready(self, handle: DeploymentHandle) -> None:
+    async def _wait_ready(
+        self, handle: DeploymentHandle, wait_mode: str = "provision"
+    ) -> None:
+        del wait_mode
         await self._wait_for_deployment_ready(
             namespace=handle.namespace,
             deployment_name=handle.deployment_name,
             replicas=handle.replicas,
         )
+
+    async def _check_liveness(self, handle: DeploymentHandle) -> None:
+        try:
+            await asyncio.to_thread(
+                self._apps_v1_api.read_namespaced_deployment_status,
+                name=handle.deployment_name,
+                namespace=handle.namespace,
+            )
+        except ApiException as ex:
+            if ex.status == 404:
+                raise BatchJobError(
+                    BatchJobErrorCode.RESOURCE_NOTFOUND_ERROR,
+                    f"Deployment '{handle.deployment_name}' in namespace "
+                    f"'{handle.namespace}' no longer exists",
+                ) from ex
+            raise RuntimeError(
+                f"Failed to read Deployment '{handle.deployment_name}' in "
+                f"namespace '{handle.namespace}': {ex}"
+            ) from ex
 
     async def _connect(self, handle: DeploymentHandle) -> Endpoint:
         handle.source = self._build_endpoint_source(handle)

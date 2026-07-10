@@ -90,6 +90,57 @@ export interface JobEvent {
 
 // Job is the Console BFF's view of a batch — superset of OpenAI Batch.
 // Timestamps are unix seconds.
+export interface JobDeploymentWorkload {
+  id: string;
+  name: string;
+  type?: string;
+  sale_mode?: string;
+  role?: string;
+  phase?: string;
+  cluster?: {
+    zone?: string;
+    physical_cluster?: string;
+    logical_cluster?: string;
+    idc?: string;
+  };
+  replicas?: number;
+  image?: string;
+  healthy?: boolean;
+  pods?: JobDeploymentPod[];
+  yaml?: string;
+  resources?: {
+    resourceType?: string;
+    [key: string]: unknown;
+  };
+}
+
+export interface JobDeploymentPod {
+  name: string;
+  phase?: string;
+  pod_ip?: string;
+  node?: string;
+  ports?: Array<{ nodePort?: number; port?: number }>;
+  healthy?: boolean;
+  role?: string;
+  created_at?: string;
+  cluster?: {
+    zone?: string;
+    physical_cluster?: string;
+    logical_cluster?: string;
+    idc?: string;
+  };
+  monitoring?: string;
+}
+
+export interface JobDeploymentDetail {
+  type: string;
+  job_id?: string;
+  job_name?: string;
+  workloads?: JobDeploymentWorkload[];
+  monitoring?: string;
+  grafana?: string;
+}
+
 export interface Job {
   id: string;
   object: string;

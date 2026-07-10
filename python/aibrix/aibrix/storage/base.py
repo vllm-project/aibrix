@@ -20,7 +20,7 @@ from io import BytesIO, StringIO
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
 from aibrix.storage.reader import Reader
-from aibrix.storage.types import StorageType
+from aibrix.storage.types import StorageListOrdering, StorageType
 from aibrix.storage.utils import ObjectMetadata
 
 
@@ -48,6 +48,7 @@ class StorageConfig:
     # Read configuration
     range_chunksize: int = 1024 * 1024  # 1MB for range reads
     readline_buffer_size: int = 8192  # 8KB buffer for readline
+    list_ordering: Optional[StorageListOrdering] = None
 
 
 @dataclass
@@ -115,6 +116,15 @@ class BaseStorage(ABC):
 
     def __init__(self, config: Optional[StorageConfig] = None):
         self.config = config or StorageConfig()
+        selected_ordering = self.config.list_ordering
+        if selected_ordering is not None and (
+            selected_ordering not in self.get_supported_list_orderings()
+        ):
+            raise ValueError(
+                f"List ordering {selected_ordering.value} is not supported by "
+                f"{self.get_type().value} storage"
+            )
+        self._selected_list_ordering = selected_ordering
 
     @abstractmethod
     def get_type(self) -> StorageType:
@@ -148,6 +158,15 @@ class BaseStorage(ABC):
             True if SET IF EXISTS is supported, False otherwise
         """
         return False
+
+    @classmethod
+    def get_supported_list_orderings(cls) -> tuple[StorageListOrdering, ...]:
+        """Return the supported ordering contracts for ``list_objects`` results."""
+        return (StorageListOrdering.LEXICOGRAPHIC_ASC,)
+
+    def get_list_ordering(self) -> StorageListOrdering:
+        """Return the currently active ordering contract for ``list_objects``."""
+        return self._selected_list_ordering or self.get_supported_list_orderings()[0]
 
     @abstractmethod
     async def put_object(

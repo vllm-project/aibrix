@@ -158,8 +158,8 @@ class TestLocalStorage:
             after_key=first_page[-1],
         )
 
-        assert first_page == ["after/file1.txt", "after/file2.txt"]
-        assert second_page == ["after/file3.txt"]
+        assert first_page == ["after/file3.txt", "after/file2.txt"]
+        assert second_page == ["after/file1.txt"]
 
         for key in test_files:
             await local_storage.delete_object(key)
@@ -168,27 +168,26 @@ class TestLocalStorage:
     async def test_list_with_flat_string_prefix(self, local_storage: LocalStorage):
         """list_objects matches a STRING prefix, not just a directory path.
 
-        Flat root-level keys like ``batchjob:<id>`` (no '/') must be found by a
-        partial prefix such as ``batchjob:`` — this is the JobStore.list_jobs
-        recovery contract on a LOCAL metastore. The old directory-descent
+        Flat root-level keys like ``flatkey:<id>`` (no '/') must be found by a
+        partial prefix such as ``flatkey:``. The old directory-descent
         implementation returned nothing for any non-directory prefix.
         """
-        await local_storage.put_object("batchjob:abc", b"a")
-        await local_storage.put_object("batchjob:def", b"b")
+        await local_storage.put_object("flatkey:abc", b"a")
+        await local_storage.put_object("flatkey:def", b"b")
         await local_storage.put_object("other:zzz", b"c")
 
-        keys, _ = await local_storage.list_objects(prefix="batchjob:")
-        assert sorted(keys) == ["batchjob:abc", "batchjob:def"]
+        keys, _ = await local_storage.list_objects(prefix="flatkey:")
+        assert keys == ["flatkey:def", "flatkey:abc"]
 
         # A delimiter must not break flat-prefix matching.
-        keys2, _ = await local_storage.list_objects(prefix="batchjob:", delimiter=":")
-        assert sorted(keys2) == ["batchjob:abc", "batchjob:def"]
+        keys2, _ = await local_storage.list_objects(prefix="flatkey:", delimiter=":")
+        assert keys2 == ["flatkey:def", "flatkey:abc"]
 
-        for key in ("batchjob:abc", "batchjob:def", "other:zzz"):
+        for key in ("flatkey:abc", "flatkey:def", "other:zzz"):
             await local_storage.delete_object(key)
 
     @pytest.mark.asyncio
-    async def test_list_batchjob_prefix_orders_by_created_at_desc(
+    async def test_list_prefix_orders_by_created_at_desc(
         self, local_storage: LocalStorage
     ):
         keys = ["batchjob:job-b", "batchjob:job-a", "batchjob:job-c"]
@@ -217,6 +216,50 @@ class TestLocalStorage:
 
         for key in keys:
             await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_hierarchical_keys_with_colon_parent_are_supported(
+        self, local_storage: LocalStorage
+    ):
+        key = "batchstatus_copies:job-1/cluster-a"
+
+        await local_storage.put_object(key, b"payload")
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchstatus_copies:job-1/",
+            delimiter="/",
+        )
+        assert objects == [key]
+        assert await local_storage.object_exists(key)
+
+        await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_recursive_list_preserves_nested_subfolders(
+        self, local_storage: LocalStorage
+    ):
+        key = "batchstatus_copies:job-1/cluster-a/default/workload-1"
+
+        await local_storage.put_object(key, b"payload")
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchstatus_copies:job-1/",
+        )
+        assert objects == [key]
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchstatus_copies:job-1/cluster-a/",
+        )
+        assert objects == [key]
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchstatus_copies:job-1/cluster-a/default/",
+        )
+        assert objects == [key]
+
+        assert await local_storage.object_exists(key)
+
+        await local_storage.delete_object(key)
 
     @pytest.mark.asyncio
     async def test_concurrent_operations(self, local_storage: LocalStorage):

@@ -114,13 +114,50 @@ async def test_run_returns_failure_when_execution_fails(monkeypatch):
     monkeypatch.setattr(worker_module, "GatewayEndpointSource", lambda url: object())
     monkeypatch.setattr(worker_module, "ExternalRuntime", lambda src: object())
     monkeypatch.setattr(
-        worker_module, "BaseJobDriver", lambda runner, runtime: failing_driver
+        worker_module,
+        "BaseJobDriver",
+        lambda runner, runtime, **kwargs: failing_driver,
     )
 
     result = await worker.run()
 
     assert result == 1
     failing_driver.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_constructs_driver_in_worker_mode(monkeypatch):
+    """The worker pod builds its driver in worker_mode: it dispatches and writes
+    output parts and per-request done markers, but does not finalize. Aggregating
+    the markers is the metadata service's job; finalizing here would consume them
+    and the coordinator would then overwrite the output with zero counts (#2263)."""
+    worker = BatchWorker()
+    worker.llm_engine_base_url = "http://localhost:8000"
+    batch_job = _make_job(BatchJobState.IN_PROGRESS)
+
+    monkeypatch.setattr(worker, "load_job_from_env", lambda: batch_job)
+    monkeypatch.setattr(
+        worker, "wait_for_in_progress", AsyncMock(return_value=batch_job)
+    )
+    worker.health_checker = SimpleNamespace(wait_for_ready=AsyncMock(return_value=True))
+
+    from aibrix.batch import worker as worker_module
+
+    captured: dict = {}
+
+    def _capture_driver(runner, runtime, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(execute=AsyncMock(return_value=None))
+
+    monkeypatch.setattr(worker_module, "SingleJobRunner", lambda job: object())
+    monkeypatch.setattr(worker_module, "GatewayEndpointSource", lambda url: object())
+    monkeypatch.setattr(worker_module, "ExternalRuntime", lambda src: object())
+    monkeypatch.setattr(worker_module, "BaseJobDriver", _capture_driver)
+
+    result = await worker.run()
+
+    assert result == 0
+    assert captured.get("worker_mode") is True
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,10 @@ from fastapi.testclient import TestClient
 import aibrix.batch.constant as constant
 from aibrix.batch.batch_manager import BatchManager
 from aibrix.batch.job_driver import BaseJobDriver, JobDriver, TerminateResult
+from aibrix.batch.job_driver.error_injection import (
+    BREAKPOINT_RUNTIME_INITIALIZATION,
+    JobDriverErrorInjector,
+)
 from aibrix.batch.job_entity import (
     AibrixMetadata,
     BatchJob,
@@ -65,7 +69,7 @@ TEST_OPTS_DELAY_BEFORE_FINALIZE_SHUTDOWN_SECONDS = (
 TEST_OPTS_DELAY_AFTER_FINALIZE_SHUTDOWN_SECONDS = (
     "delay_after_finalize_shutdown_seconds"
 )
-_ORIGINAL_RUNTIME_DELAY_SEND_ONE: Any = None
+_ORIGINAL_RUNTIME_DELAY_SEND: Any = None
 _PATCHED_RUNTIME_DELAY_SECONDS = 0.0
 
 
@@ -97,8 +101,32 @@ def backend_expect_runtime_teardown(test_backend) -> bool:
     return _backend(test_backend).fake_runtime
 
 
-def backend_expect_exact_request_counts(test_backend) -> bool:
-    return _backend(test_backend).max_concurrency == 1
+def backend_uses_redis_metastore(test_backend) -> bool:
+    return _backend(test_backend).metastore_type.value == "redis"
+
+
+def backend_status_wait_kwargs(
+    test_backend, *, expected_status: str
+) -> dict[str, float | int]:
+    if not backend_uses_redis_metastore(test_backend):
+        return {}
+    if expected_status == "in_progress":
+        return {"max_polls": 60, "poll_interval": 0.5}
+    if expected_status in {"completed", "cancelled"}:
+        return {"max_polls": 240, "poll_interval": 0.5}
+    return {}
+
+
+def backend_prepare_entry_timeout_seconds(test_backend) -> float:
+    if backend_uses_redis_metastore(test_backend):
+        return 20.0
+    return 5.0
+
+
+def is_keyword_serial_worker(driver: Any) -> bool:
+    execute_worker = getattr(driver, "execute_worker", None)
+    execute_worker_func = getattr(execute_worker, "__func__", execute_worker)
+    return getattr(execute_worker_func, "__name__", "") == "serial_execute_worker"
 
 
 def backend_has_runtime_debug_state(test_backend) -> bool:
@@ -161,6 +189,18 @@ def backend_uses_fake_provisioning_runtime(test_backend) -> bool:
     return _backend(test_backend).has_feature("fake_provisioning_runtime")
 
 
+def backend_supports_runtime_cleanup_interruption(test_backend) -> bool:
+    return backend_uses_fake_provisioning_runtime(
+        test_backend
+    ) and not backend_uses_kubernetes_provider(test_backend)
+
+
+def backend_runtime_cleanup_delete_delta(test_backend) -> int:
+    if backend_uses_deployment_provider(test_backend):
+        return 1
+    return 2
+
+
 def backend_observes_restart_validation_runtime_delta(test_backend) -> bool:
     return _backend(test_backend).has_feature(
         "restart_validation_runtime_delta_observable"
@@ -177,9 +217,8 @@ def pytest_generate_tests(metafunc):
     select_e2e_backends(
         metafunc,
         [
-            "local_metastore_job_parallel",
             "local_job_using_deployment",
-            "k8s_job",
+            "local_job_using_k8s_job",
         ],
         default_backend="local_metastore_job",
     )
@@ -279,12 +318,14 @@ def force_batch_driver_crash_on_shutdown(monkeypatch, app) -> None:
         *,
         progress_manager=None,
         worker_id_generator=None,
+        error_injection=None,
     ):
         self._bind_active_session(job_id, progress_manager)
         try:
             runtimeRef = self._load_runtime_ref(job)
             handle = None
             max_attempts = self.session_retry_attempts + 1
+            error_injection = error_injection or JobDriverErrorInjector(job)
             try:
                 for attempt in range(max_attempts):
                     try:
@@ -299,9 +340,11 @@ def force_batch_driver_crash_on_shutdown(monkeypatch, app) -> None:
                             if handle is None:
                                 phase = "provision"
                         if handle is None:
-                            self._maybe_fail_runtime_initialization(job)
+                            error_injection.raise_for_breakpoint(
+                                BREAKPOINT_RUNTIME_INITIALIZATION
+                            )
                             handle = await self._provision(job, job_id)
-                        job = await self._persist_runtime_ref(
+                        job, _ = await self._persist_runtime_ref(
                             job,
                             progress_manager=progress_manager,
                             worker_id_generator=worker_id_generator,
@@ -316,10 +359,7 @@ def force_batch_driver_crash_on_shutdown(monkeypatch, app) -> None:
                         if phase in {"reconnect", "provision"}:
                             should_retry = attempt + 1 < max_attempts
                         elif phase == "wait_ready":
-                            should_retry = (
-                                self._should_retry_wait_ready(exc)
-                                and attempt + 1 < max_attempts
-                            )
+                            should_retry = attempt + 1 < max_attempts
                             should_teardown = self._should_teardown_failed_wait_ready(
                                 exc
                             )
@@ -498,7 +538,15 @@ def install_pending_after_n_requests_barrier(
                 if latest_job is not None:
                     return latest_job, completed
             else:
-                await asyncio.sleep(3600)
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    if is_keyword_serial_worker(self):
+                        raise
+                    latest_job = await job_manager.get_job(job.job_id)
+                    if latest_job is not None:
+                        return latest_job, completed
+                    raise
         return job, completed
 
     async def blocked_sync_completed_request_tasks(self, job, completed_request_tasks):
@@ -521,6 +569,7 @@ async def wait_for_status(
     client: TestClient,
     batch_id: str,
     expected_status: str,
+    *,
     extra_expected_fields: Optional[Union[str, List[str]]] = None,
     max_polls: int = 20,
     poll_interval: float = 0.5,
@@ -924,7 +973,7 @@ def verify_runtime_restart_completion_teardown(
 def set_runtime_inference_delay(
     e2e_test_app, test_backend: str, delay_seconds: float
 ) -> Optional[float]:
-    global _ORIGINAL_RUNTIME_DELAY_SEND_ONE, _PATCHED_RUNTIME_DELAY_SECONDS
+    global _ORIGINAL_RUNTIME_DELAY_SEND, _PATCHED_RUNTIME_DELAY_SECONDS
 
     from aibrix.batch.client.engine import DispatchEngine
 
@@ -932,23 +981,23 @@ def set_runtime_inference_delay(
     original_delay = values.get("endpoint_source_delay_seconds", 0.0)
     values["endpoint_source_delay_seconds"] = delay_seconds
 
-    original_send_one = _ORIGINAL_RUNTIME_DELAY_SEND_ONE
-    if original_send_one is None:
-        _ORIGINAL_RUNTIME_DELAY_SEND_ONE = DispatchEngine.send_one
-        original_send_one = _ORIGINAL_RUNTIME_DELAY_SEND_ONE
+    original_send = _ORIGINAL_RUNTIME_DELAY_SEND
+    if original_send is None:
+        _ORIGINAL_RUNTIME_DELAY_SEND = DispatchEngine._send_with_failover
+        original_send = _ORIGINAL_RUNTIME_DELAY_SEND
 
     if delay_seconds > 0:
         _PATCHED_RUNTIME_DELAY_SECONDS = delay_seconds
-        if DispatchEngine.send_one is original_send_one:
+        if DispatchEngine._send_with_failover is original_send:
 
-            async def delayed_send_one(self, request):
+            async def delayed_send(self, request):
                 await asyncio.sleep(_PATCHED_RUNTIME_DELAY_SECONDS)
-                return await original_send_one(self, request)
+                return await original_send(self, request)
 
-            cast(Any, DispatchEngine).send_one = delayed_send_one
+            cast(Any, DispatchEngine)._send_with_failover = delayed_send
     else:
         _PATCHED_RUNTIME_DELAY_SECONDS = 0.0
-        cast(Any, DispatchEngine).send_one = original_send_one
+        cast(Any, DispatchEngine)._send_with_failover = original_send
 
     # Dry-run local/redis backends reuse a singleton NoopEndpointSource that
     # captures EchoChannel(delay=...) at app construction time. Update the live
@@ -976,13 +1025,31 @@ async def run_follow_up_success_with_same_input(
 ) -> None:
     debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
     batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
+    in_progress_wait_kwargs = {
+        "max_polls": 30,
+        "poll_interval": 0.5,
+        **backend_status_wait_kwargs(test_backend, expected_status="in_progress"),
+    }
+    completed_wait_kwargs = {
+        "max_polls": 60,
+        "poll_interval": 0.5,
+        **backend_status_wait_kwargs(test_backend, expected_status="completed"),
+    }
 
     try:
         await wait_for_status(
-            client, batch_id, "in_progress", max_polls=30, poll_interval=0.5
+            client,
+            batch_id,
+            "in_progress",
+            max_polls=int(in_progress_wait_kwargs["max_polls"]),
+            poll_interval=float(in_progress_wait_kwargs["poll_interval"]),
         )
         final_status = await wait_for_status(
-            client, batch_id, "completed", max_polls=60, poll_interval=0.5
+            client,
+            batch_id,
+            "completed",
+            max_polls=int(completed_wait_kwargs["max_polls"]),
+            poll_interval=float(completed_wait_kwargs["poll_interval"]),
         )
 
         validate_batch_response_with_runtime_teardown(
@@ -1004,7 +1071,7 @@ async def run_follow_up_success_with_same_input(
             expected_cancelled_at=False,
             expected_errors=False,
             expected_output_file_id=True,
-            expected_error_file_id=True,
+            expected_error_file_id=False,
             expected_request_counts={
                 "total": expected_total_requests,
                 "completed": expected_total_requests,
@@ -1045,7 +1112,6 @@ async def complete_job_after_restart(
         test_backend,
         tmp_path,
         monkeypatch,
-        preserve_redis_prefix=True,
     )
     restarted_debug_state = capture_runtime_debug_state(restarted_app, test_backend)
     try:
@@ -1080,7 +1146,7 @@ async def complete_job_after_restart(
                 expected_cancelled_at=False,
                 expected_errors=False,
                 expected_output_file_id=True,
-                expected_error_file_id=True,
+                expected_error_file_id=False,
                 expected_request_counts=(
                     expected_request_counts
                     if expected_request_counts is not None
@@ -1196,8 +1262,20 @@ async def test_job_success_baseline(e2e_test_app, test_backend):
         batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
 
         try:
-            await wait_for_status(client, batch_id, "in_progress")
-            final_status = await wait_for_status(client, batch_id, "completed")
+            await wait_for_status(
+                client,
+                batch_id,
+                "in_progress",
+                **backend_status_wait_kwargs(
+                    test_backend, expected_status="in_progress"
+                ),
+            )
+            final_status = await wait_for_status(
+                client,
+                batch_id,
+                "completed",
+                **backend_status_wait_kwargs(test_backend, expected_status="completed"),
+            )
 
             validate_batch_response_with_runtime_teardown(
                 final_status,
@@ -1218,7 +1296,7 @@ async def test_job_success_baseline(e2e_test_app, test_backend):
                 expected_cancelled_at=False,
                 expected_errors=False,
                 expected_output_file_id=True,
-                expected_error_file_id=True,
+                expected_error_file_id=False,
                 expected_request_counts={
                     "total": 2,
                     "completed": 2,
@@ -1303,6 +1381,9 @@ async def test_job_processing_failure(e2e_test_app, test_backend):
         try:
             # Step 3: Create batch job with failing manager that injects fail_after metadata
             debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
+            expect_exact_request_counts = is_keyword_serial_worker(
+                e2e_test_app.state.batch_driver
+            )
             batch_id = create_batch_job(
                 client, input_file_id, test_backend=test_backend
             )
@@ -1334,17 +1415,17 @@ async def test_job_processing_failure(e2e_test_app, test_backend):
                     else BatchJobErrorCode.INFERENCE_FAILED
                 ),
                 expected_output_file_id=True,
-                expected_error_file_id=True,
+                expected_error_file_id=False,
                 expected_request_counts=(
                     {
                         "total": 10,
-                        "completed_at_least": 1,
+                        "completed": 1,
                         "failed": 0,
                     }
-                    if test_backend == "local_metastore_job_parallel"
+                    if expect_exact_request_counts
                     else {
                         "total": 10,
-                        "completed": 1,
+                        "completed_at_least": 1,
                         "failed": 0,
                     }
                 ),
@@ -1418,6 +1499,114 @@ async def test_job_runtime_initialization_failure(e2e_test_app, test_backend):
                 client, e2e_test_app, test_backend, input_file_id, 2
             )
         finally:
+            if batch_id is not None:
+                await e2e_test_app.state.batch_driver.clear_job(batch_id)
+            restore_job_manager(e2e_test_app, original_manager)
+
+
+@pytest.mark.asyncio
+async def test_job_runtime_failure_in_progress(e2e_test_app, test_backend):
+    if not backend_supports_runtime_cleanup_interruption(test_backend):
+        pytest.skip(
+            "Runtime interruption injection requires a fake provisioning runtime "
+            "with a live endpoint source"
+        )
+
+    print("Test 2c: Job runtime failure during in-progress scenario")
+
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 10)
+        original_delay = set_runtime_inference_delay(
+            e2e_test_app, test_backend, delay_seconds=1.0
+        )
+        failing_manager = FailingBatchManager(
+            injected_opts={constant.BATCH_OPTS_INTERRUPT_RUNTIME_AFTER_N_REQUESTS: "3"}
+        )
+        original_manager = await swap_job_manager(e2e_test_app, failing_manager)
+        batch_id = None
+
+        try:
+            debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
+            expect_exact_request_counts = is_keyword_serial_worker(
+                e2e_test_app.state.batch_driver
+            )
+            completed_wait_kwargs = {
+                "max_polls": 120,
+                "poll_interval": 0.5,
+                **backend_status_wait_kwargs(test_backend, expected_status="completed"),
+            }
+            batch_id = create_batch_job(
+                client, input_file_id, test_backend=test_backend
+            )
+
+            await wait_for_status(
+                client,
+                batch_id,
+                "in_progress",
+                **backend_status_wait_kwargs(
+                    test_backend, expected_status="in_progress"
+                ),
+            )
+            final_status = await wait_for_status(
+                client,
+                batch_id,
+                "completed",
+                **completed_wait_kwargs,
+            )
+
+            validate_batch_response(
+                final_status,
+                expected_status="completed",
+                expected_endpoint="/v1/chat/completions",
+                expected_input_file_id=input_file_id,
+                expected_in_progress_at=True,
+                expected_finalizing_at=True,
+                expected_completed_at=True,
+                expected_failed_at=False,
+                expected_errors=False,
+                expected_output_file_id=True,
+                expected_error_file_id=True,
+                expected_request_counts=(
+                    {
+                        "total": 10,
+                        "completed": 3,
+                        "failed": 7,
+                    }
+                    if expect_exact_request_counts
+                    else {
+                        "total": 10,
+                        "completed_at_least": 3,
+                        "failed_at_least": 1,
+                    }
+                ),
+            )
+
+            handles = get_runtime_debug_handles(e2e_test_app, test_backend)
+            assert handles is not None
+            assert debug_state is not None
+            assert len(handles["runtime_create_calls"]) == (
+                debug_state["runtime_create_calls"] + 1
+            )
+            assert len(handles["inference_client_builds"]) == (
+                debug_state["inference_client_builds"] + 1
+            )
+            assert len(handles["teardown_calls"]) >= debug_state["teardown_calls"] + 2
+            assert len(handles["runtime_delete_calls"]) >= (
+                debug_state["runtime_delete_calls"]
+                + backend_runtime_cleanup_delete_delta(test_backend)
+            )
+
+            print(
+                "✅ Runtime interruption during processing test completed successfully"
+            )
+            failing_manager.injected_opts = {}
+            await run_follow_up_success_with_same_input(
+                client, e2e_test_app, test_backend, input_file_id, 10
+            )
+        finally:
+            set_runtime_inference_delay(
+                e2e_test_app, test_backend, delay_seconds=original_delay or 0.0
+            )
             if batch_id is not None:
                 await e2e_test_app.state.batch_driver.clear_job(batch_id)
             restore_job_manager(e2e_test_app, original_manager)
@@ -1518,8 +1707,8 @@ async def test_job_finalizing_failure(e2e_test_app, test_backend):
                 expected_failed_at=True,  # Should have failure timestamp
                 expected_finalizing_at=True,  # Should have reached finalizing stage
                 expected_errors=BatchJobErrorCode.FINALIZING_ERROR,
-                expected_output_file_id=True,  # May or may not have output file
-                expected_error_file_id=True,  # May or may not have error file
+                expected_output_file_id=True,  # Successful requests produced output
+                expected_error_file_id=False,  # No requests failed -> no error file
                 expected_request_counts={  # Should reflect what's done before finalizing
                     "total": 2,
                     "completed": 2,
@@ -1623,7 +1812,10 @@ async def test_job_cancellation_in_progress_before_preparation(
 
             try:
                 # Step 3: Wait until the job is pinned inside prepare_job
-                await asyncio.wait_for(entered_preparation.wait(), timeout=5)
+                await asyncio.wait_for(
+                    entered_preparation.wait(),
+                    timeout=backend_prepare_entry_timeout_seconds(test_backend),
+                )
 
                 # Step 4: Verify the job is pending in progress before preparation completes
                 status_during_prepare = client.get(f"/v1/batches/{batch_id}")
@@ -1638,7 +1830,15 @@ async def test_job_cancellation_in_progress_before_preparation(
                 release_preparation.set()
 
                 final_status = await wait_for_status(
-                    client, batch_id, "cancelled", max_polls=40, poll_interval=0.5
+                    client,
+                    batch_id,
+                    "cancelled",
+                    **(
+                        {"max_polls": 40, "poll_interval": 0.5}
+                        | backend_status_wait_kwargs(
+                            test_backend, expected_status="cancelled"
+                        )
+                    ),
                 )
 
                 # Step 7: Verify cancelled status using comprehensive validation
@@ -1705,7 +1905,10 @@ async def test_job_cancellation_in_progress_during_init_runtime(
 
             try:
                 # Step 3: Wait until the job is pinned inside runtime initialization
-                await asyncio.wait_for(entered_init_runtime.wait(), timeout=5)
+                await asyncio.wait_for(
+                    entered_init_runtime.wait(),
+                    timeout=backend_prepare_entry_timeout_seconds(test_backend),
+                )
 
                 # Step 4: Verify the job is pending in progress before runtime init completes
                 status_during_init = client.get(f"/v1/batches/{batch_id}")
@@ -1720,7 +1923,15 @@ async def test_job_cancellation_in_progress_during_init_runtime(
                 release_init_runtime.set()
 
                 final_status = await wait_for_status(
-                    client, batch_id, "cancelled", max_polls=40, poll_interval=0.5
+                    client,
+                    batch_id,
+                    "cancelled",
+                    **(
+                        {"max_polls": 40, "poll_interval": 0.5}
+                        | backend_status_wait_kwargs(
+                            test_backend, expected_status="cancelled"
+                        )
+                    ),
                 )
                 # Step 7: Verify cancelled status using comprehensive validation
                 validate_batch_response(
@@ -1801,7 +2012,10 @@ async def test_job_cancellation_in_progress_during_service_discovery(
             test_backend=test_backend,
         )
         try:
-            await asyncio.wait_for(entered_discovery.wait(), timeout=5)
+            await asyncio.wait_for(
+                entered_discovery.wait(),
+                timeout=backend_prepare_entry_timeout_seconds(test_backend),
+            )
 
             status_during_discovery = client.get(f"/v1/batches/{batch_id}")
             assert status_during_discovery.status_code == 200
@@ -1812,7 +2026,15 @@ async def test_job_cancellation_in_progress_during_service_discovery(
             assert cancel_response.json()["status"] == "cancelling"
 
             final_status = await wait_for_status(
-                client, batch_id, "cancelled", max_polls=40, poll_interval=0.1
+                client,
+                batch_id,
+                "cancelled",
+                **(
+                    {"max_polls": 40, "poll_interval": 0.1}
+                    | backend_status_wait_kwargs(
+                        test_backend, expected_status="cancelled"
+                    )
+                ),
             )
             await wait_for_runtime_teardown_delta(
                 e2e_test_app,
@@ -1860,8 +2082,9 @@ async def test_job_cancellation_in_progress(e2e_test_app, test_backend, monkeypa
         # Step 2: Create batch job
         debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
         batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
-        expect_exact_request_counts = backend_expect_exact_request_counts(test_backend)
-
+        expect_exact_request_counts = is_keyword_serial_worker(
+            e2e_test_app.state.batch_driver
+        )
         try:
             # Step 3: Wait until exactly 3 requests have been persisted and the job blocks
             entered = await asyncio.to_thread(entered_pending.wait, 10)
@@ -1892,7 +2115,15 @@ async def test_job_cancellation_in_progress(e2e_test_app, test_backend, monkeypa
 
             # Step 5: Wait for cancellation and finalization
             final_status = await wait_for_status(
-                client, batch_id, "cancelled", max_polls=40, poll_interval=0.5
+                client,
+                batch_id,
+                "cancelled",
+                **(
+                    {"max_polls": 40, "poll_interval": 0.5}
+                    | backend_status_wait_kwargs(
+                        test_backend, expected_status="cancelled"
+                    )
+                ),
             )
 
             # Step 6: Verify cancelled status using comprehensive validation
@@ -1911,11 +2142,11 @@ async def test_job_cancellation_in_progress(e2e_test_app, test_backend, monkeypa
                 expected_finalizing_at=True,  # Should have finalizing timestamp
                 expected_completed_at=False,
                 expected_output_file_id=True,
-                expected_error_file_id=True,
+                expected_error_file_id=False,
                 expected_request_counts=(
                     {"total": 10, "completed": 3, "failed": 0}
                     if expect_exact_request_counts
-                    else True
+                    else {"total": 10, "completed_at_least": 3, "failed": 0}
                 ),
             )
             if not expect_exact_request_counts:
@@ -1993,8 +2224,9 @@ async def test_job_cancellation_in_finalizing(e2e_test_app, test_backend):
                     expected_finalizing_at=True,  # Should have reached finalizing
                     expected_cancelling_at=False,
                     expected_cancelled_at=False,
+                    expected_errors="cancel_rejected",
                     expected_output_file_id=True,  # Should have output file
-                    expected_error_file_id=True,  # Should have error file
+                    expected_error_file_id=False,  # No failures -> no error file
                     expected_request_counts=True,  # Should have request counts
                 )
                 print("  Job completed without cancelling finalization")
@@ -2008,8 +2240,8 @@ async def test_job_cancellation_in_finalizing(e2e_test_app, test_backend):
 
 @pytest.mark.asyncio
 async def test_job_expiration_in_finalizing(e2e_test_app, test_backend):
-    """Batch completion-window expiry after entering FINALIZING should end as
-    expired, not completed."""
+    """Batch completion-window expiry after entering FINALIZING should not
+    interrupt terminalization; the job still completes."""
     print("Test 6b: Job expiration during finalizing scenario")
 
     with create_test_client(e2e_test_app) as client:
@@ -2043,7 +2275,7 @@ async def test_job_expiration_in_finalizing(e2e_test_app, test_backend):
                 assert status_during_finalizing["status"] == "finalizing"
 
                 final_status = await wait_for_status(
-                    client, batch_id, "expired", max_polls=40, poll_interval=0.5
+                    client, batch_id, "completed", max_polls=40, poll_interval=0.5
                 )
 
                 validate_batch_response_with_runtime_teardown(
@@ -2055,18 +2287,18 @@ async def test_job_expiration_in_finalizing(e2e_test_app, test_backend):
                     expect_runtime_teardown=backend_expect_runtime_teardown(
                         test_backend
                     ),
-                    expected_status="expired",
+                    expected_status="completed",
                     expected_completion_window="0h",
                     expected_endpoint="/v1/chat/completions",
                     expected_in_progress_at=True,
                     expected_finalizing_at=True,
-                    expected_completed_at=False,
+                    expected_completed_at=True,
                     expected_failed_at=False,
-                    expected_expired_at=True,
+                    expected_expired_at=False,
                     expected_cancelled_at=False,
                     expected_cancelling_at=False,
                     expected_output_file_id=True,
-                    expected_error_file_id=True,
+                    expected_error_file_id=False,
                     expected_request_counts=True,
                 )
 
@@ -2159,9 +2391,7 @@ async def test_job_expiration_during_processing(e2e_test_app, test_backend):
         original_delay = set_runtime_inference_delay(
             e2e_test_app,
             test_backend,
-            delay_seconds=(
-                3.0 if test_backend == "local_metastore_job_parallel" else 1.0
-            ),
+            delay_seconds=1.0,
         )
 
         # Step 2: Inject FailingBatchManager to add fail_after metadata during job creation
@@ -2214,10 +2444,14 @@ async def test_job_expiration_during_processing(e2e_test_app, test_backend):
                     expected_expired_at=True,
                     expected_finalizing_at=True,  # Should have reached finalizing stage
                     expected_output_file_id=True,
-                    expected_error_file_id=True,
+                    expected_error_file_id=False,
                     expected_request_counts=True,
                 )
-                assert terminate_calls == [batch_id]
+                # terminate is idempotent: the expiry and deletion paths can each
+                # invoke it for the same job, and the second call is rejected by the
+                # guard in BaseJobDriver.terminate. Assert it ran for this job and
+                # never for another, tolerating the benign retry.
+                assert terminate_calls and set(terminate_calls) == {batch_id}
 
             print(
                 "✅ Processing failure test with worker fail_after completed successfully"

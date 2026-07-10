@@ -14,6 +14,7 @@
 
 import asyncio
 import contextlib
+import copy
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Optional
@@ -101,9 +102,26 @@ class FakeProgressManager:
         self.validated_job_ids.append(job_id)
         return True
 
-    async def update_job_local_status(self, job_id: str, worker_id: str, status):
+    async def update_job_local_status(
+        self, job_id: str, worker_id: str, status, update_keys=None
+    ):
         del job_id, worker_id
-        self.job.status = status
+        if update_keys is None:
+            self.job.status = status
+            return self.job
+
+        if "execution" in update_keys:
+            self.job.status.execution = copy.deepcopy(status.execution)
+        if "state" in update_keys:
+            self.job.status.state = status.state
+        if "errors" in update_keys:
+            self.job.status.errors = copy.deepcopy(status.errors)
+        if "request_counts" in update_keys:
+            self.job.status.request_counts = status.request_counts.model_copy(deep=True)
+        if "usage" in update_keys:
+            self.job.status.usage = (
+                status.usage.model_copy(deep=True) if status.usage is not None else None
+            )
         return self.job
 
     async def mark_job_finalizing(self, job_id: str):

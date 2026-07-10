@@ -451,8 +451,11 @@ export async function listAllJobs(): Promise<Job[]> {
   return all;
 }
 
-export async function getJob(id: string): Promise<Job> {
-  return normalizeJob(await apiFetch<Job>(`/api/v1/jobs/${encodeURIComponent(id)}`));
+export async function getJob(id: string, options?: { includeDeployment?: boolean }): Promise<Job> {
+  const query = buildQuery({
+    include_deployment: options?.includeDeployment ? 'true' : undefined,
+  });
+  return normalizeJob(await apiFetch<Job>(`/api/v1/jobs/${encodeURIComponent(id)}${query}`));
 }
 
 export async function createJob(req: CreateJobRequest): Promise<Job> {

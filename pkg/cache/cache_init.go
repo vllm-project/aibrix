@@ -84,8 +84,9 @@ type Store struct {
 	engineMetricsFetcher *metrics.EngineMetricsFetcher // Centralized typed metrics fetcher
 
 	// Request trace fields
-	enableTracing bool                                  // Default to load from enableGPUOptimizerTracing, can be configured.
-	requestTrace  *utils.SyncMap[string, *RequestTrace] // Request trace data (model_name -> *RequestTrace)
+	enableTracing bool                                   // Default to load from enableGPUOptimizerTracing, can be configured.
+	requestTrace  *utils.SyncMap[string, *RequestTrace]  // Request trace data (model_name -> *RequestTrace)
+	podStats      utils.SyncMap[string, *podStatsRecord] // Request stats data bound to request completion, not pod lifetime.
 
 	// Pod related storage
 	metaPods utils.SyncMap[string, *Pod] // pod_namespace/pod_name -> *Pod

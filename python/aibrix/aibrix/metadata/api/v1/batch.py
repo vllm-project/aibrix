@@ -35,18 +35,19 @@ from aibrix.batch.job_entity import (
     BatchUsage,
     ClientConfig,
     CompletionWindow,
+    DeploymentDetail,
     ModelTemplateRef,
     ResourceAllocation,
     RuntimeSpec,
 )
 from aibrix.batch.manifest import RenderError
-from aibrix.batch.storage.batch_metastore import get_batch_job
 from aibrix.batch.template import (
     BatchProfile,
     ModelDeploymentTemplate,
     ProfileRegistry,
     TemplateRegistry,
 )
+from aibrix.context import InfrastructureContext, get_deployment_detail_provider
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -450,7 +451,9 @@ class BatchListResponse(BaseModel):
     )
 
 
-def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
+def _batch_job_to_openai_response(
+    batch_job: BatchJob, deployment: Optional[DeploymentDetail] = None
+) -> BatchResponse:
     """Convert BatchJob to OpenAI batch response format."""
     status: BatchJobStatus = batch_job.status
     spec: BatchJobSpec = batch_job.spec
@@ -500,6 +503,31 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
     else:
         state = status.state.value
 
+    # Mirror OpenAI's batch object contract for the result file ids. We allocate
+    # them upfront so the worker can stream into them, but they must not surface
+    # until they are real, downloadable files:
+    #   - both stay null through validating/in_progress/finalizing (the multipart
+    #     upload is only completed during finalization), and
+    #   - output_file_id is exposed only when there are successful results, and
+    #     error_file_id only when at least one request failed (OpenAI leaves the
+    #     error file null when nothing errored).
+    # rc is non-Optional (default_factory), but guard defensively to match the
+    # check at the request_counts conversion above and stay safe if it ever
+    # becomes nullable.
+    rc = status.request_counts
+    output_file_id = (
+        status.output_file_id if status.finished and rc and rc.completed > 0 else None
+    )
+    error_file_id = (
+        status.error_file_id if status.finished and rc and rc.failed > 0 else None
+    )
+
+    aibrix = (
+        spec.aibrix.model_copy(update={"deployment": deployment})
+        if spec.aibrix and deployment
+        else spec.aibrix
+    )
+
     return BatchResponse(
         id=status.job_id,
         endpoint=spec.endpoint,
@@ -508,8 +536,8 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
         input_file_id=spec.input_file_id,
         completion_window=completion_window,
         status=state,
-        output_file_id=status.output_file_id,
-        error_file_id=status.error_file_id,
+        output_file_id=output_file_id,
+        error_file_id=error_file_id,
         created_at=created_at_unix,
         in_progress_at=dt_to_unix(status.in_progress_at),
         expires_at=created_at_unix + spec.completion_window,
@@ -522,7 +550,7 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
         request_counts=request_counts,
         usage=status.usage,
         metadata=spec.metadata,
-        aibrix=spec.aibrix,
+        aibrix=aibrix,
     )
 
 
@@ -592,37 +620,73 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
 
 
 async def _resolve_batch_job(request: Request, batch_id: str) -> Optional[BatchJob]:
-    """Resolve a BatchJob by id, metastore-first with BatchManager fallback.
+    """Resolve a BatchJob by id through the BatchDriver.
 
-    The batch metastore is the source of truth. The fallback to the driver's
-    in-memory pool covers the brief window after POST before the store write
-    is observable, since the metadata service seeds the BatchManager pool
-    synchronously on create.
+    Reads flow through the BatchDriver so an unfinished job that exists only in
+    the metastore can be republished into the manager's runtime pools if restart
+    recovery missed it. The driver still covers the brief POST -> store window
+    because freshly created jobs are seeded into the in-memory pools first.
     """
-    job = await get_batch_job(batch_id)
-    if job is not None:
-        return job
-
     batch_driver: BatchDriver = request.app.state.batch_driver
     return await batch_driver.get_job(batch_id)
 
 
+async def _query_deployment_detail(
+    ctx: InfrastructureContext, job: BatchJob
+) -> Optional[DeploymentDetail]:
+    """Query the deployment detail for a batch job via side-channel provider."""
+    try:
+        runtime_target = job.spec.runtime_target
+        if not runtime_target:
+            return None
+
+        provider = get_deployment_detail_provider(runtime_target)
+        if provider is None:
+            return None
+
+        detail_dict = await provider.get_deployment_detail(ctx, job)
+        if detail_dict is None:
+            return None
+
+        return DeploymentDetail(**detail_dict)
+    except Exception as e:
+        logger.warning(
+            "Failed to query deployment detail",
+            job_id=job.job_id,
+            error=str(e),
+        )
+        return None
+
+
 @router.get("/{batch_id}", response_model_exclude_none=True)
-async def get_batch(request: Request, batch_id: str) -> BatchResponse:
+async def get_batch(
+    request: Request,
+    batch_id: str,
+    include_deployment: Optional[bool] = Query(
+        False, description="Include deployment detail in the response"
+    ),
+) -> BatchResponse:
     """Retrieve a batch by ID.
 
     Returns the details of a specific batch including its current status,
     request counts, and timestamps.
     """
     try:
-        logger.debug("Retrieving batch", batch_id=batch_id)  # type: ignore[call-arg]
+        logger.debug(
+            "Retrieving batch", batch_id=batch_id, include_deployment=include_deployment
+        )  # type: ignore[call-arg]
 
         job = await _resolve_batch_job(request, batch_id)
         if not job:
             logger.warning("Batch not found", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=404, detail="Batch not found")
 
-        return _batch_job_to_openai_response(job)
+        deployment = None
+        if include_deployment:
+            ctx = request.app.state.infrastructure_context
+            deployment = await _query_deployment_detail(ctx, job)
+
+        return _batch_job_to_openai_response(job, deployment)
     except HTTPException:
         raise
     except Exception as e:
