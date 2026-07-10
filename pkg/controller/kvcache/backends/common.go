@@ -18,6 +18,7 @@ package backends
 
 import (
 	"fmt"
+	"strings"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -185,4 +186,63 @@ func buildRoleBinding(kvCache *orchestrationv1alpha1.KVCache) *rbacv1.RoleBindin
 	}
 
 	return rb
+}
+
+// parseSecretRef parses a secret reference in "secretName/key" format.
+// If no key is specified, defaults to "password".
+func parseSecretRef(ref string) (name, key string) {
+	parts := strings.SplitN(ref, "/", 2)
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return parts[0], "password"
+}
+
+// buildRedisWatcherEnvVars constructs the REDIS_ADDR and REDIS_PASSWORD env vars
+// for a watcher pod. If an ExternalConnection is configured, it uses the external
+// address and wires the password via SecretKeyRef. Otherwise falls back to the
+// in-cluster Redis service at <name>-redis:6379 with an empty password.
+//
+// Limitation: ReconcilePodObject only reconciles the container image, not env vars.
+// If an operator later changes which secret/key passwordSecretRef points at or changes
+// the external address, the running watcher pod retains the old env vars. The secret
+// *value* is re-read by kubelet on pod restart (SecretKeyRef is a reference, not a
+// snapshot), but a change to the secret *name* or the address field requires deleting
+// and recreating the watcher pod for the new config to take effect.
+func buildRedisWatcherEnvVars(kvCache *orchestrationv1alpha1.KVCache) []corev1.EnvVar {
+	redisAddr := fmt.Sprintf("%s-redis:%d", kvCache.Name, 6379)
+	var redisPasswordEnv corev1.EnvVar
+
+	if kvCache.Spec.Metadata != nil && kvCache.Spec.Metadata.Redis != nil &&
+		kvCache.Spec.Metadata.Redis.ExternalConnection != nil &&
+		kvCache.Spec.Metadata.Redis.ExternalConnection.Address != "" {
+		extConn := kvCache.Spec.Metadata.Redis.ExternalConnection
+		redisAddr = extConn.Address
+
+		// Wire PasswordSecretRef into the pod env via SecretKeyRef.
+		if extConn.PasswordSecretRef != "" {
+			secretName, secretKey := parseSecretRef(extConn.PasswordSecretRef)
+			redisPasswordEnv = corev1.EnvVar{
+				Name: "REDIS_PASSWORD",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+						Key:                  secretKey,
+					},
+				},
+			}
+		} else {
+			redisPasswordEnv = corev1.EnvVar{Name: "REDIS_PASSWORD", Value: ""}
+		}
+	} else {
+		redisPasswordEnv = corev1.EnvVar{Name: "REDIS_PASSWORD", Value: ""}
+	}
+
+	return []corev1.EnvVar{
+		{
+			Name:  "REDIS_ADDR",
+			Value: redisAddr,
+		},
+		redisPasswordEnv,
+	}
 }
