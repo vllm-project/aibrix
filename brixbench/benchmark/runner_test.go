@@ -95,6 +95,16 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 
 	result.BenchmarkKind = testCase.BenchmarkKind
 	benchmarkNamespace := benchmarkNamespaceForTestCase(testCase)
+	caseLogDir := caseLogRoot(scenarioLogRoot, testCase.Name)
+
+	if testCase.ProviderName() == "dynamo" {
+		staleCleanupDone := progressStep(t, "clear stale Dynamo resources in namespace %s for %s", benchmarkNamespace, testCase.Name)
+		if cleanupErr := deployers.CleanupStaleDynamoNamespace(ctx, benchmarkNamespace, testCase.Engine.Manifest, projectRoot, caseLogDir); cleanupErr != nil {
+			result.Error = fmt.Sprintf("Dynamo stale namespace cleanup failed: %v", cleanupErr)
+			return result, fmt.Errorf("Dynamo stale namespace cleanup failed: %w", cleanupErr)
+		}
+		staleCleanupDone()
+	}
 
 	if resetBeforeTestEnabled() {
 		namespaceResetDone := progressStep(t, "reset benchmark namespace %s for %s", benchmarkNamespace, testCase.Name)
@@ -116,7 +126,6 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 		progressLog(t, "Skipping benchmark namespace reset before %s; namespace %s will be reused", testCase.Name, benchmarkNamespace)
 	}
 
-	caseLogDir := caseLogRoot(scenarioLogRoot, testCase.Name)
 	deployDone := progressStep(t, "deploy control plane and engine for %s", testCase.Name)
 	deployer, gatewayURL, err := setupAndRunDeployment(ctx, t, projectRoot, &testCase, benchmarkNamespace, caseLogDir)
 	result.Version = testCase.Version

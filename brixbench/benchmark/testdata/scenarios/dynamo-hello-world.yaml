@@ -3,6 +3,8 @@ Tests:
   - name: dynamo-v1.2.1-qwen3-8b-round-robin-1p1d-tp2
     provider: dynamo
     version: 1.2.1
+    platform:
+      valuesFile: testdata/deployments/dynamo/platform-aibrix-mirror-dev-operator.yaml
     engine:
       type: vllm
       manifest: testdata/deployments/dynamo/qwen3-8b-round-robin-1p1d-tp2.yaml

@@ -50,7 +50,6 @@ const dynamoModelsHostPath = "/root/models"
 const dynamoModelsPVStorage = "500Gi"
 const dynamoDefaultPlatformValuesFileName = "dynamo-platform-values.yaml"
 const dynamoDefaultOperatorImageRepository = "aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/ai-dynamo/kubernetes-operator"
-const dynamoDefaultOperatorImageTag = "1.2.0-deepseek-v4-dev.3"
 const dynamoModelProbeTimeout = 10 * time.Minute
 
 // DynamoDeployer deploys Dynamo platform releases and user-provided
@@ -81,6 +80,31 @@ func NewDynamoDeployer() *DynamoDeployer {
 		releaseSource: NewGitDynamoReleaseSource(),
 		runner:        execCommandRunner{},
 	}
+}
+
+// CleanupStaleDynamoNamespace clears Dynamo finalizers before the generic
+// namespace reset path waits on namespace deletion.
+func CleanupStaleDynamoNamespace(ctx context.Context, namespace string, engineManifest string, projectRoot string, logDir string) error {
+	namespace = strings.TrimSpace(namespace)
+	if namespace == "" {
+		return nil
+	}
+	deployer := &DynamoDeployer{
+		namespace:      namespace,
+		effectiveNS:    namespace,
+		engineManifest: strings.TrimSpace(engineManifest),
+		projectRoot:    strings.TrimSpace(projectRoot),
+		logDir:         strings.TrimSpace(logDir),
+		runner:         execCommandRunner{},
+	}
+	exists, err := deployer.dynamoNamespaceExists(ctx, namespace)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	return deployer.Teardown(ctx)
 }
 
 func (d *DynamoDeployer) Initialize(ctx context.Context, config Config) error {
@@ -233,17 +257,30 @@ func (d *DynamoDeployer) Teardown(ctx context.Context) error {
 	if namespace == "" {
 		namespace = d.namespace
 	}
+	var criticalErrs []error
+	addCriticalErr := func(err error) {
+		if err != nil {
+			criticalErrs = append(criticalErrs, err)
+		}
+	}
+	addCriticalErrUnlessNotFound := func(err error) {
+		if err != nil && !isDynamoCleanupNotFoundError(err) {
+			criticalErrs = append(criticalErrs, err)
+		}
+	}
 	if strings.TrimSpace(d.engineManifest) != "" {
 		args := []string{"patch"}
 		if strings.TrimSpace(namespace) != "" {
 			args = append(args, "-n", namespace)
 		}
 		args = append(args, "-f", d.engineManifest, "--type=merge", "-p", dynamoClearFinalizersPatch)
-		d.runDynamoCleanupCommand(ctx, "patch-dynamo-graph-deployment-finalizers", "kubectl", args...)
+		addCriticalErrUnlessNotFound(d.runDynamoCleanupCommand(ctx, "patch-dynamo-graph-deployment-finalizers", "kubectl", args...))
 	}
 	componentDeployments := []string{}
 	if strings.TrimSpace(namespace) != "" {
-		componentDeployments = d.patchDynamoComponentDeploymentFinalizers(ctx, namespace)
+		var err error
+		componentDeployments, err = d.patchDynamoComponentDeploymentFinalizers(ctx, namespace)
+		addCriticalErr(err)
 	}
 	if strings.TrimSpace(d.engineManifest) != "" {
 		args := []string{"delete"}
@@ -251,18 +288,24 @@ func (d *DynamoDeployer) Teardown(ctx context.Context) error {
 			args = append(args, "-n", namespace)
 		}
 		args = append(args, "-f", d.engineManifest, "--ignore-not-found", "--wait=false")
-		d.runDynamoCleanupCommand(ctx, "delete-dynamo-graph-deployment", "kubectl", args...)
+		addCriticalErr(d.runDynamoCleanupCommand(ctx, "delete-dynamo-graph-deployment", "kubectl", args...))
+		waitArgs := []string{"wait", "--for=delete"}
+		if strings.TrimSpace(namespace) != "" {
+			waitArgs = append(waitArgs, "-n", namespace)
+		}
+		waitArgs = append(waitArgs, "-f", d.engineManifest, "--timeout=2m")
+		addCriticalErrUnlessNotFound(d.runDynamoCleanupCommand(ctx, "wait-delete-dynamo-graph-deployment", "kubectl", waitArgs...))
 	}
 	if strings.TrimSpace(namespace) != "" {
-		d.deleteDynamoComponentDeployments(ctx, namespace, componentDeployments)
-		d.runDynamoCleanupCommand(ctx, "delete-dynamo-fallback-podmonitors", "kubectl", "delete", "podmonitor", "dynamo-vllm-worker-metrics", "dynamo-vllm-frontend-metrics", "-n", namespace, "--ignore-not-found")
-		d.runDynamoHelmCleanupCommand(ctx, "uninstall-dynamo-platform", "uninstall", dynamoPlatformHelmReleaseName, "-n", namespace, "--ignore-not-found", "--wait", "--timeout", "5m")
-		d.runDynamoCleanupCommand(ctx, "delete-dynamo-pvcs", "kubectl", "delete", "pvc", "--all", "-n", namespace, "--ignore-not-found")
-		d.runDynamoCleanupCommand(ctx, "release-dynamo-models-pv", "kubectl", "patch", "pv", dynamoModelsPVName(namespace), "--type=json", "-p", `[{"op":"remove","path":"/spec/claimRef"}]`)
-		d.runDynamoCleanupCommand(ctx, "delete-dynamo-namespace", "kubectl", "delete", "namespace", namespace, "--ignore-not-found")
-		d.runDynamoCleanupCommand(ctx, "wait-delete-dynamo-namespace", "kubectl", "wait", "--for=delete", "namespace/"+namespace, "--timeout=10m")
+		addCriticalErr(d.deleteDynamoComponentDeployments(ctx, namespace, componentDeployments))
+		_ = d.runDynamoCleanupCommand(ctx, "delete-dynamo-fallback-podmonitors", "kubectl", "delete", "podmonitor", "dynamo-vllm-worker-metrics", "dynamo-vllm-frontend-metrics", "-n", namespace, "--ignore-not-found")
+		addCriticalErr(d.runDynamoHelmCleanupCommand(ctx, "uninstall-dynamo-platform", "uninstall", dynamoPlatformHelmReleaseName, "-n", namespace, "--ignore-not-found", "--wait", "--timeout", "5m"))
+		_ = d.runDynamoCleanupCommand(ctx, "delete-dynamo-pvcs", "kubectl", "delete", "pvc", "--all", "-n", namespace, "--ignore-not-found")
+		_ = d.runDynamoCleanupCommand(ctx, "release-dynamo-models-pv", "kubectl", "patch", "pv", dynamoModelsPVName(namespace), "--type=json", "-p", `[{"op":"remove","path":"/spec/claimRef"}]`)
+		addCriticalErr(d.runDynamoCleanupCommand(ctx, "delete-dynamo-namespace", "kubectl", "delete", "namespace", namespace, "--ignore-not-found"))
+		addCriticalErr(d.runDynamoCleanupCommand(ctx, "wait-delete-dynamo-namespace", "kubectl", "wait", "--for=delete", "namespace/"+namespace, "--timeout=10m"))
 	}
-	return nil
+	return errors.Join(criticalErrs...)
 }
 
 func (d *DynamoDeployer) ensureDynamoRuntimePrerequisites(ctx context.Context) error {
@@ -353,6 +396,14 @@ stringData:
 `, dynamoMPISecretName, strings.TrimSpace(d.namespace))
 }
 
+func (d *DynamoDeployer) dynamoNamespaceExists(ctx context.Context, namespace string) (bool, error) {
+	output, err := d.captureDynamoCommand(ctx, "inspect-stale-dynamo-namespace", "bash", "-lc", fmt.Sprintf("kubectl get namespace %s -o name 2>/dev/null || true", shellQuote(namespace)))
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(output) != "", nil
+}
+
 func dynamoModelsPVName(namespace string) string {
 	return "models-pv-" + strings.TrimSpace(namespace)
 }
@@ -366,7 +417,7 @@ func (d *DynamoDeployer) applyDynamoRenderedManifest(ctx context.Context, stage 
 }
 
 func (d *DynamoDeployer) writeDynamoDefaultPlatformValues() (string, error) {
-	return d.writeDynamoRuntimeManifest("default-dynamo-platform-values", renderDynamoDefaultPlatformValues(d.registrySecret))
+	return d.writeDynamoRuntimeManifest("default-dynamo-platform-values", renderDynamoDefaultPlatformValues(d.registrySecret, d.version))
 }
 
 func (d *DynamoDeployer) writeDynamoRuntimeManifest(name string, content string) (string, error) {
@@ -390,9 +441,10 @@ func (d *DynamoDeployer) writeDynamoRuntimeManifest(name string, content string)
 	return path, nil
 }
 
-func renderDynamoDefaultPlatformValues(registrySecret bool) string {
+func renderDynamoDefaultPlatformValues(registrySecret bool, operatorTag string) string {
 	imagePullSecrets := ""
 	dockerRegistry := ""
+	operatorTag = strings.TrimPrefix(strings.TrimSpace(operatorTag), "v")
 	if registrySecret {
 		imagePullSecrets = fmt.Sprintf(`  imagePullSecrets:
     - name: %s
@@ -462,42 +514,59 @@ nats:
       port: 8222
   natsBox:
     enabled: false
-`, imagePullSecrets, dynamoDefaultOperatorImageRepository, dynamoDefaultOperatorImageTag, dockerRegistry, dynamoMPISecretName, dynamoRegistryServer, dynamoRegistryServer)
+`, imagePullSecrets, dynamoDefaultOperatorImageRepository, operatorTag, dockerRegistry, dynamoMPISecretName, dynamoRegistryServer, dynamoRegistryServer)
 }
 
-func (d *DynamoDeployer) patchDynamoComponentDeploymentFinalizers(ctx context.Context, namespace string) []string {
+func (d *DynamoDeployer) patchDynamoComponentDeploymentFinalizers(ctx context.Context, namespace string) ([]string, error) {
 	output, err := d.captureDynamoCommand(ctx, "list-dynamo-component-deployments", "kubectl", "get", "dynamocomponentdeployments.nvidia.com", "-n", namespace, "-o", "name")
 	if err != nil {
 		fmt.Printf("Warning: Dynamo cleanup step list-dynamo-component-deployments failed: %v\n", err)
-		return nil
+		return nil, err
 	}
 	names := []string{}
+	var errs []error
 	for _, name := range strings.Fields(output) {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
 		names = append(names, name)
-		d.runDynamoCleanupCommand(ctx, "patch-dynamo-component-deployment-finalizers-"+name, "kubectl", "patch", name, "-n", namespace, "--type=merge", "-p", dynamoClearFinalizersPatch)
+		if err := d.runDynamoCleanupCommand(ctx, "patch-dynamo-component-deployment-finalizers-"+name, "kubectl", "patch", name, "-n", namespace, "--type=merge", "-p", dynamoClearFinalizersPatch); err != nil && !isDynamoCleanupNotFoundError(err) {
+			errs = append(errs, err)
+		}
 	}
-	return names
+	return names, errors.Join(errs...)
 }
 
-func (d *DynamoDeployer) deleteDynamoComponentDeployments(ctx context.Context, namespace string, names []string) {
+func (d *DynamoDeployer) deleteDynamoComponentDeployments(ctx context.Context, namespace string, names []string) error {
+	var errs []error
 	for _, name := range names {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
-		d.runDynamoCleanupCommand(ctx, "delete-dynamo-component-deployment-"+name, "kubectl", "delete", name, "-n", namespace, "--ignore-not-found", "--wait=false")
+		if err := d.runDynamoCleanupCommand(ctx, "delete-dynamo-component-deployment-"+name, "kubectl", "delete", name, "-n", namespace, "--ignore-not-found", "--wait=false"); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	for _, name := range names {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
-		d.runDynamoCleanupCommand(ctx, "wait-delete-dynamo-component-deployment-"+name, "kubectl", "wait", "--for=delete", name, "-n", namespace, "--timeout=2m")
+		if err := d.runDynamoCleanupCommand(ctx, "wait-delete-dynamo-component-deployment-"+name, "kubectl", "wait", "--for=delete", name, "-n", namespace, "--timeout=2m"); err != nil && !isDynamoCleanupNotFoundError(err) {
+			errs = append(errs, err)
+		}
 	}
+	return errors.Join(errs...)
+}
+
+func isDynamoCleanupNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "Error from server (NotFound)") || strings.Contains(message, " not found")
 }
 
 type dynamoGraphManifestMetadata struct {
@@ -1272,16 +1341,18 @@ func (d *DynamoDeployer) captureDynamoCommand(ctx context.Context, stage string,
 	return output, nil
 }
 
-func (d *DynamoDeployer) runDynamoCleanupCommand(ctx context.Context, stage string, name string, args ...string) {
+func (d *DynamoDeployer) runDynamoCleanupCommand(ctx context.Context, stage string, name string, args ...string) error {
 	if d.runner == nil {
 		d.runner = execCommandRunner{}
 	}
 	if strings.TrimSpace(name) == "" {
-		return
+		return nil
 	}
 	if err := d.runDynamoCommand(ctx, stage, name, args...); err != nil {
 		fmt.Printf("Warning: Dynamo cleanup step %s failed: %v\n", stage, err)
+		return err
 	}
+	return nil
 }
 
 func (d *DynamoDeployer) runDynamoBestEffortCommand(ctx context.Context, stage string, name string, args ...string) error {
@@ -1298,13 +1369,15 @@ func (d *DynamoDeployer) runDynamoBestEffortCommand(ctx context.Context, stage s
 	return nil
 }
 
-func (d *DynamoDeployer) runDynamoHelmCleanupCommand(ctx context.Context, stage string, args ...string) {
+func (d *DynamoDeployer) runDynamoHelmCleanupCommand(ctx context.Context, stage string, args ...string) error {
 	if d.runner == nil {
 		d.runner = execCommandRunner{}
 	}
 	if err := d.runDynamoHelmCommand(ctx, stage, args...); err != nil {
 		fmt.Printf("Warning: Dynamo cleanup step %s failed: %v\n", stage, err)
+		return err
 	}
+	return nil
 }
 
 func (d *DynamoDeployer) writeDynamoCommandLog(stage string, name string, args []string, startedAt time.Time, finishedAt time.Time, exitCode int, output string) error {

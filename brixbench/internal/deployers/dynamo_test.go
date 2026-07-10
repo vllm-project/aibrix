@@ -937,6 +937,12 @@ func TestDynamoDeployerDeployControlPlaneContinuesWithoutRegistrySecret(t *testi
 			t.Fatalf("generated platform values should not contain %q without registry secret:\n%s", forbidden, values)
 		}
 	}
+	if !strings.Contains(values, `tag: "1.2.1"`) {
+		t.Fatalf("expected operator image tag to come from version v1.2.1:\n%s", values)
+	}
+	if strings.Contains(values, "1.2.0-deepseek-v4-dev.3") {
+		t.Fatalf("generated platform values should not use hard-coded dev operator tag:\n%s", values)
+	}
 }
 
 func TestReadDynamoHelmDependencyReposFiltersFileAndOCIRepos(t *testing.T) {
@@ -1262,6 +1268,10 @@ func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *t
 		},
 		{
 			name: "kubectl",
+			args: []string{"wait", "--for=delete", "-n", "brixbench-dynamo", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml", "--timeout=2m"},
+		},
+		{
+			name: "kubectl",
 			args: []string{"delete", "dynamocomponentdeployment.nvidia.com/vllm-dynamo-frontend", "-n", "brixbench-dynamo", "--ignore-not-found", "--wait=false"},
 		},
 		{
@@ -1298,7 +1308,7 @@ func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *t
 	}
 }
 
-func TestDynamoDeployerTeardownIgnoresCleanupErrors(t *testing.T) {
+func TestDynamoDeployerTeardownReturnsCriticalCleanupErrors(t *testing.T) {
 	runner := &fakeCommandRunner{
 		err: errors.New("cleanup failed"),
 	}
@@ -1309,11 +1319,57 @@ func TestDynamoDeployerTeardownIgnoresCleanupErrors(t *testing.T) {
 		runner:         runner,
 	}
 
-	if err := deployer.Teardown(context.Background()); err != nil {
-		t.Fatalf("Teardown returned error: %v", err)
+	err := deployer.Teardown(context.Background())
+	if err == nil {
+		t.Fatalf("expected Teardown to return critical cleanup errors")
 	}
-	if len(runner.calls) != 9 {
-		t.Fatalf("expected 9 cleanup commands, got %d", len(runner.calls))
+	for _, want := range []string{
+		"patch-dynamo-graph-deployment-finalizers",
+		"delete-dynamo-graph-deployment",
+		"wait-delete-dynamo-graph-deployment",
+		"uninstall-dynamo-platform",
+		"delete-dynamo-namespace",
+		"wait-delete-dynamo-namespace",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to include %q, got %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "delete-dynamo-pvcs") || strings.Contains(err.Error(), "release-dynamo-models-pv") || strings.Contains(err.Error(), "delete-dynamo-fallback-podmonitors") {
+		t.Fatalf("best-effort cleanup errors should not be returned: %v", err)
+	}
+	if len(runner.calls) != 10 {
+		t.Fatalf("expected 10 cleanup commands, got %d", len(runner.calls))
+	}
+}
+
+func TestDynamoDeployerTeardownIgnoresMissingGraphDuringPartialDeploy(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{err: errors.New(`Error from server (NotFound): dynamographdeployments.nvidia.com "vllm-dynamo" not found`)},
+			{output: ""},
+			{},
+			{err: errors.New(`Error from server (NotFound): dynamographdeployments.nvidia.com "vllm-dynamo" not found`)},
+			{},
+			{},
+			{},
+			{},
+			{},
+			{},
+		},
+	}
+	deployer := &DynamoDeployer{
+		namespace:      "brixbench-dynamo",
+		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml",
+		projectRoot:    t.TempDir(),
+		runner:         runner,
+	}
+
+	if err := deployer.Teardown(context.Background()); err != nil {
+		t.Fatalf("Teardown returned error for missing graph in partial deploy: %v", err)
+	}
+	if len(runner.calls) != 10 {
+		t.Fatalf("expected 10 cleanup commands, got %d", len(runner.calls))
 	}
 }
 
