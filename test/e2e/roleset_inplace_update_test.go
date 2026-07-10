@@ -129,7 +129,10 @@ func TestRoleSetInPlaceUpdate(t *testing.T) {
 				pod.Annotations[controllerconstants.RoleInPlaceUpdateTargetHashAnnotationKey] != "" &&
 				isExpectedInPlacePendingReason(reason)
 		})
-		t.Logf("observed stuck in-place update reason: %s", stuckPod.Annotations[controllerconstants.RoleInPlaceUpdatePendingReasonAnnotationKey])
+		t.Logf(
+			"observed stuck in-place update reason: %s",
+			stuckPod.Annotations[controllerconstants.RoleInPlaceUpdatePendingReasonAnnotationKey],
+		)
 	})
 
 	t.Run("podset role falls back to recreate", func(t *testing.T) {
@@ -139,21 +142,33 @@ func TestRoleSetInPlaceUpdate(t *testing.T) {
 
 		podGroupSize := int32(2)
 		createRoleSet(ctx, t, dynamicClient, name, roleSetInPlaceImageV1, &podGroupSize, 1)
-		initialPodSet := waitForSingleRoleSetPodSet(ctx, t, dynamicClient, name, func(podSet *unstructured.Unstructured) bool {
-			return podSet.GetLabels()[controllerconstants.RoleTemplateHashLabelKey] != ""
-		})
+		initialPodSet := waitForSingleRoleSetPodSet(
+			ctx,
+			t,
+			dynamicClient,
+			name,
+			func(podSet *unstructured.Unstructured) bool {
+				return podSet.GetLabels()[controllerconstants.RoleTemplateHashLabelKey] != ""
+			},
+		)
 		initialUID := initialPodSet.GetUID()
 		initialHash := initialPodSet.GetLabels()[controllerconstants.RoleTemplateHashLabelKey]
 		waitForRoleSetPodsReady(ctx, t, k8sClient, name, int(podGroupSize))
 
 		updateRoleSetContainerImage(ctx, t, dynamicClient, name, roleSetInPlaceImageV2)
-		replacementPodSet := waitForSingleRoleSetPodSet(ctx, t, dynamicClient, name, func(podSet *unstructured.Unstructured) bool {
-			image := podSetContainerImage(podSet)
-			return podSet.GetUID() != initialUID &&
-				podSet.GetLabels()[controllerconstants.RoleTemplateHashLabelKey] != initialHash &&
-				image == roleSetInPlaceImageV2 &&
-				podSet.GetAnnotations()[controllerconstants.RoleInPlaceUpdateTargetHashAnnotationKey] == ""
-		})
+		replacementPodSet := waitForSingleRoleSetPodSet(
+			ctx,
+			t,
+			dynamicClient,
+			name,
+			func(podSet *unstructured.Unstructured) bool {
+				image := podSetContainerImage(podSet)
+				return podSet.GetUID() != initialUID &&
+					podSet.GetLabels()[controllerconstants.RoleTemplateHashLabelKey] != initialHash &&
+					image == roleSetInPlaceImageV2 &&
+					podSet.GetAnnotations()[controllerconstants.RoleInPlaceUpdateTargetHashAnnotationKey] == ""
+			},
+		)
 		require.NotEqual(t, initialUID, replacementPodSet.GetUID())
 		waitForRoleSetEvent(ctx, t, k8sClient, name, rolesetcontroller.InPlaceFallbackEventType)
 	})
@@ -179,7 +194,14 @@ func roleSetInPlaceClients(t *testing.T) (*kubernetes.Clientset, dynamic.Interfa
 	return k8sClient, dynamicClient
 }
 
-func createRoleSet(ctx context.Context, t *testing.T, dynamicClient dynamic.Interface, name, image string, podGroupSize *int32, replicas int32) {
+func createRoleSet(
+	ctx context.Context,
+	t *testing.T,
+	dynamicClient dynamic.Interface,
+	name, image string,
+	podGroupSize *int32,
+	replicas int32,
+) {
 	t.Helper()
 
 	maxSurge := intstr.FromInt32(0)
@@ -228,14 +250,25 @@ func createRoleSet(ctx context.Context, t *testing.T, dynamicClient dynamic.Inte
 	require.NoError(t, err)
 }
 
-func updateRoleSetContainerImage(ctx context.Context, t *testing.T, dynamicClient dynamic.Interface, name, image string) {
+func updateRoleSetContainerImage(
+	ctx context.Context,
+	t *testing.T,
+	dynamicClient dynamic.Interface,
+	name, image string,
+) {
 	t.Helper()
 	updateRoleSet(ctx, t, dynamicClient, name, func(obj *unstructured.Unstructured) {
 		setFirstRoleContainerField(t, obj, "image", image)
 	})
 }
 
-func updateRoleSetCommand(ctx context.Context, t *testing.T, dynamicClient dynamic.Interface, name string, command []string) {
+func updateRoleSetCommand(
+	ctx context.Context,
+	t *testing.T,
+	dynamicClient dynamic.Interface,
+	name string,
+	command []string,
+) {
 	t.Helper()
 	updateRoleSet(ctx, t, dynamicClient, name, func(obj *unstructured.Unstructured) {
 		commandValues := make([]interface{}, len(command))
@@ -246,20 +279,36 @@ func updateRoleSetCommand(ctx context.Context, t *testing.T, dynamicClient dynam
 	})
 }
 
-func updateRoleSet(ctx context.Context, t *testing.T, dynamicClient dynamic.Interface, name string, mutate func(*unstructured.Unstructured)) {
+func updateRoleSet(
+	ctx context.Context,
+	t *testing.T,
+	dynamicClient dynamic.Interface,
+	name string,
+	mutate func(*unstructured.Unstructured),
+) {
 	t.Helper()
-	require.NoError(t, wait.PollUntilContextTimeout(ctx, time.Second, 30*time.Second, true, func(ctx context.Context) (bool, error) {
-		current, err := dynamicClient.Resource(roleSetGVR).Namespace(roleSetInPlaceNamespace).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			return false, err
-		}
-		mutate(current)
-		_, err = dynamicClient.Resource(roleSetGVR).Namespace(roleSetInPlaceNamespace).Update(ctx, current, metav1.UpdateOptions{})
-		if apierrors.IsConflict(err) {
-			return false, nil
-		}
-		return err == nil, err
-	}))
+	require.NoError(t, wait.PollUntilContextTimeout(
+		ctx,
+		time.Second,
+		30*time.Second,
+		true,
+		func(ctx context.Context) (bool, error) {
+			current, err := dynamicClient.Resource(roleSetGVR).
+				Namespace(roleSetInPlaceNamespace).
+				Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				return false, err
+			}
+			mutate(current)
+			_, err = dynamicClient.Resource(roleSetGVR).
+				Namespace(roleSetInPlaceNamespace).
+				Update(ctx, current, metav1.UpdateOptions{})
+			if apierrors.IsConflict(err) {
+				return false, nil
+			}
+			return err == nil, err
+		},
+	))
 }
 
 func setFirstRoleContainerField(t *testing.T, obj *unstructured.Unstructured, field string, value interface{}) {
@@ -276,57 +325,86 @@ func setFirstRoleContainerField(t *testing.T, obj *unstructured.Unstructured, fi
 	container[field] = value
 }
 
-func waitForSingleRoleSetPodReady(ctx context.Context, t *testing.T, k8sClient *kubernetes.Clientset, roleSetName string) *corev1.Pod {
+func waitForSingleRoleSetPodReady(
+	ctx context.Context,
+	t *testing.T,
+	k8sClient *kubernetes.Clientset,
+	roleSetName string,
+) *corev1.Pod {
 	t.Helper()
 	return waitForSingleRoleSetPod(ctx, t, k8sClient, roleSetName, func(pod *corev1.Pod) bool {
 		return isPodReady(pod)
 	})
 }
 
-func waitForSingleRoleSetPod(ctx context.Context, t *testing.T, k8sClient *kubernetes.Clientset, roleSetName string, predicate func(*corev1.Pod) bool) *corev1.Pod {
+func waitForSingleRoleSetPod(
+	ctx context.Context,
+	t *testing.T,
+	k8sClient *kubernetes.Clientset,
+	roleSetName string,
+	predicate func(*corev1.Pod) bool,
+) *corev1.Pod {
 	t.Helper()
 	var matched *corev1.Pod
-	require.NoError(t, wait.PollUntilContextTimeout(ctx, time.Second, 120*time.Second, true, func(ctx context.Context) (bool, error) {
-		pods, err := listRoleSetPods(ctx, k8sClient, roleSetName)
-		if err != nil {
-			return false, err
-		}
-		if len(pods) != 1 {
-			t.Logf("waiting for one active pod for RoleSet %s, got %d", roleSetName, len(pods))
-			return false, nil
-		}
-		if !predicate(&pods[0]) {
-			t.Logf("waiting for pod %s to match predicate", pods[0].Name)
-			return false, nil
-		}
-		matched = pods[0].DeepCopy()
-		return true, nil
-	}))
+	require.NoError(t, wait.PollUntilContextTimeout(
+		ctx,
+		time.Second,
+		120*time.Second,
+		true,
+		func(ctx context.Context) (bool, error) {
+			pods, err := listRoleSetPods(ctx, k8sClient, roleSetName)
+			if err != nil {
+				return false, err
+			}
+			if len(pods) != 1 {
+				t.Logf("waiting for one active pod for RoleSet %s, got %d", roleSetName, len(pods))
+				return false, nil
+			}
+			if !predicate(&pods[0]) {
+				t.Logf("waiting for pod %s to match predicate", pods[0].Name)
+				return false, nil
+			}
+			matched = pods[0].DeepCopy()
+			return true, nil
+		},
+	))
 	return matched
 }
 
-func waitForRoleSetPodsReady(ctx context.Context, t *testing.T, k8sClient *kubernetes.Clientset, roleSetName string, expected int) {
+func waitForRoleSetPodsReady(
+	ctx context.Context,
+	t *testing.T,
+	k8sClient *kubernetes.Clientset,
+	roleSetName string,
+	expected int,
+) {
 	t.Helper()
-	require.NoError(t, wait.PollUntilContextTimeout(ctx, time.Second, 120*time.Second, true, func(ctx context.Context) (bool, error) {
-		pods, err := listRoleSetPods(ctx, k8sClient, roleSetName)
-		if err != nil {
-			return false, err
-		}
-		if len(pods) != expected {
-			return false, nil
-		}
-		for i := range pods {
-			if !isPodReady(&pods[i]) {
+	require.NoError(t, wait.PollUntilContextTimeout(
+		ctx,
+		time.Second,
+		120*time.Second,
+		true,
+		func(ctx context.Context) (bool, error) {
+			pods, err := listRoleSetPods(ctx, k8sClient, roleSetName)
+			if err != nil {
+				return false, err
+			}
+			if len(pods) != expected {
 				return false, nil
 			}
-		}
-		return true, nil
-	}))
+			for i := range pods {
+				if !isPodReady(&pods[i]) {
+					return false, nil
+				}
+			}
+			return true, nil
+		},
+	))
 }
 
 func listRoleSetPods(ctx context.Context, k8sClient *kubernetes.Clientset, roleSetName string) ([]corev1.Pod, error) {
 	podList, err := k8sClient.CoreV1().Pods(roleSetInPlaceNamespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("%s=%s,%s=%s", controllerconstants.RoleSetNameLabelKey, roleSetName, controllerconstants.RoleNameLabelKey, roleSetInPlaceRoleName),
+		LabelSelector: roleSetPodSelector(roleSetName),
 	})
 	if err != nil {
 		return nil, err
@@ -340,33 +418,57 @@ func listRoleSetPods(ctx context.Context, k8sClient *kubernetes.Clientset, roleS
 	return active, nil
 }
 
-func waitForSingleRoleSetPodSet(ctx context.Context, t *testing.T, dynamicClient dynamic.Interface, roleSetName string, predicate func(*unstructured.Unstructured) bool) *unstructured.Unstructured {
+func waitForSingleRoleSetPodSet(
+	ctx context.Context,
+	t *testing.T,
+	dynamicClient dynamic.Interface,
+	roleSetName string,
+	predicate func(*unstructured.Unstructured) bool,
+) *unstructured.Unstructured {
 	t.Helper()
 	var matched *unstructured.Unstructured
-	require.NoError(t, wait.PollUntilContextTimeout(ctx, time.Second, 120*time.Second, true, func(ctx context.Context) (bool, error) {
-		list, err := dynamicClient.Resource(podSetGVR).Namespace(roleSetInPlaceNamespace).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("%s=%s,%s=%s", controllerconstants.RoleSetNameLabelKey, roleSetName, controllerconstants.RoleNameLabelKey, roleSetInPlaceRoleName),
-		})
-		if err != nil {
-			return false, err
-		}
-		var active []unstructured.Unstructured
-		for _, item := range list.Items {
-			if item.GetDeletionTimestamp() == nil {
-				active = append(active, item)
+	require.NoError(t, wait.PollUntilContextTimeout(
+		ctx,
+		time.Second,
+		120*time.Second,
+		true,
+		func(ctx context.Context) (bool, error) {
+			list, err := dynamicClient.Resource(podSetGVR).
+				Namespace(roleSetInPlaceNamespace).
+				List(ctx, metav1.ListOptions{
+					LabelSelector: roleSetPodSelector(roleSetName),
+				})
+			if err != nil {
+				return false, err
 			}
-		}
-		if len(active) != 1 {
-			t.Logf("waiting for one active PodSet for RoleSet %s, got %d", roleSetName, len(active))
-			return false, nil
-		}
-		if !predicate(&active[0]) {
-			return false, nil
-		}
-		matched = active[0].DeepCopy()
-		return true, nil
-	}))
+			var active []unstructured.Unstructured
+			for _, item := range list.Items {
+				if item.GetDeletionTimestamp() == nil {
+					active = append(active, item)
+				}
+			}
+			if len(active) != 1 {
+				t.Logf("waiting for one active PodSet for RoleSet %s, got %d", roleSetName, len(active))
+				return false, nil
+			}
+			if !predicate(&active[0]) {
+				return false, nil
+			}
+			matched = active[0].DeepCopy()
+			return true, nil
+		},
+	))
 	return matched
+}
+
+func roleSetPodSelector(roleSetName string) string {
+	return fmt.Sprintf(
+		"%s=%s,%s=%s",
+		controllerconstants.RoleSetNameLabelKey,
+		roleSetName,
+		controllerconstants.RoleNameLabelKey,
+		roleSetInPlaceRoleName,
+	)
 }
 
 func podSetContainerImage(podSet *unstructured.Unstructured) string {
@@ -382,23 +484,40 @@ func podSetContainerImage(podSet *unstructured.Unstructured) string {
 	return image
 }
 
-func waitForRoleSetEvent(ctx context.Context, t *testing.T, k8sClient *kubernetes.Clientset, roleSetName, reason string) {
+func waitForRoleSetEvent(
+	ctx context.Context,
+	t *testing.T,
+	k8sClient *kubernetes.Clientset,
+	roleSetName, reason string,
+) {
 	t.Helper()
-	require.NoError(t, wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true, func(ctx context.Context) (bool, error) {
-		events, err := k8sClient.CoreV1().Events(roleSetInPlaceNamespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return false, err
-		}
-		for _, event := range events.Items {
-			if event.InvolvedObject.Name == roleSetName && event.Reason == reason {
-				return true, nil
+	require.NoError(t, wait.PollUntilContextTimeout(
+		ctx,
+		time.Second,
+		60*time.Second,
+		true,
+		func(ctx context.Context) (bool, error) {
+			events, err := k8sClient.CoreV1().Events(roleSetInPlaceNamespace).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return false, err
 			}
-		}
-		return false, nil
-	}), "expected RoleSet %s event reason %s", roleSetName, reason)
+			for _, event := range events.Items {
+				if event.InvolvedObject.Name == roleSetName && event.Reason == reason {
+					return true, nil
+				}
+			}
+			return false, nil
+		},
+	), "expected RoleSet %s event reason %s", roleSetName, reason)
 }
 
-func cleanupRoleSetInPlaceE2EAfterTest(ctx context.Context, t *testing.T, k8sClient *kubernetes.Clientset, dynamicClient dynamic.Interface, roleSetName string) {
+func cleanupRoleSetInPlaceE2EAfterTest(
+	ctx context.Context,
+	t *testing.T,
+	k8sClient *kubernetes.Clientset,
+	dynamicClient dynamic.Interface,
+	roleSetName string,
+) {
 	t.Helper()
 	if t.Failed() && strings.ToLower(envOrDefault(roleSetInPlaceE2EKeepEnv, "false")) == "true" {
 		t.Logf("preserving RoleSet in-place e2e resources for %s", roleSetName)
@@ -407,22 +526,38 @@ func cleanupRoleSetInPlaceE2EAfterTest(ctx context.Context, t *testing.T, k8sCli
 	cleanupRoleSetInPlaceE2E(ctx, t, k8sClient, dynamicClient, roleSetName)
 }
 
-func cleanupRoleSetInPlaceE2E(ctx context.Context, t *testing.T, k8sClient *kubernetes.Clientset, dynamicClient dynamic.Interface, roleSetName string) {
+func cleanupRoleSetInPlaceE2E(
+	ctx context.Context,
+	t *testing.T,
+	k8sClient *kubernetes.Clientset,
+	dynamicClient dynamic.Interface,
+	roleSetName string,
+) {
 	t.Helper()
-	err := dynamicClient.Resource(roleSetGVR).Namespace(roleSetInPlaceNamespace).Delete(ctx, roleSetName, metav1.DeleteOptions{})
+	err := dynamicClient.Resource(roleSetGVR).
+		Namespace(roleSetInPlaceNamespace).
+		Delete(ctx, roleSetName, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		t.Fatalf("failed to delete RoleSet %s: %v", roleSetName, err)
 	}
 	_ = k8sClient.CoreV1().Pods(roleSetInPlaceNamespace).DeleteCollection(ctx, metav1.DeleteOptions{}, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("%s=%s", controllerconstants.RoleSetNameLabelKey, roleSetName),
 	})
-	require.NoError(t, wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true, func(ctx context.Context) (bool, error) {
-		_, err := dynamicClient.Resource(roleSetGVR).Namespace(roleSetInPlaceNamespace).Get(ctx, roleSetName, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			return true, nil
-		}
-		return false, err
-	}))
+	require.NoError(t, wait.PollUntilContextTimeout(
+		ctx,
+		time.Second,
+		60*time.Second,
+		true,
+		func(ctx context.Context) (bool, error) {
+			_, err := dynamicClient.Resource(roleSetGVR).
+				Namespace(roleSetInPlaceNamespace).
+				Get(ctx, roleSetName, metav1.GetOptions{})
+			if apierrors.IsNotFound(err) {
+				return true, nil
+			}
+			return false, err
+		},
+	))
 }
 
 func containerImageID(t *testing.T, pod *corev1.Pod, containerName string) string {

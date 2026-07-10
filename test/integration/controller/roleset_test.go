@@ -640,7 +640,13 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 		}, time.Second*15, time.Millisecond*250).Should(gomega.Succeed())
 
 		patchedPod := waitForSingleRolePod(ctx, k8sClient, ns.Name, rs.Name, prefill)
-		markPodReadyWithRuntimeImageID(ctx, k8sClient, patchedPod, prefillImageVersionV2, runtimeImageID(prefillImageVersionV1))
+		markPodReadyWithRuntimeImageID(
+			ctx,
+			k8sClient,
+			patchedPod,
+			prefillImageVersionV2,
+			runtimeImageID(prefillImageVersionV1),
+		)
 
 		gomega.Consistently(func(g gomega.Gomega) {
 			pod, err := getSingleRolePod(ctx, k8sClient, ns.Name, rs.Name, prefill)
@@ -653,7 +659,13 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 		}, time.Second*2, time.Millisecond*250).Should(gomega.Succeed())
 
 		patchedPod = waitForSingleRolePod(ctx, k8sClient, ns.Name, rs.Name, prefill)
-		markPodReadyWithRuntimeImageID(ctx, k8sClient, patchedPod, prefillImageVersionV2, runtimeImageID(prefillImageVersionV2))
+		markPodReadyWithRuntimeImageID(
+			ctx,
+			k8sClient,
+			patchedPod,
+			prefillImageVersionV2,
+			runtimeImageID(prefillImageVersionV2),
+		)
 
 		gomega.Eventually(func(g gomega.Gomega) {
 			pod, err := getSingleRolePod(ctx, k8sClient, ns.Name, rs.Name, prefill)
@@ -695,7 +707,14 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 		initialPodSet := waitForSingleRolePodSet(ctx, k8sClient, ns.Name, rs.Name, prefill)
 		initialUID := initialPodSet.UID
 		initialHash := initialPodSet.Labels[constants.RoleTemplateHashLabelKey]
-		validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, initialPodSet.Name, int(podGroupSize))
+		validation.WaitForPodsCreated(
+			ctx,
+			k8sClient,
+			ns.Name,
+			constants.PodSetNameLabelKey,
+			initialPodSet.Name,
+			int(podGroupSize),
+		)
 		validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, initialPodSet.Name)
 		waitForPodSetReady(ctx, k8sClient, initialPodSet)
 
@@ -717,7 +736,14 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 			g.Expect(replacementPodSet.Annotations).NotTo(gomega.HaveKey(constants.RoleInPlaceUpdateTargetHashAnnotationKey))
 		}, time.Second*30, time.Millisecond*250).Should(gomega.Succeed())
 
-		validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, replacementPodSet.Name, int(podGroupSize))
+		validation.WaitForPodsCreated(
+			ctx,
+			k8sClient,
+			ns.Name,
+			constants.PodSetNameLabelKey,
+			replacementPodSet.Name,
+			int(podGroupSize),
+		)
 		validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, replacementPodSet.Name)
 		waitForPodSetReady(ctx, k8sClient, replacementPodSet)
 	})
@@ -848,7 +874,12 @@ func markPodReadyWithRuntimeImage(ctx context.Context, k8sClient client.Client, 
 	markPodReadyWithRuntimeImageID(ctx, k8sClient, pod, image, runtimeImageID(image))
 }
 
-func markPodReadyWithRuntimeImageID(ctx context.Context, k8sClient client.Client, pod *corev1.Pod, image, imageID string) {
+func markPodReadyWithRuntimeImageID(
+	ctx context.Context,
+	k8sClient client.Client,
+	pod *corev1.Pod,
+	image, imageID string,
+) {
 	gomega.Eventually(func(g gomega.Gomega) {
 		latest := &corev1.Pod{}
 		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), latest)).To(gomega.Succeed())
