@@ -21,6 +21,8 @@ import {
 import { copyToClipboard } from '../utils/clipboard';
 import { Job, JobEvent, JobStatus, JobDeploymentDetail } from '../data/mockData';
 import { DeploymentDetailCard } from './jobDeploymentDetail';
+import { ProvisionDetailCard } from './provisionDetailCard';
+import { TimelineEventDetailCard, getTimelineEventDetailRenderer } from './jobTimelineEventDetail';
 
 interface JobDetailProps {
   jobId: string | null;
@@ -529,24 +531,35 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                 {events.map((event, index) => {
                   // The latest event of a still-running job is the active stage.
                   const isCurrent = !isTerminal && index === events.length - 1;
+                  const hasTimelineRenderer = !!getTimelineEventDetailRenderer(job.provision?.provider?.toLowerCase() ?? '', event.id);
                   return (
-                  <div key={`${event.id}-${event.at}`} className="flex gap-3">
-                    <div className="pt-1">
-                      <div className={`w-3 h-3 rounded-full ring-4 ${eventDotClass(event.status, isCurrent)}`} />
-                    </div>
-                    <div className="min-w-0 flex-1 pb-4 border-b border-gray-100 last:border-b-0 last:pb-0">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="text-sm text-gray-900">{event.label}</div>
-                        <div className="text-xs text-gray-400 whitespace-nowrap">{formatCompactTime(event.at)}</div>
+                  <div key={`${event.id}-${event.at}`}>
+                    <div className="flex gap-3">
+                      <div className="pt-1">
+                        <div className={`w-3 h-3 rounded-full ring-4 ${eventDotClass(event.status, isCurrent)}`} />
                       </div>
-                      <div className="mt-1 flex items-center gap-2">
-                        <span className="text-xs text-gray-500">{formatTimestamp(event.at)}</span>
-                        <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
-                          {event.source}
-                        </span>
+                      <div className="min-w-0 flex-1 pb-4 border-b border-gray-100 last:border-b-0 last:pb-0">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-sm text-gray-900">{event.label}</div>
+                          <div className="text-xs text-gray-400 whitespace-nowrap">{formatCompactTime(event.at)}</div>
+                        </div>
+                        <div className="mt-1 flex items-center gap-2">
+                          <span className="text-xs text-gray-500">{formatTimestamp(event.at)}</span>
+                          <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
+                            {event.source}
+                          </span>
+                        </div>
+                        {event.message && <p className="text-xs text-gray-500 mt-1">{event.message}</p>}
                       </div>
-                      {event.message && <p className="text-xs text-gray-500 mt-1">{event.message}</p>}
                     </div>
+                    {hasTimelineRenderer && (
+                      <TimelineEventDetailCard
+                        provider={job.provision?.provider?.toLowerCase() ?? ''}
+                        eventType={event.id}
+                        jobStatus={job.status}
+                        rawJson={job.provision?.rawJson}
+                      />
+                    )}
                   </div>
                   );
                 })}
@@ -692,6 +705,12 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                       <div className="text-gray-500 mb-1">Provision Updated</div>
                       <div className="text-gray-900">{formatTimestamp(job.provision.updatedAt)}</div>
                     </div>
+                  )}
+                  {job.provision.provider && job.provision.rawJson && (
+                    <ProvisionDetailCard
+                      provider={job.provision.provider.toLowerCase()}
+                      rawJson={job.provision.rawJson}
+                    />
                   )}
                 </>
               )}
