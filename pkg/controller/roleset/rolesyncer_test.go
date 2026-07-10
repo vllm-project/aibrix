@@ -394,6 +394,7 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleUsesInPlaceForImageOnlyChan
 		Ready: true,
 	}}
 
+	recorder := record.NewFakeRecorder(1)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(pod).
@@ -402,6 +403,7 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleUsesInPlaceForImageOnlyChan
 	syncer := &StatelessRoleSyncer{
 		cli:             fakeClient,
 		computeHashFunc: fakeComputeHashFunc,
+		recorder:        recorder,
 	}
 
 	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
@@ -415,6 +417,63 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleUsesInPlaceForImageOnlyChan
 	assert.Equal(t, nginxV2, updated.Spec.Containers[0].Image)
 	assert.Equal(t, oldHash, updated.Labels[constants.RoleTemplateHashLabelKey])
 	assert.Equal(t, newHash, updated.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey])
+
+	require.Len(t, recorder.Events, 1)
+	event := <-recorder.Events
+	assert.Contains(t, event, InPlaceUpdateStartedEventType)
+	assert.Contains(t, event, testPodOne)
+}
+
+func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleRecordsCompletedEvent(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 1, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1)))
+	role.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType
+	role.Template.Spec.Containers[0].Image = nginxV2
+
+	pod, err := buildRenderedPod(roleSet, role, nil)
+	require.NoError(t, err)
+	pod.Name = testPodOne
+	pod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
+	pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] = newHash
+	pod.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] = `{"lastContainerStatuses":{"master":{"imageID":"docker-pullable://nginx@sha256:old"}}}`
+	pod.Annotations[constants.RoleInPlaceUpdatePendingReasonAnnotationKey] = constants.RoleInPlaceUpdatePendingReasonImageIDUnchanged
+	pod.Status.Phase = v1.PodRunning
+	pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	pod.Status.ContainerStatuses = []v1.ContainerStatus{{
+		Name:    "master",
+		Image:   nginxV2,
+		ImageID: "docker-pullable://nginx@sha256:new",
+		Ready:   true,
+	}}
+
+	recorder := record.NewFakeRecorder(1)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+
+	syncer := &StatelessRoleSyncer{
+		cli:             fakeClient,
+		computeHashFunc: fakeComputeHashFunc,
+		recorder:        recorder,
+	}
+
+	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+
+	updated := &v1.Pod{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
+	assert.Equal(t, newHash, updated.Labels[constants.RoleTemplateHashLabelKey])
+	assert.NotContains(t, updated.Annotations, constants.RoleInPlaceUpdatePendingReasonAnnotationKey)
+
+	require.Len(t, recorder.Events, 1)
+	event := <-recorder.Events
+	assert.Contains(t, event, InPlaceUpdateCompletedEventType)
+	assert.Contains(t, event, testPodOne)
 }
 
 func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleFallsBackToRecreateForNonImageChange(t *testing.T) {
@@ -731,6 +790,104 @@ func TestStatefulRoleSyncer_RolloutInPlaceIfPossibleCountsInProgressReadyPodsAga
 	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(waitingPod), updatedWaiting))
 	assert.Equal(t, nginxImage, updatedWaiting.Spec.Containers[0].Image)
 	assert.NotContains(t, updatedWaiting.Annotations, constants.RoleInPlaceUpdateTargetHashAnnotationKey)
+}
+
+func TestStatelessRoleSyncer_RolloutByStepInPlaceIfPossibleUsesInPlaceForImageOnlyChange(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 2, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1)))
+	role.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType
+	role.Template.Spec.Containers[0].Image = nginxImage
+	oldRole := role.DeepCopy()
+	role.Template.Spec.Containers[0].Image = nginxV2
+
+	firstPod, err := buildRenderedPod(roleSet, oldRole, nil)
+	require.NoError(t, err)
+	firstPod.Name = testPodOne
+	firstPod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
+	firstPod.Status.Phase = v1.PodRunning
+	firstPod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	firstPod.Status.ContainerStatuses = []v1.ContainerStatus{{
+		Name:    "master",
+		Image:   nginxImage,
+		ImageID: "docker-pullable://nginx@sha256:old-1",
+		Ready:   true,
+	}}
+	secondPod, err := buildRenderedPod(roleSet, oldRole, nil)
+	require.NoError(t, err)
+	secondPod.Name = "pod-2"
+	secondPod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
+	secondPod.Status.Phase = v1.PodRunning
+	secondPod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
+	secondPod.Status.ContainerStatuses = []v1.ContainerStatus{{
+		Name:    "master",
+		Image:   nginxImage,
+		ImageID: "docker-pullable://nginx@sha256:old-2",
+		Ready:   true,
+	}}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(firstPod, secondPod).
+		Build()
+
+	syncer := &StatelessRoleSyncer{
+		cli:             fakeClient,
+		computeHashFunc: fakeComputeHashFunc,
+	}
+
+	require.NoError(t, syncer.RolloutByStep(ctx, roleSet, role, 1))
+
+	pods := &v1.PodList{}
+	require.NoError(t, fakeClient.List(ctx, pods))
+	require.Len(t, pods.Items, 2)
+
+	var patched int
+	for _, pod := range pods.Items {
+		if pod.Spec.Containers[0].Image == nginxV2 {
+			patched++
+			assert.Equal(t, oldHash, pod.Labels[constants.RoleTemplateHashLabelKey])
+			assert.Equal(t, newHash, pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey])
+		}
+	}
+	assert.Equal(t, 1, patched)
+}
+
+func TestPodSetRoleSyncer_RolloutInPlaceIfPossibleRecordsFallbackEvent(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newTestRoleSpec("worker", 1, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(1)))
+	role.PodGroupSize = ptr.To[int32](2)
+	role.UpdateStrategy.Type = orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType
+	role.Template.Spec.Containers[0].Image = nginxImage
+	oldRole := role.DeepCopy()
+	role.Template.Spec.Containers[0].Image = nginxV2
+
+	recorder := record.NewFakeRecorder(1)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		Build()
+	syncer := GetRoleSyncerWithRecorder(fakeClient, role, recorder)
+	podSetSyncer, ok := syncer.(*PodSetRoleSyncer)
+	require.True(t, ok)
+
+	podSet := podSetSyncer.createPodSetForRole(roleSet, oldRole, ptr.To(0))
+	podSet.Labels[constants.RoleTemplateHashLabelKey] = oldHash
+	require.NoError(t, fakeClient.Create(ctx, podSet))
+
+	require.NoError(t, syncer.Rollout(ctx, roleSet, role))
+	require.Len(t, recorder.Events, 1)
+	event := <-recorder.Events
+	assert.Contains(t, event, InPlaceFallbackEventType)
+	assert.Contains(t, event, "PodSet")
 }
 
 // Helper function to create a pod with specific template hash

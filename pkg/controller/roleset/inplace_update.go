@@ -18,6 +18,7 @@ package roleset
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -34,6 +36,23 @@ import (
 )
 
 const defaultServiceAccountName = "default"
+
+type inPlaceUpdateState struct {
+	LastContainerStatuses map[string]inPlaceUpdateContainerStatus `json:"lastContainerStatuses,omitempty"`
+}
+
+type inPlaceUpdateContainerStatus struct {
+	ImageID string `json:"imageID,omitempty"`
+}
+
+type inPlaceUpdatePendingStatus struct {
+	Reason         string
+	Container      string
+	DesiredImage   string
+	RuntimeImage   string
+	OldImageID     string
+	CurrentImageID string
+}
 
 // roleUpdateStrategyTypeOrDefault preserves the existing recreate behavior for
 // roles that were created before the strategy field existed or omit it.
@@ -315,6 +334,13 @@ func patchPodImagesForInPlaceUpdate(ctx context.Context, cli client.Client, pod 
 	if updated.Annotations == nil {
 		updated.Annotations = make(map[string]string)
 	}
+	if changed && updated.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] == "" {
+		stateJSON, err := buildInPlaceUpdateStateJSON(pod, role)
+		if err != nil {
+			return false, err
+		}
+		updated.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] = stateJSON
+	}
 	if updated.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] != targetHash {
 		updated.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] = targetHash
 		changed = true
@@ -322,14 +348,42 @@ func patchPodImagesForInPlaceUpdate(ctx context.Context, cli client.Client, pod 
 	if !changed {
 		return false, nil
 	}
+	if err := setInPlaceReadinessCondition(ctx, cli, pod, corev1.ConditionFalse); err != nil {
+		return false, err
+	}
 	if err := cli.Patch(ctx, updated, client.MergeFrom(pod)); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
+func buildInPlaceUpdateStateJSON(pod *corev1.Pod, role *orchestrationv1alpha1.RoleSpec) (string, error) {
+	desiredImages := make(map[string]string, len(role.Template.Spec.Containers))
+	for _, container := range role.Template.Spec.Containers {
+		desiredImages[container.Name] = container.Image
+	}
+	state := inPlaceUpdateState{
+		LastContainerStatuses: make(map[string]inPlaceUpdateContainerStatus),
+	}
+	for _, status := range pod.Status.ContainerStatuses {
+		for _, container := range pod.Spec.Containers {
+			if container.Name == status.Name && desiredImages[container.Name] != "" && desiredImages[container.Name] != container.Image {
+				state.LastContainerStatuses[status.Name] = inPlaceUpdateContainerStatus{ImageID: status.ImageID}
+				break
+			}
+		}
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
 // hasInPlaceUpdateInProgress gates replacement rollouts while an image patch is
-// still waiting for kubelet to restart containers and report the new image.
+// still waiting for kubelet to restart containers and report the new image. The
+// controller currently has no timeout or automatic rollback for a pod that never
+// reports the new runtime image; operators must clear or recreate the stuck pod.
 func hasInPlaceUpdateInProgress(ctx context.Context, cli client.Client, namespace, roleSetName string) (bool, error) {
 	pods := &corev1.PodList{}
 	if err := cli.List(ctx, pods,
@@ -352,8 +406,13 @@ func hasInPlaceUpdateInProgress(ctx context.Context, cli client.Client, namespac
 func markInPlaceUpdateComplete(ctx context.Context, cli client.Client, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, pod *corev1.Pod, targetHash string) (bool, error) {
 	if pod.Labels[constants.RoleTemplateHashLabelKey] == targetHash {
 		if _, ok := pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey]; ok {
+			if err := setInPlaceReadinessCondition(ctx, cli, pod, corev1.ConditionTrue); err != nil {
+				return false, err
+			}
 			updated := pod.DeepCopy()
 			delete(updated.Annotations, constants.RoleInPlaceUpdateTargetHashAnnotationKey)
+			delete(updated.Annotations, constants.RoleInPlaceUpdateStateAnnotationKey)
+			delete(updated.Annotations, constants.RoleInPlaceUpdatePendingReasonAnnotationKey)
 			updateRoleRevisionLabels(updated, roleSet, role)
 			if err := cli.Patch(ctx, updated, client.MergeFrom(pod)); err != nil {
 				return false, err
@@ -364,8 +423,15 @@ func markInPlaceUpdateComplete(ctx context.Context, cli client.Client, roleSet *
 	if pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] != targetHash {
 		return false, nil
 	}
-	if !podReadyWithRuntimeImages(pod) {
+	if pending := inPlaceUpdatePendingStatusForPod(pod); pending != nil {
+		logInPlaceUpdatePending(roleSet, role, pod, pending)
+		if err := setInPlaceUpdatePendingReason(ctx, cli, pod, pending.Reason); err != nil {
+			return false, err
+		}
 		return false, nil
+	}
+	if err := setInPlaceReadinessCondition(ctx, cli, pod, corev1.ConditionTrue); err != nil {
+		return false, err
 	}
 
 	updated := pod.DeepCopy()
@@ -375,6 +441,8 @@ func markInPlaceUpdateComplete(ctx context.Context, cli client.Client, roleSet *
 	updated.Labels[constants.RoleTemplateHashLabelKey] = targetHash
 	updateRoleRevisionLabels(updated, roleSet, role)
 	delete(updated.Annotations, constants.RoleInPlaceUpdateTargetHashAnnotationKey)
+	delete(updated.Annotations, constants.RoleInPlaceUpdateStateAnnotationKey)
+	delete(updated.Annotations, constants.RoleInPlaceUpdatePendingReasonAnnotationKey)
 	if err := cli.Patch(ctx, updated, client.MergeFrom(pod)); err != nil {
 		return false, err
 	}
@@ -398,20 +466,62 @@ func updateRoleRevisionLabels(pod *corev1.Pod, roleSet *orchestrationv1alpha1.Ro
 }
 
 // podReadyWithRuntimeImages verifies that kubelet has restarted the containers
-// and is reporting image IDs that match the patched pod spec.
+// and is reporting image IDs that match the patched pod spec. This intentionally
+// waits forever rather than promoting a hash on a timer; timeout handling is a
+// future enhancement.
 func podReadyWithRuntimeImages(pod *corev1.Pod) bool {
+	return inPlaceUpdatePendingStatusForPod(pod) == nil
+}
+
+func inPlaceUpdatePendingStatusForPod(pod *corev1.Pod) *inPlaceUpdatePendingStatus {
 	if !podutil.IsPodReady(pod) {
-		return false
+		return &inPlaceUpdatePendingStatus{Reason: constants.RoleInPlaceUpdatePendingReasonPodNotReady}
 	}
 
+	state, ok := getInPlaceUpdateState(pod)
+	if !ok {
+		state = inPlaceUpdateState{}
+	}
 	statusByName := make(map[string]corev1.ContainerStatus, len(pod.Status.ContainerStatuses))
 	for _, status := range pod.Status.ContainerStatuses {
 		statusByName[status.Name] = status
 	}
 	for _, container := range pod.Spec.Containers {
 		status, ok := statusByName[container.Name]
-		if !ok || !status.Ready || !runtimeImageMatchesSpec(status.Image, container.Image) {
-			return false
+		if !ok {
+			return &inPlaceUpdatePendingStatus{
+				Reason:       constants.RoleInPlaceUpdatePendingReasonContainerStatusMissing,
+				Container:    container.Name,
+				DesiredImage: container.Image,
+			}
+		}
+		if !status.Ready {
+			return &inPlaceUpdatePendingStatus{
+				Reason:         constants.RoleInPlaceUpdatePendingReasonContainerNotReady,
+				Container:      container.Name,
+				DesiredImage:   container.Image,
+				RuntimeImage:   status.Image,
+				CurrentImageID: status.ImageID,
+			}
+		}
+		if !runtimeImageMatchesSpec(status.Image, container.Image) {
+			return &inPlaceUpdatePendingStatus{
+				Reason:         constants.RoleInPlaceUpdatePendingReasonRuntimeImageMismatch,
+				Container:      container.Name,
+				DesiredImage:   container.Image,
+				RuntimeImage:   status.Image,
+				CurrentImageID: status.ImageID,
+			}
+		}
+		if oldStatus, ok := state.LastContainerStatuses[container.Name]; ok && oldStatus.ImageID != "" && status.ImageID == oldStatus.ImageID {
+			return &inPlaceUpdatePendingStatus{
+				Reason:         constants.RoleInPlaceUpdatePendingReasonImageIDUnchanged,
+				Container:      container.Name,
+				DesiredImage:   container.Image,
+				RuntimeImage:   status.Image,
+				OldImageID:     oldStatus.ImageID,
+				CurrentImageID: status.ImageID,
+			}
 		}
 	}
 
@@ -421,13 +531,105 @@ func podReadyWithRuntimeImages(pod *corev1.Pod) bool {
 	}
 	for _, container := range pod.Spec.InitContainers {
 		status, ok := initStatusByName[container.Name]
-		if !ok || !runtimeImageMatchesSpec(status.Image, container.Image) {
-			return false
+		if !ok {
+			return &inPlaceUpdatePendingStatus{
+				Reason:       constants.RoleInPlaceUpdatePendingReasonContainerStatusMissing,
+				Container:    container.Name,
+				DesiredImage: container.Image,
+			}
+		}
+		if !runtimeImageMatchesSpec(status.Image, container.Image) {
+			return &inPlaceUpdatePendingStatus{
+				Reason:         constants.RoleInPlaceUpdatePendingReasonRuntimeImageMismatch,
+				Container:      container.Name,
+				DesiredImage:   container.Image,
+				RuntimeImage:   status.Image,
+				CurrentImageID: status.ImageID,
+			}
 		}
 	}
-	return true
+	return nil
 }
 
+func setInPlaceUpdatePendingReason(ctx context.Context, cli client.Client, pod *corev1.Pod, reason string) error {
+	if pod.Annotations[constants.RoleInPlaceUpdatePendingReasonAnnotationKey] == reason {
+		return nil
+	}
+	updated := pod.DeepCopy()
+	if updated.Annotations == nil {
+		updated.Annotations = make(map[string]string)
+	}
+	updated.Annotations[constants.RoleInPlaceUpdatePendingReasonAnnotationKey] = reason
+	return cli.Patch(ctx, updated, client.MergeFrom(pod))
+}
+
+func logInPlaceUpdatePending(roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, pod *corev1.Pod, pending *inPlaceUpdatePendingStatus) {
+	klog.InfoS("in-place update pending",
+		"roleset", fmt.Sprintf("%s/%s", roleSet.Namespace, roleSet.Name),
+		"role", role.Name,
+		"pod", pod.Name,
+		"reason", pending.Reason,
+		"container", pending.Container,
+		"desiredImage", pending.DesiredImage,
+		"runtimeImage", pending.RuntimeImage,
+		"oldImageID", pending.OldImageID,
+		"currentImageID", pending.CurrentImageID)
+}
+
+func getInPlaceUpdateState(pod *corev1.Pod) (inPlaceUpdateState, bool) {
+	if pod.Annotations == nil || pod.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] == "" {
+		return inPlaceUpdateState{}, false
+	}
+	state := inPlaceUpdateState{}
+	if err := json.Unmarshal([]byte(pod.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey]), &state); err != nil {
+		return inPlaceUpdateState{}, false
+	}
+	return state, true
+}
+
+func setInPlaceReadinessCondition(ctx context.Context, cli client.Client, pod *corev1.Pod, status corev1.ConditionStatus) error {
+	if !hasInPlaceReadinessGate(pod) {
+		return nil
+	}
+	updated := pod.DeepCopy()
+	setPodCondition(updated, corev1.PodCondition{
+		Type:   corev1.PodConditionType(constants.RoleInPlaceUpdateReadyCondition),
+		Status: status,
+	})
+	if status == corev1.ConditionFalse {
+		setPodCondition(updated, corev1.PodCondition{
+			Type:   corev1.PodReady,
+			Status: corev1.ConditionFalse,
+		})
+	}
+	return cli.Status().Patch(ctx, updated, client.MergeFrom(pod))
+}
+
+func hasInPlaceReadinessGate(pod *corev1.Pod) bool {
+	for _, gate := range pod.Spec.ReadinessGates {
+		if gate.ConditionType == corev1.PodConditionType(constants.RoleInPlaceUpdateReadyCondition) {
+			return true
+		}
+	}
+	return false
+}
+
+func setPodCondition(pod *corev1.Pod, condition corev1.PodCondition) {
+	for i := range pod.Status.Conditions {
+		if pod.Status.Conditions[i].Type == condition.Type {
+			pod.Status.Conditions[i].Status = condition.Status
+			return
+		}
+	}
+	pod.Status.Conditions = append(pod.Status.Conditions, condition)
+}
+
+// runtimeImageMatchesSpec accepts the formats Kubernetes commonly reports in
+// ContainerStatus.Image: exact spec image, implicit ":latest" for untagged
+// images, Docker Hub library defaulting ("nginx" -> "docker.io/library/nginx"),
+// and Docker Hub namespace defaulting ("org/image" -> "docker.io/org/image").
+// It does not try to resolve arbitrary registry aliases or compare digests from
+// ImageID; ImageID is only used to detect that a restarted container changed.
 func runtimeImageMatchesSpec(runtimeImage, specImage string) bool {
 	for _, candidate := range runtimeImageCandidates(specImage) {
 		if runtimeImage == candidate {

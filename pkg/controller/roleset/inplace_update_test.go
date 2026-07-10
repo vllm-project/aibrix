@@ -316,6 +316,43 @@ func TestPatchPodImagesForInPlaceUpdate(t *testing.T) {
 	assert.Equal(t, newHash, updated.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey])
 }
 
+func TestPatchPodImagesForInPlaceUpdateRecordsStateAndMarksReadinessGateFalse(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	role := newRoleSpecWithImage("worker", "vllm-openai", "vllm:v2")
+	pod := newTestPodWithHash(testPodOne, "test-ns", true, false, oldHash)
+	pod.Spec.ReadinessGates = []corev1.PodReadinessGate{{
+		ConditionType: corev1.PodConditionType(constants.RoleInPlaceUpdateReadyCondition),
+	}}
+	pod.Spec.Containers = []corev1.Container{{Name: "vllm-openai", Image: "vllm:v1"}}
+	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:    "vllm-openai",
+		Image:   "vllm:v1",
+		ImageID: "docker-pullable://vllm@sha256:old",
+		Ready:   true,
+	}}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+
+	changed, err := patchPodImagesForInPlaceUpdate(ctx, fakeClient, pod, role, newHash)
+	require.NoError(t, err)
+	assert.True(t, changed)
+
+	updated := &corev1.Pod{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
+	assert.Contains(t, updated.Annotations, constants.RoleInPlaceUpdateStateAnnotationKey)
+	assert.Contains(t, updated.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey], "docker-pullable://vllm@sha256:old")
+
+	condition := findPodCondition(updated.Status.Conditions, corev1.PodConditionType(constants.RoleInPlaceUpdateReadyCondition))
+	require.NotNil(t, condition)
+	assert.Equal(t, corev1.ConditionFalse, condition.Status)
+}
+
 func TestHasInPlaceUpdateInProgress(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
@@ -374,6 +411,113 @@ func TestMarkInPlaceUpdateComplete(t *testing.T) {
 	assert.NotContains(t, updated.Annotations, constants.RoleInPlaceUpdateTargetHashAnnotationKey)
 }
 
+func TestMarkInPlaceUpdateCompleteWaitsForChangedImageID(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	roleSet := newTestRoleSet("test-roleset", "test-ns")
+	role := newRoleSpecWithImage("worker", "vllm-openai", "vllm:v2")
+
+	pod := newTestPodWithHash(testPodOne, "test-ns", true, false, oldHash)
+	pod.Annotations = map[string]string{
+		constants.RoleInPlaceUpdateTargetHashAnnotationKey: newHash,
+		constants.RoleInPlaceUpdateStateAnnotationKey:      `{"lastContainerStatuses":{"vllm-openai":{"imageID":"docker-pullable://vllm@sha256:old"}}}`,
+	}
+	pod.Spec.Containers = []corev1.Container{{Name: "vllm-openai", Image: "vllm:v2"}}
+	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:    "vllm-openai",
+		Image:   "vllm:v2",
+		ImageID: "docker-pullable://vllm@sha256:old",
+		Ready:   true,
+	}}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+
+	completed, err := markInPlaceUpdateComplete(ctx, fakeClient, roleSet, role, pod, newHash)
+	require.NoError(t, err)
+	assert.False(t, completed)
+
+	updated := &corev1.Pod{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
+	assert.Equal(t, oldHash, updated.Labels[constants.RoleTemplateHashLabelKey])
+	assert.Equal(t, newHash, updated.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey])
+	assert.Equal(t, constants.RoleInPlaceUpdatePendingReasonImageIDUnchanged, updated.Annotations[constants.RoleInPlaceUpdatePendingReasonAnnotationKey])
+}
+
+func TestMarkInPlaceUpdateCompleteRecordsPendingReason(t *testing.T) {
+	tests := []struct {
+		name              string
+		ready             bool
+		status            corev1.ContainerStatus
+		wantPendingReason string
+	}{
+		{
+			name:  "pod not ready",
+			ready: false,
+			status: corev1.ContainerStatus{
+				Name:    "vllm-openai",
+				Image:   "vllm:v2",
+				ImageID: "docker-pullable://vllm@sha256:new",
+				Ready:   true,
+			},
+			wantPendingReason: constants.RoleInPlaceUpdatePendingReasonPodNotReady,
+		},
+		{
+			name:  "runtime image mismatch",
+			ready: true,
+			status: corev1.ContainerStatus{
+				Name:    "vllm-openai",
+				Image:   "vllm:v1",
+				ImageID: "docker-pullable://vllm@sha256:new",
+				Ready:   true,
+			},
+			wantPendingReason: constants.RoleInPlaceUpdatePendingReasonRuntimeImageMismatch,
+		},
+		{
+			name:  "container status missing",
+			ready: true,
+			status: corev1.ContainerStatus{
+				Name:    "sidecar",
+				Image:   "sidecar:v1",
+				ImageID: "docker-pullable://sidecar@sha256:1",
+				Ready:   true,
+			},
+			wantPendingReason: constants.RoleInPlaceUpdatePendingReasonContainerStatusMissing,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := runtime.NewScheme()
+			require.NoError(t, corev1.AddToScheme(scheme))
+			roleSet := newTestRoleSet("test-roleset", "test-ns")
+			role := newRoleSpecWithImage("worker", "vllm-openai", "vllm:v2")
+
+			pod := newTestPodWithHash(testPodOne, "test-ns", tt.ready, false, oldHash)
+			pod.Annotations = map[string]string{constants.RoleInPlaceUpdateTargetHashAnnotationKey: newHash}
+			pod.Spec.Containers = []corev1.Container{{Name: "vllm-openai", Image: "vllm:v2"}}
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{tt.status}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(pod).
+				Build()
+
+			completed, err := markInPlaceUpdateComplete(ctx, fakeClient, roleSet, role, pod, newHash)
+			require.NoError(t, err)
+			assert.False(t, completed)
+
+			updated := &corev1.Pod{}
+			require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
+			assert.Equal(t, tt.wantPendingReason, updated.Annotations[constants.RoleInPlaceUpdatePendingReasonAnnotationKey])
+		})
+	}
+}
+
 func TestMarkInPlaceUpdateCompleteAcceptsKubeletNormalizedRuntimeImage(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
@@ -404,6 +548,16 @@ func TestMarkInPlaceUpdateCompleteAcceptsKubeletNormalizedRuntimeImage(t *testin
 	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(pod), updated))
 	assert.Equal(t, newHash, updated.Labels[constants.RoleTemplateHashLabelKey])
 	assert.NotContains(t, updated.Annotations, constants.RoleInPlaceUpdateTargetHashAnnotationKey)
+	assert.NotContains(t, updated.Annotations, constants.RoleInPlaceUpdatePendingReasonAnnotationKey)
+}
+
+func findPodCondition(conditions []corev1.PodCondition, conditionType corev1.PodConditionType) *corev1.PodCondition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
 }
 
 func TestMarkInPlaceUpdateCompleteWaitsForRuntimeImage(t *testing.T) {
