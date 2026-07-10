@@ -25,6 +25,7 @@ from aibrix.batch.job_driver.driver_factory import create_job_driver
 from aibrix.batch.job_driver.runtime import Completion, Endpoint
 from aibrix.batch.job_driver.runtime.k8s_job import K8sJobHandle, K8sJobRuntime
 from aibrix.batch.job_entity import BatchJobError, BatchJobErrorCode, BatchJobState
+from aibrix.context.infra import InfrastructureContext
 
 
 class _FakeRuntime:
@@ -64,7 +65,12 @@ class _FakePM:
 
 def _job():
     return SimpleNamespace(
-        status=SimpleNamespace(state=BatchJobState.IN_PROGRESS), job_id="jid"
+        status=SimpleNamespace(
+            state=BatchJobState.IN_PROGRESS,
+            last_crashed_at=None,
+        ),
+        spec=SimpleNamespace(opts={}),
+        job_id="jid",
     )
 
 
@@ -77,12 +83,13 @@ async def test_self_hosted_run_finalizes_on_success(monkeypatch):
     for this aggregation."""
     job = _job()
     rt = _FakeRuntime(Completion(succeeded=True))
-    driver = BaseJobDriver(_FakePM(job), rt)
+    driver = BaseJobDriver(InfrastructureContext(), _FakePM(job), rt)
 
     aggregated = []
 
     async def _record_finalize(j):
         aggregated.append(j)
+        return j
 
     monkeypatch.setattr(
         "aibrix.batch.job_driver.base.storage.finalize_job_output_data",
@@ -102,7 +109,7 @@ async def test_execute_raises_on_failed_job():
     rt = _FakeRuntime(
         Completion(succeeded=False, reason="DeadlineExceeded", message="too slow")
     )
-    driver = BaseJobDriver(_FakePM(job), rt)
+    driver = BaseJobDriver(InfrastructureContext(), _FakePM(job), rt)
     with pytest.raises(BatchJobError) as excinfo:
         await driver.run_job("jid", Endpoint(source=None))
     assert excinfo.value.code == BatchJobErrorCode.INFERENCE_FAILED

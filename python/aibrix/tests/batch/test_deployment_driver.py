@@ -15,6 +15,7 @@
 import asyncio
 import contextlib
 import copy
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Optional
@@ -314,7 +315,7 @@ def _make_deployment_driver(
     default failure) are derived from DeploymentRuntime.provisions=True."""
     del entity_manager
     runtime = DeploymentRuntime(context, renderer=renderer)
-    return BaseJobDriver(progress_manager, runtime)
+    return BaseJobDriver(context, progress_manager, runtime)
 
 
 def _make_deployment_handle(replicas: int = 1) -> DeploymentHandle:
@@ -374,7 +375,8 @@ async def test_deployment_driver_creates_runtime_and_finalizes_with_temp_files()
         called["prepare"] += 1
         return _job
 
-    async def _execute_worker(job_id):
+    async def _execute_worker(job_id, next_pass_start=None):
+        del job_id, next_pass_start
         called["base_url"] = driver._runtime._active_handle.base_url
         called["model_name"] = driver._active_model_name
         progress_manager.job.status.state = BatchJobState.FINALIZING
@@ -425,6 +427,70 @@ async def test_deployment_driver_creates_runtime_and_finalizes_with_temp_files()
 
 
 @pytest.mark.asyncio
+async def test_base_job_driver_finalizes_when_runtime_session_exit_fails():
+    job = _make_job("job-session-exit-failure")
+    job.status.temp_output_file_id = "temp-out"
+    job.status.temp_error_file_id = "temp-err"
+
+    class _ProgressManager(FakeProgressManager):
+        async def mark_job_failed(self, job_id: str, error):
+            del job_id
+            self.failed_messages.append(str(error))
+            failed_at = datetime.now(timezone.utc)
+            self.job.status.errors = [error]
+            self.job.status.add_condition(
+                Condition(
+                    type=ConditionType.FAILED,
+                    status=ConditionStatus.TRUE,
+                    lastTransitionTime=failed_at,
+                    reason=error.code,
+                    message=error.message,
+                )
+            )
+            self.job.status.failed_at = failed_at
+            self.job.status.state = BatchJobState.IN_PROGRESS
+            return self.job
+
+    class _ExitFailureRuntime(ExternalRuntime):
+        @asynccontextmanager
+        async def session(self, job, job_id, **kwargs):
+            del job, job_id, kwargs
+            yield SimpleNamespace(source=None, model_name="m")
+            raise BatchJobError(
+                code=BatchJobErrorCode.RESOURCE_NOTFOUND_ERROR,
+                message="runtime vanished during session exit",
+            )
+
+    progress_manager = _ProgressManager(job)
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        progress_manager,
+        _ExitFailureRuntime(None),
+    )
+    finalized: list[str] = []
+
+    async def _execute_worker(job_id: str, next_pass_start=None):
+        del job_id, next_pass_start
+        return progress_manager.job
+
+    async def _finalize_job(current_job):
+        finalized.append(current_job.job_id)
+        current_job.status.state = BatchJobState.FINALIZED
+        current_job.status.finalized_at = datetime.now(timezone.utc)
+        return current_job
+
+    driver.execute_worker = _execute_worker
+    driver.finalize_job = _finalize_job
+
+    await driver.execute(job.job_id)
+
+    assert progress_manager.failed_messages == ["runtime vanished during session exit"]
+    assert finalized == [job.job_id]
+    assert job.status.state == BatchJobState.FINALIZED
+    assert job.status.get_condition(ConditionType.FAILED) is not None
+
+
+@pytest.mark.asyncio
 async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down():
     job = _make_job("job-delete-1234")
     progress_manager = FakeProgressManager(job)
@@ -445,7 +511,8 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
         _job.status.temp_error_file_id = "temp-err"
         return _job
 
-    async def _execute_worker(_job_id):
+    async def _execute_worker(_job_id, next_pass_start=None):
+        del next_pass_start
         entered.set()
         await driver._runtime._stop_requested.wait()
         raise asyncio.CancelledError
@@ -678,7 +745,11 @@ async def test_provisioning_runtime_drives_converged_failure_policy():
     re-raise, always aggregate, internal default failure. This is the
     load-bearing replacement for the old DeploymentJobDriver overrides."""
     runtime = DeploymentRuntime(_make_infrastructure_context())
-    driver = BaseJobDriver(FakeProgressManager(_make_job()), runtime)
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        FakeProgressManager(_make_job()),
+        runtime,
+    )
     assert driver._reraise_on_failure is False
     assert driver._default_failure_code == BatchJobErrorCode.INTERNAL_ERROR
 
@@ -686,7 +757,11 @@ async def test_provisioning_runtime_drives_converged_failure_policy():
 def test_standalone_runtime_drives_inline_failure_policy():
     """A non-provisioning runtime is the scheduler-driven inline path: re-raise,
     inference default failure."""
-    driver = BaseJobDriver(FakeProgressManager(_make_job()), ExternalRuntime(None))
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        FakeProgressManager(_make_job()),
+        ExternalRuntime(None),
+    )
     assert driver._reraise_on_failure is True
     assert driver._default_failure_code == BatchJobErrorCode.INFERENCE_FAILED
 

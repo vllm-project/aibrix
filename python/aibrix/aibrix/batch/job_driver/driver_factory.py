@@ -62,7 +62,11 @@ def create_job_driver(
     if runtime_target is None:
         # Standalone / endpoint-source path: dispatch against the injected
         # source (possibly None for prepare/finalize-only) via External.
-        runtime = create_runtime("External", endpoint_source=endpoint_source)
+        runtime = create_runtime(
+            "External",
+            endpoint_source=endpoint_source,
+            context=context,
+        )
         logger.info(
             "Selected job runtime",
             job_id=job_id,
@@ -72,7 +76,7 @@ def create_job_driver(
             if endpoint_source is not None
             else None,
         )  # type: ignore[call-arg]
-        return BaseJobDriver(progress_manager, runtime)
+        return BaseJobDriver(context, progress_manager, runtime)
 
     try:
         runtime = create_runtime(
@@ -94,4 +98,4 @@ def create_job_driver(
         runtime=type(runtime).__name__,
         registered=registered_runtimes(),
     )  # type: ignore[call-arg]
-    return BaseJobDriver(progress_manager, runtime)
+    return BaseJobDriver(context, progress_manager, runtime)

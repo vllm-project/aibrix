@@ -188,7 +188,7 @@ async def write_job_output_data(
     await p_storage.write_job_output_data(job, request_index, output_data)
 
 
-async def finalize_job_output_data(job: BatchJob) -> None:
+async def finalize_job_output_data(job: BatchJob) -> BatchJob:
     """Finalize job output files, aggregate output and error files
 
     Raises:
@@ -198,7 +198,8 @@ async def finalize_job_output_data(job: BatchJob) -> None:
         raise RuntimeError(
             "Batch storage not initialized. Call initialize_batch_storage() first."
         )
-    await p_storage.finalize_job_output_data(job)
+    job = await p_storage.finalize_job_output_data(job)
+    return job
 
 
 async def download_output_data(file_id: str) -> List[Dict[str, Any]]:

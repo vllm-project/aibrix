@@ -23,9 +23,9 @@ These tests cover various failure modes and edge cases in the batch job lifecycl
 """
 
 import asyncio
+import pydoc
 import threading
-import warnings
-from contextlib import asynccontextmanager
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, TypeVar, Union, cast
 from unittest.mock import patch
@@ -34,12 +34,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 import aibrix.batch.constant as constant
+from aibrix import envs
 from aibrix.batch.batch_manager import BatchManager
 from aibrix.batch.job_driver import BaseJobDriver, JobDriver, TerminateResult
-from aibrix.batch.job_driver.error_injection import (
-    BREAKPOINT_RUNTIME_INITIALIZATION,
-    JobDriverErrorInjector,
-)
 from aibrix.batch.job_entity import (
     AibrixMetadata,
     BatchJob,
@@ -47,6 +44,7 @@ from aibrix.batch.job_entity import (
     BatchJobErrorCode,
     BatchJobSpec,
     BatchJobState,
+    ClientConfig,
     ResourceAllocation,
 )
 from aibrix.context import InfrastructureContext
@@ -60,15 +58,10 @@ from tests.batch.conftest import (
     select_e2e_backends,
     upload_batch_input_file,
 )
+from tests.batch.job_driver.runtime.backends import get_runtime_patch_backend
 
 T = TypeVar("T")
 TEST_OPTS_PENDING_AFTER_N_REQUESTS = "pending_after_n_requests"
-TEST_OPTS_DELAY_BEFORE_FINALIZE_SHUTDOWN_SECONDS = (
-    "delay_before_finalize_shutdown_seconds"
-)
-TEST_OPTS_DELAY_AFTER_FINALIZE_SHUTDOWN_SECONDS = (
-    "delay_after_finalize_shutdown_seconds"
-)
 _ORIGINAL_RUNTIME_DELAY_SEND: Any = None
 _PATCHED_RUNTIME_DELAY_SECONDS = 0.0
 
@@ -81,24 +74,21 @@ def _backend_provider(test_backend) -> Optional[str]:
     return _backend(test_backend).request_kwargs.get("provider")
 
 
-def backend_uses_tce_provider(test_backend) -> bool:
-    return _backend_provider(test_backend) == "tce"
-
-
-def backend_uses_deployment_provider(test_backend) -> bool:
-    return _backend_provider(test_backend) == "deployment"
-
-
-def backend_uses_kubernetes_provider(test_backend) -> bool:
-    return _backend_provider(test_backend) == "kubernetes"
-
-
 def backend_supports_restart_phase_recovery(test_backend) -> bool:
-    return not backend_uses_kubernetes_provider(test_backend)
+    return _backend(test_backend).has_feature("restart_phase_recovery")
 
 
 def backend_expect_runtime_teardown(test_backend) -> bool:
     return _backend(test_backend).fake_runtime
+
+
+def backend_restart_in_progress_teardown_delta(test_backend) -> int:
+    """Expected teardown-call delta on restart after in-progress crash.
+
+    This helper maps backend capabilities to the expected debug-call delta so
+    restart assertions match the backend's recovery semantics.
+    """
+    return 1 if backend_expect_runtime_teardown(test_backend) else 0
 
 
 def backend_uses_redis_metastore(test_backend) -> bool:
@@ -162,27 +152,32 @@ def get_runtime_debug_handles(
     }
 
 
-def backend_runtime_driver_class(test_backend):
-    if backend_uses_deployment_provider(test_backend):
-        from aibrix.batch.job_driver.base import BaseJobDriver
-
-        return BaseJobDriver
-
+def backend_runtime_driver_class():
     from aibrix.batch.job_driver.base import BaseJobDriver
 
     return BaseJobDriver
 
 
-def backend_runtime_create_patch(test_backend):
-    if backend_uses_deployment_provider(test_backend):
-        from aibrix.batch.job_driver.runtime.k8s_deployment import DeploymentRuntime
+def _backend_runtime_patch_backend(test_backend):
+    provider = _backend_provider(test_backend)
+    if provider is None:
+        raise ValueError(f"Backend {test_backend} does not declare a runtime provider")
+    return get_runtime_patch_backend(provider)
 
-        return (
-            "aibrix.batch.job_driver.runtime.k8s_deployment."
-            "DeploymentRuntime._provision",
-            DeploymentRuntime._provision,
-        )
-    raise ValueError(f"Backend {test_backend} does not have a runtime create hook")
+
+def backend_runtime_create_patch(test_backend):
+    patch = _backend_runtime_patch_backend(test_backend).create
+    return patch.path, patch.original
+
+
+def backend_runtime_teardown_patch(test_backend):
+    patch = _backend_runtime_patch_backend(test_backend).teardown
+    return patch.path, patch.original
+
+
+def backend_runtime_delete_wait_patch(test_backend):
+    patch = _backend_runtime_patch_backend(test_backend).delete_wait
+    return patch.path, patch.original
 
 
 def backend_uses_fake_provisioning_runtime(test_backend) -> bool:
@@ -190,13 +185,15 @@ def backend_uses_fake_provisioning_runtime(test_backend) -> bool:
 
 
 def backend_supports_runtime_cleanup_interruption(test_backend) -> bool:
-    return backend_uses_fake_provisioning_runtime(
-        test_backend
-    ) and not backend_uses_kubernetes_provider(test_backend)
+    return _backend(test_backend).has_feature("runtime_cleanup_interruption")
+
+
+def backend_supports_restart_in_progress_lock_retry(test_backend) -> bool:
+    return _backend(test_backend).has_feature("restart_in_progress_lock_retry")
 
 
 def backend_runtime_cleanup_delete_delta(test_backend) -> int:
-    if backend_uses_deployment_provider(test_backend):
+    if _backend(test_backend).has_feature("runtime_cleanup_single_delete"):
         return 1
     return 2
 
@@ -273,6 +270,33 @@ def inject_job_creation_opts(monkeypatch, app, injected_opts: Dict[str, str]) ->
     monkeypatch.setattr(manager, "create_job_with_spec", patched_create_job_with_spec)
 
 
+def inject_job_creation_client_config(
+    monkeypatch, app, injected_client: Dict[str, object]
+) -> None:
+    manager = app.state.batch_driver.job_manager
+    original_create_job_with_spec = manager.create_job_with_spec
+
+    async def patched_create_job_with_spec(
+        session_id: str,
+        job_spec: BatchJobSpec,
+        timeout: float = 30.0,
+        initial_state: BatchJobState = BatchJobState.CREATED,
+        request_count: int = 0,
+    ) -> str:
+        if job_spec.aibrix is None:
+            job_spec.aibrix = AibrixMetadata()
+        client = dict(
+            job_spec.aibrix.client.model_dump() if job_spec.aibrix.client else {}
+        )
+        client.update(injected_client)
+        job_spec.aibrix.client = ClientConfig.model_validate(client)
+        return await original_create_job_with_spec(
+            session_id, job_spec, timeout, initial_state, request_count
+        )
+
+    monkeypatch.setattr(manager, "create_job_with_spec", patched_create_job_with_spec)
+
+
 def inject_runtime_deadline(monkeypatch, app, offset_seconds: float) -> None:
     manager = app.state.batch_driver.job_manager
     original_create_job_with_spec = manager.create_job_with_spec
@@ -296,192 +320,6 @@ def inject_runtime_deadline(monkeypatch, app, offset_seconds: float) -> None:
         )
 
     monkeypatch.setattr(manager, "create_job_with_spec", patched_create_job_with_spec)
-
-
-def force_batch_driver_crash_on_shutdown(monkeypatch, app) -> None:
-    driver = app.state.batch_driver
-    original_stop = driver.stop
-    import _pytest.unraisableexception as pytest_unraisableexception
-
-    from aibrix.batch.job_driver.runtime.base import RuntimeBase
-    from aibrix.batch.job_driver.runtime.base import logger as runtime_logger
-
-    warnings.simplefilter("ignore", pytest.PytestUnraisableExceptionWarning)
-    warnings.filterwarnings("ignore", category=pytest.PytestUnraisableExceptionWarning)
-    pytest_unraisableexception.warnings.warn = lambda *args, **kwargs: None
-
-    @asynccontextmanager
-    async def patched_runtime_session(
-        self,
-        job,
-        job_id,
-        *,
-        progress_manager=None,
-        worker_id_generator=None,
-        error_injection=None,
-    ):
-        self._bind_active_session(job_id, progress_manager)
-        try:
-            runtimeRef = self._load_runtime_ref(job)
-            handle = None
-            max_attempts = self.session_retry_attempts + 1
-            error_injection = error_injection or JobDriverErrorInjector(job)
-            try:
-                for attempt in range(max_attempts):
-                    try:
-                        phase = (
-                            "reconnect"
-                            if attempt == 0 and runtimeRef is not None
-                            else "provision"
-                        )
-                        if phase == "reconnect":
-                            assert runtimeRef is not None
-                            handle = await self._reconnect(job, job_id, runtimeRef)
-                            if handle is None:
-                                phase = "provision"
-                        if handle is None:
-                            error_injection.raise_for_breakpoint(
-                                BREAKPOINT_RUNTIME_INITIALIZATION
-                            )
-                            handle = await self._provision(job, job_id)
-                        job, _ = await self._persist_runtime_ref(
-                            job,
-                            progress_manager=progress_manager,
-                            worker_id_generator=worker_id_generator,
-                        )
-                        phase = "wait_ready"
-                        await self._wait_ready(handle)
-                        break
-                    except Exception as exc:
-                        should_retry = False
-                        should_teardown = handle is not None
-
-                        if phase in {"reconnect", "provision"}:
-                            should_retry = attempt + 1 < max_attempts
-                        elif phase == "wait_ready":
-                            should_retry = attempt + 1 < max_attempts
-                            should_teardown = self._should_teardown_failed_wait_ready(
-                                exc
-                            )
-
-                        if should_teardown and handle is not None:
-                            try:
-                                await self._teardown(handle)
-                            except Exception as teardown_exc:
-                                runtime_logger.warning(
-                                    "Runtime teardown failed during retry recovery; continuing with retry",
-                                    job_id=job_id,
-                                    phase=phase,
-                                    handle=repr(handle),
-                                    error=str(teardown_exc),
-                                )  # type: ignore[call-arg]
-                        elif not should_retry:
-                            handle = None
-                        if not should_retry:
-                            raise
-                        handle = None
-                        runtimeRef = None
-                        await self._sleep_before_session_retry(attempt)
-                yield await self._connect(handle)
-            finally:
-                if handle is not None:
-                    opts = job.spec.opts or {}
-                    before_delay = float(
-                        opts.get(TEST_OPTS_DELAY_BEFORE_FINALIZE_SHUTDOWN_SECONDS, 0.0)
-                        or 0.0
-                    )
-                    if (
-                        before_delay > 0
-                        and progress_manager is not None
-                        and job.job_id is not None
-                    ):
-                        await progress_manager.mark_job_finalizing(job.job_id)
-                        await asyncio.sleep(before_delay)
-                if handle is not None and not self._context.values.get(
-                    "simulate_crash_shutdown", False
-                ):
-                    await self._teardown(handle)
-                elif handle is not None and hasattr(self, "_active_handle"):
-                    self._active_handle = None
-                self._unbind_active_session()
-        except asyncio.CancelledError:
-            raise
-
-    monkeypatch.setattr(RuntimeBase, "session", patched_runtime_session)
-
-    async def patched_stop() -> None:
-        async_thread_loop = getattr(driver, "_async_thread_loop", None)
-        loop = getattr(async_thread_loop, "loop", None)
-        driver._context.values["simulate_crash_shutdown"] = True
-        if loop is None:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-
-        if loop is not None:
-            try:
-                running_loop = asyncio.get_running_loop()
-            except RuntimeError:
-                running_loop = None
-            if loop is running_loop:
-                loop.set_exception_handler(lambda _loop, _context: None)
-            else:
-                loop.call_soon_threadsafe(
-                    loop.set_exception_handler,
-                    lambda _loop, _context: None,
-                )
-        await original_stop()
-
-    monkeypatch.setattr(driver, "stop", patched_stop)
-
-
-def install_runtime_finalize_shutdown_delay(monkeypatch, test_backend) -> None:
-    runtime_driver_class = backend_runtime_driver_class(test_backend)
-    if hasattr(runtime_driver_class, "_shutdown_runtime_before_finalize"):
-        original_shutdown_runtime_before_finalize = (
-            runtime_driver_class._shutdown_runtime_before_finalize
-        )
-
-        async def patched_shutdown_runtime_before_finalize(self, job):
-            opts = job.spec.opts or {}
-            before_delay = float(
-                opts.get(TEST_OPTS_DELAY_BEFORE_FINALIZE_SHUTDOWN_SECONDS, 0.0) or 0.0
-            )
-            after_delay = float(
-                opts.get(TEST_OPTS_DELAY_AFTER_FINALIZE_SHUTDOWN_SECONDS, 0.0) or 0.0
-            )
-            if before_delay > 0:
-                await asyncio.sleep(before_delay)
-            job = await original_shutdown_runtime_before_finalize(self, job)
-            if after_delay > 0:
-                await asyncio.sleep(after_delay)
-            return job
-
-        monkeypatch.setattr(
-            runtime_driver_class,
-            "_shutdown_runtime_before_finalize",
-            patched_shutdown_runtime_before_finalize,
-        )
-        return
-
-    original_finalize_job = runtime_driver_class.finalize_job
-
-    async def patched_finalize_job(self, job):
-        opts = job.spec.opts or {}
-        after_delay = float(
-            opts.get(TEST_OPTS_DELAY_AFTER_FINALIZE_SHUTDOWN_SECONDS, 0.0) or 0.0
-        )
-
-        # Shared-driver runtimes now model the before-shutdown window inside the
-        # RuntimeBase session wrapper; only keep the after-shutdown pause here.
-        if after_delay > 0:
-            job = await self._progress_manager.mark_job_finalizing(job.job_id)
-        if after_delay > 0:
-            await asyncio.sleep(after_delay)
-        return await original_finalize_job(self, job)
-
-    monkeypatch.setattr(runtime_driver_class, "finalize_job", patched_finalize_job)
 
 
 def install_pending_after_n_requests_barrier(
@@ -510,7 +348,7 @@ def install_pending_after_n_requests_barrier(
             return None
 
     completed_counts: Dict[str, int] = {}
-    target_driver = backend_runtime_driver_class(test_backend)
+    target_driver = backend_runtime_driver_class()
     original_sync_completed_request_tasks = target_driver._sync_completed_request_tasks
 
     async def block_after_completed_requests(
@@ -565,6 +403,110 @@ def install_pending_after_n_requests_barrier(
     return entered_pending, release_pending
 
 
+def install_request_lock_retry_harness(
+    monkeypatch,
+    *,
+    lock_timeout_seconds: float,
+):
+    import aibrix.batch.storage.adapter as storage_adapter_module
+
+    lock_state: Dict[str, tuple[str, Optional[float]]] = {}
+
+    def purge_expired(key: str) -> None:
+        entry = lock_state.get(key)
+        if entry is None:
+            return
+        status, expires_at = entry
+        if (
+            status == "processing"
+            and expires_at is not None
+            and time.monotonic() >= expires_at
+        ):
+            lock_state.pop(key, None)
+
+    def purge_all_expired() -> None:
+        for key in list(lock_state.keys()):
+            purge_expired(key)
+
+    async def fake_lock_request(key: str, expiration_seconds: int = 3600) -> bool:
+        del expiration_seconds
+        purge_expired(key)
+        if key in lock_state:
+            return False
+        lock_state[key] = ("processing", time.monotonic() + lock_timeout_seconds)
+        return True
+
+    async def fake_unlock_request(key: str, status: str) -> bool:
+        lock_state[key] = (status, None)
+        return True
+
+    async def fake_is_request_done(key: str) -> bool:
+        purge_expired(key)
+        entry = lock_state.get(key)
+        return entry is not None and entry[0] != "processing"
+
+    async def fake_get_metadata(key: str) -> tuple[str, bool]:
+        purge_expired(key)
+        entry = lock_state.get(key)
+        if entry is None:
+            return "", False
+        return entry[0], True
+
+    async def fake_list_metastore_keys(
+        prefix: str,
+        limit: int = 1000,
+        continuation_token=None,
+    ):
+        del continuation_token
+        purge_all_expired()
+        keys = sorted(key for key in lock_state if key.startswith(prefix))
+        return keys[:limit], None
+
+    async def fake_delete_metadata(key: str) -> None:
+        lock_state.pop(key, None)
+
+    monkeypatch.setattr(
+        storage_adapter_module, "is_request_locking_supported", lambda: True
+    )
+    monkeypatch.setattr(storage_adapter_module, "lock_request", fake_lock_request)
+    monkeypatch.setattr(storage_adapter_module, "unlock_request", fake_unlock_request)
+    monkeypatch.setattr(storage_adapter_module, "is_request_done", fake_is_request_done)
+    monkeypatch.setattr(storage_adapter_module, "get_metadata", fake_get_metadata)
+    monkeypatch.setattr(
+        storage_adapter_module, "list_metastore_keys", fake_list_metastore_keys
+    )
+    monkeypatch.setattr(storage_adapter_module, "delete_metadata", fake_delete_metadata)
+    return lock_state
+
+
+async def wait_for_harness_completed_requests(
+    lock_state: Dict[str, tuple[str, Optional[float]]],
+    batch_id: str,
+    expected_completed: int,
+    *,
+    max_polls: int = 60,
+    poll_interval: float = 0.5,
+) -> int:
+    prefix = f"batch:{batch_id}:done/"
+    completed = 0
+    for _ in range(max_polls):
+        completed = sum(
+            1
+            for key, (status, _) in lock_state.items()
+            if key.startswith(prefix) and status != "processing"
+        )
+        if completed >= expected_completed:
+            return completed
+        await asyncio.sleep(poll_interval)
+    return completed
+
+
+def install_restart_reclaim_short_timeouts(monkeypatch, test_backend) -> None:
+    runtime_class = _backend_runtime_patch_backend(test_backend).runtime_class
+    monkeypatch.setattr(runtime_class, "session_liveness_check_interval_s", 0.5)
+    monkeypatch.setattr(runtime_class, "session_retry_base_delay_s", 0.1)
+
+
 async def wait_for_status(
     client: TestClient,
     batch_id: str,
@@ -597,6 +539,28 @@ async def wait_for_status(
         await asyncio.sleep(poll_interval)
 
     # Return last known status if timeout
+    return result
+
+
+async def wait_for_completed_at_least(
+    client: TestClient,
+    batch_id: str,
+    expected_completed: int,
+    *,
+    max_polls: int = 60,
+    poll_interval: float = 0.5,
+) -> Dict[str, Any]:
+    """Wait until request_counts.completed reaches the expected threshold."""
+    result: Dict[str, Any] = {}
+    for _ in range(max_polls):
+        response = client.get(f"/v1/batches/{batch_id}")
+        assert response.status_code == 200, f"Status check failed: {response.text}"
+        result = response.json()
+        request_counts = result.get("request_counts") or {}
+        completed = request_counts.get("completed", 0)
+        if completed >= expected_completed:
+            return result
+        await asyncio.sleep(poll_interval)
     return result
 
 
@@ -777,7 +741,7 @@ def validate_batch_response(
         check_optional_field(field_name, expected_value, expected_type)
 
     # Check non-timestamp optional fields
-    if expected_errors not in (None, False):
+    if expected_errors not in (None, False, True):
         normalized_expected_errors: List[str]
         if isinstance(expected_errors, str):
             normalized_expected_errors = [expected_errors]
@@ -928,15 +892,146 @@ async def wait_for_runtime_teardown_delta(
         await asyncio.sleep(poll_interval)
 
 
+async def wait_for_runtime_use_delta(
+    e2e_test_app,
+    test_backend: str,
+    debug_state: Optional[Dict[str, int]],
+    expected_delta: int,
+    timeout_seconds: float = 5.0,
+    poll_interval: float = 0.1,
+) -> None:
+    if not backend_has_runtime_debug_state(test_backend):
+        return
+
+    assert debug_state is not None
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while True:
+        current = capture_runtime_debug_state(e2e_test_app, test_backend)
+        assert current is not None
+        current_delta = (
+            current["inference_client_builds"] - debug_state["inference_client_builds"]
+        )
+        if current_delta == expected_delta:
+            return
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError(
+                f"Expected runtime use delta {expected_delta}, got {current_delta}"
+            )
+        await asyncio.sleep(poll_interval)
+
+
+async def wait_for_runtime_create_delta(
+    e2e_test_app,
+    test_backend: str,
+    debug_state: Optional[Dict[str, int]],
+    expected_delta: int,
+    timeout_seconds: float = 5.0,
+    poll_interval: float = 0.1,
+) -> None:
+    if not backend_has_runtime_debug_state(test_backend):
+        return
+
+    assert debug_state is not None
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while True:
+        current = capture_runtime_debug_state(e2e_test_app, test_backend)
+        assert current is not None
+        current_delta = (
+            current["runtime_create_calls"] - debug_state["runtime_create_calls"]
+        )
+        if current_delta == expected_delta:
+            return
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError(
+                f"Expected runtime create delta {expected_delta}, got {current_delta}"
+            )
+        await asyncio.sleep(poll_interval)
+
+
+def install_scheduler_admit_barrier(monkeypatch, app):
+    """Test-only: let the restarted metadata service finish startup, but hold
+    it before it can admit the rollover job. This makes the sequence
+    deterministic: old shutdown must first mark delete-started and reach
+    blocked teardown, then the restarted scheduler is released to observe
+    delete-wait + reprovision instead of racing ahead too early.
+    """
+    scheduler = app.state.batch_driver._scheduler
+    assert scheduler is not None
+    original_schedule_next_job = scheduler.schedule_next_job
+    entered_schedule = threading.Event()
+    release_schedule = threading.Event()
+
+    async def patched_schedule_next_job():
+        if app.state.batch_driver._context.values.get("block_schedule_next_job", False):
+            entered_schedule.set()
+            released = await asyncio.to_thread(release_schedule.wait, 20)
+            assert released, "Timed out waiting to release scheduler admit barrier"
+            app.state.batch_driver._context.values["block_schedule_next_job"] = False
+        return await original_schedule_next_job()
+
+    monkeypatch.setattr(scheduler, "schedule_next_job", patched_schedule_next_job)
+    return entered_schedule, release_schedule
+
+
+def backend_runtime_should_teardown_patch(test_backend):
+    patch = _backend_runtime_patch_backend(test_backend).should_teardown
+    return patch.path, patch.original
+
+
+def install_session_final_exception(monkeypatch, test_backend, message: str):
+    patch_target, _ = backend_runtime_teardown_patch(test_backend)
+    target_owner_path, target_attr = patch_target.rsplit(".", 1)
+    target_owner = pydoc.locate(target_owner_path)
+    assert target_owner is not None, f"Unable to resolve teardown target {patch_target}"
+    original_teardown = getattr(target_owner, target_attr)
+
+    async def patched_teardown(self, handle):
+        result = await original_teardown(self, handle)
+        if self._context.values.pop("raise_in_runtime_teardown", False):
+            raise RuntimeError(message)
+        return result
+
+    monkeypatch.setattr(patch_target, patched_teardown)
+
+
+def stop_batch_driver_in_background(client: TestClient, app):
+    done = threading.Event()
+    errors: List[BaseException] = []
+
+    def _stop():
+        try:
+            # Run driver shutdown on the TestClient app loop instead of calling
+            # `__exit__()` from another thread. This keeps the old-MDS rollover
+            # path on the owning event loop, which is the behavior we want to
+            # observe for teardown entry in this test.
+            client.portal.call(app.state.batch_driver.stop)
+        except BaseException as exc:  # noqa: BLE001 - test helper preserves error
+            errors.append(exc)
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_stop, daemon=True)
+    thread.start()
+    return thread, done, errors
+
+
+def close_test_client_after_driver_crash(client: TestClient) -> None:
+    try:
+        client.__exit__(None, None, None)
+    except RuntimeError as exc:
+        if "Event loop is closed" not in str(exc):
+            raise
+
+
 def verify_runtime_restart_completion_teardown(
     e2e_test_app,
     test_backend: str,
     batch_id: str,
     debug_state: Optional[Dict[str, int]],
     *,
-    expect_runtime_created: bool,
-    expect_runtime_used: bool,
-    expect_runtime_teardown: bool,
+    expect_runtime_created: bool | int,
+    expect_runtime_used: bool | int,
+    expect_runtime_teardown: bool | int,
 ) -> None:
     handles = get_runtime_debug_handles(e2e_test_app, test_backend)
     if handles is None:
@@ -948,9 +1043,27 @@ def verify_runtime_restart_completion_teardown(
     runtime_create_calls = handles["runtime_create_calls"]
     runtime_delete_calls = handles["runtime_delete_calls"]
 
-    expected_create_delta = 1 if expect_runtime_created else 0
-    expected_runtime_use_delta = 1 if expect_runtime_used else 0
-    expected_teardown_delta = 1 if expect_runtime_teardown else 0
+    expected_create_delta = (
+        1
+        if isinstance(expect_runtime_created, bool) and expect_runtime_created
+        else 0
+        if isinstance(expect_runtime_created, bool)
+        else expect_runtime_created
+    )
+    expected_runtime_use_delta = (
+        1
+        if isinstance(expect_runtime_used, bool) and expect_runtime_used
+        else 0
+        if isinstance(expect_runtime_used, bool)
+        else expect_runtime_used
+    )
+    expected_teardown_delta = (
+        1
+        if isinstance(expect_runtime_teardown, bool) and expect_runtime_teardown
+        else 0
+        if isinstance(expect_runtime_teardown, bool)
+        else expect_runtime_teardown
+    )
     assert (
         len(teardown_calls) == debug_state["teardown_calls"] + expected_teardown_delta
     )
@@ -1091,7 +1204,7 @@ async def complete_job_after_restart(
     expected_total_requests: int,
     expect_runtime_created_on_restart: bool,
     expect_runtime_used_on_restart: bool = True,
-    expect_runtime_teardown_on_restart: bool = True,
+    expect_runtime_teardown_on_restart: bool | int = True,
     expect_runtime_teardown_before_restart: bool = False,
     original_app=None,
     original_debug_state: Optional[Dict[str, int]] = None,
@@ -1445,11 +1558,20 @@ async def test_job_processing_failure(e2e_test_app, test_backend):
 
 
 @pytest.mark.asyncio
-async def test_job_runtime_initialization_failure(e2e_test_app, test_backend):
+async def test_job_runtime_initialization_failure(
+    e2e_test_app, test_backend, monkeypatch
+):
     if not test_backend.support_runtime:
         pytest.skip("Runtime initialization failure only applies to runtime drivers")
 
     print("Test 2b: Job runtime initialization failure scenario")
+
+    # Test-only: force runtime initialization failures to surface immediately
+    # instead of waiting through the full session retry ladder
+    # (2s+4s+8s+16s+32s...), which would otherwise leave the job in_progress
+    # longer than this e2e assertion window.
+    runtime_class = _backend_runtime_patch_backend(test_backend).runtime_class
+    monkeypatch.setattr(runtime_class, "session_retry_attempts", 0)
 
     with create_test_client(e2e_test_app) as client:
         input_file_id = upload_batch_input_file(client, 2)
@@ -1478,12 +1600,7 @@ async def test_job_runtime_initialization_failure(e2e_test_app, test_backend):
                 expected_status="failed",
                 expected_endpoint="/v1/chat/completions",
                 expected_input_file_id=input_file_id,
-                expected_in_progress_at=(
-                    not (
-                        backend_uses_deployment_provider(test_backend)
-                        and not _backend(test_backend).fake_runtime
-                    )
-                ),
+                expected_in_progress_at=True,
                 expected_finalizing_at=False,
                 expected_completed_at=False,
                 expected_failed_at=True,
@@ -1632,6 +1749,15 @@ async def test_job_preparation_failure(e2e_test_app, test_backend):
             final_status = await wait_for_status(
                 client, batch_id, "failed", max_polls=60, poll_interval=0.5
             )
+            expect_runtime_teardown = backend_expect_runtime_teardown(test_backend)
+            if expect_runtime_teardown:
+                await wait_for_runtime_teardown_delta(
+                    e2e_test_app,
+                    test_backend,
+                    debug_state,
+                    expected_delta=1,
+                    timeout_seconds=20.0,
+                )
 
             validate_batch_response_with_runtime_teardown(
                 final_status,
@@ -1639,7 +1765,7 @@ async def test_job_preparation_failure(e2e_test_app, test_backend):
                 test_backend=test_backend,
                 batch_id=batch_id,
                 debug_state=debug_state,
-                expect_runtime_teardown=backend_expect_runtime_teardown(test_backend),
+                expect_runtime_teardown=expect_runtime_teardown,
                 expected_status="failed",
                 expected_endpoint="/v1/chat/completions",
                 expected_input_file_id=input_file_id,
@@ -1840,6 +1966,15 @@ async def test_job_cancellation_in_progress_before_preparation(
                         )
                     ),
                 )
+                expect_runtime_teardown = backend_expect_runtime_teardown(test_backend)
+                if expect_runtime_teardown:
+                    await wait_for_runtime_teardown_delta(
+                        e2e_test_app,
+                        test_backend,
+                        debug_state,
+                        expected_delta=1,
+                        timeout_seconds=20.0,
+                    )
 
                 # Step 7: Verify cancelled status using comprehensive validation
                 validate_batch_response_with_runtime_teardown(
@@ -1848,9 +1983,7 @@ async def test_job_cancellation_in_progress_before_preparation(
                     test_backend=test_backend,
                     batch_id=batch_id,
                     debug_state=debug_state,
-                    expect_runtime_teardown=backend_expect_runtime_teardown(
-                        test_backend
-                    ),
+                    expect_runtime_teardown=expect_runtime_teardown,
                     expected_status="cancelled",
                     expected_endpoint="/v1/chat/completions",
                     expected_in_progress_at=True,
@@ -2470,118 +2603,133 @@ async def test_job_expiration_during_processing(e2e_test_app, test_backend):
 
 
 @pytest.mark.asyncio
-async def test_job_restart_during_validation(
+async def test_job_restore_after_mds_crash_during_validation(
     e2e_test_app, test_backend, request, tmp_path, monkeypatch
 ):
     if not backend_supports_restart_phase_recovery(test_backend):
         pytest.skip("Restart phase recovery is covered on local and redis backends")
 
     # Test setup
-    force_batch_driver_crash_on_shutdown(monkeypatch, e2e_test_app)
+    monkeypatch.setattr(envs, "BATCH_ERROR_INJECTION_ENABLED", True)
+    inject_job_creation_opts(
+        monkeypatch,
+        e2e_test_app,
+        {constant.BATCH_OPTS_CRASH_DURING_VALIDATION: "1"},
+    )
 
-    with create_test_client(e2e_test_app) as client:
+    client = create_test_client(e2e_test_app)
+    client.__enter__()
+    try:
         input_file_id = upload_batch_input_file(client, 2)
-        await swap_job_manager(e2e_test_app, FailingBatchManager(stall_validation=2.0))
         batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
         await wait_for_status(
             client, batch_id, "validating", max_polls=20, poll_interval=0.2
         )
         original_debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
 
-    expect_runtime_activity_on_restart = (
-        backend_observes_restart_validation_runtime_delta(test_backend)
-    )
+        expect_runtime_activity_on_restart = (
+            backend_observes_restart_validation_runtime_delta(test_backend)
+        )
 
-    await complete_job_after_restart(
-        request,
-        test_backend,
-        tmp_path,
-        monkeypatch,
-        batch_id,
-        2,
-        expect_runtime_created_on_restart=(
-            backend_expect_runtime_teardown(test_backend)
-            if expect_runtime_activity_on_restart
-            else False
-        ),
-        expect_runtime_used_on_restart=(
-            backend_expect_runtime_teardown(test_backend)
-            if expect_runtime_activity_on_restart
-            else False
-        ),
-        expect_runtime_teardown_on_restart=(
-            backend_expect_runtime_teardown(test_backend)
-            if expect_runtime_activity_on_restart
-            else False
-        ),
-        original_app=e2e_test_app,
-        original_debug_state=original_debug_state,
-    )
+        await complete_job_after_restart(
+            request,
+            test_backend,
+            tmp_path,
+            monkeypatch,
+            batch_id,
+            2,
+            expect_runtime_created_on_restart=(
+                backend_expect_runtime_teardown(test_backend)
+                if expect_runtime_activity_on_restart
+                else False
+            ),
+            expect_runtime_used_on_restart=(
+                backend_expect_runtime_teardown(test_backend)
+                if expect_runtime_activity_on_restart
+                else False
+            ),
+            expect_runtime_teardown_on_restart=(
+                backend_expect_runtime_teardown(test_backend)
+                if expect_runtime_activity_on_restart
+                else False
+            ),
+            original_app=e2e_test_app,
+            original_debug_state=original_debug_state,
+        )
+    finally:
+        close_test_client_after_driver_crash(client)
 
 
 @pytest.mark.asyncio
-async def test_job_restart_during_in_progress(
+async def test_job_restore_after_mds_crash_during_in_progress(
     e2e_test_app, test_backend, request, tmp_path, monkeypatch
 ):
     if not backend_supports_restart_phase_recovery(test_backend):
         pytest.skip("Restart phase recovery is not covered for this backend")
 
     # Test setup
-    force_batch_driver_crash_on_shutdown(monkeypatch, e2e_test_app)
-    entered_pending, _ = install_pending_after_n_requests_barrier(
-        monkeypatch,
-        e2e_test_app,
-        test_backend,
-    )
+    monkeypatch.setattr(envs, "BATCH_ERROR_INJECTION_ENABLED", True)
     inject_job_creation_opts(
         monkeypatch,
         e2e_test_app,
-        {TEST_OPTS_PENDING_AFTER_N_REQUESTS: "1"},
+        {constant.BATCH_OPTS_CRASH_AFTER_N_REQUESTS: "1"},
     )
+    if backend_supports_restart_in_progress_lock_retry(test_backend):
+        install_restart_reclaim_short_timeouts(monkeypatch, test_backend)
+        install_request_lock_retry_harness(
+            monkeypatch,
+            lock_timeout_seconds=1.0,
+        )
 
-    with create_test_client(e2e_test_app) as client:
+    client = create_test_client(e2e_test_app)
+    client.__enter__()
+    try:
         input_file_id = upload_batch_input_file(client, 10)
         batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
-        entered = await asyncio.to_thread(entered_pending.wait, 5)
-        assert entered, "Job did not enter pending-after-n-requests barrier in time"
-        status_during_pending = client.get(f"/v1/batches/{batch_id}")
-        assert status_during_pending.status_code == 200
-        payload = status_during_pending.json()
+        payload = await wait_for_status(
+            client, batch_id, "in_progress", max_polls=20, poll_interval=0.2
+        )
         assert payload["status"] == "in_progress"
         original_debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
-    await complete_job_after_restart(
-        request,
-        test_backend,
-        tmp_path,
-        monkeypatch,
-        batch_id,
-        10,
-        expect_runtime_created_on_restart=False,
-        expect_runtime_used_on_restart=backend_expect_runtime_teardown(test_backend),
-        expect_runtime_teardown_on_restart=backend_expect_runtime_teardown(
-            test_backend
-        ),
-        original_app=e2e_test_app,
-        original_debug_state=original_debug_state,
-    )
+        await complete_job_after_restart(
+            request,
+            test_backend,
+            tmp_path,
+            monkeypatch,
+            batch_id,
+            10,
+            expect_runtime_created_on_restart=False,
+            expect_runtime_used_on_restart=backend_expect_runtime_teardown(
+                test_backend
+            ),
+            expect_runtime_teardown_on_restart=backend_restart_in_progress_teardown_delta(
+                test_backend
+            ),
+            original_app=e2e_test_app,
+            original_debug_state=original_debug_state,
+        )
+    finally:
+        close_test_client_after_driver_crash(client)
 
 
 @pytest.mark.asyncio
-async def test_job_restart_during_finalizing_before_runtime_shutdown(
+@pytest.mark.batch_driver_stand_alone
+async def test_job_restore_after_mds_crash_during_finalizing_before_runtime_shutdown(
     e2e_test_app, test_backend, request, tmp_path, monkeypatch
 ):
     skip_if_runtime_unavailable(test_backend)
 
     # Test setup
-    force_batch_driver_crash_on_shutdown(monkeypatch, e2e_test_app)
-    install_runtime_finalize_shutdown_delay(monkeypatch, test_backend)
+    monkeypatch.setattr(envs, "BATCH_ERROR_INJECTION_ENABLED", True)
     inject_job_creation_opts(
         monkeypatch,
         e2e_test_app,
-        {TEST_OPTS_DELAY_BEFORE_FINALIZE_SHUTDOWN_SECONDS: "3"},
+        {constant.BATCH_OPTS_CRASH_BEFORE_FINALIZE_SHUTDOWN: "1"},
     )
 
-    with create_test_client(e2e_test_app) as client:
+    client = create_test_client(e2e_test_app)
+    client.__enter__()
+    try:
         input_file_id = upload_batch_input_file(client, 6)
         original_debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
         batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
@@ -2589,39 +2737,42 @@ async def test_job_restart_during_finalizing_before_runtime_shutdown(
             client, batch_id, "finalizing", max_polls=40, poll_interval=0.5
         )
         verify_runtime_not_torn_down(e2e_test_app, test_backend, original_debug_state)
-
-    await complete_job_after_restart(
-        request,
-        test_backend,
-        tmp_path,
-        monkeypatch,
-        batch_id,
-        6,
-        expect_runtime_created_on_restart=False,
-        expect_runtime_used_on_restart=False,
-        expect_runtime_teardown_on_restart=backend_expect_runtime_teardown(
-            test_backend
-        ),
-        expect_runtime_teardown_before_restart=False,
-        original_app=e2e_test_app,
-        original_debug_state=original_debug_state,
-    )
+        await complete_job_after_restart(
+            request,
+            test_backend,
+            tmp_path,
+            monkeypatch,
+            batch_id,
+            6,
+            expect_runtime_created_on_restart=False,
+            expect_runtime_used_on_restart=False,
+            expect_runtime_teardown_on_restart=backend_expect_runtime_teardown(
+                test_backend
+            ),
+            expect_runtime_teardown_before_restart=False,
+            original_app=e2e_test_app,
+            original_debug_state=original_debug_state,
+        )
+    finally:
+        close_test_client_after_driver_crash(client)
 
 
 @pytest.mark.asyncio
-async def test_job_restart_during_finalizing_after_runtime_shutdown(
+@pytest.mark.batch_driver_stand_alone
+async def test_job_restore_after_mds_crash_during_finalizing_after_runtime_shutdown(
     e2e_test_app, test_backend, request, tmp_path, monkeypatch
 ):
     # Test setup
-    force_batch_driver_crash_on_shutdown(monkeypatch, e2e_test_app)
-    install_runtime_finalize_shutdown_delay(monkeypatch, test_backend)
+    monkeypatch.setattr(envs, "BATCH_ERROR_INJECTION_ENABLED", True)
     inject_job_creation_opts(
         monkeypatch,
         e2e_test_app,
-        {TEST_OPTS_DELAY_AFTER_FINALIZE_SHUTDOWN_SECONDS: "3"},
+        {constant.BATCH_OPTS_CRASH_AFTER_FINALIZE_SHUTDOWN: "1"},
     )
 
-    with create_test_client(e2e_test_app) as client:
+    client = create_test_client(e2e_test_app)
+    client.__enter__()
+    try:
         input_file_id = upload_batch_input_file(client, 6)
         original_debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
         batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
@@ -2631,23 +2782,241 @@ async def test_job_restart_during_finalizing_after_runtime_shutdown(
         await wait_for_runtime_teardown_delta(
             e2e_test_app, test_backend, original_debug_state, expected_delta=1
         )
+        await complete_job_after_restart(
+            request,
+            test_backend,
+            tmp_path,
+            monkeypatch,
+            batch_id,
+            6,
+            expect_runtime_created_on_restart=False,
+            expect_runtime_used_on_restart=False,
+            expect_runtime_teardown_on_restart=False,
+            expect_runtime_teardown_before_restart=backend_expect_runtime_teardown(
+                test_backend
+            ),
+            original_app=e2e_test_app,
+            original_debug_state=original_debug_state,
+        )
+    finally:
+        close_test_client_after_driver_crash(client)
 
-    await complete_job_after_restart(
-        request,
-        test_backend,
-        tmp_path,
+
+@pytest.mark.asyncio
+async def test_job_restore_after_mds_migrated_before_old_runtime_teardown(
+    e2e_test_app, test_backend, request, tmp_path, monkeypatch
+):
+    # Reproduce graceful MDS rollover:
+    # T1. old MDS owns a live in-progress runtime
+    # T2. new MDS starts against the same persisted job state while the old MDS
+    #     is still alive
+    # T3. old MDS shuts down and releases ownership
+    # T4. new MDS resumes the job and drives it to completion
+    if not backend_supports_runtime_cleanup_interruption(test_backend):
+        pytest.skip(
+            "Rollover overlap requires a fake provisioning runtime with teardown "
+            "debug hooks"
+        )
+    runtime_class = _backend_runtime_patch_backend(test_backend).runtime_class
+    monkeypatch.setattr(runtime_class, "session_retry_attempts", 3)
+    monkeypatch.setattr(runtime_class, "session_liveness_check_interval_s", 2.0)
+    monkeypatch.setattr(runtime_class, "session_retry_base_delay_s", 0.1)
+    inject_job_creation_client_config(
         monkeypatch,
-        batch_id,
-        6,
-        expect_runtime_created_on_restart=False,
-        expect_runtime_used_on_restart=False,
-        expect_runtime_teardown_on_restart=False,
-        expect_runtime_teardown_before_restart=backend_expect_runtime_teardown(
-            test_backend
-        ),
-        original_app=e2e_test_app,
-        original_debug_state=original_debug_state,
+        e2e_test_app,
+        {
+            "max_concurrency": 1,
+            "adaptive_concurrency": False,
+        },
     )
+    request_lock_state = None
+    if backend_supports_restart_in_progress_lock_retry(test_backend):
+        request_lock_state = install_request_lock_retry_harness(
+            monkeypatch,
+            lock_timeout_seconds=5.0,
+        )
+
+    old_client = create_test_client(e2e_test_app)
+    restarted_app = None
+    restarted_client = None
+    batch_id = None
+    original_delay = 0.0
+    shutdown_done = None
+    shutdown_errors = None
+
+    old_client.__enter__()
+    try:
+        # Slow the old worker enough that shutdown reliably catches a live
+        # in-progress session even on fast local backends. This rollover case
+        # no longer uses the post-completion pending barrier because the target
+        # scenario is specifically about delete-started + teardown handoff.
+        input_file_id = upload_batch_input_file(old_client, 20)
+        original_delay = (
+            set_runtime_inference_delay(e2e_test_app, test_backend, delay_seconds=1.0)
+            or 0.0
+        )
+        batch_id = create_batch_job(
+            old_client, input_file_id, test_backend=test_backend
+        )
+        in_progress_status = await wait_for_status(
+            old_client,
+            batch_id,
+            "in_progress",
+            max_polls=30,
+            poll_interval=0.5,
+        )
+        assert in_progress_status["status"] == "in_progress"
+        completed_status = await wait_for_completed_at_least(
+            old_client,
+            batch_id,
+            3,
+            max_polls=60,
+            poll_interval=0.5,
+        )
+        assert completed_status.get("request_counts", {}).get("completed", 0) >= 3
+        if request_lock_state is not None:
+            durable_completed = await wait_for_harness_completed_requests(
+                request_lock_state,
+                batch_id,
+                3,
+                max_polls=60,
+                poll_interval=0.5,
+            )
+            assert durable_completed >= 3
+
+        # Start the replacement MDS before shutting the old one down. This
+        # matches the rollover sequence where the new metadata service is up
+        # before the old one has finished tearing the runtime down.
+        restarted_app = build_e2e_test_app(
+            request,
+            test_backend,
+            tmp_path,
+            monkeypatch,
+        )
+        entered_schedule, release_schedule = install_scheduler_admit_barrier(
+            monkeypatch, restarted_app
+        )
+        restarted_app.state.batch_driver._context.values["block_schedule_next_job"] = (
+            True
+        )
+        restarted_client = create_test_client(restarted_app)
+        restarted_client.__enter__()
+        schedule_blocked = await asyncio.to_thread(entered_schedule.wait, 20)
+        assert schedule_blocked, (
+            "Restarted metadata service did not reach scheduler admit barrier"
+        )
+        restarted_debug_state = capture_runtime_debug_state(restarted_app, test_backend)
+
+        _, shutdown_done, shutdown_errors = stop_batch_driver_in_background(
+            old_client, e2e_test_app
+        )
+        release_schedule.set()
+        shutdown_finished = await asyncio.to_thread(shutdown_done.wait, 20)
+        assert shutdown_finished, "Old metadata service did not finish shutdown"
+        assert shutdown_errors == []
+
+        # The restarted app should drive the recovered job all the way to a
+        # successful terminal state after graceful ownership handoff.
+        final_status = await wait_for_status(
+            restarted_client,
+            batch_id,
+            "completed",
+            max_polls=180,
+            poll_interval=0.5,
+        )
+        validate_batch_response_with_runtime_check(
+            final_status,
+            runtime_verifier=verify_runtime_restart_completion_teardown,
+            runtime_verifier_kwargs={
+                "e2e_test_app": restarted_app,
+                "test_backend": test_backend,
+                "batch_id": batch_id,
+                "debug_state": restarted_debug_state,
+                "expect_runtime_created": backend_expect_runtime_teardown(test_backend),
+                "expect_runtime_used": backend_expect_runtime_teardown(test_backend),
+                "expect_runtime_teardown": 2
+                if backend_expect_runtime_teardown(test_backend)
+                else 0,
+            },
+            expected_status="completed",
+            expected_endpoint="/v1/chat/completions",
+            expected_input_file_id=input_file_id,
+            expected_in_progress_at=True,
+            expected_finalizing_at=True,
+            expected_completed_at=True,
+            expected_failed_at=False,
+            expected_expired_at=False,
+            expected_cancelling_at=False,
+            expected_cancelled_at=False,
+            expected_errors=False,
+            expected_output_file_id=True,
+            expected_error_file_id=False,
+            expected_request_counts={
+                "total": 20,
+                "completed": 20,
+                "failed": 0,
+            },
+        )
+    finally:
+        set_runtime_inference_delay(
+            e2e_test_app, test_backend, delay_seconds=original_delay
+        )
+        old_client.__exit__(None, None, None)
+        if restarted_client is not None:
+            restarted_client.__exit__(None, None, None)
+        if restarted_app is not None and batch_id is not None:
+            await restarted_app.state.batch_driver.clear_job(batch_id)
+        elif batch_id is not None:
+            await e2e_test_app.state.batch_driver.clear_job(batch_id)
+
+
+@pytest.mark.asyncio
+async def test_job_session_final_block_exception_surfaces_as_failure(
+    e2e_test_app, test_backend, monkeypatch
+):
+    if not backend_supports_runtime_cleanup_interruption(test_backend):
+        pytest.skip(
+            "Session-final teardown injection requires a fake provisioning runtime"
+        )
+
+    injected_message = "injected session-final teardown failure"
+    install_session_final_exception(monkeypatch, test_backend, injected_message)
+
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 2)
+        debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
+        e2e_test_app.state.batch_driver._context.values["raise_in_runtime_teardown"] = (
+            True
+        )
+        batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
+        try:
+            final_status = await wait_for_status(
+                client,
+                batch_id,
+                "failed",
+                max_polls=60,
+                poll_interval=0.5,
+            )
+            assert final_status["status"] == "failed"
+            assert injected_message in str(final_status.get("errors", []))
+            validate_batch_response_with_runtime_teardown(
+                final_status,
+                e2e_test_app=e2e_test_app,
+                test_backend=test_backend,
+                batch_id=batch_id,
+                debug_state=debug_state,
+                expect_runtime_teardown=backend_expect_runtime_teardown(test_backend),
+                expected_status="failed",
+                expected_in_progress_at=True,
+                expected_failed_at=True,
+                expected_finalizing_at=True,
+                expected_errors=True,
+                expected_output_file_id=True,
+                expected_error_file_id=False,
+                expected_request_counts={"total": 2, "completed": 2, "failed": 0},
+            )
+        finally:
+            await e2e_test_app.state.batch_driver.clear_job(batch_id)
 
 
 if __name__ == "__main__":

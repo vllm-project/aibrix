@@ -47,6 +47,10 @@ from aibrix.context import InfrastructureContext
 
 
 class _FakeProgressManager:
+    async def get_job(self, job_id: str) -> object | None:
+        del job_id
+        return None
+
     async def update_job_local_status(
         self, job_id: str, worker_id: str, status, update_keys=None
     ) -> object:
@@ -188,6 +192,27 @@ async def test_runtime_base_session_runs_four_phases_in_order():
         assert endpoint.source is None
 
     assert calls == ["provision", "wait_ready", "connect", "body", "teardown"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_session_forwards_provision_wait_mode_on_initial_provision():
+    wait_modes: list[str] = []
+
+    async def _wait_ready(handle, *, wait_mode="provision"):
+        del handle
+        wait_modes.append(wait_mode)
+
+    runtime = _R(wait_ready=_wait_ready)
+
+    async with runtime.session(
+        job=_make_test_job(),
+        job_id="j",
+        progress_manager=_FakeProgressManager(),
+        worker_id_generator=_fake_worker_id_generator,
+    ):
+        pass
+
+    assert wait_modes == [RUNTIME_WAIT_MODE_PROVISION]
 
 
 @pytest.mark.asyncio
@@ -427,7 +452,7 @@ async def test_runtime_base_session_passes_reconnect_wait_mode_on_reconnect_atte
     wait_calls: list[tuple[str, str]] = []
 
     class _ReconnectRuntime(_R):
-        async def _reconnect(self, job, job_id, runtime_ref):
+        async def _load_handle(self, job, job_id, runtime_ref):
             del job, job_id
             assert runtime_ref is execution
             return "reconnected-handle"
@@ -771,6 +796,38 @@ async def test_runtime_base_session_liveness_uses_global_failure_threshold(
 
 
 @pytest.mark.asyncio
+async def test_runtime_base_session_preserves_liveness_error_when_teardown_fails():
+    liveness_failure_seen = asyncio.Event()
+
+    async def _check_liveness(handle):
+        del handle
+        liveness_failure_seen.set()
+        raise RuntimeError("runtime lost")
+
+    async def _teardown(handle):
+        del handle
+        raise RuntimeError("teardown failed")
+
+    class _LivenessRuntime(_R):
+        session_liveness_check_interval_s = 0.01
+
+    runtime = _LivenessRuntime(
+        check_liveness=_check_liveness,
+        teardown=_teardown,
+    )
+
+    with pytest.raises(RuntimeError, match="runtime lost"):
+        async with runtime.session(
+            job=_make_test_job(job_id="job-1"),
+            job_id="job-1",
+            progress_manager=_FakeProgressManager(),
+            worker_id_generator=_fake_worker_id_generator,
+        ):
+            await asyncio.wait_for(liveness_failure_seen.wait(), timeout=1)
+            await asyncio.sleep(1)
+
+
+@pytest.mark.asyncio
 async def test_runtime_base_session_reprovisions_after_reconnect_not_found(
     monkeypatch,
 ):
@@ -785,7 +842,7 @@ async def test_runtime_base_session_reprovisions_after_reconnect_not_found(
     execution = JobRuntimeRef(driverType="base")
     job = _make_test_job(job_id="job-1", execution={"base": execution})
 
-    async def _reconnect(job, job_id, runtime_ref):
+    async def _load_handle(job, job_id, runtime_ref):
         del job
         assert runtime_ref is execution
         calls.append(("reconnect", job_id))
@@ -812,8 +869,8 @@ async def test_runtime_base_session_reprovisions_after_reconnect_not_found(
             )
 
     class _ReconnectRuntime(_R):
-        async def _reconnect(self, job, job_id, runtime_ref):
-            return await _reconnect(job, job_id, runtime_ref)
+        async def _load_handle(self, job, job_id, runtime_ref):
+            return await _load_handle(job, job_id, runtime_ref)
 
         async def _persist_runtime_ref(
             self,
@@ -857,7 +914,6 @@ async def test_runtime_base_session_reprovisions_after_reconnect_not_found(
         ("persist", "job-1"),
         ("wait_ready", "fresh-handle"),
         ("connect", "fresh-handle"),
-        ("teardown", "fresh-handle"),
     ]
 
 
@@ -943,6 +999,7 @@ async def test_persist_runtime_ref_updates_execution_only():
     assert progress_manager.last_worker_id == "owner-ref-worker-1"
     assert progress_manager.execution is not None
     assert progress_manager.status_copy is not None
+    assert progress_manager.execution["base"].owner_worker_id == "owner-ref-worker-1"
     assert progress_manager.status_copy.request_counts.total == 0
     assert progress_manager.status_copy.request_counts.launched == 0
     assert progress_manager.status_copy.request_counts.completed == 0
@@ -953,10 +1010,58 @@ async def test_persist_runtime_ref_updates_execution_only():
 
 
 @pytest.mark.asyncio
-async def test_session_clears_runtime_ref_with_execution_only_update():
+async def test_persist_runtime_ref_clears_delete_started_marker():
+    class _CapturingProgressManager:
+        def __init__(self) -> None:
+            self.execution = None
+
+        async def update_job_local_status(
+            self, job_id: str, worker_id: str, status, update_keys=None
+        ):
+            del job_id, worker_id, update_keys
+            self.execution = status.execution
+            return SimpleNamespace(job_id="job-1", status=status)
+
+    now = datetime.now(timezone.utc)
+    existing = JobRuntimeRef(
+        driverType="base",
+        ownerRef="owner-ref",
+        ownerWorkerId="owner-ref-worker-1",
+        deleteStartedAt=now,
+        heartbeatAt=now,
+    )
+
+    class _PersistingRuntime(_R):
+        def _build_runtime_ref(self, job):
+            existing_ref = self._load_runtime_ref(job)
+            assert existing_ref is not None
+            return existing_ref.model_copy(deep=True)
+
+    progress_manager = _CapturingProgressManager()
+    job = _make_test_job(job_id="job-1", execution={"base": existing})
+    runtime = _PersistingRuntime()
+
+    await runtime._persist_runtime_ref(
+        job,
+        progress_manager=progress_manager,
+        worker_id_generator=_fake_worker_id_generator,
+    )
+
+    assert progress_manager.execution is not None
+    persisted_ref = progress_manager.execution["base"]
+    assert persisted_ref.delete_started_at is None
+
+
+@pytest.mark.asyncio
+async def test_session_leaves_runtime_ref_persisted_on_exit_without_cas_clear():
     class _CapturingProgressManager:
         def __init__(self) -> None:
             self.calls: list[tuple[str, BatchJobStatus, object]] = []
+            self.current_job: object | None = None
+
+        async def get_job(self, job_id: str):
+            del job_id
+            return self.current_job
 
         async def update_job_local_status(
             self,
@@ -965,6 +1070,7 @@ async def test_session_clears_runtime_ref_with_execution_only_update():
             status: BatchJobStatus,
             update_keys=None,
         ):
+            self.current_job = SimpleNamespace(job_id=job_id, status=status)
             self.calls.append((worker_id, status.model_copy(deep=True), update_keys))
             return SimpleNamespace(job_id=job_id, status=status)
 
@@ -990,13 +1096,255 @@ async def test_session_clears_runtime_ref_with_execution_only_update():
 
     assert len(progress_manager.calls) == 2
     first_worker_id, first_status, first_update_keys = progress_manager.calls[0]
-    second_worker_id, second_status, second_update_keys = progress_manager.calls[1]
     assert first_worker_id == "owner-ref-worker-1"
-    assert first_status.get_runtime_ref("base") is not None
+    first_ref = first_status.get_runtime_ref("base")
+    assert first_ref is not None
+    assert first_ref.delete_started_at is None
     assert first_update_keys == {"execution"}
+    second_worker_id, second_status, second_update_keys = progress_manager.calls[1]
     assert second_worker_id == "owner-ref-worker-1"
-    assert second_status.execution is None
+    second_ref = second_status.get_runtime_ref("base")
+    assert second_ref is not None
+    assert second_ref.delete_started_at is not None
+    assert second_ref.deleted_at is None
     assert second_update_keys == {"execution"}
+
+
+def test_runtime_ref_lease_uses_double_liveness_interval():
+    runtime = _R()
+    runtime.session_liveness_check_interval_s = 7.5
+
+    assert runtime._runtime_ref_lease_seconds() == 15.0
+
+
+def test_touch_runtime_ref_heartbeat_only_updates_matching_runtime_key():
+    runtime = _R()
+    now = datetime.now(timezone.utc)
+    target_ref = JobRuntimeRef(
+        driverType="base",
+        ownerRef="owner-ref",
+        ownerWorkerId="owner-ref-worker-1",
+    )
+    other_ref = JobRuntimeRef(
+        driverType="other-runtime",
+        ownerRef="other-ref",
+        ownerWorkerId="owner-ref-worker-1",
+    )
+    status = BatchJobStatus(
+        jobID="job-1",
+        state=BatchJobState.IN_PROGRESS,
+        createdAt=now,
+        execution={
+            "base": target_ref,
+            "other-runtime": other_ref,
+        },
+    )
+
+    runtime.touch_runtime_ref_heartbeat(
+        _make_test_job(job_id="job-1"),
+        status,
+        worker_id="owner-ref-worker-1",
+        now=now,
+    )
+
+    assert status.get_runtime_ref("base").heartbeat_at == now
+    assert status.get_runtime_ref("other-runtime").heartbeat_at is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_runtime_ref_heartbeat_skips_recent_heartbeat():
+    now = datetime.now(timezone.utc)
+    existing = JobRuntimeRef(
+        driverType="base",
+        ownerRef="owner-ref",
+        ownerWorkerId="owner-ref-worker-1",
+        heartbeatAt=now,
+    )
+    job = _make_test_job(job_id="job-1", execution={"base": existing})
+
+    class _CapturingProgressManager:
+        def __init__(self) -> None:
+            self.updated = False
+
+        async def get_job(self, job_id: str):
+            del job_id
+            return job
+
+        async def update_job_local_status(
+            self, job_id: str, worker_id: str, status, update_keys=None
+        ):
+            del job_id, worker_id, status, update_keys
+            self.updated = True
+            return job
+
+    runtime = _R()
+    runtime.session_liveness_check_interval_s = 30.0
+    progress_manager = _CapturingProgressManager()
+
+    await runtime._refresh_runtime_ref_heartbeat(
+        "job-1",
+        progress_manager=progress_manager,
+        worker_id="owner-ref-worker-1",
+    )
+
+    assert progress_manager.updated is False
+
+
+@pytest.mark.asyncio
+async def test_session_waits_for_delete_started_runtime_to_disappear_before_provision():
+    now = datetime.now(timezone.utc)
+    delete_started_ref = JobRuntimeRef(
+        driverType="base",
+        ownerRef="owner-ref",
+        deleteStartedAt=now,
+        heartbeatAt=now,
+    )
+    provision_calls: list[str] = []
+    liveness_checks: list[str] = []
+
+    class _ProgressManager(_FakeProgressManager):
+        def __init__(self, current_job) -> None:
+            self.current_job = current_job
+
+        async def get_job(self, job_id: str):
+            del job_id
+            return self.current_job
+
+    class _DeleteAwareRuntime(_R):
+        session_retry_attempts = 2
+        session_retry_base_delay_s = 0.01
+
+        async def _load_handle(self, job, job_id, runtime_ref):
+            del job, job_id
+            assert runtime_ref is delete_started_ref
+            return "old-runtime"
+
+        async def _check_liveness(self, handle):
+            assert handle == "old-runtime"
+            liveness_checks.append(handle)
+            if len(liveness_checks) == 1:
+                return None
+            raise BatchJobError(
+                code=BatchJobErrorCode.RESOURCE_NOTFOUND_ERROR,
+                message="runtime deleted",
+            )
+
+        async def _provision(self, job, job_id):
+            del job
+            provision_calls.append(job_id)
+            return "new-runtime"
+
+    job = _make_test_job(job_id="job-1", execution={"base": delete_started_ref})
+    progress_manager = _ProgressManager(job)
+    runtime = _DeleteAwareRuntime()
+
+    async with runtime.session(
+        job=job,
+        job_id="job-1",
+        progress_manager=progress_manager,
+        worker_id_generator=_fake_worker_id_generator,
+    ) as endpoint:
+        assert endpoint.model_name == "m"
+
+    assert liveness_checks == ["old-runtime", "old-runtime"]
+    assert provision_calls == ["job-1"]
+
+
+@pytest.mark.asyncio
+async def test_session_retries_reconnect_until_owner_lease_expires():
+    now = datetime.now(timezone.utc)
+    execution = JobRuntimeRef(
+        driverType="base",
+        ownerRef="owner-ref",
+        ownerWorkerId="owner-ref-worker-2",
+        reconnectPayload={},
+        heartbeatAt=now,
+    )
+    job = _make_test_job(job_id="job-1", execution={"base": execution})
+    reconnect_calls: list[str] = []
+
+    class _ReconnectRuntime(_R):
+        session_retry_attempts = 2
+        session_retry_base_delay_s = 0.01
+        session_liveness_check_interval_s = 0.05
+
+        async def _load_handle(self, job, job_id, runtime_ref):
+            del job
+            assert runtime_ref is execution
+            reconnect_calls.append(job_id)
+            return "reconnected-handle"
+
+    runtime = _ReconnectRuntime()
+
+    async with runtime.session(
+        job=job,
+        job_id="job-1",
+        progress_manager=_FakeProgressManager(),
+        worker_id_generator=_fake_worker_id_generator,
+    ) as endpoint:
+        assert endpoint.model_name == "m"
+
+    assert reconnect_calls == ["job-1", "job-1"]
+
+
+@pytest.mark.asyncio
+async def test_session_skips_teardown_and_runtime_ref_clear_after_reownership():
+    class _CapturingProgressManager:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, BatchJobStatus, object]] = []
+            self.current_job: object | None = None
+
+        async def get_job(self, job_id: str):
+            del job_id
+            return self.current_job
+
+        async def update_job_local_status(
+            self,
+            job_id: str,
+            worker_id: str,
+            status: BatchJobStatus,
+            update_keys=None,
+        ):
+            self.current_job = SimpleNamespace(job_id=job_id, status=status)
+            self.calls.append((worker_id, status.model_copy(deep=True), update_keys))
+            return SimpleNamespace(job_id=job_id, status=status)
+
+    class _PersistingRuntime(_R):
+        def _build_runtime_ref(self, job):
+            del job
+            return JobRuntimeRef(
+                driverType="base",
+                ownerRef="owner-ref",
+            )
+
+    teardown_calls: list[str] = []
+    progress_manager = _CapturingProgressManager()
+    runtime = _PersistingRuntime(teardown=lambda handle: teardown_calls.append(handle))
+    job = _make_test_job(job_id="job-1")
+
+    async with runtime.session(
+        job=job,
+        job_id="job-1",
+        progress_manager=progress_manager,
+        worker_id_generator=_fake_worker_id_generator,
+    ):
+        execution_ref = progress_manager.current_job.status.get_runtime_ref("base")
+        assert execution_ref is not None
+        stolen_ref = execution_ref.model_copy(deep=True)
+        stolen_ref.owner_worker_id = "owner-ref-worker-2"
+        stolen_ref.heartbeat_at = datetime.now(timezone.utc)
+        stolen_status = progress_manager.current_job.status.model_copy(deep=True)
+        stolen_status.set_runtime_ref("base", stolen_ref)
+        progress_manager.current_job = SimpleNamespace(
+            job_id="job-1",
+            status=stolen_status,
+        )
+
+    assert teardown_calls == []
+    assert len(progress_manager.calls) == 1
+    persisted_ref = progress_manager.current_job.status.get_runtime_ref("base")
+    assert persisted_ref is not None
+    assert persisted_ref.owner_worker_id == "owner-ref-worker-2"
 
 
 @pytest.mark.asyncio

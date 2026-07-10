@@ -375,7 +375,9 @@ def build_app(args: argparse.Namespace, params={}):
             metastore_type=settings.METASTORE_TYPE,
             endpoint_source=endpoint_source,
             params=params,
+            stand_alone=getattr(args, "batch_driver_stand_alone", False),
         )
+        infrastructure_context.values["batch_driver"] = app.state.batch_driver
         app.include_router(
             batch.router, prefix=f"{settings.API_V1_STR}/batches", tags=["batches"]
         )  # mount batch api at /v1/batches

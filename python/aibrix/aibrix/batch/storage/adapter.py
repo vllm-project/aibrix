@@ -266,15 +266,15 @@ class BatchStorageAdapter:
             f"Stored result for job {job.job_id} request {request_index}, status: {completion_status}"
         )
 
-    async def finalize_job_output_data(self, job: BatchJob) -> None:
+    async def finalize_job_output_data(self, job: BatchJob) -> BatchJob:
+        authoritative_total = job.status.request_counts.total
         if (
             job.status.output_file_id is None
             or job.status.error_file_id is None
             or job.status.temp_output_file_id is None
             or job.status.temp_error_file_id is None
         ):
-            # Do nothing
-            return
+            return job
 
         prefix = self._get_request_meta_output_key(job, None)
         output: List[Dict[str, str | int]] = []
@@ -346,13 +346,16 @@ class BatchStorageAdapter:
             if continuation_token is None:
                 break
 
-        total = max_index + 1 if launched > 0 else 0
+        metastore_total = max_index + 1 if launched > 0 else 0
+        total = max(authoritative_total, metastore_total)
 
         logger.info(
             "Finalizing job output data using metastore keys",
             job_id=job.job_id,
             launched=launched,
             total=total,
+            metastore_total=metastore_total,
+            authoritative_total=authoritative_total,
         )  # type: ignore[call-arg]
 
         # 4. Update job object with calculated request counts if they differ.
@@ -405,6 +408,7 @@ class BatchStorageAdapter:
             for start in range(0, len(valid_keys), METASTORE_LIST_PAGE_SIZE):
                 batch = valid_keys[start : start + METASTORE_LIST_PAGE_SIZE]
                 await asyncio.gather(*[delete_metadata(key) for key in batch])
+        return job
 
     async def _sum_usage_from_output(self, output_file_id: str) -> BatchUsage:
         """Read the merged output JSONL and sum the per-line usage.
