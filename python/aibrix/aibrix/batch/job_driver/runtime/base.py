@@ -992,14 +992,10 @@ class RuntimeBase:
                 await asyncio.sleep(self.session_liveness_check_interval_s)
                 if self._stop_requested.is_set():
                     return
+
                 try:
                     await self._check_liveness(handle)
                     consecutive_failures = 0
-                    await self._refresh_runtime_ref_heartbeat(
-                        job_id,
-                        progress_manager=progress_manager,
-                        worker_id=worker_id,
-                    )
                 except BaseException as exc:
                     if isinstance(exc, asyncio.CancelledError):
                         raise
@@ -1016,6 +1012,19 @@ class RuntimeBase:
                     error_sink["error"] = exc
                     current_task.cancel()
                     return
+
+                try:
+                    await self._refresh_runtime_ref_heartbeat(
+                        job_id,
+                        progress_manager=progress_manager,
+                        worker_id=worker_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to refresh runtime ref heartbeat",
+                        job_id=job_id,
+                        error=str(exc),
+                    )  # type: ignore[call-arg]
         except asyncio.CancelledError:
             raise
 
