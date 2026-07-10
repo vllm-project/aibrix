@@ -83,15 +83,17 @@ function CopyButton({ text }: { text: string }) {
     setTimeout(() => setCopied(false), 1500);
   };
   return (
-    <button
-      type="button"
+    <span
+      role="button"
+      tabIndex={0}
       onClick={handleClick}
-      className="inline-flex items-center gap-1 text-gray-400 hover:text-gray-600 ml-1"
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(e as unknown as React.MouseEvent); } }}
+      className="inline-flex items-center gap-1 text-gray-400 hover:text-gray-600 ml-1 cursor-pointer"
       title={`Copy ${text}`}
     >
       <Copy className="w-3.5 h-3.5" />
       {copied && <span className="text-xs text-emerald-600">Copied</span>}
-    </button>
+    </span>
   );
 }
 
@@ -259,14 +261,16 @@ function WorkloadSection({
             </span>
             <CopyButton text={workload.name} />
             {workload.yaml && (
-              <button
-                type="button"
+              <span
+                role="button"
+                tabIndex={0}
                 onClick={(e) => { e.stopPropagation(); setShowYaml(true); }}
-                className="inline-flex items-center text-gray-400 hover:text-gray-600 shrink-0"
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setShowYaml(true); } }}
+                className="inline-flex items-center text-gray-400 hover:text-gray-600 shrink-0 cursor-pointer"
                 title="View YAML"
               >
                 <FileCode2 className="w-3.5 h-3.5" />
-              </button>
+              </span>
             )}
             {workload.sale_mode && (
               <span className="text-xs px-1.5 py-0.5 rounded bg-blue-50 text-blue-600">

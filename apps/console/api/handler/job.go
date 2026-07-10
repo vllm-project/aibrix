@@ -118,7 +118,9 @@ func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb
 		if h.devMode {
 			if dev, ok := h.store.(interface{ ListDemoJobs() []*pb.Job }); ok {
 				klog.Warningf("MDS unreachable, falling back to demo jobs: %v", err)
-				return &pb.ListJobsResponse{Jobs: dev.ListDemoJobs(), HasMore: false}, nil
+				jobs := dev.ListDemoJobs()
+				h.enrichJobs(ctx, jobs)
+				return &pb.ListJobsResponse{Jobs: jobs, HasMore: false}, nil
 			}
 		}
 		// Non-dev: degrade to empty list. Surfacing the raw SDK error in the UI
@@ -179,7 +181,7 @@ func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job
 					if !common.IncludeDeploymentFromCtx(ctx) {
 						demoJob = stripDeploymentFromExtraBody(demoJob)
 					}
-					return demoJob, nil
+					return h.enrichJob(ctx, demoJob), nil
 				}
 			}
 		}
