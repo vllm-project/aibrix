@@ -62,7 +62,8 @@ func TestExternalMetricsAutoscaler(t *testing.T) {
 	k8sClient, aibrixClient := externalMetricsClients(t)
 	cleanupExternalMetricsE2E(ctx, t, k8sClient, aibrixClient)
 	defer func() {
-		if t.Failed() && strings.ToLower(envOrDefault("AIBRIX_EXTERNAL_METRICS_E2E_KEEP_ON_FAILURE", "false")) == e2eEnabledValue {
+		keepOnFailure := envOrDefault("AIBRIX_EXTERNAL_METRICS_E2E_KEEP_ON_FAILURE", "false")
+		if t.Failed() && strings.ToLower(keepOnFailure) == e2eEnabledValue {
 			t.Log("preserving external metrics e2e resources for failure diagnostics")
 			return
 		}
