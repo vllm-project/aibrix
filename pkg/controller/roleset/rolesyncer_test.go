@@ -40,6 +40,7 @@ const (
 	oldHash    = "old-hash"
 	nginxImage = "nginx:v1"
 	nginxV2    = "nginx:v2"
+	testPodTwo = "pod-2"
 )
 
 var fakeComputeHashFunc = func(template *v1.PodTemplateSpec, collisionCount *int32) string {
@@ -84,7 +85,7 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 			role:        newTestRoleSpec("worker", 2, intStrPtr(intstr.FromString("25%")), intStrPtr(intstr.FromString("25%"))),
 			existingPods: []*v1.Pod{
 				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", true, false),
-				newTestPod("pod-2", "test-ns", "worker", "test-roleset", true, false),
+				newTestPod(testPodTwo, "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-3", "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-4", "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-5", "test-ns", "worker", "test-roleset", true, false),
@@ -99,7 +100,7 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 			role:    newTestRoleSpec("worker", 2, intStrPtr(intstr.FromString("25%")), intStrPtr(intstr.FromString("25%"))),
 			existingPods: []*v1.Pod{
 				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", true, false),
-				newTestPod("pod-2", "test-ns", "worker", "test-roleset", true, false),
+				newTestPod(testPodTwo, "test-ns", "worker", "test-roleset", true, false),
 			},
 			expectedChange: false,
 			expectedCreate: 0,
@@ -112,7 +113,7 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 			role:    newTestRoleSpec("worker", 2, intStrPtr(intstr.FromString("25%")), intStrPtr(intstr.FromString("25%"))),
 			existingPods: []*v1.Pod{
 				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", true, false),
-				newTestPod("pod-2", "test-ns", "worker", "test-roleset", true, false),
+				newTestPod(testPodTwo, "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-terminated", "test-ns", "worker", "test-roleset", false, true),
 			},
 			expectedChange: true,
@@ -131,7 +132,7 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 			role:    newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
 				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", true, false),
-				newTestPod("pod-2", "test-ns", "worker", "test-roleset", true, false),
+				newTestPod(testPodTwo, "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-3", "test-ns", "worker", "test-roleset", false, false), // not ready
 				newTestPod("pod-4", "test-ns", "worker", "test-roleset", false, false),
 			},
@@ -150,7 +151,7 @@ func TestStatelessRoleSyncer_Scale(t *testing.T) {
 			role:    newTestRoleSpec("worker", 5, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(0))),
 			existingPods: []*v1.Pod{
 				newTestPod(testPodOne, "test-ns", "worker", "test-roleset", true, false),
-				newTestPod("pod-2", "test-ns", "worker", "test-roleset", true, false),
+				newTestPod(testPodTwo, "test-ns", "worker", "test-roleset", true, false),
 				newTestPod("pod-terminating", "test-ns", "worker", "test-roleset", true, true),
 			},
 			expectedChange: true,
@@ -226,7 +227,7 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			role:        newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
 				newTestPodWithHash(testPodOne, "test-ns", true, false, oldHash),
-				newTestPodWithHash("pod-2", "test-ns", true, false, oldHash),
+				newTestPodWithHash(testPodTwo, "test-ns", true, false, oldHash),
 				newTestPodWithHash("pod-3", "test-ns", true, false, oldHash),
 			},
 			expectedError:  false,
@@ -240,7 +241,7 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			role:        newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
 				newTestPodWithHash(testPodOne, "test-ns", true, false, newHash), // updated
-				newTestPodWithHash("pod-2", "test-ns", true, false, oldHash),    // outdated
+				newTestPodWithHash(testPodTwo, "test-ns", true, false, oldHash), // outdated
 				newTestPodWithHash("pod-3", "test-ns", true, false, oldHash),    // outdated
 			},
 			expectedError:  false,
@@ -254,7 +255,7 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			role:        newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
 				newTestPodWithHash(testPodOne, "test-ns", true, false, newHash),
-				newTestPodWithHash("pod-2", "test-ns", true, false, newHash),
+				newTestPodWithHash(testPodTwo, "test-ns", true, false, newHash),
 				newTestPodWithHash("pod-3", "test-ns", true, false, newHash),
 			},
 			expectedError:  false,
@@ -267,9 +268,9 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			roleSet:     newTestRoleSet("test-roleset", "test-ns"),
 			role:        newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
-				newTestPodWithHash(testPodOne, "test-ns", true, false, newHash), // updated & ready
-				newTestPodWithHash("pod-2", "test-ns", false, false, oldHash),   // outdated & not ready
-				newTestPodWithHash("pod-3", "test-ns", true, false, oldHash),    // outdated & ready
+				newTestPodWithHash(testPodOne, "test-ns", true, false, newHash),  // updated & ready
+				newTestPodWithHash(testPodTwo, "test-ns", false, false, oldHash), // outdated & not ready
+				newTestPodWithHash("pod-3", "test-ns", true, false, oldHash),     // outdated & ready
 			},
 			expectedError:  false,
 			expectedCreate: 1,
@@ -282,7 +283,7 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			role:        newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
 				newTestPodWithHash(testPodOne, "test-ns", true, false, oldHash),
-				newTestPodWithHash("pod-2", "test-ns", true, false, oldHash),
+				newTestPodWithHash(testPodTwo, "test-ns", true, false, oldHash),
 				newTestPodWithHash("pod-terminating", "test-ns", true, true, oldHash), // terminating
 			},
 			expectedError:  false,
@@ -296,7 +297,7 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			role:        newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(0)), intStrPtr(intstr.FromInt(1))),
 			existingPods: []*v1.Pod{
 				newTestPodWithHash(testPodOne, "test-ns", true, false, oldHash),
-				newTestPodWithHash("pod-2", "test-ns", true, false, oldHash),
+				newTestPodWithHash(testPodTwo, "test-ns", true, false, oldHash),
 				newTestPodWithHash("pod-3", "test-ns", true, false, oldHash),
 			},
 			expectedError:  false,
@@ -310,7 +311,7 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			role:        newTestRoleSpec("worker", 3, intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromInt(0))),
 			existingPods: []*v1.Pod{
 				newTestPodWithHash(testPodOne, "test-ns", true, false, oldHash),
-				newTestPodWithHash("pod-2", "test-ns", true, false, oldHash),
+				newTestPodWithHash(testPodTwo, "test-ns", true, false, oldHash),
 				newTestPodWithHash("pod-3", "test-ns", true, false, oldHash),
 			},
 			expectedError:  false,
@@ -557,7 +558,7 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleRespectsMaxUnavailable(t *t
 	}}
 	notReadyPod, err := buildRenderedPod(roleSet, oldRole, nil)
 	require.NoError(t, err)
-	notReadyPod.Name = "pod-2"
+	notReadyPod.Name = testPodTwo
 	notReadyPod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
 	notReadyPod.Status.Phase = v1.PodRunning
 	notReadyPod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse}}
@@ -662,7 +663,7 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleCountsInProgressReadyPodsAg
 
 	waitingPod, err := buildRenderedPod(roleSet, oldRole, nil)
 	require.NoError(t, err)
-	waitingPod.Name = "pod-2"
+	waitingPod.Name = testPodTwo
 	waitingPod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
 	waitingPod.Status.Phase = v1.PodRunning
 	waitingPod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
@@ -819,7 +820,7 @@ func TestStatelessRoleSyncer_RolloutByStepInPlaceIfPossibleUsesInPlaceForImageOn
 	}}
 	secondPod, err := buildRenderedPod(roleSet, oldRole, nil)
 	require.NoError(t, err)
-	secondPod.Name = "pod-2"
+	secondPod.Name = testPodTwo
 	secondPod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
 	secondPod.Status.Phase = v1.PodRunning
 	secondPod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}

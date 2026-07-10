@@ -59,7 +59,7 @@ var (
 )
 
 func TestRoleSetInPlaceUpdate(t *testing.T) {
-	if strings.ToLower(strings.TrimSpace(envOrDefault(roleSetInPlaceE2EEnv, "false"))) != "true" {
+	if strings.ToLower(strings.TrimSpace(envOrDefault(roleSetInPlaceE2EEnv, "false"))) != e2eEnabledValue {
 		t.Skipf("set %s=true to run RoleSet in-place update e2e tests", roleSetInPlaceE2EEnv)
 	}
 
@@ -519,7 +519,7 @@ func cleanupRoleSetInPlaceE2EAfterTest(
 	roleSetName string,
 ) {
 	t.Helper()
-	if t.Failed() && strings.ToLower(envOrDefault(roleSetInPlaceE2EKeepEnv, "false")) == "true" {
+	if t.Failed() && strings.ToLower(envOrDefault(roleSetInPlaceE2EKeepEnv, "false")) == e2eEnabledValue {
 		t.Logf("preserving RoleSet in-place e2e resources for %s", roleSetName)
 		return
 	}
