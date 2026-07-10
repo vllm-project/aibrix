@@ -63,12 +63,15 @@ func TestRoleSetInPlaceUpdate(t *testing.T) {
 		t.Skipf("set %s=true to run RoleSet in-place update e2e tests", roleSetInPlaceE2EEnv)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	k8sClient, dynamicClient := roleSetInPlaceClients(t)
 
 	t.Run("image-only update keeps pod identity", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer cancel()
+
 		name := "roleset-inplace-success"
 		cleanupRoleSetInPlaceE2E(ctx, t, k8sClient, dynamicClient, name)
 		defer cleanupRoleSetInPlaceE2EAfterTest(ctx, t, k8sClient, dynamicClient, name)
@@ -94,6 +97,9 @@ func TestRoleSetInPlaceUpdate(t *testing.T) {
 	})
 
 	t.Run("non-image change falls back to recreate", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer cancel()
+
 		name := "roleset-inplace-fallback"
 		cleanupRoleSetInPlaceE2E(ctx, t, k8sClient, dynamicClient, name)
 		defer cleanupRoleSetInPlaceE2EAfterTest(ctx, t, k8sClient, dynamicClient, name)
@@ -113,6 +119,9 @@ func TestRoleSetInPlaceUpdate(t *testing.T) {
 	})
 
 	t.Run("stuck update exposes pending reason", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer cancel()
+
 		name := "roleset-inplace-stuck"
 		cleanupRoleSetInPlaceE2E(ctx, t, k8sClient, dynamicClient, name)
 		defer cleanupRoleSetInPlaceE2EAfterTest(ctx, t, k8sClient, dynamicClient, name)
@@ -136,6 +145,9 @@ func TestRoleSetInPlaceUpdate(t *testing.T) {
 	})
 
 	t.Run("podset role falls back to recreate", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer cancel()
+
 		name := "roleset-inplace-podset-fallback"
 		cleanupRoleSetInPlaceE2E(ctx, t, k8sClient, dynamicClient, name)
 		defer cleanupRoleSetInPlaceE2EAfterTest(ctx, t, k8sClient, dynamicClient, name)
@@ -323,6 +335,7 @@ func setFirstRoleContainerField(t *testing.T, obj *unstructured.Unstructured, fi
 	containers := spec["containers"].([]interface{})
 	container := containers[0].(map[string]interface{})
 	container[field] = value
+	require.NoError(t, unstructured.SetNestedSlice(obj.Object, roles, "spec", "roles"))
 }
 
 func waitForSingleRoleSetPodReady(
