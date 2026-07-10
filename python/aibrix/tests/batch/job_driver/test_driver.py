@@ -82,7 +82,7 @@ class LifecycleEntityManager(JobEntityManager):
 
 
 def generate_input_data(num_requests, local_file):
-    input_name = Path(os.path.dirname(__file__)) / "testdata" / "sample_job_input.jsonl"
+    input_name = Path(__file__).parents[1] / "testdata" / "sample_job_input.jsonl"
     data = None
     with open(input_name, "r") as file:
         for line in file.readlines():
