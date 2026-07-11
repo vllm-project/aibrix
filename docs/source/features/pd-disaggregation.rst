@@ -86,7 +86,7 @@ How PD Disaggregation Works
 2. The KV cache is transferred to a **decode pod** via a high-speed interconnect (SHFS for GPU, NIXL for Neuron).
 3. The decode pod streams the generated tokens back to the client.
 
-If no matching prefill/decode pair is available (e.g. the prompt is outside all configured buckets), the request falls back to a **standard inference pod** that runs both phases locally.
+If no complete prefill/decode pair is available for the request's prompt length — for example the prompt is outside all configured buckets, or the matching roleset is incomplete because a decode pod is down — the request falls back to a **standard inference pod** (``combined: true``) that runs both phases locally, when one is configured and its prompt-length range matches.
 
 
 Supported Engines
@@ -125,8 +125,8 @@ The gateway identifies the role of each pod using two labels:
      - Value
      - Purpose
    * - ``role-name``
-     - ``prefill`` or ``decode``
-     - Tells the gateway which phase this pod handles. Standard inference pods omit this label.
+     - ``prefill``, ``decode``, or another value (e.g. ``all``)
+     - Tells the gateway which phase this pod handles. Standard inference pods use a role other than ``prefill``/``decode`` (or omit ``role-name``) and set ``combined: true`` in ``routingConfig``.
    * - ``roleset-name``
      - any string (e.g. ``group-0``)
      - Groups a prefill pod and a decode pod into a **pair**. The gateway only uses pairs where both prefill and decode pods are present.
@@ -195,8 +195,9 @@ Adding standard inference pods turns a rigid two-tier pipeline into a self-heali
 
 Standard inference pods run both prefill and decode on a single GPU. They serve as overflow capacity when:
 
-- The request's prompt length falls outside all configured buckets.
-- All prefill/decode pairs are at capacity.
+- The request's prompt length falls outside all configured PD buckets.
+- The matching PD roleset is incomplete (for example, a decode pod is unavailable).
+- All prefill/decode pairs are at capacity (load-imbalance routing may select a combined pod).
 - You want a gradual migration path (run standard inference pods alongside disaggregated pairs).
 
 **To configure a standard inference pod**, set ``combined: true`` in the pod's ``routingConfig`` annotation and enable prompt-length bucketing on the gateway:
@@ -418,6 +419,54 @@ This example shows a three-tier setup: prefill + decode pods for short prompts, 
           value: "true"
 
 
+Pod Selection Algorithm
+-----------------------
+
+Once pods are partitioned into prefill, decode, and combined slices, the gateway selects the best target through a cascade of checks. Bucketing (when ``AIBRIX_PROMPT_LENGTH_BUCKETING=true``) runs first; load-imbalance and scoring steps run only when a PD pair is still in play.
+
+**Step 0 — Prompt-length bucketing (optional)**
+
+When bucketing is enabled, each roleset contributes to the bucket-filtered pool only when **both** its prefill and decode pods declare a range that includes the request's prompt length. Incomplete rolesets (missing decode or prefill) are skipped. If no complete bucket-matched pair exists — including when a decode pod is down in the matching bucket — the gateway routes to a ``combined: true`` pod whose range includes the prompt, or returns an error if none is available. When a bucket match exists but PD pods are heavily loaded while a combined pod is idle, ``shouldPickCombined()`` may select the combined pod instead.
+
+**Step 1 — Prefill load-imbalance fast path**
+
+If the difference between the maximum and minimum number of outstanding prefill requests across prefill pods exceeds ``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD``, the gateway routes the prefill phase to the single least-loaded prefill pod and aligns the decode candidates to the same roleset.
+
+**Step 2 — Decode load-imbalance fast path**
+
+Three ordered checks run against decode pods. The first that fires selects a single decode pod and aligns the prefill candidates to its roleset. Steps 1 and 2 are independent: both can fire on the same request if both sides are imbalanced.
+
+1. *Request count spread* — If ``max(running + pending) − min`` across metric-bearing pods ≥ ``AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD``, route to the least-loaded pod. Pods without ``RealtimeNumRequestsRunning`` are excluded from the spread to avoid thundering-herd on freshly restarted pods; their pending-decode count is still tracked for the scoring step.
+
+2. *Throughput spread* — If ``max(throughput) − min`` across metric-bearing pods > ``AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD``, route to the lowest-throughput pod.
+
+3. *Drain-rate score* — If all pods report a positive ``drain_rate``, score each pod as ``effective_running_reqs / drain_rate``. If ``max_score / min_score`` exceeds ``AIBRIX_DECODE_SCORE_RATIO_THRESHOLD``, route to the pod with the lowest score (fastest estimated queue drain).
+
+**Step 3 — Prefill scoring**
+
+Each prefill pod is scored by the selected policy. Pods with a request count more than ``N`` standard deviations above the mean are skipped (``N = AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``). The lowest-scoring pod per roleset is kept as the roleset's prefill candidate.
+
+- ``prefix_cache`` (default): ``score = (100 − prefix_match_percent) × 0.1 + req_count / max_req_count`` — lower score means more cache hits and less load.
+- ``least_request``: ``score = req_count``.
+
+**Step 4 — Decode scoring**
+
+Each decode pod is scored by the selected policy. Pods without ``RealtimeNumRequestsRunning`` receive a cold-start score (``1.0 + pending_decode_count``) when at least one sibling pod already has metrics, so they compete fairly without attracting all traffic immediately.
+
+- ``load_balancing`` (default): ``score = (w_run × norm_reqs + w_thru × (1 − norm_throughput)) / norm_free_gpu``, where norms are relative to the batch maximum; lower is better.
+- ``least_request``: ``score = running_reqs + pending_decode_count``.
+
+**Step 5 — Final pair selection**
+
+For each roleset with both a prefill and decode candidate, the gateway computes:
+
+.. code-block:: text
+
+    final_score = prefill_score / max_prefill_score + decode_score / max_decode_score
+
+The roleset with the lowest combined score wins. The selected prefill and decode pods always come from the same roleset.
+
+
 Environment Variables
 ---------------------
 
@@ -450,4 +499,19 @@ These are set on the **gateway plugin** deployment.
      - Minimum request-count spread between prefill pods before load-imbalance routing kicks in.
    * - ``AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD``
      - ``16``
-     - Minimum request-count spread between decode pods before load-imbalance routing kicks in.
+     - Minimum ``(max − min)`` running request count spread between decode pods before request-count load-imbalance routing kicks in.
+   * - ``AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD``
+     - ``2048``
+     - Minimum ``(max − min)`` token throughput spread (tok/s) between decode pods before throughput-based load-imbalance routing kicks in.
+   * - ``AIBRIX_DECODE_SCORE_RATIO_THRESHOLD``
+     - ``1.5``
+     - ``max_drain_score / min_drain_score`` ratio above which the drain-rate routing fast path is triggered. Score for each pod is ``effective_running_reqs / drain_rate``.
+   * - ``AIBRIX_DECODE_LB_WEIGHT_RUNNING``
+     - ``1.0``
+     - Weight applied to the normalized running-request term in the ``load_balancing`` decode score numerator.
+   * - ``AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT``
+     - ``1.0``
+     - Weight applied to the normalized inverse-throughput term in the ``load_balancing`` decode score numerator.
+   * - ``AIBRIX_TRT_MACHINE_ID``
+     - ``0``
+     - 10-bit machine ID used in Snowflake-style ``disagg_request_id`` generation for TensorRT-LLM (valid range: ``[0, 1024)``).

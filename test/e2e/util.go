@@ -20,6 +20,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,14 +42,15 @@ import (
 )
 
 const (
-	gatewayURL      = "http://localhost:8888"
-	engineURL       = "http://localhost:8000"
-	apiKey          = "test-key-1234567890"
-	modelName       = "llama2-7b"
-	modelNameQwen3  = "qwen3-8b"
-	modelNameVLLM   = "llama2-7b-vllm"
-	modelNameSGLang = "llama2-7b-sglang"
-	modelNameTRTLLM = "llama2-7b-trtllm"
+	gatewayURL          = "http://localhost:8888"
+	engineURL           = "http://localhost:8000"
+	apiKey              = "test-key-1234567890"
+	modelName           = "llama2-7b"
+	modelNameQwen3      = "qwen3-8b"
+	modelNameVLLM       = "llama2-7b-vllm"
+	modelNameVLLMBucket = "llama2-7b-vllm-bucket"
+	modelNameSGLang     = "llama2-7b-sglang"
+	modelNameTRTLLM     = "llama2-7b-trtllm"
 )
 
 func initializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset, *v1alpha1.Clientset) {
@@ -183,7 +185,7 @@ func validateInferenceWithClient(t *testing.T, client openai.Client, modelName s
 }
 
 func validateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expectedPodCount int) {
-	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 30*time.Second,
+	err := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, 60*time.Second,
 		true, func(ctx context.Context) (bool, error) {
 			podList, err := client.CoreV1().Pods("default").List(ctx, v1.ListOptions{})
 			if err != nil {
@@ -199,4 +201,66 @@ func validateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expecte
 			return false, nil
 		})
 	assert.NoError(t, err, "timeout waiting for all pods to be ready")
+}
+
+// waitForPDDisaggregationRouting polls until the gateway can route a PD request for modelName.
+// Pod readiness alone is not enough: the gateway pod cache may lag after pod churn.
+func waitForPDDisaggregationRouting(t *testing.T, modelName string) {
+	t.Helper()
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+
+	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 30*time.Second,
+		true, func(ctx context.Context) (bool, error) {
+			_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+				Messages: []openai.ChatCompletionMessageParamUnion{
+					openai.UserMessage("PD routing readiness check"),
+				},
+				Model: modelName,
+			})
+			if err != nil {
+				t.Logf("waiting for PD routing for model %s: %v", modelName, err)
+				return false, nil
+			}
+			prefillPod := dst.Header.Get("prefill-target-pod")
+			decodePod := dst.Header.Get("target-pod")
+			if prefillPod == "" || decodePod == "" || prefillPod == decodePod {
+				t.Logf("waiting for valid PD routing headers for model %s", modelName)
+				return false, nil
+			}
+			t.Logf("PD routing ready for model %s", modelName)
+			return true, nil
+		})
+	assert.NoError(t, err, "timeout waiting for PD routing to be ready for model %s", modelName)
+}
+
+// waitForPDCombinedRouting polls until the gateway routes a long prompt to a combined pod
+// (no prefill-target-pod header). Pod cache may lag behind Kubernetes readiness.
+func waitForPDCombinedRouting(t *testing.T, modelName, combinedStormName, longPrompt string) {
+	t.Helper()
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+
+	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 30*time.Second,
+		true, func(ctx context.Context) (bool, error) {
+			_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+				Messages: []openai.ChatCompletionMessageParamUnion{
+					openai.UserMessage(longPrompt),
+				},
+				Model: modelName,
+			})
+			if err != nil {
+				t.Logf("waiting for combined PD routing for model %s: %v", modelName, err)
+				return false, nil
+			}
+			prefillPod := dst.Header.Get("prefill-target-pod")
+			decodePod := dst.Header.Get("target-pod")
+			if prefillPod != "" || decodePod == "" || !strings.Contains(decodePod, combinedStormName) {
+				t.Logf("waiting for combined routing for model %s: prefill=%s decode=%s", modelName, prefillPod, decodePod)
+				return false, nil
+			}
+			t.Logf("combined PD routing ready for model %s (decode=%s)", modelName, decodePod)
+			return true, nil
+		})
+	assert.NoError(t, err, "timeout waiting for combined PD routing for model %s", modelName)
 }

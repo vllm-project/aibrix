@@ -19,7 +19,7 @@ Client Request
      ▼
 Route(ctx, readyPodList)
      │
-     ├─► validateAndGetLLMEngine()
+     ├─► ValidateAndGetLLMEngine()
      │        Ensure all pods use the same engine (vllm / sglang / trtllm)
      │
      ├─► filterPrefillDecodePods()
@@ -38,8 +38,10 @@ Route(ctx, readyPodList)
      │        ├─► scoreDecodePods()
      │        └─► finalPDScore()  →  (prefillPod, decodePod)
      │
+     ├─► AddPendingDecode() + defer RemovePendingDecode()  (all paths)
+     │
      ├─► [prefillPod != nil]
-     │        pendingDecodeTracker.AddPendingDecode(requestID, decodePod)
+     │        AddPrefillRequest()
      │        doPrefillRequest(ctx, prefillPod, engine)
      │              ├─ SGLang   → async goroutine (bootstrap handshake; Route does not wait for completion)
      │              ├─ vLLM     → sync, extract kv_transfer_params from response
@@ -60,9 +62,40 @@ Pods are grouped using Kubernetes labels:
 | `roleset-name` | any string | Groups prefill+decode pairs into a "roleset" |
 | `role-name` | `prefill` / `decode` / other | Pod's role in PD disaggregation |
 | `stormservice.orchestration.aibrix.ai/pod-group-index` | `"0"` or absent | Only pods with index `"0"` (or no label) host the HTTP server (multi-node TP) |
+| `stormservice.orchestration.aibrix.ai/role-replica-index` | any string | Distinct replica index within a role; used by `roleReplicaCardinality` to count unique replicas across multi-node TP groups. When absent, each routable pod counts as its own replica. |
 | `model.aibrix.ai/engine` | `vllm` / `sglang` / `trtllm` | LLM engine type |
 
-Only rolesets with **both** at least one prefill pod and one decode pod are eligible. Incomplete rolesets are excluded.
+Only rolesets with **both** at least one prefill replica and one decode replica are eligible. Incomplete rolesets are excluded. See [Roleset Eligibility Utilities](#roleset-eligibility-utilities) for diagnostic functions.
+
+---
+
+## Roleset Eligibility Utilities
+
+`pd_roleset.go` provides helper functions used by both the router and the gateway's pod-readiness logic.
+
+### Replica cardinality
+
+A roleset's replica count is the number of **distinct** values of `stormservice.orchestration.aibrix.ai/role-replica-index`. When that label is absent on all pods of a role, each routable pod counts as its own replica. This correctly handles multi-node tensor-parallel groups where multiple pods share one logical replica slot.
+
+```
+roleReplicaCardinality(pods):
+  if any pod has role-replica-index label:
+    count distinct index values
+  else:
+    count routable pods
+```
+
+### Eligibility checks
+
+A roleset is **eligible** when it has ≥1 prefill replica **and** ≥1 decode replica.
+
+| Function | Use |
+|----------|-----|
+| `HasEligibleRoleset(readyPods)` | Gateway check: at least one roleset is fully ready for PD routing |
+| `eligiblePDRolesets(readyPods)` | Internal: returns only complete rolesets for scoring |
+| `DescribePDRolesetEligibility(readyPods)` | Diagnostics: per-roleset replica counts and eligibility flag |
+
+`ValidateAndGetLLMEngine` (called from the gateway before `Route`) checks that all ready pods for the model share the same `model.aibrix.ai/engine` label.
 
 ---
 
@@ -74,7 +107,8 @@ collectAndBucketPods()
         ▼
 ┌───────────────────────────────┐
 │  prefillPods / decodePods     │
-│  (grouped by roleset)         │
+│  (grouped by eligible         │
+│   rolesets only)              │
 └───────────────────────────────┘
         │
         ▼
@@ -82,23 +116,41 @@ loadImbalanceSelectPrefillPod()
   ┌─────────────────────────────────────────────────────────┐
   │  max(outstanding_prefill_reqs) - min > MIN_SPREAD?      │
   │  → YES: narrow to single least-loaded prefill pod       │
+  │         align decodePods to selected pod's roleset      │
+  │         (continues to decode fast path below)           │
   │  → NO:  continue with all prefill pods                  │
   └─────────────────────────────────────────────────────────┘
         │
+        │  NOTE: the two fast paths are independent. Both can fire on the
+        │  same request if both sides are imbalanced: prefill narrows first,
+        │  then decode narrows within the already-aligned decode set.
+        │
         ▼
-loadImbalanceSelectDecodePod()  (3 ordered checks)
+loadImbalanceSelectDecodePod()  (3 ordered checks, metrics-bearing pods only)
   ┌──────────────────────────────────────────────────────────────────┐
+  │  Effective request count = RealtimeNumRequestsRunning            │
+  │                          + PendingDecodeTracker count            │
+  │  Pending counts bridge the gap between pod selection and the     │
+  │  first metric update, preventing thundering-herd on a newly      │
+  │  selected pod whose running count has not yet ticked up.         │
+  │                                                                  │
   │  Check 1 – Request count spread                                  │
-  │    max(running_reqs+pending) - min >= DECODE_LOAD_SPREAD?        │
-  │    → YES: return least-loaded decode pod                         │
+  │    Only pods with RealtimeNumRequestsRunning metric participate  │
+  │    (pods without the metric are excluded from spread; their      │
+  │     pending count is still stored for scoring — prevents         │
+  │     thundering-herd on freshly restarted pods)                   │
+  │    max(observed running+pending) - min >= DECODE_LOAD_SPREAD?    │
+  │    → YES: return least-loaded observed pod;                      │
+  │           align prefillPods to selected pod's roleset            │
   │                                                                  │
   │  Check 2 – Throughput spread                                     │
-  │    max(throughput_tok/s) - min > THROUGHPUT_SPREAD?              │
-  │    → YES: return lowest-throughput decode pod                    │
+  │    Only pods with AvgGenerationThroughputToksPerS participate    │
+  │    max(observed throughput) - min > THROUGHPUT_SPREAD?           │
+  │    → YES: return lowest-throughput observed pod                  │
   │                                                                  │
   │  Check 3 – Drain rate score (soft path)                          │
   │    all pods have drain_rate > 0?                                 │
-  │    score = running_reqs / drain_rate                             │
+  │    score = effective_running_reqs / drain_rate                   │
   │    max_score / min_score > DECODE_SCORE_RATIO?                   │
   │    → YES: return pod with lowest drain-rate score                │
   └──────────────────────────────────────────────────────────────────┘
@@ -107,6 +159,9 @@ loadImbalanceSelectDecodePod()  (3 ordered checks)
 scorePrefillPods()              (per roleset, best pod wins)
   ┌──────────────────────────────────────────────────────────────────┐
   │  Skip pods with req_count > mean + N * stddev                    │
+  │  (N = AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR)            │
+  │  When all pods in a roleset are filtered, that roleset has no    │
+  │  entry in the output map and finalPDScore cannot select it.      │
   │                                                                  │
   │  Policy: prefix_cache (default)                                  │
   │    score = (100 - match_pct) * 0.1  +  req_cnt / max_req_cnt    │
@@ -118,6 +173,10 @@ scorePrefillPods()              (per roleset, best pod wins)
         ▼
 scoreDecodePods()  →  pd.DecodeScoreRun (per roleset best pod + MaxScore + policy metadata)
   ┌──────────────────────────────────────────────────────────────────┐
+  │  Cold-start (if some pods have metrics but this pod does not):   │
+  │    score = 1.0 + pending_decode_count                            │
+  │    (neutral idle-warm score; pod competes but is not favored)    │
+  │                                                                  │
   │  Policy: load_balancing (default)                                │
   │    norm_reqs     = running_reqs / max_running_reqs               │
   │    norm_thru     = 1 - throughput / max_throughput               │
@@ -140,6 +199,13 @@ finalPDScore()
   │    final = norm_prefill_score + norm_decode_score                │
   │  Pick roleset with minimum final score                           │
   │  → selectedPrefillPod, selectedDecodePod                         │
+  │                                                                  │
+  │  Errors:                                                         │
+  │  • prefillScores nil          → Prepare failed in scorer         │
+  │  • prefillScores empty        → all prefill pods filtered by     │
+  │                                 stddev (no eligible candidate)   │
+  │  • no roleset intersection    → load-imbalance alignment left    │
+  │                                 prefill/decode on different sets │
   └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -185,7 +251,9 @@ Controlled by `AIBRIX_DECODE_SCORE_POLICY`, or overridden per request via **`rou
 Metrics are pulled from the cache per pod (same maps as `loadImbalanceSelectDecodePod`):
 - `RealtimeNumRequestsRunning` + `PendingDecodeTracker` count
 - `AvgGenerationThroughputToksPerS` (per model)
-- `GPUCacheUsagePerc` (free = 100 − usage%)
+- `KVCacheUsagePerc` (free = 100 − usage%)
+
+**Cold-start gate**: if at least one pod has `RealtimeNumRequestsRunning`, pods that lack it are given a neutral **cold-start score** (`1.0 + pending_decode_count`) rather than full policy scoring. When *no* pod has that metric yet, all pods are scored normally.
 
 ### `load_balancing` (default)
 
@@ -312,8 +380,8 @@ Machine ID is set via `AIBRIX_TRT_MACHINE_ID` (must be in `[0, 1024)`).
 Tracks active **prefill** request counts per pod using `sync.Map` and `atomic.Int32`. Used by both prefill load-imbalance detection and `scorePrefillPods` (mean/stddev filter).
 
 ```
-AddPrefillRequest(requestID, podName)   // on prefill start
-RemovePrefillRequest(requestID)         // on prefill end (deferred)
+AddPrefillRequest(requestID, podName)   // in Route(), after PD pod selection, before prefill HTTP
+RemovePrefillRequest(requestID)         // on prefill end (executor defer) or Route error
 GetPrefillRequestCountsForPods(pods)    // for scoring
 ```
 
@@ -322,7 +390,7 @@ GetPrefillRequestCountsForPods(pods)    // for scoring
 Bridges the gap between **decode pod selection** and the actual decode request starting. Without this, concurrent requests could all route to the same decode pod (since `RealtimeNumRequestsRunning` hasn't updated yet).
 
 ```
-AddPendingDecode(requestID, podName)    // after pod selection, before prefill
+AddPendingDecode(requestID, podName)    // in Route(), immediately after pod selection
 RemovePendingDecode(requestID)          // deferred in Route()
 GetPendingDecodeCount(podName)          // added to running reqs in decode scoring
 ```
@@ -331,12 +399,17 @@ Timeline:
 ```
 Route() called
   │
-  ├─ filterPrefillDecodePods() selects decodePod
-  ├─ AddPendingDecode(requestID, decodePod)   ← counts as +1 running
-  ├─ doPrefillRequest()                        (may take seconds)
+  ├─ filterPrefillDecodePods() → (prefillPod, decodePod)
+  │     └─ [combined path] returns prefillPod=nil
+  │
+  ├─ AddPendingDecode(requestID, decodePod)
+  ├─ defer RemovePendingDecode(requestID)
+  │
+  ├─ [PD path] AddPrefillRequest(requestID, prefillPod)
+  ├─ [PD path] doPrefillRequest()              (may take seconds)
+  │     └─ on error: RemovePrefillRequest(requestID) called immediately
   ├─ ctx.SetTargetPod(decodePod)
-  ├─ return address to caller
-  └─ defer RemovePendingDecode(requestID)      ← cleaned up after Route returns
+  └─ return address to caller
 ```
 
 ---
@@ -349,30 +422,50 @@ Each pod can declare a prompt-length range via its config profile (`promptLenBuc
 
 ```
 collectAndBucketPods()
-    ├─ Phase 1: build roleset → {prefills, decodes}
-    └─ Phase 2: filter each roleset by prompt length range
-                 → promptLengthBucketingPrefillPods
-                 → promptLengthBucketingDecodePods
+    ├─ Combined pass: collect combined-role pods (role-name is not prefill/decode)
+    │                 with combined=true and a prompt-length match
+    ├─ Eligible rolesets: group by roleset-name (prefill + decode both present)
+    └─ Bucket pass: per roleset, keep pods whose bucket covers promptLength
+                    only when BOTH prefill and decode sides match (half-pairs excluded)
 
-If bucket-filtered lists are non-empty, they replace the unfiltered lists.
+If both bucket-filtered lists are non-empty, they replace the unfiltered prefill/decode lists atomically so the sides stay roleset-aligned.
 ```
+
+### No-match guard and combined fallback
+
+When `AIBRIX_PROMPT_LENGTH_BUCKETING=true`, a roleset enters the bucket-filtered lists only when **both** its prefill and decode pods match the request's prompt length. A roleset with only one matching side (misconfigured bucket or a missing decode pod) is excluded from the bucket lists.
+
+If no complete bucket-matched prefill/decode pair exists for the request — including when the prompt length is outside every declared range, or when the matching roleset is incomplete (e.g. decode pod is down) — the router falls back to a combined pod when one is available. Otherwise it returns an error rather than cross-routing to a different bucket's PD pair:
+
+```
+if AIBRIX_PROMPT_LENGTH_BUCKETING &&
+   (bucketPrefills == 0 || bucketDecodes == 0):
+     if combined pods available for this prompt length → route to combined (random pick)
+     else → error: "no prompt-length bucket matches prompt length N and no combined pods available"
+```
+
+Pods without a `model.aibrix.ai/config` annotation are treated as suitable for any prompt length. With bucketing enabled globally, models that do not declare explicit bucket ranges still participate using those default bounds.
 
 ### Combined Pods
 
-When bucketing is enabled, pods with `combined=true` in their config profile can act as both prefill and decode. The router falls back to a combined pod when:
+When bucketing is enabled, pods with `combined=true` in their config profile can act as both prefill and decode. Combined pods use a `role-name` other than `prefill` or `decode` (for example `all`). The router falls back to a combined pod when:
 
-1. No bucket-matched prefill/decode pods exist for the request's prompt length, **or**
+1. No complete bucket-matched prefill/decode pair exists for the request's prompt length (prompt outside all buckets, incomplete roleset, or decode pod unavailable), **or**
 2. `shouldPickCombined()` returns `true`:
-   - At least one combined pod has request rate < `0.25` (low load), **and**
-   - At least one prefill pod **or** decode pod has request rate > `1.0` (high load).
+   - At least one combined pod has queue-drain score < `0.25` (low load), **and**
+   - At least one prefill pod **or** decode pod has queue-drain score > `1.0` (high load).
+
+Queue-drain score is `(waiting_reqs + prealloc_queues) / drain_rate_1m` (see `calculatePodScoreBasedOffRequestRate`).
 
 ```
 shouldPickCombined():
-    combinedLowLoad  = any combined pod request_rate < 0.25
-    prefillHighLoad  = any prefill pod request_rate > 1.0
-    decodeHighLoad   = any decode pod request_rate > 1.0
+    combinedLowLoad  = any combined pod score < 0.25
+    prefillHighLoad  = any prefill pod score > 1.0
+    decodeHighLoad   = any decode pod score > 1.0  (skipped if prefillHighLoad)
     return (prefillHighLoad OR decodeHighLoad) AND combinedLowLoad
 ```
+
+When a combined pod is selected for load imbalance, `scoreCombinedPods()` picks the lowest-score combined pod. The no-match path picks a combined pod at random.
 
 When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) and `decodePod` is the selected combined pod.
 
@@ -386,7 +479,7 @@ When a combined pod is selected, `prefillPod` is `nil` (no prefill HTTP call) an
 |----------|---------|-------------|
 | `AIBRIX_PREFILL_SCORE_POLICY` | `prefix_cache` | Prefill pod scoring: `prefix_cache` or `least_request`. Any other value logs a warning and falls back to `prefix_cache`. |
 | `AIBRIX_DECODE_SCORE_POLICY` | `load_balancing` | Decode pod scoring for `finalPDScore`: `load_balancing` or `least_request`. Any other value logs a warning and falls back to `load_balancing`. |
-| `AIBRIX_KV_CONNECTOR_TYPE` | `shfs` | KV transfer backend: `shfs` (GPU/SHFS) or `nixl` (Neuron) |
+| `AIBRIX_KV_CONNECTOR_TYPE` | `shfs` | KV transfer backend: `shfs` (GPU/SHFS), `nixl` (Neuron/NIXL), or `mooncake` (Mooncake) |
 | `AIBRIX_PREFILL_REQUEST_TIMEOUT` | `30` | Prefill HTTP request timeout in seconds |
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | `false` | Enable prompt-length-based pod bucketing |
 
@@ -487,4 +580,9 @@ NewPDRouter()
   ├─ NewPrefillRequestTracker()
   ├─ NewPendingDecodeTracker()
   └─ startPrefixUpdater()                 // background goroutine
+
+// pd_roleset.go (no per-router state; pure functions called on each request)
+HasEligibleRoleset(readyPods)             // gateway: skip PD when no complete roleset
+eligiblePDRolesets(readyPods)             // internal: filter to complete rolesets only
+DescribePDRolesetEligibility(readyPods)   // diagnostics: per-roleset replica counts
 ```

@@ -43,9 +43,9 @@ func NewPrefillRequestTracker() *PrefillRequestTracker {
 }
 
 // AddPrefillRequest records that requestID has been assigned to podName and
-// increments that pod's active-request counter. Called when prefill dispatch
-// starts so concurrent routing sees in-flight assignments. Must be paired with
-// RemovePrefillRequest when prefill completes or the assignment is abandoned.
+// increments that pod's active-request counter. Called in Route before
+// doPrefillRequest so concurrent routing sees in-flight assignments. Must be
+// paired with RemovePrefillRequest when prefill completes or the assignment is abandoned.
 func (t *PrefillRequestTracker) AddPrefillRequest(requestID, podName string) {
 	countInterface, _ := t.podRequestCounts.LoadOrStore(podName, &atomic.Int32{})
 	count := countInterface.(*atomic.Int32)
@@ -148,8 +148,8 @@ func NewPendingDecodeTracker() *PendingDecodeTracker {
 }
 
 // AddPendingDecode records that requestID has been assigned to podName and
-// increments that pod's pending-decode counter. Must be paired with a
-// corresponding RemovePendingDecode call (typically via defer in Route).
+// increments that pod's pending-decode counter. Called at the start of Route
+// after pod selection. RemovePendingDecode is deferred in Route.
 func (t *PendingDecodeTracker) AddPendingDecode(requestID, podName string) {
 	if t == nil {
 		return
