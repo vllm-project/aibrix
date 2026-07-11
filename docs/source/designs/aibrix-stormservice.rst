@@ -160,11 +160,13 @@ UID, configure both layers.
    * - Role ``InPlaceIfPossible``
      - Pod
      - Preserves Pod name and UID for eligible image-only updates
-     - ``RoleSet.spec.roles[].updateStrategy.type``
+     - ``RoleSet.spec.roles[].updateStrategy.type`` or
+       ``StormService.spec.template.spec.roles[].updateStrategy.type``
    * - Role ``Recreate``
      - Pod
      - Replaces Pods during a role update; this is the default
-     - ``RoleSet.spec.roles[].updateStrategy.type``
+     - ``RoleSet.spec.roles[].updateStrategy.type`` or
+       ``StormService.spec.template.spec.roles[].updateStrategy.type``
 
 For a StormService-managed rollout, configure the outer strategy on the
 StormService and the Pod strategy on each role:
