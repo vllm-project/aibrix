@@ -41,6 +41,8 @@ const (
 	nginxImage = "nginx:v1"
 	nginxV2    = "nginx:v2"
 	testPodTwo = "pod-2"
+
+	testMasterOldImageState = `{"lastContainerStatuses":{"master":{"imageID":"docker-pullable://nginx@sha256:old"}}}`
 )
 
 var fakeComputeHashFunc = func(template *v1.PodTemplateSpec, collisionCount *int32) string {
@@ -441,7 +443,7 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleRecordsCompletedEvent(t *te
 	pod.Name = testPodOne
 	pod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
 	pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] = newHash
-	pod.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] = `{"lastContainerStatuses":{"master":{"imageID":"docker-pullable://nginx@sha256:old"}}}`
+	pod.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] = testMasterOldImageState
 	pod.Annotations[constants.RoleInPlaceUpdatePendingReasonAnnotationKey] = constants.RoleInPlaceUpdatePendingReasonImageIDUnchanged
 	pod.Status.Phase = v1.PodRunning
 	pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
@@ -608,7 +610,7 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleWaitsForChangedImageID(t *t
 	pod.Name = testPodOne
 	pod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
 	pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] = newHash
-	pod.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] = `{"lastContainerStatuses":{"master":{"imageID":"docker-pullable://nginx@sha256:old"}}}`
+	pod.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] = testMasterOldImageState
 	pod.Status.Phase = v1.PodRunning
 	pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
 	pod.Status.ContainerStatuses = []v1.ContainerStatus{{
@@ -655,7 +657,7 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleCountsInProgressReadyPodsAg
 	inProgressPod.Name = testPodOne
 	inProgressPod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
 	inProgressPod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] = newHash
-	inProgressPod.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] = `{"lastContainerStatuses":{"master":{"imageID":"docker-pullable://nginx@sha256:old"}}}`
+	inProgressPod.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] = testMasterOldImageState
 	inProgressPod.Status.Phase = v1.PodRunning
 	inProgressPod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
 	inProgressPod.Status.ContainerStatuses = []v1.ContainerStatus{{
@@ -759,7 +761,7 @@ func TestStatefulRoleSyncer_RolloutInPlaceIfPossibleCountsInProgressReadyPodsAga
 	require.NoError(t, err)
 	inProgressPod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
 	inProgressPod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] = newHash
-	inProgressPod.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] = `{"lastContainerStatuses":{"master":{"imageID":"docker-pullable://nginx@sha256:old"}}}`
+	inProgressPod.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] = testMasterOldImageState
 	inProgressPod.Status.Phase = v1.PodRunning
 	inProgressPod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
 	inProgressPod.Status.ContainerStatuses = []v1.ContainerStatus{{
