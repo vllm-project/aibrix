@@ -230,6 +230,21 @@ jobs:
             "aibrix/vllm-mock:${sha}" "aibrix/vllm-mock:nightly" \
             --name installation-test
 
+          docker build \
+            --build-arg INPLACE_E2E_VERSION=v1 \
+            -t aibrix/inplace-e2e:v1 \
+            -f test/e2e/roleset-inplace-image/Dockerfile \
+            test/e2e/roleset-inplace-image
+          docker build \
+            --build-arg INPLACE_E2E_VERSION=v2 \
+            -t aibrix/inplace-e2e:v2 \
+            -f test/e2e/roleset-inplace-image/Dockerfile \
+            test/e2e/roleset-inplace-image
+          kind load docker-image \
+            aibrix/inplace-e2e:v1 \
+            aibrix/inplace-e2e:v2 \
+            --name installation-test
+
       - name: Deploy controller with the built image
         run: |
           kubectl apply -k config/dependency --server-side
@@ -269,6 +284,7 @@ jobs:
         run: |
           kind get kubeconfig --name installation-test > /tmp/admin.conf
           export KUBECONFIG=/tmp/admin.conf
+          export AIBRIX_ROLESET_INPLACE_E2E=true
           make test-e2e
           export EXTERNAL_METRICS_E2E_CLUSTER=kind
           export EXTERNAL_METRICS_E2E_USE_EXISTING_CONTROLLER=true

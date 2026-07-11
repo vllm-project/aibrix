@@ -82,10 +82,7 @@ var _ = ginkgo.Describe("RayClusterReplicaSet controller test", func() {
 		}
 		waitForIntegrationReplicaSetStatus(ctx, k8sClient, replicaSet, 2, 2, 2, 2)
 
-		latestReplicaSet := &orchestrationapi.RayClusterReplicaSet{}
-		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(replicaSet), latestReplicaSet)).To(gomega.Succeed())
-		latestReplicaSet.Spec.Replicas = ptr.To(int32(3))
-		gomega.Expect(k8sClient.Update(ctx, latestReplicaSet)).To(gomega.Succeed())
+		updateIntegrationReplicaSetReplicas(ctx, k8sClient, replicaSet, 3)
 
 		clusters = waitForIntegrationRayClusters(ctx, k8sClient, ns.Name, matchLabels, 3)
 		sort.Slice(clusters, func(i, j int) bool {
@@ -99,9 +96,7 @@ var _ = ginkgo.Describe("RayClusterReplicaSet controller test", func() {
 		setIntegrationRayClusterReadinessAndDeletionCost(ctx, k8sClient, &deleteNotReadyHighCost, false, "1000")
 		setIntegrationRayClusterReadinessAndDeletionCost(ctx, k8sClient, &deleteReadyLowCost, true, "-10")
 
-		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(replicaSet), latestReplicaSet)).To(gomega.Succeed())
-		latestReplicaSet.Spec.Replicas = ptr.To(int32(1))
-		gomega.Expect(k8sClient.Update(ctx, latestReplicaSet)).To(gomega.Succeed())
+		updateIntegrationReplicaSetReplicas(ctx, k8sClient, replicaSet, 1)
 
 		gomega.Eventually(func() ([]string, error) {
 			clusters := &rayv1.RayClusterList{}
@@ -166,6 +161,20 @@ func makeIntegrationRayClusterSpec() rayv1.RayClusterSpec {
 
 func markIntegrationRayClusterReady(ctx context.Context, k8sClient client.Client, cluster *rayv1.RayCluster) {
 	setIntegrationRayClusterReadinessAndDeletionCost(ctx, k8sClient, cluster, true, "")
+}
+
+func updateIntegrationReplicaSetReplicas(
+	ctx context.Context,
+	k8sClient client.Client,
+	replicaSet *orchestrationapi.RayClusterReplicaSet,
+	replicas int32,
+) {
+	gomega.Eventually(func(g gomega.Gomega) {
+		latest := &orchestrationapi.RayClusterReplicaSet{}
+		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(replicaSet), latest)).To(gomega.Succeed())
+		latest.Spec.Replicas = ptr.To(replicas)
+		g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+	}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
 }
 
 func setIntegrationRayClusterReadinessAndDeletionCost(

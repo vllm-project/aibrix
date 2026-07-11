@@ -88,6 +88,8 @@ or
 **Environment Variables:**
 - `KIND_E2E=true` - Creates Kind cluster with proper configuration
 - `INSTALL_AIBRIX=true` - Builds images, installs dependencies, and deploys AIBrix
+- `AIBRIX_ROLESET_INPLACE_E2E=true` - Runs RoleSet in-place update e2e tests and builds/loads their local test images when `INSTALL_AIBRIX=true`
+- `AIBRIX_ROLESET_INPLACE_E2E_KEEP_ON_FAILURE=true` - Preserves RoleSet in-place e2e resources for debugging failed runs
 - `SKIP_KUBECTL_INSTALL=true` - Skip kubectl installation (default: true)
 - `SKIP_KIND_INSTALL=true` - Skip Kind installation (default: true)
 

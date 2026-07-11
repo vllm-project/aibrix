@@ -3930,6 +3930,12 @@ spec:
                                   - type: integer
                                   - type: string
                                   x-kubernetes-int-or-string: true
+                                type:
+                                  default: Recreate
+                                  enum:
+                                  - Recreate
+                                  - InPlaceIfPossible
+                                  type: string
                               type: object
                             upgradeOrder:
                               format: int32
