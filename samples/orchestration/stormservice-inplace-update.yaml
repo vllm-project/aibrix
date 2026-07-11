@@ -1,0 +1,48 @@
+# Apply this StormService and wait for its Pod to become Ready:
+#   kubectl apply -f samples/orchestration/stormservice-inplace-update.yaml
+#   kubectl get pods -l storm-service-name=stormservice-inplace-update -w
+#
+# Record the Pod UID, update only the container image, and compare the UID:
+#   kubectl get pods -l storm-service-name=stormservice-inplace-update \
+#     -o jsonpath='{.items[0].metadata.uid}{"\n"}'
+#   kubectl patch stormservice stormservice-inplace-update --type=json -p='[
+#     {"op":"replace","path":"/spec/template/spec/roles/0/template/spec/containers/0/image",
+#      "value":"registry.k8s.io/e2e-test-images/agnhost:2.54"}
+#   ]'
+#   kubectl get pods -l storm-service-name=stormservice-inplace-update \
+#     -o jsonpath='{.items[0].metadata.uid}{"\n"}'
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: stormservice-inplace-update
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stormservice-inplace-update
+  # StormService-level: update existing RoleSets instead of replacing them.
+  updateStrategy:
+    type: InPlaceUpdate
+    maxUnavailable: 1
+    maxSurge: 0
+  template:
+    metadata:
+      labels:
+        app: stormservice-inplace-update
+    spec:
+      updateStrategy: Parallel
+      roles:
+        - name: server
+          replicas: 1
+          # Role-level: attempt to update the Pod image without replacing
+          # the Pod. Both strategy levels are needed for this workflow.
+          updateStrategy:
+            type: InPlaceIfPossible
+            maxUnavailable: 1
+            maxSurge: 0
+          template:
+            spec:
+              containers:
+                - name: server
+                  image: registry.k8s.io/e2e-test-images/agnhost:2.53
+                  args: ["pause"]
