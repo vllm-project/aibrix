@@ -589,7 +589,6 @@ func isExpectedInPlacePendingReason(reason string) bool {
 	case controllerconstants.RoleInPlaceUpdatePendingReasonPodNotReady,
 		controllerconstants.RoleInPlaceUpdatePendingReasonContainerStatusMissing,
 		controllerconstants.RoleInPlaceUpdatePendingReasonContainerNotReady,
-		controllerconstants.RoleInPlaceUpdatePendingReasonRuntimeImageMismatch,
 		controllerconstants.RoleInPlaceUpdatePendingReasonImageIDUnchanged:
 		return true
 	default:

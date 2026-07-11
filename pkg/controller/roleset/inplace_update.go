@@ -381,9 +381,9 @@ func buildInPlaceUpdateStateJSON(pod *corev1.Pod, role *orchestrationv1alpha1.Ro
 }
 
 // hasInPlaceUpdateInProgress gates replacement rollouts while an image patch is
-// still waiting for kubelet to restart containers and report the new image. The
-// controller currently has no timeout or automatic rollback for a pod that never
-// reports the new runtime image; operators must clear or recreate the stuck pod.
+// still waiting for kubelet to restart containers and report changed ImageIDs.
+// The controller currently has no timeout or automatic rollback for a pod whose
+// ImageIDs never change; operators must clear or recreate the stuck pod.
 func hasInPlaceUpdateInProgress(ctx context.Context, cli client.Client, namespace, roleSetName string) (bool, error) {
 	pods := &corev1.PodList{}
 	if err := cli.List(ctx, pods,
@@ -401,8 +401,10 @@ func hasInPlaceUpdateInProgress(ctx context.Context, cli client.Client, namespac
 }
 
 // markInPlaceUpdateComplete promotes the target hash to the pod labels only
-// after the pod is ready and container statuses show the requested images. This
-// keeps rollout bookkeeping aligned with the actual runtime state.
+// after the pod is ready and changed container ImageIDs show kubelet has
+// restarted the patched containers. This keeps rollout bookkeeping aligned with
+// the actual runtime state without depending on runtime-specific image string
+// normalization.
 func markInPlaceUpdateComplete(ctx context.Context, cli client.Client, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, pod *corev1.Pod, targetHash string) (bool, error) {
 	if pod.Labels[constants.RoleTemplateHashLabelKey] == targetHash {
 		if _, ok := pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey]; ok {
@@ -465,14 +467,6 @@ func updateRoleRevisionLabels(pod *corev1.Pod, roleSet *orchestrationv1alpha1.Ro
 	}
 }
 
-// podReadyWithRuntimeImages verifies that kubelet has restarted the containers
-// and is reporting image IDs that match the patched pod spec. This intentionally
-// waits forever rather than promoting a hash on a timer; timeout handling is a
-// future enhancement.
-func podReadyWithRuntimeImages(pod *corev1.Pod) bool {
-	return inPlaceUpdatePendingStatusForPod(pod) == nil
-}
-
 func inPlaceUpdatePendingStatusForPod(pod *corev1.Pod) *inPlaceUpdatePendingStatus {
 	if !podutil.IsPodReady(pod) {
 		return &inPlaceUpdatePendingStatus{Reason: constants.RoleInPlaceUpdatePendingReasonPodNotReady}
@@ -504,15 +498,6 @@ func inPlaceUpdatePendingStatusForPod(pod *corev1.Pod) *inPlaceUpdatePendingStat
 				CurrentImageID: status.ImageID,
 			}
 		}
-		if !runtimeImageMatchesSpec(status.Image, container.Image) {
-			return &inPlaceUpdatePendingStatus{
-				Reason:         constants.RoleInPlaceUpdatePendingReasonRuntimeImageMismatch,
-				Container:      container.Name,
-				DesiredImage:   container.Image,
-				RuntimeImage:   status.Image,
-				CurrentImageID: status.ImageID,
-			}
-		}
 		if oldStatus, ok := state.LastContainerStatuses[container.Name]; ok && oldStatus.ImageID != "" && status.ImageID == oldStatus.ImageID {
 			return &inPlaceUpdatePendingStatus{
 				Reason:         constants.RoleInPlaceUpdatePendingReasonImageIDUnchanged,
@@ -525,29 +510,6 @@ func inPlaceUpdatePendingStatusForPod(pod *corev1.Pod) *inPlaceUpdatePendingStat
 		}
 	}
 
-	initStatusByName := make(map[string]corev1.ContainerStatus, len(pod.Status.InitContainerStatuses))
-	for _, status := range pod.Status.InitContainerStatuses {
-		initStatusByName[status.Name] = status
-	}
-	for _, container := range pod.Spec.InitContainers {
-		status, ok := initStatusByName[container.Name]
-		if !ok {
-			return &inPlaceUpdatePendingStatus{
-				Reason:       constants.RoleInPlaceUpdatePendingReasonContainerStatusMissing,
-				Container:    container.Name,
-				DesiredImage: container.Image,
-			}
-		}
-		if !runtimeImageMatchesSpec(status.Image, container.Image) {
-			return &inPlaceUpdatePendingStatus{
-				Reason:         constants.RoleInPlaceUpdatePendingReasonRuntimeImageMismatch,
-				Container:      container.Name,
-				DesiredImage:   container.Image,
-				RuntimeImage:   status.Image,
-				CurrentImageID: status.ImageID,
-			}
-		}
-	}
 	return nil
 }
 
@@ -622,47 +584,6 @@ func setPodCondition(pod *corev1.Pod, condition corev1.PodCondition) {
 		}
 	}
 	pod.Status.Conditions = append(pod.Status.Conditions, condition)
-}
-
-// runtimeImageMatchesSpec accepts the formats Kubernetes commonly reports in
-// ContainerStatus.Image: exact spec image, implicit ":latest" for untagged
-// images, Docker Hub library defaulting ("nginx" -> "docker.io/library/nginx"),
-// and Docker Hub namespace defaulting ("org/image" -> "docker.io/org/image").
-// It does not try to resolve arbitrary registry aliases or compare digests from
-// ImageID; ImageID is only used to detect that a restarted container changed.
-func runtimeImageMatchesSpec(runtimeImage, specImage string) bool {
-	for _, candidate := range runtimeImageCandidates(specImage) {
-		if runtimeImage == candidate {
-			return true
-		}
-	}
-	return false
-}
-
-func runtimeImageCandidates(specImage string) []string {
-	candidates := []string{specImage}
-	if !imageHasTagOrDigest(specImage) {
-		candidates = append(candidates, specImage+":latest")
-	}
-	if defaulted := defaultDockerImageName(specImage); defaulted != specImage {
-		candidates = append(candidates, defaulted)
-		if !imageHasTagOrDigest(defaulted) {
-			candidates = append(candidates, defaulted+":latest")
-		}
-	}
-	return candidates
-}
-
-func defaultDockerImageName(image string) string {
-	parts := strings.Split(image, "/")
-	if len(parts) == 1 {
-		return "docker.io/library/" + image
-	}
-	first := parts[0]
-	if strings.Contains(first, ".") || strings.Contains(first, ":") || first == "localhost" {
-		return image
-	}
-	return "docker.io/" + image
 }
 
 func imageHasTagOrDigest(image string) bool {

@@ -592,7 +592,7 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleRespectsMaxUnavailable(t *t
 	assert.Equal(t, newHash, updatedNotReady.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey])
 }
 
-func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleWaitsForRuntimeImage(t *testing.T) {
+func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleWaitsForChangedImageID(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
 	require.NoError(t, v1.AddToScheme(scheme))
@@ -608,12 +608,14 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleWaitsForRuntimeImage(t *tes
 	pod.Name = testPodOne
 	pod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
 	pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] = newHash
+	pod.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] = `{"lastContainerStatuses":{"master":{"imageID":"docker-pullable://nginx@sha256:old"}}}`
 	pod.Status.Phase = v1.PodRunning
 	pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
 	pod.Status.ContainerStatuses = []v1.ContainerStatus{{
-		Name:  "master",
-		Image: nginxImage,
-		Ready: true,
+		Name:    "master",
+		Image:   nginxV2,
+		ImageID: "docker-pullable://nginx@sha256:old",
+		Ready:   true,
 	}}
 
 	fakeClient := fake.NewClientBuilder().
@@ -653,12 +655,14 @@ func TestStatelessRoleSyncer_RolloutInPlaceIfPossibleCountsInProgressReadyPodsAg
 	inProgressPod.Name = testPodOne
 	inProgressPod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
 	inProgressPod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] = newHash
+	inProgressPod.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] = `{"lastContainerStatuses":{"master":{"imageID":"docker-pullable://nginx@sha256:old"}}}`
 	inProgressPod.Status.Phase = v1.PodRunning
 	inProgressPod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
 	inProgressPod.Status.ContainerStatuses = []v1.ContainerStatus{{
-		Name:  "master",
-		Image: nginxImage,
-		Ready: true,
+		Name:    "master",
+		Image:   nginxV2,
+		ImageID: "docker-pullable://nginx@sha256:old",
+		Ready:   true,
 	}}
 
 	waitingPod, err := buildRenderedPod(roleSet, oldRole, nil)
@@ -755,12 +759,14 @@ func TestStatefulRoleSyncer_RolloutInPlaceIfPossibleCountsInProgressReadyPodsAga
 	require.NoError(t, err)
 	inProgressPod.Labels[constants.RoleTemplateHashLabelKey] = oldHash
 	inProgressPod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] = newHash
+	inProgressPod.Annotations[constants.RoleInPlaceUpdateStateAnnotationKey] = `{"lastContainerStatuses":{"master":{"imageID":"docker-pullable://nginx@sha256:old"}}}`
 	inProgressPod.Status.Phase = v1.PodRunning
 	inProgressPod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
 	inProgressPod.Status.ContainerStatuses = []v1.ContainerStatus{{
-		Name:  "master",
-		Image: nginxImage,
-		Ready: true,
+		Name:    "master",
+		Image:   nginxV2,
+		ImageID: "docker-pullable://nginx@sha256:old",
+		Ready:   true,
 	}}
 
 	secondIndex := 1

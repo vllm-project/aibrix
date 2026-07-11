@@ -48,7 +48,6 @@ const (
 	RoleInPlaceUpdatePendingReasonPodNotReady            = "PodNotReady"
 	RoleInPlaceUpdatePendingReasonContainerStatusMissing = "ContainerStatusMissing"
 	RoleInPlaceUpdatePendingReasonContainerNotReady      = "ContainerNotReady"
-	RoleInPlaceUpdatePendingReasonRuntimeImageMismatch   = "RuntimeImageMismatch"
 	RoleInPlaceUpdatePendingReasonImageIDUnchanged       = "ImageIDUnchanged"
 	// RoleReplicaIndexAnnotationKey is originally used, to support label filter rank 0 pod, we add label support but keep this annotation for backward compatibility.
 	RoleReplicaIndexAnnotationKey = "stormservice.orchestration.aibrix.ai/role-replica-index"
