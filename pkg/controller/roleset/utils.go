@@ -48,9 +48,12 @@ const (
 	ProgressingConditionType = "Progressing"
 	FailureConditionType     = "Failure"
 
-	PodGroupSyncedEventType = "PodGroupSynced"
-	PodSyncedEventType      = "PodSynced"
-	FailureEventType        = "Failure"
+	PodGroupSyncedEventType         = "PodGroupSynced"
+	PodSyncedEventType              = "PodSynced"
+	InPlaceFallbackEventType        = "InPlaceFallback"
+	InPlaceUpdateStartedEventType   = "InPlaceUpdateStarted"
+	InPlaceUpdateCompletedEventType = "InPlaceUpdateCompleted"
+	FailureEventType                = "Failure"
 
 	topologyPreferredAffinityWeight int32 = 100
 )
