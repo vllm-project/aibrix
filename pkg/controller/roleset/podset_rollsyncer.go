@@ -24,6 +24,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -38,6 +39,7 @@ type PodSetRoleSyncer struct {
 	cli client.Client
 	// To allow injection for testing.
 	computeHashFunc func(template *v1.PodTemplateSpec, collisionCount *int32) string
+	recorder        record.EventRecorder
 }
 
 func (p *PodSetRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
@@ -164,6 +166,9 @@ func (p *PodSetRoleSyncer) Rollout(ctx context.Context, roleSet *orchestrationv1
 	createBudget := expectedReplicas + MaxSurge(role) - int32(len(allPodSets))
 	roleTemplateHash := p.computeHashFunc(&role.Template, nil)
 	klog.Infof("[PodSetRoleSyncer.Rollout] roleset %s/%s role %s expectedReplicas %d, deleteBudget %d, createBudget %d, template hash %s", roleSet.Namespace, roleSet.Name, role.Name, expectedReplicas, deleteBudget, createBudget, roleTemplateHash)
+	if roleUpdateStrategyTypeOrDefault(role) == orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType {
+		recordInPlaceFallback(p.recorder, roleSet, role, fmt.Sprintf("role %s uses PodSet and cannot be updated in place", role.Name))
+	}
 
 	slots, _ := p.podSetSlotForRole(role, activePodSets)
 	for i := range slots {
@@ -212,6 +217,9 @@ func (p *PodSetRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchestra
 	createBudget := expectedReplicas + MaxSurge(role) - int32(len(allPodSets))
 	roleTemplateHash := p.computeHashFunc(&role.Template, nil)
 	klog.Infof("[PodSetRoleSyncer.RolloutByStep] Step %d: roleset %s/%s role %s expectedReplicas %d, deleteBudget %d, createBudget %d, template hash %s", currentStep, roleSet.Namespace, roleSet.Name, role.Name, expectedReplicas, deleteBudget, createBudget, roleTemplateHash)
+	if roleUpdateStrategyTypeOrDefault(role) == orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType {
+		recordInPlaceFallback(p.recorder, roleSet, role, fmt.Sprintf("role %s uses PodSet and cannot be updated in place", role.Name))
+	}
 
 	updatedTotal, _, outdatedTotal := p.updatedSlotNum(role, allPodSets)
 

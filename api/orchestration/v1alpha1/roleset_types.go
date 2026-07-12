@@ -234,7 +234,21 @@ type RoleSpec struct {
 }
 
 // +enum
+type RoleUpdateStrategyType string
+
+const (
+	// RecreateRoleUpdateStrategyType recreates pods during role updates.
+	RecreateRoleUpdateStrategyType RoleUpdateStrategyType = "Recreate"
+	// InPlaceIfPossibleRoleUpdateStrategyType updates pods in place when possible and recreates otherwise.
+	InPlaceIfPossibleRoleUpdateStrategyType RoleUpdateStrategyType = "InPlaceIfPossible"
+)
+
 type RoleUpdateStrategy struct {
+	// +optional
+	// +kubebuilder:validation:Enum={Recreate,InPlaceIfPossible}
+	// +kubebuilder:default=Recreate
+	Type RoleUpdateStrategyType `json:"type,omitempty" protobuf:"bytes,3,opt,name=type"`
+
 	// +optional
 	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty" protobuf:"bytes,1,opt,name=maxUnavailable"`
 
