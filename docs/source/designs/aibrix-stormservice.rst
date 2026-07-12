@@ -107,20 +107,27 @@ Suppose we have a `StormService` with 3 replicas, `MaxUnavailable` set to 1, and
 InPlace Update
 ^^^^^^^^^^^^^^
 
-**Designed for pooled mode**, the InPlace update strategy propagates changes from the `StormService` directly to all associated RoleSets without deleting and creating new RoleSets. This strategy is useful when you want to update the configuration of RoleSets without disrupting the existing pods.
-How it Works
+**Designed for pooled mode**, the StormService ``InPlaceUpdate`` strategy updates
+the existing RoleSets instead of deleting and recreating them. This is an outer
+update layer: preserving a RoleSet does not, by itself, preserve the Pods owned
+by that RoleSet.
 
 **How it Works**
 
-1. Identify Outdated RoleSets: The controller identifies all RoleSets that are not using the latest revision.
-2. Update RoleSets: The controller directly updates the configuration of the outdated RoleSets to the latest revision.
-3. Sync Status: The reconciler at the RoleSet level then syncs its status according to the updated spec.
+1. The StormService controller identifies RoleSets that do not use the latest
+   StormService revision.
+2. With ``StormService.spec.updateStrategy.type: InPlaceUpdate``, the controller
+   updates those RoleSet objects in place.
+3. Each RoleSet then updates its roles. The role-level strategy determines
+   whether Pods are patched or replaced.
 
 **Advantages**
 
-- Minimal Disruption: Since no RoleSets are deleted or created, the service remains available during the update process.
-- Fast Updates: The update process is faster as it does not involve the creation and deletion of resources.
-- No additional GPU needed: It doesn't need to create new `RoleSets`, which avoids using more GPUs for upgrades.
+- **Stable RoleSets**: No replacement RoleSets are created during the update.
+- **Fast propagation**: The latest template is applied directly to the existing
+  RoleSets.
+- **No extra RoleSet capacity**: The outer update does not require surge
+  RoleSets.
 
 .. mermaid::
 
@@ -130,6 +137,124 @@ How it Works
 
         A(Initial: 3 old RoleSets):::old --> B(Update 3 RoleSets in-place)
         B --> C(Result: 3 new RoleSets):::new
+
+StormService and role update strategies
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+StormService and role in-place strategies operate at different layers. To
+update a Pod image through a StormService while preserving the Pod name and
+UID, configure both layers.
+
+.. list-table:: Update strategy comparison
+   :header-rows: 1
+   :widths: 24 18 24 34
+
+   * - Strategy
+     - Target
+     - Identity behavior
+     - Configuration path
+   * - StormService ``InPlaceUpdate``
+     - RoleSet
+     - Preserves RoleSet identity; does not guarantee Pod identity
+     - ``StormService.spec.updateStrategy.type``
+   * - Role ``InPlaceIfPossible``
+     - Pod
+     - Preserves Pod name and UID for eligible image-only updates
+     - ``RoleSet.spec.roles[].updateStrategy.type`` or
+       ``StormService.spec.template.spec.roles[].updateStrategy.type``
+   * - Role ``Recreate``
+     - Pod
+     - Replaces Pods during a role update; this is the default
+     - ``RoleSet.spec.roles[].updateStrategy.type`` or
+       ``StormService.spec.template.spec.roles[].updateStrategy.type``
+
+For a StormService-managed rollout, configure the outer strategy on the
+StormService and the Pod strategy on each role:
+
+.. code-block:: yaml
+
+   spec:
+     updateStrategy:
+       type: InPlaceUpdate       # Update existing RoleSets.
+     template:
+       spec:
+         roles:
+           - name: server
+             updateStrategy:
+               type: InPlaceIfPossible  # Try to preserve this role's Pods.
+
+When managing a RoleSet directly, only the role-level strategy is required:
+
+.. code-block:: yaml
+
+   spec:
+     roles:
+       - name: server
+         updateStrategy:
+           type: InPlaceIfPossible
+
+See the complete `StormService sample`_ and `RoleSet sample`_ in the AIBrix
+repository.
+
+.. _StormService sample: https://github.com/vllm-project/aibrix/blob/main/samples/orchestration/stormservice-inplace-update.yaml
+.. _RoleSet sample: https://github.com/vllm-project/aibrix/blob/main/samples/orchestration/roleset-inplace-update.yaml
+
+Pod in-place update eligibility
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``InPlaceIfPossible`` updates existing Pods only when container images are the
+only fields changed in the Pod template. The controller patches the requested
+images, waits for the runtime container image IDs and readiness to reflect the
+new images, and then completes the role revision. ``maxUnavailable`` limits how
+many role Pods can be unavailable while the images restart; ``maxSurge`` still
+controls any replacement Pods required by a fallback.
+
+Changes to commands, arguments, environment variables, resources, volumes, or
+other Pod template fields are not eligible. The controller emits a normal
+``InPlaceFallback`` event and recreates the affected Pods instead of blocking
+the rollout. Roles with ``podGroupSize > 1`` are managed through PodSet and also
+fall back to recreation. Omitting the role strategy selects the default
+``Recreate`` behavior.
+
+Trigger and observe an image update
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Apply the StormService sample and record the original Pod UID:
+
+.. code-block:: shell
+
+   kubectl apply -f samples/orchestration/stormservice-inplace-update.yaml
+   kubectl get pods -l storm-service-name=stormservice-inplace-update -w
+   kubectl get pods -l storm-service-name=stormservice-inplace-update \
+     -o jsonpath='{.items[0].metadata.uid}{"\n"}'
+
+Patch only the image field to trigger an eligible in-place update:
+
+.. code-block:: shell
+
+   kubectl patch stormservice stormservice-inplace-update --type=json -p='[
+     {"op":"replace","path":"/spec/template/spec/roles/0/template/spec/containers/0/image",
+      "value":"registry.k8s.io/e2e-test-images/agnhost:2.54"}
+   ]'
+
+Watch the image and compare the UID with the value recorded before the update:
+
+.. code-block:: shell
+
+   kubectl get pods -l storm-service-name=stormservice-inplace-update \
+     -o custom-columns='NAME:.metadata.name,UID:.metadata.uid,IMAGE:.spec.containers[*].image'
+
+While an update is in progress, the controller can set the Pod readiness
+condition ``stormservice.orchestration.aibrix.ai/in-place-update-ready`` and the
+annotation
+``stormservice.orchestration.aibrix.ai/in-place-update-pending-reason``. Inspect
+them with ``kubectl describe pod <pod-name>``. If the controller falls back to
+recreation, inspect the reason on the RoleSet event:
+
+.. code-block:: shell
+
+   kubectl get events --field-selector reason=InPlaceFallback \
+     --sort-by=.lastTimestamp
 
 Rolling Strategy
 ----------------
