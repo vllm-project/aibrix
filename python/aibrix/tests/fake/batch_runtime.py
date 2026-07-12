@@ -42,7 +42,8 @@ class FakeRuntime(RuntimeBase):
             return None
         return self.reconnect_handle
 
-    async def _wait_ready(self, handle: Any) -> None:
+    async def _wait_ready(self, handle: Any, wait_mode: str = "provision") -> None:
+        del wait_mode
         self.wait_ready_handles.append(handle)
 
     async def _teardown(self, handle: Any) -> None:

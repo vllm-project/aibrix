@@ -181,6 +181,7 @@ func (r *RayClusterReplicaSetReconciler) scaleDown(ctx context.Context, replicas
 	const maxConcurrency = 10
 	semaphore := make(chan struct{}, maxConcurrency)
 
+	sortRayClustersForScaleDown(clusters)
 	for i := 0; i < diff; i++ {
 		cluster := clusters[i]
 		semaphore <- struct{}{}

@@ -17,6 +17,7 @@ import time
 from typing import BinaryIO, Optional, TextIO, Union
 
 import aibrix.client.redis as redis
+from aibrix import envs
 from aibrix.storage.base import (
     PutObjectOptions,
     StorageConfig,
@@ -60,6 +61,20 @@ class RedisStorage(BaseStorage2):
         super().__init__(config)
         self._redis_clients: dict[int, redis.AsyncRedis] = {}
         self._kwargs = kwargs
+        self._global_prefix = (envs.DB_REDIS_PREFIX or "").strip()
+
+    def _prefixed_key(self, key: str) -> str:
+        if not self._global_prefix:
+            return key
+        return f"{self._global_prefix}:{key}"
+
+    def _strip_prefixed_key(self, key: str) -> str:
+        if not self._global_prefix:
+            return key
+        prefix = f"{self._global_prefix}:"
+        if key.startswith(prefix):
+            return key[len(prefix) :]
+        return key
 
     def get_type(self) -> StorageType:
         """Get the type of storage.
@@ -173,6 +188,10 @@ class RedisStorage(BaseStorage2):
 
         # Parse hierarchical key
         parent_key, item_key = self._parse_hierarchical_key(key)
+        storage_key = self._prefixed_key(key)
+        storage_parent_key = (
+            self._prefixed_key(parent_key) if parent_key is not None else None
+        )
 
         # Prepare Redis SET options from PutObjectOptions
         redis_ex = None
@@ -191,7 +210,12 @@ class RedisStorage(BaseStorage2):
 
         # Store the actual data with options
         result = await redis_client.set(
-            key, data_bytes, ex=redis_ex, px=redis_px, nx=redis_nx, xx=redis_xx
+            storage_key,
+            data_bytes,
+            ex=redis_ex,
+            px=redis_px,
+            nx=redis_nx,
+            xx=redis_xx,
         )
 
         # Check if the SET operation succeeded
@@ -206,7 +230,7 @@ class RedisStorage(BaseStorage2):
         # index needs to mirror it on overwrite.
         timestamp = time.time()
         global_timestamp_added = await redis_client.zadd(
-            "timestamps:all", {key: timestamp}, nx=True
+            self._prefixed_key("timestamps:all"), {storage_key: timestamp}, nx=True
         )
 
         # If hierarchical, add to parent list and track timestamp
@@ -219,16 +243,22 @@ class RedisStorage(BaseStorage2):
                 # ``timestamps:all``. Re-applying the parent ZADD keeps the
                 # hierarchical ordering index aligned and repairs partial drift
                 # from interrupted writes or manual Redis changes.
-                existing_timestamp = await redis_client.zscore("timestamps:all", key)
+                existing_timestamp = await redis_client.zscore(
+                    self._prefixed_key("timestamps:all"), storage_key
+                )
                 if existing_timestamp is None:
                     raise RuntimeError(
-                        f"Redis timestamps:all lost score for existing key {key!r}"
+                        f"Redis timestamps:all lost score for existing key {storage_key!r}"
                     )
                 timestamp = float(existing_timestamp)
             # Add item to parent list (only if not already present)
-            await redis_client.sadd(f"{parent_key}:index", item_key)
+            assert storage_parent_key is not None
+            await redis_client.sadd(f"{storage_parent_key}:index", item_key)
             # Also track timestamp for hierarchical objects
-            await redis_client.zadd(f"timestamps:{parent_key}", {item_key: timestamp})
+            await redis_client.zadd(
+                self._prefixed_key(f"timestamps:{parent_key}"),
+                {item_key: timestamp},
+            )
 
         return True
 
@@ -253,7 +283,7 @@ class RedisStorage(BaseStorage2):
         """
         redis_client = await self._get_redis()
 
-        data = await redis_client.get(key)
+        data = await redis_client.get(self._prefixed_key(key))
         if data is None:
             raise FileNotFoundError(f"Object not found: {key}")
         if isinstance(data, str):
@@ -280,17 +310,24 @@ class RedisStorage(BaseStorage2):
 
         # Parse hierarchical key
         parent_key, item_key = self._parse_hierarchical_key(key)
+        storage_key = self._prefixed_key(key)
+        storage_parent_key = (
+            self._prefixed_key(parent_key) if parent_key is not None else None
+        )
 
         # Delete the actual data
-        await redis_client.delete(key)
+        await redis_client.delete(storage_key)
 
         # Clean up timestamp tracking
-        await redis_client.zrem("timestamps:all", key)
+        await redis_client.zrem(self._prefixed_key("timestamps:all"), storage_key)
 
         # If hierarchical, remove from parent list and timestamps
         if parent_key is not None:
-            await redis_client.srem(f"{parent_key}:index", item_key)
-            await redis_client.zrem(f"timestamps:{parent_key}", item_key)
+            assert storage_parent_key is not None
+            await redis_client.srem(f"{storage_parent_key}:index", item_key)
+            await redis_client.zrem(
+                self._prefixed_key(f"timestamps:{parent_key}"), item_key
+            )
 
     async def list_objects(
         self,
@@ -338,10 +375,10 @@ class RedisStorage(BaseStorage2):
             hierarchical_prefix = f"{prefix}{delimiter}"
 
         # Check if this prefix corresponds to a list index
-        list_key = f"{parent_prefix}:index"
+        list_key = self._prefixed_key(f"{parent_prefix}:index")
         if await redis_client.exists(list_key):
             # Get members ordered by timestamp from the sorted set
-            timestamp_key = f"timestamps:{parent_prefix}"
+            timestamp_key = self._prefixed_key(f"timestamps:{parent_prefix}")
             members: list[str]
             if await redis_client.exists(timestamp_key):
                 if continuation_token is None and after_key:
@@ -410,12 +447,16 @@ class RedisStorage(BaseStorage2):
         if prefix:
             # For prefix searches, get all keys from timestamp sorted set and filter
             all_keys_with_timestamps = await self._zrange_by_list_order(
-                redis_client, "timestamps:all", 0, -1, withscores=False
+                redis_client,
+                self._prefixed_key("timestamps:all"),
+                0,
+                -1,
+                withscores=False,
             )
 
             filtered_keys = []
             for key_bytes in all_keys_with_timestamps:
-                key_str = key_bytes.decode("utf-8")
+                key_str = self._strip_prefixed_key(key_bytes.decode("utf-8"))
                 # Filter by prefix and exclude internal keys
                 if (
                     key_str.startswith(prefix)
@@ -440,11 +481,15 @@ class RedisStorage(BaseStorage2):
             # For no prefix, get all keys first, then filter and paginate
             # This ensures consistent pagination even when internal keys are present
             all_keys_with_timestamps = await self._zrange_by_list_order(
-                redis_client, "timestamps:all", 0, -1, withscores=False
+                redis_client,
+                self._prefixed_key("timestamps:all"),
+                0,
+                -1,
+                withscores=False,
             )
             all_user_keys = []
             for key_bytes in all_keys_with_timestamps:
-                key_str = key_bytes.decode("utf-8")
+                key_str = self._strip_prefixed_key(key_bytes.decode("utf-8"))
                 # Exclude internal keys
                 if not key_str.endswith(":index") and not key_str.startswith(
                     "timestamps:"
@@ -497,7 +542,7 @@ class RedisStorage(BaseStorage2):
             True if object exists, False otherwise
         """
         redis_client = await self._get_redis()
-        return bool(await redis_client.exists(key))
+        return bool(await redis_client.exists(self._prefixed_key(key)))
 
     async def get_object_size(self, key: str) -> int:
         """Get object size in bytes.
@@ -513,10 +558,11 @@ class RedisStorage(BaseStorage2):
         """
         redis_client = await self._get_redis()
 
-        size = await redis_client.strlen(key)
+        storage_key = self._prefixed_key(key)
+        size = await redis_client.strlen(storage_key)
         if size == 0:
             # Check if key actually exists
-            if not await redis_client.exists(key):
+            if not await redis_client.exists(storage_key):
                 raise FileNotFoundError(f"Object not found: {key}")
 
         return size

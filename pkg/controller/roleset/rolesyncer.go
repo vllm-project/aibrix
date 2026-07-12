@@ -18,10 +18,12 @@ package roleset
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -44,6 +46,7 @@ type StatefulRoleSyncer struct {
 	cli client.Client
 	// To allow injection for testing.
 	computeHashFunc func(template *v1.PodTemplateSpec, collisionCount *int32) string
+	recorder        record.EventRecorder
 }
 
 func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
@@ -176,6 +179,26 @@ func (s *StatefulRoleSyncer) Rollout(ctx context.Context, roleSet *orchestration
 	klog.Infof("[StatefulRoleSyncer.Rollout] roleset %s/%s role %s expectedReplicas %d, deleteBudget %d, createBudget %d, template hash %s", roleSet.Namespace, roleSet.Name, role.Name, expectedReplicas, deleteBudget, createBudget, roleTemplateHash)
 
 	slots, _ := s.podSlotForRole(role, activePods)
+	var outdatedPods []*v1.Pod
+	for i := range slots {
+		if len(slots[i]) != 1 {
+			continue
+		}
+		if slots[i][0].Labels[constants.RoleTemplateHashLabelKey] != roleTemplateHash {
+			outdatedPods = append(outdatedPods, slots[i][0])
+		}
+	}
+	strategy := roleUpdateStrategyTypeOrDefault(role)
+	if strategy == orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType {
+		possible, reason, err := canRolloutPodsInPlace(roleSet, role, outdatedPods, roleTemplateHash, s.computeHashFunc)
+		if err != nil {
+			return err
+		}
+		if possible {
+			return rolloutPodsInPlace(ctx, s.cli, roleSet, role, outdatedPods, roleTemplateHash, deleteBudget, s.computeHashFunc, s.recorder)
+		}
+		recordInPlaceFallback(s.recorder, roleSet, role, reason)
+	}
 	for i := range slots {
 		if len(slots[i]) != 1 {
 			// wait for scale to handle this slot
@@ -239,6 +262,24 @@ func (s *StatefulRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchest
 	klog.Infof("[StatefulRoleSyncer.RolloutByStep] Step %d: roleset %s/%s role %s expectedUpdatedReplicas %d, updatedTotal %d, outdatedTotal %d, deleteBudget %d, createBudget %d",
 		currentStep, roleSet.Namespace, roleSet.Name, role.Name, expectedUpdatedReplicas, updatedTotal, outdatedTotal, deleteBudget, createBudget)
 	slots, _ := s.podSlotForRole(role, activePods)
+	strategy := roleUpdateStrategyTypeOrDefault(role)
+	if strategy == orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType {
+		var outdatedPods []*v1.Pod
+		for i := range slots {
+			if len(slots[i]) == 1 && slots[i][0].Labels[constants.RoleTemplateHashLabelKey] != roleTemplateHash {
+				outdatedPods = append(outdatedPods, slots[i][0])
+			}
+		}
+		possible, reason, err := canRolloutPodsInPlace(roleSet, role, outdatedPods, roleTemplateHash, s.computeHashFunc)
+		if err != nil {
+			return err
+		}
+		if possible {
+			selected := selectInPlaceOutdatedPodsForStep(outdatedPods, roleTemplateHash, expectedUpdatedReplicas-updatedTotal)
+			return rolloutPodsInPlace(ctx, s.cli, roleSet, role, selected, roleTemplateHash, deleteBudget, s.computeHashFunc, s.recorder)
+		}
+		recordInPlaceFallback(s.recorder, roleSet, role, reason)
+	}
 	for i := range slots {
 		if len(slots[i]) != 1 {
 			// wait for scale to handle this slot
@@ -387,6 +428,7 @@ type StatelessRoleSyncer struct {
 	cli client.Client
 	// To allow injection for testing.
 	computeHashFunc func(template *v1.PodTemplateSpec, collisionCount *int32) string
+	recorder        record.EventRecorder
 }
 
 func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
@@ -472,6 +514,20 @@ func (s *StatelessRoleSyncer) Rollout(ctx context.Context, roleSet *orchestratio
 	klog.Infof("[StatelessRoleSyncer.Rollout] roleset %s/%s role %s updated %d, outdated %d, expectedReplicas %d, hash %s", roleSet.Namespace, roleSet.Name, role.Name, len(updated), len(outdated), expectedReplicas, roleTemplateHash)
 	ready, _ := filterReadyPods(activePods)
 	deleteBudget := int32(len(ready)) - expectedReplicas + MaxUnavailable(role)
+	strategy := roleUpdateStrategyTypeOrDefault(role)
+	if strategy == orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType {
+		possible, reason, err := canRolloutPodsInPlace(roleSet, role, outdated, roleTemplateHash, s.computeHashFunc)
+		if err != nil {
+			return err
+		}
+		if possible {
+			if err := s.rolloutInPlace(ctx, roleSet, role, outdated, roleTemplateHash, deleteBudget); err != nil {
+				return err
+			}
+			return nil
+		}
+		recordInPlaceFallback(s.recorder, roleSet, role, reason)
+	}
 	sortPodsByActive(outdated)
 	// 1. delete outdated pods
 	for i := 0; i < len(outdated); i++ {
@@ -506,6 +562,100 @@ func (s *StatelessRoleSyncer) Rollout(ctx context.Context, roleSet *orchestratio
 	return nil
 }
 
+func (s *StatelessRoleSyncer) rolloutInPlace(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, outdated []*v1.Pod, roleTemplateHash string, unavailableBudget int32) error {
+	return rolloutPodsInPlace(ctx, s.cli, roleSet, role, outdated, roleTemplateHash, unavailableBudget, s.computeHashFunc, s.recorder)
+}
+
+func rolloutPodsInPlace(ctx context.Context, cli client.Client, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, outdated []*v1.Pod, roleTemplateHash string, unavailableBudget int32, hashFunc func(*v1.PodTemplateSpec, *int32) string, recorder record.EventRecorder) error {
+	sortPodsByActive(outdated)
+	var candidates []*v1.Pod
+	// First settle pods that were patched in a previous reconcile. A ready pod
+	// with the target annotation still consumes disruption budget until kubelet
+	// reports the desired runtime image and the hash label is promoted.
+	for _, pod := range outdated {
+		hadTargetAnnotation := pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] == roleTemplateHash
+		if completed, err := markInPlaceUpdateComplete(ctx, cli, roleSet, role, pod, roleTemplateHash); err != nil {
+			return err
+		} else if completed {
+			if hadTargetAnnotation {
+				recordInPlaceUpdateCompleted(recorder, roleSet, role, pod)
+			}
+			continue
+		}
+		if pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] == roleTemplateHash {
+			if podutil.IsPodReady(pod) {
+				unavailableBudget--
+			}
+			continue
+		}
+		candidates = append(candidates, pod)
+	}
+
+	// Then patch new candidates with any remaining budget.
+	for _, pod := range candidates {
+
+		eligible, reason, err := canInPlaceUpdatePod(roleSet, role, pod, hashFunc)
+		if err != nil {
+			return err
+		}
+		if !eligible {
+			return fmt.Errorf("role %s pod %s is not eligible for in-place update: %s", role.Name, pod.Name, reason)
+		}
+		if podutil.IsPodReady(pod) {
+			if unavailableBudget <= 0 {
+				continue
+			}
+			unavailableBudget--
+		}
+		if changed, err := patchPodImagesForInPlaceUpdate(ctx, cli, pod, role, roleTemplateHash); err != nil {
+			return err
+		} else if changed {
+			recordInPlaceUpdateStarted(recorder, roleSet, role, pod)
+		}
+	}
+	return nil
+}
+
+func canRolloutPodsInPlace(roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, outdated []*v1.Pod, roleTemplateHash string, hashFunc func(*v1.PodTemplateSpec, *int32) string) (bool, string, error) {
+	for _, pod := range outdated {
+		if pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] == roleTemplateHash {
+			continue
+		}
+		eligible, reason, err := canInPlaceUpdatePod(roleSet, role, pod, hashFunc)
+		if err != nil {
+			return false, "", err
+		}
+		if !eligible {
+			return false, fmt.Sprintf("role %s pod %s cannot be updated in place: %s", role.Name, pod.Name, reason), nil
+		}
+	}
+	return true, "", nil
+}
+
+func recordInPlaceFallback(recorder record.EventRecorder, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, reason string) {
+	if recorder == nil {
+		return
+	}
+	if reason == "" {
+		reason = fmt.Sprintf("role %s cannot be updated in place", role.Name)
+	}
+	recorder.Eventf(roleSet, v1.EventTypeNormal, InPlaceFallbackEventType, "%s; falling back to recreate", reason)
+}
+
+func recordInPlaceUpdateStarted(recorder record.EventRecorder, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, pod *v1.Pod) {
+	if recorder == nil {
+		return
+	}
+	recorder.Eventf(roleSet, v1.EventTypeNormal, InPlaceUpdateStartedEventType, "role %s pod %s in-place image update started", role.Name, pod.Name)
+}
+
+func recordInPlaceUpdateCompleted(recorder record.EventRecorder, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, pod *v1.Pod) {
+	if recorder == nil {
+		return
+	}
+	recorder.Eventf(roleSet, v1.EventTypeNormal, InPlaceUpdateCompletedEventType, "role %s pod %s in-place image update completed", role.Name, pod.Name)
+}
+
 // RolloutByStep performs rollout in steps based on the defined step size
 func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, currentStep int32) error {
 	var toCreate, toDelete []*v1.Pod
@@ -532,6 +682,18 @@ func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orches
 	deleteBudget := utils.MinInt32(int32(len(outdated))-expectedReplicas+expectedUpdatedReplicas, int32(len(ready))-expectedReplicas+MaxUnavailable(role))
 
 	sortPodsByActive(outdated)
+	strategy := roleUpdateStrategyTypeOrDefault(role)
+	if strategy == orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType {
+		possible, reason, err := canRolloutPodsInPlace(roleSet, role, outdated, roleTemplateHash, s.computeHashFunc)
+		if err != nil {
+			return err
+		}
+		if possible {
+			selected := selectInPlaceOutdatedPodsForStep(outdated, roleTemplateHash, expectedUpdatedReplicas-int32(len(updated)))
+			return s.rolloutInPlace(ctx, roleSet, role, selected, roleTemplateHash, deleteBudget)
+		}
+		recordInPlaceFallback(s.recorder, roleSet, role, reason)
+	}
 	// 1. delete outdated pods
 	for i := 0; i < len(outdated); i++ {
 		if podutil.IsPodReady(outdated[i]) {
@@ -566,6 +728,22 @@ func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orches
 		return err
 	}
 	return nil
+}
+
+func selectInPlaceOutdatedPodsForStep(outdated []*v1.Pod, roleTemplateHash string, remaining int32) []*v1.Pod {
+	var selected []*v1.Pod
+	for _, pod := range outdated {
+		if pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] == roleTemplateHash {
+			selected = append(selected, pod)
+			continue
+		}
+		if remaining <= 0 {
+			continue
+		}
+		selected = append(selected, pod)
+		remaining--
+	}
+	return selected
 }
 
 func (s *StatelessRoleSyncer) AllReady(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
@@ -645,11 +823,16 @@ func (s *StatelessRoleSyncer) CheckCurrentStep(ctx context.Context, roleSet *orc
 }
 
 func GetRoleSyncer(cli client.Client, role *orchestrationv1alpha1.RoleSpec) RoleRollingSyncer {
+	return GetRoleSyncerWithRecorder(cli, role, nil)
+}
+
+func GetRoleSyncerWithRecorder(cli client.Client, role *orchestrationv1alpha1.RoleSpec, recorder record.EventRecorder) RoleRollingSyncer {
 	// Check if role requires PodSet (podGroupSize > 1)
 	if role.PodGroupSize != nil && *role.PodGroupSize > 1 {
 		return &PodSetRoleSyncer{
 			cli:             cli,
 			computeHashFunc: ctrlutil.ComputeHash,
+			recorder:        recorder,
 		}
 	}
 
@@ -658,10 +841,12 @@ func GetRoleSyncer(cli client.Client, role *orchestrationv1alpha1.RoleSpec) Role
 		return &StatefulRoleSyncer{
 			cli:             cli,
 			computeHashFunc: ctrlutil.ComputeHash,
+			recorder:        recorder,
 		}
 	}
 	return &StatelessRoleSyncer{
 		cli:             cli,
 		computeHashFunc: ctrlutil.ComputeHash,
+		recorder:        recorder,
 	}
 }

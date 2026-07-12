@@ -32,12 +32,14 @@ from aibrix.batch.job_entity import (
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    BatchJobStatusCopy,
     CompletionWindow,
     Condition,
     ConditionStatus,
     ConditionType,
     JobRuntimeRef,
     ObjectMeta,
+    RequestCountStats,
     TypeMeta,
 )
 from aibrix.batch.state import JobEntityManager, JobMetaInfo
@@ -110,6 +112,47 @@ class _FakeJobDriver:
 
     async def cleanup(self, job: BatchJob) -> None:
         self.cleanup_calls.append(job.job_id)
+
+
+@pytest.mark.asyncio
+async def test_update_job_local_status_execution_only_preserves_worker_snapshot():
+    job_manager = _job_manager()
+    meta_job = _in_progress_meta_job("job-execution-only", total_requests=10)
+    meta_job.status.set_runtime_ref(
+        "base",
+        JobRuntimeRef(driverType="base", ownerRef="worker-1", attempt=1),
+    )
+    meta_job.status.status_copies = {
+        "worker-1": BatchJobStatusCopy(
+            state=BatchJobState.IN_PROGRESS,
+            requestCounts=RequestCountStats(
+                total=10,
+                launched=4,
+                completed=3,
+                failed=1,
+            ),
+        )
+    }
+    job_manager._in_progress_jobs[meta_job.job_id] = meta_job
+
+    status = meta_job.status.model_copy(deep=True)
+    status.remove_runtime_ref("base")
+    status.request_counts = RequestCountStats()
+
+    updated = await job_manager.update_job_local_status(
+        meta_job.job_id,
+        "worker-1",
+        status,
+        update_keys={"execution"},
+    )
+
+    assert updated.status.execution is None
+    assert updated.status.status_copies is not None
+    assert updated.status.status_copies["worker-1"].request_counts.total == 10
+    assert updated.status.status_copies["worker-1"].request_counts.launched == 4
+    assert updated.status.status_copies["worker-1"].request_counts.completed == 3
+    assert updated.status.status_copies["worker-1"].request_counts.failed == 1
+    assert updated.status.status_copies["worker-1"].updated is False
 
 
 @pytest.mark.asyncio
@@ -599,10 +642,26 @@ async def test_expire_job_skips_already_finalizing_job():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("job_id", "owner_ref", "initial_bucket"),
+    ("job_id", "owner_ref", "initial_bucket", "recovered_state"),
     [
-        ("test-job-id-expire-orphaned", "owner-2", "in_progress"),
-        ("test-job-id-expire-recovered-pending", "owner-3", "pending"),
+        (
+            "test-job-id-expire-orphaned",
+            "owner-2",
+            "in_progress",
+            BatchJobState.IN_PROGRESS,
+        ),
+        (
+            "test-job-id-expire-recovered-pending",
+            "owner-3",
+            "pending",
+            BatchJobState.IN_PROGRESS,
+        ),
+        (
+            "test-job-id-expire-recovered-cancelling",
+            "owner-4",
+            "pending",
+            BatchJobState.CANCELLING,
+        ),
     ],
 )
 async def test_expired_job_cleans_up_during_recovery(
@@ -610,9 +669,11 @@ async def test_expired_job_cleans_up_during_recovery(
     job_id: str,
     owner_ref: str,
     initial_bucket: str,
+    recovered_state: BatchJobState,
 ):
     job_manager = _job_manager()
     recovered_job = _in_progress_meta_job(job_id, total_requests=1)
+    recovered_job.status.state = recovered_state
     recovered_job.status.set_runtime_ref(
         "fake",
         JobRuntimeRef(driverType="fake", ownerRef=owner_ref, attempt=1),

@@ -355,6 +355,7 @@ def build_app(args: argparse.Namespace, params={}):
         # The construction of context should before any k8s dependent components'
         # (e.g., k8s job execution) initialization.
         infrastructure_context = _load_batch_k8s_context(args)
+        app.state.infrastructure_context = infrastructure_context
         app.state.template_registry = infrastructure_context.template_registry
         app.state.profile_registry = infrastructure_context.profile_registry
 

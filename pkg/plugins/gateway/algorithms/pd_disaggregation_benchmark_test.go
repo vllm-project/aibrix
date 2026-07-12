@@ -184,6 +184,7 @@ func BenchmarkDoPrefillRequest(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				ctx.RequestID = fmt.Sprintf("bench-prefill-%s-%d", engine, i)
 				ctx.RequestTime = time.Now()
+				router.prefillRequestTracker.AddPrefillRequest(ctx.RequestID, prefillPod.Name)
 				if err := router.doPrefillRequest(ctx, prefillPod, engine); err != nil {
 					b.Fatalf("doPrefillRequest failed: %v", err)
 				}

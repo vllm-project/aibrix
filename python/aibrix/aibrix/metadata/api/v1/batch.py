@@ -35,6 +35,7 @@ from aibrix.batch.job_entity import (
     BatchUsage,
     ClientConfig,
     CompletionWindow,
+    DeploymentDetail,
     ModelTemplateRef,
     ResourceAllocation,
     RuntimeSpec,
@@ -46,6 +47,7 @@ from aibrix.batch.template import (
     ProfileRegistry,
     TemplateRegistry,
 )
+from aibrix.context import InfrastructureContext, get_deployment_detail_provider
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -449,7 +451,9 @@ class BatchListResponse(BaseModel):
     )
 
 
-def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
+def _batch_job_to_openai_response(
+    batch_job: BatchJob, deployment: Optional[DeploymentDetail] = None
+) -> BatchResponse:
     """Convert BatchJob to OpenAI batch response format."""
     status: BatchJobStatus = batch_job.status
     spec: BatchJobSpec = batch_job.spec
@@ -518,6 +522,12 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
         status.error_file_id if status.finished and rc and rc.failed > 0 else None
     )
 
+    aibrix = (
+        spec.aibrix.model_copy(update={"deployment": deployment})
+        if spec.aibrix and deployment
+        else spec.aibrix
+    )
+
     return BatchResponse(
         id=status.job_id,
         endpoint=spec.endpoint,
@@ -540,7 +550,7 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
         request_counts=request_counts,
         usage=status.usage,
         metadata=spec.metadata,
-        aibrix=spec.aibrix,
+        aibrix=aibrix,
     )
 
 
@@ -621,22 +631,62 @@ async def _resolve_batch_job(request: Request, batch_id: str) -> Optional[BatchJ
     return await batch_driver.get_job(batch_id)
 
 
+async def _query_deployment_detail(
+    ctx: InfrastructureContext, job: BatchJob
+) -> Optional[DeploymentDetail]:
+    """Query the deployment detail for a batch job via side-channel provider."""
+    try:
+        runtime_target = job.spec.runtime_target
+        if not runtime_target:
+            return None
+
+        provider = get_deployment_detail_provider(runtime_target)
+        if provider is None:
+            return None
+
+        detail_dict = await provider.get_deployment_detail(ctx, job)
+        if detail_dict is None:
+            return None
+
+        return DeploymentDetail(**detail_dict)
+    except Exception as e:
+        logger.warning(
+            "Failed to query deployment detail",
+            job_id=job.job_id,
+            error=str(e),
+        )
+        return None
+
+
 @router.get("/{batch_id}", response_model_exclude_none=True)
-async def get_batch(request: Request, batch_id: str) -> BatchResponse:
+async def get_batch(
+    request: Request,
+    batch_id: str,
+    include_deployment: Optional[bool] = Query(
+        False, description="Include deployment detail in the response"
+    ),
+) -> BatchResponse:
     """Retrieve a batch by ID.
 
     Returns the details of a specific batch including its current status,
     request counts, and timestamps.
     """
     try:
-        logger.debug("Retrieving batch", batch_id=batch_id)  # type: ignore[call-arg]
+        logger.debug(
+            "Retrieving batch", batch_id=batch_id, include_deployment=include_deployment
+        )  # type: ignore[call-arg]
 
         job = await _resolve_batch_job(request, batch_id)
         if not job:
             logger.warning("Batch not found", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=404, detail="Batch not found")
 
-        return _batch_job_to_openai_response(job)
+        deployment = None
+        if include_deployment:
+            ctx = request.app.state.infrastructure_context
+            deployment = await _query_deployment_detail(ctx, job)
+
+        return _batch_job_to_openai_response(job, deployment)
     except HTTPException:
         raise
     except Exception as e:

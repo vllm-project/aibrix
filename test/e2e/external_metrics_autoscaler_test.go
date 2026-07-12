@@ -48,10 +48,11 @@ const (
 	externalMetricName = "aibrix_test_queue_depth"
 	e2eTargetName      = "external-metrics-scale-target"
 	e2ePANamespace     = "default"
+	e2eEnabledValue    = "true"
 )
 
 func TestExternalMetricsAutoscaler(t *testing.T) {
-	if strings.ToLower(strings.TrimSpace(envOrDefault("AIBRIX_EXTERNAL_METRICS_E2E", "false"))) != "true" {
+	if strings.ToLower(strings.TrimSpace(envOrDefault("AIBRIX_EXTERNAL_METRICS_E2E", "false"))) != e2eEnabledValue {
 		t.Skip("set AIBRIX_EXTERNAL_METRICS_E2E=true to run the external metrics e2e test")
 	}
 
@@ -61,7 +62,8 @@ func TestExternalMetricsAutoscaler(t *testing.T) {
 	k8sClient, aibrixClient := externalMetricsClients(t)
 	cleanupExternalMetricsE2E(ctx, t, k8sClient, aibrixClient)
 	defer func() {
-		if t.Failed() && strings.ToLower(envOrDefault("AIBRIX_EXTERNAL_METRICS_E2E_KEEP_ON_FAILURE", "false")) == "true" {
+		keepOnFailure := envOrDefault("AIBRIX_EXTERNAL_METRICS_E2E_KEEP_ON_FAILURE", "false")
+		if t.Failed() && strings.ToLower(keepOnFailure) == e2eEnabledValue {
 			t.Log("preserving external metrics e2e resources for failure diagnostics")
 			return
 		}

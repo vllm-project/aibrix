@@ -17,11 +17,27 @@ limitations under the License.
 package common
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/openai/openai-go/v3"
 	"k8s.io/klog/v2"
 )
+
+type ctxKey string
+
+const includeDeploymentKey ctxKey = "include_deployment"
+
+// WithIncludeDeployment attaches the include_deployment flag to the context.
+func WithIncludeDeployment(ctx context.Context, val bool) context.Context {
+	return context.WithValue(ctx, includeDeploymentKey, val)
+}
+
+// IncludeDeploymentFromCtx returns whether deployment detail should be fetched.
+func IncludeDeploymentFromCtx(ctx context.Context) bool {
+	v, _ := ctx.Value(includeDeploymentKey).(bool)
+	return v
+}
 
 // Console-owned fields we stash on the OpenAI batch.metadata map. Namespaced
 // to keep them out of user-supplied metadata's key space. The bare

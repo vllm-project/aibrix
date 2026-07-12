@@ -17,6 +17,7 @@ import os
 from dataclasses import replace
 from datetime import datetime
 from typing import Callable, Optional, Tuple
+from urllib.parse import quote, unquote
 
 from aibrix import envs
 from aibrix.batch.job_entity import (
@@ -58,8 +59,17 @@ def _status_copies_list_prefix(batch_id: str) -> str:
     return f"{_status_copies_parent_key(batch_id)}/"
 
 
+def _normalize_status_copy_worker_id(worker_id: str) -> str:
+    return quote(worker_id, safe="._-@+()[]{}~")
+
+
+def _decode_status_copy_worker_id(storage_worker_id: str) -> str:
+    return unquote(storage_worker_id)
+
+
 def _status_copy_key(batch_id: str, worker_id: str) -> str:
-    return f"{_status_copies_list_prefix(batch_id)}{worker_id}"
+    encoded_worker_id = _normalize_status_copy_worker_id(worker_id)
+    return f"{_status_copies_list_prefix(batch_id)}{encoded_worker_id}"
 
 
 def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
@@ -341,7 +351,7 @@ async def get_batch_job(batch_id: str) -> Optional[BatchJob]:
     )
     for storage_key, (status_json, exists) in zip(keys, metadata_results):
         if exists:
-            worker_id = storage_key[len(prefix) :]
+            worker_id = _decode_status_copy_worker_id(storage_key[len(prefix) :])
             status_copies[worker_id] = BatchJobStatusCopy.model_validate_json(
                 status_json
             )

@@ -74,6 +74,7 @@ type Server struct {
 	redisClient         *redis.Client
 	ratelimiter         ratelimiter.RateLimiter
 	modelRateLimiter    ratelimiter.RateLimiter
+	apiKeyAuth          *apiKeyAuthConfig
 	client              kubernetes.Interface
 	gatewayClient       gatewayapi.Interface
 	requestCountTracker map[string]int
@@ -142,6 +143,7 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		redisClient:         redisClient,
 		ratelimiter:         r,
 		modelRateLimiter:    mr,
+		apiKeyAuth:          loadAPIKeyAuthConfig(),
 		client:              client,
 		gatewayClient:       gatewayClient,
 		requestCountTracker: map[string]int{},

@@ -37,7 +37,10 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
 )
 
-const testRoleSetUID types.UID = "test-roleset-uid-123"
+const (
+	testRoleSetUID types.UID = "test-roleset-uid-123"
+	testPodOne     string    = "pod-1"
+)
 
 func newOrphanTestRoleSet(name, namespace string) *orchestrationv1alpha1.RoleSet {
 	return &orchestrationv1alpha1.RoleSet{
@@ -185,7 +188,7 @@ func TestPodSetRoleSyncer_Scale_CleansUpOrphanPods(t *testing.T) {
 			description: "Multiple orphan Pods owned by RoleSet should all be cleaned up",
 			existingPods: []client.Object{
 				newOrphanPod("pod-0", "test-ns", "worker", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
-				newOrphanPod("pod-1", "test-ns", "worker", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
+				newOrphanPod(testPodOne, "test-ns", "worker", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
 			},
 			existingPodSets:   []client.Object{},
 			expectedPodCount:  0,
@@ -479,7 +482,7 @@ func TestCleanupOrphanPods_PartialDeletionFailure(t *testing.T) {
 
 	pods := []client.Object{
 		newOrphanPod("pod-0", "test-ns", "worker", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
-		newOrphanPod("pod-1", "test-ns", "worker", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
+		newOrphanPod(testPodOne, "test-ns", "worker", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
 		newOrphanPod("pod-2", "test-ns", "worker", "test-roleset", orchestrationv1alpha1.RoleSetKind, testRoleSetUID),
 	}
 
@@ -491,7 +494,7 @@ func TestCleanupOrphanPods_PartialDeletionFailure(t *testing.T) {
 	interceptedClient := interceptor.NewClient(fakeClient, interceptor.Funcs{
 		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 			deleteCalls++
-			if obj.GetName() == "pod-1" {
+			if obj.GetName() == testPodOne {
 				return fmt.Errorf("simulated transient error")
 			}
 			return c.Delete(ctx, obj, opts...)
@@ -514,7 +517,7 @@ func TestCleanupOrphanPods_PartialDeletionFailure(t *testing.T) {
 	finalPods := &v1.PodList{}
 	require.NoError(t, fakeClient.List(ctx, finalPods, client.InNamespace("test-ns")))
 	assert.Equal(t, 1, len(finalPods.Items), "only the pod that failed to delete should remain")
-	assert.Equal(t, "pod-1", finalPods.Items[0].Name)
+	assert.Equal(t, testPodOne, finalPods.Items[0].Name)
 }
 
 func TestCleanupOrphanPodSets_PartialDeletionFailure(t *testing.T) {
