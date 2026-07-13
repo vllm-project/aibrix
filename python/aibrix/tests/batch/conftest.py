@@ -22,8 +22,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import boto3
 import pytest
@@ -31,8 +30,6 @@ import yaml
 from fastapi.testclient import TestClient
 from kubernetes import client, config
 
-import aibrix.batch.job_driver.runtime.k8s_deployment as deployment_runtime_module
-import aibrix.batch.job_driver.runtime.k8s_job as k8s_job_runtime_module
 import aibrix.client.redis as redis_client
 from aibrix import envs
 from aibrix.batch.client.channel import EchoChannel
@@ -40,19 +37,18 @@ from aibrix.batch.client.engine import DispatchEngine
 from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
 from aibrix.batch.client.sources import NoopEndpointSource
 from aibrix.batch.job_driver.base import BaseJobDriver
-from aibrix.batch.job_driver.runtime import ExternalRuntime
-from aibrix.batch.job_entity import BatchJob
-from aibrix.batch.manifest import JobManifestRenderer
-from aibrix.batch.worker import SingleJobRunner
 from aibrix.logger import init_logger
 from aibrix.metadata.app import build_app
 from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
+from tests.batch.job_driver.runtime.deployment_backend import (
+    configure_local_metastore_deployment_backend,
+)
+from tests.batch.job_driver.runtime.k8s_job_backend import (
+    configure_local_metastore_k8s_job_backend,
+)
 
 logger = init_logger(__name__)
-ORIGINAL_DEPLOYMENT_TEARDOWN_RUNTIME = (
-    deployment_runtime_module.DeploymentRuntime._teardown_runtime
-)
 
 
 def pin_job_concurrency_to_serial(
@@ -62,7 +58,7 @@ def pin_job_concurrency_to_serial(
 ) -> None:
     """Opt a test into the serial worker path; concurrent remains the default."""
 
-    async def serial_execute_worker(self, job_id):
+    async def serial_execute_worker(self, job_id, next_pass_start=None):
         if self._engine is None:
             raise RuntimeError(
                 "JobDriver was constructed without an engine; execute_worker "
@@ -72,7 +68,7 @@ def pin_job_concurrency_to_serial(
         job, stopped = await self._is_job_stopped(job_id)
         if stopped:
             return await self._finish_stopped_job(job)
-        return await self._execute_worker_serial(job)
+        return await self._execute_worker_serial(job, start_index=next_pass_start)
 
     monkeypatch.setattr(
         BaseJobDriver,
@@ -110,6 +106,13 @@ def _keyword_enables_serial_worker(keyword: str) -> bool:
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         item.extra_keyword_matches.add("serial_worker")
+
+
+@pytest.fixture(autouse=True)
+def enable_batch_driver_error_injection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(envs, "BATCH_ERROR_INJECTION_ENABLED", True)
 
 
 @pytest.fixture(autouse=True)
@@ -457,6 +460,7 @@ def create_test_app(
     metastore_type: StorageType = StorageType.LOCAL,
     params: Optional[Dict[str, Any]] = None,
     dry_run: bool = False,
+    batch_driver_stand_alone: bool = False,
 ):
     """Create a FastAPI app configured for e2e testing.
 
@@ -482,6 +486,7 @@ def create_test_app(
             disable_file_api=False,
             enable_k8s_support=enable_k8s_support,
             dry_run=dry_run,
+            batch_driver_stand_alone=batch_driver_stand_alone,
         ),
         params,
     )
@@ -547,292 +552,6 @@ class InterruptibleEchoChannel(EchoChannel):
         return request.payload
 
 
-class FakeDeploymentAppsV1Api:
-    def __init__(self):
-        self.created: list[tuple[str, dict[str, Any]]] = []
-        self.deleted: list[tuple[str, str]] = []
-        self._existing: set[tuple[str, str]] = set()
-
-    def create_namespaced_deployment(self, namespace: str, body: dict[str, Any]):
-        self.created.append((namespace, body))
-        self._existing.add((namespace, body["metadata"]["name"]))
-
-    def read_namespaced_deployment_status(self, name: str, namespace: str):
-        if (namespace, name) not in self._existing:
-            raise client.ApiException(status=404)
-        return SimpleNamespace(status=SimpleNamespace(available_replicas=1))
-
-    def delete_namespaced_deployment(self, name: str, namespace: str):
-        if (namespace, name) not in self._existing:
-            raise client.ApiException(status=404)
-        self.deleted.append((namespace, name))
-        self._existing.remove((namespace, name))
-
-    def deployment_exists(self, namespace: str, name: str) -> bool:
-        return (namespace, name) in self._existing
-
-
-class FakeDeploymentCoreV1Api:
-    def __init__(self):
-        self.created: list[tuple[str, dict[str, Any]]] = []
-        self.deleted: list[tuple[str, str]] = []
-        self._existing: set[tuple[str, str]] = set()
-
-    def create_namespaced_service(self, namespace: str, body: dict[str, Any]):
-        self.created.append((namespace, body))
-        self._existing.add((namespace, body["metadata"]["name"]))
-
-    def read_namespaced_service(self, name: str, namespace: str):
-        if (namespace, name) not in self._existing:
-            raise client.ApiException(status=404)
-        return SimpleNamespace(metadata=SimpleNamespace(name=name, namespace=namespace))
-
-    def delete_namespaced_service(self, name: str, namespace: str):
-        if (namespace, name) not in self._existing:
-            raise client.ApiException(status=404)
-        self.deleted.append((namespace, name))
-        self._existing.remove((namespace, name))
-
-    def service_exists(self, namespace: str, name: str) -> bool:
-        return (namespace, name) in self._existing
-
-
-class FakeDeploymentRenderer:
-    def render(
-        self,
-        job_id: str,
-        spec,
-        prividerSpec,
-    ):
-        deployment_name = f"batch-{job_id[:8]}-engine"
-        return {
-            "deployment": {
-                "apiVersion": "apps/v1",
-                "kind": "Deployment",
-                "metadata": {
-                    "name": deployment_name,
-                    "namespace": "default",
-                    "labels": {"model.aibrix.ai/name": deployment_name},
-                },
-                "spec": {
-                    "replicas": 1,
-                    "selector": {
-                        "matchLabels": {
-                            "app": deployment_name,
-                            "model.aibrix.ai/name": deployment_name,
-                        }
-                    },
-                    "template": {
-                        "metadata": {
-                            "labels": {
-                                "app": deployment_name,
-                                "model.aibrix.ai/name": deployment_name,
-                            }
-                        },
-                        "spec": {"containers": [{"name": "llm-engine"}]},
-                    },
-                },
-            },
-            "service": {
-                "apiVersion": "v1",
-                "kind": "Service",
-                "metadata": {
-                    "name": deployment_name,
-                    "namespace": "default",
-                    "labels": {"model.aibrix.ai/name": deployment_name},
-                },
-                "spec": {
-                    "selector": {"model.aibrix.ai/name": deployment_name},
-                    "ports": [{"port": 8000, "targetPort": 8000}],
-                    "type": "ClusterIP",
-                },
-            },
-        }
-
-
-class FakeBatchV1Api:
-    """In-process stand-in for ``kubernetes.client.BatchV1Api`` used by the
-    local ``KubernetesJob`` backend. A Job stays without a terminal condition
-    until ``mark_complete`` flips it to ``Complete``; the fake worker run does
-    that once it has written the job's output, so the runtime's poll loop
-    observes completion exactly as it would against a real cluster."""
-
-    def __init__(self):
-        self.created: list[tuple[str, dict[str, Any]]] = []
-        self.deleted: list[tuple[str, str]] = []
-        self._conditions: dict[tuple[str, str], list[Any]] = {}
-
-    def create_namespaced_job(self, namespace: str, body: dict[str, Any]):
-        name = body["metadata"]["name"]
-        self.created.append((namespace, body))
-        self._conditions[(namespace, name)] = []
-
-    def patch_namespaced_job(self, name: str, namespace: str, body: dict[str, Any]):
-        if (namespace, name) not in self._conditions:
-            raise client.ApiException(status=404)
-
-    def read_namespaced_job_status(self, name: str, namespace: str):
-        conditions = self._conditions.get((namespace, name))
-        if conditions is None:
-            raise client.ApiException(status=404)
-        return SimpleNamespace(status=SimpleNamespace(conditions=conditions))
-
-    def delete_namespaced_job(
-        self, name: str, namespace: str, propagation_policy: str | None = None
-    ):
-        if (namespace, name) not in self._conditions:
-            raise client.ApiException(status=404)
-        self.deleted.append((namespace, name))
-        self._conditions.pop((namespace, name))
-
-    def mark_complete(self, namespace: str, name: str):
-        self._conditions[(namespace, name)] = [
-            SimpleNamespace(type="Complete", status="True", reason="", message="")
-        ]
-
-
-def configure_local_metastore_deployment_backend(app, monkeypatch) -> None:
-    context = app.state.batch_driver._context
-    shared_state = getattr(monkeypatch, "_aibrix_fake_deployment_backend_state", None)
-    if shared_state is None:
-        shared_state = {
-            "apps_v1_api": FakeDeploymentAppsV1Api(),
-            "core_v1_api": FakeDeploymentCoreV1Api(),
-            "deployment_teardown_calls": [],
-            "deployment_endpoint_source_builds": [],
-        }
-        setattr(monkeypatch, "_aibrix_fake_deployment_backend_state", shared_state)
-
-    apps_v1_api = shared_state["apps_v1_api"]
-    core_v1_api = shared_state["core_v1_api"]
-    context.apps_v1_api = apps_v1_api
-    context.core_v1_api = core_v1_api
-    context.values["deployment_apps_v1_api"] = apps_v1_api
-    context.values["deployment_core_v1_api"] = core_v1_api
-    context.values["deployment_teardown_calls"] = shared_state[
-        "deployment_teardown_calls"
-    ]
-    context.values["deployment_endpoint_source_builds"] = shared_state[
-        "deployment_endpoint_source_builds"
-    ]
-
-    monkeypatch.setattr(
-        deployment_runtime_module.DeploymentRuntime,
-        "_build_renderer",
-        staticmethod(lambda context: FakeDeploymentRenderer()),
-    )
-
-    def _build_test_endpoint_source(self, handle):
-        self._context.values["deployment_endpoint_source_builds"].append(
-            handle.deployment_name
-        )
-        return FastNoopEndpointSource(
-            self._context,
-            availability_check=lambda: (
-                apps_v1_api.deployment_exists(handle.namespace, handle.deployment_name)
-                and core_v1_api.service_exists(handle.namespace, handle.deployment_name)
-            ),
-            channel_id=handle.deployment_name,
-        )
-
-    async def _recording_teardown(self, runtime):
-        self._context.values["deployment_teardown_calls"].append(
-            {
-                "job_id": self._active_job_id,
-                "deployment_name": runtime.deployment_name,
-            }
-        )
-        return await ORIGINAL_DEPLOYMENT_TEARDOWN_RUNTIME(self, runtime)
-
-    monkeypatch.setattr(
-        deployment_runtime_module.DeploymentRuntime,
-        "_build_endpoint_source",
-        _build_test_endpoint_source,
-    )
-    monkeypatch.setattr(
-        deployment_runtime_module.DeploymentRuntime,
-        "_teardown_runtime",
-        _recording_teardown,
-    )
-
-
-def configure_local_metastore_k8s_job_backend(app, monkeypatch) -> None:
-    context = app.state.batch_driver._context
-    fake_api = FakeBatchV1Api()
-    context.values["k8s_job_batch_v1_api"] = fake_api
-    context.values["k8s_job_teardown_calls"] = []
-
-    # K8sJobRuntime reads batch_v1_api off the context, but the slotted
-    # InfrastructureContext has no such field, so the runtime falls back to
-    # constructing a real BatchV1Api(). Patch the constructor to hand every
-    # runtime the fake instead — no cluster is reachable in the local backend.
-    monkeypatch.setattr(
-        k8s_job_runtime_module.k8s_client,
-        "BatchV1Api",
-        lambda *args, **kwargs: fake_api,
-    )
-
-    # A real render resolves template/profile ConfigMaps that the local
-    # backend never applies, so return a minimal suspended-Job manifest.
-    def _render(self, session_id, spec, prepared_job=None, **kwargs):
-        job_id = getattr(prepared_job, "job_id", None) or session_id
-        job_name = f"batch-{job_id[:8]}-worker"
-        return {
-            "metadata": {"name": job_name, "namespace": "default"},
-            "spec": {"suspend": True},
-        }
-
-    monkeypatch.setattr(JobManifestRenderer, "render", _render)
-
-    original_on_prepared = k8s_job_runtime_module.K8sJobRuntime.on_prepared
-
-    async def _run_self_hosted_worker(self):
-        # Un-suspend first (the real hook), then stand in for the Job's pod:
-        # run the worker in worker_mode so it writes the output parts and
-        # per-request done markers but leaves finalization to the coordinator,
-        # exactly as the real KubernetesJob worker does. The coordinator then
-        # aggregates the surviving markers in finalize_job.
-        await original_on_prepared(self)
-        job_id = self._active_job_id
-        job = await self._progress_manager.get_job(job_id)
-        worker_job = BatchJob(
-            sessionID=job.session_id,
-            typeMeta=job.type_meta,
-            metadata=job.metadata,
-            spec=job.spec,
-            status=job.status.model_copy(deep=True),
-        )
-        worker = BaseJobDriver(
-            SingleJobRunner(worker_job),
-            ExternalRuntime(FastNoopEndpointSource(context)),
-            worker_mode=True,
-        )
-        await worker.execute(job_id)
-        handle = self.active_handle
-        fake_api.mark_complete(handle.namespace, handle.job_name)
-
-    monkeypatch.setattr(
-        k8s_job_runtime_module.K8sJobRuntime,
-        "on_prepared",
-        _run_self_hosted_worker,
-    )
-
-    original_teardown = k8s_job_runtime_module.K8sJobRuntime._teardown
-
-    async def _recording_teardown(self, handle):
-        if handle is not None:
-            context.values["k8s_job_teardown_calls"].append(
-                {"job_id": self._active_job_id, "job_name": handle.job_name}
-            )
-        return await original_teardown(self, handle)
-
-    monkeypatch.setattr(
-        k8s_job_runtime_module.K8sJobRuntime,
-        "_teardown",
-        _recording_teardown,
-    )
-
-
 ENDPOINT_SAMPLE_BODIES = {
     "/v1/chat/completions": {
         "model": "gpt-3.5-turbo-0125",
@@ -864,6 +583,14 @@ ENDPOINT_SAMPLE_BODIES = {
 
 
 class E2ETestBackend(str):
+    """Named E2E backend with feature flags consumed by test helpers.
+
+    `features` are symbolic capabilities used by `tests/batch` helpers to
+    decide whether to skip a scenario or which runtime-debug delta to expect.
+    See the feature reference above `E2E_BACKENDS` for the current readers and
+    affected scope.
+    """
+
     request_kwargs: dict[str, str]
     features: frozenset[str]
     runtime_debug_config: Optional[dict[str, str]]
@@ -871,6 +598,7 @@ class E2ETestBackend(str):
     storage_type: StorageType
     metastore_type: StorageType
     serial_worker: bool
+    configure_app: Optional[Callable[[Any, pytest.MonkeyPatch], None]]
 
     def __new__(
         cls,
@@ -883,6 +611,7 @@ class E2ETestBackend(str):
         storage_type: StorageType = StorageType.LOCAL,
         metastore_type: StorageType = StorageType.LOCAL,
         serial_worker: bool = False,
+        configure_app: Optional[Callable[[Any, pytest.MonkeyPatch], None]] = None,
     ):
         backend = str.__new__(cls, name)
         backend.request_kwargs = dict(request_kwargs or {})
@@ -894,6 +623,7 @@ class E2ETestBackend(str):
         backend.storage_type = storage_type
         backend.metastore_type = metastore_type
         backend.serial_worker = serial_worker
+        backend.configure_app = configure_app
         return backend
 
     def has_feature(self, feature: str) -> bool:
@@ -911,6 +641,7 @@ class E2ETestBackend(str):
             storage_type=self.storage_type,
             metastore_type=metastore_type,
             serial_worker=self.serial_worker,
+            configure_app=self.configure_app,
         )
 
     def with_serial_worker(self, serial_worker: bool = True) -> "E2ETestBackend":
@@ -925,6 +656,7 @@ class E2ETestBackend(str):
             storage_type=self.storage_type,
             metastore_type=self.metastore_type,
             serial_worker=serial_worker,
+            configure_app=self.configure_app,
         )
 
     @property
@@ -968,9 +700,71 @@ class E2ETestBackend(str):
         return "][".join(parts)
 
 
+# E2E backend feature reference.
+#
+# `support_runtime`
+#   Readers: `E2ETestBackend.support_runtime`, plus
+#   `test_e2e_abnormal_job_behavior.py` runtime-gated scenarios such as
+#   `test_job_runtime_failure_in_progress` and
+#   `test_job_cancellation_in_progress_during_service_discovery`.
+#   Scope: enables runtime-only tests instead of skipping them.
+#
+# `fake_runtime`
+#   Readers: `E2ETestBackend.fake_runtime`,
+#   `E2ETestBackend.requires_fake_runtime`, `build_e2e_test_app()`,
+#   `backend_expect_runtime_teardown()`.
+#   Scope: installs the local fake runtime backend and enables runtime debug
+#   delta assertions that only make sense when create/delete hooks are visible.
+#
+# `fake_provisioning_runtime`
+#   Readers: `backend_uses_fake_provisioning_runtime()` in
+#   `test_e2e_abnormal_job_behavior.py`.
+#   Scope: recovery/abnormal tests that require observable provisioned runtime
+#   lifecycle rather than an already-external endpoint.
+#
+# `service_discovery`
+#   Readers: `backend_has_feature(..., "service_discovery")`.
+#   Scope: `test_job_cancellation_in_progress_during_service_discovery`.
+#
+# `restart_phase_recovery`
+#   Readers: `backend_supports_restart_phase_recovery()`.
+#   Scope: restart/reclaim scenarios in
+#   `test_e2e_abnormal_job_behavior.py`, especially
+#   `complete_job_after_restart()`-based flows.
+#
+# `restart_validation_runtime_delta_observable`
+#   Readers: `backend_observes_restart_validation_runtime_delta()`.
+#   Scope: `test_job_restore_after_mds_crash_during_validation`; controls
+#   whether restart-time runtime create/use/teardown deltas should be asserted.
+#
+# `runtime_cleanup_interruption`
+#   Readers: `backend_supports_runtime_cleanup_interruption()`.
+#   Scope: teardown-interruption and rollover overlap tests such as
+#   `test_job_runtime_failure_in_progress`,
+#   `test_job_restore_after_mds_rollover_with_runtime_overlap`, and
+#   `test_job_session_final_block_exception_surfaces_as_failure`.
+#
+# `runtime_cleanup_single_delete`
+#   Readers: `backend_runtime_cleanup_delete_delta()`.
+#   Scope: expected delete-call count for runtime cleanup assertions; deployment
+#   tears down via a single runtime delete while Octagram observes two phases.
+#
+# `restart_in_progress_lock_retry`
+#   Readers: `backend_supports_restart_in_progress_lock_retry()`.
+#   Scope: restart-after-in-progress-crash tests that install shorter reclaim
+#   timeouts and request-lock retry harnesses.
+#
+# `finalizing_cancel_api_race`
+#   Current scope: declaration-only in `tests/batch`; kept as backend metadata
+#   for finalizing/cancel API race coverage but has no direct reader today.
+#
+# `restart_in_progress_multi_teardown`
+#   Current scope: declaration-only in `tests/batch`; kept to describe backend
+#   behavior where restart recovery may observe more than one teardown phase.
 E2E_BACKENDS: dict[str, E2ETestBackend] = {
     "local_metastore_job": E2ETestBackend(
         "local_metastore_job",
+        features=("restart_phase_recovery",),
     ),
     "local_job_using_deployment": E2ETestBackend(
         "local_job_using_deployment",
@@ -978,7 +772,16 @@ E2E_BACKENDS: dict[str, E2ETestBackend] = {
             "aibrix_template": "mock-template",
             "provider": "deployment",
         },
-        features=("support_runtime", "fake_runtime", "fake_provisioning_runtime"),
+        features=(
+            "support_runtime",
+            "fake_runtime",
+            "fake_provisioning_runtime",
+            "restart_phase_recovery",
+            "restart_validation_runtime_delta_observable",
+            "runtime_cleanup_interruption",
+            "runtime_cleanup_single_delete",
+            "restart_in_progress_lock_retry",
+        ),
         runtime_debug_config={
             "teardown_calls_key": "deployment_teardown_calls",
             "endpoint_source_builds_key": "deployment_endpoint_source_builds",
@@ -987,6 +790,7 @@ E2E_BACKENDS: dict[str, E2ETestBackend] = {
             "runtime_delete_target_key": "deployment_apps_v1_api",
             "runtime_delete_attr": "deleted",
         },
+        configure_app=configure_local_metastore_deployment_backend,
     ),
     # Self-hosting KubernetesJob backend on local storage/metastore, backed by
     # a fake BatchV1Api. The worker runs in-process in worker_mode, so this
@@ -999,6 +803,7 @@ E2E_BACKENDS: dict[str, E2ETestBackend] = {
             "provider": "k8s_job",
         },
         features=("support_runtime", "fake_runtime", "fake_provisioning_runtime"),
+        configure_app=configure_local_metastore_k8s_job_backend,
     ),
     # Example backend configuration for implementing e2e Kubernetes Job tests.
     # This documents the intended shape of a real k8s-job backend:
@@ -1122,7 +927,7 @@ def build_batch_request(
             "provision_resource_deadline": 3600,
             "resource_details": [
                 {
-                    "endpoint_cluster": "cluster-a",
+                    "endpoint_cluster": "zone/HL/cluster-a/default",
                     "gpu_type": "H100",
                     "replica": 1,
                 }
@@ -1296,6 +1101,9 @@ def build_e2e_test_app(
         storage_type=test_backend.storage_type,
         metastore_type=test_backend.metastore_type,
         dry_run=test_backend.dry_run,
+        batch_driver_stand_alone=bool(
+            request.node.get_closest_marker("batch_driver_stand_alone")
+        ),
     )
     app.state.metadata_store = MockMetadataStore()
     app.state.redis_client = None
@@ -1309,11 +1117,8 @@ def build_e2e_test_app(
                 f"Backend {test_backend} must declare fake_runtime for local storage/metastore tests"
             )
 
-        if test_backend.runtime_name == "deployment":
-            configure_local_metastore_deployment_backend(app, monkeypatch)
-            return app
-        elif test_backend.runtime_name == "k8s_job":
-            configure_local_metastore_k8s_job_backend(app, monkeypatch)
+        if test_backend.configure_app is not None:
+            test_backend.configure_app(app, monkeypatch)
             return app
 
         raise ValueError(

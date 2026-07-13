@@ -357,11 +357,20 @@ class JobRuntimeRef(_Strict):
     driver_type: str = Field(alias="driverType")
     attempt: int = Field(default=0, ge=0)
     owner_ref: Optional[str] = Field(default=None, alias="ownerRef")
+    owner_worker_id: Optional[str] = Field(default=None, alias="ownerWorkerId")
     reconnect_payload: Optional[Dict[str, Any]] = Field(
         default=None, alias="reconnectPayload"
     )
     connected_at: Optional[datetime] = Field(default=None, alias="connectedAt")
     heartbeat_at: Optional[datetime] = Field(default=None, alias="heartbeatAt")
+    delete_started_at: Optional[datetime] = Field(default=None, alias="deleteStartedAt")
+    deleted_at: Optional[datetime] = Field(default=None, alias="deletedAt")
+
+    def delete_started(self) -> bool:
+        return self.delete_started_at is not None
+
+    def deleted(self) -> bool:
+        return self.deleted_at is not None
 
 
 class BatchJobStatusCopy(_Strict):
@@ -572,6 +581,11 @@ class BatchJobStatus(_Strict):
         default=None,
         alias="finalizingAt",
         description="Timestamp of when the batch job started finalizing",
+    )
+    last_crashed_at: Optional[datetime] = Field(
+        default=None,
+        alias="lastCrashedAt",
+        description="Timestamp of the most recent injected crash for this job",
     )
     finalized_at: Optional[datetime] = Field(
         default=None,

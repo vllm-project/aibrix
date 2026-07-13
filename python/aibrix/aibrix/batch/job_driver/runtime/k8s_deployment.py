@@ -130,7 +130,7 @@ class DeploymentRuntime(RuntimeBase):
         )
         return payload
 
-    async def _reconnect(
+    async def _load_handle(
         self, job: BatchJob, job_id: str, execution: JobRuntimeRef
     ) -> DeploymentHandle | None:
         del job
@@ -169,7 +169,7 @@ class DeploymentRuntime(RuntimeBase):
         )
         self._active_handle = handle
         logger.info(
-            "Reconnected Deployment runtime for batch job",
+            "Loaded Deployment runtime handle for batch job",
             job_id=job_id,
             namespace=handle.namespace,
             deployment=handle.deployment_name,

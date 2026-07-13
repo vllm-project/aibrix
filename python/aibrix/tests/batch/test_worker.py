@@ -17,6 +17,7 @@ from aibrix.batch.job_entity import (
     TypeMeta,
 )
 from aibrix.batch.worker import BatchWorker, SingleJobRunner, worker_main
+from aibrix.context.infra import InfrastructureContext
 
 
 def _make_job(state: BatchJobState) -> BatchJob:
@@ -116,7 +117,7 @@ async def test_run_returns_failure_when_execution_fails(monkeypatch):
     monkeypatch.setattr(
         worker_module,
         "BaseJobDriver",
-        lambda runner, runtime, **kwargs: failing_driver,
+        lambda _context, runner, runtime, **kwargs: failing_driver,
     )
 
     result = await worker.run()
@@ -145,7 +146,8 @@ async def test_run_constructs_driver_in_worker_mode(monkeypatch):
 
     captured: dict = {}
 
-    def _capture_driver(runner, runtime, **kwargs):
+    def _capture_driver(context, runner, runtime, **kwargs):
+        captured["context"] = context
         captured.update(kwargs)
         return SimpleNamespace(execute=AsyncMock(return_value=None))
 
@@ -157,6 +159,7 @@ async def test_run_constructs_driver_in_worker_mode(monkeypatch):
     result = await worker.run()
 
     assert result == 0
+    assert isinstance(captured.get("context"), InfrastructureContext)
     assert captured.get("worker_mode") is True
 
 

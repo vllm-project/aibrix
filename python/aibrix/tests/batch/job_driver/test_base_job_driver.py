@@ -1,11 +1,13 @@
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import cast
 
 import pytest
 
 from aibrix.batch.job_driver import BaseJobDriver, ExternalRuntime
 from aibrix.batch.job_driver import base as base_module
+from aibrix.batch.job_driver.running_jobs import RunningJobs
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobError,
@@ -20,6 +22,7 @@ from aibrix.batch.job_entity import (
     TypeMeta,
 )
 from aibrix.batch.worker import SingleJobRunner
+from aibrix.context.infra import InfrastructureContext
 
 
 def _make_job(
@@ -48,11 +51,18 @@ def _make_job(
 
 
 def _make_driver(job: BatchJob) -> BaseJobDriver:
-    return BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
+    return BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
 
 
 def test_assign_worker_id_normalizes_runtime_owner_ref_slashes():
-    driver = BaseJobDriver(progress_manager=None)
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        cast(RunningJobs, None),
+    )
     driver._worker_token = "token1234"
 
     worker_id = driver._assign_worker_id("cluster-a/default/workload-1")

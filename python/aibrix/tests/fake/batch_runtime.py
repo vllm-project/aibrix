@@ -32,7 +32,7 @@ class FakeRuntime(RuntimeBase):
         del job
         return self.runtime_key
 
-    async def _reconnect(
+    async def _load_handle(
         self, job: BatchJob, job_id: str, runtimeRef: JobRuntimeRef
     ) -> Any | None:
         del job

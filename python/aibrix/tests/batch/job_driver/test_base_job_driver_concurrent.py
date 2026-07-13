@@ -37,6 +37,7 @@ from aibrix.batch.job_entity import (
     TypeMeta,
 )
 from aibrix.batch.worker import SingleJobRunner
+from aibrix.context.infra import InfrastructureContext
 
 
 def _make_job(total: int) -> BatchJob:
@@ -133,7 +134,11 @@ def _driver(
     fail_indices: Optional[set[int]] = None,
 ):
     channel = _SlowChannel(fail_indices=fail_indices)
-    driver = BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
     driver._engine = DispatchEngine(_Source(channel, capacity), max_retries=0)
     return driver, channel
 
@@ -154,7 +159,11 @@ def test_retry_config_prefers_job_client_and_falls_back_to_env(monkeypatch):
             }
         }
     )
-    driver = BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
 
     retry = driver._retry_config_for_job(job)
 
@@ -180,7 +189,11 @@ def test_dispatch_kwargs_preserve_adaptive_capacity_factor_when_cap_absent(
 ):
     monkeypatch.setenv("AIBRIX_BATCH_ADAPTIVE_MAX_FACTOR", "12")
     job = _make_job(total=1)
-    driver = BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
 
     kwargs = driver._dispatch_run_kwargs_for_job(job)
 
@@ -199,7 +212,11 @@ def test_dispatch_kwargs_use_fixed_max_concurrency_when_adaptive_disabled():
             "adaptive_max_factor": 16,
         }
     )
-    driver = BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
 
     kwargs = driver._dispatch_run_kwargs_for_job(job)
 
@@ -213,7 +230,11 @@ def test_dispatch_kwargs_use_fixed_max_concurrency_when_adaptive_disabled():
 def test_build_response_shapes_output_payload_model():
     job = _make_job(total=1)
     job.spec.aibrix = AibrixMetadata(model="requested-model")
-    driver = BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
     driver._active_model_name = "served-model"
 
     response = driver._build_response(
@@ -313,7 +334,11 @@ async def test_execute_worker_passes_client_concurrency_as_absolute_adaptive_cap
             "adaptive_max_factor": 16,
         }
     )
-    driver = BaseJobDriver(SingleJobRunner(job), ExternalRuntime(None))
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
     engine = _CapturingEngine()
     driver._engine = engine
     requests = [{"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}}]
@@ -447,6 +472,7 @@ async def test_finalize_job_persists_calibrated_counts_before_done(monkeypatch):
             completed=4,
             failed=0,
         )
+        return finalizing_job
 
     async def mark_job_done(finalized_job):
         lifecycle.append("done")

@@ -211,6 +211,13 @@ class BatchDriver:
         This method itself MUST be awaited. (For use from async code)
         """
         if self._async_thread_loop is not None:
+            loop = self._async_thread_loop.loop
+            if (
+                loop is None
+                or loop.is_closed()
+                or not self._async_thread_loop.is_alive()
+            ):
+                return await coro
             return await self._async_thread_loop.run_coroutine(coro)
 
         return await coro

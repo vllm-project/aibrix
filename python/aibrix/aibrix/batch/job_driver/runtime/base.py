@@ -56,6 +56,8 @@ from aibrix import envs
 from aibrix.batch.client import EndpointSource
 from aibrix.batch.job_driver.driver import TerminateResult
 from aibrix.batch.job_driver.error_injection import (
+    BREAKPOINT_AFTER_FINALIZE_SHUTDOWN,
+    BREAKPOINT_BEFORE_FINALIZE_SHUTDOWN,
     BREAKPOINT_RUNTIME_INITIALIZATION,
     JobDriverErrorInjector,
 )
@@ -75,6 +77,72 @@ logger = init_logger(__name__)
 
 RUNTIME_WAIT_MODE_PROVISION = "provision"
 RUNTIME_WAIT_MODE_RECONNECT = "reconnect"
+
+
+class RuntimeOwnershipConflictError(BatchJobError):
+    def __init__(
+        self,
+        *,
+        job_id: str,
+        runtime_key: str,
+        owner_worker_id: Optional[str],
+        current_worker_id: str,
+        retry_after_s: float = 0.0,
+    ) -> None:
+        owner_label = owner_worker_id if owner_worker_id is not None else "<unknown>"
+        super().__init__(
+            code=BatchJobErrorCode.INTERNAL_ERROR,
+            message=(
+                "Runtime is still owned by another active worker; retry later "
+                f"(runtime={runtime_key}, owner_worker_id={owner_label}, "
+                f"current_worker_id={current_worker_id}, retry_after_s={retry_after_s:.2f})"
+            ),
+        )
+        self.job_id = job_id
+        self.runtime_key = runtime_key
+        self.owner_worker_id = owner_worker_id
+        self.current_worker_id = current_worker_id
+        self.retry_after_s = retry_after_s
+
+    def __deepcopy__(self, memo):
+        new_copy = self.__class__(
+            job_id=self.job_id,
+            runtime_key=self.runtime_key,
+            owner_worker_id=self.owner_worker_id,
+            current_worker_id=self.current_worker_id,
+            retry_after_s=self.retry_after_s,
+        )
+        memo[id(self)] = new_copy
+        return new_copy
+
+
+class RuntimeDeleteInProgressError(BatchJobError):
+    def __init__(
+        self,
+        *,
+        job_id: str,
+        runtime_key: str,
+        retry_after_s: float = 0.0,
+    ) -> None:
+        super().__init__(
+            code=BatchJobErrorCode.INTERNAL_ERROR,
+            message=(
+                "Runtime teardown is still in progress; retry later "
+                f"(runtime={runtime_key}, retry_after_s={retry_after_s:.2f})"
+            ),
+        )
+        self.job_id = job_id
+        self.runtime_key = runtime_key
+        self.retry_after_s = retry_after_s
+
+    def __deepcopy__(self, memo):
+        new_copy = self.__class__(
+            job_id=self.job_id,
+            runtime_key=self.runtime_key,
+            retry_after_s=self.retry_after_s,
+        )
+        memo[id(self)] = new_copy
+        return new_copy
 
 
 @dataclass(slots=True)
@@ -114,6 +182,11 @@ class Runtime(Protocol):
     #: Whether this runtime stands up compute (False for local/openai/sidecar).
     provisions: bool
 
+    @property
+    def context(self) -> InfrastructureContext:
+        """Return runtime context"""
+        ...
+
     def cancelled(self) -> bool:
         """True once delete-triggered teardown has fully finished."""
         ...
@@ -151,6 +224,17 @@ class Runtime(Protocol):
         """Best-effort cleanup for a recovered job before finalization."""
         ...
 
+    def touch_runtime_ref_heartbeat(
+        self,
+        job: BatchJob,
+        status: BatchJobStatus,
+        *,
+        worker_id: Optional[str],
+        now: Optional[datetime] = None,
+    ) -> None:
+        """Refresh the active runtime ref heartbeat inside a copied status."""
+        ...
+
 
 class AsyncRuntimeSession(Protocol):
     async def __aenter__(self) -> Endpoint: ...
@@ -171,7 +255,7 @@ class RuntimeBase:
     """
 
     provisions: bool = False
-    session_retry_attempts: int = 3
+    session_retry_attempts: int = 5
     session_retry_base_delay_s: float = 2.0
     session_liveness_check_interval_s: float = 30.0
     session_liveness_failure_threshold: Optional[int] = None
@@ -202,6 +286,11 @@ class RuntimeBase:
         self._stop_job_id: Optional[str] = None
         self._stopped_job_id: Optional[str] = None
 
+    @property
+    def context(self) -> InfrastructureContext:
+        """Return runtime context"""
+        return self._context
+
     def cancelled(self) -> bool:
         return self._stopped.is_set()
 
@@ -210,7 +299,7 @@ class RuntimeBase:
             self._stop_job_id == job_id or self._stopped_job_id == job_id
         )
 
-    async def _reconnect(
+    async def _load_handle(
         self, job: BatchJob, job_id: str, runtimeRef: JobRuntimeRef
     ) -> Any | None:
         del job, job_id, runtimeRef
@@ -236,6 +325,42 @@ class RuntimeBase:
         """Best-effort liveness probe for reconnect/recovery and live sessions."""
         del handle
         return None
+
+    async def _wait_teared_down(
+        self,
+        handle: Any,
+        *,
+        job: Optional[BatchJob] = None,
+        progress_manager: Optional[RunningJobs] = None,
+        worker_id: Optional[str] = None,
+    ) -> bool:
+        """Poll until runtime confirm to be deleted"""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + float(self._ready_timeout_seconds)
+        while True:
+            if self._stop_requested.is_set():
+                raise asyncio.CancelledError
+            try:
+                await asyncio.wait_for(self._check_liveness(handle), timeout=1.0)
+            except TimeoutError:
+                pass
+            except Exception as exc:
+                if self._is_not_found_error(exc):
+                    if (
+                        job is not None
+                        and progress_manager is not None
+                        and worker_id is not None
+                    ):
+                        job = await self._clear_runtime_ref(
+                            job,
+                            progress_manager=progress_manager,
+                            worker_id=worker_id,
+                        )
+                    return True
+                raise
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(1)
 
     async def _connect(self, handle: Any) -> Endpoint:
         """Build the reachable endpoint. Default: no endpoint (worker self-hosts)."""
@@ -367,6 +492,258 @@ class RuntimeBase:
     def _load_runtime_ref(self, job: BatchJob) -> Optional[JobRuntimeRef]:
         return job.status.get_runtime_ref(self._get_runtime_key(job))
 
+    def _runtime_ref_lease_seconds(self) -> float:
+        if self.session_liveness_check_interval_s > 0:
+            return max(self.session_liveness_check_interval_s * 2, 1.0)
+        return 30.0
+
+    def _runtime_ref_remaining_lease_seconds(
+        self,
+        execution_ref: JobRuntimeRef,
+        *,
+        now: Optional[datetime] = None,
+    ) -> float:
+        heartbeat_at = execution_ref.heartbeat_at
+        if heartbeat_at is None:
+            return 0.0
+        reference_time = now or datetime.now(timezone.utc)
+        elapsed = (reference_time - heartbeat_at).total_seconds()
+        return max(0.0, self._runtime_ref_lease_seconds() - elapsed)
+
+    def _runtime_ref_owned_by_other_live_worker(
+        self,
+        execution_ref: Optional[JobRuntimeRef],
+        worker_id: Optional[str],
+    ) -> tuple[Optional[str], float, bool]:
+        if execution_ref is None or worker_id is None:
+            return None, 0.0, False
+        owner_worker_id = execution_ref.owner_worker_id
+        # `None` means a legacy runtime_ref written before owner_worker_id
+        # existed. Treat it as "unknown owner": preserve the lease implied by
+        # heartbeat_at for backward compatibility, but report no concrete owner
+        # identity. This prevents fresh workers from reclaiming a runtime that
+        # older metadata services may still be actively using.
+        #
+        # Empty string is different: it is an explicit "currently unowned"
+        # marker, so a new worker may reclaim the runtime immediately.
+        if owner_worker_id == "" or owner_worker_id == worker_id:
+            return owner_worker_id, 0.0, False
+
+        retry_after_s = self._runtime_ref_remaining_lease_seconds(execution_ref)
+        return owner_worker_id, retry_after_s, retry_after_s > 0
+
+    @staticmethod
+    def _get_runtime_key_from_execution_ref(execution_ref: JobRuntimeRef) -> str:
+        return execution_ref.driver_type
+
+    async def _reload_job_runtime_ref(
+        self,
+        job: BatchJob,
+        *,
+        progress_manager: Optional[RunningJobs],
+    ) -> tuple[BatchJob, Optional[JobRuntimeRef]]:
+        latest_job = (
+            await progress_manager.get_job(job.job_id)
+            if progress_manager is not None
+            else None
+        )
+        effective_job = latest_job if latest_job is not None else job
+        return effective_job, self._load_runtime_ref(effective_job)
+
+    async def _refresh_runtime_ref_heartbeat(
+        self,
+        job_id: str,
+        *,
+        progress_manager: Optional[RunningJobs],
+        worker_id: Optional[str],
+    ) -> None:
+        if progress_manager is None or worker_id is None:
+            return
+        job = await progress_manager.get_job(job_id)
+        if job is None:
+            return
+        execution_ref = self._load_runtime_ref(job)
+        if (
+            execution_ref is None
+            or execution_ref.owner_worker_id != worker_id
+            or execution_ref.delete_started()
+        ):
+            return
+        now = datetime.now(timezone.utc)
+        heartbeat_at = execution_ref.heartbeat_at
+        if heartbeat_at is not None and self.session_liveness_check_interval_s > 0:
+            elapsed = (now - heartbeat_at).total_seconds()
+            if elapsed < (self.session_liveness_check_interval_s / 2):
+                return
+        refreshed = copy.deepcopy(execution_ref)
+        refreshed.heartbeat_at = now
+        status = self._execution_update_status(job)
+        status.set_runtime_ref(self._get_runtime_key(job), refreshed)
+        await progress_manager.update_job_local_status(
+            job.job_id,
+            worker_id,
+            status,
+            update_keys={"execution"},
+        )
+
+    async def _should_teardown_runtime_handle(
+        self,
+        job: BatchJob,
+        *,
+        progress_manager: Optional[RunningJobs],
+        worker_id: Optional[str],
+    ) -> bool:
+        latest_job, execution_ref = await self._reload_job_runtime_ref(
+            job,
+            progress_manager=progress_manager,
+        )
+        owner_worker_id, _, owned_by_other_live_worker = (
+            self._runtime_ref_owned_by_other_live_worker(execution_ref, worker_id)
+        )
+        if owned_by_other_live_worker:
+            assert execution_ref is not None
+            logger.info(
+                "Skipping runtime teardown because ownership moved to another active worker",
+                job_id=latest_job.job_id,
+                runtime_key=self._get_runtime_key(latest_job),
+                current_worker_id=worker_id,
+                owner_worker_id=owner_worker_id,
+                heartbeat_at=execution_ref.heartbeat_at.isoformat()
+                if execution_ref.heartbeat_at is not None
+                else None,
+            )  # type: ignore[call-arg]
+            return False
+        return True
+
+    async def _mark_runtime_ref_delete_started(
+        self,
+        job: BatchJob,
+        *,
+        progress_manager: Optional[RunningJobs],
+        worker_id: Optional[str],
+    ) -> BatchJob:
+        """Best-effort marker for runtime teardown.
+
+        This helper must not fail. Session cleanup should still teardown the
+        provisioned runtime even if execution metadata can no longer be updated
+        (for example, the job already left the in-progress bucket).
+        """
+        if progress_manager is None or worker_id is None:
+            return job
+        try:
+            latest_job, execution_ref = await self._reload_job_runtime_ref(
+                job,
+                progress_manager=progress_manager,
+            )
+            if execution_ref is None:
+                return latest_job
+            # At this stage, we do not check owner_worker_id.
+            if execution_ref.delete_started_at is not None:
+                return latest_job
+            marked_ref = copy.deepcopy(execution_ref)
+            now = datetime.now(timezone.utc)
+            marked_ref.delete_started_at = now
+            marked_ref.heartbeat_at = now
+            status = self._execution_update_status(latest_job)
+            status.set_runtime_ref(self._get_runtime_key(latest_job), marked_ref)
+            return await progress_manager.update_job_local_status(
+                latest_job.job_id,
+                worker_id,
+                status,
+                update_keys={"execution"},
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to mark runtime_ref delete-started; continuing with teardown",
+                job_id=job.job_id,
+                worker_id=worker_id,
+                error=str(exc),
+            )  # type: ignore[call-arg]
+            return job
+
+    async def _teardown_handle_for_retry_recovery(
+        self,
+        job: BatchJob,
+        *,
+        progress_manager: Optional[RunningJobs],
+        worker_id: Optional[str],
+        handle: Any,
+        job_id: str,
+        phase: str,
+    ) -> BatchJob:
+        """Best-effort teardown for startup failures before retrying."""
+        try:
+            if worker_id is not None:
+                job = await self._mark_runtime_ref_delete_started(
+                    job,
+                    progress_manager=progress_manager,
+                    worker_id=worker_id,
+                )
+            await self._teardown(handle)
+        except Exception as teardown_exc:
+            logger.warning(
+                "Runtime teardown failed during retry recovery; continuing with retry",
+                job_id=job_id,
+                phase=phase,
+                handle=repr(handle),
+                error=str(teardown_exc),
+            )  # type: ignore[call-arg]
+        return job
+
+    async def _teardown_handle_during_session_cleanup(
+        self,
+        job: BatchJob,
+        *,
+        progress_manager: Optional[RunningJobs],
+        worker_id: Optional[str],
+        handle: Any,
+        job_id: str,
+        error: Optional[BaseException],
+        error_injection: JobDriverErrorInjector,
+    ) -> tuple[BatchJob, Optional[BaseException]]:
+        """Run final session teardown while preserving the primary error."""
+        await error_injection.raise_for_breakpoint(
+            self._context, job, BREAKPOINT_BEFORE_FINALIZE_SHUTDOWN
+        )
+        if error_injection.should_skip_session_cleanup_teardown(error):
+            return job, error
+        try:
+            if await self._should_teardown_runtime_handle(
+                job,
+                progress_manager=progress_manager,
+                worker_id=worker_id,
+            ):
+                if worker_id is not None:
+                    job = await self._mark_runtime_ref_delete_started(
+                        job,
+                        progress_manager=progress_manager,
+                        worker_id=worker_id,
+                    )
+                await self._teardown(handle)
+                # Do not clear persisted runtime_ref on session exit.
+                #
+                # Without an atomic compare-and-swap in `progress_manager`, a
+                # late cleanup write from the old worker can erase a newer
+                # owner_worker_id already persisted by a restarted worker.
+                # Leaving the old runtime_ref in place is safer: ownership and
+                # heartbeat-based lease expiry will naturally make stale refs
+                # reclaimable without risking overwrite of a newer active owner.
+        except BaseException as teardown_exc:
+            if error is None:
+                error = teardown_exc
+            else:
+                logger.warning(
+                    "Runtime teardown failed during session cleanup; preserving original error",
+                    job_id=job_id,
+                    handle=repr(handle),
+                    original_error=str(error),
+                    teardown_error=str(teardown_exc),
+                )  # type: ignore[call-arg]
+        await error_injection.raise_for_breakpoint(
+            self._context, job, BREAKPOINT_AFTER_FINALIZE_SHUTDOWN
+        )
+        return job, error
+
     async def cleanup(self, job: BatchJob) -> None:
         """Best-effort cleanup for restart recovery before finalization.
 
@@ -403,7 +780,7 @@ class RuntimeBase:
         self._stopped.clear()
         self._stop_job_id = None
         self._stopped_job_id = None
-        handle = await self._reconnect(job, job.job_id, runtime_ref)
+        handle = await self._load_handle(job, job.job_id, runtime_ref)
         if handle is None:
             self._active_job_id = None
             return
@@ -441,6 +818,26 @@ class RuntimeBase:
             self._stop_job_id = saved_stop_job_id
             self._stopped_job_id = saved_stopped_job_id
 
+    def touch_runtime_ref_heartbeat(
+        self,
+        job: BatchJob,
+        status: BatchJobStatus,
+        *,
+        worker_id: Optional[str],
+        now: Optional[datetime] = None,
+    ) -> None:
+        if worker_id is None or status.execution is None:
+            return
+        runtime_key = self._get_runtime_key(job)
+        execution_ref = status.get_runtime_ref(runtime_key)
+        if execution_ref is None:
+            return
+        if execution_ref.owner_worker_id != worker_id:
+            return
+        if execution_ref.delete_started():
+            return
+        execution_ref.heartbeat_at = now or datetime.now(timezone.utc)
+
     async def _persist_runtime_ref(
         self,
         job: BatchJob,
@@ -463,12 +860,17 @@ class RuntimeBase:
                 "progress_manager and worker_id_generator when starting a runtime session "
                 "for a batch job"
             )
+        worker_id = worker_id_generator(execution_ref.owner_ref)
+        execution_ref.owner_worker_id = worker_id
+        if execution_ref.connected_at is None:
+            execution_ref.connected_at = datetime.now(timezone.utc)
+        execution_ref.heartbeat_at = datetime.now(timezone.utc)
+        execution_ref.delete_started_at = None
         status = self._execution_update_status(job)
         status.set_runtime_ref(
             self._get_runtime_key(job),
             execution_ref,
         )
-        worker_id = worker_id_generator(execution_ref.owner_ref)
         # This update include execution only
         return (
             await progress_manager.update_job_local_status(
@@ -492,23 +894,39 @@ class RuntimeBase:
         progress_manager: Optional[RunningJobs],
         worker_id: str,
     ) -> BatchJob:
-        execution_ref = self._load_runtime_ref(job)
-        if execution_ref is None:
-            return job
         if progress_manager is None:
-            raise RuntimeError(
-                "Execution tracking is not configured for session(); provide "
-                "progress_manager and worker_id_generator when starting a runtime session "
-                "for a batch job"
+            return job
+        try:
+            latest_job, execution_ref = await self._reload_job_runtime_ref(
+                job,
+                progress_manager=progress_manager,
             )
-        status = self._execution_update_status(job)
-        status.remove_runtime_ref(self._get_runtime_key(job))
-        return await progress_manager.update_job_local_status(
-            job.job_id,
-            worker_id,
-            status,
-            update_keys={"execution"},
-        )
+            if execution_ref is None:
+                return latest_job
+            if execution_ref.deleted_at is not None:
+                return latest_job
+            marked_ref = copy.deepcopy(execution_ref)
+            now = datetime.now(timezone.utc)
+            if marked_ref.delete_started_at is None:
+                marked_ref.delete_started_at = now
+            marked_ref.deleted_at = now
+            marked_ref.heartbeat_at = now
+            status = self._execution_update_status(latest_job)
+            status.set_runtime_ref(self._get_runtime_key(latest_job), marked_ref)
+            return await progress_manager.update_job_local_status(
+                latest_job.job_id,
+                worker_id,
+                status,
+                update_keys={"execution"},
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to mark runtime_ref deleted; continuing recovery",
+                job_id=job.job_id,
+                worker_id=worker_id,
+                error=str(exc),
+            )  # type: ignore[call-arg]
+            return job
 
     @staticmethod
     def _opt_enabled(job: BatchJob, opt_key: str) -> bool:
@@ -544,8 +962,71 @@ class RuntimeBase:
     async def _sleep_before_session_retry(self, attempt: int) -> None:
         await asyncio.sleep(self.session_retry_base_delay_s * (2**attempt))
 
+    async def _sleep_before_session_error_retry(
+        self, attempt: int, exc: Exception
+    ) -> None:
+        delay = self.session_retry_base_delay_s * (2**attempt)
+        if isinstance(
+            exc, (RuntimeOwnershipConflictError, RuntimeDeleteInProgressError)
+        ):
+            delay = max(delay, exc.retry_after_s)
+        await asyncio.sleep(delay)
+
     def _should_run_session_liveness_checks(self, handle: Any) -> bool:
         return handle is not None and self.session_liveness_check_interval_s > 0
+
+    async def _session_liveness_loop(
+        self,
+        *,
+        handle: Any,
+        job_id: str,
+        progress_manager: Optional[RunningJobs],
+        worker_id: Optional[str],
+        liveness_failure_threshold: int,
+        current_task: asyncio.Task[Any],
+        error_sink: dict[str, Optional[BaseException]],
+    ) -> None:
+        consecutive_failures = 0
+        try:
+            while True:
+                await asyncio.sleep(self.session_liveness_check_interval_s)
+                if self._stop_requested.is_set():
+                    return
+
+                try:
+                    await self._check_liveness(handle)
+                    consecutive_failures = 0
+                except BaseException as exc:
+                    if isinstance(exc, asyncio.CancelledError):
+                        raise
+                    consecutive_failures += 1
+                    if consecutive_failures < liveness_failure_threshold:
+                        logger.warning(
+                            "Runtime liveness check failed; retrying",
+                            job_id=job_id,
+                            consecutive_failures=consecutive_failures,
+                            abort_after_failures=liveness_failure_threshold,
+                            error=str(exc),
+                        )  # type: ignore[call-arg]
+                        continue
+                    error_sink["error"] = exc
+                    current_task.cancel()
+                    return
+
+                try:
+                    await self._refresh_runtime_ref_heartbeat(
+                        job_id,
+                        progress_manager=progress_manager,
+                        worker_id=worker_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to refresh runtime ref heartbeat",
+                        job_id=job_id,
+                        error=str(exc),
+                    )  # type: ignore[call-arg]
+        except asyncio.CancelledError:
+            raise
 
     @asynccontextmanager
     async def session(
@@ -558,14 +1039,17 @@ class RuntimeBase:
         error_injection: Optional[JobDriverErrorInjector] = None,
     ) -> AsyncIterator[Endpoint]:
         runtimeRef = self._load_runtime_ref(job)
-        error_injection = error_injection or JobDriverErrorInjector(job)
+        error_injection = error_injection or JobDriverErrorInjector(
+            job,
+            progress_manager=progress_manager,
+        )
         session_worker_id: Optional[str] = None
         handle = None
         max_attempts = self.session_retry_attempts + 1
         self._bind_active_session(job_id, progress_manager)
         error: BaseException | None = None
         body_error: BaseException | None = None
-        liveness_error: BaseException | None = None
+        liveness_state: dict[str, Optional[BaseException]] = {"error": None}
         liveness_task: asyncio.Task[None] | None = None
         try:
             if self._stop_requested.is_set() or self._stopped.is_set():
@@ -574,19 +1058,80 @@ class RuntimeBase:
                 )
             for attempt in range(max_attempts):
                 try:
-                    phase = (
-                        "reconnect"
-                        if attempt == 0 and runtimeRef is not None
-                        else "provision"
-                    )
+                    if attempt > 0:
+                        job, runtimeRef = await self._reload_job_runtime_ref(
+                            job,
+                            progress_manager=progress_manager,
+                        )
+                    phase = "reconnect" if runtimeRef is not None else "provision"
                     if phase == "reconnect":
                         assert runtimeRef is not None
-                        handle = await self._reconnect(job, job_id, runtimeRef)
-                        if handle is None:
-                            phase = "provision"
+                        if (
+                            session_worker_id is None
+                            and worker_id_generator is not None
+                        ):
+                            session_worker_id = worker_id_generator(
+                                runtimeRef.owner_ref
+                            )
+                        if not runtimeRef.deleted():
+                            handle = await self._load_handle(job, job_id, runtimeRef)
+                        if handle is None or runtimeRef.delete_started():
+                            # A previous worker has already started tearing this
+                            # runtime down. Do not trust or reuse that runtime_ref
+                            # until the replacement worker verifies the old runtime
+                            # is actually gone; otherwise a slow delete can race a
+                            # new provision against the same backend identity.
+                            if handle is None or await self._wait_teared_down(
+                                handle,
+                                job=job,
+                                progress_manager=progress_manager,
+                                worker_id=session_worker_id,
+                            ):
+                                runtimeRef = None
+                                handle = None
+                                phase = "provision"
+                            else:
+                                raise RuntimeDeleteInProgressError(
+                                    job_id=job_id,
+                                    runtime_key=self._get_runtime_key_from_execution_ref(
+                                        runtimeRef
+                                    ),
+                                    retry_after_s=1.0,
+                                )
+                    # Check for handle timeout
+                    if handle is not None:
+                        assert runtimeRef is not None
+                        if worker_id_generator is None:
+                            raise RuntimeError(
+                                "Execution tracking is not configured for session(); provide "
+                                "worker_id_generator when starting a runtime session "
+                                "for a batch job"
+                            )
+                        session_worker_id = worker_id_generator(runtimeRef.owner_ref)
+                        owner_worker_id, retry_after_s, owned_by_other_live_worker = (
+                            self._runtime_ref_owned_by_other_live_worker(
+                                runtimeRef,
+                                session_worker_id,
+                            )
+                        )
+                        if owned_by_other_live_worker:
+                            # We do not wait for timeout but leave session retry to handle.
+                            # So other changes (e.g., delete flag) may shortcut the wait.
+                            raise RuntimeOwnershipConflictError(
+                                job_id=job_id,
+                                runtime_key=self._get_runtime_key_from_execution_ref(
+                                    runtimeRef
+                                ),
+                                owner_worker_id=owner_worker_id,
+                                current_worker_id=session_worker_id,
+                                retry_after_s=retry_after_s,
+                            )
+                    # Provision
                     if handle is None:
-                        error_injection.raise_for_breakpoint(
-                            BREAKPOINT_RUNTIME_INITIALIZATION
+                        await error_injection.raise_for_breakpoint(
+                            self._context,
+                            job,
+                            BREAKPOINT_RUNTIME_INITIALIZATION,
                         )
                         handle = await self._provision(job, job_id)
                     # Run after both reconnect and provision. On provision this
@@ -598,12 +1143,15 @@ class RuntimeBase:
                         progress_manager=progress_manager,
                         worker_id_generator=worker_id_generator,
                     )
+                    wait_mode = (
+                        RUNTIME_WAIT_MODE_PROVISION
+                        if phase == "provision"
+                        else RUNTIME_WAIT_MODE_RECONNECT
+                    )
                     phase = "wait_ready"
                     await self._wait_ready(
                         handle,
-                        wait_mode=RUNTIME_WAIT_MODE_PROVISION
-                        if phase == "provision"
-                        else RUNTIME_WAIT_MODE_RECONNECT,
+                        wait_mode=wait_mode,
                     )
                     # Only yield a connected endpoint after both startup phases
                     # succeed within the same attempt.
@@ -614,27 +1162,45 @@ class RuntimeBase:
                     # falls back to provisioning fresh compute on retry.
                     should_retry = attempt + 1 < max_attempts
                     should_teardown = handle is not None
+                    if isinstance(
+                        exc,
+                        (RuntimeOwnershipConflictError, RuntimeDeleteInProgressError),
+                    ):
+                        # Reconnect found a live runtime that is still owned by
+                        # another worker or is already being deleted. Do not
+                        # tear that runtime down from the replacement worker;
+                        # wait/retry and either reclaim it or observe that the
+                        # original delete completed.
+                        should_teardown = False
                     if phase == "wait_ready":
                         should_teardown = self._should_teardown_failed_wait_ready(exc)
+                        if (
+                            not should_teardown
+                            and progress_manager is not None
+                            and session_worker_id is not None
+                        ):
+                            job = await self._clear_runtime_ref(
+                                job,
+                                progress_manager=progress_manager,
+                                worker_id=session_worker_id,
+                            )
 
                     if should_teardown and handle is not None:
-                        try:
-                            await self._teardown(handle)
-                        except Exception as teardown_exc:
-                            logger.warning(
-                                "Runtime teardown failed during retry recovery; continuing with retry",
-                                job_id=job_id,
-                                phase=phase,
-                                handle=repr(handle),
-                                error=str(teardown_exc),
-                            )  # type: ignore[call-arg]
+                        job = await self._teardown_handle_for_retry_recovery(
+                            job,
+                            progress_manager=progress_manager,
+                            worker_id=session_worker_id,
+                            handle=handle,
+                            job_id=job_id,
+                            phase=phase,
+                        )
                     elif not should_retry:
                         handle = None
                     if not should_retry:
                         raise
                     handle = None
                     runtimeRef = None
-                    await self._sleep_before_session_retry(attempt)
+                    await self._sleep_before_session_error_retry(attempt, exc)
 
             endpoint = await self._connect(handle)
             current_task = asyncio.current_task()
@@ -649,38 +1215,18 @@ class RuntimeBase:
                 )
             liveness_failure_threshold = max(1, configured_liveness_failure_threshold)
 
-            async def _session_liveness_loop() -> None:
-                nonlocal liveness_error
-                consecutive_failures = 0
-                try:
-                    while True:
-                        await asyncio.sleep(self.session_liveness_check_interval_s)
-                        if self._stop_requested.is_set():
-                            return
-                        try:
-                            await self._check_liveness(handle)
-                            consecutive_failures = 0
-                        except BaseException as exc:
-                            if isinstance(exc, asyncio.CancelledError):
-                                raise
-                            consecutive_failures += 1
-                            if consecutive_failures < liveness_failure_threshold:
-                                logger.warning(
-                                    "Runtime liveness check failed; retrying",
-                                    job_id=job_id,
-                                    consecutive_failures=consecutive_failures,
-                                    abort_after_failures=liveness_failure_threshold,
-                                    error=str(exc),
-                                )  # type: ignore[call-arg]
-                                continue
-                            liveness_error = exc
-                            current_task.cancel()
-                            return
-                except asyncio.CancelledError:
-                    raise
-
             if self._should_run_session_liveness_checks(handle):
-                liveness_task = asyncio.create_task(_session_liveness_loop())
+                liveness_task = asyncio.create_task(
+                    self._session_liveness_loop(
+                        handle=handle,
+                        job_id=job_id,
+                        progress_manager=progress_manager,
+                        worker_id=session_worker_id,
+                        liveness_failure_threshold=liveness_failure_threshold,
+                        current_task=current_task,
+                        error_sink=liveness_state,
+                    )
+                )
             try:
                 yield endpoint
             except BaseException as ex:
@@ -699,18 +1245,20 @@ class RuntimeBase:
                     pass
             if (
                 isinstance(body_error, asyncio.CancelledError)
-                and liveness_error is not None
+                and liveness_state["error"] is not None
             ):
-                error = liveness_error
-            elif error is None and liveness_error is not None:
-                error = liveness_error
+                error = liveness_state["error"]
+            elif error is None and liveness_state["error"] is not None:
+                error = liveness_state["error"]
             if handle is not None:
-                await self._teardown(handle)
-            if session_worker_id is not None:
-                job = await self._clear_runtime_ref(
+                job, error = await self._teardown_handle_during_session_cleanup(
                     job,
                     progress_manager=progress_manager,
                     worker_id=session_worker_id,
+                    handle=handle,
+                    job_id=job_id,
+                    error=error,
+                    error_injection=error_injection,
                 )
             if self._stop_requested.is_set():
                 self._stopped_job_id = job_id

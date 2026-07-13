@@ -72,7 +72,12 @@ class JobDriver(Protocol):
         """
         ...
 
-    async def run_job(self, job_id: str, endpoint: Endpoint) -> BatchJob:
+    async def run_job(
+        self,
+        job_id: str,
+        endpoint: Endpoint,
+        next_pass_start: Optional[int] = None,
+    ) -> BatchJob:
         """Send job's requests against endpoint once a runtime endpoint
         become ready.
 
