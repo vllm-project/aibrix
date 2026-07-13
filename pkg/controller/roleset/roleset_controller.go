@@ -104,7 +104,7 @@ type RoleSetReconciler struct {
 // +kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rolesets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rolesets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete;deletecollection
-// +kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;list;watch;update;patch
 
 func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	klog.Infof("Reconciling RoleSet %s", req.NamespacedName.String())
@@ -152,6 +152,12 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
 	}
 	if apiequality.Semantic.DeepEqual(&roleSet.Status, status) {
+		if inProgress, err := hasInPlaceUpdateInProgress(ctx, r.Client, roleSet.Namespace, roleSet.Name); err != nil {
+			return ctrl.Result{RequeueAfter: DefaultRetryDelay}, err
+		} else if inProgress {
+			klog.Infof("roleset %s/%s has in-place update in progress, reconcile after %v seconds", roleSet.Namespace, roleSet.Name, DefaultRetryDelay)
+			return ctrl.Result{RequeueAfter: DefaultRetryDelay}, nil
+		}
 		if !orchestrationctrl.IsRoleSetReady(roleSet) {
 			klog.Infof("roleset %s/%s not ready, reconcile after %v seconds", roleSet.Namespace, roleSet.Name, DefaultRetryDelay)
 			return ctrl.Result{RequeueAfter: DefaultRetryDelay}, nil
@@ -162,6 +168,12 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := orchestrationctrl.UpdateStatus(ctx, r.Scheme, r.Client, roleSet); err != nil {
 		klog.Infof("roleset %s/%s update status error %v", roleSet.Namespace, roleSet.Name, err)
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
+	}
+	if inProgress, err := hasInPlaceUpdateInProgress(ctx, r.Client, roleSet.Namespace, roleSet.Name); err != nil {
+		return ctrl.Result{RequeueAfter: DefaultRetryDelay}, err
+	} else if inProgress {
+		klog.Infof("roleset %s/%s has in-place update in progress, reconcile after %v seconds", roleSet.Namespace, roleSet.Name, DefaultRetryDelay)
+		return ctrl.Result{RequeueAfter: DefaultRetryDelay}, nil
 	}
 	return ctrl.Result{}, nil
 }
