@@ -265,11 +265,154 @@ func validateCompletionRequest(requestID string, requestBody []byte) (model, mes
 	return
 }
 
+// embeddingReqRaw is a fallback parse target for embeddings requests whose `input` uses
+// multimodal content parts (e.g. image_url for vision-language embedding models), which
+// openai.EmbeddingNewParamsInputUnion does not support -- unlike chat completions, the
+// OpenAI embeddings spec has no content-parts shape, so backends that accept images this
+// way (e.g. qwen3-vl-embedding) are an extension. Input is kept raw so it can be
+// re-parsed once the shape is known.
+type embeddingReqRaw struct {
+	Model  string          `json:"model"`
+	Input  json.RawMessage `json:"input"`
+	Stream json.RawMessage `json:"stream"`
+}
+
+// embeddingContentPart supports two multimodal `input` part shapes:
+//   - the OpenAI chat-content-part shape: {"type": ..., "text": ..., "image_url": {...}}
+//   - sglang's flat MultimodalEmbeddingInput shape (no "type" discriminator):
+//     {"text": "..."} / {"image": "<data-uri>"} / {"video": "<data-uri>"}
+//
+// sglang's embeddings endpoint only understands the flat shape -- it silently ignores
+// unrecognized fields (extra="ignore"), so sending the OpenAI content-part shape leaves
+// text/image/video all unset and falls back to a fixed placeholder input.
+type embeddingContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text"`
+	ImageURL json.RawMessage `json:"image_url"`
+	VideoURL json.RawMessage `json:"video_url"`
+	Image    string          `json:"image"`
+	Video    string          `json:"video"`
+}
+
+// validateEmbeddingContentParts validates a multimodal embeddings `input` array. Only
+// "text" parts are tokenized and counted against MaxInputTokensPerModel / MaxTotalTokens;
+// image/video parts are excluded because the gateway's text tokenizer cannot estimate
+// their cost, and the backend's own multimodal processor is responsible for that
+// accounting.
+func validateEmbeddingContentParts(parts []embeddingContentPart) error {
+	if len(parts) == 0 {
+		return errors.New("input array cannot be empty")
+	}
+
+	totalEstimatedTokens := 0
+	for i, part := range parts {
+		typ := part.Type
+		if typ == "" {
+			// Flat sglang shape: infer the part kind from whichever field is set.
+			switch {
+			case part.Text != "":
+				typ = "text"
+			case part.Image != "":
+				typ = "image"
+			case part.Video != "":
+				typ = "video"
+			default:
+				return fmt.Errorf("input at index %d must set one of text, image, or video", i)
+			}
+		}
+
+		switch typ {
+		case "text":
+			if part.Text == "" {
+				return fmt.Errorf("input at index %d cannot be an empty string", i)
+			}
+			tokens, err := utils.TokenizeInputText(part.Text)
+			if err != nil {
+				return fmt.Errorf("failed to tokenize input for validation: %w", err)
+			}
+			estimatedTokens := len(tokens)
+			if estimatedTokens > MaxInputTokensPerModel {
+				return fmt.Errorf("input at index %d exceeds max tokens per model (%d), estimated tokens: %d",
+					i, MaxInputTokensPerModel, estimatedTokens)
+			}
+			totalEstimatedTokens += estimatedTokens
+		case "image_url", "image":
+			if len(part.ImageURL) == 0 && part.Image == "" {
+				return fmt.Errorf("input at index %d is missing image_url", i)
+			}
+		case "video_url", "video":
+			if len(part.VideoURL) == 0 && part.Video == "" {
+				return fmt.Errorf("input at index %d is missing video_url", i)
+			}
+		default:
+			return fmt.Errorf("input at index %d has unsupported content type %q", i, typ)
+		}
+	}
+
+	if totalEstimatedTokens > MaxTotalTokens {
+		return fmt.Errorf("total tokens across all inputs exceeds maximum (%d), estimated total: %d",
+			MaxTotalTokens, totalEstimatedTokens)
+	}
+
+	return nil
+}
+
+// validateMultimodalEmbeddingRequest re-parses an embeddings request body whose `input`
+// didn't fit openai.EmbeddingNewParamsInputUnion, checking whether it's instead an array
+// of multimodal content parts. matched is false if the body doesn't match that shape
+// either, signaling the caller to fall back to the original parse error.
+func validateMultimodalEmbeddingRequest(requestID string, requestBody []byte) (model string, errRes *extProcPb.ProcessingResponse, matched bool) {
+	var req embeddingReqRaw
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		return "", nil, false
+	}
+
+	trimmed := bytes.TrimSpace(req.Input)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return "", nil, false
+	}
+
+	var parts []embeddingContentPart
+	if err := sonic.Unmarshal(trimmed, &parts); err != nil || len(parts) == 0 {
+		return "", nil, false
+	}
+	// Confirm this is actually a content-parts array (typed or sglang's flat shape) and
+	// not some other array of objects that merely failed to unmarshal as expected -- an
+	// empty first part (no type/text/image_url/video_url/image/video set at all) means
+	// the shape doesn't match either content-parts variant, so fall back to the original
+	// parse error instead of reporting a misleading per-index validation error.
+	first := parts[0]
+	if first.Type == "" && first.Text == "" && len(first.ImageURL) == 0 && len(first.VideoURL) == 0 && first.Image == "" && first.Video == "" {
+		return "", nil, false
+	}
+
+	klog.V(4).InfoS("parsed multimodal embeddings input", "requestID", requestID, "parts", len(parts))
+
+	if err := validateEmbeddingContentParts(parts); err != nil {
+		return req.Model, buildErrorResponse(envoyTypePb.StatusCode_BadRequest, err.Error(), "", "input", HeaderErrorRequestBodyProcessing, "true"), true
+	}
+
+	if len(req.Stream) > 0 {
+		var streamBool bool
+		if err := sonic.Unmarshal(req.Stream, &streamBool); err != nil || streamBool {
+			return req.Model, buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", "", "stream", HeaderErrorRequestBodyProcessing, "true"), true
+		}
+	}
+
+	return req.Model, nil, true
+}
+
 // validateEmbeddingRequest parses and validates an embeddings request body.
 // nolint:nakedret
 func validateEmbeddingRequest(requestID string, requestBody []byte) (model string, errRes *extProcPb.ProcessingResponse) {
 	var embeddingReq embeddingReqMinimal
 	if err := sonic.Unmarshal(requestBody, &embeddingReq); err != nil {
+		// `input` may be an array of multimodal content parts (e.g. image_url), which
+		// the strict OpenAI union type above does not support. Retry with that shape
+		// before treating this as a hard parse failure.
+		if m, mmErrRes, matched := validateMultimodalEmbeddingRequest(requestID, requestBody); matched {
+			return m, mmErrRes
+		}
 		klog.ErrorS(err, "error to unmarshal embeddings object", "requestID", requestID, "requestBody", string(requestBody))
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return

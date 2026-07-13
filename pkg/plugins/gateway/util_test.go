@@ -324,6 +324,83 @@ func Test_ValidateRequestBody_Embeddings(t *testing.T) {
 			stream:      false,
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
+
+		// Multimodal content-parts input (e.g. image_url for vision-language embedding models)
+		{
+			message:     "/v1/embeddings multimodal image_url input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings multimodal text and image_url input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "text", "text": "a photo of pets"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings multimodal input with stream true - should fail",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}], "stream": true}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/embeddings multimodal input missing image_url",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "image_url"}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/embeddings multimodal video_url input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "video_url", "video_url": {"url": "data:video/mp4;base64,aGVsbG8="}}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings multimodal input missing video_url",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "video_url"}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/embeddings multimodal input unsupported content type",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "audio_url"}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+
+		// sglang's flat MultimodalEmbeddingInput shape (no "type" discriminator):
+		// {"text": "..."} / {"image": "<data-uri>"} / {"video": "<data-uri>"}
+		{
+			message:     "/v1/embeddings flat image input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"image": "data:image/png;base64,aGVsbG8="}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings flat video input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"video": "data:video/mp4;base64,aGVsbG8="}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings flat text and image input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"text": "a photo of pets"}, {"image": "data:image/png;base64,aGVsbG8="}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings flat input part with nothing set",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
 	}
 
 	for _, tt := range testCases {
