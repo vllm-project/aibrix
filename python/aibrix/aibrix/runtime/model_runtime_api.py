@@ -31,6 +31,7 @@ from aibrix.openapi.protocol import (
     DeactivateRuntimeModelRequest,
     ListRuntimeModelsResponse,
     RuntimeModelInfo,
+    RuntimeSnapshotResponse,
 )
 from aibrix.runtime.model_runtime import get_model_runtime
 
@@ -56,6 +57,9 @@ def activate_runtime_model(request: ActivateRuntimeModelRequest):
                 else None
             ),
             additional_config=request.additional_config,
+            claim_ref=(
+                request.claim_ref.model_dump() if request.claim_ref is not None else None
+            ),
         )
     except Exception as exc:  # surface activation failure to the controller
         logger.error(f"failed to activate model {request.model_name}: {exc}")
@@ -110,3 +114,11 @@ def list_runtime_models():
         status_code=200,
         content=ListRuntimeModelsResponse(models=models).model_dump(),
     )
+
+
+@model_runtime_router.get(
+    "/v1/runtime/snapshot", response_model=RuntimeSnapshotResponse
+)
+def runtime_snapshot():
+    """Expose the current runtime state for controller-side placement."""
+    return RuntimeSnapshotResponse(**get_model_runtime().snapshot())

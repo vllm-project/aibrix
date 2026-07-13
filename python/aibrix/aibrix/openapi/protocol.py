@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -125,6 +126,14 @@ class RuntimeEngineConfig(NoExtraBaseModel):
     )
 
 
+class RuntimeClaimRef(NoExtraBaseModel):
+    """Stable ModelClaim identity carried into a runtime instance."""
+
+    namespace: str
+    name: str
+    uid: str
+
+
 class ActivateRuntimeModelRequest(NoProtectedBaseModel):
     """Bring a model online as its own kvcached-enabled engine process."""
 
@@ -138,6 +147,7 @@ class ActivateRuntimeModelRequest(NoProtectedBaseModel):
     )
     credentials: Optional[Dict[str, str]] = None
     engine_config: Optional[RuntimeEngineConfig] = None
+    claim_ref: Optional[RuntimeClaimRef] = None
     # Legacy compatibility for older callers. New ModelClaim callers should use
     # engine_config.args for engine CLI flags.
     additional_config: Optional[Dict[str, str]] = None
@@ -176,3 +186,34 @@ class RuntimeModelInfo(NoProtectedBaseModel):
 
 class ListRuntimeModelsResponse(NoProtectedBaseModel):
     models: List[RuntimeModelInfo]
+
+
+class RuntimeAcceleratorSnapshot(NoProtectedBaseModel):
+    """Live memory observation for one GPU visible to the runtime pod."""
+
+    id: str
+    hbm_total_bytes: int
+    hbm_free_bytes: int
+
+
+class RuntimeSnapshotModel(NoProtectedBaseModel):
+    """One runtime-managed engine in a point-in-time sidecar snapshot."""
+
+    model_name: str
+    artifact_url: str
+    claim_ref: Optional[RuntimeClaimRef] = None
+    port: int
+    ipc_name: str
+    phase: str
+    ready: bool
+    kv_used_bytes: int
+    kv_capacity_bytes: int
+
+
+class RuntimeSnapshotResponse(NoProtectedBaseModel):
+    """Runtime state used by the ModelClaim controller's placement cache."""
+
+    observed_at: datetime
+    accelerators: List[RuntimeAcceleratorSnapshot]
+    models: List[RuntimeSnapshotModel]
+    cached_artifacts: List[str]

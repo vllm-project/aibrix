@@ -153,6 +153,108 @@ def test_endpoints_activate_list_deactivate():
     assert all(m["model_name"] != "ep1" for m in listed["models"])
 
 
+def test_snapshot_reports_runtime_state(monkeypatch, tmp_path):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setenv("AIBRIX_WEIGHT_CACHE_DIR", str(tmp_path))
+    agent = make_agent()
+    agent.activate(
+        model_name="qwen",
+        artifact_url="hf://Qwen/Qwen3-0.6B",
+        claim_ref={"namespace": "default", "name": "qwen", "uid": "claim-uid"},
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "gpu_memory_snapshots",
+        lambda: [
+            {
+                "id": "GPU-0",
+                "hbm_total_bytes": 1000,
+                "hbm_free_bytes": 700,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "read_kv_segment",
+        lambda ipc_name: (100, 20, 5),
+    )
+
+    snapshot = agent.snapshot()
+
+    assert snapshot["accelerators"] == [
+        {"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 700}
+    ]
+    assert snapshot["cached_artifacts"] == ["hf://Qwen/Qwen3-0.6B"]
+    assert snapshot["models"] == [
+        {
+            "model_name": "qwen",
+            "artifact_url": "hf://Qwen/Qwen3-0.6B",
+            "claim_ref": {
+                "namespace": "default",
+                "name": "qwen",
+                "uid": "claim-uid",
+            },
+            "port": 20000,
+            "ipc_name": "kvc_qwen",
+            "phase": "active",
+            "ready": True,
+            "kv_used_bytes": 25,
+            "kv_capacity_bytes": 100,
+        }
+    ]
+    assert snapshot["observed_at"]
+
+
+def test_snapshot_handles_hosts_without_gpu(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "gpu_memory_snapshots", lambda: [])
+    snapshot = make_agent().snapshot()
+
+    assert snapshot["accelerators"] == []
+    assert snapshot["models"] == []
+
+
+def test_snapshot_endpoint_returns_typed_runtime_state(monkeypatch, tmp_path):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setenv("AIBRIX_WEIGHT_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        runtime_module,
+        "gpu_memory_snapshots",
+        lambda: [
+            {
+                "id": "GPU-0",
+                "hbm_total_bytes": 1000,
+                "hbm_free_bytes": 700,
+            }
+        ],
+    )
+    client = _make_test_client()
+    activated = client.post(
+        "/v1/runtime/models/activate",
+        json={
+            "model_name": "ep-snapshot",
+            "artifact_url": "hf://Org/Model",
+            "claim_ref": {
+                "namespace": "default",
+                "name": "model-claim",
+                "uid": "claim-uid",
+            },
+        },
+    )
+    assert activated.status_code == 200, activated.text
+
+    response = client.get("/v1/runtime/snapshot")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["accelerators"][0]["id"] == "GPU-0"
+    assert body["models"][0]["claim_ref"]["uid"] == "claim-uid"
+    assert body["models"][0]["artifact_url"] == "hf://Org/Model"
+
+
 # --------------------------------------------------------------------------- #
 # Cache markers and /dev/shm KV accounting
 # --------------------------------------------------------------------------- #

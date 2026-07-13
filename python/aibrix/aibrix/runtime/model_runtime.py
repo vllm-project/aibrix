@@ -35,6 +35,7 @@ import sys
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 
@@ -58,6 +59,8 @@ class ModelInstance:
     port: int
     ipc_name: str
     engine: str = "vllm"
+    artifact_url: str = ""
+    claim_ref: Optional[Dict[str, str]] = None
     phase: str = "active"
     pid: Optional[int] = None
     # Underlying process handle (None for mock); excluded from repr.
@@ -115,6 +118,70 @@ def weight_cache_dir() -> str:
     return os.environ.get(
         "AIBRIX_WEIGHT_CACHE_DIR", os.path.expanduser("~/.cache/huggingface")
     )
+
+
+def cached_artifacts(cache_dir: Optional[str] = None) -> List[str]:
+    """Return artifact URLs marked as resident in this runtime's shared cache.
+
+    A marker is intentionally only a locality hint. A missing, malformed, or
+    stale file must never make an otherwise valid placement fail.
+    """
+    import json
+    from pathlib import Path
+
+    marker_dir = Path(cache_dir or weight_cache_dir()) / ".aibrix" / "served"
+    artifacts = set()
+    try:
+        for marker in marker_dir.glob("*.json"):
+            try:
+                data = json.loads(marker.read_text())
+            except (OSError, ValueError):
+                continue
+            artifact_url = data.get("artifact_url")
+            if isinstance(artifact_url, str) and artifact_url:
+                artifacts.add(artifact_url)
+    except OSError as exc:
+        logger.debug("could not inspect model cache markers: %s", exc)
+    return sorted(artifacts)
+
+
+def gpu_memory_snapshots() -> List[Dict[str, object]]:
+    """Read memory state for GPUs visible to this pod via NVML.
+
+    The sidecar also runs in CPU-only test and development environments. NVML
+    is therefore optional: lack of the module, driver, or visible device means
+    the controller receives an empty accelerator list and falls back safely.
+    """
+    initialized = False
+    try:
+        import pynvml  # type: ignore[import-not-found]
+
+        pynvml.nvmlInit()
+        initialized = True
+        snapshots = []
+        for index in range(pynvml.nvmlDeviceGetCount()):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            device_id = pynvml.nvmlDeviceGetUUID(handle)
+            if isinstance(device_id, bytes):
+                device_id = device_id.decode()
+            snapshots.append(
+                {
+                    "id": str(device_id),
+                    "hbm_total_bytes": int(info.total),
+                    "hbm_free_bytes": int(info.free),
+                }
+            )
+        return snapshots
+    except Exception as exc:
+        logger.debug("NVML GPU observation is unavailable: %s", exc)
+        return []
+    finally:
+        if initialized:
+            try:
+                pynvml.nvmlShutdown()  # type: ignore[name-defined]
+            except Exception:
+                pass
 
 
 def write_cache_marker(
@@ -358,6 +425,7 @@ class ModelRuntime:
         ipc_name: str = "",
         engine_config: Optional[Dict] = None,
         additional_config: Optional[Dict[str, str]] = None,
+        claim_ref: Optional[Dict[str, str]] = None,
     ) -> ModelInstance:
         with self._lock:
             existing = self._models.get(model_name)
@@ -379,6 +447,8 @@ class ModelRuntime:
                 port=port or self._pick_port(),
                 ipc_name=sanitize_ipc_name(ipc_name or f"kvc_{model_name}"),
                 engine=engine,
+                artifact_url=artifact_url,
+                claim_ref=dict(claim_ref) if claim_ref else None,
             )
             inst.pid = self._launcher.launch(
                 inst, artifact_url, engine_config, additional_config
@@ -421,6 +491,38 @@ class ModelRuntime:
         so the metrics collector never mutates agent state on a scrape."""
         with self._lock:
             return list(self._models.values())
+
+    def snapshot(self) -> Dict[str, object]:
+        """Return the sidecar's point-in-time scheduling observation.
+
+        Instance bookkeeping is copied while holding the runtime lock. The
+        potentially slow hardware, filesystem, and readiness reads happen
+        afterwards so an observation never blocks activate/deactivate.
+        """
+        instances = self.list_models()
+        models = []
+        for inst in instances:
+            segment = read_kv_segment(inst.ipc_name)
+            total, used, prealloc = segment if segment else (0, 0, 0)
+            models.append(
+                {
+                    "model_name": inst.model_name,
+                    "artifact_url": inst.artifact_url,
+                    "claim_ref": dict(inst.claim_ref) if inst.claim_ref else None,
+                    "port": inst.port,
+                    "ipc_name": inst.ipc_name,
+                    "phase": inst.phase,
+                    "ready": instance_ready(inst),
+                    "kv_used_bytes": used + prealloc,
+                    "kv_capacity_bytes": total,
+                }
+            )
+        return {
+            "observed_at": datetime.now(timezone.utc),
+            "accelerators": gpu_memory_snapshots(),
+            "models": models,
+            "cached_artifacts": cached_artifacts(),
+        }
 
     def _pick_port(self) -> int:
         used = {m.port for m in self._models.values()}
