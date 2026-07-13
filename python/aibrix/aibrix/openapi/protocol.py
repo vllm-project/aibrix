@@ -168,6 +168,39 @@ class DeactivateRuntimeModelRequest(NoProtectedBaseModel):
     mode: str = "stop"
 
 
+class SetRuntimeModelKVLimitRequest(NoProtectedBaseModel):
+    """Controller-only request to set one model's kvcached limit."""
+
+    model_name: str
+    limit_bytes: int = Field(ge=0)
+    operation_id: str = Field(min_length=1)
+
+
+class SleepRuntimeModelRequest(NoProtectedBaseModel):
+    """Controller-only request to put a vLLM engine to sleep."""
+
+    model_name: str
+    level: int = Field(ge=1, le=2)
+    operation_id: str = Field(min_length=1)
+
+
+class WakeRuntimeModelRequest(NoProtectedBaseModel):
+    """Controller-only request to wake a vLLM engine."""
+
+    model_name: str
+    operation_id: str = Field(min_length=1)
+
+
+class RuntimeOperationResponse(NoProtectedBaseModel):
+    """Result of an idempotent runtime control operation."""
+
+    status: str = "success"
+    model_name: str
+    operation_id: str
+    applied: bool
+    phase: str
+
+
 class RuntimeModelInfo(NoProtectedBaseModel):
     model_name: str
     port: int

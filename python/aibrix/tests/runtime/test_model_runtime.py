@@ -16,6 +16,8 @@
 
 import os
 
+import pytest
+
 from aibrix.runtime.model_runtime import (
     MockEngineLauncher,
     ModelRuntime,
@@ -24,6 +26,177 @@ from aibrix.runtime.model_runtime import (
 
 def make_agent():
     return ModelRuntime(MockEngineLauncher())
+
+
+class _RecordingKVController:
+    def __init__(self):
+        self.limits = []
+
+    def set_limit(self, ipc_name, limit_bytes):
+        self.limits.append((ipc_name, limit_bytes))
+
+
+def test_set_kv_limit_is_idempotent_by_operation_id():
+    launcher = MockEngineLauncher()
+    kv_controller = _RecordingKVController()
+    agent = ModelRuntime(launcher, kv_controller=kv_controller)
+    inst = agent.activate(
+        model_name="qwen3-0.6b",
+        artifact_url="hf://Qwen/Qwen3-0.6B",
+        ipc_name="kvc_qwen3-0.6b",
+    )
+
+    first = agent.set_kv_limit(inst.model_name, 4096, operation_id="limit-1")
+    duplicate = agent.set_kv_limit(inst.model_name, 4096, operation_id="limit-1")
+
+    assert first.applied is True
+    assert duplicate.applied is False
+    assert kv_controller.limits == [("kvc_qwen3-0-6b", 4096)]
+
+
+def test_failed_kv_limit_operation_is_retriable():
+    class _FlakyKVController:
+        def __init__(self):
+            self.calls = 0
+
+        def set_limit(self, ipc_name, limit_bytes):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("kvctl failed")
+
+    kv_controller = _FlakyKVController()
+    agent = ModelRuntime(MockEngineLauncher(), kv_controller=kv_controller)
+    inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+
+    with pytest.raises(RuntimeError, match="kvctl failed"):
+        agent.set_kv_limit("m1", 4096, operation_id="limit-1")
+    retried = agent.set_kv_limit("m1", 4096, operation_id="limit-1")
+
+    assert retried.applied is True
+    assert kv_controller.calls == 2
+    assert inst.completed_operation_ids["kv-limit"] == ["limit-1"]
+
+
+def test_sleep_is_idempotent_by_operation_id():
+    launcher = MockEngineLauncher()
+    agent = ModelRuntime(launcher)
+    inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+
+    first = agent.sleep(inst.model_name, level=1, operation_id="sleep-1")
+    duplicate = agent.sleep(inst.model_name, level=1, operation_id="sleep-1")
+
+    assert first.applied is True
+    assert duplicate.applied is False
+    assert inst.phase == "sleeping"
+    assert launcher.slept == [("m1", 1)]
+
+
+def test_failed_sleep_operation_keeps_model_active_and_retriable():
+    class _FlakySleepLauncher(MockEngineLauncher):
+        def sleep(self, inst, level):
+            super().sleep(inst, level)
+            if len(self.slept) == 1:
+                raise RuntimeError("vllm sleep failed")
+
+    launcher = _FlakySleepLauncher()
+    agent = ModelRuntime(launcher)
+    inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+
+    with pytest.raises(RuntimeError, match="vllm sleep failed"):
+        agent.sleep("m1", level=1, operation_id="sleep-1")
+    retried = agent.sleep("m1", level=1, operation_id="sleep-1")
+
+    assert inst.phase == "sleeping"
+    assert retried.applied is True
+    assert launcher.slept == [("m1", 1), ("m1", 1)]
+    assert inst.completed_operation_ids["sleep"] == ["sleep-1"]
+
+
+def test_wake_restores_active_phase_and_readiness():
+    from aibrix.runtime.model_runtime import instance_ready
+
+    launcher = MockEngineLauncher()
+    agent = ModelRuntime(launcher)
+    inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    agent.sleep(inst.model_name, level=1, operation_id="sleep-1")
+
+    assert instance_ready(inst) is False
+    first = agent.wake(inst.model_name, operation_id="wake-1")
+    duplicate = agent.wake(inst.model_name, operation_id="wake-1")
+
+    assert first.applied is True
+    assert duplicate.applied is False
+    assert inst.phase == "active"
+    assert instance_ready(inst) is True
+    assert launcher.woken == ["m1"]
+
+
+def test_kvctl_controller_uses_checked_limit_command(monkeypatch):
+    import subprocess
+
+    from aibrix.runtime.model_runtime import KvctlController
+
+    calls = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    KvctlController().set_limit("kvc_m1", 4096)
+
+    assert calls == [
+        ((["kvctl", "limit", "kvc_m1", "4096"],), {"check": True, "timeout": 10})
+    ]
+
+
+def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
+    import httpx
+
+    from aibrix.runtime.model_runtime import ModelInstance, SubprocessEngineLauncher
+
+    calls = []
+
+    class _Response:
+        def raise_for_status(self):
+            calls[-1]["checked"] = True
+
+    def fake_post(url, timeout):
+        calls.append({"url": url, "timeout": timeout})
+        return _Response()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    inst = ModelInstance(model_name="m1", port=30123, ipc_name="kvc_m1")
+    launcher = SubprocessEngineLauncher()
+
+    launcher.sleep(inst, level=2)
+    launcher.wake(inst)
+
+    assert calls == [
+        {
+            "url": "http://127.0.0.1:30123/sleep?level=2",
+            "timeout": 10.0,
+            "checked": True,
+        },
+        {
+            "url": "http://127.0.0.1:30123/wake_up",
+            "timeout": 10.0,
+            "checked": True,
+        },
+    ]
+
+
+def test_completed_operation_ids_are_bounded():
+    kv_controller = _RecordingKVController()
+    agent = ModelRuntime(MockEngineLauncher(), kv_controller=kv_controller)
+    inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+
+    for index in range(130):
+        agent.set_kv_limit("m1", index, operation_id=f"limit-{index}")
+
+    assert len(inst.completed_operation_ids["kv-limit"]) == 128
+    assert inst.completed_operation_ids["kv-limit"][0] == "limit-2"
+    assert len(kv_controller.limits) == 130
 
 
 def test_activate_assigns_ipc_port():
@@ -151,6 +324,90 @@ def test_endpoints_activate_list_deactivate():
 
     listed = client.get("/v1/runtime/models").json()
     assert all(m["model_name"] != "ep1" for m in listed["models"])
+
+
+def test_control_endpoints_apply_kv_sleep_and_wake():
+    client = _make_test_client()
+    activated = client.post(
+        "/v1/runtime/models/activate",
+        json={"model_name": "ep-control", "artifact_url": "hf://Org/Model"},
+    )
+    assert activated.status_code == 200, activated.text
+
+    limited = client.post(
+        "/v1/runtime/models/kv-limit",
+        json={
+            "model_name": "ep-control",
+            "limit_bytes": 4096,
+            "operation_id": "limit-1",
+        },
+    )
+    assert limited.status_code == 200, limited.text
+    assert limited.json()["applied"] is True
+
+    sleeping = client.post(
+        "/v1/runtime/models/sleep",
+        json={"model_name": "ep-control", "level": 1, "operation_id": "sleep-1"},
+    )
+    assert sleeping.status_code == 200, sleeping.text
+    assert sleeping.json() == {
+        "status": "success",
+        "model_name": "ep-control",
+        "operation_id": "sleep-1",
+        "applied": True,
+        "phase": "sleeping",
+    }
+    listed = client.get("/v1/runtime/models").json()
+    assert listed["models"] == [
+        {
+            "model_name": "ep-control",
+            "port": activated.json()["port"],
+            "ipc_name": "kvc_ep-control",
+            "phase": "sleeping",
+            "ready": False,
+            "kv_used_bytes": 0,
+            "kv_total_bytes": 0,
+        }
+    ]
+
+    woken = client.post(
+        "/v1/runtime/models/wake",
+        json={"model_name": "ep-control", "operation_id": "wake-1"},
+    )
+    assert woken.status_code == 200, woken.text
+    assert woken.json()["phase"] == "active"
+    assert woken.json()["applied"] is True
+
+
+def test_control_endpoints_reject_unknown_unsupported_and_invalid_requests():
+    client = _make_test_client()
+
+    missing = client.post(
+        "/v1/runtime/models/kv-limit",
+        json={"model_name": "missing", "limit_bytes": 4096, "operation_id": "x"},
+    )
+    assert missing.status_code == 404
+
+    activated = client.post(
+        "/v1/runtime/models/activate",
+        json={
+            "model_name": "ep-sglang",
+            "artifact_url": "hf://Org/Model",
+            "engine": "sglang",
+        },
+    )
+    assert activated.status_code == 200, activated.text
+    unsupported = client.post(
+        "/v1/runtime/models/sleep",
+        json={"model_name": "ep-sglang", "level": 1, "operation_id": "sleep-1"},
+    )
+    assert unsupported.status_code == 409
+
+    invalid = client.post(
+        "/v1/runtime/models/wake",
+        json={"model_name": "ep-sglang", "operation_id": ""},
+    )
+    assert invalid.status_code == 422
 
 
 def test_snapshot_reports_runtime_state(monkeypatch, tmp_path):

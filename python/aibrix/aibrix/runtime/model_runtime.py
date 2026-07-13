@@ -63,8 +63,29 @@ class ModelInstance:
     claim_ref: Optional[Dict[str, str]] = None
     phase: str = "active"
     pid: Optional[int] = None
+    completed_operation_ids: Dict[str, List[str]] = field(
+        default_factory=dict, repr=False
+    )
     # Underlying process handle (None for mock); excluded from repr.
     proc: Optional[object] = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class RuntimeOperationResult:
+    """Result of an idempotent runtime control operation."""
+
+    model_name: str
+    operation_id: str
+    applied: bool
+    phase: str
+
+
+class ModelNotFoundError(LookupError):
+    """Raised when a control request targets an absent runtime model."""
+
+
+class UnsupportedModelControlError(RuntimeError):
+    """Raised when an engine does not implement a requested lifecycle control."""
 
 
 # --------------------------------------------------------------------------- #
@@ -86,6 +107,35 @@ class EngineLauncher(ABC):
     @abstractmethod
     def stop(self, inst: ModelInstance) -> None:
         """Terminate the engine process."""
+
+    @abstractmethod
+    def sleep(self, inst: ModelInstance, level: int) -> None:
+        """Put an engine into its supported sleep state."""
+
+    @abstractmethod
+    def wake(self, inst: ModelInstance) -> None:
+        """Wake an engine that was previously put to sleep."""
+
+
+class KVController(ABC):
+    """Applies kvcached controls to a model's shared-memory segment."""
+
+    @abstractmethod
+    def set_limit(self, ipc_name: str, limit_bytes: int) -> None:
+        """Set the kvcached limit for one normalized IPC segment."""
+
+
+class KvctlController(KVController):
+    """Production kvcached control plane backed by the kvctl CLI."""
+
+    def set_limit(self, ipc_name: str, limit_bytes: int) -> None:
+        import subprocess
+
+        subprocess.run(
+            ["kvctl", "limit", ipc_name, str(limit_bytes)],
+            check=True,
+            timeout=10,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -226,6 +276,14 @@ def engine_ready(port: int) -> bool:
         return False
 
 
+def _vllm_control_post(port: int, path: str) -> None:
+    """Invoke a vLLM development lifecycle endpoint through localhost only."""
+    import httpx
+
+    response = httpx.post(f"http://127.0.0.1:{port}{path}", timeout=10.0)
+    response.raise_for_status()
+
+
 def instance_ready(inst: "ModelInstance") -> bool:
     """Whether a model instance is ready to serve. A mock/handle-less instance
     (no real engine process) is ready by definition; a dead one is not; a live
@@ -233,6 +291,8 @@ def instance_ready(inst: "ModelInstance") -> bool:
     a model's warm-pod annotation stays at the non-routable marker (port 0)
     until ready, so requests never route to an engine that is still
     booting/compiling."""
+    if inst.phase == "sleeping":
+        return False
     proc = inst.proc
     poll = getattr(proc, "poll", None)
     if proc is None or poll is None:
@@ -329,6 +389,12 @@ class SubprocessEngineLauncher(EngineLauncher):
             except OSError:
                 pass
 
+    def sleep(self, inst, level):
+        _vllm_control_post(inst.port, f"/sleep?level={level}")
+
+    def wake(self, inst):
+        _vllm_control_post(inst.port, "/wake_up")
+
 
 def _resolve_model_path(artifact_url: str) -> str:
     """Resolve a weight artifact URL to a path/id the engine can load.
@@ -378,6 +444,8 @@ class MockEngineLauncher(EngineLauncher):
     def __init__(self) -> None:
         self.launched: List[str] = []
         self.stopped: List[str] = []
+        self.slept: List[tuple[str, int]] = []
+        self.woken: List[str] = []
         self._pid = 10000
 
     def launch(self, inst, artifact_url, engine_config, additional_config):
@@ -387,6 +455,22 @@ class MockEngineLauncher(EngineLauncher):
 
     def stop(self, inst):
         self.stopped.append(inst.model_name)
+
+    def sleep(self, inst, level):
+        self.slept.append((inst.model_name, level))
+
+    def wake(self, inst):
+        self.woken.append(inst.model_name)
+
+
+class MockKVController(KVController):
+    """In-memory KV actuator for runtime mock mode and unit tests."""
+
+    def __init__(self) -> None:
+        self.limits: List[tuple[str, int]] = []
+
+    def set_limit(self, ipc_name: str, limit_bytes: int) -> None:
+        self.limits.append((ipc_name, limit_bytes))
 
 
 # --------------------------------------------------------------------------- #
@@ -399,8 +483,10 @@ class ModelRuntime:
         self,
         launcher: EngineLauncher,
         port_range: tuple = (20000, 21000),
+        kv_controller: Optional[KVController] = None,
     ) -> None:
         self._launcher = launcher
+        self._kv_controller = kv_controller or KvctlController()
         self._models: Dict[str, ModelInstance] = {}
         self._lock = threading.RLock()
         self._port_lo, self._port_hi = port_range
@@ -471,6 +557,106 @@ class ModelRuntime:
             self._launcher.stop(inst)
             self._models.pop(model_name, None)
 
+    def set_kv_limit(
+        self, model_name: str, limit_bytes: int, *, operation_id: str
+    ) -> RuntimeOperationResult:
+        """Apply a kvcached limit once for an idempotent controller operation."""
+        if limit_bytes < 0:
+            raise ValueError("limit_bytes must be non-negative")
+        if not operation_id:
+            raise ValueError("operation_id must not be empty")
+        with self._lock:
+            inst = self._require_instance(model_name)
+            if self._operation_completed(inst, "kv-limit", operation_id):
+                return RuntimeOperationResult(
+                    model_name=model_name,
+                    operation_id=operation_id,
+                    applied=False,
+                    phase=inst.phase,
+                )
+            self._kv_controller.set_limit(inst.ipc_name, limit_bytes)
+            self._remember_operation(inst, "kv-limit", operation_id)
+            return RuntimeOperationResult(
+                model_name=model_name,
+                operation_id=operation_id,
+                applied=True,
+                phase=inst.phase,
+            )
+
+    def sleep(
+        self, model_name: str, *, level: int, operation_id: str
+    ) -> RuntimeOperationResult:
+        """Put a vLLM model to sleep once for a controller operation ID."""
+        if level not in (1, 2):
+            raise ValueError("sleep level must be 1 or 2")
+        if not operation_id:
+            raise ValueError("operation_id must not be empty")
+        with self._lock:
+            inst = self._require_instance(model_name)
+            if inst.engine != "vllm":
+                raise UnsupportedModelControlError(
+                    f"sleep is unsupported for engine {inst.engine!r}"
+                )
+            if self._operation_completed(inst, "sleep", operation_id):
+                return RuntimeOperationResult(
+                    model_name=model_name,
+                    operation_id=operation_id,
+                    applied=False,
+                    phase=inst.phase,
+                )
+            if inst.phase == "sleeping":
+                self._remember_operation(inst, "sleep", operation_id)
+                return RuntimeOperationResult(
+                    model_name=model_name,
+                    operation_id=operation_id,
+                    applied=False,
+                    phase=inst.phase,
+                )
+            self._launcher.sleep(inst, level)
+            inst.phase = "sleeping"
+            self._remember_operation(inst, "sleep", operation_id)
+            return RuntimeOperationResult(
+                model_name=model_name,
+                operation_id=operation_id,
+                applied=True,
+                phase=inst.phase,
+            )
+
+    def wake(self, model_name: str, *, operation_id: str) -> RuntimeOperationResult:
+        """Wake a vLLM model once for a controller operation ID."""
+        if not operation_id:
+            raise ValueError("operation_id must not be empty")
+        with self._lock:
+            inst = self._require_instance(model_name)
+            if inst.engine != "vllm":
+                raise UnsupportedModelControlError(
+                    f"wake is unsupported for engine {inst.engine!r}"
+                )
+            if self._operation_completed(inst, "wake", operation_id):
+                return RuntimeOperationResult(
+                    model_name=model_name,
+                    operation_id=operation_id,
+                    applied=False,
+                    phase=inst.phase,
+                )
+            if inst.phase != "sleeping":
+                self._remember_operation(inst, "wake", operation_id)
+                return RuntimeOperationResult(
+                    model_name=model_name,
+                    operation_id=operation_id,
+                    applied=False,
+                    phase=inst.phase,
+                )
+            self._launcher.wake(inst)
+            inst.phase = "active"
+            self._remember_operation(inst, "wake", operation_id)
+            return RuntimeOperationResult(
+                model_name=model_name,
+                operation_id=operation_id,
+                applied=True,
+                phase=inst.phase,
+            )
+
     def list_models(self) -> List[ModelInstance]:
         """Resident instances, with dead engines reaped first so the listing
         (and everything built on it: node reporting, the reclaim loop, the
@@ -524,6 +710,27 @@ class ModelRuntime:
             "cached_artifacts": cached_artifacts(),
         }
 
+    @staticmethod
+    def _operation_completed(
+        inst: ModelInstance, action: str, operation_id: str
+    ) -> bool:
+        return operation_id in inst.completed_operation_ids.get(action, [])
+
+    @staticmethod
+    def _remember_operation(
+        inst: ModelInstance, action: str, operation_id: str
+    ) -> None:
+        completed = inst.completed_operation_ids.setdefault(action, [])
+        completed.append(operation_id)
+        if len(completed) > 128:
+            del completed[:-128]
+
+    def _require_instance(self, model_name: str) -> ModelInstance:
+        inst = self._models.get(model_name)
+        if inst is None:
+            raise ModelNotFoundError(f"model {model_name!r} is not active")
+        return inst
+
     def _pick_port(self) -> int:
         used = {m.port for m in self._models.values()}
         for port in range(self._port_lo, self._port_hi):
@@ -558,7 +765,7 @@ def get_model_runtime() -> ModelRuntime:
     global _AGENT
     if _AGENT is None:
         if os.environ.get("AIBRIX_MODEL_RUNTIME_MOCK") == "1":
-            _AGENT = ModelRuntime(MockEngineLauncher())
+            _AGENT = ModelRuntime(MockEngineLauncher(), kv_controller=MockKVController())
         else:
-            _AGENT = ModelRuntime(SubprocessEngineLauncher())
+            _AGENT = ModelRuntime(SubprocessEngineLauncher(), kv_controller=KvctlController())
     return _AGENT
