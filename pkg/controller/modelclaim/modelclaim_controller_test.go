@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -53,6 +54,8 @@ type fakeRuntime struct {
 	// models tracks the engines the fake currently hosts, keyed by served
 	// model name, so ListModels can drive the controller's readiness gate.
 	models map[string]ModelInfo
+	// snapshots reports per-pod runtime state for Phase-2 placement tests.
+	snapshots map[string]*RuntimeSnapshot
 }
 
 func (f *fakeRuntime) Activate(_ context.Context, _ string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
@@ -91,6 +94,13 @@ func (f *fakeRuntime) ListModels(_ context.Context, _ string, _ int) ([]ModelInf
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+func (f *fakeRuntime) Snapshot(_ context.Context, podIP string, _ int) (*RuntimeSnapshot, error) {
+	if snapshot, ok := f.snapshots[podIP]; ok {
+		return snapshot, nil
+	}
+	return nil, fmt.Errorf("no snapshot for pod %s", podIP)
 }
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -146,6 +156,9 @@ func newReconciler(t *testing.T, objs ...client.Object) (*ModelClaimReconciler, 
 		Scheme:   scheme,
 		Recorder: record.NewFakeRecorder(32),
 		Runtime:  runtime,
+		SnapshotCache: newRuntimeSnapshotCache(
+			defaultRuntimeSnapshotTTL, time.Now,
+		),
 	}, runtime
 }
 
@@ -228,6 +241,35 @@ func TestReconcileActivatesOnCandidate(t *testing.T) {
 	cond := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+}
+
+func TestReconcilePlacementPrefersRuntimeSnapshot(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.UID = types.UID("claim-uid")
+	cold := warmPod("cold", "b300-pool-a", true, corev1.PodRunning)
+	cold.Status.PodIP = "10.0.0.1"
+	hot := warmPod("hot", "b300-pool-a", true, corev1.PodRunning)
+	hot.Status.PodIP = "10.0.0.2"
+	r, runtime := newReconciler(t, pm, cold, hot)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		"10.0.0.1": {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 900}},
+			Models:       []RuntimeSnapshotModel{{ModelName: "other", KVUsedBytes: 1}},
+		},
+		"10.0.0.2": {
+			Accelerators:    []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 100}},
+			CachedArtifacts: []string{pm.Spec.ArtifactURL},
+		},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, "hot", getModel(t, r, pm.Name).Status.Instances[0].Pod)
+	require.NotNil(t, runtime.activateCalls[0].ClaimRef)
+	assert.Equal(t, "default", runtime.activateCalls[0].ClaimRef.Namespace)
+	assert.Equal(t, "qwen2-7b", runtime.activateCalls[0].ClaimRef.Name)
+	assert.Equal(t, "claim-uid", runtime.activateCalls[0].ClaimRef.UID)
 }
 
 // TestReconcileReadinessGate verifies the controller does not make a model

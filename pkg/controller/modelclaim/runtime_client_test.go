@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,6 +47,8 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 		assert.Equal(t, "m1", req.ModelName)
 		assert.Equal(t, "kvc_m1", req.IPCName)
+		require.NotNil(t, req.ClaimRef)
+		assert.Equal(t, "claim-uid", req.ClaimRef.UID)
 		require.NotNil(t, req.EngineConfig)
 		assert.Equal(t, "2048", req.EngineConfig.Args["--max-model-len"])
 		_ = json.NewEncoder(w).Encode(ActivateResponse{
@@ -58,6 +61,7 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 	resp, err := c.Activate(context.Background(), host, port, &ActivateRequest{
 		ModelName: "m1",
 		IPCName:   "kvc_m1",
+		ClaimRef:  &ModelClaimRef{Namespace: "default", Name: "m1", UID: "claim-uid"},
 		EngineConfig: &modelv1alpha1.ModelClaimEngineConfig{
 			Args: map[string]string{"--max-model-len": "2048"},
 		},
@@ -65,6 +69,37 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int32(9123), resp.Port)
 	assert.Equal(t, "kvc_m1", resp.IPCName)
+}
+
+func TestHTTPRuntimeSnapshot(t *testing.T) {
+	observedAt := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/runtime/snapshot", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(RuntimeSnapshot{
+			ObservedAt: observedAt,
+			Accelerators: []RuntimeAcceleratorSnapshot{{
+				ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 700,
+			}},
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "m1", ArtifactURL: "hf://Org/M1", Port: 9001,
+				IPCName: "kvc_m1", Phase: "active", Ready: true,
+				KVUsedBytes: 10, KVCapacityBytes: 100,
+				ClaimRef: &ModelClaimRef{Namespace: "default", Name: "m1", UID: "claim-uid"},
+			}},
+			CachedArtifacts: []string{"hf://Org/M1"},
+		})
+	}))
+	defer srv.Close()
+
+	c, host, port := clientForServer(srv)
+	snapshot, err := c.Snapshot(context.Background(), host, port)
+
+	require.NoError(t, err)
+	require.Len(t, snapshot.Accelerators, 1)
+	assert.Equal(t, int64(700), snapshot.Accelerators[0].HBMFreeBytes)
+	require.Len(t, snapshot.Models, 1)
+	assert.Equal(t, "claim-uid", snapshot.Models[0].ClaimRef.UID)
+	assert.Equal(t, []string{"hf://Org/M1"}, snapshot.CachedArtifacts)
 }
 
 func TestHTTPRuntimeActivate_StatusError(t *testing.T) {

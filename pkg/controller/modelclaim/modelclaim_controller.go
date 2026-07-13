@@ -75,6 +75,9 @@ type ModelClaimReconciler struct {
 	// Layer 2 node weight-cache signal). Phase 1 uses uniformLocality, so
 	// placement is load-only until node state reporting is added back.
 	Locality LocalityProvider
+	// SnapshotCache stores bounded runtime observations for placement. It is
+	// process-local so a leader restart naturally rehydrates from sidecars.
+	SnapshotCache *runtimeSnapshotCache
 }
 
 // Add creates a new ModelClaim controller and registers it with the Manager.
@@ -85,6 +88,9 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 		Recorder: mgr.GetEventRecorderFor(controllerName),
 		Runtime:  NewRuntimeClient(),
 		Locality: uniformLocality{},
+		SnapshotCache: newRuntimeSnapshotCache(
+			defaultRuntimeSnapshotTTL, time.Now,
+		),
 	}
 
 	err := ctrl.NewControllerManagedBy(mgr).
@@ -308,9 +314,12 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 // reconciles again); only runtime failures propagate.
 func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1alpha1.ModelClaim, candidates []corev1.Pod) error {
 	load := r.computePodLoad(ctx, pm.Namespace)
+	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL)
 
 	for desiredReplicas(pm) > int32(len(pm.Status.Instances)) {
-		pod, err := selectPodForActivation(candidates, instancePods(pm), load, servedModelName(pm), r.Locality)
+		pod, err := selectPodForActivationWithState(
+			candidates, instancePods(pm), load, servedModelName(pm), r.Locality, placementStates,
+		)
 		if err != nil {
 			// No available warm pod right now; remain Pending and retry on requeue.
 			r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", err.Error())
@@ -329,6 +338,11 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			Engine:       pm.Spec.Engine,
 			IPCName:      ipcNameFor(pm),
 			EngineConfig: pm.Spec.EngineConfig,
+			ClaimRef: &ModelClaimRef{
+				Namespace: pm.Namespace,
+				Name:      pm.Name,
+				UID:       string(pm.UID),
+			},
 		})
 		if aerr != nil {
 			recordActivation(pm.Namespace, servedModelName(pm), false)
@@ -354,6 +368,29 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			"model %s engine starting on pod %s:%d", servedModelName(pm), pod.Name, resp.Port)
 	}
 	return nil
+}
+
+func (r *ModelClaimReconciler) collectPlacementStates(
+	ctx context.Context,
+	candidates []corev1.Pod,
+	artifactURL string,
+) map[string]PodPlacementState {
+	states := make(map[string]PodPlacementState, len(candidates))
+	if r.SnapshotCache == nil {
+		return states
+	}
+	for i := range candidates {
+		pod := &candidates[i]
+		key := types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}
+		snapshot, ok := r.SnapshotCache.Get(key, pod.UID, func() (*RuntimeSnapshot, error) {
+			return r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
+		})
+		if !ok {
+			continue
+		}
+		states[pod.Name] = placementStateFromSnapshot(snapshot, artifactURL)
+	}
+	return states
 }
 
 // reconcileInstanceHealth reconciles each instance against the engine's live
