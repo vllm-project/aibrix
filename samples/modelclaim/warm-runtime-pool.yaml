@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warm-runtime-pool-b300
+  namespace: default
+  labels:
+    pool.aibrix.ai/name: b300-pool-a
+    pool.aibrix.ai/enabled: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: warm-runtime-pool-b300
+  template:
+    metadata:
+      labels:
+        app: warm-runtime-pool-b300
+        pool.aibrix.ai/name: b300-pool-a
+        pool.aibrix.ai/enabled: "true"
+    spec:
+      containers:
+        - name: aibrix-runtime
+          image: aibrix/runtime:dev
+          imagePullPolicy: IfNotPresent
+          command:
+            - aibrix_runtime
+          ports:
+            - name: runtime
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          env:
+            - name: AIBRIX_MODEL_RUNTIME_MOCK
+              value: "0"
+            - name: ENABLE_KVCACHED
+              value: "true"
+            - name: KVCACHED_AUTOPATCH
+              value: "1"
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: hf-cache
+              mountPath: /root/.cache/huggingface
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+        - name: hf-cache
+          hostPath:
+            path: /var/cache/aibrix/huggingface
+            type: DirectoryOrCreate

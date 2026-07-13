@@ -111,3 +111,68 @@ class UnloadLoraAdapterRuntimeRequest(NoExtraBaseModel):
     cleanup_local: bool = Field(
         default=True, description="Whether to delete local artifact files"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Runtime model lifecycle protocol (engine <-> control-plane co-design)
+# --------------------------------------------------------------------------- #
+class RuntimeEngineConfig(NoExtraBaseModel):
+    """Engine-specific startup options."""
+
+    args: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Engine CLI flags keyed by flag name, e.g. {'--max-model-len': '2048'}",
+    )
+
+
+class ActivateRuntimeModelRequest(NoProtectedBaseModel):
+    """Bring a model online as its own kvcached-enabled engine process."""
+
+    model_name: str
+    artifact_url: str
+    engine: str = "vllm"
+    port: int = Field(default=0, description="0 lets the agent pick a free port")
+    ipc_name: Optional[str] = Field(
+        default=None,
+        description="kvcached KVCACHED_IPC_NAME; agent derives one if empty",
+    )
+    credentials: Optional[Dict[str, str]] = None
+    engine_config: Optional[RuntimeEngineConfig] = None
+    # Legacy compatibility for older callers. New ModelClaim callers should use
+    # engine_config.args for engine CLI flags.
+    additional_config: Optional[Dict[str, str]] = None
+
+
+class ActivateRuntimeModelResponse(NoProtectedBaseModel):
+    status: str  # "success" | "error"
+    model_name: str
+    port: int = 0
+    ipc_name: str = ""
+    message: Optional[str] = None
+
+
+class DeactivateRuntimeModelRequest(NoProtectedBaseModel):
+    """Tear a model down by stopping its engine process."""
+
+    model_name: str
+    mode: str = "stop"
+
+
+class RuntimeModelInfo(NoProtectedBaseModel):
+    model_name: str
+    port: int
+    ipc_name: str
+    phase: str
+    # Whether the engine can serve right now (a /health probe). The controller
+    # gates routability on this: a model's warm-pod annotation stays at the
+    # non-routable marker (port 0) until ready, so requests never hit a
+    # still-booting engine.
+    ready: bool = False
+    # KV accounting comes from the model's kvcached /dev/shm MemInfoStruct and
+    # is zero when the segment is absent (mock engine, or engine still starting).
+    kv_used_bytes: int = 0
+    kv_total_bytes: int = 0
+
+
+class ListRuntimeModelsResponse(NoProtectedBaseModel):
+    models: List[RuntimeModelInfo]

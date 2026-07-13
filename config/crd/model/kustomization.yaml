@@ -1,2 +1,3 @@
 resources:
 - model.aibrix.ai_modeladapters.yaml
+- model.aibrix.ai_modelclaims.yaml

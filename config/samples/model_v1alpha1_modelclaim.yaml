@@ -1,0 +1,22 @@
+# A ModelClaim attaches to a warm GPU pool: an ordinary Deployment of
+# pre-warmed GPU-host pods labelled `pool.aibrix.ai/name: <pool>` and
+# `pool.aibrix.ai/enabled: "true"`. The controller bin-packs this model onto a
+# pod and serves it as its own engine process, sharing the pod's elastic KV
+# cache (kvcached) with other ModelClaims.
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelClaim
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: qwen2-7b-sample
+spec:
+  # Served model name clients address; defaults to metadata.name when omitted.
+  modelName: qwen2-7b-instruct
+  # Select the warm GPU pool to attach to.
+  podSelector:
+    matchLabels:
+      pool.aibrix.ai/name: b300-pool-a
+  artifactURL: huggingface://Qwen/Qwen2-7B-Instruct
+  engine: vllm
+  replicas: 1
