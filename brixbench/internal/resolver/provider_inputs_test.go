@@ -1,6 +1,8 @@
 package resolver
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -47,16 +49,22 @@ func TestValidateProviderInputsRejectsNullProviderUnsupportedInputs(t *testing.T
 	}
 }
 
-func TestValidateProviderInputsRejectsLLMdProvider(t *testing.T) {
-	provider := "llmd"
-	test := Test{Name: "llmd", Provider: &provider}
-
-	err := validateProviderInputs(&test)
-	if err == nil {
-		t.Fatalf("expected llmd not implemented error")
+func TestValidateProviderInputsAcceptsLLMdProvider(t *testing.T) {
+	valuesFile := filepath.Join(t.TempDir(), "router-values.yaml")
+	if err := os.WriteFile(valuesFile, []byte("router: {}\n"), 0o644); err != nil {
+		t.Fatalf("failed to write router values: %v", err)
 	}
-	if !strings.Contains(err.Error(), "provider llmd is not implemented") {
-		t.Fatalf("expected llmd not implemented error, got %v", err)
+	provider := "llmd"
+	test := Test{Name: "llmd", Provider: &provider, Version: "0.8.1", ControlPlane: []string{" " + valuesFile + " "}}
+
+	if err := validateProviderInputs(&test); err != nil {
+		t.Fatalf("validateProviderInputs returned error: %v", err)
+	}
+	if test.Version != "v0.8.1" {
+		t.Fatalf("expected normalized version v0.8.1, got %s", test.Version)
+	}
+	if test.ControlPlane[0] != valuesFile {
+		t.Fatalf("expected trimmed controlplane path %s, got %s", valuesFile, test.ControlPlane[0])
 	}
 }
 
