@@ -336,13 +336,21 @@ func validateEmbeddingContentParts(parts []embeddingContentPart) error {
 					i, MaxInputTokensPerModel, estimatedTokens)
 			}
 			totalEstimatedTokens += estimatedTokens
-		case "image_url", "image":
-			if len(part.ImageURL) == 0 && part.Image == "" {
+		case "image_url":
+			if len(part.ImageURL) == 0 {
 				return fmt.Errorf("input at index %d is missing image_url", i)
 			}
-		case "video_url", "video":
-			if len(part.VideoURL) == 0 && part.Video == "" {
+		case "image":
+			if part.Image == "" {
+				return fmt.Errorf("input at index %d is missing image", i)
+			}
+		case "video_url":
+			if len(part.VideoURL) == 0 {
 				return fmt.Errorf("input at index %d is missing video_url", i)
+			}
+		case "video":
+			if part.Video == "" {
+				return fmt.Errorf("input at index %d is missing video", i)
 			}
 		default:
 			return fmt.Errorf("input at index %d has unsupported content type %q", i, typ)
