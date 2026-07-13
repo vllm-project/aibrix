@@ -364,6 +364,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.tokens = nil
 	r.predictor = nil
 	r.statsUpdated = statusInitial
+	r.traceAdded = statusInitial
 }
 
 func (r *RoutingContext) debugWait() {
