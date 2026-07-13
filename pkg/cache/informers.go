@@ -117,9 +117,11 @@ func getModelNameFromPod(pod *v1.Pod) (string, bool) {
 
 func (c *Store) addPod(obj interface{}) {
 	pod := obj.(*v1.Pod)
-	// only track pods with model deployments (check label first, then annotation)
+	// Track pods that serve a model either through the standard deployment label
+	// or through ModelClaim runtime annotations.
 	modelName, ok := getModelNameFromPod(pod)
-	if !ok {
+	modelClaims := utils.ModelClaimsFromPod(pod)
+	if !ok && len(modelClaims) == 0 {
 		klog.V(4).InfoS("ignored pod without model label or annotation", "name", pod.Name)
 		return
 	}
@@ -133,7 +135,14 @@ func (c *Store) addPod(obj interface{}) {
 	defer c.mu.Unlock()
 
 	metaPod := c.addPodLocked(pod)
-	c.addPodAndModelMappingLocked(metaPod, modelName)
+	if ok {
+		c.addPodAndModelMappingLocked(metaPod, modelName)
+	}
+	for servedModel, port := range modelClaims {
+		if port > 0 {
+			c.addPodAndModelMappingLocked(metaPod, servedModel)
+		}
+	}
 
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
@@ -159,8 +168,9 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	_, oldOk := getModelNameFromPod(oldPod)
 	_, existed := c.metaPods.Load(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name)) // Make sure nothing left.
 	newModelName, newOk := getModelNameFromPod(newPod)
+	newModelClaims := utils.ModelClaimsFromPod(newPod)
 
-	if !oldOk && !existed && !newOk {
+	if !oldOk && !existed && !newOk && len(newModelClaims) == 0 {
 		return // No model information to track in either old or new pod
 	}
 
@@ -188,9 +198,16 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	}
 
 	// Add new mappings if present
-	if newOk && !newIsWorker {
+	if (newOk || len(newModelClaims) > 0) && !newIsWorker {
 		metaPod := c.addPodLocked(newPod)
-		c.addPodAndModelMappingLocked(metaPod, newModelName)
+		if newOk {
+			c.addPodAndModelMappingLocked(metaPod, newModelName)
+		}
+		for servedModel, port := range newModelClaims {
+			if port > 0 {
+				c.addPodAndModelMappingLocked(metaPod, servedModel)
+			}
+		}
 	}
 
 	klog.V(4).Infof("POD UPDATED: %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
@@ -211,11 +228,13 @@ func (c *Store) deletePod(obj interface{}) {
 		pod = obj
 		namespace, name = obj.Namespace, obj.Name
 		_, hasModelInfo = getModelNameFromPod(obj)
+		hasModelInfo = hasModelInfo || len(utils.ModelClaimsFromPod(obj)) > 0
 	case cache.DeletedFinalStateUnknown:
 		if p, ok := obj.Obj.(*v1.Pod); ok {
 			pod = p
 			namespace, name = p.Namespace, p.Name
 			_, hasModelInfo = getModelNameFromPod(p)
+			hasModelInfo = hasModelInfo || len(utils.ModelClaimsFromPod(p)) > 0
 			break
 		}
 
