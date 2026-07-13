@@ -98,7 +98,7 @@ func TestPlacementStateFromSnapshot(t *testing.T) {
 	assert.True(t, state.SnapshotKnown)
 	assert.True(t, state.ArtifactCached)
 	assert.True(t, state.MemoryKnown)
-	assert.Equal(t, int64(300), state.HBMFreeBytes)
+	assert.Equal(t, int64(800), state.HBMFreeBytes)
 	assert.Equal(t, int64(35), state.KVUsedBytes)
 	assert.Equal(t, 2, state.ModelCount)
 }

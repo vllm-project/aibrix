@@ -111,7 +111,11 @@ func placementStateFromSnapshot(snapshot *RuntimeSnapshot, artifactURL string) P
 		}
 	}
 	for _, accelerator := range snapshot.Accelerators {
-		if !state.MemoryKnown || accelerator.HBMFreeBytes < state.HBMFreeBytes {
+		// HBMFreeBytes describes the largest available single-GPU slot. Phase 2
+		// launches independent single-GPU engines, so pod ranking must use the
+		// most free HBM reported by any visible accelerator rather than aggregate
+		// or worst-device capacity.
+		if !state.MemoryKnown || accelerator.HBMFreeBytes > state.HBMFreeBytes {
 			state.HBMFreeBytes = accelerator.HBMFreeBytes
 			state.MemoryKnown = true
 		}
