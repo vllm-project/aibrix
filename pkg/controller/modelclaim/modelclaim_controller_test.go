@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -53,6 +54,8 @@ type fakeRuntime struct {
 	// models tracks the engines the fake currently hosts, keyed by served
 	// model name, so ListModels can drive the controller's readiness gate.
 	models map[string]ModelInfo
+	// snapshots reports per-pod runtime state for Phase-2 placement tests.
+	snapshots map[string]*RuntimeSnapshot
 }
 
 func (f *fakeRuntime) Activate(_ context.Context, _ string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
@@ -84,13 +87,40 @@ func (f *fakeRuntime) Deactivate(_ context.Context, _ string, _ int, req *Deacti
 	return nil
 }
 
+func (f *fakeRuntime) SetKVLimit(_ context.Context, _ string, _ int, req *SetKVLimitRequest) (*RuntimeOperationResponse, error) {
+	return &RuntimeOperationResponse{
+		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: true, Phase: "active",
+	}, nil
+}
+
+func (f *fakeRuntime) Sleep(_ context.Context, _ string, _ int, req *SleepRequest) (*RuntimeOperationResponse, error) {
+	return &RuntimeOperationResponse{
+		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: true, Phase: "sleeping",
+	}, nil
+}
+
+func (f *fakeRuntime) Wake(_ context.Context, _ string, _ int, req *WakeRequest) (*RuntimeOperationResponse, error) {
+	return &RuntimeOperationResponse{
+		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: true, Phase: "active",
+	}, nil
+}
+
 func (f *fakeRuntime) ListModels(_ context.Context, _ string, _ int) ([]ModelInfo, error) {
 	out := make([]ModelInfo, 0, len(f.models))
 	for _, m := range f.models {
-		m.Ready = !f.notReady // readiness evaluated at call time so tests can flip it
+		if m.Phase != "sleeping" {
+			m.Ready = !f.notReady // readiness evaluated at call time so tests can flip it
+		}
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+func (f *fakeRuntime) Snapshot(_ context.Context, podIP string, _ int) (*RuntimeSnapshot, error) {
+	if snapshot, ok := f.snapshots[podIP]; ok {
+		return snapshot, nil
+	}
+	return nil, fmt.Errorf("no snapshot for pod %s", podIP)
 }
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -146,6 +176,9 @@ func newReconciler(t *testing.T, objs ...client.Object) (*ModelClaimReconciler, 
 		Scheme:   scheme,
 		Recorder: record.NewFakeRecorder(32),
 		Runtime:  runtime,
+		SnapshotCache: newRuntimeSnapshotCache(
+			defaultRuntimeSnapshotTTL, time.Now,
+		),
 	}, runtime
 }
 
@@ -230,6 +263,35 @@ func TestReconcileActivatesOnCandidate(t *testing.T) {
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 }
 
+func TestReconcilePlacementPrefersRuntimeSnapshot(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.UID = types.UID("claim-uid")
+	cold := warmPod("cold", "b300-pool-a", true, corev1.PodRunning)
+	cold.Status.PodIP = "10.0.0.1"
+	hot := warmPod("hot", "b300-pool-a", true, corev1.PodRunning)
+	hot.Status.PodIP = "10.0.0.2"
+	r, runtime := newReconciler(t, pm, cold, hot)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		"10.0.0.1": {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 900}},
+			Models:       []RuntimeSnapshotModel{{ModelName: "other", KVUsedBytes: 1}},
+		},
+		"10.0.0.2": {
+			Accelerators:    []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 100}},
+			CachedArtifacts: []string{pm.Spec.ArtifactURL},
+		},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, "hot", getModel(t, r, pm.Name).Status.Instances[0].Pod)
+	require.NotNil(t, runtime.activateCalls[0].ClaimRef)
+	assert.Equal(t, "default", runtime.activateCalls[0].ClaimRef.Namespace)
+	assert.Equal(t, "qwen2-7b", runtime.activateCalls[0].ClaimRef.Name)
+	assert.Equal(t, "claim-uid", runtime.activateCalls[0].ClaimRef.UID)
+}
+
 // TestReconcileReadinessGate verifies the controller does not make a model
 // routable until its engine reports ready: while the engine is booting the
 // instance stays Activating, the warm-pod annotation holds the non-routable marker
@@ -302,6 +364,70 @@ func TestReconcileActiveDemotedWhenUnhealthy(t *testing.T) {
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, pod))
 	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+"qwen2-7b"], `"port":0`,
 		"unhealthy engine must be non-routable")
+}
+
+func TestReconcileSleepingInstanceRemovesRouteAndWakeRestoresIt(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	r, runtime := newReconciler(t,
+		pm,
+		warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning),
+	)
+
+	reconcileOnce(t, r, pm.Name)
+	active := getModel(t, r, pm.Name)
+	require.Len(t, active.Status.Instances, 1)
+	port := active.Status.Instances[0].Port
+	runtime.models[servedModelName(pm)] = ModelInfo{
+		ModelName: servedModelName(pm),
+		Port:      port,
+		Phase:     "sleeping",
+		Ready:     false,
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	sleeping := getModel(t, r, pm.Name)
+	require.Len(t, sleeping.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, sleeping.Status.Instances[0].Phase)
+	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, sleeping.Status.Phase)
+	assert.Equal(t, int32(0), sleeping.Status.ReadyReplicas)
+	condition := meta.FindStatusCondition(sleeping.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, "EngineSleeping", condition.Reason)
+	pod := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, pod))
+	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+"qwen2-7b"], `"port":0`,
+		"sleeping engine must be non-routable")
+	assert.Len(t, runtime.activateCalls, 1, "sleep must keep its assigned instance")
+
+	runtime.models[servedModelName(pm)] = ModelInfo{
+		ModelName: servedModelName(pm),
+		Port:      port,
+		Phase:     "active",
+		Ready:     false,
+	}
+	runtime.notReady = true
+	reconcileOnce(t, r, pm.Name)
+
+	waking := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, waking.Status.Instances[0].Phase)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, waking.Status.Phase)
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, pod))
+	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+"qwen2-7b"], `"port":0`,
+		"woken but unready engine must remain non-routable")
+
+	runtime.notReady = false
+	reconcileOnce(t, r, pm.Name)
+
+	woken := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, woken.Status.Instances[0].Phase)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, woken.Status.Phase)
+	assert.Equal(t, int32(1), woken.Status.ReadyReplicas)
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, pod))
+	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+"qwen2-7b"],
+		fmt.Sprintf(`"port":%d`, port), "woken and ready engine must regain its route")
+	assert.Len(t, runtime.activateCalls, 1, "wake must not launch another engine")
 }
 
 // TestReconcileNoCandidatesStaysPending verifies that with no warm pods the

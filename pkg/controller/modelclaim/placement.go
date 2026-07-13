@@ -67,13 +67,10 @@ func sanitizeIPCName(s string) string {
 	return b.String()
 }
 
-// LocalityProvider estimates the relative cost of loading a model's weights on
-// a node. 0 means "already hot on this node" (cheapest); a larger value means
-// costlier to bring up there (staged from local NVMe, or fetched from a remote/
-// HF source). It lets placement prefer nodes where the weights are already
-// cached. Layer 2's node weight-cache DaemonSet supplies a real implementation;
-// until then uniformLocality reports 0 for every node, so placement reduces to
-// load-based bin-packing exactly as before.
+// LocalityProvider is an optional advisory estimate for bringing a model's
+// weights onto a node. Runtime snapshots supply the authoritative per-pod
+// artifact signal; this interface remains for future node-level hints. A zero
+// cost means "already hot", and uniformLocality preserves load-only fallback.
 type LocalityProvider interface {
 	Cost(model, nodeName string) float64
 }
@@ -90,15 +87,29 @@ func (uniformLocality) Cost(model, nodeName string) float64 { return 0 }
 // where the weights are already hot, then the least-loaded pod for density
 // spread, breaking remaining ties by name for determinism.
 //
-// node-awareness comes for free: locality.Cost is keyed on pod.Spec.NodeName, so
-// the same function generalizes from "pick a GPU on this node" (Layer 2) to
-// "pick a node, then a GPU" (Layer 3) — only the LocalityProvider changes. A nil
-// provider is treated as uniform (load-only), preserving Layer-1 behavior.
+// A nil provider is treated as uniform (load-only), preserving the existing
+// deterministic fallback when runtime observations are unavailable.
 func selectPodForActivation(candidates []corev1.Pod, alreadyOn map[string]bool, load map[string]int, model string, locality LocalityProvider) (*corev1.Pod, error) {
+	return selectPodForActivationWithState(candidates, alreadyOn, load, model, locality, nil)
+}
+
+// selectPodForActivationWithState first prefers a pod that already has the
+// artifact locally, then live GPU/KV observations, and finally the Phase-1
+// locality/load/name rank. Missing runtime state is safe: it simply falls back
+// to the existing deterministic placement behavior.
+func selectPodForActivationWithState(
+	candidates []corev1.Pod,
+	alreadyOn map[string]bool,
+	load map[string]int,
+	model string,
+	locality LocalityProvider,
+	states map[string]PodPlacementState,
+) (*corev1.Pod, error) {
 	if locality == nil {
 		locality = uniformLocality{}
 	}
 	var best *corev1.Pod
+	var bestState PodPlacementState
 	var bestLoc float64
 	var bestLoad int
 	for i := range candidates {
@@ -106,16 +117,43 @@ func selectPodForActivation(candidates []corev1.Pod, alreadyOn map[string]bool, 
 		if alreadyOn[pod.Name] {
 			continue
 		}
+		state := states[pod.Name]
 		loc := locality.Cost(model, pod.Spec.NodeName)
 		l := load[pod.Name]
-		if best == nil || rankLess(loc, l, pod.Name, bestLoc, bestLoad, best.Name) {
-			best, bestLoc, bestLoad = pod, loc, l
+		if best == nil || placementStateLess(state, bestState) ||
+			(!placementStateLess(bestState, state) && rankLess(loc, l, pod.Name, bestLoc, bestLoad, best.Name)) {
+			best, bestState, bestLoc, bestLoad = pod, state, loc, l
 		}
 	}
 	if best == nil {
 		return nil, fmt.Errorf("no available candidate warm pod for model")
 	}
 	return best, nil
+}
+
+// placementStateLess returns whether a ranks ahead of b using live runtime
+// state. `false` in both directions means the legacy locality/load tie-breaker
+// decides the winner.
+func placementStateLess(a, b PodPlacementState) bool {
+	if a.ArtifactCached != b.ArtifactCached {
+		return a.ArtifactCached
+	}
+	if a.SnapshotKnown != b.SnapshotKnown {
+		return a.SnapshotKnown
+	}
+	if a.MemoryKnown != b.MemoryKnown {
+		return a.MemoryKnown
+	}
+	if a.MemoryKnown && a.HBMFreeBytes != b.HBMFreeBytes {
+		return a.HBMFreeBytes > b.HBMFreeBytes
+	}
+	if a.SnapshotKnown && a.KVUsedBytes != b.KVUsedBytes {
+		return a.KVUsedBytes < b.KVUsedBytes
+	}
+	if a.SnapshotKnown && a.ModelCount != b.ModelCount {
+		return a.ModelCount < b.ModelCount
+	}
+	return false
 }
 
 // rankLess reports whether candidate (loc,load,name) ranks before

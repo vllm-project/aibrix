@@ -316,9 +316,11 @@ def nullable_str(val: str):
     return val
 
 
-def main():
+def parse_runtime_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run aibrix runtime server")
-    parser.add_argument("--host", type=nullable_str, default=None, help="host name")
+    parser.add_argument(
+        "--host", type=nullable_str, default="0.0.0.0", help="host name"
+    )
     parser.add_argument("--port", type=int, default=8080, help="port number")
     parser.add_argument(
         "--enable-fastapi-docs",
@@ -326,7 +328,11 @@ def main():
         default=False,
         help="Enable FastAPI's OpenAPI schema, Swagger UI, and ReDoc endpoint",
     )
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main():
+    args = parse_runtime_args()
     logger.info("Use %s to startup runtime server", args)
     app = build_app(args=args)
     uvicorn.run(app, host=args.host, port=args.port)

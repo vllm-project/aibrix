@@ -22,7 +22,7 @@ implementation.
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
 from aibrix.openapi.protocol import (
@@ -31,8 +31,18 @@ from aibrix.openapi.protocol import (
     DeactivateRuntimeModelRequest,
     ListRuntimeModelsResponse,
     RuntimeModelInfo,
+    RuntimeOperationResponse,
+    RuntimeSnapshotResponse,
+    SetRuntimeModelKVLimitRequest,
+    SleepRuntimeModelRequest,
+    WakeRuntimeModelRequest,
 )
-from aibrix.runtime.model_runtime import get_model_runtime
+from aibrix.runtime.model_runtime import (
+    ModelNotFoundError,
+    RuntimeOperationResult,
+    UnsupportedModelControlError,
+    get_model_runtime,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +66,11 @@ def activate_runtime_model(request: ActivateRuntimeModelRequest):
                 else None
             ),
             additional_config=request.additional_config,
+            claim_ref=(
+                request.claim_ref.model_dump()
+                if request.claim_ref is not None
+                else None
+            ),
         )
     except Exception as exc:  # surface activation failure to the controller
         logger.error(f"failed to activate model {request.model_name}: {exc}")
@@ -81,6 +96,67 @@ async def deactivate_runtime_model(request: DeactivateRuntimeModelRequest):
     """Deactivate a model by stopping its engine process."""
     get_model_runtime().deactivate(request.model_name, mode=request.mode)
     return JSONResponse(content={"status": "success"}, status_code=200)
+
+
+def _operation_response(result: RuntimeOperationResult) -> JSONResponse:
+    return JSONResponse(
+        status_code=200,
+        content=RuntimeOperationResponse(
+            model_name=result.model_name,
+            operation_id=result.operation_id,
+            applied=result.applied,
+            phase=result.phase,
+        ).model_dump(),
+    )
+
+
+def _control_error(exc: Exception) -> None:
+    if isinstance(exc, ModelNotFoundError):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, UnsupportedModelControlError):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    raise exc
+
+
+@model_runtime_router.post("/v1/runtime/models/kv-limit")
+def set_runtime_model_kv_limit(request: SetRuntimeModelKVLimitRequest):
+    """Apply a kvcached limit through the sidecar's controller-only API."""
+    try:
+        result = get_model_runtime().set_kv_limit(
+            request.model_name,
+            request.limit_bytes,
+            operation_id=request.operation_id,
+        )
+    except Exception as exc:
+        _control_error(exc)
+    return _operation_response(result)
+
+
+@model_runtime_router.post("/v1/runtime/models/sleep")
+def sleep_runtime_model(request: SleepRuntimeModelRequest):
+    """Put a vLLM model to sleep through the sidecar, never its public port."""
+    try:
+        result = get_model_runtime().sleep(
+            request.model_name,
+            level=request.level,
+            operation_id=request.operation_id,
+        )
+    except Exception as exc:
+        _control_error(exc)
+    return _operation_response(result)
+
+
+@model_runtime_router.post("/v1/runtime/models/wake")
+def wake_runtime_model(request: WakeRuntimeModelRequest):
+    """Wake a vLLM model through the sidecar's controller-only API."""
+    try:
+        result = get_model_runtime().wake(
+            request.model_name,
+            operation_id=request.operation_id,
+        )
+    except Exception as exc:
+        _control_error(exc)
+    return _operation_response(result)
 
 
 # sync def: instance_ready issues blocking HTTP probes; run it in a threadpool.
@@ -110,3 +186,11 @@ def list_runtime_models():
         status_code=200,
         content=ListRuntimeModelsResponse(models=models).model_dump(),
     )
+
+
+@model_runtime_router.get(
+    "/v1/runtime/snapshot", response_model=RuntimeSnapshotResponse
+)
+def runtime_snapshot():
+    """Expose the current runtime state for controller-side placement."""
+    return RuntimeSnapshotResponse(**get_model_runtime().snapshot())

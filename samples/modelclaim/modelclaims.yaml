@@ -14,7 +14,6 @@ spec:
   engineConfig:
     args:
       --max-model-len: "2048"
-      --gpu-memory-utilization: "0.45"
 ---
 apiVersion: model.aibrix.ai/v1alpha1
 kind: ModelClaim
@@ -29,3 +28,6 @@ spec:
   artifactURL: huggingface://Qwen/Qwen2.5-0.5B-Instruct
   engine: vllm
   replicas: 1
+  engineConfig:
+    args:
+      --max-model-len: "2048"

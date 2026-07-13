@@ -42,6 +42,10 @@ const (
 	activatePath   = "/v1/runtime/models/activate"
 	deactivatePath = "/v1/runtime/models/deactivate"
 	modelListPath  = "/v1/runtime/models"
+	snapshotPath   = "/v1/runtime/snapshot"
+	kvLimitPath    = "/v1/runtime/models/kv-limit"
+	sleepPath      = "/v1/runtime/models/sleep"
+	wakePath       = "/v1/runtime/models/wake"
 
 	defaultRuntimeHTTPTimeout = 60 * time.Second
 )
@@ -71,6 +75,15 @@ type ActivateRequest struct {
 	// Credentials and engine-specific startup settings.
 	Credentials  map[string]string                     `json:"credentials,omitempty"`
 	EngineConfig *modelv1alpha1.ModelClaimEngineConfig `json:"engine_config,omitempty"`
+	ClaimRef     *ModelClaimRef                        `json:"claim_ref,omitempty"`
+}
+
+// ModelClaimRef identifies the ModelClaim that owns a runtime engine without
+// relying on the served model name, which may not be unique across namespaces.
+type ModelClaimRef struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	UID       string `json:"uid"`
 }
 
 // ActivateResponse reports the resulting engine instance.
@@ -88,6 +101,36 @@ type DeactivateRequest struct {
 	Mode      DeactivateMode `json:"mode"`
 }
 
+// SetKVLimitRequest applies a kvcached limit to a resident model through the
+// runtime sidecar. OperationID makes retries idempotent at the runtime.
+type SetKVLimitRequest struct {
+	ModelName   string `json:"model_name"`
+	LimitBytes  int64  `json:"limit_bytes"`
+	OperationID string `json:"operation_id"`
+}
+
+// SleepRequest puts a vLLM engine to sleep through its runtime sidecar.
+type SleepRequest struct {
+	ModelName   string `json:"model_name"`
+	Level       int    `json:"level"`
+	OperationID string `json:"operation_id"`
+}
+
+// WakeRequest wakes a vLLM engine through its runtime sidecar.
+type WakeRequest struct {
+	ModelName   string `json:"model_name"`
+	OperationID string `json:"operation_id"`
+}
+
+// RuntimeOperationResponse reports the result of an idempotent control action.
+type RuntimeOperationResponse struct {
+	Status      string `json:"status"`
+	ModelName   string `json:"model_name"`
+	OperationID string `json:"operation_id"`
+	Applied     bool   `json:"applied"`
+	Phase       string `json:"phase"`
+}
+
 // ModelInfo is one entry returned by the runtime sidecar's model listing.
 type ModelInfo struct {
 	ModelName string `json:"model_name"`
@@ -103,12 +146,45 @@ type ModelInfo struct {
 	KVTotalBytes int64 `json:"kv_total_bytes,omitempty"`
 }
 
+// RuntimeAcceleratorSnapshot is one GPU visible to a warm runtime pod.
+type RuntimeAcceleratorSnapshot struct {
+	ID            string `json:"id"`
+	HBMTotalBytes int64  `json:"hbm_total_bytes"`
+	HBMFreeBytes  int64  `json:"hbm_free_bytes"`
+}
+
+// RuntimeSnapshotModel is one engine reported by a runtime snapshot.
+type RuntimeSnapshotModel struct {
+	ModelName       string         `json:"model_name"`
+	ArtifactURL     string         `json:"artifact_url"`
+	ClaimRef        *ModelClaimRef `json:"claim_ref,omitempty"`
+	Port            int32          `json:"port"`
+	IPCName         string         `json:"ipc_name"`
+	Phase           string         `json:"phase"`
+	Ready           bool           `json:"ready"`
+	KVUsedBytes     int64          `json:"kv_used_bytes"`
+	KVCapacityBytes int64          `json:"kv_capacity_bytes"`
+}
+
+// RuntimeSnapshot is the point-in-time source for controller placement. It is
+// cached in memory only; the runtime sidecar remains authoritative.
+type RuntimeSnapshot struct {
+	ObservedAt      time.Time                    `json:"observed_at"`
+	Accelerators    []RuntimeAcceleratorSnapshot `json:"accelerators"`
+	Models          []RuntimeSnapshotModel       `json:"models"`
+	CachedArtifacts []string                     `json:"cached_artifacts"`
+}
+
 // RuntimeClient is the control-plane view of the per-runtime sidecar. The
 // interface keeps the controller testable with an in-process fake.
 type RuntimeClient interface {
 	Activate(ctx context.Context, podIP string, port int, req *ActivateRequest) (*ActivateResponse, error)
 	Deactivate(ctx context.Context, podIP string, port int, req *DeactivateRequest) error
 	ListModels(ctx context.Context, podIP string, port int) ([]ModelInfo, error)
+	Snapshot(ctx context.Context, podIP string, port int) (*RuntimeSnapshot, error)
+	SetKVLimit(ctx context.Context, podIP string, port int, req *SetKVLimitRequest) (*RuntimeOperationResponse, error)
+	Sleep(ctx context.Context, podIP string, port int, req *SleepRequest) (*RuntimeOperationResponse, error)
+	Wake(ctx context.Context, podIP string, port int, req *WakeRequest) (*RuntimeOperationResponse, error)
 }
 
 // httpRuntimeClient talks to the runtime sidecar over HTTP.
@@ -142,27 +218,66 @@ func (c *httpRuntimeClient) Deactivate(ctx context.Context, podIP string, port i
 	return c.postJSON(ctx, runtimeURL(podIP, port, deactivatePath), req, nil)
 }
 
-func (c *httpRuntimeClient) ListModels(ctx context.Context, podIP string, port int) ([]ModelInfo, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, runtimeURL(podIP, port, modelListPath), nil)
-	if err != nil {
+func (c *httpRuntimeClient) SetKVLimit(ctx context.Context, podIP string, port int, req *SetKVLimitRequest) (*RuntimeOperationResponse, error) {
+	out := &RuntimeOperationResponse{}
+	if err := c.postJSON(ctx, runtimeURL(podIP, port, kvLimitPath), req, out); err != nil {
 		return nil, err
+	}
+	return out, nil
+}
+
+func (c *httpRuntimeClient) Sleep(ctx context.Context, podIP string, port int, req *SleepRequest) (*RuntimeOperationResponse, error) {
+	out := &RuntimeOperationResponse{}
+	if err := c.postJSON(ctx, runtimeURL(podIP, port, sleepPath), req, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *httpRuntimeClient) Wake(ctx context.Context, podIP string, port int, req *WakeRequest) (*RuntimeOperationResponse, error) {
+	out := &RuntimeOperationResponse{}
+	if err := c.postJSON(ctx, runtimeURL(podIP, port, wakePath), req, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *httpRuntimeClient) ListModels(ctx context.Context, podIP string, port int) ([]ModelInfo, error) {
+	var out struct {
+		Models []ModelInfo `json:"models"`
+	}
+	if err := c.getJSON(ctx, runtimeURL(podIP, port, modelListPath), &out); err != nil {
+		return nil, err
+	}
+	return out.Models, nil
+}
+
+func (c *httpRuntimeClient) Snapshot(ctx context.Context, podIP string, port int) (*RuntimeSnapshot, error) {
+	out := &RuntimeSnapshot{}
+	if err := c.getJSON(ctx, runtimeURL(podIP, port, snapshotPath), out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *httpRuntimeClient) getJSON(ctx context.Context, url string, out any) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
 	}
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("runtime list models returned %d: %s", resp.StatusCode, body)
+		return fmt.Errorf("runtime GET %s returned %d: %s", url, resp.StatusCode, body)
 	}
-	var out struct {
-		Models []ModelInfo `json:"models"`
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("decode runtime response: %w", err)
 	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("decode runtime model list: %w", err)
-	}
-	return out.Models, nil
+	return nil
 }
 
 // postJSON marshals req, POSTs it, and (optionally) decodes the response into

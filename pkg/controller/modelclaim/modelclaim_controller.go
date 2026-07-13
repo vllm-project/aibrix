@@ -75,6 +75,9 @@ type ModelClaimReconciler struct {
 	// Layer 2 node weight-cache signal). Phase 1 uses uniformLocality, so
 	// placement is load-only until node state reporting is added back.
 	Locality LocalityProvider
+	// SnapshotCache stores bounded runtime observations for placement. It is
+	// process-local so a leader restart naturally rehydrates from sidecars.
+	SnapshotCache *runtimeSnapshotCache
 }
 
 // Add creates a new ModelClaim controller and registers it with the Manager.
@@ -85,6 +88,9 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 		Recorder: mgr.GetEventRecorderFor(controllerName),
 		Runtime:  NewRuntimeClient(),
 		Locality: uniformLocality{},
+		SnapshotCache: newRuntimeSnapshotCache(
+			defaultRuntimeSnapshotTTL, time.Now,
+		),
 	}
 
 	err := ctrl.NewControllerManagedBy(mgr).
@@ -272,9 +278,13 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 	// warm-pod annotation is still the non-routable marker (port 0), so it is NOT
 	// routable and must not inflate ReadyReplicas.
 	active := 0
+	sleeping := 0
 	for i := range pm.Status.Instances {
 		if pm.Status.Instances[i].Phase == modelv1alpha1.ModelClaimActive {
 			active++
+		}
+		if pm.Status.Instances[i].Phase == modelv1alpha1.ModelClaimSleeping {
+			sleeping++
 		}
 	}
 	pm.Status.ReadyReplicas = int32(active)
@@ -286,6 +296,14 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 			Status:  metav1.ConditionTrue,
 			Reason:  "ModelClaimActive",
 			Message: "model is active on at least one warm pod",
+		})
+	case sleeping > 0:
+		pm.Status.Phase = modelv1alpha1.ModelClaimSleeping
+		meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+			Type:    string(modelv1alpha1.ModelClaimConditionReady),
+			Status:  metav1.ConditionFalse,
+			Reason:  "EngineSleeping",
+			Message: "one or more model engine instances are sleeping and non-routable",
 		})
 	case len(pm.Status.Instances) > 0:
 		// Engine(s) spawned but at least one is still booting/compiling. The
@@ -308,9 +326,12 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 // reconciles again); only runtime failures propagate.
 func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1alpha1.ModelClaim, candidates []corev1.Pod) error {
 	load := r.computePodLoad(ctx, pm.Namespace)
+	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL)
 
 	for desiredReplicas(pm) > int32(len(pm.Status.Instances)) {
-		pod, err := selectPodForActivation(candidates, instancePods(pm), load, servedModelName(pm), r.Locality)
+		pod, err := selectPodForActivationWithState(
+			candidates, instancePods(pm), load, servedModelName(pm), r.Locality, placementStates,
+		)
 		if err != nil {
 			// No available warm pod right now; remain Pending and retry on requeue.
 			r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", err.Error())
@@ -329,6 +350,11 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			Engine:       pm.Spec.Engine,
 			IPCName:      ipcNameFor(pm),
 			EngineConfig: pm.Spec.EngineConfig,
+			ClaimRef: &ModelClaimRef{
+				Namespace: pm.Namespace,
+				Name:      pm.Name,
+				UID:       string(pm.UID),
+			},
 		})
 		if aerr != nil {
 			recordActivation(pm.Namespace, servedModelName(pm), false)
@@ -356,18 +382,42 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 	return nil
 }
 
+func (r *ModelClaimReconciler) collectPlacementStates(
+	ctx context.Context,
+	candidates []corev1.Pod,
+	artifactURL string,
+) map[string]PodPlacementState {
+	states := make(map[string]PodPlacementState, len(candidates))
+	if r.SnapshotCache == nil {
+		return states
+	}
+	for i := range candidates {
+		pod := &candidates[i]
+		key := types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}
+		snapshot, ok := r.SnapshotCache.Get(key, pod.UID, func() (*RuntimeSnapshot, error) {
+			return r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
+		})
+		if !ok {
+			continue
+		}
+		states[pod.Name] = placementStateFromSnapshot(snapshot, artifactURL)
+	}
+	return states
+}
+
 // reconcileInstanceHealth reconciles each instance against the engine's live
 // readiness (runtime-sidecar listing). An Activating instance is promoted to
 // Active once ready, flipping the warm-pod annotation from the non-routable
-// marker (port 0) to its real port — the moment the model becomes routable. An
-// Active instance whose engine stops reporting ready (crash, restart) is demoted
-// back to Activating and re-stamped non-routable, so the gateway stops routing
-// to a dead engine and the instance re-promotes when it recovers.
+// marker (port 0) to its real port — the moment the model becomes routable. A
+// runtime-reported sleeping engine remains assigned but is always re-stamped
+// non-routable; it can only become Active again after wake and a ready probe.
 func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *modelv1alpha1.ModelClaim) {
 	served := servedModelName(pm)
 	for i := range pm.Status.Instances {
 		inst := &pm.Status.Instances[i]
-		if inst.Phase != modelv1alpha1.ModelClaimActivating && inst.Phase != modelv1alpha1.ModelClaimActive {
+		if inst.Phase != modelv1alpha1.ModelClaimActivating &&
+			inst.Phase != modelv1alpha1.ModelClaimActive &&
+			inst.Phase != modelv1alpha1.ModelClaimSleeping {
 			continue
 		}
 		ip := r.podIP(ctx, pm.Namespace, inst.Pod)
@@ -379,14 +429,36 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *
 			klog.V(4).InfoS("readiness check failed", "model", pm.Name, "pod", inst.Pod, "phase", inst.Phase, "err", err)
 			continue
 		}
-		ready := false
-		for _, m := range models {
-			if m.ModelName == served {
-				ready = m.Ready
+		var observed *ModelInfo
+		for j := range models {
+			if models[j].ModelName == served {
+				observed = &models[j]
 				break
 			}
 		}
-		if ready == (inst.Phase == modelv1alpha1.ModelClaimActive) {
+		if observed != nil && observed.Phase == "sleeping" {
+			pod := &corev1.Pod{}
+			if err := r.Get(ctx, types.NamespacedName{Namespace: pm.Namespace, Name: inst.Pod}, pod); err != nil {
+				continue
+			}
+			if err := r.annotateWarmPod(ctx, pm, pod, 0); err != nil {
+				klog.ErrorS(err, "routability annotation failed", "model", pm.Name, "pod", inst.Pod, "ready", false)
+				continue
+			}
+			if inst.Phase != modelv1alpha1.ModelClaimSleeping {
+				inst.Phase = modelv1alpha1.ModelClaimSleeping
+				r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Sleeping",
+					"model %s is sleeping on pod %s and marked non-routable", served, inst.Pod)
+			}
+			continue
+		}
+
+		ready := observed != nil && observed.Ready
+		desiredPhase := modelv1alpha1.ModelClaimActivating
+		if ready {
+			desiredPhase = modelv1alpha1.ModelClaimActive
+		}
+		if inst.Phase == desiredPhase {
 			continue // already in the phase matching current readiness
 		}
 		pod := &corev1.Pod{}
@@ -401,11 +473,17 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *
 			klog.ErrorS(err, "routability annotation failed", "model", pm.Name, "pod", inst.Pod, "ready", ready)
 			continue
 		}
+		previousPhase := inst.Phase
 		if ready {
 			inst.Phase = modelv1alpha1.ModelClaimActive
-			recordActivation(pm.Namespace, served, true)
-			r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activated",
-				"model %s ready and routable on pod %s:%d", served, inst.Pod, inst.Port)
+			if previousPhase == modelv1alpha1.ModelClaimActivating {
+				recordActivation(pm.Namespace, served, true)
+				r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activated",
+					"model %s ready and routable on pod %s:%d", served, inst.Pod, inst.Port)
+			} else {
+				r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Woken",
+					"model %s woke and is routable on pod %s:%d", served, inst.Pod, inst.Port)
+			}
 		} else {
 			inst.Phase = modelv1alpha1.ModelClaimActivating
 			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "Unhealthy",

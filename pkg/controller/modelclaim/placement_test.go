@@ -131,6 +131,73 @@ func TestSelectPodForActivation_NilLocalityIsUniform(t *testing.T) {
 	assert.Equal(t, "b", got.Name)
 }
 
+func TestSelectPodForActivationWithStatePrefersLiveRuntimeState(t *testing.T) {
+	candidates := []corev1.Pod{namedPod("cold"), namedPod("hot")}
+	states := map[string]PodPlacementState{
+		"cold": {
+			SnapshotKnown: true,
+			MemoryKnown:   true,
+			HBMFreeBytes:  900,
+			KVUsedBytes:   10,
+			ModelCount:    1,
+		},
+		"hot": {
+			SnapshotKnown:  true,
+			ArtifactCached: true,
+			MemoryKnown:    true,
+			HBMFreeBytes:   100,
+			KVUsedBytes:    100,
+			ModelCount:     3,
+		},
+	}
+
+	got, err := selectPodForActivationWithState(
+		candidates, map[string]bool{}, map[string]int{}, "m", uniformLocality{}, states,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "hot", got.Name, "cached artifact wins before live memory tie-breakers")
+}
+
+func TestSelectPodForActivationWithStateRanksMemoryAndKV(t *testing.T) {
+	candidates := []corev1.Pod{namedPod("busy"), namedPod("free")}
+	states := map[string]PodPlacementState{
+		"busy": {
+			SnapshotKnown: true,
+			MemoryKnown:   true,
+			HBMFreeBytes:  500,
+			KVUsedBytes:   10,
+			ModelCount:    1,
+		},
+		"free": {
+			SnapshotKnown: true,
+			MemoryKnown:   true,
+			HBMFreeBytes:  600,
+			KVUsedBytes:   100,
+			ModelCount:    3,
+		},
+	}
+
+	got, err := selectPodForActivationWithState(
+		candidates, map[string]bool{}, map[string]int{}, "m", uniformLocality{}, states,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "free", got.Name, "higher free HBM wins before KV/model-count tie-breakers")
+}
+
+func TestSelectPodForActivationWithStateFallsBackForUnknownSnapshots(t *testing.T) {
+	candidates := []corev1.Pod{namedPod("busy"), namedPod("idle")}
+	got, err := selectPodForActivationWithState(
+		candidates,
+		map[string]bool{},
+		map[string]int{"busy": 2, "idle": 0},
+		"m",
+		uniformLocality{},
+		map[string]PodPlacementState{},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "idle", got.Name)
+}
+
 func TestUniformLocality_AlwaysZero(t *testing.T) {
 	assert.Zero(t, uniformLocality{}.Cost("m", "any-node"))
 }
