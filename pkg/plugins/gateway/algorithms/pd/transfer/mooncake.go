@@ -102,6 +102,12 @@ func (a *MooncakeAgent) AugmentPrefillRequest(
 	_ *v1.Pod,
 	completionRequest map[string]any,
 ) error {
+	if routingCtx == nil {
+		return fmt.Errorf("routing context is nil")
+	}
+	if completionRequest == nil {
+		return fmt.Errorf("completion request map is nil")
+	}
 	completionRequest["kv_transfer_params"] = map[string]any{
 		"do_remote_decode":  true,
 		"do_remote_prefill": false,
@@ -123,6 +129,13 @@ func (a *MooncakeAgent) MergePrefillResponse(
 	_ map[string]any, // prefillResponse is unused: Mooncake returns no kv_transfer_params
 	prefillPod *v1.Pod,
 ) error {
+	if routingCtx == nil {
+		return fmt.Errorf("routing context is nil")
+	}
+	if prefillPod == nil {
+		return fmt.Errorf("prefill pod is nil")
+	}
+
 	var originalRequest map[string]any
 	if err := sonic.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
 		return fmt.Errorf("failed to unmarshal original request body: %w", err)
@@ -131,7 +144,7 @@ func (a *MooncakeAgent) MergePrefillResponse(
 		return fmt.Errorf("original request body is empty or null")
 	}
 
-	info, err := getMooncakeBootstrapInfo(prefillPod)
+	info, err := getMooncakeBootstrapInfo(routingCtx, prefillPod)
 	if err != nil {
 		return fmt.Errorf("failed to resolve mooncake bootstrap info for prefill pod %s: %w",
 			prefillPod.Name, err)
@@ -165,7 +178,10 @@ func (a *MooncakeAgent) MergePrefillResponse(
 // for a prefill pod. On cache miss or TTL expiry it queries the pod's
 // MooncakeBootstrapServer GET /query. The result is cached per pod IP so we do
 // not add a per-request HTTP round-trip in the hot path.
-func getMooncakeBootstrapInfo(prefillPod *v1.Pod) (*mooncakeBootstrapInfo, error) {
+func getMooncakeBootstrapInfo(routingCtx *types.RoutingContext, prefillPod *v1.Pod) (*mooncakeBootstrapInfo, error) {
+	if prefillPod == nil {
+		return nil, fmt.Errorf("prefill pod is nil")
+	}
 	podIP := prefillPod.Status.PodIP
 	if podIP == "" {
 		return nil, fmt.Errorf("prefill pod %s has no PodIP yet", prefillPod.Name)
@@ -183,7 +199,11 @@ func getMooncakeBootstrapInfo(prefillPod *v1.Pod) (*mooncakeBootstrapInfo, error
 	bootstrapAddr := fmt.Sprintf("http://%s:%d", podIP, mooncakeBootstrapPort)
 	queryURL := bootstrapAddr + "/query"
 
-	resp, err := bootstrapHTTPClient.Get(queryURL)
+	req, err := http.NewRequestWithContext(routingCtx, http.MethodGet, queryURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request for mooncake bootstrap %s: %w", queryURL, err)
+	}
+	resp, err := bootstrapHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("query mooncake bootstrap %s: %w", queryURL, err)
 	}
@@ -229,7 +249,14 @@ func getMooncakeBootstrapInfo(prefillPod *v1.Pod) (*mooncakeBootstrapInfo, error
 		fetchedAt:     time.Now(),
 	}
 
+	// Prune stale cache entries while holding the write lock to prevent
+	// unbounded growth as pods are created and destroyed.
 	bootstrapCache.Lock()
+	for ip, cached := range bootstrapCache.m {
+		if time.Since(cached.fetchedAt) > mooncakeBootstrapCacheTTL {
+			delete(bootstrapCache.m, ip)
+		}
+	}
 	bootstrapCache.m[podIP] = info
 	bootstrapCache.Unlock()
 

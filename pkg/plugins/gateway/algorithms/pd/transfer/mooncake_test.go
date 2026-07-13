@@ -78,7 +78,6 @@ func newBootstrapServer(engineID string) *httptest.Server {
 	}))
 }
 
-// listenerPort extracts the listening port from an httptest.Server.
 func listenerPort(tb testing.TB, srv *httptest.Server) int {
 	tb.Helper()
 	_, port, err := splitHostPort(srv.URL)
@@ -267,7 +266,6 @@ func TestMooncakeMergePrefillResponse_EmptyReqBody(t *testing.T) {
 func TestMooncakeGetBootstrapInfo_CacheExpiry(t *testing.T) {
 	clearBootstrapCache()
 
-	// Use a test server that stays alive for the duration of the test.
 	bs := newBootstrapServer("engine-expiry")
 	defer bs.Close()
 
@@ -275,15 +273,16 @@ func TestMooncakeGetBootstrapInfo_CacheExpiry(t *testing.T) {
 	mooncakeBootstrapPort = listenerPort(t, bs)
 	t.Cleanup(func() { mooncakeBootstrapPort = origPort })
 
+	rc := makeRoutingContext("bootstrap-expire", map[string]any{})
 	pod := makePrefillPod("prefill-expire", "127.0.0.1")
 
 	// First call: query HTTP server.
-	info1, err := getMooncakeBootstrapInfo(pod)
+	info1, err := getMooncakeBootstrapInfo(rc, pod)
 	require.NoError(t, err)
 	assert.Equal(t, "engine-expiry", info1.engineID)
 
 	// Second call: hit cache (same pod IP, port unchanged).
-	info2, err := getMooncakeBootstrapInfo(pod)
+	info2, err := getMooncakeBootstrapInfo(rc, pod)
 	require.NoError(t, err)
 	assert.Equal(t, "engine-expiry", info2.engineID, "should return cached value")
 
@@ -293,17 +292,18 @@ func TestMooncakeGetBootstrapInfo_CacheExpiry(t *testing.T) {
 	bootstrapCache.Unlock()
 
 	// Third call: re-query HTTP server because TTL expired.
-	info3, err := getMooncakeBootstrapInfo(pod)
+	info3, err := getMooncakeBootstrapInfo(rc, pod)
 	require.NoError(t, err)
 	assert.Equal(t, "engine-expiry", info3.engineID, "should re-query after TTL expiry")
 }
 
 func TestMooncakeGetBootstrapInfo_NoPodIP(t *testing.T) {
 	clearBootstrapCache()
+	rc := makeRoutingContext("bootstrap-nopodip", map[string]any{})
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "no-ip"},
 	}
-	_, err := getMooncakeBootstrapInfo(pod)
+	_, err := getMooncakeBootstrapInfo(rc, pod)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no PodIP")
 }
@@ -321,8 +321,9 @@ func TestMooncakeGetBootstrapInfo_EmptyResponse(t *testing.T) {
 	mooncakeBootstrapPort = listenerPort(t, bs)
 	t.Cleanup(func() { mooncakeBootstrapPort = origPort })
 
+	rc := makeRoutingContext("bootstrap-empty", map[string]any{})
 	pod := makePrefillPod("prefill-empty-resp", "127.0.0.1")
-	_, err := getMooncakeBootstrapInfo(pod)
+	_, err := getMooncakeBootstrapInfo(rc, pod)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no engine_id")
 }
@@ -339,8 +340,9 @@ func TestMooncakeGetBootstrapInfo_Non200Response(t *testing.T) {
 	mooncakeBootstrapPort = listenerPort(t, bs)
 	t.Cleanup(func() { mooncakeBootstrapPort = origPort })
 
+	rc := makeRoutingContext("bootstrap-non200", map[string]any{})
 	pod := makePrefillPod("prefill-err", "127.0.0.1")
-	_, err := getMooncakeBootstrapInfo(pod)
+	_, err := getMooncakeBootstrapInfo(rc, pod)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "returned status")
 }
