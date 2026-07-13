@@ -20,6 +20,8 @@ spec:
     spec:
       containers:
         - name: aibrix-runtime
+          # This image must be built on a kvcached-enabled vLLM base image.
+          # The runtime sidecar starts the per-ModelClaim engine processes.
           image: aibrix/runtime:dev
           imagePullPolicy: IfNotPresent
           command:
@@ -37,9 +39,13 @@ spec:
             - name: AIBRIX_MODEL_RUNTIME_MOCK
               value: "0"
             - name: ENABLE_KVCACHED
-              value: "true"
+              # Keep the sidecar itself unpatched. The launcher sets these
+              # values to true only for each child engine process.
+              value: "false"
             - name: KVCACHED_AUTOPATCH
-              value: "1"
+              value: "0"
+            - name: AIBRIX_WEIGHT_CACHE_DIR
+              value: /root/.cache/huggingface
           resources:
             limits:
               nvidia.com/gpu: "1"
