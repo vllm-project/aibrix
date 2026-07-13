@@ -765,7 +765,11 @@ def get_model_runtime() -> ModelRuntime:
     global _AGENT
     if _AGENT is None:
         if os.environ.get("AIBRIX_MODEL_RUNTIME_MOCK") == "1":
-            _AGENT = ModelRuntime(MockEngineLauncher(), kv_controller=MockKVController())
+            _AGENT = ModelRuntime(
+                MockEngineLauncher(), kv_controller=MockKVController()
+            )
         else:
-            _AGENT = ModelRuntime(SubprocessEngineLauncher(), kv_controller=KvctlController())
+            _AGENT = ModelRuntime(
+                SubprocessEngineLauncher(), kv_controller=KvctlController()
+            )
     return _AGENT

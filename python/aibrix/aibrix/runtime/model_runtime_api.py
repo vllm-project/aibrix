@@ -67,7 +67,9 @@ def activate_runtime_model(request: ActivateRuntimeModelRequest):
             ),
             additional_config=request.additional_config,
             claim_ref=(
-                request.claim_ref.model_dump() if request.claim_ref is not None else None
+                request.claim_ref.model_dump()
+                if request.claim_ref is not None
+                else None
             ),
         )
     except Exception as exc:  # surface activation failure to the controller
