@@ -47,10 +47,6 @@ spec:
             type: object
           spec:
             properties:
-              additionalConfig:
-                additionalProperties:
-                  type: string
-                type: object
               artifactURL:
                 type: string
               engine:
@@ -59,6 +55,13 @@ spec:
                 - vllm
                 - sglang
                 type: string
+              engineConfig:
+                properties:
+                  args:
+                    additionalProperties:
+                      type: string
+                    type: object
+                type: object
               modelName:
                 type: string
               podSelector:

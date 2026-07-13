@@ -39,8 +39,9 @@ logger = logging.getLogger(__name__)
 model_runtime_router = APIRouter()
 
 
+# sync def: activation does blocking weight-download I/O; run it in a threadpool.
 @model_runtime_router.post("/v1/runtime/models/activate")
-async def activate_runtime_model(request: ActivateRuntimeModelRequest):
+def activate_runtime_model(request: ActivateRuntimeModelRequest):
     """Activate a model as its own kvcached-enabled engine process on this pod."""
     try:
         inst = get_model_runtime().activate(
@@ -82,8 +83,9 @@ async def deactivate_runtime_model(request: DeactivateRuntimeModelRequest):
     return JSONResponse(content={"status": "success"}, status_code=200)
 
 
+# sync def: instance_ready issues blocking HTTP probes; run it in a threadpool.
 @model_runtime_router.get("/v1/runtime/models")
-async def list_runtime_models():
+def list_runtime_models():
     """List models managed by this runtime sidecar, with KV accounting read
     live from the model's kvcached /dev/shm MemInfoStruct (zero when the
     segment is absent)."""

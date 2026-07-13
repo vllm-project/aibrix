@@ -133,9 +133,11 @@ def write_cache_marker(
 
     base = cache_dir or weight_cache_dir()
     try:
-        marker_dir = os.path.join(base, ".aibrix", "served")
+        marker_dir = os.path.abspath(os.path.join(base, ".aibrix", "served"))
         os.makedirs(marker_dir, exist_ok=True)
-        path = os.path.join(marker_dir, f"{model_name}.json")
+        path = os.path.abspath(os.path.join(marker_dir, f"{model_name}.json"))
+        if os.path.commonpath([marker_dir, path]) != marker_dir:
+            raise ValueError(f"path traversal detected in model name: {model_name!r}")
         with open(path, "w") as f:
             json.dump({"model_name": model_name, "artifact_url": artifact_url}, f)
         return path
@@ -257,7 +259,7 @@ class SubprocessEngineLauncher(EngineLauncher):
         if isinstance(proc, subprocess.Popen) and proc.poll() is None:
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except ProcessLookupError:
+            except OSError:
                 pass
 
 
@@ -431,8 +433,12 @@ class ModelRuntime:
 
     @staticmethod
     def _port_free(port: int) -> bool:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            return sock.connect_ex(("127.0.0.1", port)) != 0
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind(("127.0.0.1", port))
+                return True
+        except OSError:
+            return False
 
 
 # --------------------------------------------------------------------------- #

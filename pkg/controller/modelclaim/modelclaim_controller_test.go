@@ -277,6 +277,33 @@ func TestReconcileReadinessGate(t *testing.T) {
 	assert.Equal(t, 1, len(runtime.activateCalls), "readiness flip must not re-activate")
 }
 
+// TestReconcileActiveDemotedWhenUnhealthy verifies an Active instance whose
+// engine stops reporting ready is demoted to Activating, re-stamped
+// non-routable (port 0), and drops out of ReadyReplicas.
+func TestReconcileActiveDemotedWhenUnhealthy(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	r, runtime := newReconciler(t,
+		pm,
+		warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning),
+	)
+
+	reconcileOnce(t, r, pm.Name)
+	got := getModel(t, r, pm.Name)
+	require.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
+
+	runtime.notReady = true // engine crashed / restarted
+	reconcileOnce(t, r, pm.Name)
+
+	got = getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	assert.Equal(t, int32(0), got.Status.ReadyReplicas)
+	pod := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, pod))
+	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+"qwen2-7b"], `"port":0`,
+		"unhealthy engine must be non-routable")
+}
+
 // TestReconcileNoCandidatesStaysPending verifies that with no warm pods the
 // model neither activates nor errors; it stays Pending.
 func TestReconcileNoCandidatesStaysPending(t *testing.T) {
@@ -303,6 +330,9 @@ func TestReconcileIdempotent(t *testing.T) {
 		warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning),
 		warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning),
 	)
+	runtime.models = map[string]ModelInfo{
+		servedModelName(pm): {ModelName: servedModelName(pm), Port: 9001, Phase: "active", Ready: true},
+	}
 
 	reconcileOnce(t, r, pm.Name)
 

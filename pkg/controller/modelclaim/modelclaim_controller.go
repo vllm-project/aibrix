@@ -180,9 +180,9 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		r.scaleDown(ctx, pm, desiredReplicas(pm))
 	}
 
-	// Promote Activating instances whose engine is now ready (flips their
-	// annotation port:0 -> real port, making the model routable).
-	r.reconcileActivating(ctx, pm)
+	// Reconcile instance routability against live engine readiness (promote
+	// ready Activating instances, demote Active instances that went unhealthy).
+	r.reconcileInstanceHealth(ctx, pm)
 	r.recomputeReadiness(pm)
 	setClaimGauges(pm)
 	if err := r.Status().Update(ctx, pm); err != nil {
@@ -194,6 +194,9 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // listCandidateWarmPods returns running pods that match the model's PodSelector
 // and advertise themselves as warm GPU pool members accepting attachments.
 func (r *ModelClaimReconciler) listCandidateWarmPods(ctx context.Context, pm *modelv1alpha1.ModelClaim) ([]corev1.Pod, error) {
+	if pm.Spec.PodSelector == nil {
+		return nil, fmt.Errorf("spec.podSelector must not be nil")
+	}
 	selector, err := metav1.LabelSelectorAsSelector(pm.Spec.PodSelector)
 	if err != nil {
 		return nil, err
@@ -214,6 +217,9 @@ func (r *ModelClaimReconciler) listCandidateWarmPods(ctx context.Context, pm *mo
 			continue
 		}
 		if pod.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		if pod.Status.PodIP == "" {
 			continue
 		}
 		if !pod.DeletionTimestamp.IsZero() {
@@ -307,6 +313,13 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 		pod, err := selectPodForActivation(candidates, instancePods(pm), load, servedModelName(pm), r.Locality)
 		if err != nil {
 			// No available warm pod right now; remain Pending and retry on requeue.
+			r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", err.Error())
+			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
+				Status:  metav1.ConditionFalse,
+				Reason:  "NoMatchingPods",
+				Message: err.Error(),
+			})
 			return nil
 		}
 
@@ -324,7 +337,7 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 
 		// The engine is spawned but not yet serveable (boot/compile). Keep the
 		// model NOT routable — stamp the non-routable marker (port 0), record the
-		// instance as Activating with its real port — until reconcileActivating
+		// instance as Activating with its real port — until reconcileInstanceHealth
 		// confirms the engine is ready, then it flips the annotation to the real
 		// port. This means the gateway never routes to a still-booting engine.
 		if err := r.annotateWarmPod(ctx, pm, pod, 0); err != nil {
@@ -343,26 +356,18 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 	return nil
 }
 
-// reconcileActivating promotes each Activating instance to Active once its
-// engine reports ready (runtime-sidecar listing), flipping the warm-pod
-// annotation from the non-routable marker (port 0) to the instance's real port
-// — the moment the model becomes routable. Until then the model is known but not
-// routable, so the gateway does not route to a not-ready engine.
-func (r *ModelClaimReconciler) reconcileActivating(ctx context.Context, pm *modelv1alpha1.ModelClaim) {
-	hasActivating := false
-	for i := range pm.Status.Instances {
-		if pm.Status.Instances[i].Phase == modelv1alpha1.ModelClaimActivating {
-			hasActivating = true
-			break
-		}
-	}
-	if !hasActivating {
-		return
-	}
+// reconcileInstanceHealth reconciles each instance against the engine's live
+// readiness (runtime-sidecar listing). An Activating instance is promoted to
+// Active once ready, flipping the warm-pod annotation from the non-routable
+// marker (port 0) to its real port — the moment the model becomes routable. An
+// Active instance whose engine stops reporting ready (crash, restart) is demoted
+// back to Activating and re-stamped non-routable, so the gateway stops routing
+// to a dead engine and the instance re-promotes when it recovers.
+func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *modelv1alpha1.ModelClaim) {
 	served := servedModelName(pm)
 	for i := range pm.Status.Instances {
 		inst := &pm.Status.Instances[i]
-		if inst.Phase != modelv1alpha1.ModelClaimActivating {
+		if inst.Phase != modelv1alpha1.ModelClaimActivating && inst.Phase != modelv1alpha1.ModelClaimActive {
 			continue
 		}
 		ip := r.podIP(ctx, pm.Namespace, inst.Pod)
@@ -371,7 +376,7 @@ func (r *ModelClaimReconciler) reconcileActivating(ctx context.Context, pm *mode
 		}
 		models, err := r.Runtime.ListModels(ctx, ip, DefaultRuntimePort)
 		if err != nil {
-			klog.V(4).InfoS("readiness check failed; staying Activating", "model", pm.Name, "pod", inst.Pod, "err", err)
+			klog.V(4).InfoS("readiness check failed", "model", pm.Name, "pod", inst.Pod, "phase", inst.Phase, "err", err)
 			continue
 		}
 		ready := false
@@ -381,21 +386,31 @@ func (r *ModelClaimReconciler) reconcileActivating(ctx context.Context, pm *mode
 				break
 			}
 		}
-		if !ready {
-			continue
+		if ready == (inst.Phase == modelv1alpha1.ModelClaimActive) {
+			continue // already in the phase matching current readiness
 		}
 		pod := &corev1.Pod{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: pm.Namespace, Name: inst.Pod}, pod); err != nil {
 			continue
 		}
-		if err := r.annotateWarmPod(ctx, pm, pod, inst.Port); err != nil {
-			klog.ErrorS(err, "flip-to-routable annotation failed", "model", pm.Name, "pod", inst.Pod)
+		port := inst.Port
+		if !ready {
+			port = 0 // non-routable marker
+		}
+		if err := r.annotateWarmPod(ctx, pm, pod, port); err != nil {
+			klog.ErrorS(err, "routability annotation failed", "model", pm.Name, "pod", inst.Pod, "ready", ready)
 			continue
 		}
-		inst.Phase = modelv1alpha1.ModelClaimActive
-		recordActivation(pm.Namespace, served, true)
-		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activated",
-			"model %s ready and routable on pod %s:%d", served, inst.Pod, inst.Port)
+		if ready {
+			inst.Phase = modelv1alpha1.ModelClaimActive
+			recordActivation(pm.Namespace, served, true)
+			r.Recorder.Eventf(pm, corev1.EventTypeNormal, "Activated",
+				"model %s ready and routable on pod %s:%d", served, inst.Pod, inst.Port)
+		} else {
+			inst.Phase = modelv1alpha1.ModelClaimActivating
+			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "Unhealthy",
+				"model %s no longer ready on pod %s; marked non-routable", served, inst.Pod)
+		}
 	}
 }
 

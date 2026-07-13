@@ -168,6 +168,14 @@ def test_activate_writes_cache_marker(tmp_path, monkeypatch):
     assert data == {"model_name": "m1", "artifact_url": "huggingface://Org/M1"}
 
 
+def test_write_cache_marker_rejects_path_traversal(tmp_path):
+    from aibrix.runtime.model_runtime import write_cache_marker
+
+    path = write_cache_marker("../../etc/evil", "hf://x", cache_dir=str(tmp_path))
+    assert path is None, "path traversal in model name must be rejected"
+    assert not (tmp_path.parent / "etc" / "evil.json").exists()
+
+
 def test_activate_marker_failure_does_not_block(monkeypatch):
     # Point the cache at an unwritable location: activation must still succeed.
     monkeypatch.setenv("AIBRIX_WEIGHT_CACHE_DIR", "/proc/definitely-not-writable")
