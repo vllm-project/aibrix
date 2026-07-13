@@ -102,6 +102,69 @@ func TestHTTPRuntimeSnapshot(t *testing.T) {
 	assert.Equal(t, []string{"hf://Org/M1"}, snapshot.CachedArtifacts)
 }
 
+func TestHTTPRuntimeSetKVLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/runtime/models/kv-limit", r.URL.Path)
+		var req SetKVLimitRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.Equal(t, "m1", req.ModelName)
+		assert.Equal(t, int64(4096), req.LimitBytes)
+		assert.Equal(t, "limit-1", req.OperationID)
+		_ = json.NewEncoder(w).Encode(RuntimeOperationResponse{
+			Status: "success", ModelName: "m1", OperationID: "limit-1", Applied: true, Phase: "active",
+		})
+	}))
+	defer srv.Close()
+
+	c, host, port := clientForServer(srv)
+	response, err := c.SetKVLimit(context.Background(), host, port, &SetKVLimitRequest{
+		ModelName: "m1", LimitBytes: 4096, OperationID: "limit-1",
+	})
+
+	require.NoError(t, err)
+	assert.True(t, response.Applied)
+	assert.Equal(t, "active", response.Phase)
+}
+
+func TestHTTPRuntimeSleepAndWake(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/runtime/models/sleep":
+			var req SleepRequest
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			assert.Equal(t, "m1", req.ModelName)
+			assert.Equal(t, 2, req.Level)
+			assert.Equal(t, "sleep-1", req.OperationID)
+			_ = json.NewEncoder(w).Encode(RuntimeOperationResponse{
+				Status: "success", ModelName: "m1", OperationID: "sleep-1", Applied: true, Phase: "sleeping",
+			})
+		case "/v1/runtime/models/wake":
+			var req WakeRequest
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			assert.Equal(t, "m1", req.ModelName)
+			assert.Equal(t, "wake-1", req.OperationID)
+			_ = json.NewEncoder(w).Encode(RuntimeOperationResponse{
+				Status: "success", ModelName: "m1", OperationID: "wake-1", Applied: true, Phase: "active",
+			})
+		default:
+			t.Fatalf("unexpected runtime control path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	c, host, port := clientForServer(srv)
+	slept, err := c.Sleep(context.Background(), host, port, &SleepRequest{
+		ModelName: "m1", Level: 2, OperationID: "sleep-1",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "sleeping", slept.Phase)
+	woken, err := c.Wake(context.Background(), host, port, &WakeRequest{
+		ModelName: "m1", OperationID: "wake-1",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "active", woken.Phase)
+}
+
 func TestHTTPRuntimeActivate_StatusError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(ActivateResponse{Status: "error", Message: "out of HBM"})

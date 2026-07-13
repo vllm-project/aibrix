@@ -94,6 +94,10 @@ const (
 	ModelClaimActivating ModelClaimPhase = "Activating"
 	// ModelClaimActive means the model is serving on at least one warm pod.
 	ModelClaimActive ModelClaimPhase = "Active"
+	// ModelClaimSleeping means one or more resident engines are intentionally
+	// asleep and non-routable. The assigned instances remain present so the
+	// controller does not activate duplicate engines while waiting for a wake.
+	ModelClaimSleeping ModelClaimPhase = "Sleeping"
 	// ModelClaimFailed means activation terminated in a failure.
 	ModelClaimFailed ModelClaimPhase = "Failed"
 	// ModelClaimUnknown means the controller could not determine the state.

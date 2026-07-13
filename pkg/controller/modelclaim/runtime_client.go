@@ -43,6 +43,9 @@ const (
 	deactivatePath = "/v1/runtime/models/deactivate"
 	modelListPath  = "/v1/runtime/models"
 	snapshotPath   = "/v1/runtime/snapshot"
+	kvLimitPath    = "/v1/runtime/models/kv-limit"
+	sleepPath      = "/v1/runtime/models/sleep"
+	wakePath       = "/v1/runtime/models/wake"
 
 	defaultRuntimeHTTPTimeout = 60 * time.Second
 )
@@ -98,6 +101,36 @@ type DeactivateRequest struct {
 	Mode      DeactivateMode `json:"mode"`
 }
 
+// SetKVLimitRequest applies a kvcached limit to a resident model through the
+// runtime sidecar. OperationID makes retries idempotent at the runtime.
+type SetKVLimitRequest struct {
+	ModelName   string `json:"model_name"`
+	LimitBytes  int64  `json:"limit_bytes"`
+	OperationID string `json:"operation_id"`
+}
+
+// SleepRequest puts a vLLM engine to sleep through its runtime sidecar.
+type SleepRequest struct {
+	ModelName   string `json:"model_name"`
+	Level       int    `json:"level"`
+	OperationID string `json:"operation_id"`
+}
+
+// WakeRequest wakes a vLLM engine through its runtime sidecar.
+type WakeRequest struct {
+	ModelName   string `json:"model_name"`
+	OperationID string `json:"operation_id"`
+}
+
+// RuntimeOperationResponse reports the result of an idempotent control action.
+type RuntimeOperationResponse struct {
+	Status      string `json:"status"`
+	ModelName   string `json:"model_name"`
+	OperationID string `json:"operation_id"`
+	Applied     bool   `json:"applied"`
+	Phase       string `json:"phase"`
+}
+
 // ModelInfo is one entry returned by the runtime sidecar's model listing.
 type ModelInfo struct {
 	ModelName string `json:"model_name"`
@@ -149,6 +182,9 @@ type RuntimeClient interface {
 	Deactivate(ctx context.Context, podIP string, port int, req *DeactivateRequest) error
 	ListModels(ctx context.Context, podIP string, port int) ([]ModelInfo, error)
 	Snapshot(ctx context.Context, podIP string, port int) (*RuntimeSnapshot, error)
+	SetKVLimit(ctx context.Context, podIP string, port int, req *SetKVLimitRequest) (*RuntimeOperationResponse, error)
+	Sleep(ctx context.Context, podIP string, port int, req *SleepRequest) (*RuntimeOperationResponse, error)
+	Wake(ctx context.Context, podIP string, port int, req *WakeRequest) (*RuntimeOperationResponse, error)
 }
 
 // httpRuntimeClient talks to the runtime sidecar over HTTP.
@@ -180,6 +216,30 @@ func (c *httpRuntimeClient) Activate(ctx context.Context, podIP string, port int
 
 func (c *httpRuntimeClient) Deactivate(ctx context.Context, podIP string, port int, req *DeactivateRequest) error {
 	return c.postJSON(ctx, runtimeURL(podIP, port, deactivatePath), req, nil)
+}
+
+func (c *httpRuntimeClient) SetKVLimit(ctx context.Context, podIP string, port int, req *SetKVLimitRequest) (*RuntimeOperationResponse, error) {
+	out := &RuntimeOperationResponse{}
+	if err := c.postJSON(ctx, runtimeURL(podIP, port, kvLimitPath), req, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *httpRuntimeClient) Sleep(ctx context.Context, podIP string, port int, req *SleepRequest) (*RuntimeOperationResponse, error) {
+	out := &RuntimeOperationResponse{}
+	if err := c.postJSON(ctx, runtimeURL(podIP, port, sleepPath), req, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *httpRuntimeClient) Wake(ctx context.Context, podIP string, port int, req *WakeRequest) (*RuntimeOperationResponse, error) {
+	out := &RuntimeOperationResponse{}
+	if err := c.postJSON(ctx, runtimeURL(podIP, port, wakePath), req, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *httpRuntimeClient) ListModels(ctx context.Context, podIP string, port int) ([]ModelInfo, error) {
