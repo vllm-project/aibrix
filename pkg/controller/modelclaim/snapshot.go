@@ -102,7 +102,7 @@ type PodPlacementState struct {
 	ModelCount     int
 }
 
-func placementStateFromSnapshot(snapshot *RuntimeSnapshot, artifactURL string) PodPlacementState {
+func placementStateFromSnapshot(snapshot *RuntimeSnapshot, artifactURL string, parallelism int64) PodPlacementState {
 	state := PodPlacementState{SnapshotKnown: true, ModelCount: len(snapshot.Models)}
 	for _, cached := range snapshot.CachedArtifacts {
 		if cached == artifactURL {
@@ -110,12 +110,18 @@ func placementStateFromSnapshot(snapshot *RuntimeSnapshot, artifactURL string) P
 			break
 		}
 	}
+	if parallelism < 1 {
+		parallelism = 1
+	}
+	if parallelism > 1 && int64(len(snapshot.Accelerators)) != parallelism {
+		return state
+	}
 	for _, accelerator := range snapshot.Accelerators {
-		// HBMFreeBytes describes the largest available single-GPU slot. Phase 2
-		// launches independent single-GPU engines, so pod ranking must use the
-		// most free HBM reported by any visible accelerator rather than aggregate
-		// or worst-device capacity.
-		if !state.MemoryKnown || accelerator.HBMFreeBytes > state.HBMFreeBytes {
+		// A single-GPU engine needs the largest available single-device slot. A
+		// fixed TP/PP group uses every visible GPU, so its safe headroom is the
+		// least-free rank rather than a misleading aggregate or maximum.
+		if !state.MemoryKnown || (parallelism == 1 && accelerator.HBMFreeBytes > state.HBMFreeBytes) ||
+			(parallelism > 1 && accelerator.HBMFreeBytes < state.HBMFreeBytes) {
 			state.HBMFreeBytes = accelerator.HBMFreeBytes
 			state.MemoryKnown = true
 		}
