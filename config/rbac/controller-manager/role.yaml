@@ -62,6 +62,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - apps
+  resources:
+  - replicasets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - autoscaling
   resources:
   - horizontalpodautoscalers
