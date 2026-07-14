@@ -90,6 +90,10 @@ type ModelClaimReconciler struct {
 	// CapacityReservations protects the short interval between sending Activate
 	// and observing that engine in a fresh runtime snapshot.
 	CapacityReservations *capacityReservationCache
+	// PoolPolicy serializes controller-local policy ticks and retains only the
+	// request-counter deltas needed for conservative KV allocation. It is not a
+	// desired-state store; runtime snapshots remain authoritative after restart.
+	PoolPolicy *poolPolicyManager
 }
 
 // Add creates a new ModelClaim controller and registers it with the Manager.
@@ -104,6 +108,7 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 		CapacityReservations: newCapacityReservationCache(
 			defaultCapacityReservationTTL, time.Now,
 		),
+		PoolPolicy: newPoolPolicyManager(time.Now),
 		SnapshotCache: newRuntimeSnapshotCache(
 			defaultRuntimeSnapshotTTL, time.Now,
 		),
@@ -141,6 +146,7 @@ func (r *ModelClaimReconciler) capacityProvider() CapacityProvider {
 //+kubebuilder:rbac:groups=model.aibrix.ai,resources=modelclaims/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=model.aibrix.ai,resources=modelclaims/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;update;patch
+//+kubebuilder:rbac:groups=apps,resources=deployments;replicasets,verbs=get;list;watch
 
 // Reconcile drives a ModelClaim towards its desired state: select a warm pod,
 // activate a runtime engine, hold routing at port 0 until ready, and stop the
@@ -248,6 +254,10 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err := r.Status().Update(ctx, pm); err != nil {
 		return requeueOnConflict(err)
 	}
+	// Pool policy is an optional, Deployment-scoped control loop. It runs after
+	// lifecycle status is persisted so a policy failure cannot block activation
+	// or route-health convergence for this claim.
+	r.reconcilePoolPolicies(ctx, candidates)
 	return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, nil
 }
 

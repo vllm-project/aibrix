@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -52,6 +53,7 @@ const (
 type fakeRuntime struct {
 	activateCalls   []ActivateRequest
 	deactivateCalls []DeactivateRequest
+	kvLimitCalls    []SetKVLimitRequest
 	listCalls       int
 	snapshotCalls   int
 	portSeq         int32
@@ -96,6 +98,7 @@ func (f *fakeRuntime) Deactivate(_ context.Context, _ string, _ int, req *Deacti
 }
 
 func (f *fakeRuntime) SetKVLimit(_ context.Context, _ string, _ int, req *SetKVLimitRequest) (*RuntimeOperationResponse, error) {
+	f.kvLimitCalls = append(f.kvLimitCalls, *req)
 	return &RuntimeOperationResponse{
 		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: true, Phase: "active",
 	}, nil
@@ -163,6 +166,7 @@ func (f *fakeRuntime) Snapshot(_ context.Context, podIP string, _ int) (*Runtime
 func testScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
+	require.NoError(t, appsv1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, modelv1alpha1.AddToScheme(scheme))
 	return scheme
@@ -228,10 +232,72 @@ func newReconciler(t *testing.T, objs ...client.Object) (*ModelClaimReconciler, 
 		CapacityReservations: newCapacityReservationCache(
 			defaultCapacityReservationTTL, time.Now,
 		),
+		PoolPolicy: newPoolPolicyManager(time.Now),
 		SnapshotCache: newRuntimeSnapshotCache(
 			defaultRuntimeSnapshotTTL, time.Now,
 		),
 	}, runtime
+}
+
+func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "warm-runtime-pool",
+			Namespace: testNamespace,
+			Annotations: map[string]string{
+				constants.ModelPoolPolicyAnnotationKey: `{
+					"reclaim": {
+						"mode": "kv-first",
+						"capacityBytes": 1000,
+						"guaranteedFloorPercent": 20
+					}
+				}`,
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "warm"}},
+		},
+	}
+	replicaSet := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "warm-runtime-pool-rs",
+			Namespace:       testNamespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(deployment, appsv1.SchemeGroupVersion.WithKind("Deployment"))},
+		},
+	}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Labels["app"] = "warm"
+	pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(replicaSet, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod)
+	requestSuccessTotal := int64(10)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 500}},
+			Models: []RuntimeSnapshotModel{
+				{
+					ModelName: "hot", Phase: "active", Alive: true, Ready: true,
+					KVUsedBytes: 100, KVCapacityBytes: 200,
+					RequestMetricsObserved: true, RequestsRunning: 2, RequestSuccessTotal: &requestSuccessTotal,
+				},
+				{
+					ModelName: "idle", Phase: "active", Alive: true, Ready: true,
+					KVUsedBytes: 100, KVCapacityBytes: 800,
+					RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
+				},
+			},
+		},
+	}
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+
+	require.Len(t, runtime.kvLimitCalls, 2)
+	limits := map[string]int64{}
+	for _, call := range runtime.kvLimitCalls {
+		limits[call.ModelName] = call.LimitBytes
+	}
+	assert.Equal(t, int64(800), limits["hot"])
+	assert.Equal(t, int64(200), limits["idle"])
 }
 
 func reconcileOnce(t *testing.T, r *ModelClaimReconciler, name string) {
