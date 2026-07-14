@@ -178,6 +178,13 @@ type RuntimeSnapshotModel struct {
 	// HBMReservationFraction is the vLLM envelope carried at activation time.
 	// A zero value means an old or non-vLLM runtime did not report one.
 	HBMReservationFraction float64 `json:"hbm_reservation_fraction"`
+	// RequestMetricsObserved distinguishes a zero metric from an unavailable
+	// scrape. Pool policy must not infer idleness unless the completion counter
+	// is also present.
+	RequestMetricsObserved bool   `json:"request_metrics_observed"`
+	RequestsRunning        int64  `json:"requests_running"`
+	RequestsWaiting        int64  `json:"requests_waiting"`
+	RequestSuccessTotal    *int64 `json:"request_success_total,omitempty"`
 }
 
 // RuntimeSnapshot is the point-in-time source for controller placement. It is

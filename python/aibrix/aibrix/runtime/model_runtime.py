@@ -108,6 +108,21 @@ class UnsupportedModelControlError(RuntimeError):
     """Raised when an engine does not implement a requested lifecycle control."""
 
 
+@dataclass(frozen=True)
+class EngineRequestActivity:
+    """A point-in-time request observation from one engine's metrics endpoint.
+
+    The runtime sidecar is the only component that can safely associate an
+    engine port with one ModelClaim. It carries this additive observation in
+    its snapshot instead of making the controller scrape public engine ports.
+    """
+
+    observed: bool = False
+    requests_running: int = 0
+    requests_waiting: int = 0
+    request_success_total: Optional[int] = None
+
+
 # --------------------------------------------------------------------------- #
 # Pluggable actuators
 # --------------------------------------------------------------------------- #
@@ -459,6 +474,77 @@ def _vllm_control_post(port: int, path: str) -> None:
 
     response = httpx.post(f"http://127.0.0.1:{port}{path}", timeout=10.0)
     response.raise_for_status()
+
+
+_prometheus_sample_re = re.compile(
+    r"^([A-Za-z_:][A-Za-z0-9_:]*)(?:\{[^}]*\})?\s+"
+    r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)(?:\s+\d+)?$"
+)
+
+_requests_running_metrics = {
+    "vllm:num_requests_running",
+    "vllm_num_requests_running",
+}
+_requests_waiting_metrics = {
+    "vllm:num_requests_waiting",
+    "vllm_num_requests_waiting",
+}
+_request_success_metrics = {
+    "vllm:request_success_total",
+    "vllm_request_success_total",
+    "vllm:num_requests_success_total",
+    "vllm_num_requests_success_total",
+}
+
+
+def engine_request_activity(inst: "ModelInstance") -> EngineRequestActivity:
+    """Read vLLM request gauges and completion counter from localhost.
+
+    vLLM has used both colon- and underscore-separated metric names across
+    releases. Each ModelClaim owns one engine process, so summing all matching
+    samples is correct even when the counter has labels such as
+    ``finished_reason``. An absent or malformed response is reported as
+    unobserved; callers must not infer idleness from a scrape failure.
+    """
+    if inst.port <= 0 or inst.proc is None or inst.phase != "active":
+        return EngineRequestActivity()
+    try:
+        import httpx
+
+        response = httpx.get(f"http://127.0.0.1:{inst.port}/metrics", timeout=0.5)
+        response.raise_for_status()
+    except Exception:
+        return EngineRequestActivity()
+
+    values = {"running": 0.0, "waiting": 0.0, "success": 0.0}
+    found = {"running": False, "waiting": False, "success": False}
+    for line in response.text.splitlines():
+        match = _prometheus_sample_re.match(line)
+        if match is None:
+            continue
+        name, raw_value = match.groups()
+        try:
+            value = float(raw_value)
+        except ValueError:
+            continue
+        if name in _requests_running_metrics:
+            values["running"] += value
+            found["running"] = True
+        elif name in _requests_waiting_metrics:
+            values["waiting"] += value
+            found["waiting"] = True
+        elif name in _request_success_metrics:
+            values["success"] += value
+            found["success"] = True
+
+    return EngineRequestActivity(
+        observed=any(found.values()),
+        requests_running=max(0, int(values["running"])),
+        requests_waiting=max(0, int(values["waiting"])),
+        request_success_total=(
+            max(0, int(values["success"])) if found["success"] else None
+        ),
+    )
 
 
 def instance_ready(inst: "ModelInstance") -> bool:
@@ -1352,6 +1438,10 @@ class ModelRuntime:
         for inst in instances:
             segment = read_kv_segment(inst.ipc_name)
             total, used, prealloc = segment if segment else (0, 0, 0)
+            alive = self._instance_alive(inst)
+            activity = (
+                engine_request_activity(inst) if alive else EngineRequestActivity()
+            )
             models.append(
                 {
                     "model_name": inst.model_name,
@@ -1360,7 +1450,7 @@ class ModelRuntime:
                     "port": inst.port,
                     "ipc_name": inst.ipc_name,
                     "phase": inst.phase,
-                    "alive": self._instance_alive(inst),
+                    "alive": alive,
                     "ready": instance_ready(inst),
                     "restart_count": inst.restart_count,
                     "last_error": inst.last_error,
@@ -1369,6 +1459,10 @@ class ModelRuntime:
                     "kv_capacity_bytes": total,
                     "hbm_peak_bytes": engine_hbm_peak_bytes(inst, process_hbm),
                     "hbm_reservation_fraction": inst.hbm_reservation_fraction,
+                    "request_metrics_observed": activity.observed,
+                    "requests_running": activity.requests_running,
+                    "requests_waiting": activity.requests_waiting,
+                    "request_success_total": activity.request_success_total,
                 }
             )
         return {

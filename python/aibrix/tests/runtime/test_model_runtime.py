@@ -660,6 +660,16 @@ def test_snapshot_reports_runtime_state(monkeypatch, tmp_path):
         "read_kv_segment",
         lambda ipc_name: (100, 20, 5),
     )
+    monkeypatch.setattr(
+        runtime_module,
+        "engine_request_activity",
+        lambda inst: runtime_module.EngineRequestActivity(
+            observed=True,
+            requests_running=2,
+            requests_waiting=1,
+            request_success_total=7,
+        ),
+    )
 
     snapshot = agent.snapshot()
 
@@ -688,6 +698,10 @@ def test_snapshot_reports_runtime_state(monkeypatch, tmp_path):
         "kv_capacity_bytes": 100,
         "hbm_peak_bytes": 0,
         "hbm_reservation_fraction": 0.0,
+        "request_metrics_observed": True,
+        "requests_running": 2,
+        "requests_waiting": 1,
+        "request_success_total": 7,
     }
     assert snapshot["observed_at"]
 
@@ -724,6 +738,61 @@ def test_snapshot_reports_hbm_peak_for_engine_process_tree(monkeypatch):
 
     assert snapshot["accelerators"][0]["id"] == "GPU-0"
     assert snapshot["models"][0]["hbm_peak_bytes"] == 130
+
+
+def test_engine_request_activity_accepts_vllm_metric_name_variants(monkeypatch):
+    import httpx
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    class Response:
+        text = """# HELP vllm:num_requests_running Running requests.
+vllm:num_requests_running{model_name=\"m1\"} 2
+vllm_num_requests_waiting{model_name=\"m1\"} 3
+vllm:request_success_total{finished_reason=\"stop\"} 5
+vllm:request_success_total{finished_reason=\"length\"} 7
+"""
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    inst = runtime_module.ModelInstance(
+        model_name="m1",
+        port=20000,
+        ipc_name="kvc_m1",
+        proc=object(),
+    )
+
+    activity = runtime_module.engine_request_activity(inst)
+
+    assert activity.observed is True
+    assert activity.requests_running == 2
+    assert activity.requests_waiting == 3
+    assert activity.request_success_total == 12
+
+
+def test_engine_request_activity_does_not_treat_scrape_failure_as_idle(monkeypatch):
+    import httpx
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda url, timeout: (_ for _ in ()).throw(httpx.ConnectError("down")),
+    )
+    inst = runtime_module.ModelInstance(
+        model_name="m1",
+        port=20000,
+        ipc_name="kvc_m1",
+        proc=object(),
+    )
+
+    assert (
+        runtime_module.engine_request_activity(inst)
+        == runtime_module.EngineRequestActivity()
+    )
 
 
 def test_snapshot_handles_hosts_without_gpu(monkeypatch):

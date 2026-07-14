@@ -258,6 +258,12 @@ class RuntimeSnapshotModel(NoProtectedBaseModel):
     # The controller-derived envelope carried at activation time. A zero value
     # means an older or non-vLLM caller did not provide a capacity reservation.
     hbm_reservation_fraction: float = 0
+    # Per-engine request activity is read by the sidecar from localhost. False
+    # means policy must not infer that an engine is idle from unavailable metrics.
+    request_metrics_observed: bool = False
+    requests_running: int = 0
+    requests_waiting: int = 0
+    request_success_total: Optional[int] = None
 
 
 class RuntimeSnapshotResponse(NoProtectedBaseModel):
