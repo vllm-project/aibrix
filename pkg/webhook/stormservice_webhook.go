@@ -53,6 +53,9 @@ func (r *StormServiceCustomDefaulter) Default(_ context.Context, obj runtime.Obj
 		return fmt.Errorf("expected a StormService object but got %T", obj)
 	}
 
+	// Record the resolved deployment mode so the intent is explicit on the object.
+	stormService.Spec.Mode = stormService.Spec.ResolvedMode()
+
 	// Only proceed if the sidecar injection annotation is present
 	if _, exists := stormService.GetAnnotations()[SidecarInjectionAnnotation]; !exists {
 		return nil
@@ -171,6 +174,10 @@ func (r *StormServiceCustomDefaulter) ValidateCreate(ctx context.Context, obj ru
 		return nil, fmt.Errorf("expected a StormService object but got %T", obj)
 	}
 
+	if err := validateStormServiceMode(stormService); err != nil {
+		return nil, err
+	}
+
 	// 1. Validate StormService.Name itself (≤63, DNS-1123 compliant)
 	if len(stormService.Name) > 63 {
 		return nil, fmt.Errorf("StormService name must be no more than 63 characters")
@@ -206,8 +213,26 @@ func (r *StormServiceCustomDefaulter) ValidateCreate(ctx context.Context, obj ru
 
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
 func (r *StormServiceCustomDefaulter) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	// TODO(user): fill in your validation logic upon object update.
+	stormService, ok := newObj.(*orchestrationv1alpha1.StormService)
+	if !ok {
+		return nil, fmt.Errorf("expected a StormService object but got %T", newObj)
+	}
+	if err := validateStormServiceMode(stormService); err != nil {
+		return nil, err
+	}
 	return nil, nil
+}
+
+// validateStormServiceMode rejects mode/replicas combinations that cannot be satisfied.
+// Pooled mode runs a single RoleSet and scales roles through spec.template.spec.roles[],
+// so a replica count above one is ambiguous.
+func validateStormServiceMode(stormService *orchestrationv1alpha1.StormService) error {
+	if stormService.Spec.Mode == orchestrationv1alpha1.StormServicePooledMode &&
+		stormService.Spec.Replicas != nil && *stormService.Spec.Replicas > 1 {
+		return fmt.Errorf("StormService in %s mode must not set spec.replicas > 1 (got %d); scale roles through spec.template.spec.roles[].replicas instead",
+			orchestrationv1alpha1.StormServicePooledMode, *stormService.Spec.Replicas)
+	}
+	return nil
 }
 
 // ValidateDelete implements webhook.Validator so a webhook will be registered for the type
