@@ -33,6 +33,7 @@ import (
 	pu "github.com/vllm-project/aibrix/apps/console/api/planner/utils"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
+	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 	"github.com/vllm-project/aibrix/apps/console/api/utils"
 
 	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
@@ -44,9 +45,19 @@ const (
 	defaultPlanningInterval = 60 * time.Second
 	defaultListJobsLimit    = 20
 
+	// expiryFinalizeGracePeriod bounds how long past the completion window the
+	// planner keeps polling MDS before forcing a planner-side expiry. The batch
+	// runtime finalizes expiry on its own deadline and aggregates any
+	// already-completed requests into the output/error files, so we prefer that
+	// terminal batch over a premature planner-side conclusion. The grace period
+	// only kicks in as a fallback when the runtime is unresponsive.
+	expiryFinalizeGracePeriod = 5 * time.Minute
+
 	metricConsolePlannerDuration  = "console.planner.duration"
 	metricConsolePlannerError     = "console.planner.error"
 	metricConsolePlannerJobFailed = "console.planner.job.failed"
+
+	listJobsRefreshWorkers = 8
 )
 
 // Planner is an asynchronous implementation of plannerapi.Planner.
@@ -256,6 +267,9 @@ func (q *Planner) persist(ctx context.Context, job *queuedJob) {
 	job.mu.RLock()
 	jobID := job.req.JobID
 	rec := jobToModel(job)
+	if job.batch != nil {
+		mergeBatchIntoModel(rec, job.batch)
+	}
 	job.mu.RUnlock()
 
 	if err := q.store.UpsertJob(ctx, rec); err != nil {
@@ -443,6 +457,9 @@ func (q *Planner) getJobFromStore(ctx context.Context, jobID string) (*plannerap
 		if err != nil {
 			return nil, err
 		}
+		if j.status.IsTerminal() && !plannerapi.JobStatus(batch.Status).IsTerminal() {
+			batch = getBatchOrPlaceholder(j.batch, j.req, j.status, j.queuedAt, terminalTime(j))
+		}
 		return &plannerapi.Job{JobID: jobID, Batch: batch, State: jobStateSnapshot(j)}, nil
 	}
 	return &plannerapi.Job{
@@ -450,6 +467,30 @@ func (q *Planner) getJobFromStore(ctx context.Context, jobID string) (*plannerap
 		Batch: getBatchOrPlaceholder(j.batch, j.req, j.status, j.queuedAt, terminalTime(j)),
 		State: jobStateSnapshot(j),
 	}, nil
+}
+
+func (q *Planner) refreshStoredJobFromMDS(ctx context.Context, rec *models.Job) *queuedJob {
+	j := modelToJob(rec)
+	if j.batchID == "" || j.status.IsTerminal() {
+		return j
+	}
+	batch, err := q.bc.GetBatch(ctx, j.batchID)
+	if err != nil {
+		klog.Warningf("[planner] ListJobs refresh failed job_id=%q batch_id=%q: %v",
+			j.req.JobID, j.batchID, err)
+		return j
+	}
+
+	j.status = plannerapi.JobStatus(batch.Status)
+	j.batch = batch
+	refreshed := jobToModel(j)
+	mergeBatchIntoModel(refreshed, batch)
+	if q.store != nil {
+		if err := q.store.UpsertJob(ctx, refreshed); err != nil {
+			klog.Warningf("[planner] ListJobs refresh persist job_id=%q: %v", j.req.JobID, err)
+		}
+	}
+	return modelToJob(refreshed)
 }
 
 // Cancel enqueues a cancel request for async processing.
@@ -531,9 +572,10 @@ func (q *Planner) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest)
 		return nil, err
 	}
 
+	jobs := q.refreshStoredJobsFromMDS(ctx, rows)
 	out := make([]*plannerapi.Job, 0, len(rows))
-	for _, row := range rows {
-		j := modelToJob(row)
+	for i, row := range rows {
+		j := jobs[i]
 		out = append(out, &plannerapi.Job{
 			JobID: row.ID,
 			Batch: getBatchOrPlaceholder(j.batch, j.req, j.status, j.queuedAt, terminalTime(j)),
@@ -542,6 +584,40 @@ func (q *Planner) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest)
 	}
 
 	return &plannerapi.ListJobsResponse{Data: out, HasMore: hasMore}, nil
+}
+
+func (q *Planner) refreshStoredJobsFromMDS(ctx context.Context, rows []*models.Job) []*queuedJob {
+	jobs := make([]*queuedJob, len(rows))
+	if len(rows) == 0 {
+		return jobs
+	}
+	if len(rows) == 1 {
+		jobs[0] = q.refreshStoredJobFromMDS(ctx, rows[0])
+		return jobs
+	}
+
+	workers := listJobsRefreshWorkers
+	if len(rows) < workers {
+		workers = len(rows)
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for i, row := range rows {
+		wg.Add(1)
+		go func(i int, row *models.Job) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				jobs[i] = modelToJob(row)
+				return
+			}
+			jobs[i] = q.refreshStoredJobFromMDS(ctx, row)
+		}(i, row)
+	}
+	wg.Wait()
+	return jobs
 }
 
 // placeholderBatch builds the batch view for jobs without an MDS batch.ID.

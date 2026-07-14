@@ -38,6 +38,8 @@ const (
 	// concurrentEnqueueTimeout is used by race-stress tests where SQLite upserts
 	// under -race can take hundreds of ms each on CI runners.
 	concurrentEnqueueTimeout = 30 * time.Second
+	testOutputFileID         = "file-output"
+	testErrorFileID          = "file-error"
 )
 
 // =============================================================================
@@ -469,7 +471,7 @@ func TestGetJobWithTerminalMDSBatchStillFetchesMDS(t *testing.T) {
 			return &openai.Batch{
 				ID:           batchID,
 				Status:       openai.BatchStatusCompleted,
-				OutputFileID: "file-output",
+				OutputFileID: testOutputFileID,
 			}, nil
 		},
 	}
@@ -492,7 +494,7 @@ func TestGetJobWithTerminalMDSBatchStillFetchesMDS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first GetJob: %v", err)
 	}
-	if first.Batch.Status != openai.BatchStatusCompleted || first.Batch.OutputFileID != "file-output" {
+	if first.Batch.Status != openai.BatchStatusCompleted || first.Batch.OutputFileID != testOutputFileID {
 		t.Fatalf("first GetJob batch = %+v, want completed with output file", first.Batch)
 	}
 
@@ -500,12 +502,221 @@ func TestGetJobWithTerminalMDSBatchStillFetchesMDS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second GetJob: %v", err)
 	}
-	if second.Batch.Status != openai.BatchStatusCompleted || second.Batch.OutputFileID != "file-output" {
+	if second.Batch.Status != openai.BatchStatusCompleted || second.Batch.OutputFileID != testOutputFileID {
 		t.Fatalf("second GetJob batch = %+v, want MDS batch, not placeholder", second.Batch)
 	}
 	if got := getCalls.Load(); got < 2 {
 		t.Fatalf("GetBatch calls = %d, want at least 2", got)
 	}
+}
+
+func TestCompletedBatchSurvivesCleanupAndStoreEviction(t *testing.T) {
+	prov := &fakeProvisioner{}
+	bc := &fakeBatchClient{
+		GetFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			batch := &openai.Batch{
+				ID:            batchID,
+				Status:        openai.BatchStatusCompleted,
+				OutputFileID:  testOutputFileID,
+				ErrorFileID:   testErrorFileID,
+				CompletedAt:   1_800_000_123,
+				RequestCounts: openai.BatchRequestCounts{Total: 10, Completed: 10, Failed: 0},
+			}
+			constructBatchJson(batch)
+			return batch, nil
+		},
+	}
+	q := newTestPlanner(t, bc, prov, 1)
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-completed-cleanup")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitFor(t, defaultTimeout, func() bool {
+		q.mu.RLock()
+		_, ok := q.jobs["j-completed-cleanup"]
+		q.mu.RUnlock()
+		return !ok
+	}, "expected terminal job to be evicted from memory")
+
+	got, err := q.GetJob(context.Background(), "j-completed-cleanup")
+	if err != nil {
+		t.Fatalf("GetJob after eviction: %v", err)
+	}
+	if got.Batch.ID != "batch-j-completed-cleanup" {
+		t.Fatalf("Batch.ID = %q, want persisted MDS batch ID", got.Batch.ID)
+	}
+	if got.Batch.Status != openai.BatchStatusCompleted {
+		t.Fatalf("Batch.Status = %s, want completed", got.Batch.Status)
+	}
+	if got.Batch.OutputFileID != testOutputFileID || got.Batch.ErrorFileID != testErrorFileID {
+		t.Fatalf("terminal files = output %q error %q, want file-output/file-error",
+			got.Batch.OutputFileID, got.Batch.ErrorFileID)
+	}
+	if got.Batch.RequestCounts.Total != 10 || got.Batch.RequestCounts.Completed != 10 || got.Batch.RequestCounts.Failed != 0 {
+		t.Fatalf("request counts = %+v, want 10/10/0", got.Batch.RequestCounts)
+	}
+	_, releases, _ := prov.snapshot()
+	if len(releases) != 1 || releases[0] != "prov-j-completed-cleanup" {
+		t.Fatalf("release calls = %v, want [prov-j-completed-cleanup]", releases)
+	}
+
+	list, err := q.ListJobs(context.Background(), &plannerapi.ListJobsRequest{})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if len(list.Data) != 1 {
+		t.Fatalf("ListJobs returned %d jobs, want 1", len(list.Data))
+	}
+	listed := list.Data[0].Batch
+	if listed.ID != "batch-j-completed-cleanup" ||
+		listed.Status != openai.BatchStatusCompleted ||
+		listed.OutputFileID != testOutputFileID ||
+		listed.RequestCounts.Total != 10 ||
+		listed.RequestCounts.Completed != 10 ||
+		listed.RequestCounts.Failed != 0 {
+		t.Fatalf("ListJobs batch = %+v, want completed MDS fields preserved", listed)
+	}
+}
+
+// TestExpiredInProgressPreservesPartialOutput covers the batch that runs past
+// its completion window: the runtime finalizes expiry and aggregates the
+// already-completed requests into the output/error files. The planner must not
+// conclude a premature, output-less expiry on its own deadline; it keeps
+// polling MDS within the grace period and adopts the finalized terminal batch.
+func TestExpiredInProgressPreservesPartialOutput(t *testing.T) {
+	var finalized atomic.Bool
+	prov := &fakeProvisioner{}
+	bc := &fakeBatchClient{
+		GetFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			batch := &openai.Batch{
+				ID:            batchID,
+				Status:        openai.BatchStatusInProgress,
+				RequestCounts: openai.BatchRequestCounts{Total: 10, Completed: 4, Failed: 0},
+			}
+			if finalized.Load() {
+				batch.Status = openai.BatchStatusExpired
+				batch.OutputFileID = testOutputFileID
+				batch.ErrorFileID = testErrorFileID
+				batch.ExpiredAt = 1_800_000_500
+			}
+			constructBatchJson(batch)
+			return batch, nil
+		},
+	}
+	q := newTestPlanner(t, bc, prov, 1)
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-expire-partial")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// Wait until the job is running and MDS has been polled at least once.
+	waitFor(t, defaultTimeout, func() bool {
+		q.mu.RLock()
+		job, ok := q.jobs["j-expire-partial"]
+		q.mu.RUnlock()
+		if !ok {
+			return false
+		}
+		job.mu.RLock()
+		defer job.mu.RUnlock()
+		return job.status == plannerapi.JobStatusInProgress
+	}, "expected job to reach in_progress")
+
+	// Simulate the completion window elapsing while the job is still running,
+	// within the finalize grace period.
+	q.mu.RLock()
+	job, ok := q.jobs["j-expire-partial"]
+	q.mu.RUnlock()
+	if !ok {
+		t.Fatal("job evicted before completion window elapsed")
+	}
+	job.mu.Lock()
+	job.expiresAt = time.Now().UTC().Add(-time.Minute)
+	job.mu.Unlock()
+
+	// While the runtime is still finalizing, the planner must not prematurely
+	// conclude an output-less expiry.
+	time.Sleep(300 * time.Millisecond)
+	got, err := q.GetJob(context.Background(), "j-expire-partial")
+	if err != nil {
+		t.Fatalf("GetJob during finalize: %v", err)
+	}
+	if got.Batch.Status == openai.BatchStatusExpired && got.Batch.OutputFileID == "" {
+		t.Fatal("planner concluded a premature expiry before the runtime finalized partial output")
+	}
+
+	// Runtime finishes finalizing: MDS now reports expired with partial output.
+	finalized.Store(true)
+
+	waitFor(t, defaultTimeout, func() bool {
+		g, err := q.GetJob(context.Background(), "j-expire-partial")
+		return err == nil && g.Batch.Status == openai.BatchStatusExpired
+	}, "expected job to reach expired")
+
+	got, err = q.GetJob(context.Background(), "j-expire-partial")
+	if err != nil {
+		t.Fatalf("GetJob after expiry: %v", err)
+	}
+	if got.Batch.OutputFileID != testOutputFileID || got.Batch.ErrorFileID != testErrorFileID {
+		t.Fatalf("expired batch files = output %q error %q, want partial output preserved",
+			got.Batch.OutputFileID, got.Batch.ErrorFileID)
+	}
+	if got.Batch.RequestCounts.Total != 10 || got.Batch.RequestCounts.Completed != 4 || got.Batch.RequestCounts.Failed != 0 {
+		t.Fatalf("expired request counts = %+v, want 10 total / 4 completed / 0 failed", got.Batch.RequestCounts)
+	}
+}
+
+// TestExpiredInProgressForcesExpiryAfterGracePeriod covers the fallback: when
+// the runtime is unresponsive past the completion window, the planner must
+// still force a planner-side expiry rather than leave the job running forever.
+func TestExpiredInProgressForcesExpiryAfterGracePeriod(t *testing.T) {
+	prov := &fakeProvisioner{}
+	bc := &fakeBatchClient{
+		// Runtime never finalizes: it keeps reporting in_progress.
+		GetFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			batch := &openai.Batch{
+				ID:            batchID,
+				Status:        openai.BatchStatusInProgress,
+				RequestCounts: openai.BatchRequestCounts{Total: 10, Completed: 4, Failed: 0},
+			}
+			constructBatchJson(batch)
+			return batch, nil
+		},
+	}
+	q := newTestPlanner(t, bc, prov, 1)
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-expire-stuck")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	waitFor(t, defaultTimeout, func() bool {
+		q.mu.RLock()
+		job, ok := q.jobs["j-expire-stuck"]
+		q.mu.RUnlock()
+		if !ok {
+			return false
+		}
+		job.mu.RLock()
+		defer job.mu.RUnlock()
+		return job.status == plannerapi.JobStatusInProgress
+	}, "expected job to reach in_progress")
+
+	// Completion window elapsed beyond the finalize grace period with an
+	// unresponsive runtime.
+	q.mu.RLock()
+	job, ok := q.jobs["j-expire-stuck"]
+	q.mu.RUnlock()
+	if !ok {
+		t.Fatal("job evicted before completion window elapsed")
+	}
+	job.mu.Lock()
+	job.expiresAt = time.Now().UTC().Add(-(expiryFinalizeGracePeriod + time.Minute))
+	job.mu.Unlock()
+
+	waitFor(t, defaultTimeout, func() bool {
+		g, err := q.GetJob(context.Background(), "j-expire-stuck")
+		return err == nil && g.Batch.Status == openai.BatchStatusExpired
+	}, "expected fallback planner-side expiry")
 }
 
 // =============================================================================
@@ -898,6 +1109,66 @@ func TestCancelSubmittedJobForwardsToMDSAndReleasesProvision(t *testing.T) {
 	}
 }
 
+func TestCancelledBatchSurvivesCleanupAndStoreEviction(t *testing.T) {
+	prov := &fakeProvisioner{}
+	var cancelled atomic.Bool
+	bc := &fakeBatchClient{
+		CancelFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			cancelled.Store(true)
+			batch := &openai.Batch{
+				ID:          batchID,
+				Status:      openai.BatchStatusCancelled,
+				CancelledAt: 1_800_000_456,
+			}
+			constructBatchJson(batch)
+			return batch, nil
+		},
+		GetFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			if !cancelled.Load() {
+				return &openai.Batch{ID: batchID, Status: openai.BatchStatusInProgress}, nil
+			}
+			batch := &openai.Batch{
+				ID:          batchID,
+				Status:      openai.BatchStatusCancelled,
+				CancelledAt: 1_800_000_456,
+			}
+			constructBatchJson(batch)
+			return batch, nil
+		},
+	}
+	q := newTestPlanner(t, bc, prov, 1)
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-cancel-cleanup")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitFor(t, defaultTimeout, func() bool {
+		creates, _ := bc.snapshot()
+		return len(creates) == 1
+	}, "CreateBatch never fired")
+
+	if _, err := q.Cancel(context.Background(), "j-cancel-cleanup"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	waitFor(t, defaultTimeout, func() bool {
+		_, cancels := bc.snapshot()
+		return len(cancels) == 1
+	}, "CancelBatch never fired")
+	waitFor(t, defaultTimeout, func() bool {
+		q.mu.RLock()
+		_, ok := q.jobs["j-cancel-cleanup"]
+		q.mu.RUnlock()
+		return !ok
+	}, "expected terminal job to be evicted from memory")
+
+	got, err := q.GetJob(context.Background(), "j-cancel-cleanup")
+	if err != nil {
+		t.Fatalf("GetJob after eviction: %v", err)
+	}
+	if got.Batch.ID != "batch-j-cancel-cleanup" || got.Batch.Status != openai.BatchStatusCancelled {
+		t.Fatalf("Batch = %+v, want persisted cancelled MDS batch", got.Batch)
+	}
+}
+
 func TestCancelUnknownJobReturnsNotFound(t *testing.T) {
 	q := newTestPlanner(t, &fakeBatchClient{}, &fakeProvisioner{}, 1)
 	_, err := q.Cancel(context.Background(), "j-ghost")
@@ -1237,6 +1508,65 @@ func TestListJobsFromStoreOnly(t *testing.T) {
 	}
 	if len(resp.Data) != 0 {
 		t.Errorf("expected empty list with nil store, got %d items", len(resp.Data))
+	}
+}
+
+func TestListJobsRefreshesActiveStoredBatchFromMDS(t *testing.T) {
+	var getCalls atomic.Int32
+	bc := &fakeBatchClient{
+		GetFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			getCalls.Add(1)
+			batch := &openai.Batch{
+				ID:            batchID,
+				Status:        openai.BatchStatusCompleted,
+				OutputFileID:  "file-output-list",
+				RequestCounts: openai.BatchRequestCounts{Total: 25, Completed: 25, Failed: 0},
+			}
+			constructBatchJson(batch)
+			return batch, nil
+		},
+	}
+	q := newTestPlanner(t, bc, &fakeProvisioner{}, 1)
+
+	rec := jobToModel(&queuedJob{
+		req:         validReq("j-list-refresh"),
+		status:      plannerapi.JobStatusInProgress,
+		batchID:     "batch-j-list-refresh",
+		queuedAt:    time.Now().UTC(),
+		completedAt: time.Time{},
+	})
+	if err := q.store.UpsertJob(context.Background(), rec); err != nil {
+		t.Fatalf("seed store job: %v", err)
+	}
+
+	resp, err := q.ListJobs(context.Background(), &plannerapi.ListJobsRequest{})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if getCalls.Load() != 1 {
+		t.Fatalf("GetBatch calls = %d, want 1", getCalls.Load())
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("ListJobs returned %d jobs, want 1", len(resp.Data))
+	}
+	batch := resp.Data[0].Batch
+	if batch.Status != openai.BatchStatusCompleted ||
+		batch.OutputFileID != "file-output-list" ||
+		batch.RequestCounts.Total != 25 ||
+		batch.RequestCounts.Completed != 25 ||
+		batch.RequestCounts.Failed != 0 {
+		t.Fatalf("ListJobs batch = %+v, want refreshed completed batch", batch)
+	}
+
+	stored, err := q.store.GetJob(context.Background(), "j-list-refresh")
+	if err != nil {
+		t.Fatalf("GetJob from store: %v", err)
+	}
+	if stored.Status != string(plannerapi.JobStatusCompleted) ||
+		stored.BatchID != "batch-j-list-refresh" ||
+		stored.OutputDataset != "file-output-list" {
+		t.Fatalf("stored row = status %q batch %q output %q, want completed/batch/file-output-list",
+			stored.Status, stored.BatchID, stored.OutputDataset)
 	}
 }
 
