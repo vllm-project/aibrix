@@ -217,6 +217,19 @@ func (r *StormServiceCustomDefaulter) ValidateUpdate(_ context.Context, oldObj, 
 	if !ok {
 		return nil, fmt.Errorf("expected a StormService object but got %T", newObj)
 	}
+	oldStormService, ok := oldObj.(*orchestrationv1alpha1.StormService)
+	if !ok {
+		return nil, fmt.Errorf("expected a StormService object but got %T", oldObj)
+	}
+	// The deployment mode selects the RoleSet topology the controller builds, so
+	// switching it on a live StormService would force a disruptive teardown and
+	// rebuild. Treat the resolved mode as immutable and require recreation instead.
+	// Comparing ResolvedMode rather than spec.Mode keeps objects created before the
+	// mode field existed (stored spec.mode is empty) from being rejected on updates.
+	if oldStormService.Spec.ResolvedMode() != stormService.Spec.ResolvedMode() {
+		return nil, fmt.Errorf("StormService deployment mode is immutable; cannot change from %s to %s",
+			oldStormService.Spec.ResolvedMode(), stormService.Spec.ResolvedMode())
+	}
 	if err := validateStormServiceMode(stormService); err != nil {
 		return nil, err
 	}
