@@ -238,7 +238,10 @@ class DeploymentRuntime(RuntimeBase):
             replicas=handle.replicas,
         )
 
-    async def _check_liveness(self, handle: DeploymentHandle) -> None:
+    async def _check_liveness(
+        self, handle: DeploymentHandle, reason: str = "unspecified"
+    ) -> None:
+        del reason
         try:
             await asyncio.to_thread(
                 self._apps_v1_api.read_namespaced_deployment_status,

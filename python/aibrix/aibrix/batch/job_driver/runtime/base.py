@@ -321,9 +321,9 @@ class RuntimeBase:
         del handle, wait_mode
         return None
 
-    async def _check_liveness(self, handle: Any) -> None:
+    async def _check_liveness(self, handle: Any, reason: str = "unspecified") -> None:
         """Best-effort liveness probe for reconnect/recovery and live sessions."""
-        del handle
+        del handle, reason
         return None
 
     async def _wait_teared_down(
@@ -341,7 +341,10 @@ class RuntimeBase:
             if self._stop_requested.is_set():
                 raise asyncio.CancelledError
             try:
-                await asyncio.wait_for(self._check_liveness(handle), timeout=1.0)
+                await asyncio.wait_for(
+                    self._check_liveness(handle, reason="wait_teared_down"),
+                    timeout=1.0,
+                )
             except TimeoutError:
                 pass
             except Exception as exc:
@@ -794,7 +797,10 @@ class RuntimeBase:
                 # "what to check", not "how long it may block"; cleanup must
                 # remain a fast recovery path even if a runtime-specific probe
                 # stalls on remote control-plane calls.
-                await asyncio.wait_for(self._check_liveness(handle), timeout=1.0)
+                await asyncio.wait_for(
+                    self._check_liveness(handle, reason="recover_finalizing_cleanup"),
+                    timeout=1.0,
+                )
             except TimeoutError:
                 return
             except Exception as exc:
@@ -994,7 +1000,7 @@ class RuntimeBase:
                     return
 
                 try:
-                    await self._check_liveness(handle)
+                    await self._check_liveness(handle, reason="session_liveness_loop")
                     consecutive_failures = 0
                 except BaseException as exc:
                     if isinstance(exc, asyncio.CancelledError):
