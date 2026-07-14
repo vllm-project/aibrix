@@ -90,3 +90,42 @@ func TestStormServiceValidateCreate_ModeReplicas(t *testing.T) {
 		})
 	}
 }
+
+func TestStormServiceValidateUpdate_ModeImmutability(t *testing.T) {
+	validator := &StormServiceCustomDefaulter{}
+
+	tests := map[string]struct {
+		oldMode     orchestrationv1alpha1.StormServiceMode
+		oldReplicas *int32
+		newMode     orchestrationv1alpha1.StormServiceMode
+		newReplicas *int32
+		expectError bool
+	}{
+		"unchanged mode is allowed":              {oldMode: orchestrationv1alpha1.StormServicePooledMode, newMode: orchestrationv1alpha1.StormServicePooledMode, expectError: false},
+		"explicit mode change is rejected":       {oldMode: orchestrationv1alpha1.StormServicePooledMode, newMode: orchestrationv1alpha1.StormServiceReplicaMode, expectError: true},
+		"replica-driven mode change is rejected": {oldReplicas: ptr.To[int32](1), newReplicas: ptr.To[int32](3), expectError: true},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			oldSS := &orchestrationv1alpha1.StormService{
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Replicas: tc.oldReplicas,
+					Mode:     tc.oldMode,
+				},
+			}
+			newSS := &orchestrationv1alpha1.StormService{
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Replicas: tc.newReplicas,
+					Mode:     tc.newMode,
+				},
+			}
+			_, err := validator.ValidateUpdate(context.Background(), oldSS, newSS)
+			if tc.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
