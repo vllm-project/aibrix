@@ -14,6 +14,8 @@ spec:
   engineConfig:
     args:
       --max-model-len: "2048"
+      # A conservative per-engine cap for the two-small-model A10 smoke test.
+      --gpu-memory-utilization: "0.45"
 ---
 apiVersion: model.aibrix.ai/v1alpha1
 kind: ModelClaim
@@ -31,3 +33,5 @@ spec:
   engineConfig:
     args:
       --max-model-len: "2048"
+      # A conservative per-engine cap for the two-small-model A10 smoke test.
+      --gpu-memory-utilization: "0.45"

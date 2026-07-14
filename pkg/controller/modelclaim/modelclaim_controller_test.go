@@ -42,20 +42,25 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
-const testNamespace = "default"
+const (
+	testNamespace      = "default"
+	testHBMReservation = "0.45"
+)
 
 // fakeRuntime is an in-process RuntimeClient that records calls and hands out
 // monotonic ports, so the reconcile loop can be tested without a real runtime.
 type fakeRuntime struct {
 	activateCalls   []ActivateRequest
 	deactivateCalls []DeactivateRequest
+	listCalls       int
+	snapshotCalls   int
 	portSeq         int32
 	failActivate    bool
-	// notReady makes ListModels report activated engines as not yet serveable,
-	// so a test can hold a model in the Activating phase (readiness gate).
+	// notReady makes runtime snapshots report activated engines as not yet
+	// serveable, so a test can hold a model in the Activating phase.
 	notReady bool
 	// models tracks the engines the fake currently hosts, keyed by served
-	// model name, so ListModels can drive the controller's readiness gate.
+	// model name, so Snapshot can drive the controller's readiness gate.
 	models map[string]ModelInfo
 	// snapshots reports per-pod runtime state for Phase-2 placement tests.
 	snapshots map[string]*RuntimeSnapshot
@@ -109,6 +114,7 @@ func (f *fakeRuntime) Wake(_ context.Context, _ string, _ int, req *WakeRequest)
 }
 
 func (f *fakeRuntime) ListModels(_ context.Context, _ string, _ int) ([]ModelInfo, error) {
+	f.listCalls++
 	out := make([]ModelInfo, 0, len(f.models))
 	for _, m := range f.models {
 		if m.Phase != "sleeping" {
@@ -120,10 +126,38 @@ func (f *fakeRuntime) ListModels(_ context.Context, _ string, _ int) ([]ModelInf
 }
 
 func (f *fakeRuntime) Snapshot(_ context.Context, podIP string, _ int) (*RuntimeSnapshot, error) {
+	f.snapshotCalls++
+	result := &RuntimeSnapshot{}
 	if snapshot, ok := f.snapshots[podIP]; ok {
-		return snapshot, nil
+		copy := *snapshot
+		copy.Models = append([]RuntimeSnapshotModel(nil), snapshot.Models...)
+		result = &copy
 	}
-	return nil, fmt.Errorf("no snapshot for pod %s", podIP)
+	for _, model := range f.models {
+		present := false
+		for i := range result.Models {
+			if result.Models[i].ModelName == model.ModelName {
+				present = true
+				break
+			}
+		}
+		if present {
+			continue
+		}
+		ready := model.Ready
+		if model.Phase != "sleeping" {
+			ready = !f.notReady
+		}
+		result.Models = append(result.Models, RuntimeSnapshotModel{
+			ModelName: model.ModelName,
+			Port:      model.Port,
+			IPCName:   model.IPCName,
+			Phase:     model.Phase,
+			Alive:     model.Phase != "failed",
+			Ready:     ready,
+		})
+	}
+	return result, nil
 }
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -190,6 +224,10 @@ func newReconciler(t *testing.T, objs ...client.Object) (*ModelClaimReconciler, 
 		Scheme:   scheme,
 		Recorder: record.NewFakeRecorder(32),
 		Runtime:  runtime,
+		Capacity: engineArgCapacityProvider{},
+		CapacityReservations: newCapacityReservationCache(
+			defaultCapacityReservationTTL, time.Now,
+		),
 		SnapshotCache: newRuntimeSnapshotCache(
 			defaultRuntimeSnapshotTTL, time.Now,
 		),
@@ -334,6 +372,83 @@ func TestReconcilePlacementPrefersRuntimeSnapshot(t *testing.T) {
 	assert.Equal(t, "claim-uid", runtime.activateCalls[0].ClaimRef.UID)
 }
 
+func TestReconcileRejectsKnownInsufficientHBMCapacity(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Spec.EngineConfig.Args["--gpu-memory-utilization"] = testHBMReservation
+	r, runtime := newReconciler(t, pm, warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning))
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		"10.0.0.1": {
+			Accelerators: []RuntimeAcceleratorSnapshot{{
+				ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 700,
+			}},
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "resident", HBMReservationFraction: 0.60,
+			}},
+		},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimPending, got.Status.Phase)
+	condition := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, "InsufficientHBMCapacity", condition.Reason)
+}
+
+func TestReconcileCarriesVLLMHBMReservation(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Spec.EngineConfig.Args["--gpu-memory-utilization"] = testHBMReservation
+	r, runtime := newReconciler(t, pm, warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning))
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		"10.0.0.1": {
+			Accelerators: []RuntimeAcceleratorSnapshot{{
+				ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 1000,
+			}},
+		},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.activateCalls, 1)
+	assert.InDelta(t, 0.45, runtime.activateCalls[0].HBMReservationFraction, 0.0001)
+}
+
+func TestReconcilePendingHBMReservationsPreventOvercommit(t *testing.T) {
+	claims := []*modelv1alpha1.ModelClaim{
+		withFinalizer(sampleModelClaim()),
+		withFinalizer(sampleModelClaim()),
+		withFinalizer(sampleModelClaim()),
+	}
+	for index, claim := range claims {
+		claim.Name = fmt.Sprintf("model-%d", index+1)
+		claim.Spec.EngineConfig.Args["--gpu-memory-utilization"] = testHBMReservation
+	}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	objects := []client.Object{claims[0], claims[1], claims[2], pod}
+	r, runtime := newReconciler(t, objects...)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		"10.0.0.1": {
+			Accelerators: []RuntimeAcceleratorSnapshot{{
+				ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 1000,
+			}},
+		},
+	}
+
+	reconcileOnce(t, r, claims[0].Name)
+	reconcileOnce(t, r, claims[1].Name)
+	reconcileOnce(t, r, claims[2].Name)
+
+	require.Len(t, runtime.activateCalls, 2)
+	third := getModel(t, r, claims[2].Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimPending, third.Status.Phase)
+	condition := meta.FindStatusCondition(third.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, condition)
+	assert.Equal(t, "InsufficientHBMCapacity", condition.Reason)
+}
+
 // TestReconcileReadinessGate verifies the controller does not make a model
 // routable until its engine reports ready: while the engine is booting the
 // instance stays Activating, the warm-pod annotation holds the non-routable marker
@@ -406,6 +521,140 @@ func TestReconcileActiveDemotedWhenUnhealthy(t *testing.T) {
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, pod))
 	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+"qwen2-7b"], `"port":0`,
 		"unhealthy engine must be non-routable")
+}
+
+func TestReconcileSnapshotCorrectsRouteToActualRuntimePort(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + pm.Name: `{"model":"qwen2-7b","port":9001}`,
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.models = map[string]ModelInfo{
+		servedModelName(pm): {
+			ModelName: servedModelName(pm), Port: 9001, Phase: "active", Ready: true,
+		},
+	}
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		"10.0.0.1": {Models: []RuntimeSnapshotModel{{
+			ModelName: servedModelName(pm), Port: 9100, Phase: "active", Alive: true, Ready: true,
+		}}},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, int32(9100), got.Status.Instances[0].Port)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
+	assert.Zero(t, runtime.listCalls, "routing health must use runtime snapshots")
+	assert.GreaterOrEqual(t, runtime.snapshotCalls, 1)
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{
+		Namespace: testNamespace, Name: "warm-1",
+	}, pod))
+	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+pm.Name], `"port":9100`)
+}
+
+func TestReconcileSnapshotPortZeroNeverRoutesStaleStatusPort(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + pm.Name: `{"model":"qwen2-7b","port":9001}`,
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		"10.0.0.1": {Models: []RuntimeSnapshotModel{{
+			ModelName: servedModelName(pm), Port: 0, Phase: "active", Alive: true, Ready: true,
+		}}},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, int32(0), got.Status.Instances[0].Port)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{
+		Namespace: testNamespace, Name: "warm-1",
+	}, pod))
+	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+pm.Name], `"port":0`)
+}
+
+func TestReconcileSnapshotTerminalFailureDeroutesAndFailsClaim(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + pm.Name: `{"model":"qwen2-7b","port":9001}`,
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.models = map[string]ModelInfo{
+		servedModelName(pm): {
+			ModelName: servedModelName(pm), Port: 9001, Phase: "active", Ready: true,
+		},
+	}
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		"10.0.0.1": {Models: []RuntimeSnapshotModel{{
+			ModelName: servedModelName(pm),
+			Port:      9001,
+			Phase:     "failed",
+			Alive:     false,
+			Ready:     false,
+			LastError: "engine exited; restart budget exhausted",
+		}}},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Instances[0].Phase)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Phase)
+	condition := meta.FindStatusCondition(
+		got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady),
+	)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, "EngineFailed", condition.Reason)
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{
+		Namespace: testNamespace, Name: "warm-1",
+	}, pod))
+	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+pm.Name], `"port":0`)
+	assert.Empty(t, runtime.activateCalls)
+}
+
+func TestSnapshotModelForClaimPrefersMatchingClaimUID(t *testing.T) {
+	pm := sampleModelClaim()
+	pm.UID = types.UID("claim-uid")
+	snapshot := &RuntimeSnapshot{Models: []RuntimeSnapshotModel{
+		{
+			ModelName: servedModelName(pm),
+			Port:      9001,
+			ClaimRef: &ModelClaimRef{
+				Namespace: testNamespace, Name: "other", UID: "other-uid",
+			},
+		},
+		{
+			ModelName: "renamed-at-runtime",
+			Port:      9100,
+			ClaimRef: &ModelClaimRef{
+				Namespace: testNamespace, Name: pm.Name, UID: string(pm.UID),
+			},
+		},
+	}}
+
+	observed := snapshotModelForClaim(snapshot, pm, servedModelName(pm))
+
+	require.NotNil(t, observed)
+	assert.Equal(t, int32(9100), observed.Port)
 }
 
 func TestReconcileSleepingInstanceRemovesRouteAndWakeRestoresIt(t *testing.T) {

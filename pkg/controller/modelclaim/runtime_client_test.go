@@ -51,6 +51,7 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 		assert.Equal(t, "claim-uid", req.ClaimRef.UID)
 		require.NotNil(t, req.EngineConfig)
 		assert.Equal(t, "2048", req.EngineConfig.Args["--max-model-len"])
+		assert.InDelta(t, 0.45, req.HBMReservationFraction, 0.0001)
 		_ = json.NewEncoder(w).Encode(ActivateResponse{
 			Status: "success", ModelName: req.ModelName, Port: 9123, IPCName: req.IPCName,
 		})
@@ -65,6 +66,7 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 		EngineConfig: &modelv1alpha1.ModelClaimEngineConfig{
 			Args: map[string]string{"--max-model-len": "2048"},
 		},
+		HBMReservationFraction: 0.45,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int32(9123), resp.Port)
@@ -82,8 +84,10 @@ func TestHTTPRuntimeSnapshot(t *testing.T) {
 			}},
 			Models: []RuntimeSnapshotModel{{
 				ModelName: "m1", ArtifactURL: "hf://Org/M1", Port: 9001,
-				IPCName: "kvc_m1", Phase: "active", Ready: true,
+				IPCName: "kvc_m1", Phase: "active", Alive: true, Ready: true,
+				RestartCount: 2, LastError: "previous launch failed", LastTransition: &observedAt,
 				KVUsedBytes: 10, KVCapacityBytes: 100,
+				HBMPeakBytes: 456, HBMReservationFraction: 0.45,
 				ClaimRef: &ModelClaimRef{Namespace: "default", Name: "m1", UID: "claim-uid"},
 			}},
 			CachedArtifacts: []string{"hf://Org/M1"},
@@ -99,6 +103,13 @@ func TestHTTPRuntimeSnapshot(t *testing.T) {
 	assert.Equal(t, int64(700), snapshot.Accelerators[0].HBMFreeBytes)
 	require.Len(t, snapshot.Models, 1)
 	assert.Equal(t, "claim-uid", snapshot.Models[0].ClaimRef.UID)
+	assert.True(t, snapshot.Models[0].Alive)
+	assert.Equal(t, 2, snapshot.Models[0].RestartCount)
+	assert.Equal(t, "previous launch failed", snapshot.Models[0].LastError)
+	require.NotNil(t, snapshot.Models[0].LastTransition)
+	assert.Equal(t, observedAt, *snapshot.Models[0].LastTransition)
+	assert.Equal(t, int64(456), snapshot.Models[0].HBMPeakBytes)
+	assert.InDelta(t, 0.45, snapshot.Models[0].HBMReservationFraction, 0.0001)
 	assert.Equal(t, []string{"hf://Org/M1"}, snapshot.CachedArtifacts)
 }
 

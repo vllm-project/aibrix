@@ -75,7 +75,11 @@ type ActivateRequest struct {
 	// Credentials and engine-specific startup settings.
 	Credentials  map[string]string                     `json:"credentials,omitempty"`
 	EngineConfig *modelv1alpha1.ModelClaimEngineConfig `json:"engine_config,omitempty"`
-	ClaimRef     *ModelClaimRef                        `json:"claim_ref,omitempty"`
+	// HBMReservationFraction is derived from vLLM's existing
+	// --gpu-memory-utilization argument. It is controller/runtime bookkeeping,
+	// not a new ModelClaim resource field.
+	HBMReservationFraction float64        `json:"hbm_reservation_fraction,omitempty"`
+	ClaimRef               *ModelClaimRef `json:"claim_ref,omitempty"`
 }
 
 // ModelClaimRef identifies the ModelClaim that owns a runtime engine without
@@ -155,15 +159,25 @@ type RuntimeAcceleratorSnapshot struct {
 
 // RuntimeSnapshotModel is one engine reported by a runtime snapshot.
 type RuntimeSnapshotModel struct {
-	ModelName       string         `json:"model_name"`
-	ArtifactURL     string         `json:"artifact_url"`
-	ClaimRef        *ModelClaimRef `json:"claim_ref,omitempty"`
-	Port            int32          `json:"port"`
-	IPCName         string         `json:"ipc_name"`
-	Phase           string         `json:"phase"`
-	Ready           bool           `json:"ready"`
-	KVUsedBytes     int64          `json:"kv_used_bytes"`
-	KVCapacityBytes int64          `json:"kv_capacity_bytes"`
+	ModelName   string         `json:"model_name"`
+	ArtifactURL string         `json:"artifact_url"`
+	ClaimRef    *ModelClaimRef `json:"claim_ref,omitempty"`
+	Port        int32          `json:"port"`
+	IPCName     string         `json:"ipc_name"`
+	Phase       string         `json:"phase"`
+	// Alive is process liveness, separate from readiness: a booting engine is
+	// alive but not routable, while a restarting or terminal engine is not.
+	Alive           bool       `json:"alive"`
+	Ready           bool       `json:"ready"`
+	RestartCount    int        `json:"restart_count"`
+	LastError       string     `json:"last_error,omitempty"`
+	LastTransition  *time.Time `json:"last_transition,omitempty"`
+	KVUsedBytes     int64      `json:"kv_used_bytes"`
+	KVCapacityBytes int64      `json:"kv_capacity_bytes"`
+	HBMPeakBytes    int64      `json:"hbm_peak_bytes"`
+	// HBMReservationFraction is the vLLM envelope carried at activation time.
+	// A zero value means an old or non-vLLM runtime did not report one.
+	HBMReservationFraction float64 `json:"hbm_reservation_fraction"`
 }
 
 // RuntimeSnapshot is the point-in-time source for controller placement. It is

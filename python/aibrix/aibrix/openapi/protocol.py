@@ -148,6 +148,10 @@ class ActivateRuntimeModelRequest(NoProtectedBaseModel):
     credentials: Optional[Dict[str, str]] = None
     engine_config: Optional[RuntimeEngineConfig] = None
     claim_ref: Optional[RuntimeClaimRef] = None
+    # Controller-derived vLLM envelope, not a user-facing ModelClaim resource.
+    # The sidecar reports it in snapshots so a controller restart can rebuild
+    # the active per-pod capacity ledger.
+    hbm_reservation_fraction: Optional[float] = Field(default=None, gt=0, le=1)
     # Legacy compatibility for older callers. New ModelClaim callers should use
     # engine_config.args for engine CLI flags.
     additional_config: Optional[Dict[str, str]] = None
@@ -239,8 +243,21 @@ class RuntimeSnapshotModel(NoProtectedBaseModel):
     ipc_name: str
     phase: str
     ready: bool
+    # Process liveness is independent from readiness: a booting engine is
+    # alive but non-routable, while a restart/terminal failure is not alive.
+    alive: bool = True
+    restart_count: int = 0
+    last_error: Optional[str] = None
+    last_transition: Optional[datetime] = None
     kv_used_bytes: int
     kv_capacity_bytes: int
+    # Largest amount of GPU memory attributable to this engine on any visible
+    # accelerator. This folds vLLM's worker process tree into the engine it
+    # belongs to, which makes it safe for fixed TP/PP topology admission.
+    hbm_peak_bytes: int = 0
+    # The controller-derived envelope carried at activation time. A zero value
+    # means an older or non-vLLM caller did not provide a capacity reservation.
+    hbm_reservation_fraction: float = 0
 
 
 class RuntimeSnapshotResponse(NoProtectedBaseModel):
