@@ -531,6 +531,31 @@ func TestReconcileActivateFailureSetsFailed(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 }
 
+func TestReconcileInvalidEngineConfigSetsFailed(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Spec.EngineConfig.Args["--tensor-parallel-size"] = "invalid"
+	r, runtime := newReconciler(t,
+		pm,
+		warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning),
+	)
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: pm.Name},
+	})
+	require.NoError(t, err)
+	assert.False(t, result.Requeue)
+	assert.Zero(t, result.RequeueAfter)
+	assert.Empty(t, runtime.activateCalls)
+
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Phase)
+	cond := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "InvalidEngineConfig", cond.Reason)
+	assert.Contains(t, cond.Message, "--tensor-parallel-size must be a positive integer")
+}
+
 // TestReconcileReplicasZeroDeactivates verifies explicit replicas=0 deactivates instances.
 func TestReconcileReplicasZeroDeactivates(t *testing.T) {
 	zero := int32(0)

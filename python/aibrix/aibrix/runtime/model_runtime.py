@@ -50,6 +50,10 @@ def sanitize_ipc_name(name: str) -> str:
 
 logger = logging.getLogger(__name__)
 
+# NVML owns a process-global initialization state. Snapshot requests can run
+# concurrently, so init/query/shutdown must be one uninterrupted operation.
+_nvml_lock = threading.Lock()
+
 
 @dataclass
 class ModelInstance:
@@ -202,36 +206,37 @@ def gpu_memory_snapshots() -> List[Dict[str, object]]:
     is therefore optional: lack of the module, driver, or visible device means
     the controller receives an empty accelerator list and falls back safely.
     """
-    initialized = False
-    try:
-        import pynvml  # type: ignore[import-not-found]
+    with _nvml_lock:
+        initialized = False
+        try:
+            import pynvml  # type: ignore[import-not-found]
 
-        pynvml.nvmlInit()
-        initialized = True
-        snapshots = []
-        for index in range(pynvml.nvmlDeviceGetCount()):
-            handle = pynvml.nvmlDeviceGetHandleByIndex(index)
-            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            device_id = pynvml.nvmlDeviceGetUUID(handle)
-            if isinstance(device_id, bytes):
-                device_id = device_id.decode()
-            snapshots.append(
-                {
-                    "id": str(device_id),
-                    "hbm_total_bytes": int(info.total),
-                    "hbm_free_bytes": int(info.free),
-                }
-            )
-        return snapshots
-    except Exception as exc:
-        logger.debug("NVML GPU observation is unavailable: %s", exc)
-        return []
-    finally:
-        if initialized:
-            try:
-                pynvml.nvmlShutdown()  # type: ignore[name-defined]
-            except Exception:
-                pass
+            pynvml.nvmlInit()
+            initialized = True
+            snapshots = []
+            for index in range(pynvml.nvmlDeviceGetCount()):
+                handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+                info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                device_id = pynvml.nvmlDeviceGetUUID(handle)
+                if isinstance(device_id, bytes):
+                    device_id = device_id.decode()
+                snapshots.append(
+                    {
+                        "id": str(device_id),
+                        "hbm_total_bytes": int(info.total),
+                        "hbm_free_bytes": int(info.free),
+                    }
+                )
+            return snapshots
+        except Exception as exc:
+            logger.debug("NVML GPU observation is unavailable: %s", exc)
+            return []
+        finally:
+            if initialized:
+                try:
+                    pynvml.nvmlShutdown()  # type: ignore[name-defined]
+                except Exception:
+                    pass
 
 
 def write_cache_marker(

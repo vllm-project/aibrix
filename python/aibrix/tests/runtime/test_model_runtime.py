@@ -15,6 +15,10 @@
 """Tests for runtime model lifecycle, using mock actuators (no GPU)."""
 
 import os
+import sys
+import threading
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,6 +30,61 @@ from aibrix.runtime.model_runtime import (
 
 def make_agent():
     return ModelRuntime(MockEngineLauncher())
+
+
+def test_gpu_memory_snapshots_serializes_nvml_lifecycle(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    state_lock = threading.Lock()
+    active = 0
+    max_active = 0
+    init_calls = 0
+    shutdown_calls = 0
+
+    def nvml_init():
+        nonlocal active, init_calls, max_active
+        with state_lock:
+            init_calls += 1
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.01)
+
+    def nvml_shutdown():
+        nonlocal active, shutdown_calls
+        with state_lock:
+            shutdown_calls += 1
+            active -= 1
+
+    nvml = SimpleNamespace(
+        nvmlInit=nvml_init,
+        nvmlShutdown=nvml_shutdown,
+        nvmlDeviceGetCount=lambda: 1,
+        nvmlDeviceGetHandleByIndex=lambda index: index,
+        nvmlDeviceGetMemoryInfo=lambda handle: SimpleNamespace(total=100, free=50),
+        nvmlDeviceGetUUID=lambda handle: f"GPU-{handle}",
+    )
+    monkeypatch.setitem(sys.modules, "pynvml", nvml)
+
+    start = threading.Barrier(4)
+    snapshots = []
+
+    def observe():
+        start.wait()
+        snapshots.append(runtime_module.gpu_memory_snapshots())
+
+    threads = [threading.Thread(target=observe) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert (
+        snapshots
+        == [[{"id": "GPU-0", "hbm_total_bytes": 100, "hbm_free_bytes": 50}]] * 4
+    )
+    assert init_calls == 4
+    assert shutdown_calls == 4
+    assert max_active == 1
 
 
 class _RecordingKVController:
@@ -239,10 +298,13 @@ def test_vllm_parallelism_defaults_and_combines_tp_pp():
     from aibrix.runtime.model_runtime import vllm_parallelism
 
     assert vllm_parallelism(None, None) == 1
-    assert vllm_parallelism(
-        {"args": {"--tensor-parallel-size": "2", "--pipeline-parallel-size": "2"}},
-        None,
-    ) == 4
+    assert (
+        vllm_parallelism(
+            {"args": {"--tensor-parallel-size": "2", "--pipeline-parallel-size": "2"}},
+            None,
+        )
+        == 4
+    )
 
 
 @pytest.mark.parametrize(
@@ -260,7 +322,9 @@ def test_vllm_parallelism_rejects_unsupported_or_invalid_args(args):
         vllm_parallelism({"args": args}, None)
 
 
-def test_activate_rejects_vllm_parallelism_that_does_not_match_visible_gpus(monkeypatch):
+def test_activate_rejects_vllm_parallelism_that_does_not_match_visible_gpus(
+    monkeypatch,
+):
     import aibrix.runtime.model_runtime as runtime_module
 
     monkeypatch.setattr(

@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -50,7 +51,7 @@ func vllmParallelism(config *modelv1alpha1.ModelClaimEngineConfig) (int64, error
 	if data != 1 {
 		return 0, fmt.Errorf("--data-parallel-size=%d is unsupported by fixed topology pools", data)
 	}
-	if tensor > int64(^uint64(0)>>1)/pipeline {
+	if tensor > math.MaxInt64/pipeline {
 		return 0, fmt.Errorf("tensor and pipeline parallelism product overflows int64")
 	}
 	return tensor * pipeline, nil

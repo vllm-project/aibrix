@@ -156,6 +156,22 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	if _, err := modelParallelism(pm); err != nil {
+		message := fmt.Sprintf("invalid engineConfig parallelism: %v", err)
+		r.Recorder.Event(pm, corev1.EventTypeWarning, "InvalidEngineConfig", message)
+		meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+			Type:    string(modelv1alpha1.ModelClaimConditionReady),
+			Status:  metav1.ConditionFalse,
+			Reason:  "InvalidEngineConfig",
+			Message: message,
+		})
+		pm.Status.Phase = modelv1alpha1.ModelClaimFailed
+		if uerr := r.Status().Update(ctx, pm); uerr != nil {
+			return requeueOnConflict(uerr)
+		}
+		return ctrl.Result{}, nil
+	}
+
 	candidates, err := r.listCandidateWarmPods(ctx, pm)
 	if err != nil {
 		klog.ErrorS(err, "failed to list candidate warm pods", "modelClaim", req.NamespacedName)
