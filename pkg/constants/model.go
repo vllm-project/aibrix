@@ -58,7 +58,7 @@ const (
 	// ModelPoolPolicyAnnotationKey holds one JSON pool policy on the warm
 	// Deployment metadata. It intentionally avoids a separate policy CRD while
 	// keeping the configuration scoped to the pool that owns the GPU pods.
-	// Example: "pool.aibrix.ai/policy": '{"reclaim":{"mode":"kv-first"}}'
+	// Example: "pool.aibrix.ai/policy": '{"reclaim":{"mode":"kv-first","capacityBytes":17179869184}}'
 	ModelPoolPolicyAnnotationKey = "pool.aibrix.ai/policy"
 
 	// ModelClaimPodAnnotationPrefix marks, on a warm GPU pod, that a ModelClaim

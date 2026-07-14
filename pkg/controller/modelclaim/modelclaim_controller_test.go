@@ -46,6 +46,7 @@ import (
 const (
 	testNamespace      = "default"
 	testHBMReservation = "0.45"
+	testPeerIP         = "10.0.0.2"
 )
 
 // fakeRuntime is an in-process RuntimeClient that records calls and hands out
@@ -54,6 +55,7 @@ type fakeRuntime struct {
 	activateCalls   []ActivateRequest
 	deactivateCalls []DeactivateRequest
 	kvLimitCalls    []SetKVLimitRequest
+	sleepCalls      []SleepRequest
 	listCalls       int
 	snapshotCalls   int
 	portSeq         int32
@@ -105,6 +107,7 @@ func (f *fakeRuntime) SetKVLimit(_ context.Context, _ string, _ int, req *SetKVL
 }
 
 func (f *fakeRuntime) Sleep(_ context.Context, _ string, _ int, req *SleepRequest) (*RuntimeOperationResponse, error) {
+	f.sleepCalls = append(f.sleepCalls, *req)
 	return &RuntimeOperationResponse{
 		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: true, Phase: "sleeping",
 	}, nil
@@ -300,6 +303,100 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 	assert.Equal(t, int64(200), limits["idle"])
 }
 
+func TestReconcilePoolPoliciesSleepsOnlyAnIdleRedundantInstance(t *testing.T) {
+	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "warm-runtime-pool",
+			Namespace: testNamespace,
+			Annotations: map[string]string{
+				constants.ModelPoolPolicyAnnotationKey: `{
+					"lifecycle": {"sleepAfterSeconds": 60}
+				}`,
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "warm"}},
+		},
+	}
+	replicaSet := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "warm-runtime-pool-rs",
+			Namespace:       testNamespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(deployment, appsv1.SchemeGroupVersion.WithKind("Deployment"))},
+		},
+	}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Labels["app"] = "warm"
+	pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(replicaSet, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))}
+	peer := warmPod("warm-elsewhere", "other-pool", true, corev1.PodRunning)
+	peer.Status.PodIP = testPeerIP
+	claim := sampleModelClaim()
+	claim.UID = types.UID("claim-uid")
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: pod.Name, Port: 20000, Phase: modelv1alpha1.ModelClaimActive},
+		{Pod: "warm-elsewhere", Port: 20001, Phase: modelv1alpha1.ModelClaimActive},
+	}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod, peer, claim)
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	requestSuccessTotal := int64(10)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 500}},
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "qwen2-7b", Phase: "active", Alive: true, Ready: true,
+				RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
+				ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+			}},
+		},
+		peer.Status.PodIP: {
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "qwen2-7b", Phase: "active", Alive: true, Ready: true,
+				ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+			}},
+		},
+	}
+
+	// The first counter observation establishes a conservative idle baseline.
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	require.Empty(t, runtime.sleepCalls)
+
+	now = now.Add(61 * time.Second)
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "qwen2-7b", runtime.sleepCalls[0].ModelName)
+	assert.Equal(t, 1, runtime.sleepCalls[0].Level)
+	gotPod := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: pod.Name}, gotPod))
+	assert.Contains(t, gotPod.Annotations[constants.ModelClaimPodAnnotationPrefix+claim.Name], `"port":0`)
+	gotClaim := getModel(t, r, claim.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, gotClaim.Status.Instances[0].Phase)
+}
+
+func TestPoolPolicyRequiresRuntimeReadyPeerBeforeSleep(t *testing.T) {
+	claim := sampleModelClaim()
+	claim.UID = types.UID("claim-uid")
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: "target", Port: 20000, Phase: modelv1alpha1.ModelClaimActive},
+		{Pod: "peer", Port: 20001, Phase: modelv1alpha1.ModelClaimActive},
+	}
+	peer := warmPod("peer", "other-pool", true, corev1.PodRunning)
+	peer.Status.PodIP = testPeerIP
+	r, runtime := newReconciler(t, claim, peer)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		peer.Status.PodIP: {Models: []RuntimeSnapshotModel{{
+			ModelName: "qwen2-7b", Phase: "active", Alive: true, Ready: false,
+			ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+		}}},
+	}
+
+	assert.False(t, r.hasOtherRuntimeReadyInstance(context.Background(), claim, "target"))
+	runtime.snapshots[peer.Status.PodIP].Models[0].Ready = true
+	assert.True(t, r.hasOtherRuntimeReadyInstance(context.Background(), claim, "target"))
+}
+
 func reconcileOnce(t *testing.T, r *ModelClaimReconciler, name string) {
 	t.Helper()
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
@@ -415,14 +512,14 @@ func TestReconcilePlacementPrefersRuntimeSnapshot(t *testing.T) {
 	cold := warmPod("cold", "b300-pool-a", true, corev1.PodRunning)
 	cold.Status.PodIP = "10.0.0.1"
 	hot := warmPod("hot", "b300-pool-a", true, corev1.PodRunning)
-	hot.Status.PodIP = "10.0.0.2"
+	hot.Status.PodIP = testPeerIP
 	r, runtime := newReconciler(t, pm, cold, hot)
 	runtime.snapshots = map[string]*RuntimeSnapshot{
 		"10.0.0.1": {
 			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 900}},
 			Models:       []RuntimeSnapshotModel{{ModelName: "other", KVUsedBytes: 1}},
 		},
-		"10.0.0.2": {
+		testPeerIP: {
 			Accelerators:    []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 100}},
 			CachedArtifacts: []string{pm.Spec.ArtifactURL},
 		},

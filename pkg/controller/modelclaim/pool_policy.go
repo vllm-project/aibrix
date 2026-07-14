@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"time"
 )
 
 const poolReclaimModeKVFirst = "kv-first"
@@ -90,6 +91,8 @@ type poolRequestActivity struct {
 	Active           bool
 	RequestsInFlight int64
 	CompletionDelta  int64
+	LastActive       time.Time
+	Initialized      bool
 }
 
 type poolKVModel struct {

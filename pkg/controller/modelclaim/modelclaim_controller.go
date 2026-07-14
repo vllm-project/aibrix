@@ -51,6 +51,7 @@ import (
 const (
 	controllerName = "model-claim-controller"
 
+	runtimePhaseActive   = "active"
 	runtimePhaseFailed   = "failed"
 	runtimePhaseSleeping = "sleeping"
 
