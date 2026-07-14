@@ -28,6 +28,14 @@ type StormServiceSpec struct {
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// Mode is the deployment mode of the StormService. When left empty it is resolved
+	// from spec.replicas for backward compatibility: "Replica" when replicas > 1,
+	// otherwise "Pooled" (see ResolvedMode). The mutating webhook defaults this field
+	// so the intent is recorded on the object.
+	// +optional
+	// +kubebuilder:validation:Enum={Replica,Pooled}
+	Mode StormServiceMode `json:"mode,omitempty"`
+
 	// Label selector for roleSets. Existing ReplicaSets whose roleSets are
 	// selected by this will be the ones affected by this stormService.
 	// It must match the roleSet template's labels.
@@ -66,6 +74,32 @@ const (
 	DefaultStormServiceUniqueLabelKey string = "stormservice-template-hash"
 )
 
+// StormServiceMode is the deployment mode of a StormService.
+// +enum
+type StormServiceMode string
+
+const (
+	// StormServiceReplicaMode treats each RoleSet as an independent replica of the
+	// service, so spec.replicas is the desired number of RoleSets.
+	StormServiceReplicaMode StormServiceMode = "Replica"
+	// StormServicePooledMode runs a single RoleSet whose roles scale independently
+	// through spec.template.spec.roles[].replicas.
+	StormServicePooledMode StormServiceMode = "Pooled"
+)
+
+// ResolvedMode returns the effective deployment mode. An explicit spec.mode takes
+// precedence; otherwise the mode is inferred from spec.replicas for backward
+// compatibility (replicas > 1 is Replica mode, replicas <= 1 or unset is Pooled mode).
+func (s *StormServiceSpec) ResolvedMode() StormServiceMode {
+	if s.Mode != "" {
+		return s.Mode
+	}
+	if s.Replicas != nil && *s.Replicas > 1 {
+		return StormServiceReplicaMode
+	}
+	return StormServicePooledMode
+}
+
 type RoleSetTemplateSpec struct {
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
@@ -78,6 +112,10 @@ type RoleSetTemplateSpec struct {
 type StormServiceStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Mode is the resolved deployment mode the controller is operating the StormService in.
+	// +optional
+	Mode StormServiceMode `json:"mode,omitempty"`
 
 	// Total number of non-terminated roleSets targeted by this stormService (their labels match the selector).
 	// +optional

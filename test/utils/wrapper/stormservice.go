@@ -77,6 +77,12 @@ func (w *StormServiceWrapper) Replicas(replicas *int32) *StormServiceWrapper {
 	return w
 }
 
+// Mode sets the deployment mode of the StormService.
+func (w *StormServiceWrapper) Mode(mode orchestrationapi.StormServiceMode) *StormServiceWrapper {
+	w.stormService.Spec.Mode = mode
+	return w
+}
+
 // Selector sets the selector of the StormService.
 func (w *StormServiceWrapper) Selector(selector *metav1.LabelSelector) *StormServiceWrapper {
 	w.stormService.Spec.Selector = selector

@@ -42,6 +42,7 @@ metadata:
   name: ss-replica
   namespace: default
 spec:
+  mode: Replica
   updateStrategy:
     type: RollingUpdate
     maxSurge: 2

@@ -85,6 +85,7 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 				return wrapper.MakeStormService("st-with-no-inject-sidecar").
 					Namespace(ns.Name).
 					WithDefaultConfiguration().
+					Mode(orchestrationapi.StormServicePooledMode).
 					Obj()
 			},
 		}),
@@ -101,6 +102,7 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 					Namespace(ns.Name).
 					Annotations(map[string]string{webhook.SidecarInjectionAnnotation: "true"}).
 					WithDefaultConfiguration().
+					Mode(orchestrationapi.StormServicePooledMode).
 					WithSidecarInjection("").
 					Obj()
 			},
@@ -125,6 +127,7 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 						webhook.SidecarInjectionRuntimeImageAnnotation: testRuntimeImage,
 					}).
 					WithDefaultConfiguration().
+					Mode(orchestrationapi.StormServicePooledMode).
 					WithSidecarInjection(testRuntimeImage).
 					Obj()
 			},
