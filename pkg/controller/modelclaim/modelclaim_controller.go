@@ -29,6 +29,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -135,7 +136,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			clearClaimMetrics(pm.Namespace, servedModelName(pm))
 			controllerutil.RemoveFinalizer(pm, ModelClaimFinalizer)
 			if err := r.Update(ctx, pm); err != nil {
-				return ctrl.Result{}, err
+				return requeueOnConflict(err)
 			}
 		}
 		return ctrl.Result{}, nil
@@ -145,7 +146,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if !controllerutil.ContainsFinalizer(pm, ModelClaimFinalizer) {
 		controllerutil.AddFinalizer(pm, ModelClaimFinalizer)
 		if err := r.Update(ctx, pm); err != nil {
-			return ctrl.Result{}, err
+			return requeueOnConflict(err)
 		}
 		// A finalizer-only update changes neither generation, labels, nor
 		// annotations, so our watch predicate (GenerationChanged / LabelChanged /
@@ -153,6 +154,22 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		// re-enqueue. Requeue explicitly so reconciliation proceeds to placement
 		// and activation instead of stalling until an unrelated event arrives.
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	if _, err := modelParallelism(pm); err != nil {
+		message := fmt.Sprintf("invalid engineConfig parallelism: %v", err)
+		r.Recorder.Event(pm, corev1.EventTypeWarning, "InvalidEngineConfig", message)
+		meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+			Type:    string(modelv1alpha1.ModelClaimConditionReady),
+			Status:  metav1.ConditionFalse,
+			Reason:  "InvalidEngineConfig",
+			Message: message,
+		})
+		pm.Status.Phase = modelv1alpha1.ModelClaimFailed
+		if uerr := r.Status().Update(ctx, pm); uerr != nil {
+			return requeueOnConflict(uerr)
+		}
+		return ctrl.Result{}, nil
 	}
 
 	candidates, err := r.listCandidateWarmPods(ctx, pm)
@@ -178,7 +195,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			})
 			pm.Status.Phase = modelv1alpha1.ModelClaimFailed
 			if uerr := r.Status().Update(ctx, pm); uerr != nil {
-				return ctrl.Result{}, uerr
+				return requeueOnConflict(uerr)
 			}
 			return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, nil
 		}
@@ -192,9 +209,20 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	r.recomputeReadiness(pm)
 	setClaimGauges(pm)
 	if err := r.Status().Update(ctx, pm); err != nil {
-		return ctrl.Result{}, err
+		return requeueOnConflict(err)
 	}
 	return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, nil
+}
+
+// requeueOnConflict lets the next reconcile work from the latest API object.
+// Status updates can race with deletion/finalizer updates and must not surface
+// as a controller error when Kubernetes reports the expected resource-version
+// conflict.
+func requeueOnConflict(err error) (ctrl.Result, error) {
+	if apierrors.IsConflict(err) {
+		return ctrl.Result{Requeue: true}, nil
+	}
+	return ctrl.Result{}, err
 }
 
 // listCandidateWarmPods returns running pods that match the model's PodSelector
@@ -202,6 +230,10 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *ModelClaimReconciler) listCandidateWarmPods(ctx context.Context, pm *modelv1alpha1.ModelClaim) ([]corev1.Pod, error) {
 	if pm.Spec.PodSelector == nil {
 		return nil, fmt.Errorf("spec.podSelector must not be nil")
+	}
+	parallelism, err := modelParallelism(pm)
+	if err != nil {
+		return nil, fmt.Errorf("invalid engineConfig parallelism: %w", err)
 	}
 	selector, err := metav1.LabelSelectorAsSelector(pm.Spec.PodSelector)
 	if err != nil {
@@ -229,6 +261,9 @@ func (r *ModelClaimReconciler) listCandidateWarmPods(ctx context.Context, pm *mo
 			continue
 		}
 		if !pod.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if isVLLMModel(pm) && !podSupportsVLLMParallelism(pod, parallelism) {
 			continue
 		}
 		candidates = append(candidates, pod)
@@ -326,7 +361,11 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 // reconciles again); only runtime failures propagate.
 func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1alpha1.ModelClaim, candidates []corev1.Pod) error {
 	load := r.computePodLoad(ctx, pm.Namespace)
-	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL)
+	parallelism, err := modelParallelism(pm)
+	if err != nil {
+		return fmt.Errorf("invalid engineConfig parallelism: %w", err)
+	}
+	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
 
 	for desiredReplicas(pm) > int32(len(pm.Status.Instances)) {
 		pod, err := selectPodForActivationWithState(
@@ -386,6 +425,7 @@ func (r *ModelClaimReconciler) collectPlacementStates(
 	ctx context.Context,
 	candidates []corev1.Pod,
 	artifactURL string,
+	parallelism int64,
 ) map[string]PodPlacementState {
 	states := make(map[string]PodPlacementState, len(candidates))
 	if r.SnapshotCache == nil {
@@ -400,7 +440,7 @@ func (r *ModelClaimReconciler) collectPlacementStates(
 		if !ok {
 			continue
 		}
-		states[pod.Name] = placementStateFromSnapshot(snapshot, artifactURL)
+		states[pod.Name] = placementStateFromSnapshot(snapshot, artifactURL, parallelism)
 	}
 	return states
 }

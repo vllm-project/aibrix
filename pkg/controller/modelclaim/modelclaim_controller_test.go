@@ -25,9 +25,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -146,6 +149,17 @@ func warmPod(name, poolName string, enabled bool, phase corev1.PodPhase) *corev1
 	}
 }
 
+func warmPodWithGPUs(name, poolName string, gpuCount int64) *corev1.Pod {
+	pod := warmPod(name, poolName, true, corev1.PodRunning)
+	pod.Spec.Containers = []corev1.Container{{
+		Name: "aibrix-runtime",
+		Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/gpu"): *resource.NewQuantity(gpuCount, resource.DecimalSI),
+		}},
+	}}
+	return pod
+}
+
 func sampleModelClaim() *modelv1alpha1.ModelClaim {
 	return &modelv1alpha1.ModelClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "qwen2-7b", Namespace: testNamespace},
@@ -190,6 +204,19 @@ func reconcileOnce(t *testing.T, r *ModelClaimReconciler, name string) {
 	require.NoError(t, err)
 }
 
+func TestRequeueOnConflict(t *testing.T) {
+	result, err := requeueOnConflict(apierrors.NewConflict(
+		schema.GroupResource{Group: "model.aibrix.ai", Resource: "modelclaims"},
+		"qwen", nil,
+	))
+	require.NoError(t, err)
+	assert.True(t, result.Requeue)
+
+	result, err = requeueOnConflict(fmt.Errorf("runtime unavailable"))
+	require.Error(t, err)
+	assert.False(t, result.Requeue)
+}
+
 func getModel(t *testing.T, r *ModelClaimReconciler, name string) *modelv1alpha1.ModelClaim {
 	t.Helper()
 	got := &modelv1alpha1.ModelClaim{}
@@ -218,6 +245,21 @@ func TestListCandidateWarmPods(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, "ready", got[0].Name)
+}
+
+func TestListCandidateWarmPodsFiltersMismatchedVLLMParallelism(t *testing.T) {
+	pm := sampleModelClaim()
+	pm.Spec.EngineConfig.Args["--tensor-parallel-size"] = "2"
+	r, _ := newReconciler(t,
+		warmPodWithGPUs("one-gpu", "b300-pool-a", 1),
+		warmPodWithGPUs("two-gpu", "b300-pool-a", 2),
+	)
+
+	got, err := r.listCandidateWarmPods(context.Background(), pm)
+
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "two-gpu", got[0].Name)
 }
 
 // TestReconcileAddsFinalizer verifies the first reconcile installs the finalizer
@@ -487,6 +529,31 @@ func TestReconcileActivateFailureSetsFailed(t *testing.T) {
 	cond := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+}
+
+func TestReconcileInvalidEngineConfigSetsFailed(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Spec.EngineConfig.Args["--tensor-parallel-size"] = "invalid"
+	r, runtime := newReconciler(t,
+		pm,
+		warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning),
+	)
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: pm.Name},
+	})
+	require.NoError(t, err)
+	assert.False(t, result.Requeue)
+	assert.Zero(t, result.RequeueAfter)
+	assert.Empty(t, runtime.activateCalls)
+
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Phase)
+	cond := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, "InvalidEngineConfig", cond.Reason)
+	assert.Contains(t, cond.Message, "--tensor-parallel-size must be a positive integer")
 }
 
 // TestReconcileReplicasZeroDeactivates verifies explicit replicas=0 deactivates instances.

@@ -15,6 +15,10 @@
 """Tests for runtime model lifecycle, using mock actuators (no GPU)."""
 
 import os
+import sys
+import threading
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,6 +30,61 @@ from aibrix.runtime.model_runtime import (
 
 def make_agent():
     return ModelRuntime(MockEngineLauncher())
+
+
+def test_gpu_memory_snapshots_serializes_nvml_lifecycle(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    state_lock = threading.Lock()
+    active = 0
+    max_active = 0
+    init_calls = 0
+    shutdown_calls = 0
+
+    def nvml_init():
+        nonlocal active, init_calls, max_active
+        with state_lock:
+            init_calls += 1
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.01)
+
+    def nvml_shutdown():
+        nonlocal active, shutdown_calls
+        with state_lock:
+            shutdown_calls += 1
+            active -= 1
+
+    nvml = SimpleNamespace(
+        nvmlInit=nvml_init,
+        nvmlShutdown=nvml_shutdown,
+        nvmlDeviceGetCount=lambda: 1,
+        nvmlDeviceGetHandleByIndex=lambda index: index,
+        nvmlDeviceGetMemoryInfo=lambda handle: SimpleNamespace(total=100, free=50),
+        nvmlDeviceGetUUID=lambda handle: f"GPU-{handle}",
+    )
+    monkeypatch.setitem(sys.modules, "pynvml", nvml)
+
+    start = threading.Barrier(4)
+    snapshots = []
+
+    def observe():
+        start.wait()
+        snapshots.append(runtime_module.gpu_memory_snapshots())
+
+    threads = [threading.Thread(target=observe) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert (
+        snapshots
+        == [[{"id": "GPU-0", "hbm_total_bytes": 100, "hbm_free_bytes": 50}]] * 4
+    )
+    assert init_calls == 4
+    assert shutdown_calls == 4
+    assert max_active == 1
 
 
 class _RecordingKVController:
@@ -235,6 +294,76 @@ def test_engine_config_args_are_structured():
     ) == {"--max-model-len": "2048", "--enforce-eager": ""}
 
 
+def test_vllm_parallelism_defaults_and_combines_tp_pp():
+    from aibrix.runtime.model_runtime import vllm_parallelism
+
+    assert vllm_parallelism(None, None) == 1
+    assert (
+        vllm_parallelism(
+            {"args": {"--tensor-parallel-size": "2", "--pipeline-parallel-size": "2"}},
+            None,
+        )
+        == 4
+    )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"--tensor-parallel-size": "0"},
+        {"--pipeline-parallel-size": "not-a-number"},
+        {"--data-parallel-size": "2"},
+    ],
+)
+def test_vllm_parallelism_rejects_unsupported_or_invalid_args(args):
+    from aibrix.runtime.model_runtime import vllm_parallelism
+
+    with pytest.raises(ValueError):
+        vllm_parallelism({"args": args}, None)
+
+
+def test_activate_rejects_vllm_parallelism_that_does_not_match_visible_gpus(
+    monkeypatch,
+):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(
+        runtime_module,
+        "gpu_memory_snapshots",
+        lambda: [{"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 900}],
+    )
+
+    with pytest.raises(ValueError, match="must equal 1 GPU"):
+        make_agent().activate(
+            model_name="tp2",
+            artifact_url="hf://Org/M1",
+            engine_config={"args": {"--tensor-parallel-size": "2"}},
+        )
+
+
+def test_activate_accepts_vllm_tp_pp_matching_visible_gpus(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(
+        runtime_module,
+        "gpu_memory_snapshots",
+        lambda: [
+            {"id": f"GPU-{index}", "hbm_total_bytes": 1000, "hbm_free_bytes": 900}
+            for index in range(4)
+        ],
+    )
+
+    inst = make_agent().activate(
+        model_name="tp2pp2",
+        artifact_url="hf://Org/M1",
+        engine_config={
+            "args": {"--tensor-parallel-size": "2", "--pipeline-parallel-size": "2"}
+        },
+    )
+
+    assert inst.model_name == "tp2pp2"
+
+
 def test_legacy_additional_config_engine_arg_prefix_is_supported():
     from aibrix.runtime.model_runtime import _engine_args
 
@@ -324,6 +453,37 @@ def test_endpoints_activate_list_deactivate():
 
     listed = client.get("/v1/runtime/models").json()
     assert all(m["model_name"] != "ep1" for m in listed["models"])
+
+
+def test_activate_endpoint_rejects_mismatched_vllm_parallelism(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(
+        runtime_module,
+        "gpu_memory_snapshots",
+        lambda: [
+            {
+                "id": "GPU-0",
+                "hbm_total_bytes": 1000,
+                "hbm_free_bytes": 700,
+            }
+        ],
+    )
+    client = _make_test_client()
+
+    response = client.post(
+        "/v1/runtime/models/activate",
+        json={
+            "model_name": "tp2-on-one-gpu",
+            "artifact_url": "hf://Org/Model",
+            "engine": "vllm",
+            "engine_config": {"args": {"--tensor-parallel-size": "2"}},
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["status"] == "error"
+    assert "must equal 1 GPU" in response.json()["message"]
 
 
 def test_control_endpoints_apply_kv_sleep_and_wake():

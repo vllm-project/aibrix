@@ -50,6 +50,10 @@ def sanitize_ipc_name(name: str) -> str:
 
 logger = logging.getLogger(__name__)
 
+# NVML owns a process-global initialization state. Snapshot requests can run
+# concurrently, so init/query/shutdown must be one uninterrupted operation.
+_nvml_lock = threading.Lock()
+
 
 @dataclass
 class ModelInstance:
@@ -202,36 +206,37 @@ def gpu_memory_snapshots() -> List[Dict[str, object]]:
     is therefore optional: lack of the module, driver, or visible device means
     the controller receives an empty accelerator list and falls back safely.
     """
-    initialized = False
-    try:
-        import pynvml  # type: ignore[import-not-found]
+    with _nvml_lock:
+        initialized = False
+        try:
+            import pynvml  # type: ignore[import-not-found]
 
-        pynvml.nvmlInit()
-        initialized = True
-        snapshots = []
-        for index in range(pynvml.nvmlDeviceGetCount()):
-            handle = pynvml.nvmlDeviceGetHandleByIndex(index)
-            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            device_id = pynvml.nvmlDeviceGetUUID(handle)
-            if isinstance(device_id, bytes):
-                device_id = device_id.decode()
-            snapshots.append(
-                {
-                    "id": str(device_id),
-                    "hbm_total_bytes": int(info.total),
-                    "hbm_free_bytes": int(info.free),
-                }
-            )
-        return snapshots
-    except Exception as exc:
-        logger.debug("NVML GPU observation is unavailable: %s", exc)
-        return []
-    finally:
-        if initialized:
-            try:
-                pynvml.nvmlShutdown()  # type: ignore[name-defined]
-            except Exception:
-                pass
+            pynvml.nvmlInit()
+            initialized = True
+            snapshots = []
+            for index in range(pynvml.nvmlDeviceGetCount()):
+                handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+                info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                device_id = pynvml.nvmlDeviceGetUUID(handle)
+                if isinstance(device_id, bytes):
+                    device_id = device_id.decode()
+                snapshots.append(
+                    {
+                        "id": str(device_id),
+                        "hbm_total_bytes": int(info.total),
+                        "hbm_free_bytes": int(info.free),
+                    }
+                )
+            return snapshots
+        except Exception as exc:
+            logger.debug("NVML GPU observation is unavailable: %s", exc)
+            return []
+        finally:
+            if initialized:
+                try:
+                    pynvml.nvmlShutdown()  # type: ignore[name-defined]
+                except Exception:
+                    pass
 
 
 def write_cache_marker(
@@ -437,6 +442,50 @@ def _engine_args(
     return args
 
 
+def _positive_engine_arg(args: Dict[str, str], name: str) -> int:
+    raw = args.get(name, "1")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if value < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def vllm_parallelism(
+    engine_config: Optional[Dict], additional_config: Optional[Dict[str, str]]
+) -> int:
+    """Return the fixed GPU group size required by vLLM TP and PP."""
+    args = _engine_args(engine_config, additional_config)
+    tensor = _positive_engine_arg(args, "--tensor-parallel-size")
+    pipeline = _positive_engine_arg(args, "--pipeline-parallel-size")
+    data = _positive_engine_arg(args, "--data-parallel-size")
+    if data != 1:
+        raise ValueError(
+            f"--data-parallel-size={data} is unsupported by fixed topology pools"
+        )
+    return tensor * pipeline
+
+
+def validate_vllm_parallelism(
+    engine_config: Optional[Dict], additional_config: Optional[Dict[str, str]]
+) -> None:
+    """Require TP * PP to match the GPUs visible to this warm runtime pod."""
+    parallelism = vllm_parallelism(engine_config, additional_config)
+    visible_gpus = len(gpu_memory_snapshots())
+    if visible_gpus == 0:
+        if parallelism > 1:
+            raise RuntimeError(
+                "cannot validate vLLM TP/PP topology because no GPUs are visible to the runtime"
+            )
+        return
+    if visible_gpus != parallelism:
+        raise ValueError(
+            f"vLLM parallelism {parallelism} must equal {visible_gpus} GPU(s) visible to runtime"
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Mock implementations (no GPU, no process, no network) for local testing
 # --------------------------------------------------------------------------- #
@@ -514,6 +563,8 @@ class ModelRuntime:
         claim_ref: Optional[Dict[str, str]] = None,
     ) -> ModelInstance:
         with self._lock:
+            if engine == "vllm":
+                validate_vllm_parallelism(engine_config, additional_config)
             existing = self._models.get(model_name)
             if existing is not None:
                 if self._instance_alive(existing):
