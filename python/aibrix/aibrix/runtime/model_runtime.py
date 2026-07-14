@@ -476,11 +476,6 @@ def _vllm_control_post(port: int, path: str) -> None:
     response.raise_for_status()
 
 
-_prometheus_sample_re = re.compile(
-    r"^([A-Za-z_:][A-Za-z0-9_:]*)(?:\{[^}]*\})?\s+"
-    r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)(?:\s+\d+)?$"
-)
-
 _requests_running_metrics = {
     "vllm:num_requests_running",
     "vllm_num_requests_running",
@@ -501,15 +496,17 @@ def engine_request_activity(inst: "ModelInstance") -> EngineRequestActivity:
     """Read vLLM request gauges and completion counter from localhost.
 
     vLLM has used both colon- and underscore-separated metric names across
-    releases. Each ModelClaim owns one engine process, so summing all matching
-    samples is correct even when the counter has labels such as
-    ``finished_reason``. An absent or malformed response is reported as
-    unobserved; callers must not infer idleness from a scrape failure.
+    releases. vLLM metrics can be multiplexed across engine processes when
+    they share a Prometheus multiprocess directory, so only samples whose
+    ``model_name`` label matches this engine are used. An absent or malformed
+    response, including an old unlabeled metric, is reported as unobserved;
+    callers must not infer idleness from a scrape failure.
     """
     if inst.port <= 0 or inst.proc is None or inst.phase != "active":
         return EngineRequestActivity()
     try:
         import httpx
+        from prometheus_client.parser import text_string_to_metric_families
 
         response = httpx.get(f"http://127.0.0.1:{inst.port}/metrics", timeout=0.5)
         response.raise_for_status()
@@ -518,24 +515,22 @@ def engine_request_activity(inst: "ModelInstance") -> EngineRequestActivity:
 
     values = {"running": 0.0, "waiting": 0.0, "success": 0.0}
     found = {"running": False, "waiting": False, "success": False}
-    for line in response.text.splitlines():
-        match = _prometheus_sample_re.match(line)
-        if match is None:
-            continue
-        name, raw_value = match.groups()
-        try:
-            value = float(raw_value)
-        except ValueError:
-            continue
-        if name in _requests_running_metrics:
-            values["running"] += value
-            found["running"] = True
-        elif name in _requests_waiting_metrics:
-            values["waiting"] += value
-            found["waiting"] = True
-        elif name in _request_success_metrics:
-            values["success"] += value
-            found["success"] = True
+    try:
+        for family in text_string_to_metric_families(response.text):
+            for sample in family.samples:
+                if sample.labels.get("model_name") != inst.model_name:
+                    continue
+                if sample.name in _requests_running_metrics:
+                    values["running"] += sample.value
+                    found["running"] = True
+                elif sample.name in _requests_waiting_metrics:
+                    values["waiting"] += sample.value
+                    found["waiting"] = True
+                elif sample.name in _request_success_metrics:
+                    values["success"] += sample.value
+                    found["success"] = True
+    except Exception:
+        return EngineRequestActivity()
 
     return EngineRequestActivity(
         observed=any(found.values()),

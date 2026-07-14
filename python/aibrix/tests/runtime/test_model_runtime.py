@@ -749,8 +749,8 @@ def test_engine_request_activity_accepts_vllm_metric_name_variants(monkeypatch):
         text = """# HELP vllm:num_requests_running Running requests.
 vllm:num_requests_running{model_name=\"m1\"} 2
 vllm_num_requests_waiting{model_name=\"m1\"} 3
-vllm:request_success_total{finished_reason=\"stop\"} 5
-vllm:request_success_total{finished_reason=\"length\"} 7
+vllm:request_success_total{model_name=\"m1\",finished_reason=\"stop\"} 5
+vllm:request_success_total{model_name=\"m1\",finished_reason=\"length\"} 7
 """
 
         def raise_for_status(self):
@@ -770,6 +770,41 @@ vllm:request_success_total{finished_reason=\"length\"} 7
     assert activity.requests_running == 2
     assert activity.requests_waiting == 3
     assert activity.request_success_total == 12
+
+
+def test_engine_request_activity_ignores_other_models_from_shared_metrics(monkeypatch):
+    import httpx
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    class Response:
+        text = """vllm:num_requests_running{model_name=\"m1\"} 2
+vllm:num_requests_running{model_name=\"m2\"} 11
+vllm_num_requests_waiting{model_name=\"m1\"} 3
+vllm_num_requests_waiting{model_name=\"m2\"} 13
+vllm:request_success_total{model_name=\"m1\",finished_reason=\"stop\"} 5
+vllm:request_success_total{model_name=\"m2\",finished_reason=\"stop\"} 17
+"""
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    inst = runtime_module.ModelInstance(
+        model_name="m1",
+        port=20000,
+        ipc_name="kvc_m1",
+        proc=object(),
+    )
+
+    assert runtime_module.engine_request_activity(
+        inst
+    ) == runtime_module.EngineRequestActivity(
+        observed=True,
+        requests_running=2,
+        requests_waiting=3,
+        request_success_total=5,
+    )
 
 
 def test_engine_request_activity_does_not_treat_scrape_failure_as_idle(monkeypatch):
