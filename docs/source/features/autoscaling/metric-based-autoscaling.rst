@@ -145,6 +145,71 @@ Example:
      scalingStrategy: KPA
 
 
+Circuit breaker for KPA and APA
+-------------------------------
+
+KPA and APA can enable a circuit breaker to protect workloads when metric
+collection becomes unhealthy. HPA is intentionally excluded: HPA resources use
+the native Kubernetes HPA control loop and should be protected with Kubernetes
+HPA mechanisms instead.
+
+The circuit breaker is configured in ``spec.circuitBreaker``:
+
+.. code-block:: yaml
+
+   spec:
+     scalingStrategy: KPA
+     circuitBreaker:
+       enabled: true
+       action: freeze
+       failureThreshold: 3
+       recoveryThreshold: 3
+
+Supported values:
+
+- ``enabled``: set to ``true`` to enable protection.
+- ``action``: ``freeze`` keeps the protected replica count that was current when
+  the breaker opened; ``max`` scales to the current ``spec.maxReplicas``.
+- ``failureThreshold``: number of consecutive all-failed metric rounds required
+  to open the breaker. The default is ``3``.
+- ``recoveryThreshold``: number of consecutive healthy metric rounds required to
+  close an open breaker. The default is ``3``.
+
+Partial metric failures do not open the breaker. When at least one metric source
+is still usable, AIBrix allows scale-up recommendations but blocks scale-down
+recommendations, keeping the current replica count instead. This avoids scaling
+down on incomplete telemetry while still allowing the workload to grow under
+load.
+
+When every metric source fails for ``failureThreshold`` consecutive rounds, the
+breaker opens and applies the selected protective action. For ``freeze``, the
+controller also corrects manual replica drift back to the protected replica
+count. If an operator needs to take manual control, first update the
+PodAutoscaler with ``spec.circuitBreaker.enabled: false``.
+
+You can inspect the current breaker state from status:
+
+.. code-block:: bash
+
+   kubectl get podautoscaler <name> -o jsonpath='{.status.circuitBreaker}'
+   kubectl describe podautoscaler <name>
+
+The controller also reports:
+
+- Condition ``CircuitBreakerTriggered`` with stable reasons such as
+  ``CircuitBreakerOpened`` and ``CircuitBreakerClosed``.
+- Events ``CircuitBreakerOpened``, ``CircuitBreakerRecovered`` and
+  ``CircuitBreakerActionFailed``.
+- Prometheus metrics
+  ``aibrix_podautoscaler_circuit_breaker_state``,
+  ``aibrix_podautoscaler_circuit_breaker_transitions_total`` and
+  ``aibrix_podautoscaler_circuit_breaker_action_failures_total``.
+
+This feature does not implement spike/outlier detection, fallback metrics, or a
+webhook action. It only uses metric source health and the configured
+``freeze``/``max`` protective action.
+
+
 StormService Role-Level Autoscaling
 ------------------------------------
 

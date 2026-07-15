@@ -288,6 +288,7 @@ jobs:
           make test-e2e
           export EXTERNAL_METRICS_E2E_CLUSTER=kind
           export EXTERNAL_METRICS_E2E_USE_EXISTING_CONTROLLER=true
+          export AIBRIX_AUTOSCALER_CIRCUIT_BREAKER_E2E=true
           export KIND_CLUSTER_NAME=installation-test
           make test-e2e-external-metrics
 

@@ -115,8 +115,13 @@ kubectl apply -k test/e2e/testdata/external-metrics-adapter
 kubectl -n aibrix-system rollout status deployment/aibrix-external-metrics-adapter --timeout=180s
 kubectl wait --for=condition=Available apiservice/v1beta1.external.metrics.k8s.io --timeout=180s
 
+test_run='TestExternalMetricsAutoscaler'
+if [ "${AIBRIX_AUTOSCALER_CIRCUIT_BREAKER_E2E:-false}" = "true" ]; then
+  test_run='TestExternalMetricsAutoscaler|TestAutoscalerCircuitBreakerE2E'
+fi
+
 if ! AIBRIX_EXTERNAL_METRICS_E2E=true AIBRIX_EXTERNAL_METRICS_E2E_KEEP_ON_FAILURE=true \
-  go test ./test/e2e -v -run TestExternalMetricsAutoscaler -count=1 -timeout=5m; then
+  go test ./test/e2e -v -run "${test_run}" -count=1 -timeout=10m; then
   diagnose
   exit 1
 fi

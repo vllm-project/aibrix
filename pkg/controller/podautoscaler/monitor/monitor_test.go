@@ -52,3 +52,24 @@ func TestMonitor_RecordScaleAction(t *testing.T) {
 		assert.Equal(t, expectedValue, actualValue, "Expected metric for %s/%s to be %v", tc.namespace, tc.name, tc.desiredReplicas)
 	}
 }
+
+func TestMonitor_RecordCircuitBreakerMetrics(t *testing.T) {
+	circuitBreakerState.Reset()
+	circuitBreakerTransitions.Reset()
+	circuitBreakerActionFailures.Reset()
+
+	m := New()
+
+	m.RecordCircuitBreakerState("ns-a", "pa-a", true)
+	assert.Equal(t, float64(1), testutil.ToFloat64(circuitBreakerState.WithLabelValues("ns-a", "pa-a")))
+
+	m.RecordCircuitBreakerState("ns-a", "pa-a", false)
+	assert.Equal(t, float64(0), testutil.ToFloat64(circuitBreakerState.WithLabelValues("ns-a", "pa-a")))
+
+	m.RecordCircuitBreakerTransition("ns-a", "pa-a", "freeze", "Opened")
+	m.RecordCircuitBreakerTransition("ns-a", "pa-a", "freeze", "Opened")
+	assert.Equal(t, float64(2), testutil.ToFloat64(circuitBreakerTransitions.WithLabelValues("ns-a", "pa-a", "freeze", "Opened")))
+
+	m.RecordCircuitBreakerActionFailure("ns-a", "pa-a", "freeze")
+	assert.Equal(t, float64(1), testutil.ToFloat64(circuitBreakerActionFailures.WithLabelValues("ns-a", "pa-a", "freeze")))
+}

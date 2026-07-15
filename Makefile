@@ -14,7 +14,7 @@ AIBRIX_IMAGES := $(foreach img,$(IMAGES),$(AIBRIX_CONTAINER_REGISTRY_NAMESPACE)/
 IMG ?= ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/controller-manager:${IMAGE_TAG}
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.29.0
+ENVTEST_K8S_VERSION = 1.30.0
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
