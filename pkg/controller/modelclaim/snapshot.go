@@ -100,17 +100,6 @@ type PodPlacementState struct {
 	HBMFreeBytes   int64
 	KVUsedBytes    int64
 	ModelCount     int
-	// CapacityKnown/Fits are populated only when the runtime snapshot and the
-	// engine have enough information for a conservative HBM admission decision.
-	// Unknown deliberately falls back to the Phase-2 ranking behavior.
-	CapacityKnown bool
-	CapacityFits  bool
-	// These fractions are controller-local derivatives of a fresh snapshot. They
-	// let the activation critical section re-check a pending reservation without
-	// another runtime round trip.
-	CapacityRequestedFraction float64
-	CapacityReservedFraction  float64
-	CapacityFreeFraction      float64
 }
 
 func placementStateFromSnapshot(snapshot *RuntimeSnapshot, artifactURL string, parallelism int64) PodPlacementState {

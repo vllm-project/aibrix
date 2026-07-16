@@ -36,6 +36,9 @@ func vllmParallelism(config *modelv1alpha1.ModelClaimEngineConfig) (int64, error
 	if config != nil && config.Args != nil {
 		args = config.Args
 	}
+	if _, found := args["--gpu-memory-utilization"]; found {
+		return 0, fmt.Errorf("--gpu-memory-utilization is incompatible with kvcached; use the pool KV policy instead")
+	}
 	tensor, err := positiveEngineArg(args, "--tensor-parallel-size")
 	if err != nil {
 		return 0, err

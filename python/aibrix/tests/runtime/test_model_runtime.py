@@ -547,6 +547,27 @@ def test_activate_endpoint_rejects_mismatched_vllm_parallelism(monkeypatch):
     assert "must equal 1 GPU" in response.json()["message"]
 
 
+def test_activate_endpoint_rejects_gpu_memory_utilization_for_kvcached():
+    client = _make_test_client()
+
+    response = client.post(
+        "/v1/runtime/models/activate",
+        json={
+            "model_name": "invalid-kv-budget",
+            "artifact_url": "hf://Org/Model",
+            "engine": "vllm",
+            "engine_config": {"args": {"--gpu-memory-utilization": "0.45"}},
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["status"] == "error"
+    assert (
+        "--gpu-memory-utilization is incompatible with kvcached"
+        in response.json()["message"]
+    )
+
+
 def test_control_endpoints_apply_kv_sleep_and_wake():
     client = _make_test_client()
     activated = client.post(
@@ -697,7 +718,6 @@ def test_snapshot_reports_runtime_state(monkeypatch, tmp_path):
         "kv_used_bytes": 25,
         "kv_capacity_bytes": 100,
         "hbm_peak_bytes": 0,
-        "hbm_reservation_fraction": 0.0,
         "request_metrics_observed": True,
         "requests_running": 2,
         "requests_waiting": 1,
@@ -903,7 +923,7 @@ def test_snapshot_endpoint_returns_typed_runtime_state(monkeypatch, tmp_path):
     assert body["models"][0]["last_transition"]
 
 
-def test_activate_endpoint_carries_hbm_reservation_fraction():
+def test_activate_endpoint_rejects_hbm_reservation_fraction():
     client = _make_test_client()
     response = client.post(
         "/v1/runtime/models/activate",
@@ -913,12 +933,7 @@ def test_activate_endpoint_carries_hbm_reservation_fraction():
             "hbm_reservation_fraction": 0.45,
         },
     )
-    assert response.status_code == 200, response.text
-
-    snapshot = client.get("/v1/runtime/snapshot")
-
-    assert snapshot.status_code == 200, snapshot.text
-    assert snapshot.json()["models"][0]["hbm_reservation_fraction"] == 0.45
+    assert response.status_code == 422, response.text
 
 
 # --------------------------------------------------------------------------- #

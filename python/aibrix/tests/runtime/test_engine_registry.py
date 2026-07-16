@@ -29,7 +29,6 @@ def _engine_record(model_name="qwen3-0.6b"):
         "engine_config": {"--max-model-len": "2048"},
         "additional_config": {"VLLM_LOGGING_LEVEL": "WARNING"},
         "claim_ref": {"name": "qwen", "namespace": "default", "uid": "uid-1"},
-        "hbm_reservation_fraction": 0.45,
         "phase": "active",
         "restart_count": 2,
         "last_error": "previous launch timed out",

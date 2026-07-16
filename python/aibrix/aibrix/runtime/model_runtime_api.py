@@ -66,7 +66,6 @@ def activate_runtime_model(request: ActivateRuntimeModelRequest):
                 else None
             ),
             additional_config=request.additional_config,
-            hbm_reservation_fraction=request.hbm_reservation_fraction,
             claim_ref=(
                 request.claim_ref.model_dump()
                 if request.claim_ref is not None

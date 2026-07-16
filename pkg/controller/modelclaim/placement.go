@@ -17,18 +17,12 @@ limitations under the License.
 package modelclaim
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 )
-
-// ErrInsufficientHBMCapacity distinguishes a real capacity rejection from a
-// selector/topology mismatch, so the reconciler can leave a useful pending
-// condition instead of attempting an activation that is known to exceed HBM.
-var ErrInsufficientHBMCapacity = errors.New("no eligible warm pod has sufficient HBM capacity")
 
 // servedModelName returns the model name clients address, defaulting to the
 // object name when Spec.ModelName is unset.
@@ -118,17 +112,12 @@ func selectPodForActivationWithState(
 	var bestState PodPlacementState
 	var bestLoc float64
 	var bestLoad int
-	capacityRejected := false
 	for i := range candidates {
 		pod := &candidates[i]
 		if alreadyOn[pod.Name] {
 			continue
 		}
 		state := states[pod.Name]
-		if state.CapacityKnown && !state.CapacityFits {
-			capacityRejected = true
-			continue
-		}
 		loc := locality.Cost(model, pod.Spec.NodeName)
 		l := load[pod.Name]
 		if best == nil || placementStateLess(state, bestState) ||
@@ -137,9 +126,6 @@ func selectPodForActivationWithState(
 		}
 	}
 	if best == nil {
-		if capacityRejected {
-			return nil, ErrInsufficientHBMCapacity
-		}
 		return nil, fmt.Errorf("no available candidate warm pod for model")
 	}
 	return best, nil

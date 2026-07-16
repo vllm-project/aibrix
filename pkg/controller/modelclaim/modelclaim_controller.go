@@ -22,7 +22,6 @@ package modelclaim
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -84,13 +83,6 @@ type ModelClaimReconciler struct {
 	// SnapshotCache stores bounded runtime observations for placement. It is
 	// process-local so a leader restart naturally rehydrates from sidecars.
 	SnapshotCache *runtimeSnapshotCache
-	// Capacity derives an engine envelope from its existing startup arguments
-	// and evaluates it against fresh sidecar observations. It remains injectable
-	// for focused controller tests.
-	Capacity CapacityProvider
-	// CapacityReservations protects the short interval between sending Activate
-	// and observing that engine in a fresh runtime snapshot.
-	CapacityReservations *capacityReservationCache
 	// PoolPolicy serializes controller-local policy ticks and retains only the
 	// request-counter deltas needed for conservative KV allocation. It is not a
 	// desired-state store; runtime snapshots remain authoritative after restart.
@@ -100,15 +92,11 @@ type ModelClaimReconciler struct {
 // Add creates a new ModelClaim controller and registers it with the Manager.
 func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 	r := &ModelClaimReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor(controllerName),
-		Runtime:  NewRuntimeClient(),
-		Locality: uniformLocality{},
-		Capacity: engineArgCapacityProvider{},
-		CapacityReservations: newCapacityReservationCache(
-			defaultCapacityReservationTTL, time.Now,
-		),
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Recorder:   mgr.GetEventRecorderFor(controllerName),
+		Runtime:    NewRuntimeClient(),
+		Locality:   uniformLocality{},
 		PoolPolicy: newPoolPolicyManager(time.Now),
 		SnapshotCache: newRuntimeSnapshotCache(
 			defaultRuntimeSnapshotTTL, time.Now,
@@ -134,13 +122,6 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 
 	klog.InfoS("Finished to add model-claim-controller")
 	return nil
-}
-
-func (r *ModelClaimReconciler) capacityProvider() CapacityProvider {
-	if r.Capacity == nil {
-		return engineArgCapacityProvider{}
-	}
-	return r.Capacity
 }
 
 //+kubebuilder:rbac:groups=model.aibrix.ai,resources=modelclaims,verbs=get;list;watch;create;update;patch;delete
@@ -200,22 +181,6 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		return ctrl.Result{}, nil
 	}
-	if _, err := r.capacityProvider().Requirement(pm); err != nil {
-		message := fmt.Sprintf("invalid engineConfig capacity: %v", err)
-		r.Recorder.Event(pm, corev1.EventTypeWarning, "InvalidEngineConfig", message)
-		meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
-			Type:    string(modelv1alpha1.ModelClaimConditionReady),
-			Status:  metav1.ConditionFalse,
-			Reason:  "InvalidEngineConfig",
-			Message: message,
-		})
-		pm.Status.Phase = modelv1alpha1.ModelClaimFailed
-		if uerr := r.Status().Update(ctx, pm); uerr != nil {
-			return requeueOnConflict(uerr)
-		}
-		return ctrl.Result{}, nil
-	}
-
 	candidates, err := r.listCandidateWarmPods(ctx, pm)
 	if err != nil {
 		klog.ErrorS(err, "failed to list candidate warm pods", "modelClaim", req.NamespacedName)
@@ -425,64 +390,30 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 	if err != nil {
 		return fmt.Errorf("invalid engineConfig parallelism: %w", err)
 	}
-	requirement, err := r.capacityProvider().Requirement(pm)
-	if err != nil {
-		return fmt.Errorf("invalid engineConfig capacity: %w", err)
-	}
-	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism, requirement)
+	placementStates := r.collectPlacementStates(ctx, candidates, pm.Spec.ArtifactURL, parallelism)
 
 	for desiredReplicas(pm) > int32(len(pm.Status.Instances)) {
-		var pod *corev1.Pod
-		for {
-			candidate, selectErr := selectPodForActivationWithState(
-				candidates, instancePods(pm), load, servedModelName(pm), r.Locality, placementStates,
-			)
-			if selectErr != nil {
-				// No available warm pod right now; remain Pending and retry on requeue.
-				reason := "NoMatchingPods"
-				if errors.Is(selectErr, ErrInsufficientHBMCapacity) {
-					reason = "InsufficientHBMCapacity"
-				}
-				r.Recorder.Event(pm, corev1.EventTypeWarning, reason, selectErr.Error())
-				meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
-					Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
-					Status:  metav1.ConditionFalse,
-					Reason:  reason,
-					Message: selectErr.Error(),
-				})
-				return nil
-			}
-			pod = candidate
-			state := placementStates[pod.Name]
-			if state.CapacityKnown && r.CapacityReservations != nil {
-				key := types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}
-				capacityState := CapacityState{
-					Known:             state.CapacityKnown,
-					Fits:              state.CapacityFits,
-					RequestedFraction: state.CapacityRequestedFraction,
-					ReservedFraction:  state.CapacityReservedFraction,
-					FreeFraction:      state.CapacityFreeFraction,
-				}
-				if !r.CapacityReservations.Reserve(
-					key, pod.UID, capacityReservationClaimID(pm), requirement.ReservationFraction, capacityState,
-				) {
-					// Another reconcile accepted the last available envelope after our
-					// snapshot. Exclude this Pod and let the normal selector try another.
-					state.CapacityFits = false
-					placementStates[pod.Name] = state
-					continue
-				}
-			}
-			break
+		pod, selectErr := selectPodForActivationWithState(
+			candidates, instancePods(pm), load, servedModelName(pm), r.Locality, placementStates,
+		)
+		if selectErr != nil {
+			// No available warm pod right now; remain Pending and retry on requeue.
+			r.Recorder.Event(pm, corev1.EventTypeWarning, "NoMatchingPods", selectErr.Error())
+			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
+				Status:  metav1.ConditionFalse,
+				Reason:  "NoMatchingPods",
+				Message: selectErr.Error(),
+			})
+			return nil
 		}
 
 		resp, aerr := r.Runtime.Activate(ctx, pod.Status.PodIP, DefaultRuntimePort, &ActivateRequest{
-			ModelName:              servedModelName(pm),
-			ArtifactURL:            pm.Spec.ArtifactURL,
-			Engine:                 pm.Spec.Engine,
-			IPCName:                ipcNameFor(pm),
-			EngineConfig:           pm.Spec.EngineConfig,
-			HBMReservationFraction: requirement.ReservationFraction,
+			ModelName:    servedModelName(pm),
+			ArtifactURL:  pm.Spec.ArtifactURL,
+			Engine:       pm.Spec.Engine,
+			IPCName:      ipcNameFor(pm),
+			EngineConfig: pm.Spec.EngineConfig,
 			ClaimRef: &ModelClaimRef{
 				Namespace: pm.Namespace,
 				Name:      pm.Name,
@@ -490,13 +421,6 @@ func (r *ModelClaimReconciler) ensureActivated(ctx context.Context, pm *modelv1a
 			},
 		})
 		if aerr != nil {
-			if r.CapacityReservations != nil {
-				r.CapacityReservations.Release(
-					types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name},
-					pod.UID,
-					capacityReservationClaimID(pm),
-				)
-			}
 			recordActivation(pm.Namespace, servedModelName(pm), false)
 			return aerr
 		}
@@ -527,7 +451,6 @@ func (r *ModelClaimReconciler) collectPlacementStates(
 	candidates []corev1.Pod,
 	artifactURL string,
 	parallelism int64,
-	requirement CapacityRequirement,
 ) map[string]PodPlacementState {
 	states := make(map[string]PodPlacementState, len(candidates))
 	if r.SnapshotCache == nil {
@@ -543,28 +466,9 @@ func (r *ModelClaimReconciler) collectPlacementStates(
 			continue
 		}
 		state := placementStateFromSnapshot(snapshot, artifactURL, parallelism)
-		capacity := r.capacityProvider().State(snapshot, requirement, parallelism)
-		if r.CapacityReservations != nil {
-			r.CapacityReservations.Observe(key, pod.UID, snapshot)
-			capacity = applyPendingCapacity(
-				capacity, r.CapacityReservations.PendingFraction(key, pod.UID),
-			)
-		}
-		state.CapacityKnown = capacity.Known
-		state.CapacityFits = capacity.Fits
-		state.CapacityRequestedFraction = capacity.RequestedFraction
-		state.CapacityReservedFraction = capacity.ReservedFraction
-		state.CapacityFreeFraction = capacity.FreeFraction
 		states[pod.Name] = state
 	}
 	return states
-}
-
-func capacityReservationClaimID(pm *modelv1alpha1.ModelClaim) string {
-	if pm.UID != "" {
-		return string(pm.UID)
-	}
-	return pm.Namespace + "/" + pm.Name
 }
 
 // reconcileInstanceHealth reconciles routing from fresh runtime snapshot data.

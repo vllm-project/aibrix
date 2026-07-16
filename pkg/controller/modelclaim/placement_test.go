@@ -61,42 +61,6 @@ func TestSelectPodForActivation_NoCapacity(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestSelectPodForActivationSkipsKnownInsufficientHBM(t *testing.T) {
-	candidates := []corev1.Pod{namedPod("cached-but-full"), namedPod("fits")}
-	states := map[string]PodPlacementState{
-		"cached-but-full": {
-			SnapshotKnown:  true,
-			ArtifactCached: true,
-			CapacityKnown:  true,
-			CapacityFits:   false,
-		},
-		"fits": {
-			SnapshotKnown: true,
-			CapacityKnown: true,
-			CapacityFits:  true,
-		},
-	}
-
-	got, err := selectPodForActivationWithState(
-		candidates, map[string]bool{}, map[string]int{}, "m", uniformLocality{}, states,
-	)
-
-	require.NoError(t, err)
-	assert.Equal(t, "fits", got.Name)
-}
-
-func TestSelectPodForActivationReportsInsufficientHBM(t *testing.T) {
-	states := map[string]PodPlacementState{
-		"full": {SnapshotKnown: true, CapacityKnown: true, CapacityFits: false},
-	}
-
-	_, err := selectPodForActivationWithState(
-		[]corev1.Pod{namedPod("full")}, map[string]bool{}, map[string]int{}, "m", uniformLocality{}, states,
-	)
-
-	require.ErrorIs(t, err, ErrInsufficientHBMCapacity)
-}
-
 func TestServedModelName(t *testing.T) {
 	pm := &modelv1alpha1.ModelClaim{ObjectMeta: metav1.ObjectMeta{Name: "foo"}}
 	assert.Equal(t, "foo", servedModelName(pm))

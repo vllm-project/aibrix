@@ -75,11 +75,7 @@ type ActivateRequest struct {
 	// Credentials and engine-specific startup settings.
 	Credentials  map[string]string                     `json:"credentials,omitempty"`
 	EngineConfig *modelv1alpha1.ModelClaimEngineConfig `json:"engine_config,omitempty"`
-	// HBMReservationFraction is derived from vLLM's existing
-	// --gpu-memory-utilization argument. It is controller/runtime bookkeeping,
-	// not a new ModelClaim resource field.
-	HBMReservationFraction float64        `json:"hbm_reservation_fraction,omitempty"`
-	ClaimRef               *ModelClaimRef `json:"claim_ref,omitempty"`
+	ClaimRef     *ModelClaimRef                        `json:"claim_ref,omitempty"`
 }
 
 // ModelClaimRef identifies the ModelClaim that owns a runtime engine without
@@ -175,9 +171,6 @@ type RuntimeSnapshotModel struct {
 	KVUsedBytes     int64      `json:"kv_used_bytes"`
 	KVCapacityBytes int64      `json:"kv_capacity_bytes"`
 	HBMPeakBytes    int64      `json:"hbm_peak_bytes"`
-	// HBMReservationFraction is the vLLM envelope carried at activation time.
-	// A zero value means an old or non-vLLM runtime did not report one.
-	HBMReservationFraction float64 `json:"hbm_reservation_fraction"`
 	// RequestMetricsObserved distinguishes a zero metric from an unavailable
 	// scrape. Pool policy must not infer idleness unless the completion counter
 	// is also present.

@@ -73,10 +73,6 @@ class ModelInstance:
     phase: str = "active"
     pid: Optional[int] = None
     pid_start_time: Optional[str] = None
-    # Controller-derived vLLM GPU reservation. It is an engine envelope, not a
-    # ModelClaim resource field, and survives in the sidecar snapshot so
-    # capacity admission can reconstruct after controller restart.
-    hbm_reservation_fraction: float = 0.0
     restart_count: int = 0
     last_error: Optional[str] = None
     last_transition: datetime = field(
@@ -714,6 +710,10 @@ def vllm_parallelism(
 ) -> int:
     """Return the fixed GPU group size required by vLLM TP and PP."""
     args = _engine_args(engine_config, additional_config)
+    if "--gpu-memory-utilization" in args:
+        raise ValueError(
+            "--gpu-memory-utilization is incompatible with kvcached; use the pool KV policy instead"
+        )
     tensor = _positive_engine_arg(args, "--tensor-parallel-size")
     pipeline = _positive_engine_arg(args, "--pipeline-parallel-size")
     data = _positive_engine_arg(args, "--data-parallel-size")
@@ -981,11 +981,6 @@ class ModelRuntime:
             restart_count = int(record.get("restart_count", 0))
             if restart_count < 0:
                 raise ValueError("invalid restart_count")
-            hbm_reservation_fraction = float(
-                record.get("hbm_reservation_fraction", 0.0)
-            )
-            if not 0.0 <= hbm_reservation_fraction <= 1.0:
-                raise ValueError("invalid hbm_reservation_fraction")
         except (KeyError, TypeError, ValueError) as exc:
             logger.warning("ignoring invalid engine registry record: %s", exc)
             return None
@@ -1004,7 +999,6 @@ class ModelRuntime:
             phase=phase,
             pid=pid,
             pid_start_time=pid_start_time,
-            hbm_reservation_fraction=hbm_reservation_fraction,
             restart_count=restart_count,
             last_error=(
                 record.get("last_error")
@@ -1049,7 +1043,6 @@ class ModelRuntime:
                 dict(inst.additional_config) if inst.additional_config else None
             ),
             "claim_ref": dict(inst.claim_ref) if inst.claim_ref else None,
-            "hbm_reservation_fraction": inst.hbm_reservation_fraction,
             "phase": inst.phase,
             "restart_count": inst.restart_count,
             "last_error": inst.last_error,
@@ -1204,14 +1197,9 @@ class ModelRuntime:
         ipc_name: str = "",
         engine_config: Optional[Dict] = None,
         additional_config: Optional[Dict[str, str]] = None,
-        hbm_reservation_fraction: Optional[float] = None,
         claim_ref: Optional[Dict[str, str]] = None,
     ) -> ModelInstance:
         with self._lock:
-            if hbm_reservation_fraction is not None and not (
-                0 < hbm_reservation_fraction <= 1
-            ):
-                raise ValueError("hbm_reservation_fraction must be in (0, 1]")
             if engine == "vllm":
                 validate_vllm_parallelism(engine_config, additional_config)
             existing = self._models.get(model_name)
@@ -1232,7 +1220,6 @@ class ModelRuntime:
                 additional_config=(
                     dict(additional_config) if additional_config else None
                 ),
-                hbm_reservation_fraction=hbm_reservation_fraction or 0.0,
                 claim_ref=dict(claim_ref) if claim_ref else None,
                 phase="booting",
                 last_transition=self._now(),
@@ -1453,7 +1440,6 @@ class ModelRuntime:
                     "kv_used_bytes": used + prealloc,
                     "kv_capacity_bytes": total,
                     "hbm_peak_bytes": engine_hbm_peak_bytes(inst, process_hbm),
-                    "hbm_reservation_fraction": inst.hbm_reservation_fraction,
                     "request_metrics_observed": activity.observed,
                     "requests_running": activity.requests_running,
                     "requests_waiting": activity.requests_waiting,

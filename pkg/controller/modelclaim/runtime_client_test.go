@@ -51,7 +51,6 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 		assert.Equal(t, "claim-uid", req.ClaimRef.UID)
 		require.NotNil(t, req.EngineConfig)
 		assert.Equal(t, "2048", req.EngineConfig.Args["--max-model-len"])
-		assert.InDelta(t, 0.45, req.HBMReservationFraction, 0.0001)
 		_ = json.NewEncoder(w).Encode(ActivateResponse{
 			Status: "success", ModelName: req.ModelName, Port: 9123, IPCName: req.IPCName,
 		})
@@ -66,7 +65,6 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 		EngineConfig: &modelv1alpha1.ModelClaimEngineConfig{
 			Args: map[string]string{"--max-model-len": "2048"},
 		},
-		HBMReservationFraction: 0.45,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int32(9123), resp.Port)
@@ -88,7 +86,7 @@ func TestHTTPRuntimeSnapshot(t *testing.T) {
 				IPCName: "kvc_m1", Phase: "active", Alive: true, Ready: true,
 				RestartCount: 2, LastError: "previous launch failed", LastTransition: &observedAt,
 				KVUsedBytes: 10, KVCapacityBytes: 100,
-				HBMPeakBytes: 456, HBMReservationFraction: 0.45,
+				HBMPeakBytes:           456,
 				RequestMetricsObserved: true, RequestsRunning: 2, RequestsWaiting: 1,
 				RequestSuccessTotal: &requestSuccessTotal,
 				ClaimRef:            &ModelClaimRef{Namespace: "default", Name: "m1", UID: "claim-uid"},
@@ -112,7 +110,6 @@ func TestHTTPRuntimeSnapshot(t *testing.T) {
 	require.NotNil(t, snapshot.Models[0].LastTransition)
 	assert.Equal(t, observedAt, *snapshot.Models[0].LastTransition)
 	assert.Equal(t, int64(456), snapshot.Models[0].HBMPeakBytes)
-	assert.InDelta(t, 0.45, snapshot.Models[0].HBMReservationFraction, 0.0001)
 	assert.True(t, snapshot.Models[0].RequestMetricsObserved)
 	assert.Equal(t, int64(2), snapshot.Models[0].RequestsRunning)
 	assert.Equal(t, int64(1), snapshot.Models[0].RequestsWaiting)

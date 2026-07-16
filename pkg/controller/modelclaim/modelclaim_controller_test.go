@@ -44,9 +44,8 @@ import (
 )
 
 const (
-	testNamespace      = "default"
-	testHBMReservation = "0.45"
-	testPeerIP         = "10.0.0.2"
+	testNamespace = "default"
+	testPeerIP    = "10.0.0.2"
 )
 
 // fakeRuntime is an in-process RuntimeClient that records calls and hands out
@@ -227,14 +226,10 @@ func newReconciler(t *testing.T, objs ...client.Object) (*ModelClaimReconciler, 
 		Build()
 	runtime := &fakeRuntime{}
 	return &ModelClaimReconciler{
-		Client:   c,
-		Scheme:   scheme,
-		Recorder: record.NewFakeRecorder(32),
-		Runtime:  runtime,
-		Capacity: engineArgCapacityProvider{},
-		CapacityReservations: newCapacityReservationCache(
-			defaultCapacityReservationTTL, time.Now,
-		),
+		Client:     c,
+		Scheme:     scheme,
+		Recorder:   record.NewFakeRecorder(32),
+		Runtime:    runtime,
 		PoolPolicy: newPoolPolicyManager(time.Now),
 		SnapshotCache: newRuntimeSnapshotCache(
 			defaultRuntimeSnapshotTTL, time.Now,
@@ -533,83 +528,6 @@ func TestReconcilePlacementPrefersRuntimeSnapshot(t *testing.T) {
 	assert.Equal(t, "default", runtime.activateCalls[0].ClaimRef.Namespace)
 	assert.Equal(t, "qwen2-7b", runtime.activateCalls[0].ClaimRef.Name)
 	assert.Equal(t, "claim-uid", runtime.activateCalls[0].ClaimRef.UID)
-}
-
-func TestReconcileRejectsKnownInsufficientHBMCapacity(t *testing.T) {
-	pm := withFinalizer(sampleModelClaim())
-	pm.Spec.EngineConfig.Args["--gpu-memory-utilization"] = testHBMReservation
-	r, runtime := newReconciler(t, pm, warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning))
-	runtime.snapshots = map[string]*RuntimeSnapshot{
-		"10.0.0.1": {
-			Accelerators: []RuntimeAcceleratorSnapshot{{
-				ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 700,
-			}},
-			Models: []RuntimeSnapshotModel{{
-				ModelName: "resident", HBMReservationFraction: 0.60,
-			}},
-		},
-	}
-
-	reconcileOnce(t, r, pm.Name)
-
-	assert.Empty(t, runtime.activateCalls)
-	got := getModel(t, r, pm.Name)
-	assert.Equal(t, modelv1alpha1.ModelClaimPending, got.Status.Phase)
-	condition := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
-	require.NotNil(t, condition)
-	assert.Equal(t, metav1.ConditionFalse, condition.Status)
-	assert.Equal(t, "InsufficientHBMCapacity", condition.Reason)
-}
-
-func TestReconcileCarriesVLLMHBMReservation(t *testing.T) {
-	pm := withFinalizer(sampleModelClaim())
-	pm.Spec.EngineConfig.Args["--gpu-memory-utilization"] = testHBMReservation
-	r, runtime := newReconciler(t, pm, warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning))
-	runtime.snapshots = map[string]*RuntimeSnapshot{
-		"10.0.0.1": {
-			Accelerators: []RuntimeAcceleratorSnapshot{{
-				ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 1000,
-			}},
-		},
-	}
-
-	reconcileOnce(t, r, pm.Name)
-
-	require.Len(t, runtime.activateCalls, 1)
-	assert.InDelta(t, 0.45, runtime.activateCalls[0].HBMReservationFraction, 0.0001)
-}
-
-func TestReconcilePendingHBMReservationsPreventOvercommit(t *testing.T) {
-	claims := []*modelv1alpha1.ModelClaim{
-		withFinalizer(sampleModelClaim()),
-		withFinalizer(sampleModelClaim()),
-		withFinalizer(sampleModelClaim()),
-	}
-	for index, claim := range claims {
-		claim.Name = fmt.Sprintf("model-%d", index+1)
-		claim.Spec.EngineConfig.Args["--gpu-memory-utilization"] = testHBMReservation
-	}
-	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
-	objects := []client.Object{claims[0], claims[1], claims[2], pod}
-	r, runtime := newReconciler(t, objects...)
-	runtime.snapshots = map[string]*RuntimeSnapshot{
-		"10.0.0.1": {
-			Accelerators: []RuntimeAcceleratorSnapshot{{
-				ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 1000,
-			}},
-		},
-	}
-
-	reconcileOnce(t, r, claims[0].Name)
-	reconcileOnce(t, r, claims[1].Name)
-	reconcileOnce(t, r, claims[2].Name)
-
-	require.Len(t, runtime.activateCalls, 2)
-	third := getModel(t, r, claims[2].Name)
-	assert.Equal(t, modelv1alpha1.ModelClaimPending, third.Status.Phase)
-	condition := meta.FindStatusCondition(third.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
-	require.NotNil(t, condition)
-	assert.Equal(t, "InsufficientHBMCapacity", condition.Reason)
 }
 
 // TestReconcileReadinessGate verifies the controller does not make a model
@@ -966,6 +884,29 @@ func TestReconcileInvalidEngineConfigSetsFailed(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, "InvalidEngineConfig", cond.Reason)
 	assert.Contains(t, cond.Message, "--tensor-parallel-size must be a positive integer")
+}
+
+func TestReconcileRejectsGPUMemoryUtilizationWithKVCached(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Spec.EngineConfig.Args["--gpu-memory-utilization"] = "0.45"
+	r, runtime := newReconciler(t,
+		pm,
+		warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning),
+	)
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: pm.Name},
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Requeue)
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Phase)
+	condition := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
+	require.NotNil(t, condition)
+	assert.Equal(t, "InvalidEngineConfig", condition.Reason)
+	assert.Contains(t, condition.Message, "--gpu-memory-utilization is incompatible with kvcached")
 }
 
 // TestReconcileReplicasZeroDeactivates verifies explicit replicas=0 deactivates instances.

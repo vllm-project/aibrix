@@ -68,7 +68,6 @@ def _record():
         "engine_config": {"args": {"--max-model-len": "2048"}},
         "additional_config": None,
         "claim_ref": {"namespace": "default", "name": "qwen", "uid": "uid-1"},
-        "hbm_reservation_fraction": 0.45,
         "phase": "active",
         "restart_count": 1,
         "last_error": None,
