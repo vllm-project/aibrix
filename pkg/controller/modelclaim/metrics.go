@@ -24,6 +24,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
+const activationResultFailed = "failed"
+
 // ModelClaim control-plane observability. These metrics are purely additive:
 // they reflect lifecycle state the controller already computes (desired/ready
 // replicas, activation readiness, and activation outcomes) and change no
@@ -116,7 +118,7 @@ func clearClaimMetrics(namespace, model string) {
 func recordActivation(namespace, model string, ok bool) {
 	result := "success"
 	if !ok {
-		result = "failed"
+		result = activationResultFailed
 	}
 	claimActivationTotal.WithLabelValues(namespace, model, result).Inc()
 }

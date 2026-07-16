@@ -22,10 +22,8 @@ spec:
         - name: aibrix-runtime
           # This image must be built on a kvcached-enabled vLLM base image.
           # The runtime sidecar starts the per-ModelClaim engine processes.
-          image: aibrix/runtime:dev
+          image: aibrix/kvcached-runtime:dev
           imagePullPolicy: IfNotPresent
-          command:
-            - aibrix_runtime
           ports:
             - name: runtime
               containerPort: 8080
@@ -54,6 +52,8 @@ spec:
               mountPath: /dev/shm
             - name: hf-cache
               mountPath: /root/.cache/huggingface
+            - name: engine-registry
+              mountPath: /var/run/aibrix
       volumes:
         - name: dshm
           emptyDir:
@@ -63,3 +63,5 @@ spec:
           hostPath:
             path: /var/cache/aibrix/huggingface
             type: DirectoryOrCreate
+        - name: engine-registry
+          emptyDir: {}

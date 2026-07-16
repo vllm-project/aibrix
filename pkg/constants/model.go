@@ -55,6 +55,12 @@ const (
 	// ModelPoolLabelEnabledValue is the enabled value for ModelPoolLabelEnabled.
 	ModelPoolLabelEnabledValue = "true"
 
+	// ModelPoolPolicyAnnotationKey holds one JSON pool policy on the warm
+	// Deployment metadata. It intentionally avoids a separate policy CRD while
+	// keeping the configuration scoped to the pool that owns the GPU pods.
+	// Example: "pool.aibrix.ai/policy": '{"reclaim":{"mode":"kv-first","capacityBytes":17179869184}}'
+	ModelPoolPolicyAnnotationKey = "pool.aibrix.ai/policy"
+
 	// ModelClaimPodAnnotationPrefix marks, on a warm GPU pod, that a ModelClaim
 	// has been activated on it. The key is suffixed with the ModelClaim object
 	// name (a DNS name, so always annotation-key-safe) and the value is a JSON

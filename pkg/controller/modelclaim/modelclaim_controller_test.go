@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -42,23 +43,33 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
-const testNamespace = "default"
+const (
+	testNamespace = "default"
+	testPeerIP    = "10.0.0.2"
+	warmAppLabel  = "warm"
+)
 
 // fakeRuntime is an in-process RuntimeClient that records calls and hands out
 // monotonic ports, so the reconcile loop can be tested without a real runtime.
 type fakeRuntime struct {
 	activateCalls   []ActivateRequest
 	deactivateCalls []DeactivateRequest
+	kvLimitCalls    []SetKVLimitRequest
+	sleepCalls      []SleepRequest
+	listCalls       int
+	snapshotCalls   int
 	portSeq         int32
 	failActivate    bool
-	// notReady makes ListModels report activated engines as not yet serveable,
-	// so a test can hold a model in the Activating phase (readiness gate).
+	// notReady makes runtime snapshots report activated engines as not yet
+	// serveable, so a test can hold a model in the Activating phase.
 	notReady bool
 	// models tracks the engines the fake currently hosts, keyed by served
-	// model name, so ListModels can drive the controller's readiness gate.
+	// model name, so Snapshot can drive the controller's readiness gate.
 	models map[string]ModelInfo
 	// snapshots reports per-pod runtime state for Phase-2 placement tests.
 	snapshots map[string]*RuntimeSnapshot
+	// nilSnapshots lets defensive-path tests model an invalid client response.
+	nilSnapshots map[string]bool
 }
 
 func (f *fakeRuntime) Activate(_ context.Context, _ string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
@@ -91,12 +102,14 @@ func (f *fakeRuntime) Deactivate(_ context.Context, _ string, _ int, req *Deacti
 }
 
 func (f *fakeRuntime) SetKVLimit(_ context.Context, _ string, _ int, req *SetKVLimitRequest) (*RuntimeOperationResponse, error) {
+	f.kvLimitCalls = append(f.kvLimitCalls, *req)
 	return &RuntimeOperationResponse{
 		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: true, Phase: "active",
 	}, nil
 }
 
 func (f *fakeRuntime) Sleep(_ context.Context, _ string, _ int, req *SleepRequest) (*RuntimeOperationResponse, error) {
+	f.sleepCalls = append(f.sleepCalls, *req)
 	return &RuntimeOperationResponse{
 		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: true, Phase: "sleeping",
 	}, nil
@@ -109,6 +122,7 @@ func (f *fakeRuntime) Wake(_ context.Context, _ string, _ int, req *WakeRequest)
 }
 
 func (f *fakeRuntime) ListModels(_ context.Context, _ string, _ int) ([]ModelInfo, error) {
+	f.listCalls++
 	out := make([]ModelInfo, 0, len(f.models))
 	for _, m := range f.models {
 		if m.Phase != "sleeping" {
@@ -120,15 +134,47 @@ func (f *fakeRuntime) ListModels(_ context.Context, _ string, _ int) ([]ModelInf
 }
 
 func (f *fakeRuntime) Snapshot(_ context.Context, podIP string, _ int) (*RuntimeSnapshot, error) {
-	if snapshot, ok := f.snapshots[podIP]; ok {
-		return snapshot, nil
+	f.snapshotCalls++
+	if f.nilSnapshots[podIP] {
+		return nil, nil
 	}
-	return nil, fmt.Errorf("no snapshot for pod %s", podIP)
+	result := &RuntimeSnapshot{}
+	if snapshot, ok := f.snapshots[podIP]; ok {
+		copy := *snapshot
+		copy.Models = append([]RuntimeSnapshotModel(nil), snapshot.Models...)
+		result = &copy
+	}
+	for _, model := range f.models {
+		present := false
+		for i := range result.Models {
+			if result.Models[i].ModelName == model.ModelName {
+				present = true
+				break
+			}
+		}
+		if present {
+			continue
+		}
+		ready := model.Ready
+		if model.Phase != "sleeping" {
+			ready = !f.notReady
+		}
+		result.Models = append(result.Models, RuntimeSnapshotModel{
+			ModelName: model.ModelName,
+			Port:      model.Port,
+			IPCName:   model.IPCName,
+			Phase:     model.Phase,
+			Alive:     model.Phase != "failed",
+			Ready:     ready,
+		})
+	}
+	return result, nil
 }
 
 func testScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
+	require.NoError(t, appsv1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, modelv1alpha1.AddToScheme(scheme))
 	return scheme
@@ -186,14 +232,221 @@ func newReconciler(t *testing.T, objs ...client.Object) (*ModelClaimReconciler, 
 		Build()
 	runtime := &fakeRuntime{}
 	return &ModelClaimReconciler{
-		Client:   c,
-		Scheme:   scheme,
-		Recorder: record.NewFakeRecorder(32),
-		Runtime:  runtime,
+		Client:     c,
+		Scheme:     scheme,
+		Recorder:   record.NewFakeRecorder(32),
+		Runtime:    runtime,
+		PoolPolicy: newPoolPolicyManager(time.Now),
 		SnapshotCache: newRuntimeSnapshotCache(
 			defaultRuntimeSnapshotTTL, time.Now,
 		),
 	}, runtime
+}
+
+func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "warm-runtime-pool",
+			Namespace: testNamespace,
+			Annotations: map[string]string{
+				constants.ModelPoolPolicyAnnotationKey: `{
+					"reclaim": {
+						"mode": "kv-first",
+						"capacityBytes": 1000,
+						"guaranteedFloorPercent": 20
+					}
+				}`,
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": warmAppLabel}},
+		},
+	}
+	replicaSet := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "warm-runtime-pool-rs",
+			Namespace:       testNamespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(deployment, appsv1.SchemeGroupVersion.WithKind("Deployment"))},
+		},
+	}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Labels["app"] = warmAppLabel
+	pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(replicaSet, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod)
+	requestSuccessTotal := int64(10)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 500}},
+			Models: []RuntimeSnapshotModel{
+				{
+					ModelName: "hot", Phase: "active", Alive: true, Ready: true,
+					KVUsedBytes: 100, KVCapacityBytes: 200,
+					RequestMetricsObserved: true, RequestsRunning: 2, RequestSuccessTotal: &requestSuccessTotal,
+				},
+				{
+					ModelName: "idle", Phase: "active", Alive: true, Ready: true,
+					KVUsedBytes: 100, KVCapacityBytes: 800,
+					RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
+				},
+			},
+		},
+	}
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+
+	require.Len(t, runtime.kvLimitCalls, 2)
+	limits := map[string]int64{}
+	for _, call := range runtime.kvLimitCalls {
+		limits[call.ModelName] = call.LimitBytes
+	}
+	assert.Equal(t, int64(800), limits["hot"])
+	assert.Equal(t, int64(200), limits["idle"])
+}
+
+func TestReconcilePoolPoliciesSkipsNilRuntimeSnapshot(t *testing.T) {
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "warm-runtime-pool",
+			Namespace: testNamespace,
+			Annotations: map[string]string{
+				constants.ModelPoolPolicyAnnotationKey: `{"reclaim":{"capacityBytes":1000}}`,
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": warmAppLabel}},
+		},
+	}
+	replicaSet := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "warm-runtime-pool-rs",
+			Namespace:       testNamespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(deployment, appsv1.SchemeGroupVersion.WithKind("Deployment"))},
+		},
+	}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Labels["app"] = warmAppLabel
+	pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(replicaSet, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod)
+	runtime.nilSnapshots = map[string]bool{pod.Status.PodIP: true}
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+
+	assert.Empty(t, runtime.kvLimitCalls)
+	assert.Empty(t, runtime.sleepCalls)
+}
+
+func TestReconcilePoolPoliciesSleepsOnlyAnIdleRedundantInstance(t *testing.T) {
+	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "warm-runtime-pool",
+			Namespace: testNamespace,
+			Annotations: map[string]string{
+				constants.ModelPoolPolicyAnnotationKey: `{
+					"lifecycle": {"sleepAfterSeconds": 60}
+				}`,
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": warmAppLabel}},
+		},
+	}
+	replicaSet := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "warm-runtime-pool-rs",
+			Namespace:       testNamespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(deployment, appsv1.SchemeGroupVersion.WithKind("Deployment"))},
+		},
+	}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Labels["app"] = warmAppLabel
+	pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(replicaSet, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))}
+	peer := warmPod("warm-elsewhere", "other-pool", true, corev1.PodRunning)
+	peer.Status.PodIP = testPeerIP
+	claim := sampleModelClaim()
+	claim.UID = types.UID("claim-uid")
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: pod.Name, Port: 20000, Phase: modelv1alpha1.ModelClaimActive},
+		{Pod: "warm-elsewhere", Port: 20001, Phase: modelv1alpha1.ModelClaimActive},
+	}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod, peer, claim)
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	requestSuccessTotal := int64(10)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 500}},
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "qwen2-7b", Phase: "active", Alive: true, Ready: true,
+				RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
+				ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+			}},
+		},
+		peer.Status.PodIP: {
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "qwen2-7b", Phase: "active", Alive: true, Ready: true,
+				ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+			}},
+		},
+	}
+
+	// The first counter observation establishes a conservative idle baseline.
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	require.Empty(t, runtime.sleepCalls)
+
+	now = now.Add(61 * time.Second)
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "qwen2-7b", runtime.sleepCalls[0].ModelName)
+	assert.Equal(t, 1, runtime.sleepCalls[0].Level)
+	gotPod := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: pod.Name}, gotPod))
+	assert.Contains(t, gotPod.Annotations[constants.ModelClaimPodAnnotationPrefix+claim.Name], `"port":0`)
+	gotClaim := getModel(t, r, claim.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, gotClaim.Status.Instances[0].Phase)
+}
+
+func TestPoolPolicyRequiresRuntimeReadyPeerBeforeSleep(t *testing.T) {
+	claim := sampleModelClaim()
+	claim.UID = types.UID("claim-uid")
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: "target", Port: 20000, Phase: modelv1alpha1.ModelClaimActive},
+		{Pod: "peer", Port: 20001, Phase: modelv1alpha1.ModelClaimActive},
+	}
+	peer := warmPod("peer", "other-pool", true, corev1.PodRunning)
+	peer.Status.PodIP = testPeerIP
+	r, runtime := newReconciler(t, claim, peer)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		peer.Status.PodIP: {Models: []RuntimeSnapshotModel{{
+			ModelName: "qwen2-7b", Phase: "active", Alive: true, Ready: false,
+			ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+		}}},
+	}
+
+	runtime.nilSnapshots = map[string]bool{peer.Status.PodIP: true}
+	assert.False(t, r.hasOtherRuntimeReadyInstance(context.Background(), claim, "target"))
+	delete(runtime.nilSnapshots, peer.Status.PodIP)
+	assert.False(t, r.hasOtherRuntimeReadyInstance(context.Background(), claim, "target"))
+	runtime.snapshots[peer.Status.PodIP].Models[0].Ready = true
+	assert.True(t, r.hasOtherRuntimeReadyInstance(context.Background(), claim, "target"))
+}
+
+func TestMarkClaimInstanceSleepingSkipsAbsentPod(t *testing.T) {
+	claim := sampleModelClaim()
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "present", Port: 20000, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	r, _ := newReconciler(t, claim)
+	before := getModel(t, r, claim.Name)
+
+	require.NoError(t, r.markClaimInstanceSleeping(context.Background(), before, "absent"))
+
+	after := getModel(t, r, claim.Name)
+	assert.Equal(t, before.ResourceVersion, after.ResourceVersion)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, after.Status.Instances[0].Phase)
 }
 
 func reconcileOnce(t *testing.T, r *ModelClaimReconciler, name string) {
@@ -311,14 +564,14 @@ func TestReconcilePlacementPrefersRuntimeSnapshot(t *testing.T) {
 	cold := warmPod("cold", "b300-pool-a", true, corev1.PodRunning)
 	cold.Status.PodIP = "10.0.0.1"
 	hot := warmPod("hot", "b300-pool-a", true, corev1.PodRunning)
-	hot.Status.PodIP = "10.0.0.2"
+	hot.Status.PodIP = testPeerIP
 	r, runtime := newReconciler(t, pm, cold, hot)
 	runtime.snapshots = map[string]*RuntimeSnapshot{
 		"10.0.0.1": {
 			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 900}},
 			Models:       []RuntimeSnapshotModel{{ModelName: "other", KVUsedBytes: 1}},
 		},
-		"10.0.0.2": {
+		testPeerIP: {
 			Accelerators:    []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMFreeBytes: 100}},
 			CachedArtifacts: []string{pm.Spec.ArtifactURL},
 		},
@@ -406,6 +659,140 @@ func TestReconcileActiveDemotedWhenUnhealthy(t *testing.T) {
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, pod))
 	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+"qwen2-7b"], `"port":0`,
 		"unhealthy engine must be non-routable")
+}
+
+func TestReconcileSnapshotCorrectsRouteToActualRuntimePort(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + pm.Name: `{"model":"qwen2-7b","port":9001}`,
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.models = map[string]ModelInfo{
+		servedModelName(pm): {
+			ModelName: servedModelName(pm), Port: 9001, Phase: "active", Ready: true,
+		},
+	}
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		"10.0.0.1": {Models: []RuntimeSnapshotModel{{
+			ModelName: servedModelName(pm), Port: 9100, Phase: "active", Alive: true, Ready: true,
+		}}},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, int32(9100), got.Status.Instances[0].Port)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
+	assert.Zero(t, runtime.listCalls, "routing health must use runtime snapshots")
+	assert.GreaterOrEqual(t, runtime.snapshotCalls, 1)
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{
+		Namespace: testNamespace, Name: "warm-1",
+	}, pod))
+	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+pm.Name], `"port":9100`)
+}
+
+func TestReconcileSnapshotPortZeroNeverRoutesStaleStatusPort(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + pm.Name: `{"model":"qwen2-7b","port":9001}`,
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		"10.0.0.1": {Models: []RuntimeSnapshotModel{{
+			ModelName: servedModelName(pm), Port: 0, Phase: "active", Alive: true, Ready: true,
+		}}},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, int32(0), got.Status.Instances[0].Port)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Status.Instances[0].Phase)
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{
+		Namespace: testNamespace, Name: "warm-1",
+	}, pod))
+	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+pm.Name], `"port":0`)
+}
+
+func TestReconcileSnapshotTerminalFailureDeroutesAndFailsClaim(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + pm.Name: `{"model":"qwen2-7b","port":9001}`,
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.models = map[string]ModelInfo{
+		servedModelName(pm): {
+			ModelName: servedModelName(pm), Port: 9001, Phase: "active", Ready: true,
+		},
+	}
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		"10.0.0.1": {Models: []RuntimeSnapshotModel{{
+			ModelName: servedModelName(pm),
+			Port:      9001,
+			Phase:     "failed",
+			Alive:     false,
+			Ready:     false,
+			LastError: "engine exited; restart budget exhausted",
+		}}},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	require.Len(t, got.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Instances[0].Phase)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Phase)
+	condition := meta.FindStatusCondition(
+		got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady),
+	)
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, "EngineFailed", condition.Reason)
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{
+		Namespace: testNamespace, Name: "warm-1",
+	}, pod))
+	assert.Contains(t, pod.Annotations[constants.ModelClaimPodAnnotationPrefix+pm.Name], `"port":0`)
+	assert.Empty(t, runtime.activateCalls)
+}
+
+func TestSnapshotModelForClaimPrefersMatchingClaimUID(t *testing.T) {
+	pm := sampleModelClaim()
+	pm.UID = types.UID("claim-uid")
+	snapshot := &RuntimeSnapshot{Models: []RuntimeSnapshotModel{
+		{
+			ModelName: servedModelName(pm),
+			Port:      9001,
+			ClaimRef: &ModelClaimRef{
+				Namespace: testNamespace, Name: "other", UID: "other-uid",
+			},
+		},
+		{
+			ModelName: "renamed-at-runtime",
+			Port:      9100,
+			ClaimRef: &ModelClaimRef{
+				Namespace: testNamespace, Name: pm.Name, UID: string(pm.UID),
+			},
+		},
+	}}
+
+	observed := snapshotModelForClaim(snapshot, pm, servedModelName(pm))
+
+	require.NotNil(t, observed)
+	assert.Equal(t, int32(9100), observed.Port)
 }
 
 func TestReconcileSleepingInstanceRemovesRouteAndWakeRestoresIt(t *testing.T) {
@@ -554,6 +941,29 @@ func TestReconcileInvalidEngineConfigSetsFailed(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, "InvalidEngineConfig", cond.Reason)
 	assert.Contains(t, cond.Message, "--tensor-parallel-size must be a positive integer")
+}
+
+func TestReconcileRejectsGPUMemoryUtilizationWithKVCached(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Spec.EngineConfig.Args["--gpu-memory-utilization"] = "0.45"
+	r, runtime := newReconciler(t,
+		pm,
+		warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning),
+	)
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: pm.Name},
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Requeue)
+	assert.Empty(t, runtime.activateCalls)
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimFailed, got.Status.Phase)
+	condition := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
+	require.NotNil(t, condition)
+	assert.Equal(t, "InvalidEngineConfig", condition.Reason)
+	assert.Contains(t, condition.Message, "--gpu-memory-utilization is incompatible with kvcached")
 }
 
 // TestReconcileReplicasZeroDeactivates verifies explicit replicas=0 deactivates instances.

@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ModelClaim KV-density metrics for the runtime sidecar.
+"""ModelClaim density metrics for the runtime sidecar.
 
-A scrape-time Prometheus collector: how many models are resident on this pod
-and each model's kvcached KV usage, read live from the model's /dev/shm
-MemInfoStruct. This is the agent (per-pod) plane of ModelClaim observability,
-complementing the controller (lifecycle) and gateway (wake) planes.
+A scrape-time Prometheus collector: how many models are resident on this pod,
+each model's kvcached KV usage, and its observed peak HBM footprint. This is
+the agent (per-pod) plane of ModelClaim observability, complementing the
+controller (lifecycle) and gateway (wake) planes.
 
 Mounted on the agent's existing /metrics (the same REGISTRY HTTPCollector uses).
 collect() is read-only — it takes a lock-protected snapshot and never reaps or
@@ -38,7 +38,12 @@ class ModelRuntimeKVCollector(Collector):
     def collect(self):
         # Imported lazily so importing this module never drags in the agent
         # singleton (keeps the standalone/demo import chain light).
-        from aibrix.runtime.model_runtime import get_model_runtime, read_kv_segment
+        from aibrix.runtime.model_runtime import (
+            engine_hbm_peak_bytes,
+            get_model_runtime,
+            gpu_memory_observation,
+            read_kv_segment,
+        )
 
         try:
             models = get_model_runtime().snapshot_models()
@@ -64,10 +69,21 @@ class ModelRuntimeKVCollector(Collector):
             "kvcached KV pool total bytes visible to a resident model.",
             labels=["model"],
         )
+        hbm_peak = GaugeMetricFamily(
+            "aibrix:modelclaim_hbm_peak_bytes",
+            "Largest GPU-memory footprint attributable to a resident engine on any "
+            "visible accelerator (0 when NVML process observation is unavailable).",
+            labels=["model"],
+        )
+        _, process_hbm = gpu_memory_observation() if models else ([], {})
         for m in models:
             seg = read_kv_segment(m.ipc_name)
             total_bytes, used_bytes, prealloc_bytes = seg if seg else (0, 0, 0)
             used.add_metric([m.model_name], float(used_bytes + prealloc_bytes))
             total.add_metric([m.model_name], float(total_bytes))
+            hbm_peak.add_metric(
+                [m.model_name], float(engine_hbm_peak_bytes(m, process_hbm))
+            )
         yield used
         yield total
+        yield hbm_peak

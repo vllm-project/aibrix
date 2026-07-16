@@ -73,6 +73,7 @@ func TestHTTPRuntimeActivate(t *testing.T) {
 
 func TestHTTPRuntimeSnapshot(t *testing.T) {
 	observedAt := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
+	requestSuccessTotal := int64(12)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v1/runtime/snapshot", r.URL.Path)
 		_ = json.NewEncoder(w).Encode(RuntimeSnapshot{
@@ -82,9 +83,13 @@ func TestHTTPRuntimeSnapshot(t *testing.T) {
 			}},
 			Models: []RuntimeSnapshotModel{{
 				ModelName: "m1", ArtifactURL: "hf://Org/M1", Port: 9001,
-				IPCName: "kvc_m1", Phase: "active", Ready: true,
+				IPCName: "kvc_m1", Phase: "active", Alive: true, Ready: true,
+				RestartCount: 2, LastError: "previous launch failed", LastTransition: &observedAt,
 				KVUsedBytes: 10, KVCapacityBytes: 100,
-				ClaimRef: &ModelClaimRef{Namespace: "default", Name: "m1", UID: "claim-uid"},
+				HBMPeakBytes:           456,
+				RequestMetricsObserved: true, RequestsRunning: 2, RequestsWaiting: 1,
+				RequestSuccessTotal: &requestSuccessTotal,
+				ClaimRef:            &ModelClaimRef{Namespace: "default", Name: "m1", UID: "claim-uid"},
 			}},
 			CachedArtifacts: []string{"hf://Org/M1"},
 		})
@@ -99,6 +104,17 @@ func TestHTTPRuntimeSnapshot(t *testing.T) {
 	assert.Equal(t, int64(700), snapshot.Accelerators[0].HBMFreeBytes)
 	require.Len(t, snapshot.Models, 1)
 	assert.Equal(t, "claim-uid", snapshot.Models[0].ClaimRef.UID)
+	assert.True(t, snapshot.Models[0].Alive)
+	assert.Equal(t, 2, snapshot.Models[0].RestartCount)
+	assert.Equal(t, "previous launch failed", snapshot.Models[0].LastError)
+	require.NotNil(t, snapshot.Models[0].LastTransition)
+	assert.Equal(t, observedAt, *snapshot.Models[0].LastTransition)
+	assert.Equal(t, int64(456), snapshot.Models[0].HBMPeakBytes)
+	assert.True(t, snapshot.Models[0].RequestMetricsObserved)
+	assert.Equal(t, int64(2), snapshot.Models[0].RequestsRunning)
+	assert.Equal(t, int64(1), snapshot.Models[0].RequestsWaiting)
+	require.NotNil(t, snapshot.Models[0].RequestSuccessTotal)
+	assert.Equal(t, int64(12), *snapshot.Models[0].RequestSuccessTotal)
 	assert.Equal(t, []string{"hf://Org/M1"}, snapshot.CachedArtifacts)
 }
 

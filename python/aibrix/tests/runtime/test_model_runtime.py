@@ -15,6 +15,7 @@
 """Tests for runtime model lifecycle, using mock actuators (no GPU)."""
 
 import os
+import signal
 import sys
 import threading
 import time
@@ -85,6 +86,41 @@ def test_gpu_memory_snapshots_serializes_nvml_lifecycle(monkeypatch):
     assert init_calls == 4
     assert shutdown_calls == 4
     assert max_active == 1
+
+
+def test_gpu_memory_observation_reports_process_memory_by_gpu(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    nvml = SimpleNamespace(
+        nvmlInit=lambda: None,
+        nvmlShutdown=lambda: None,
+        nvmlDeviceGetCount=lambda: 2,
+        nvmlDeviceGetHandleByIndex=lambda index: index,
+        nvmlDeviceGetMemoryInfo=lambda handle: SimpleNamespace(
+            total=1000, free=700 - (100 * handle)
+        ),
+        nvmlDeviceGetUUID=lambda handle: f"GPU-{handle}",
+        nvmlDeviceGetComputeRunningProcesses=lambda handle: (
+            [SimpleNamespace(pid=101, usedGpuMemory=111)]
+            if handle == 0
+            else [
+                SimpleNamespace(pid=101, usedGpuMemory=222),
+                SimpleNamespace(pid=202, usedGpuMemory=333),
+            ]
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "pynvml", nvml)
+
+    accelerators, process_hbm = runtime_module.gpu_memory_observation()
+
+    assert accelerators == [
+        {"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 700},
+        {"id": "GPU-1", "hbm_total_bytes": 1000, "hbm_free_bytes": 600},
+    ]
+    assert process_hbm == {
+        101: {"GPU-0": 111, "GPU-1": 222},
+        202: {"GPU-1": 333},
+    }
 
 
 class _RecordingKVController:
@@ -243,6 +279,28 @@ def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
             "checked": True,
         },
     ]
+
+
+def test_subprocess_launcher_stops_group_after_api_server_exits(monkeypatch):
+    from aibrix.runtime.model_runtime import ModelInstance, SubprocessEngineLauncher
+
+    calls = []
+    monkeypatch.setattr(
+        os,
+        "killpg",
+        lambda process_group_id, signum: calls.append((process_group_id, signum)),
+    )
+    inst = ModelInstance(
+        model_name="m1",
+        port=30123,
+        ipc_name="kvc_m1",
+        pid=1234,
+        proc=SimpleNamespace(poll=lambda: 1),
+    )
+
+    SubprocessEngineLauncher().stop(inst)
+
+    assert calls == [(1234, signal.SIGTERM)]
 
 
 def test_completed_operation_ids_are_bounded():
@@ -460,14 +518,17 @@ def test_activate_endpoint_rejects_mismatched_vllm_parallelism(monkeypatch):
 
     monkeypatch.setattr(
         runtime_module,
-        "gpu_memory_snapshots",
-        lambda: [
-            {
-                "id": "GPU-0",
-                "hbm_total_bytes": 1000,
-                "hbm_free_bytes": 700,
-            }
-        ],
+        "gpu_memory_observation",
+        lambda: (
+            [
+                {
+                    "id": "GPU-0",
+                    "hbm_total_bytes": 1000,
+                    "hbm_free_bytes": 700,
+                }
+            ],
+            {},
+        ),
     )
     client = _make_test_client()
 
@@ -484,6 +545,27 @@ def test_activate_endpoint_rejects_mismatched_vllm_parallelism(monkeypatch):
     assert response.status_code == 400, response.text
     assert response.json()["status"] == "error"
     assert "must equal 1 GPU" in response.json()["message"]
+
+
+def test_activate_endpoint_rejects_gpu_memory_utilization_for_kvcached():
+    client = _make_test_client()
+
+    response = client.post(
+        "/v1/runtime/models/activate",
+        json={
+            "model_name": "invalid-kv-budget",
+            "artifact_url": "hf://Org/Model",
+            "engine": "vllm",
+            "engine_config": {"args": {"--gpu-memory-utilization": "0.45"}},
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["status"] == "error"
+    assert (
+        "--gpu-memory-utilization is incompatible with kvcached"
+        in response.json()["message"]
+    )
 
 
 def test_control_endpoints_apply_kv_sleep_and_wake():
@@ -582,19 +664,32 @@ def test_snapshot_reports_runtime_state(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         runtime_module,
-        "gpu_memory_snapshots",
-        lambda: [
-            {
-                "id": "GPU-0",
-                "hbm_total_bytes": 1000,
-                "hbm_free_bytes": 700,
-            }
-        ],
+        "gpu_memory_observation",
+        lambda: (
+            [
+                {
+                    "id": "GPU-0",
+                    "hbm_total_bytes": 1000,
+                    "hbm_free_bytes": 700,
+                }
+            ],
+            {},
+        ),
     )
     monkeypatch.setattr(
         runtime_module,
         "read_kv_segment",
         lambda ipc_name: (100, 20, 5),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "engine_request_activity",
+        lambda inst: runtime_module.EngineRequestActivity(
+            observed=True,
+            requests_running=2,
+            requests_waiting=1,
+            request_success_total=7,
+        ),
     )
 
     snapshot = agent.snapshot()
@@ -603,34 +698,183 @@ def test_snapshot_reports_runtime_state(monkeypatch, tmp_path):
         {"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 700}
     ]
     assert snapshot["cached_artifacts"] == ["hf://Qwen/Qwen3-0.6B"]
-    assert snapshot["models"] == [
-        {
-            "model_name": "qwen",
-            "artifact_url": "hf://Qwen/Qwen3-0.6B",
-            "claim_ref": {
-                "namespace": "default",
-                "name": "qwen",
-                "uid": "claim-uid",
-            },
-            "port": 20000,
-            "ipc_name": "kvc_qwen",
-            "phase": "active",
-            "ready": True,
-            "kv_used_bytes": 25,
-            "kv_capacity_bytes": 100,
-        }
-    ]
+    observed = snapshot["models"][0]
+    assert observed.pop("last_transition").tzinfo is not None
+    assert observed == {
+        "model_name": "qwen",
+        "artifact_url": "hf://Qwen/Qwen3-0.6B",
+        "claim_ref": {
+            "namespace": "default",
+            "name": "qwen",
+            "uid": "claim-uid",
+        },
+        "port": 20000,
+        "ipc_name": "kvc_qwen",
+        "phase": "active",
+        "alive": True,
+        "ready": True,
+        "restart_count": 0,
+        "last_error": None,
+        "kv_used_bytes": 25,
+        "kv_capacity_bytes": 100,
+        "hbm_peak_bytes": 0,
+        "request_metrics_observed": True,
+        "requests_running": 2,
+        "requests_waiting": 1,
+        "request_success_total": 7,
+    }
     assert snapshot["observed_at"]
+
+
+def test_snapshot_reports_hbm_peak_for_engine_process_tree(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    inst = agent.activate(model_name="qwen", artifact_url="hf://Qwen/Qwen3-0.6B")
+    assert inst.pid is not None
+    monkeypatch.setattr(
+        runtime_module,
+        "gpu_memory_observation",
+        lambda: (
+            [
+                {"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 700},
+                {"id": "GPU-1", "hbm_total_bytes": 1000, "hbm_free_bytes": 800},
+            ],
+            {
+                inst.pid: {"GPU-0": 10},
+                20001: {"GPU-0": 120, "GPU-1": 80},
+                30001: {"GPU-0": 999},
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "process_tree_pids",
+        lambda pid: {pid, 20001},
+        raising=False,
+    )
+
+    snapshot = agent.snapshot()
+
+    assert snapshot["accelerators"][0]["id"] == "GPU-0"
+    assert snapshot["models"][0]["hbm_peak_bytes"] == 130
+
+
+def test_engine_request_activity_accepts_vllm_metric_name_variants(monkeypatch):
+    import httpx
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    class Response:
+        text = """# HELP vllm:num_requests_running Running requests.
+vllm:num_requests_running{model_name=\"m1\"} 2
+vllm_num_requests_waiting{model_name=\"m1\"} 3
+vllm:request_success_total{model_name=\"m1\",finished_reason=\"stop\"} 5
+vllm:request_success_total{model_name=\"m1\",finished_reason=\"length\"} 7
+"""
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    inst = runtime_module.ModelInstance(
+        model_name="m1",
+        port=20000,
+        ipc_name="kvc_m1",
+        proc=object(),
+    )
+
+    activity = runtime_module.engine_request_activity(inst)
+
+    assert activity.observed is True
+    assert activity.requests_running == 2
+    assert activity.requests_waiting == 3
+    assert activity.request_success_total == 12
+
+
+def test_engine_request_activity_ignores_other_models_from_shared_metrics(monkeypatch):
+    import httpx
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    class Response:
+        text = """vllm:num_requests_running{model_name=\"m1\"} 2
+vllm:num_requests_running{model_name=\"m2\"} 11
+vllm_num_requests_waiting{model_name=\"m1\"} 3
+vllm_num_requests_waiting{model_name=\"m2\"} 13
+vllm:request_success_total{model_name=\"m1\",finished_reason=\"stop\"} 5
+vllm:request_success_total{model_name=\"m2\",finished_reason=\"stop\"} 17
+"""
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    inst = runtime_module.ModelInstance(
+        model_name="m1",
+        port=20000,
+        ipc_name="kvc_m1",
+        proc=object(),
+    )
+
+    assert runtime_module.engine_request_activity(
+        inst
+    ) == runtime_module.EngineRequestActivity(
+        observed=True,
+        requests_running=2,
+        requests_waiting=3,
+        request_success_total=5,
+    )
+
+
+def test_engine_request_activity_does_not_treat_scrape_failure_as_idle(monkeypatch):
+    import httpx
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda url, timeout: (_ for _ in ()).throw(httpx.ConnectError("down")),
+    )
+    inst = runtime_module.ModelInstance(
+        model_name="m1",
+        port=20000,
+        ipc_name="kvc_m1",
+        proc=object(),
+    )
+
+    assert (
+        runtime_module.engine_request_activity(inst)
+        == runtime_module.EngineRequestActivity()
+    )
 
 
 def test_snapshot_handles_hosts_without_gpu(monkeypatch):
     import aibrix.runtime.model_runtime as runtime_module
 
-    monkeypatch.setattr(runtime_module, "gpu_memory_snapshots", lambda: [])
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
     snapshot = make_agent().snapshot()
 
     assert snapshot["accelerators"] == []
     assert snapshot["models"] == []
+
+
+def test_snapshot_collects_gpu_observation_once(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    calls = 0
+
+    def observe():
+        nonlocal calls
+        calls += 1
+        return [], {}
+
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", observe)
+
+    make_agent().snapshot()
+
+    assert calls == 1
 
 
 def test_snapshot_endpoint_returns_typed_runtime_state(monkeypatch, tmp_path):
@@ -639,14 +883,17 @@ def test_snapshot_endpoint_returns_typed_runtime_state(monkeypatch, tmp_path):
     monkeypatch.setenv("AIBRIX_WEIGHT_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(
         runtime_module,
-        "gpu_memory_snapshots",
-        lambda: [
-            {
-                "id": "GPU-0",
-                "hbm_total_bytes": 1000,
-                "hbm_free_bytes": 700,
-            }
-        ],
+        "gpu_memory_observation",
+        lambda: (
+            [
+                {
+                    "id": "GPU-0",
+                    "hbm_total_bytes": 1000,
+                    "hbm_free_bytes": 700,
+                }
+            ],
+            {},
+        ),
     )
     client = _make_test_client()
     activated = client.post(
@@ -670,6 +917,23 @@ def test_snapshot_endpoint_returns_typed_runtime_state(monkeypatch, tmp_path):
     assert body["accelerators"][0]["id"] == "GPU-0"
     assert body["models"][0]["claim_ref"]["uid"] == "claim-uid"
     assert body["models"][0]["artifact_url"] == "hf://Org/Model"
+    assert body["models"][0]["alive"] is True
+    assert body["models"][0]["restart_count"] == 0
+    assert body["models"][0]["last_error"] is None
+    assert body["models"][0]["last_transition"]
+
+
+def test_activate_endpoint_rejects_hbm_reservation_fraction():
+    client = _make_test_client()
+    response = client.post(
+        "/v1/runtime/models/activate",
+        json={
+            "model_name": "reservation-model",
+            "artifact_url": "hf://Org/Model",
+            "hbm_reservation_fraction": 0.45,
+        },
+    )
+    assert response.status_code == 422, response.text
 
 
 # --------------------------------------------------------------------------- #
@@ -726,23 +990,31 @@ class _DeadProc:
         return 1  # exited
 
 
-def test_activate_relaunches_dead_engine():
+def test_activate_does_not_bypass_supervisor_for_dead_engine():
     agent = make_agent()
     inst = agent.activate(model_name="m1", artifact_url="hf://x")
     inst.proc = _DeadProc()  # engine died underneath the agent
     again = agent.activate(model_name="m1", artifact_url="hf://x")
-    assert agent._launcher.launched == ["m1", "m1"], "dead instance must be relaunched"
-    assert again.phase == "active"
-    assert again.proc is None  # fresh mock launch
+    assert agent._launcher.launched == ["m1"]
+    assert again is inst
+
+    agent.supervise_once()
+
+    assert inst.phase == "restarting"
+    assert inst.restart_count == 1
 
 
-def test_list_models_reaps_dead_engines():
+def test_list_models_keeps_dead_engines_for_supervisor_visibility():
     agent = make_agent()
     a = agent.activate(model_name="m1", artifact_url="hf://x")
     agent.activate(model_name="m2", artifact_url="hf://y")
     a.proc = _DeadProc()
     names = {m.model_name for m in agent.list_models()}
-    assert names == {"m2"}, "dead engine must be reaped from the listing"
+    assert names == {"m1", "m2"}
+
+    agent.supervise_once()
+
+    assert a.phase == "restarting"
 
 
 # --------------------------------------------------------------------------- #

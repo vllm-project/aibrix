@@ -66,6 +66,25 @@ def test_kv_bytes_zero_when_segment_absent(monkeypatch):
     assert _sample(fams["aibrix:modelclaim_kv_total_bytes"], model="m1") == 0.0
 
 
+def test_hbm_peak_bytes_from_engine_process_tree(monkeypatch):
+    agent = _fresh_mock_agent(monkeypatch)
+    inst = agent.activate(model_name="m1", artifact_url="hf://x")
+    assert inst.pid is not None
+    monkeypatch.setattr(
+        pa,
+        "gpu_memory_observation",
+        lambda: (
+            [{"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 500}],
+            {inst.pid: {"GPU-0": 125}, 20001: {"GPU-0": 375}},
+        ),
+    )
+    monkeypatch.setattr(pa, "process_tree_pids", lambda pid: {pid, 20001})
+
+    fams = _families(ModelRuntimeKVCollector())
+
+    assert _sample(fams["aibrix:modelclaim_hbm_peak_bytes"], model="m1") == 500.0
+
+
 def test_collect_is_side_effect_free(monkeypatch):
     # A scrape must not reap or otherwise mutate agent state.
     agent = _fresh_mock_agent(monkeypatch)
