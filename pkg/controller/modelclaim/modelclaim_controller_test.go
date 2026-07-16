@@ -46,6 +46,7 @@ import (
 const (
 	testNamespace = "default"
 	testPeerIP    = "10.0.0.2"
+	warmAppLabel  = "warm"
 )
 
 // fakeRuntime is an in-process RuntimeClient that records calls and hands out
@@ -258,7 +259,7 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 			},
 		},
 		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "warm"}},
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": warmAppLabel}},
 		},
 	}
 	replicaSet := &appsv1.ReplicaSet{
@@ -269,7 +270,7 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 		},
 	}
 	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
-	pod.Labels["app"] = "warm"
+	pod.Labels["app"] = warmAppLabel
 	pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(replicaSet, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))}
 
 	r, runtime := newReconciler(t, deployment, replicaSet, pod)
@@ -313,7 +314,7 @@ func TestReconcilePoolPoliciesSkipsNilRuntimeSnapshot(t *testing.T) {
 			},
 		},
 		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "warm"}},
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": warmAppLabel}},
 		},
 	}
 	replicaSet := &appsv1.ReplicaSet{
@@ -324,7 +325,7 @@ func TestReconcilePoolPoliciesSkipsNilRuntimeSnapshot(t *testing.T) {
 		},
 	}
 	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
-	pod.Labels["app"] = "warm"
+	pod.Labels["app"] = warmAppLabel
 	pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(replicaSet, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))}
 
 	r, runtime := newReconciler(t, deployment, replicaSet, pod)
@@ -349,7 +350,7 @@ func TestReconcilePoolPoliciesSleepsOnlyAnIdleRedundantInstance(t *testing.T) {
 			},
 		},
 		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "warm"}},
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": warmAppLabel}},
 		},
 	}
 	replicaSet := &appsv1.ReplicaSet{
@@ -360,7 +361,7 @@ func TestReconcilePoolPoliciesSleepsOnlyAnIdleRedundantInstance(t *testing.T) {
 		},
 	}
 	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
-	pod.Labels["app"] = "warm"
+	pod.Labels["app"] = warmAppLabel
 	pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(replicaSet, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))}
 	peer := warmPod("warm-elsewhere", "other-pool", true, corev1.PodRunning)
 	peer.Status.PodIP = testPeerIP
