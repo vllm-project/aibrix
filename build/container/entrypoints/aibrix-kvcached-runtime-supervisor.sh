@@ -1,6 +1,6 @@
 #!/bin/sh
-# Keep the container alive across an unexpected aibrix-runtime exit. Engines
-# run in their own sessions and remain available for the replacement agent to
+# Keep the kvcached runtime agent alive across an unexpected exit. Engines run
+# in their own sessions and remain available for the replacement agent to
 # re-adopt from the local registry. Do not use `set -e`: wait intentionally
 # observes a non-zero agent exit before restarting it.
 
