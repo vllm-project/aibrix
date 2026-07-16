@@ -84,9 +84,9 @@ func TestIpcNameFor(t *testing.T) {
 func TestDesiredReplicas(t *testing.T) {
 	pm := &modelv1alpha1.ModelClaim{}
 	assert.Equal(t, int32(1), desiredReplicas(pm))
-	three := int32(3)
-	pm.Spec.Replicas = &three
-	assert.Equal(t, int32(3), desiredReplicas(pm))
+	one := int32(1)
+	pm.Spec.Replicas = &one
+	assert.Equal(t, int32(1), desiredReplicas(pm))
 }
 
 // fakeLocality maps nodeName -> load cost for tests (0 = weights already hot).

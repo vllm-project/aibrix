@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"time"
 )
 
 const poolReclaimModeKVFirst = "kv-first"
@@ -36,18 +35,13 @@ var errPoolKVUsageExceedsCapacity = errors.New(
 // not another resource. Reclaim is KV-first by construction: it adjusts
 // kvcached ceilings before any future weight eviction policy is considered.
 type poolPolicy struct {
-	Reclaim   *poolReclaimPolicy   `json:"reclaim,omitempty"`
-	Lifecycle *poolLifecyclePolicy `json:"lifecycle,omitempty"`
+	Reclaim *poolReclaimPolicy `json:"reclaim,omitempty"`
 }
 
 type poolReclaimPolicy struct {
 	Mode                   string `json:"mode,omitempty"`
 	CapacityBytes          int64  `json:"capacityBytes"`
 	GuaranteedFloorPercent int32  `json:"guaranteedFloorPercent,omitempty"`
-}
-
-type poolLifecyclePolicy struct {
-	SleepAfterSeconds int64 `json:"sleepAfterSeconds,omitempty"`
 }
 
 // parsePoolPolicy decodes the Deployment policy annotation and rejects unknown
@@ -81,9 +75,6 @@ func parsePoolPolicy(raw string) (*poolPolicy, error) {
 			return nil, fmt.Errorf("reclaim.guaranteedFloorPercent must be between 0 and 100")
 		}
 	}
-	if policy.Lifecycle != nil && policy.Lifecycle.SleepAfterSeconds < 0 {
-		return nil, fmt.Errorf("lifecycle.sleepAfterSeconds must not be negative")
-	}
 	return policy, nil
 }
 
@@ -91,8 +82,6 @@ type poolRequestActivity struct {
 	Active           bool
 	RequestsInFlight int64
 	CompletionDelta  int64
-	LastActive       time.Time
-	Initialized      bool
 }
 
 type poolKVModel struct {

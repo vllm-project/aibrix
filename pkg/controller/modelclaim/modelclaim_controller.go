@@ -221,7 +221,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return requeueOnConflict(err)
 	}
 	// Pool policy is an optional, Deployment-scoped control loop. It runs after
-	// lifecycle status is persisted so a policy failure cannot block activation
+	// claim status is persisted so a policy failure cannot block activation
 	// or route-health convergence for this claim.
 	r.reconcilePoolPolicies(ctx, candidates)
 	return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, nil
