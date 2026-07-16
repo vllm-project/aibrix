@@ -67,6 +67,8 @@ type fakeRuntime struct {
 	models map[string]ModelInfo
 	// snapshots reports per-pod runtime state for Phase-2 placement tests.
 	snapshots map[string]*RuntimeSnapshot
+	// nilSnapshots lets defensive-path tests model an invalid client response.
+	nilSnapshots map[string]bool
 }
 
 func (f *fakeRuntime) Activate(_ context.Context, _ string, _ int, req *ActivateRequest) (*ActivateResponse, error) {
@@ -132,6 +134,9 @@ func (f *fakeRuntime) ListModels(_ context.Context, _ string, _ int) ([]ModelInf
 
 func (f *fakeRuntime) Snapshot(_ context.Context, podIP string, _ int) (*RuntimeSnapshot, error) {
 	f.snapshotCalls++
+	if f.nilSnapshots[podIP] {
+		return nil, nil
+	}
 	result := &RuntimeSnapshot{}
 	if snapshot, ok := f.snapshots[podIP]; ok {
 		copy := *snapshot
@@ -298,6 +303,39 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 	assert.Equal(t, int64(200), limits["idle"])
 }
 
+func TestReconcilePoolPoliciesSkipsNilRuntimeSnapshot(t *testing.T) {
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "warm-runtime-pool",
+			Namespace: testNamespace,
+			Annotations: map[string]string{
+				constants.ModelPoolPolicyAnnotationKey: `{"reclaim":{"capacityBytes":1000}}`,
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "warm"}},
+		},
+	}
+	replicaSet := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "warm-runtime-pool-rs",
+			Namespace:       testNamespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(deployment, appsv1.SchemeGroupVersion.WithKind("Deployment"))},
+		},
+	}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Labels["app"] = "warm"
+	pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(replicaSet, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod)
+	runtime.nilSnapshots = map[string]bool{pod.Status.PodIP: true}
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+
+	assert.Empty(t, runtime.kvLimitCalls)
+	assert.Empty(t, runtime.sleepCalls)
+}
+
 func TestReconcilePoolPoliciesSleepsOnlyAnIdleRedundantInstance(t *testing.T) {
 	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
 	deployment := &appsv1.Deployment{
@@ -387,9 +425,27 @@ func TestPoolPolicyRequiresRuntimeReadyPeerBeforeSleep(t *testing.T) {
 		}}},
 	}
 
+	runtime.nilSnapshots = map[string]bool{peer.Status.PodIP: true}
+	assert.False(t, r.hasOtherRuntimeReadyInstance(context.Background(), claim, "target"))
+	delete(runtime.nilSnapshots, peer.Status.PodIP)
 	assert.False(t, r.hasOtherRuntimeReadyInstance(context.Background(), claim, "target"))
 	runtime.snapshots[peer.Status.PodIP].Models[0].Ready = true
 	assert.True(t, r.hasOtherRuntimeReadyInstance(context.Background(), claim, "target"))
+}
+
+func TestMarkClaimInstanceSleepingSkipsAbsentPod(t *testing.T) {
+	claim := sampleModelClaim()
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "present", Port: 20000, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	r, _ := newReconciler(t, claim)
+	before := getModel(t, r, claim.Name)
+
+	require.NoError(t, r.markClaimInstanceSleeping(context.Background(), before, "absent"))
+
+	after := getModel(t, r, claim.Name)
+	assert.Equal(t, before.ResourceVersion, after.ResourceVersion)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, after.Status.Instances[0].Phase)
 }
 
 func reconcileOnce(t *testing.T, r *ModelClaimReconciler, name string) {

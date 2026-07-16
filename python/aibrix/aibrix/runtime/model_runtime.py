@@ -37,7 +37,7 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, overload
 
 from aibrix.runtime.engine_registry import EngineRegistry
 
@@ -985,6 +985,9 @@ class ModelRuntime:
             logger.warning("ignoring invalid engine registry record: %s", exc)
             return None
 
+        last_transition = self._registry_timestamp(
+            record.get("last_transition"), self._now()
+        )
         return ModelInstance(
             model_name=model_name,
             port=port,
@@ -1005,14 +1008,18 @@ class ModelRuntime:
                 if isinstance(record.get("last_error"), str)
                 else None
             ),
-            last_transition=self._registry_timestamp(
-                record.get("last_transition"), self._now()
-            ),
+            last_transition=last_transition,
             next_restart_at=self._registry_timestamp(
                 record.get("next_restart_at"), None
             ),
             proc=AdoptedProcess(pid, pid_start_time),
         )
+
+    @overload
+    def _registry_timestamp(self, value: Any, fallback: datetime) -> datetime: ...
+
+    @overload
+    def _registry_timestamp(self, value: Any, fallback: None) -> None: ...
 
     def _registry_timestamp(
         self, value: Any, fallback: Optional[datetime]
@@ -1076,6 +1083,8 @@ class ModelRuntime:
         the next supervisor iteration before a replacement is launched.
         """
         process_group_id = inst.pid
+        if process_group_id is None:
+            return True
         if not process_group_is_alive(process_group_id):
             return True
         try:

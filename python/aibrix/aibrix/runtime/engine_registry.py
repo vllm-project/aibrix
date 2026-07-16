@@ -109,11 +109,18 @@ class EngineRegistry:
 
     def _sync_directory(self) -> None:
         """Persist the rename metadata where the platform supports it."""
-        directory_fd = os.open(
-            self.path.parent,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-        )
         try:
-            os.fsync(directory_fd)
+            directory_fd = os.open(
+                self.path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+        except OSError as exc:
+            logger.debug("could not open registry directory for fsync: %s", exc)
+            return
+        try:
+            try:
+                os.fsync(directory_fd)
+            except OSError as exc:
+                logger.debug("directory fsync is not supported: %s", exc)
         finally:
             os.close(directory_fd)

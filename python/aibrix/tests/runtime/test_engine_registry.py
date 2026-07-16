@@ -14,6 +14,7 @@
 
 """Tests for the crash-safe local runtime engine registry."""
 
+from aibrix.runtime import engine_registry as engine_registry_module
 from aibrix.runtime.engine_registry import EngineRegistry
 
 
@@ -74,3 +75,18 @@ def test_registry_replaces_previous_complete_state(tmp_path):
     registry.save(replacement)
 
     assert registry.load() == replacement
+
+
+def test_registry_ignores_unsupported_directory_fsync(tmp_path, monkeypatch):
+    registry = EngineRegistry(tmp_path / "engines.json")
+    fsync_calls = []
+
+    def unsupported_fsync(directory_fd):
+        fsync_calls.append(directory_fd)
+        raise OSError("directory fsync unsupported")
+
+    monkeypatch.setattr(engine_registry_module.os, "fsync", unsupported_fsync)
+
+    registry._sync_directory()
+
+    assert len(fsync_calls) == 1

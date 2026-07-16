@@ -17,6 +17,8 @@
 import signal
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 import aibrix.runtime.model_runtime as runtime_module
 from aibrix.runtime.engine_registry import EngineRegistry
 from aibrix.runtime.model_runtime import EngineLauncher, ModelRuntime
@@ -225,6 +227,23 @@ def test_supervisor_cleans_an_orphaned_process_group_before_backoff(
     runtime.supervise_once()
 
     assert launcher.launches == ["failed", "failed"]
+
+
+def test_supervisor_treats_missing_process_group_id_as_clean(tmp_path, monkeypatch):
+    launcher = _ControlledLauncher()
+    runtime = ModelRuntime(launcher, registry=EngineRegistry(tmp_path / "engines.json"))
+    inst = runtime.activate(
+        model_name="no-pid", artifact_url="hf://Org/NoPID", engine="sglang"
+    )
+    inst.pid = None
+    monkeypatch.setattr(
+        runtime_module,
+        "process_group_is_alive",
+        lambda _: pytest.fail("missing PID must not be probed"),
+    )
+
+    assert runtime._terminate_stale_process_group(inst)
+    assert launcher.stopped == []
 
 
 def test_re_adopt_stops_an_orphaned_group_for_a_terminal_engine(tmp_path, monkeypatch):

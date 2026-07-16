@@ -257,6 +257,10 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 			klog.V(4).InfoS("pool policy snapshot failed", "pod", klog.KObj(pod), "err", err)
 			continue
 		}
+		if snapshot == nil {
+			klog.V(4).InfoS("pool policy received empty runtime snapshot", "pod", klog.KObj(pod))
+			continue
+		}
 		if len(snapshot.Accelerators) != 1 {
 			// Both dynamic KV limits and vLLM sleep are held to the verified
 			// single-GPU contract until multi-GPU kvcached accounting is tested.
@@ -385,7 +389,7 @@ func (r *ModelClaimReconciler) hasOtherRuntimeReadyInstance(
 			continue
 		}
 		snapshot, err := r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
-		if err != nil {
+		if err != nil || snapshot == nil {
 			continue
 		}
 		for i := range snapshot.Models {
@@ -433,11 +437,18 @@ func (r *ModelClaimReconciler) markClaimInstanceSleeping(
 	if err := r.Get(ctx, types.NamespacedName{Namespace: pm.Namespace, Name: pm.Name}, latest); err != nil {
 		return err
 	}
+	changed := false
 	for i := range latest.Status.Instances {
 		if latest.Status.Instances[i].Pod == podName {
-			latest.Status.Instances[i].Phase = modelv1alpha1.ModelClaimSleeping
+			if latest.Status.Instances[i].Phase != modelv1alpha1.ModelClaimSleeping {
+				latest.Status.Instances[i].Phase = modelv1alpha1.ModelClaimSleeping
+				changed = true
+			}
 			break
 		}
+	}
+	if !changed {
+		return nil
 	}
 	r.recomputeReadiness(latest)
 	setClaimGauges(latest)
