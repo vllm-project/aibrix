@@ -84,7 +84,8 @@ class LLMAdaptiveConcurrencySettings:
     min_limit: int = 1
     healthy_window: int = 8
     additive_increase: int = 1
-    overload_decrease_factor: float = 0.5
+    overload_decrease_factor: float = 0.9
+    overload_error_rate_threshold: float = 0.1
     slow_decrease_factor: float = 0.8
     target_ttft_seconds: Optional[float] = None
     target_tpot_seconds: Optional[float] = None
@@ -108,6 +109,8 @@ class LLMAdaptiveConcurrencySettings:
             raise ValueError("additive_increase must be >= 1")
         if not 0 < self.overload_decrease_factor <= 1:
             raise ValueError("overload_decrease_factor must be in (0, 1]")
+        if not 0 < self.overload_error_rate_threshold <= 1:
+            raise ValueError("overload_error_rate_threshold must be in (0, 1]")
         if not 0 < self.slow_decrease_factor <= 1:
             raise ValueError("slow_decrease_factor must be in (0, 1]")
         if not 0 < self.ewma_alpha <= 1:
@@ -123,7 +126,12 @@ class LLMAdaptiveConcurrencySettings:
 
 
 class LLMAdaptiveConcurrencyController:
-    """Conservative AIMD controller for LLM serving backends."""
+    """Windowed AIMD controller for LLM serving backends.
+
+    Capacity errors are evaluated once per current-limit sample window so a
+    burst of failures from the same in-flight cohort causes at most one
+    decrease.
+    """
 
     def __init__(
         self,
@@ -144,30 +152,39 @@ class LLMAdaptiveConcurrencyController:
         self._ttft_samples = 0
         self._tpot_samples = 0
         self._e2e_tpot_samples = 0
-        self._consecutive_capacity_errors = 0
+        self._overload_samples = 0
+        self._overload_errors = 0
+        self._overload_window_size = 0
+        self._backoff_error_count = 0
         self._backoff_until = 0.0
 
     def limit(self) -> int:
         return self._limit
 
     def admission_delay_seconds(self) -> float:
-        if self._consecutive_capacity_errors < self._settings.failure_backoff_after:
+        if self._backoff_error_count < self._settings.failure_backoff_after:
             return 0.0
         return max(self._backoff_until - monotonic(), 0.0)
 
     def on_complete(self, outcome: ConcurrencyOutcome) -> None:
-        if self._is_capacity_error(outcome):
-            self._consecutive_capacity_errors += 1
+        capacity_error = self._is_capacity_error(outcome)
+        overload_errors = self._observe_overload_window(capacity_error)
+        if overload_errors is not None:
+            self._healthy = 0
+            self._backoff_error_count = overload_errors
             self._refresh_backoff_until()
             self._decrease(self._settings.overload_decrease_factor)
             return
 
+        if capacity_error:
+            return
+
         if not outcome.success:
-            self._consecutive_capacity_errors = 0
+            self._backoff_error_count = 0
             self._backoff_until = 0.0
             return
 
-        self._consecutive_capacity_errors = 0
+        self._backoff_error_count = 0
         self._backoff_until = 0.0
         slow = self._is_slow(outcome)
         self._update_ewmas(outcome)
@@ -271,12 +288,33 @@ class LLMAdaptiveConcurrencyController:
             next_limit = self._limit - 1
         self._limit = next_limit
 
+    def _observe_overload_window(self, capacity_error: bool) -> Optional[int]:
+        if self._overload_samples == 0:
+            self._overload_window_size = max(
+                self._settings.healthy_window,
+                self._limit,
+            )
+        self._overload_samples += 1
+        self._overload_errors += int(capacity_error)
+        if self._overload_samples < self._overload_window_size:
+            return None
+
+        samples = self._overload_samples
+        errors = self._overload_errors
+        self._overload_samples = 0
+        self._overload_errors = 0
+        self._overload_window_size = 0
+        if (
+            errors < self._settings.failure_backoff_after
+            or errors / samples < self._settings.overload_error_rate_threshold
+        ):
+            return None
+        return errors
+
     def _refresh_backoff_until(self) -> None:
-        if self._consecutive_capacity_errors < self._settings.failure_backoff_after:
+        if self._backoff_error_count < self._settings.failure_backoff_after:
             return
-        exponent = (
-            self._consecutive_capacity_errors - self._settings.failure_backoff_after
-        )
+        exponent = self._backoff_error_count - self._settings.failure_backoff_after
         delay = min(
             self._settings.failure_backoff_base_seconds * (2**exponent),
             self._settings.failure_backoff_max_seconds,
