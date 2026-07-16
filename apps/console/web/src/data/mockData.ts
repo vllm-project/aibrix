@@ -206,6 +206,18 @@ export interface Deployment {
 
 export type ModelCategory = 'LLM' | 'Audio' | 'Image' | 'Video' | 'Vision' | 'Embedding' | 'Reranks';
 
+export const CATEGORY_OPTIONS: ModelCategory[] = ['LLM', 'Audio', 'Image', 'Video', 'Vision', 'Embedding', 'Reranks'];
+
+export const CATEGORY_COLORS: Record<ModelCategory, string> = {
+  LLM: 'text-blue-600',
+  Audio: 'text-green-600',
+  Image: 'text-orange-500',
+  Video: 'text-red-500',
+  Vision: 'text-violet-600',
+  Embedding: 'text-cyan-600',
+  Reranks: 'text-pink-600',
+};
+
 export interface Model {
   id: string;
   name: string;

@@ -18,6 +18,7 @@ package handler
 
 import (
 	"context"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -51,6 +52,15 @@ func (h *ModelHandler) CreateModel(ctx context.Context, req *pb.CreateModelReque
 	if req == nil || req.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "name is required")
 	}
+
+	metadata := req.Metadata
+	if metadata == nil {
+		metadata = &pb.ModelMetadata{}
+	}
+	if metadata.CreatedOn == "" {
+		metadata.CreatedOn = time.Now().Format("2006-01-02")
+	}
+
 	return h.store.CreateModel(ctx, &pb.Model{
 		Id:            req.Id,
 		Name:          req.Name,
@@ -62,7 +72,7 @@ func (h *ModelHandler) CreateModel(ctx context.Context, req *pb.CreateModelReque
 		Pricing:       req.Pricing,
 		ContextLength: req.ContextLength,
 		Description:   req.Description,
-		Metadata:      req.Metadata,
+		Metadata:      metadata,
 		Specification: req.Specification,
 		Tags:          req.Tags,
 		ServingName:   req.ServingName,

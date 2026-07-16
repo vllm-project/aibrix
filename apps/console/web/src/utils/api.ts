@@ -509,6 +509,51 @@ export async function getModel(id: string): Promise<Model> {
   return apiFetch<Model>(`/api/v1/models/${encodeURIComponent(id)}`);
 }
 
+export interface CreateModelRequest {
+  id?: string;
+  name: string;
+  iconBg?: string;
+  iconText?: string;
+  iconTextColor?: string;
+  categories?: string[];
+  isNew?: boolean;
+  pricing?: {
+    uncachedInput?: string;
+    cachedInput?: string;
+    output?: string;
+    perMinute?: string;
+    perImage?: string;
+  };
+  contextLength?: string;
+  description?: string;
+  metadata?: {
+    state?: string;
+    createdOn?: string;
+    providerName?: string;
+    huggingFace?: string;
+  };
+  specification?: {
+    calibrated?: boolean;
+    mixtureOfExperts?: boolean;
+    parameters?: string;
+  };
+  tags?: string[];
+  servingName?: string;
+}
+
+export async function createModel(req: CreateModelRequest): Promise<Model> {
+  const body = camelToSnake<Record<string, unknown>>(req);
+  // metadata is in PRESERVE_VALUE_KEYS so inner keys are not converted.
+  // Override with properly converted keys for structured ModelMetadata.
+  if (req.metadata) {
+    body.metadata = camelToSnake(req.metadata);
+  }
+  return apiFetch<Model>('/api/v1/models', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
 // --- Model Deployment Templates ---
 
 export async function listModelDeploymentTemplates(

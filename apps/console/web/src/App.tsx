@@ -18,6 +18,7 @@ import type { SettingsTab } from './components/Settings';
 import { ModelLibrary } from './components/ModelLibrary';
 import { ModelDetail } from './components/ModelDetail';
 import { CreateModelDeploymentTemplate } from './components/CreateModelDeploymentTemplate';
+import { CreateModel } from './components/CreateModel';
 import { Playground } from './components/Playground';
 import { Deployments } from './components/Deployments';
 import { CreateDeployment } from './components/CreateDeployment';
@@ -53,7 +54,22 @@ function CreateJobRoute() {
 
 function ModelLibraryRoute() {
   const navigate = useNavigate();
-  return <ModelLibrary onSelectModel={(id) => navigate(`/models/${id}`)} />;
+  return (
+    <ModelLibrary
+      onSelectModel={(id) => navigate(`/models/${id}`)}
+      onCreateModel={() => navigate('/models/new')}
+    />
+  );
+}
+
+function CreateModelRoute() {
+  const navigate = useNavigate();
+  return (
+    <CreateModel
+      onBack={() => navigate('/models')}
+      onSaved={(modelId) => navigate(`/models/${modelId}`)}
+    />
+  );
 }
 
 function ModelDetailRoute() {
@@ -258,6 +274,7 @@ export default function App() {
             />
 
             <Route path="/models" element={<ModelLibraryRoute />} />
+            <Route path="/models/new" element={<CreateModelRoute />} />
             <Route path="/models/:modelId" element={<ModelDetailRoute />} />
             <Route
               path="/models/:modelId/templates/new"
