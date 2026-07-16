@@ -1,11 +1,3 @@
-export type DeploymentStatus =
-  | 'Ready'
-  | 'Deploying'
-  | 'Scaling'
-  | 'Failed'
-  | 'Degraded'
-  | 'Deleted';
-
 export function normalizeDeploymentStatus(status?: string): string {
   const value = (status || '').trim();
   if (!value) return 'Unknown';

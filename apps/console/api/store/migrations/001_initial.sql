@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS deployments (
     status             VARCHAR(255)  NOT NULL DEFAULT 'Deploying' COMMENT 'Deployment status',
     template_id        VARCHAR(36)   NOT NULL DEFAULT '' COMMENT 'Deployment template UUID',
     template_version   VARCHAR(255)  NOT NULL DEFAULT '' COMMENT 'Deployment template version',
-    provider_kind      VARCHAR(255)  NOT NULL DEFAULT '' COMMENT 'Deployment provider kind',
+    implementation_kind VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Deployment implementation kind',
     model_source       VARCHAR(255)  NOT NULL DEFAULT '' COMMENT 'Model source location',
     model_artifact_url VARCHAR(1000) NOT NULL DEFAULT '' COMMENT 'Model artifact URL',
     engine             VARCHAR(255)  NOT NULL DEFAULT '' COMMENT 'Inference engine type',

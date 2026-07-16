@@ -190,7 +190,7 @@ export interface Job {
   events?: JobEvent[];
 }
 
-export type DeploymentStatus = 'Ready' | 'Deploying' | 'Scaling' | 'Failed' | 'Degraded' | 'Deleted';
+export type DeploymentStatus = 'Ready' | 'Deploying' | 'Scaling' | 'Failed' | 'Degraded' | 'Deleted' | 'Unknown';
 
 export interface Deployment {
   id: string;
@@ -204,6 +204,9 @@ export interface Deployment {
   region: string;
   createdBy: string;
   status: DeploymentStatus;
+  templateId?: string;
+  templateVersion?: string;
+  implementationKind?: string;
 }
 
 export type ModelCategory = 'LLM' | 'Audio' | 'Image' | 'Video' | 'Vision' | 'Embedding' | 'Reranks';

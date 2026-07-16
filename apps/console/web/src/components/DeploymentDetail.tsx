@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { ChevronLeft, Copy, ExternalLink } from 'lucide-react';
-import { refreshDeploymentStatus } from '../utils/api';
+import { getDeployment } from '../utils/api';
 import type { Deployment } from '../data/mockData';
 import { deploymentStatusClass, normalizeDeploymentStatus } from '../utils/deploymentStatus';
 
@@ -20,7 +20,7 @@ export function DeploymentDetail({ deploymentId, onBack }: DeploymentDetailProps
       return;
     }
     setLoading(true);
-    refreshDeploymentStatus(deploymentId)
+    getDeployment(deploymentId)
       .then(d => setDeployment(d))
       .catch(err => {
         console.error('Failed to fetch deployment:', err);
@@ -178,6 +178,20 @@ payload = {
                 <div className="text-gray-500 mb-1">Deployed by</div>
                 <div className="text-gray-900">{deployment.createdBy}</div>
               </div>
+
+              {deployment.templateVersion && (
+                <div>
+                  <div className="text-gray-500 mb-1">Template</div>
+                  <div className="text-gray-900">{deployment.templateVersion}</div>
+                </div>
+              )}
+
+              {deployment.implementationKind && (
+                <div>
+                  <div className="text-gray-500 mb-1">Implementation</div>
+                  <div className="text-gray-900">{deployment.implementationKind}</div>
+                </div>
+              )}
 
               <div>
                 <div className="text-gray-500 mb-1">Deployment time</div>

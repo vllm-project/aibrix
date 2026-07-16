@@ -18,7 +18,7 @@ package handler
 
 import (
 	"context"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/vllm-project/aibrix/apps/console/api/deployment/provider"
@@ -30,7 +30,6 @@ import (
 )
 
 const (
-	batchRefreshConcurrency   = 8
 	deploymentRollbackTimeout = 30 * time.Second
 )
 
@@ -40,8 +39,12 @@ type DeploymentHandler struct {
 	providers *provider.Registry
 }
 
-func NewDeploymentHandler(s store.Store, providers *provider.Registry) *DeploymentHandler {
-	return &DeploymentHandler{store: s, providers: providers}
+func NewDeploymentHandler(s store.Store, registries ...*provider.Registry) *DeploymentHandler {
+	var registry *provider.Registry
+	if len(registries) > 0 {
+		registry = registries[0]
+	}
+	return &DeploymentHandler{store: s, providers: registry}
 }
 
 func (h *DeploymentHandler) ListDeployments(ctx context.Context, req *pb.ListDeploymentsRequest) (*pb.ListDeploymentsResponse, error) {
@@ -53,10 +56,6 @@ func (h *DeploymentHandler) ListDeployments(ctx context.Context, req *pb.ListDep
 }
 
 func (h *DeploymentHandler) GetDeployment(ctx context.Context, req *pb.GetDeploymentRequest) (*pb.Deployment, error) {
-	return h.store.GetDeployment(ctx, req.Id)
-}
-
-func (h *DeploymentHandler) RefreshDeploymentStatus(ctx context.Context, req *pb.RefreshDeploymentStatusRequest) (*pb.Deployment, error) {
 	deployment, err := h.store.GetDeployment(ctx, req.Id)
 	if err != nil {
 		return nil, err
@@ -64,64 +63,29 @@ func (h *DeploymentHandler) RefreshDeploymentStatus(ctx context.Context, req *pb
 	return h.refreshDeploymentStatus(ctx, deployment)
 }
 
-func (h *DeploymentHandler) BatchRefreshDeploymentStatuses(ctx context.Context, req *pb.BatchRefreshDeploymentStatusesRequest) (*pb.BatchRefreshDeploymentStatusesResponse, error) {
-	ids := req.GetIds()
-	deployments := make([]*pb.Deployment, len(ids))
-	sem := make(chan struct{}, batchRefreshConcurrency)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var firstErr error
-
-	setErr := func(err error) {
-		if err == nil {
-			return
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		if firstErr == nil {
-			firstErr = err
-		}
-	}
-
-	for i, id := range ids {
-		wg.Add(1)
-		go func(index int, deploymentID string) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				setErr(ctx.Err())
-				return
-			}
-
-			deployment, err := h.store.GetDeployment(ctx, deploymentID)
-			if err != nil {
-				setErr(err)
-				return
-			}
-			refreshed, err := h.refreshDeploymentStatus(ctx, deployment)
-			if err != nil {
-				setErr(err)
-				return
-			}
-			deployments[index] = refreshed
-		}(i, id)
-	}
-	wg.Wait()
-	if firstErr != nil {
-		return nil, firstErr
-	}
-	return &pb.BatchRefreshDeploymentStatusesResponse{Deployments: deployments}, nil
-}
-
 func (h *DeploymentHandler) CreateDeployment(ctx context.Context, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
-	if req.GetTemplate().GetTemplateId() != "" {
+	if req.GetTemplate() != nil {
+		if req.GetTemplate().GetModelId() == "" || req.GetTemplate().GetTemplateId() == "" {
+			return nil, status.Error(codes.InvalidArgument, "template.model_id and template.template_id are required")
+		}
+		if h.providers == nil {
+			return nil, status.Error(codes.FailedPrecondition, "deployment implementations are not configured")
+		}
 		template, err := h.store.GetModelDeploymentTemplate(ctx, req.GetTemplate().GetModelId(), req.GetTemplate().GetTemplateId())
 		if err != nil {
 			return nil, err
 		}
-		providerImpl, err := h.providers.Get(req.GetProvider().GetKind())
+		if template.GetStatus() != "active" {
+			return nil, status.Errorf(codes.FailedPrecondition, "deployment template %q is not active", template.GetName())
+		}
+		model, err := h.store.GetModel(ctx, template.GetModelId())
+		if err != nil {
+			return nil, err
+		}
+		if req.GetImplementation().GetProfile() != "" {
+			return nil, status.Error(codes.InvalidArgument, "deployment implementation profiles are not supported")
+		}
+		providerImpl, err := h.providers.Get(req.GetImplementation().GetKind())
 		if err != nil {
 			return nil, err
 		}
@@ -132,11 +96,15 @@ func (h *DeploymentHandler) CreateDeployment(ctx context.Context, req *pb.Create
 		if err != nil {
 			return nil, err
 		}
+		deployment.BaseModel = model.GetName()
+		deployment.BaseModelId = model.GetId()
+		deployment.CreatedBy = currentUserEmail(ctx)
 		saved, err := h.store.SaveDeployment(ctx, deployment)
 		if err != nil {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), deploymentRollbackTimeout)
-			defer cancel()
-			if cleanupErr := providerImpl.Delete(cleanupCtx, deployment); cleanupErr != nil {
+			cleanupErr := providerImpl.Delete(cleanupCtx, deployment)
+			cancel()
+			if cleanupErr != nil {
 				code := status.Code(err)
 				if code == codes.OK {
 					code = codes.Internal
@@ -147,6 +115,9 @@ func (h *DeploymentHandler) CreateDeployment(ctx context.Context, req *pb.Create
 		}
 		return saved, nil
 	}
+	if req.GetImplementation() != nil || req.GetOverrides() != nil {
+		return nil, status.Error(codes.InvalidArgument, "template is required when implementation or overrides are set")
+	}
 	return h.store.CreateDeployment(ctx, req)
 }
 
@@ -155,8 +126,14 @@ func (h *DeploymentHandler) DeleteDeployment(ctx context.Context, req *pb.Delete
 	if err != nil {
 		return nil, err
 	}
-	if deployment.GetProviderKind() != "" {
-		providerImpl, err := h.providers.Get(deployment.GetProviderKind())
+	if err := requireDeploymentOwner(ctx, deployment, "delete this deployment"); err != nil {
+		return nil, err
+	}
+	if deployment.GetImplementationKind() != "" {
+		if h.providers == nil {
+			return nil, status.Error(codes.FailedPrecondition, "deployment implementations are not configured")
+		}
+		providerImpl, err := h.providers.Get(deployment.GetImplementationKind())
 		if err != nil {
 			return nil, err
 		}
@@ -170,11 +147,25 @@ func (h *DeploymentHandler) DeleteDeployment(ctx context.Context, req *pb.Delete
 	return &emptypb.Empty{}, nil
 }
 
+func requireDeploymentOwner(ctx context.Context, deployment *pb.Deployment, action string) error {
+	if deployment == nil || deployment.GetCreatedBy() == "" {
+		return nil
+	}
+	viewer := currentUserEmail(ctx)
+	if viewer == "" || !strings.EqualFold(viewer, deployment.GetCreatedBy()) {
+		return status.Errorf(codes.PermissionDenied, "only the deployment owner can %s", action)
+	}
+	return nil
+}
+
 func (h *DeploymentHandler) refreshDeploymentStatus(ctx context.Context, deployment *pb.Deployment) (*pb.Deployment, error) {
-	if deployment == nil || deployment.GetProviderKind() == "" {
+	if deployment == nil || deployment.GetImplementationKind() == "" {
 		return deployment, nil
 	}
-	providerImpl, err := h.providers.Get(deployment.GetProviderKind())
+	if h.providers == nil {
+		return nil, status.Error(codes.FailedPrecondition, "deployment implementations are not configured")
+	}
+	providerImpl, err := h.providers.Get(deployment.GetImplementationKind())
 	if err != nil {
 		return nil, err
 	}
@@ -186,5 +177,5 @@ func (h *DeploymentHandler) refreshDeploymentStatus(ctx context.Context, deploym
 	if refreshed == nil || refreshed.GetId() == "" {
 		return refreshed, nil
 	}
-	return h.store.SaveDeployment(ctx, refreshed)
+	return h.store.UpdateDeploymentStatus(ctx, refreshed)
 }

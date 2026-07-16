@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Search, MoreVertical } from 'lucide-react';
-import { batchRefreshDeploymentStatuses, listDeployments } from '../utils/api';
+import { listDeployments } from '../utils/api';
 import type { Deployment } from '../data/mockData';
 import { DeleteDeploymentModal } from './DeleteDeploymentModal';
 import { deploymentStatusClass, normalizeDeploymentStatus } from '../utils/deploymentStatus';
@@ -21,16 +21,7 @@ export function Deployments({ onSelectDeployment, onCreateDeployment }: Deployme
   const fetchDeployments = useCallback(() => {
     setLoading(true);
     listDeployments(searchQuery || undefined)
-      .then((items) => {
-        setDeployments(items);
-        return batchRefreshDeploymentStatuses(items.map((deployment) => deployment.id))
-          .then((refreshed) => {
-            if (refreshed.length > 0) {
-              setDeployments(refreshed);
-            }
-          })
-          .catch((err) => console.error('Failed to refresh deployment statuses:', err));
-      })
+      .then(setDeployments)
       .catch(err => console.error('Failed to fetch deployments:', err))
       .finally(() => setLoading(false));
   }, [searchQuery]);

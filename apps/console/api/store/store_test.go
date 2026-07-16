@@ -171,6 +171,51 @@ func TestMemoryStore(t *testing.T) {
 			}
 		})
 
+		t.Run("UpdateDeploymentStatusPreservesExtendedFields", func(t *testing.T) {
+			deployment := &pb.Deployment{
+				Id:                 "provider-deployment",
+				Name:               "provider-deployment",
+				DeploymentId:       "k8s-resource",
+				BaseModel:          "Test Model",
+				BaseModelId:        "model-test",
+				Replicas:           "1[2]",
+				Status:             deploymentstatus.StatusDeploying,
+				ImplementationKind: "kubernetes",
+			}
+			if _, err := s.SaveDeployment(ctx, deployment); err != nil {
+				t.Fatalf("SaveDeployment failed: %v", err)
+			}
+			if err := s.db.Model(&models.Deployment{}).
+				Where("id = ?", deployment.Id).
+				Updates(map[string]any{
+					"model_source":      "s3://models/test",
+					"startup_command":   "serve",
+					"namespace":         "model-serving",
+					"k8s_resource_name": "k8s-resource",
+				}).Error; err != nil {
+				t.Fatalf("seed extended fields: %v", err)
+			}
+
+			deployment.Status = deploymentstatus.StatusReady
+			deployment.Replicas = "2[4]"
+			updated, err := s.UpdateDeploymentStatus(ctx, deployment)
+			if err != nil {
+				t.Fatalf("UpdateDeploymentStatus failed: %v", err)
+			}
+			if updated.Status != deploymentstatus.StatusReady || updated.Replicas != "2[4]" {
+				t.Fatalf("unexpected updated deployment: status=%q replicas=%q", updated.Status, updated.Replicas)
+			}
+
+			var row models.Deployment
+			if err := s.db.First(&row, "id = ?", deployment.Id).Error; err != nil {
+				t.Fatalf("read deployment row: %v", err)
+			}
+			if row.ModelSource != "s3://models/test" || row.StartupCommand != "serve" ||
+				row.Namespace != "model-serving" || row.K8sResourceName != "k8s-resource" {
+				t.Fatalf("extended fields were overwritten: %+v", row)
+			}
+		})
+
 		t.Run("DeleteDeployment_NotFound", func(t *testing.T) {
 			// Delete is idempotent - no error for non-existent deployment
 			err := s.DeleteDeployment(ctx, "non-existent")

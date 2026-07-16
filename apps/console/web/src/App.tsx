@@ -124,7 +124,12 @@ function DeploymentsRoute() {
 
 function CreateDeploymentRoute() {
   const navigate = useNavigate();
-  return <CreateDeployment onBack={() => navigate('/deployments')} />;
+  return (
+    <CreateDeployment
+      onBack={() => navigate('/deployments')}
+      onCreated={(id) => navigate(`/deployments/${id}`)}
+    />
+  );
 }
 
 function DeploymentDetailRoute() {

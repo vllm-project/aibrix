@@ -31,6 +31,7 @@ type Store interface {
 	GetDeployment(ctx context.Context, id string) (*pb.Deployment, error)
 	CreateDeployment(ctx context.Context, req *pb.CreateDeploymentRequest) (*pb.Deployment, error)
 	SaveDeployment(ctx context.Context, deployment *pb.Deployment) (*pb.Deployment, error)
+	UpdateDeploymentStatus(ctx context.Context, deployment *pb.Deployment) (*pb.Deployment, error)
 	DeleteDeployment(ctx context.Context, id string) error
 
 	// Jobs — Planner-owned state-machine snapshot of each job, persisted as models.Job.

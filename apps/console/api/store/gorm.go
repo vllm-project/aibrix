@@ -244,8 +244,6 @@ func (s *GORMStore) CreateDeployment(ctx context.Context, req *pb.CreateDeployme
 		GpuType:        req.AcceleratorType,
 		Region:         req.Region,
 		Status:         deploymentstatus.StatusDeploying,
-		TemplateID:     req.GetTemplate().GetTemplateId(),
-		ProviderKind:   req.GetProvider().GetKind(),
 	}
 	if err := s.db.WithContext(ctx).Create(&d).Error; err != nil {
 		return nil, status.Errorf(codes.Internal, "create deployment: %v", err)
@@ -265,13 +263,35 @@ func (s *GORMStore) SaveDeployment(ctx context.Context, deployment *pb.Deploymen
 	if err := d.FromPB(deployment); err != nil {
 		return nil, status.Errorf(codes.Internal, "convert deployment: %v", err)
 	}
-	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "id"}},
-		UpdateAll: true,
-	}).Create(&d).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(&d).Error; err != nil {
 		return nil, status.Errorf(codes.Internal, "save deployment: %v", err)
 	}
 	return d.ToPB()
+}
+
+func (s *GORMStore) UpdateDeploymentStatus(ctx context.Context, deployment *pb.Deployment) (*pb.Deployment, error) {
+	if deployment == nil || deployment.GetId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "deployment id is required")
+	}
+	var values models.Deployment
+	if err := values.FromPB(deployment); err != nil {
+		return nil, status.Errorf(codes.Internal, "convert deployment: %v", err)
+	}
+	result := s.db.WithContext(ctx).
+		Model(&models.Deployment{}).
+		Where("id = ? AND deleted = ?", deployment.GetId(), false).
+		Updates(map[string]any{
+			"status":       values.Status,
+			"min_replicas": values.MinReplicas,
+			"max_replicas": values.MaxReplicas,
+		})
+	if result.Error != nil {
+		return nil, status.Errorf(codes.Internal, "update deployment status: %v", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return nil, status.Errorf(codes.NotFound, "deployment %q not found", deployment.GetId())
+	}
+	return s.GetDeployment(ctx, deployment.GetId())
 }
 
 func (s *GORMStore) DeleteDeployment(ctx context.Context, id string) error {

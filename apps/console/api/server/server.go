@@ -158,7 +158,10 @@ func (s *Server) StartGRPC(addr string) error {
 		klog.Warningf("planner recovery failed (continuing without recovered jobs): %v", err)
 	}
 	deploymentProviders := provider.NewRegistry(
-		provider.NewKubernetesDeploymentProvider(s.cfg),
+		provider.NewKubernetesDeploymentProvider(
+			provider.NewKubernetesClientProvider(s.cfg.KubernetesProvider),
+			s.cfg.KubernetesWorkload,
+		),
 	)
 
 	// Register all service handlers
