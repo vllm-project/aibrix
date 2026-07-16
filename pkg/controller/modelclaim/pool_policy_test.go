@@ -18,14 +18,9 @@ package modelclaim
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
-
-	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
 
 func TestParsePoolPolicyUsesOneDeploymentAnnotation(t *testing.T) {
@@ -34,16 +29,24 @@ func TestParsePoolPolicyUsesOneDeploymentAnnotation(t *testing.T) {
 			"mode": "kv-first",
 			"capacityBytes": 1000,
 			"guaranteedFloorPercent": 20
-		},
-		"lifecycle": {"sleepAfterSeconds": 900}
+		}
 	}`)
 
 	require.NoError(t, err)
 	require.NotNil(t, policy.Reclaim)
 	assert.Equal(t, int64(1000), policy.Reclaim.CapacityBytes)
 	assert.Equal(t, int32(20), policy.Reclaim.GuaranteedFloorPercent)
-	require.NotNil(t, policy.Lifecycle)
-	assert.Equal(t, int64(900), policy.Lifecycle.SleepAfterSeconds)
+}
+
+func TestParsePoolPolicyRejectsUnsupportedLifecyclePolicy(t *testing.T) {
+	policy, err := parsePoolPolicy(`{
+		"reclaim": {"capacityBytes": 1000},
+		"lifecycle": {"sleepAfterSeconds": 900}
+	}`)
+
+	require.Error(t, err)
+	assert.Nil(t, policy)
+	assert.Contains(t, err.Error(), "unknown field")
 }
 
 func TestComputePoolKVTargetsGivesActiveModelTheBorrowedCapacity(t *testing.T) {
@@ -87,25 +90,4 @@ func TestComputePoolKVTargetsRefusesToShrinkBelowObservedKVUsage(t *testing.T) {
 
 	assert.ErrorIs(t, err, errPoolKVUsageExceedsCapacity)
 	assert.Nil(t, targets)
-}
-
-func TestPoolPolicySleepReservationKeepsOneActiveReplica(t *testing.T) {
-	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
-	manager := newPoolPolicyManager(func() time.Time { return now })
-	claim := &modelv1alpha1.ModelClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "default",
-			Name:      "qwen",
-			UID:       types.UID("claim-uid"),
-		},
-		Status: modelv1alpha1.ModelClaimStatus{Instances: []modelv1alpha1.ModelClaimInstance{
-			{Pod: "pod-a", Phase: modelv1alpha1.ModelClaimActive},
-			{Pod: "pod-b", Phase: modelv1alpha1.ModelClaimActive},
-		}},
-	}
-
-	require.True(t, manager.reserveSleep(claim, "pod-a"))
-	assert.False(t, manager.reserveSleep(claim, "pod-b"), "must retain one active replica")
-	manager.releaseSleep(claim, "pod-a")
-	assert.True(t, manager.reserveSleep(claim, "pod-b"))
 }
