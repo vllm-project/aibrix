@@ -307,7 +307,7 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 					}
 					operationID := fmt.Sprintf(
 						"pool-policy-kv/%s/%s/%s/%d/%d",
-						source.key.String(), pod.UID, model.IPCName, target, decisionTime.UnixNano(),
+						source.key.String(), pod.UID, snapshotActivityKey(model), target, decisionTime.UnixNano(),
 					)
 					if _, err := r.Runtime.SetKVLimit(ctx, pod.Status.PodIP, DefaultRuntimePort, &SetKVLimitRequest{
 						ModelName: model.ModelName, LimitBytes: target, OperationID: operationID,
@@ -416,7 +416,7 @@ func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
 		}
 		operationID := fmt.Sprintf(
 			"pool-policy-sleep/%s/%s/%s/%d",
-			source.key.String(), pod.UID, model.IPCName, idleSince.UnixNano(),
+			source.key.String(), pod.UID, snapshotActivityKey(model), idleSince.UnixNano(),
 		)
 		if _, err := r.Runtime.Sleep(ctx, pod.Status.PodIP, DefaultRuntimePort, &SleepRequest{
 			ModelName: model.ModelName, Level: 1, OperationID: operationID,

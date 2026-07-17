@@ -288,7 +288,7 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 					RequestMetricsObserved: true, RequestsRunning: 2, RequestSuccessTotal: &requestSuccessTotal,
 				},
 				{
-					ModelName: "idle", IPCName: "kvc_idle", Phase: "active", Alive: true, Ready: true,
+					ModelName: "idle", Phase: "active", Alive: true, Ready: true,
 					KVUsedBytes: 100, KVCapacityBytes: 800,
 					RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
 				},
@@ -302,6 +302,9 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 	limits := map[string]int64{}
 	for _, call := range runtime.kvLimitCalls {
 		limits[call.ModelName] = call.LimitBytes
+		if call.ModelName == "idle" {
+			assert.Contains(t, call.OperationID, "/idle/")
+		}
 	}
 	assert.Equal(t, int64(800), limits["hot"])
 	assert.Equal(t, int64(200), limits["idle"])
@@ -467,7 +470,7 @@ func TestReconcilePoolPoliciesSleepsIdleSingleReplica(t *testing.T) {
 		pod.Status.PodIP: {
 			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 500}},
 			Models: []RuntimeSnapshotModel{{
-				ModelName: "qwen2-7b", Port: 20000, IPCName: "kvc_qwen2-7b",
+				ModelName: "qwen2-7b", Port: 20000,
 				Phase: runtimePhaseActive, Alive: true, Ready: true,
 				RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
 				ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
@@ -485,6 +488,7 @@ func TestReconcilePoolPoliciesSleepsIdleSingleReplica(t *testing.T) {
 	require.Len(t, runtime.sleepCalls, 1)
 	assert.Equal(t, "qwen2-7b", runtime.sleepCalls[0].ModelName)
 	assert.Equal(t, 1, runtime.sleepCalls[0].Level)
+	assert.Contains(t, runtime.sleepCalls[0].OperationID, "/qwen2-7b/")
 	gotClaim := getModel(t, r, claim.Name)
 	require.Len(t, gotClaim.Status.Instances, 1)
 	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, gotClaim.Status.Instances[0].Phase)
