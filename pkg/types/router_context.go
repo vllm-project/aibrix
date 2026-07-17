@@ -303,6 +303,15 @@ func (r *RoutingContext) CanAddTrace() bool {
 	return atomic.CompareAndSwapInt32(&r.traceAdded, statusInitial, statusAdded)
 }
 
+// CanDoneTrace returns true only the first time a request finishes its trace
+// bookkeeping. It pairs with CanAddTrace: the model-level pendingRequests
+// counter is incremented once under CanAddTrace, so it must be decremented
+// exactly once here, even though several completion paths (response headers,
+// response body and the receive-error exits) may all call into DoneRequest*.
+func (r *RoutingContext) CanDoneTrace() bool {
+	return atomic.CompareAndSwapInt32(&r.traceAdded, statusAdded, statusDone)
+}
+
 // GetRoutingDelay returns the time duration used for routing the request.
 // Returns 0 if routing did not complete (e.g., prefill failure before SetTargetPod was called).
 func (r *RoutingContext) GetRoutingDelay() time.Duration {
