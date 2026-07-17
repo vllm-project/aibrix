@@ -337,6 +337,100 @@ func TestReconcilePoolPoliciesSkipsNilRuntimeSnapshot(t *testing.T) {
 	assert.Empty(t, runtime.sleepCalls)
 }
 
+// warmPoolObjects builds the Deployment/ReplicaSet/Pod ownership chain of one
+// warm pool whose Deployment carries the given policy annotation.
+func warmPoolObjects(policy string) (*appsv1.Deployment, *appsv1.ReplicaSet, *corev1.Pod) {
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "warm-runtime-pool",
+			Namespace:   testNamespace,
+			Annotations: map[string]string{constants.ModelPoolPolicyAnnotationKey: policy},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": warmAppLabel}},
+		},
+	}
+	replicaSet := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "warm-runtime-pool-rs",
+			Namespace:       testNamespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(deployment, appsv1.SchemeGroupVersion.WithKind("Deployment"))},
+		},
+	}
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Labels["app"] = warmAppLabel
+	pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(replicaSet, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))}
+	return deployment, replicaSet, pod
+}
+
+func drainEvents(t *testing.T, r *ModelClaimReconciler) []string {
+	t.Helper()
+	recorder := r.Recorder.(*record.FakeRecorder)
+	var events []string
+	for {
+		select {
+		case event := <-recorder.Events:
+			events = append(events, event)
+		default:
+			return events
+		}
+	}
+}
+
+func TestReconcilePoolPoliciesWarnsOnceForUnchangedInvalidPolicy(t *testing.T) {
+	deployment, replicaSet, pod := warmPoolObjects(`{"reclaim":{"capacityBytes":0}}`)
+	r, runtime := newReconciler(t, deployment, replicaSet, pod)
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+
+	events := drainEvents(t, r)
+	require.Len(t, events, 1)
+	assert.Contains(t, events[0], "Warning InvalidPoolPolicy")
+	assert.Contains(t, events[0], "invalid_capacity")
+	// Invalid configuration is fail-closed: no KV plan may run.
+	assert.Empty(t, runtime.kvLimitCalls)
+}
+
+func TestReconcilePoolPoliciesEmitsRecoveryOnceCorrected(t *testing.T) {
+	deployment, replicaSet, pod := warmPoolObjects(`{"reclaim":{"capacityBytes":0}}`)
+	r, runtime := newReconciler(t, deployment, replicaSet, pod)
+	requestSuccessTotal := int64(10)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 500}},
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "hot", Phase: "active", Alive: true, Ready: true,
+				KVUsedBytes: 100, KVCapacityBytes: 200,
+				RequestMetricsObserved: true, RequestsRunning: 2, RequestSuccessTotal: &requestSuccessTotal,
+			}},
+		},
+	}
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+
+	deployment.Annotations[constants.ModelPoolPolicyAnnotationKey] = `{"reclaim":{"capacityBytes":1000}}`
+	require.NoError(t, r.Update(context.Background(), deployment))
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+
+	events := drainEvents(t, r)
+	require.Len(t, events, 2)
+	assert.Contains(t, events[0], "Warning InvalidPoolPolicy")
+	assert.Contains(t, events[1], "Normal PoolPolicyValid")
+	// Policy execution resumes with the corrected configuration.
+	assert.NotEmpty(t, runtime.kvLimitCalls)
+}
+
+func TestReconcilePoolPoliciesStaysQuietForValidPolicy(t *testing.T) {
+	deployment, replicaSet, pod := warmPoolObjects(`{"reclaim":{"capacityBytes":1000}}`)
+	r, _ := newReconciler(t, deployment, replicaSet, pod)
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+
+	assert.Empty(t, drainEvents(t, r))
+}
+
 func reconcileOnce(t *testing.T, r *ModelClaimReconciler, name string) {
 	t.Helper()
 	_, err := r.Reconcile(context.Background(), ctrl.Request{

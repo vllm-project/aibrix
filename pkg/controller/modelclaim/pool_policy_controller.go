@@ -40,11 +40,17 @@ type poolPolicyManager struct {
 	now      func() time.Time
 	lastRun  map[types.NamespacedName]time.Time
 	activity map[string]poolActivityRecord
+	config   map[types.NamespacedName]poolConfigRecord
 }
 
 type poolActivityRecord struct {
 	successTotal int64
 	known        bool
+}
+
+type poolConfigRecord struct {
+	raw        string
+	errorClass string
 }
 
 func newPoolPolicyManager(now func() time.Time) *poolPolicyManager {
@@ -55,7 +61,37 @@ func newPoolPolicyManager(now func() time.Time) *poolPolicyManager {
 		now:      now,
 		lastRun:  make(map[types.NamespacedName]time.Time),
 		activity: make(map[string]poolActivityRecord),
+		config:   make(map[types.NamespacedName]poolConfigRecord),
 	}
+}
+
+// observeConfig records the latest annotation parse outcome and reports
+// whether a warning or recovery Event is due. Deduplication keys on the
+// annotation content because metadata edits do not bump the generation.
+func (m *poolPolicyManager) observeConfig(
+	pool types.NamespacedName,
+	raw string,
+	errorClass string,
+) (warn, recovered bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	next := poolConfigRecord{raw: raw, errorClass: errorClass}
+	previous, known := m.config[pool]
+	m.config[pool] = next
+	if next.errorClass != "" {
+		return !known || previous != next, false
+	}
+	return false, known && previous.errorClass != ""
+}
+
+// forgetConfig clears tracking once the annotation is removed, so a re-added
+// policy is treated as fresh configuration.
+func (m *poolPolicyManager) forgetConfig(pool types.NamespacedName) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, known := m.config[pool]
+	delete(m.config, pool)
+	return known
 }
 
 func (m *poolPolicyManager) begin(pool types.NamespacedName) bool {
@@ -121,31 +157,37 @@ func (r *ModelClaimReconciler) reconcilePoolPolicies(ctx context.Context, candid
 	seen := make(map[types.NamespacedName]struct{}, len(candidates))
 	manager := r.poolPolicyManager()
 	for i := range candidates {
-		source, err := r.poolPolicyForPod(ctx, &candidates[i])
+		deployment, err := r.poolDeploymentForPod(ctx, &candidates[i])
 		if err != nil {
-			klog.ErrorS(err, "unable to resolve ModelClaim pool policy", "pod", klog.KObj(&candidates[i]))
+			klog.ErrorS(err, "unable to resolve ModelClaim pool deployment", "pod", klog.KObj(&candidates[i]))
 			continue
 		}
-		if source == nil {
+		if deployment == nil {
 			continue
 		}
-		if _, done := seen[source.key]; done {
+		key := types.NamespacedName{Namespace: deployment.Namespace, Name: deployment.Name}
+		if _, done := seen[key]; done {
 			continue
 		}
-		seen[source.key] = struct{}{}
-		if !manager.begin(source.key) {
+		seen[key] = struct{}{}
+		policy := r.resolvePoolPolicy(deployment, manager)
+		if policy == nil {
 			continue
 		}
+		if !manager.begin(key) {
+			continue
+		}
+		source := &poolPolicySource{key: key, deployment: deployment, policy: policy}
 		if err := r.reconcilePoolPolicy(ctx, source, manager); err != nil {
-			klog.ErrorS(err, "ModelClaim pool policy tick failed", "deployment", klog.KObj(source.deployment))
+			klog.ErrorS(err, "ModelClaim pool policy tick failed", "deployment", klog.KObj(deployment))
 		}
 	}
 }
 
-func (r *ModelClaimReconciler) poolPolicyForPod(
+func (r *ModelClaimReconciler) poolDeploymentForPod(
 	ctx context.Context,
 	pod *corev1.Pod,
-) (*poolPolicySource, error) {
+) (*appsv1.Deployment, error) {
 	podOwner := metav1.GetControllerOf(pod)
 	if podOwner == nil || podOwner.Kind != "ReplicaSet" {
 		return nil, nil
@@ -163,15 +205,44 @@ func (r *ModelClaimReconciler) poolPolicyForPod(
 	if err := r.Get(ctx, key, deployment); err != nil {
 		return nil, err
 	}
+	return deployment, nil
+}
+
+// resolvePoolPolicy parses the Deployment policy annotation and surfaces the
+// outcome to operators through Deployment Events and the policy-valid gauge.
+// Invalid configuration stays fail-closed: it returns nil so no KV plan runs.
+func (r *ModelClaimReconciler) resolvePoolPolicy(
+	deployment *appsv1.Deployment,
+	manager *poolPolicyManager,
+) *poolPolicy {
+	pool := types.NamespacedName{Namespace: deployment.Namespace, Name: deployment.Name}
 	raw := deployment.Annotations[constants.ModelPoolPolicyAnnotationKey]
 	if raw == "" {
-		return nil, nil
+		if manager.forgetConfig(pool) {
+			clearPoolPolicyMetrics(pool)
+		}
+		return nil
 	}
 	policy, err := parsePoolPolicy(raw)
 	if err != nil {
-		return nil, err
+		errorClass := poolPolicyErrorClass(err)
+		setPoolPolicyValid(pool, false)
+		if warn, _ := manager.observeConfig(pool, raw, errorClass); warn {
+			r.Recorder.Eventf(deployment, corev1.EventTypeWarning, "InvalidPoolPolicy",
+				"invalid %s annotation (%s), pool policy disabled: %v",
+				constants.ModelPoolPolicyAnnotationKey, errorClass, err)
+			klog.ErrorS(err, "invalid ModelClaim pool policy annotation",
+				"deployment", klog.KObj(deployment), "errorClass", errorClass)
+		}
+		return nil
 	}
-	return &poolPolicySource{key: key, deployment: deployment, policy: policy}, nil
+	setPoolPolicyValid(pool, true)
+	if _, recovered := manager.observeConfig(pool, raw, ""); recovered {
+		r.Recorder.Eventf(deployment, corev1.EventTypeNormal, "PoolPolicyValid",
+			"%s annotation is valid again, pool policy execution resumed",
+			constants.ModelPoolPolicyAnnotationKey)
+	}
+	return policy
 }
 
 func (r *ModelClaimReconciler) reconcilePoolPolicy(

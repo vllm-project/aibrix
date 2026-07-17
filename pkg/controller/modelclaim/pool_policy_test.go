@@ -21,6 +21,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 func TestParsePoolPolicyUsesOneDeploymentAnnotation(t *testing.T) {
@@ -47,6 +48,62 @@ func TestParsePoolPolicyRejectsUnsupportedLifecyclePolicy(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, policy)
 	assert.Contains(t, err.Error(), "unknown field")
+}
+
+func TestParsePoolPolicyClassifiesConfigurationErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		raw   string
+		class string
+	}{
+		{"truncated JSON", `{"reclaim":`, poolPolicyErrorInvalidJSON},
+		{"multiple JSON values", `{} {}`, poolPolicyErrorInvalidJSON},
+		{"unknown field", `{"lifecycle":{}}`, poolPolicyErrorUnknownField},
+		{"unsupported mode", `{"reclaim":{"mode":"weight-first","capacityBytes":1000}}`, poolPolicyErrorUnsupportedMode},
+		{"non-positive capacity", `{"reclaim":{"capacityBytes":0}}`, poolPolicyErrorInvalidCapacity},
+		{"floor above 100", `{"reclaim":{"capacityBytes":1000,"guaranteedFloorPercent":101}}`, poolPolicyErrorInvalidFloor},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy, err := parsePoolPolicy(tt.raw)
+
+			require.Error(t, err)
+			assert.Nil(t, policy)
+			assert.Equal(t, tt.class, poolPolicyErrorClass(err))
+		})
+	}
+}
+
+func TestPoolPolicyManagerObserveConfigDeduplicatesWarnings(t *testing.T) {
+	manager := newPoolPolicyManager(nil)
+	pool := types.NamespacedName{Namespace: "default", Name: "warm-pool"}
+
+	warn, recovered := manager.observeConfig(pool, `{"bad"`, poolPolicyErrorInvalidJSON)
+	assert.True(t, warn)
+	assert.False(t, recovered)
+
+	// The unchanged invalid annotation must not warn again.
+	warn, recovered = manager.observeConfig(pool, `{"bad"`, poolPolicyErrorInvalidJSON)
+	assert.False(t, warn)
+	assert.False(t, recovered)
+
+	// An edited annotation deserves fresh feedback even when it fails the
+	// same way.
+	warn, _ = manager.observeConfig(pool, `{"worse"`, poolPolicyErrorInvalidJSON)
+	assert.True(t, warn)
+
+	warn, recovered = manager.observeConfig(pool, `{}`, "")
+	assert.False(t, warn)
+	assert.True(t, recovered)
+
+	// A policy that stays valid produces no further signals.
+	_, recovered = manager.observeConfig(pool, `{}`, "")
+	assert.False(t, recovered)
+
+	// Removing and re-adding the annotation starts a fresh configuration.
+	assert.True(t, manager.forgetConfig(pool))
+	warn, _ = manager.observeConfig(pool, `{"bad"`, poolPolicyErrorInvalidJSON)
+	assert.True(t, warn)
 }
 
 func TestComputePoolKVTargetsGivesActiveModelTheBorrowedCapacity(t *testing.T) {

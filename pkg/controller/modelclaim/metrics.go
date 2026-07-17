@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
@@ -70,6 +71,15 @@ var (
 		},
 		[]string{"namespace", "model", "result"},
 	)
+	// Cardinality is namespace×deployment, bounded by the number of warm pools.
+	poolPolicyValid = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "modelclaim_pool_policy_valid",
+			Help:      "1 when the warm pool Deployment policy annotation parses and validates, else 0.",
+		},
+		[]string{"namespace", "deployment"},
+	)
 )
 
 func init() {
@@ -78,6 +88,7 @@ func init() {
 		claimReadyReplicas,
 		claimActivating,
 		claimActivationTotal,
+		poolPolicyValid,
 	)
 }
 
@@ -113,6 +124,18 @@ func clearClaimMetrics(namespace, model string) {
 	claimDesiredReplicas.DeleteLabelValues(namespace, model)
 	claimReadyReplicas.DeleteLabelValues(namespace, model)
 	claimActivating.DeleteLabelValues(namespace, model)
+}
+
+// setPoolPolicyValid tracks the latest parse/validation outcome of a warm pool
+// Deployment's policy annotation.
+func setPoolPolicyValid(pool types.NamespacedName, valid bool) {
+	poolPolicyValid.WithLabelValues(pool.Namespace, pool.Name).Set(b2f(valid))
+}
+
+// clearPoolPolicyMetrics drops the gauge series once the annotation is removed,
+// so a retired pool policy does not stay frozen at its last value.
+func clearPoolPolicyMetrics(pool types.NamespacedName) {
+	poolPolicyValid.DeleteLabelValues(pool.Namespace, pool.Name)
 }
 
 func recordActivation(namespace, model string, ok bool) {
