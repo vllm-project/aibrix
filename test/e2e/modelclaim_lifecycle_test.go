@@ -478,4 +478,23 @@ func cleanupLifecycleResources(
 			}
 			return false, err
 		})
+	err = waitForLifecyclePoolPodsDeleted(ctx, k8sClient, time.Second)
+	require.NoError(t, err, "timed out waiting for ModelClaim lifecycle pool pods to be deleted")
+}
+
+func waitForLifecyclePoolPodsDeleted(
+	ctx context.Context,
+	client kubernetes.Interface,
+	interval time.Duration,
+) error {
+	return wait.PollUntilContextCancel(ctx, interval, true,
+		func(ctx context.Context) (bool, error) {
+			pods, err := client.CoreV1().Pods(lifecycleNamespace).List(ctx, metav1.ListOptions{
+				LabelSelector: "app=" + lifecycleDeploymentName,
+			})
+			if err != nil {
+				return false, err
+			}
+			return len(pods.Items) == 0, nil
+		})
 }
