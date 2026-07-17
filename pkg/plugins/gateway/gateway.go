@@ -79,6 +79,7 @@ type Server struct {
 	gatewayClient       gatewayapi.Interface
 	requestCountTracker map[string]int
 	cache               cache.Cache
+	wakeRequester       modelWakeRequester
 	httpServer          *http.Server
 	httprouteCache      sync.Map
 	httprouteCacheTTL   time.Duration
@@ -148,6 +149,7 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		gatewayClient:       gatewayClient,
 		requestCountTracker: map[string]int{},
 		cache:               c,
+		wakeRequester:       newRuntimeModelWakeRequester(nil, defaultModelClaimRuntimePort),
 		httprouteCacheTTL:   httpRouteCacheTTL(),
 		shutdownCh:          shutdown,
 		shutdown:            shutdown,

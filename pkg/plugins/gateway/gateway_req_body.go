@@ -28,6 +28,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
@@ -209,6 +210,15 @@ func getEngineBasedPathRewrite(requestPath string, pods []*v1.Pod) string {
 // Returns the pod list and nil on success, or nil and an error response on failure.
 func (s *Server) validateModelAvailability(requestID, model string) (types.PodList, *extProcPb.ProcessingResponse) {
 	if !s.cache.HasModel(model) {
+		if provider, ok := s.cache.(cache.ModelClaimBindingProvider); ok {
+			if pod, _, state, found := provider.ModelClaimBinding(model); found {
+				klog.InfoS("ModelClaim is known but not routable", "requestID", requestID, "model", model, "state", state)
+				if state == constants.ModelClaimRoutingStateSleeping && s.wakeRequester != nil {
+					s.wakeRequester.RequestWake(pod, model)
+				}
+				return nil, modelClaimRetryResponse(model, state)
+			}
+		}
 		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
 		return nil, generateErrorResponse(envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
@@ -226,6 +236,24 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 	}
 
 	return podsArr, nil
+}
+
+func modelClaimRetryResponse(model, state string) *extProcPb.ProcessingResponse {
+	headers := []*configPb.HeaderValueOption{
+		{Header: &configPb.HeaderValue{Key: HeaderErrorNoModelBackends, RawValue: []byte(model)}},
+	}
+	message := fmt.Sprintf("model %s is %s", model, state)
+	if state != constants.ModelClaimRoutingStateFailed {
+		headers = append(headers, &configPb.HeaderValueOption{
+			Header: &configPb.HeaderValue{
+				Key: "Retry-After", RawValue: []byte(strconv.Itoa(modelClaimRetryAfterSeconds)),
+			},
+		})
+		message += "; retry shortly"
+	}
+	return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, headers,
+		message,
+		ErrorCodeServiceUnavailable, "model")
 }
 
 // Helper to fetch running requests on a pod with safe zero fallback.

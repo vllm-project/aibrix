@@ -64,12 +64,21 @@ const (
 	// ModelClaimPodAnnotationPrefix marks, on a warm GPU pod, that a ModelClaim
 	// has been activated on it. The key is suffixed with the ModelClaim object
 	// name (a DNS name, so always annotation-key-safe) and the value is a JSON
-	// object {"model":"<servedModelName>","port":<port>}. One key per ModelClaim
-	// avoids multi-writer races on a shared annotation. The gateway cache reads
-	// these to make the served model routable to (pod, port) without a per-model
-	// Deployment; the router resolves the per-model port from the same value.
-	// Example: "modelclaim.aibrix.ai/qwen2-7b": '{"model":"qwen2-7b-instruct","port":9001}'
+	// object {"model":"<servedModelName>","port":<port>,"state":"<state>"}.
+	// One key per ModelClaim avoids multi-writer races on a shared annotation.
+	// The gateway cache reads these to make active models routable and retain
+	// sleeping port-0 bindings for request-triggered wake.
+	// Example: "modelclaim.aibrix.ai/qwen2-7b":
+	// '{"model":"qwen2-7b-instruct","port":9001,"state":"active"}'
 	ModelClaimPodAnnotationPrefix = "modelclaim.aibrix.ai/"
+
+	// ModelClaim routing states are observed runtime states carried alongside
+	// the per-model port. They let the gateway distinguish a sleeping engine
+	// that can be woken from an engine that is merely starting or has failed.
+	ModelClaimRoutingStateActive     = "active"
+	ModelClaimRoutingStateActivating = "activating"
+	ModelClaimRoutingStateSleeping   = "sleeping"
+	ModelClaimRoutingStateFailed     = "failed"
 )
 
 const (

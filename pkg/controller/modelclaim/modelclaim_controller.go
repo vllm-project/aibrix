@@ -519,7 +519,9 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(ctx context.Context, pm *
 		if err := r.Get(ctx, types.NamespacedName{Namespace: pm.Namespace, Name: inst.Pod}, pod); err != nil {
 			continue
 		}
-		if err := r.annotateWarmPod(ctx, pm, pod, routingPort); err != nil {
+		if err := r.annotateWarmPodWithState(
+			ctx, pm, pod, routingPort, routingStateForPhase(desiredPhase),
+		); err != nil {
 			klog.ErrorS(err, "routability annotation failed", "model", pm.Name, "pod", inst.Pod, "ready", desiredPhase == modelv1alpha1.ModelClaimActive)
 			continue
 		}
@@ -583,13 +585,26 @@ func snapshotModelForClaim(snapshot *RuntimeSnapshot, pm *modelv1alpha1.ModelCla
 	return legacy
 }
 
-// annotateWarmPod records the served-model -> port binding for this ModelClaim
-// on the warm pod (key modelclaim.aibrix.ai/<name>), which the gateway cache
-// reads to route the served model. One key per ModelClaim avoids races between
-// the controllers of different models sharing the pod.
+// annotateWarmPod records the active or activating served-model binding for
+// this ModelClaim. Lifecycle reconciliation uses annotateWarmPodWithState for
+// sleeping and failed observations.
 func (r *ModelClaimReconciler) annotateWarmPod(ctx context.Context, pm *modelv1alpha1.ModelClaim, pod *corev1.Pod, port int32) error {
+	state := constants.ModelClaimRoutingStateActive
+	if port == 0 {
+		state = constants.ModelClaimRoutingStateActivating
+	}
+	return r.annotateWarmPodWithState(ctx, pm, pod, port, state)
+}
+
+func (r *ModelClaimReconciler) annotateWarmPodWithState(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	pod *corev1.Pod,
+	port int32,
+	state string,
+) error {
 	key := constants.ModelClaimPodAnnotationPrefix + pm.Name
-	value := fmt.Sprintf(`{"model":%q,"port":%d}`, servedModelName(pm), port)
+	value := fmt.Sprintf(`{"model":%q,"port":%d,"state":%q}`, servedModelName(pm), port, state)
 	if pod.Annotations[key] == value {
 		return nil
 	}
@@ -599,6 +614,19 @@ func (r *ModelClaimReconciler) annotateWarmPod(ctx context.Context, pm *modelv1a
 	}
 	pod.Annotations[key] = value
 	return r.Patch(ctx, pod, patch)
+}
+
+func routingStateForPhase(phase modelv1alpha1.ModelClaimPhase) string {
+	switch phase {
+	case modelv1alpha1.ModelClaimActive:
+		return constants.ModelClaimRoutingStateActive
+	case modelv1alpha1.ModelClaimSleeping:
+		return constants.ModelClaimRoutingStateSleeping
+	case modelv1alpha1.ModelClaimFailed:
+		return constants.ModelClaimRoutingStateFailed
+	default:
+		return constants.ModelClaimRoutingStateActivating
+	}
 }
 
 // deannotateWarmPod removes this ModelClaim's routing annotation from a warm

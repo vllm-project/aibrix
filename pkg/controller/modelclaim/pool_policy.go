@@ -24,6 +24,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 )
 
 const poolReclaimModeKVFirst = "kv-first"
@@ -37,6 +38,7 @@ const (
 	poolPolicyErrorUnsupportedMode = "unsupported_mode"
 	poolPolicyErrorInvalidCapacity = "invalid_capacity"
 	poolPolicyErrorInvalidFloor    = "invalid_floor"
+	poolPolicyErrorInvalidSleep    = "invalid_sleep_window"
 )
 
 var errPoolKVUsageExceedsCapacity = errors.New(
@@ -73,16 +75,21 @@ func poolPolicyDecodeErrorClass(err error) string {
 }
 
 // poolPolicy is intentionally configured by one JSON Deployment annotation,
-// not another resource. Reclaim is KV-first by construction: it adjusts
-// kvcached ceilings before any future weight eviction policy is considered.
+// not another resource. Reclaim adjusts kvcached ceilings; lifecycle parks an
+// idle engine with vLLM sleep after request observations establish idleness.
 type poolPolicy struct {
-	Reclaim *poolReclaimPolicy `json:"reclaim,omitempty"`
+	Reclaim   *poolReclaimPolicy   `json:"reclaim,omitempty"`
+	Lifecycle *poolLifecyclePolicy `json:"lifecycle,omitempty"`
 }
 
 type poolReclaimPolicy struct {
 	Mode                   string `json:"mode,omitempty"`
 	CapacityBytes          int64  `json:"capacityBytes"`
 	GuaranteedFloorPercent int32  `json:"guaranteedFloorPercent,omitempty"`
+}
+
+type poolLifecyclePolicy struct {
+	SleepAfterSeconds int64 `json:"sleepAfterSeconds"`
 }
 
 // parsePoolPolicy decodes the Deployment policy annotation and rejects unknown
@@ -131,6 +138,12 @@ func parsePoolPolicy(raw string) (*poolPolicy, error) {
 			}
 		}
 	}
+	if policy.Lifecycle != nil && policy.Lifecycle.SleepAfterSeconds <= 0 {
+		return nil, &poolPolicyConfigError{
+			class: poolPolicyErrorInvalidSleep,
+			err:   errors.New("lifecycle.sleepAfterSeconds must be positive"),
+		}
+	}
 	return policy, nil
 }
 
@@ -138,6 +151,8 @@ type poolRequestActivity struct {
 	Active           bool
 	RequestsInFlight int64
 	CompletionDelta  int64
+	LastActive       time.Time
+	Initialized      bool
 }
 
 type poolKVModel struct {
