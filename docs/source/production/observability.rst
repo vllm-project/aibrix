@@ -7,13 +7,16 @@ Observability
 To enable observability for your AIBrix deployment, we provide **Built-in Grafana Dashboards** that cover the key system components:
 
 1. **Control Plane Runtime Dashboard**
-   - Monitors controller runtime performance, reconciliation behavior, and health status of the control plane.
+    - Monitors controller runtime performance, reconciliation behavior, and health status of the control plane.
 
 2. **Envoy Gateway Dashboard**
-   - Visualizes traffic metrics including request counts, latencies, and external processing statistics.
+    - Visualizes traffic metrics including request counts, latencies, and external processing statistics.
 
 3. **Model Service Dashboard**
-   - Tracks per-model service metrics such as request QPS, prompt and output length, TTFT/TPOT, and stop reasons etc.
+    - Tracks per-model service metrics such as request QPS, prompt and output length, TTFT/TPOT, and stop reasons etc.
+
+4. **ModelClaim Runtime Dashboard**
+    - Tracks ModelClaim desired/ready/activating lifecycle, warm-pool resident density, kvcached KV use/capacity, and HBM peak per co-resident model.
 
 Prerequisites
 -------------
@@ -53,17 +56,26 @@ To activate metric collection for each component:
 .. literalinclude:: ../../../observability/monitor/service_monitor_vllm.yaml
    :language: yaml
 
+4. **ModelClaim Runtime**
+   - Scrapes the warm-pool `aibrix-runtime` sidecar `/metrics` endpoint. Services must be labeled ``aibrix.ai/metrics: modelclaim-runtime`` (see ``samples/modelclaim/warm-runtime-pool.yaml``). The monitor attaches a bounded ``pool`` label from ``pool.aibrix.ai/name``.
+
+.. literalinclude:: ../../../observability/monitor/service_monitor_modelclaim_runtime.yaml
+   :language: yaml
+
 Import Grafana Dashboard
 ------------------------
 
-For production monitoring, we provide pre-built Grafana dashboards to visualize metrics from the control plane, Envoy Gateway, and model services.
+For production monitoring, we provide pre-built Grafana dashboards to visualize metrics from the control plane, Envoy Gateway, model services, and ModelClaim warm pools.
 These dashboards offer insights into system performance, request patterns, error rates, and more.
 You can import them into your Grafana instance by uploading the corresponding JSON files.
 Ensure your Prometheus data source is correctly configured before importing. Once imported, the dashboards will begin displaying live metrics as long as `ServiceMonitor` resources are properly set up and the kube-prometheus stack is actively scraping data.
 
+See ``observability/grafana/README.md`` for the ModelClaim metric contract and import notes.
+
 - `AIBrix Control Plane Runtime Dashboard <https://raw.githubusercontent.com/vllm-project/aibrix/main/observability/grafana/AIBrix_Control_Plane_Runtime_Dashboard.json>`_
 - `AIBrix Envoy Gateway Dashboard <https://raw.githubusercontent.com/vllm-project/aibrix/main/observability/grafana/AIBrix_Envoy_Gateway_Dashboard.json>`_
 - `AIBrix vLLM Engine Dashboard <https://raw.githubusercontent.com/vllm-project/aibrix/main/observability/grafana/AIBrix_vLLM_Engine_Dashboard.json>`_
+- `AIBrix ModelClaim Runtime Dashboard <https://raw.githubusercontent.com/vllm-project/aibrix/main/observability/grafana/AIBrix_ModelClaim_Runtime_Dashboard.json>`_
 
 Production Monitoring
 ---------------------
