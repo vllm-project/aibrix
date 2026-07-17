@@ -23,13 +23,54 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 )
 
 const poolReclaimModeKVFirst = "kv-first"
 
+// Fixed pool policy configuration error classes. They stay low-cardinality so
+// Events can be deduplicated per class; the detailed parser message travels
+// only in the Event and log text.
+const (
+	poolPolicyErrorInvalidJSON     = "invalid_json"
+	poolPolicyErrorUnknownField    = "unknown_field"
+	poolPolicyErrorUnsupportedMode = "unsupported_mode"
+	poolPolicyErrorInvalidCapacity = "invalid_capacity"
+	poolPolicyErrorInvalidFloor    = "invalid_floor"
+)
+
 var errPoolKVUsageExceedsCapacity = errors.New(
 	"observed KV usage and protected floors exceed pool capacity",
 )
+
+// poolPolicyConfigError attaches a fixed error class to a configuration
+// failure so operator-facing signals key on the class while keeping the full
+// parser message for humans.
+type poolPolicyConfigError struct {
+	class string
+	err   error
+}
+
+func (e *poolPolicyConfigError) Error() string { return e.err.Error() }
+
+func (e *poolPolicyConfigError) Unwrap() error { return e.err }
+
+func poolPolicyErrorClass(err error) string {
+	var configErr *poolPolicyConfigError
+	if errors.As(err, &configErr) {
+		return configErr.class
+	}
+	return poolPolicyErrorInvalidJSON
+}
+
+func poolPolicyDecodeErrorClass(err error) string {
+	// encoding/json exposes DisallowUnknownFields violations only through the
+	// error text, so class detection has to match on it.
+	if strings.Contains(err.Error(), "unknown field") {
+		return poolPolicyErrorUnknownField
+	}
+	return poolPolicyErrorInvalidJSON
+}
 
 // poolPolicy is intentionally configured by one JSON Deployment annotation,
 // not another resource. Reclaim is KV-first by construction: it adjusts
@@ -52,27 +93,42 @@ func parsePoolPolicy(raw string) (*poolPolicy, error) {
 	decoder.DisallowUnknownFields()
 	policy := &poolPolicy{}
 	if err := decoder.Decode(policy); err != nil {
-		return nil, fmt.Errorf("decode pool policy: %w", err)
+		return nil, &poolPolicyConfigError{
+			class: poolPolicyDecodeErrorClass(err),
+			err:   fmt.Errorf("decode pool policy: %w", err),
+		}
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		if err == nil {
-			return nil, fmt.Errorf("decode pool policy: multiple JSON values")
+			err = errors.New("multiple JSON values")
 		}
-		return nil, fmt.Errorf("decode pool policy: %w", err)
+		return nil, &poolPolicyConfigError{
+			class: poolPolicyErrorInvalidJSON,
+			err:   fmt.Errorf("decode pool policy: %w", err),
+		}
 	}
 	if policy.Reclaim != nil {
 		if policy.Reclaim.Mode == "" {
 			policy.Reclaim.Mode = poolReclaimModeKVFirst
 		}
 		if policy.Reclaim.Mode != poolReclaimModeKVFirst {
-			return nil, fmt.Errorf("reclaim.mode must be %q", poolReclaimModeKVFirst)
+			return nil, &poolPolicyConfigError{
+				class: poolPolicyErrorUnsupportedMode,
+				err:   fmt.Errorf("reclaim.mode must be %q", poolReclaimModeKVFirst),
+			}
 		}
 		if policy.Reclaim.CapacityBytes <= 0 {
-			return nil, fmt.Errorf("reclaim.capacityBytes must be positive")
+			return nil, &poolPolicyConfigError{
+				class: poolPolicyErrorInvalidCapacity,
+				err:   errors.New("reclaim.capacityBytes must be positive"),
+			}
 		}
 		if policy.Reclaim.GuaranteedFloorPercent < 0 ||
 			policy.Reclaim.GuaranteedFloorPercent > 100 {
-			return nil, fmt.Errorf("reclaim.guaranteedFloorPercent must be between 0 and 100")
+			return nil, &poolPolicyConfigError{
+				class: poolPolicyErrorInvalidFloor,
+				err:   errors.New("reclaim.guaranteedFloorPercent must be between 0 and 100"),
+			}
 		}
 	}
 	return policy, nil
