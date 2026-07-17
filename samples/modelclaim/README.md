@@ -18,6 +18,14 @@ kubectl get modelclaims -w
 kubectl get pods -l pool.aibrix.ai/name=b300-pool-a -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations}{"\n"}{end}'
 ```
 
+The warm-pool sample includes a metrics `Service` labeled
+`aibrix.ai/metrics=modelclaim-runtime`. Apply
+`observability/monitor/service_monitor_modelclaim_runtime.yaml` and import
+`observability/grafana/AIBrix_ModelClaim_Runtime_Dashboard.json` to monitor
+lifecycle, resident density, KV use, and HBM peak. See
+[`observability/grafana/README.md`](../../observability/grafana/README.md) for
+the metric contract and import steps.
+
 The controller writes `modelclaim.aibrix.ai/<claim-name>` annotations with
 `{"model":"<served-name>","port":<engine-port>}`. `port:0` means the claim is
 not routable. It is used while an engine is booting, unhealthy, or sleeping.

@@ -65,3 +65,24 @@ spec:
             type: DirectoryOrCreate
         - name: engine-registry
           emptyDir: {}
+---
+# Exposes the runtime sidecar /metrics endpoint for the ModelClaim Grafana
+# dashboard. Label aibrix.ai/metrics=modelclaim-runtime matches
+# observability/monitor/service_monitor_modelclaim_runtime.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: warm-runtime-pool-b300-metrics
+  namespace: default
+  labels:
+    app: warm-runtime-pool-b300
+    pool.aibrix.ai/name: b300-pool-a
+    pool.aibrix.ai/enabled: "true"
+    aibrix.ai/metrics: modelclaim-runtime
+spec:
+  selector:
+    app: warm-runtime-pool-b300
+  ports:
+    - name: runtime
+      port: 8080
+      targetPort: runtime
