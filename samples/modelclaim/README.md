@@ -15,7 +15,8 @@ kubectl apply -f samples/modelclaim/warm-runtime-pool.yaml
 kubectl apply -f samples/modelclaim/modelclaims.yaml
 
 kubectl get modelclaims -w
-kubectl get pods -l pool.aibrix.ai/name=b300-pool-a -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations}{"\n"}{end}'
+kubectl get pods -l pool.aibrix.ai/name=b300-pool-a \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations}{"\n"}{end}'
 ```
 
 The warm-pool sample includes a metrics `Service` labeled
@@ -27,18 +28,26 @@ lifecycle, resident density, KV use, and HBM peak. See
 the metric contract and import steps.
 
 The controller writes `modelclaim.aibrix.ai/<claim-name>` annotations with
-`{"model":"<served-name>","port":<engine-port>}`. `port:0` means the claim is
-not routable. It is used while an engine is booting, unhealthy, or sleeping.
-The controller flips the annotation to the real engine port only after the
-runtime reports `active` and ready.
+`{"model":"<served-name>","port":<engine-port>,"state":"<state>"}`. `port:0`
+means the claim is known but not routable. It is used while an engine is
+activating, unhealthy, sleeping, or failed. The controller restores the real
+engine port only after the runtime reports `active` and ready.
 
 `engineConfig.args` is the structured pass-through for engine flags. It does
 not express GPU resources or parallelism. With kvcached enabled, do not add
 `--gpu-memory-utilization`; kvcached owns elastic KV allocation.
 
-The Phase-2 foundation supports manual sidecar `kv-limit`, vLLM sleep, and
-wake operations, but it does not run an automatic idle policy or gateway hold.
-Use [the Phase-2 runbook](../../docs/modelclaim/phase2-foundation-runbook.md)
-for mock, minikube, and A10 validation. The supported path is one GPU per warm
-runtime pod and independent single-GPU engines; TP/PP is not supported by this
-sample.
+An optional JSON policy on the warm-pool Deployment drives request-based KV
+limit redistribution and idle sleep. A request for a sleeping model triggers
+an asynchronous wake and receives HTTP 503 with `Retry-After`; the gateway does
+not hold the original request. See the
+[manual GPU validation runbook](../../docs/modelclaim/manual-validation-runbook.md)
+for the complete minikube and A10 procedure, reliability fault injection, and
+the boundary between functional acceptance and performance evidence. Use the
+[kvcached and vLLM sleep mechanism guide](../../docs/modelclaim/kvcached-vllm-sleep-test-guide.md)
+when validating those upstream primitives without the AIBrix control plane.
+
+This sample uses one GPU and independent single-GPU engines. Fixed TP/PP is
+supported only in a separate topology-homogeneous pool whose Pod GPU limit
+equals `TP x PP`. `ModelClaim.spec.replicas` is optional and currently accepts
+only one.

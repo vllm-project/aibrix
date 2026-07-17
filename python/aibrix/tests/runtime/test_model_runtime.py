@@ -792,6 +792,38 @@ vllm:request_success_total{model_name=\"m1\",finished_reason=\"length\"} 7
     assert activity.request_success_total == 12
 
 
+def test_engine_request_activity_scrapes_external_runtime_mock(monkeypatch):
+    import httpx
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    class Response:
+        text = """vllm:num_requests_running{model_name=\"m1\"} 0
+vllm:num_requests_waiting{model_name=\"m1\"} 0
+vllm:request_success_total{model_name=\"m1\"} 7
+"""
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setenv("AIBRIX_MODEL_RUNTIME_MOCK", "1")
+    monkeypatch.setenv("AIBRIX_MODEL_RUNTIME_MOCK_EXTERNAL_ENGINES", "1")
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    inst = runtime_module.ModelInstance(
+        model_name="m1",
+        port=20000,
+        ipc_name="kvc_m1",
+        pid=10001,
+    )
+
+    activity = runtime_module.engine_request_activity(inst)
+
+    assert activity.observed is True
+    assert activity.requests_running == 0
+    assert activity.requests_waiting == 0
+    assert activity.request_success_total == 7
+
+
 def test_engine_request_activity_ignores_other_models_from_shared_metrics(monkeypatch):
     import httpx
 
@@ -858,6 +890,37 @@ def test_snapshot_handles_hosts_without_gpu(monkeypatch):
 
     assert snapshot["accelerators"] == []
     assert snapshot["models"] == []
+
+
+def test_snapshot_can_expose_single_gpu_for_runtime_mock(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setenv("AIBRIX_MODEL_RUNTIME_MOCK", "1")
+    monkeypatch.setenv("AIBRIX_MODEL_RUNTIME_MOCK_EXTERNAL_ENGINES", "1")
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+
+    snapshot = make_agent().snapshot()
+
+    assert snapshot["accelerators"] == [
+        {
+            "id": "mock-gpu-0",
+            "hbm_total_bytes": 0,
+            "hbm_free_bytes": 0,
+        }
+    ]
+
+
+def test_external_runtime_mock_claims_prebound_engine_ports(monkeypatch):
+    monkeypatch.setenv("AIBRIX_MODEL_RUNTIME_MOCK", "1")
+    monkeypatch.setenv("AIBRIX_MODEL_RUNTIME_MOCK_EXTERNAL_ENGINES", "1")
+    agent = make_agent()
+    monkeypatch.setattr(agent, "_port_free", lambda port: False)
+
+    first = agent.activate(model_name="m1", artifact_url="hf://m1")
+    second = agent.activate(model_name="m2", artifact_url="hf://m2")
+
+    assert first.port == 20000
+    assert second.port == 20001
 
 
 def test_snapshot_collects_gpu_observation_once(monkeypatch):
