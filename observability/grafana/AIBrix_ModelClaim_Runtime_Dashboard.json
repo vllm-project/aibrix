@@ -985,7 +985,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "aibrix:modelclaim_kv_used_bytes{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"} / clamp_min(aibrix:modelclaim_kv_total_bytes{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"}, 1)",
+          "expr": "aibrix:modelclaim_kv_used_bytes{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"} / (aibrix:modelclaim_kv_total_bytes{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"} > 0)",
           "legendFormat": "{{model}} @ {{pod}}",
           "range": true,
           "refId": "A"
