@@ -488,6 +488,13 @@ _request_success_metrics = {
 }
 
 
+def _external_runtime_mock_enabled() -> bool:
+    return (
+        os.environ.get("AIBRIX_MODEL_RUNTIME_MOCK") == "1"
+        and os.environ.get("AIBRIX_MODEL_RUNTIME_MOCK_EXTERNAL_ENGINES") == "1"
+    )
+
+
 def engine_request_activity(inst: "ModelInstance") -> EngineRequestActivity:
     """Read vLLM request gauges and completion counter from localhost.
 
@@ -498,7 +505,9 @@ def engine_request_activity(inst: "ModelInstance") -> EngineRequestActivity:
     response, including an old unlabeled metric, is reported as unobserved;
     callers must not infer idleness from a scrape failure.
     """
-    if inst.port <= 0 or inst.proc is None or inst.phase != "active":
+    if inst.port <= 0 or inst.phase != "active":
+        return EngineRequestActivity()
+    if inst.proc is None and not _external_runtime_mock_enabled():
         return EngineRequestActivity()
     try:
         import httpx
@@ -1425,6 +1434,18 @@ class ModelRuntime:
         with self._lock:
             instances = list(self._models.values())
         accelerators, process_hbm = gpu_memory_observation()
+        if (
+            not accelerators
+            and isinstance(self._launcher, MockEngineLauncher)
+            and _external_runtime_mock_enabled()
+        ):
+            accelerators = [
+                {
+                    "id": "mock-gpu-0",
+                    "hbm_total_bytes": 0,
+                    "hbm_free_bytes": 0,
+                }
+            ]
         models = []
         for inst in instances:
             segment = read_kv_segment(inst.ipc_name)
@@ -1488,7 +1509,7 @@ class ModelRuntime:
         for port in range(self._port_lo, self._port_hi):
             if port in used:
                 continue
-            if self._port_free(port):
+            if _external_runtime_mock_enabled() or self._port_free(port):
                 return port
         raise RuntimeError("no free port available in agent range")
 

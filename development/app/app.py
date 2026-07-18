@@ -18,8 +18,19 @@ import uuid
 import json
 from typing import Optional
 
+
+def _load_metrics_overrides():
+    raw = os.getenv("METRICS_OVERRIDES", "")
+    if not raw:
+        return {}
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("METRICS_OVERRIDES must be a JSON object")
+    return parsed
+
+
 # Global storage for overridden values
-overrides = {}
+overrides = _load_metrics_overrides()
 
 MODEL_NAME = os.getenv("MODEL_NAME", "llama2-7b")
 DEPLOYMENT_NAME = os.getenv("DEPLOYMENT_NAME", "llama2-7b")
@@ -27,6 +38,7 @@ NAMESPACE = os.getenv("POD_NAMESPACE", "default")
 # Kubernetes sets HOSTNAME to the pod name; fall back to the deployment name.
 POD_NAME = os.getenv("POD_NAME") or os.getenv("HOSTNAME") or DEPLOYMENT_NAME
 DEFAULT_REPLICAS = int(os.getenv("DEFAULT_REPLICAS", "1"))
+SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
 SIMULATION = os.getenv("SIMULATION", "disabled")
 STANDALONE_MODE = os.getenv("STANDALONE_MODE", "false").lower() in ("true", "1", "yes")
 
@@ -2412,7 +2424,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Failed to load k8s config: {e}")
 
-        app.run(host="0.0.0.0", port=8000)
+        app.run(host="0.0.0.0", port=SERVER_PORT)
 
     if simulator is not None:
         simulator.stop()

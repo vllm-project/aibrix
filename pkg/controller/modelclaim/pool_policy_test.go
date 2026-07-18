@@ -39,15 +39,23 @@ func TestParsePoolPolicyUsesOneDeploymentAnnotation(t *testing.T) {
 	assert.Equal(t, int32(20), policy.Reclaim.GuaranteedFloorPercent)
 }
 
-func TestParsePoolPolicyRejectsUnsupportedLifecyclePolicy(t *testing.T) {
+func TestParsePoolPolicyAcceptsLifecycleSleep(t *testing.T) {
 	policy, err := parsePoolPolicy(`{
 		"reclaim": {"capacityBytes": 1000},
 		"lifecycle": {"sleepAfterSeconds": 900}
 	}`)
 
+	require.NoError(t, err)
+	require.NotNil(t, policy)
+}
+
+func TestParsePoolPolicyRejectsNonPositiveSleepWindow(t *testing.T) {
+	policy, err := parsePoolPolicy(`{"lifecycle":{"sleepAfterSeconds":0}}`)
+
 	require.Error(t, err)
 	assert.Nil(t, policy)
-	assert.Contains(t, err.Error(), "unknown field")
+	assert.Contains(t, err.Error(), "sleepAfterSeconds must be positive")
+	assert.Equal(t, poolPolicyErrorInvalidSleep, poolPolicyErrorClass(err))
 }
 
 func TestParsePoolPolicyClassifiesConfigurationErrors(t *testing.T) {
@@ -58,10 +66,11 @@ func TestParsePoolPolicyClassifiesConfigurationErrors(t *testing.T) {
 	}{
 		{"truncated JSON", `{"reclaim":`, poolPolicyErrorInvalidJSON},
 		{"multiple JSON values", `{} {}`, poolPolicyErrorInvalidJSON},
-		{"unknown field", `{"lifecycle":{}}`, poolPolicyErrorUnknownField},
+		{"unknown field", `{"unknown":{}}`, poolPolicyErrorUnknownField},
 		{"unsupported mode", `{"reclaim":{"mode":"weight-first","capacityBytes":1000}}`, poolPolicyErrorUnsupportedMode},
 		{"non-positive capacity", `{"reclaim":{"capacityBytes":0}}`, poolPolicyErrorInvalidCapacity},
 		{"floor above 100", `{"reclaim":{"capacityBytes":1000,"guaranteedFloorPercent":101}}`, poolPolicyErrorInvalidFloor},
+		{"non-positive sleep window", `{"lifecycle":{"sleepAfterSeconds":0}}`, poolPolicyErrorInvalidSleep},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -147,4 +156,23 @@ func TestComputePoolKVTargetsRefusesToShrinkBelowObservedKVUsage(t *testing.T) {
 
 	assert.ErrorIs(t, err, errPoolKVUsageExceedsCapacity)
 	assert.Nil(t, targets)
+}
+
+func TestModelsForKVPolicyRejectsIncompleteCapacityObservation(t *testing.T) {
+	models := modelsForKVPolicy(&RuntimeSnapshot{Models: []RuntimeSnapshotModel{
+		{
+			ModelName: "observed", IPCName: "kvc_observed",
+			Phase: runtimePhaseActive, Alive: true, Ready: true,
+			KVCapacityBytes: 500,
+		},
+		{
+			ModelName: "unknown", IPCName: "kvc_unknown",
+			Phase: runtimePhaseActive, Alive: true, Ready: true,
+		},
+	}}, map[string]poolRequestActivity{
+		"kvc_observed": {Active: true},
+		"kvc_unknown":  {},
+	})
+
+	assert.Nil(t, models, "a partial KV observation must not produce a limit plan")
 }

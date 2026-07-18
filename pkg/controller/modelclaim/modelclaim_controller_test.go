@@ -274,13 +274,16 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 	pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(replicaSet, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))}
 
 	r, runtime := newReconciler(t, deployment, replicaSet, pod)
+	now := time.Unix(1_700_000_000, 0)
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
 	requestSuccessTotal := int64(10)
 	runtime.snapshots = map[string]*RuntimeSnapshot{
 		pod.Status.PodIP: {
+			ObservedAt:   now,
 			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 500}},
 			Models: []RuntimeSnapshotModel{
 				{
-					ModelName: "hot", Phase: "active", Alive: true, Ready: true,
+					ModelName: "hot", IPCName: "kvc_hot", Phase: "active", Alive: true, Ready: true,
 					KVUsedBytes: 100, KVCapacityBytes: 200,
 					RequestMetricsObserved: true, RequestsRunning: 2, RequestSuccessTotal: &requestSuccessTotal,
 				},
@@ -299,9 +302,27 @@ func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 	limits := map[string]int64{}
 	for _, call := range runtime.kvLimitCalls {
 		limits[call.ModelName] = call.LimitBytes
+		if call.ModelName == "idle" {
+			assert.Contains(t, call.OperationID, "/idle/")
+		}
 	}
 	assert.Equal(t, int64(800), limits["hot"])
 	assert.Equal(t, int64(200), limits["idle"])
+
+	firstOperationIDs := map[string]string{}
+	for _, call := range runtime.kvLimitCalls {
+		firstOperationIDs[call.ModelName] = call.OperationID
+	}
+	runtime.kvLimitCalls = nil
+	now = now.Add(DefaultRequeueDuration)
+	runtime.snapshots[pod.Status.PodIP].ObservedAt = now
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+
+	require.Len(t, runtime.kvLimitCalls, 2)
+	for _, call := range runtime.kvLimitCalls {
+		assert.NotEqual(t, firstOperationIDs[call.ModelName], call.OperationID)
+	}
 }
 
 func TestReconcilePoolPoliciesSkipsNilRuntimeSnapshot(t *testing.T) {
@@ -429,6 +450,95 @@ func TestReconcilePoolPoliciesStaysQuietForValidPolicy(t *testing.T) {
 	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
 
 	assert.Empty(t, drainEvents(t, r))
+}
+
+func TestReconcilePoolPoliciesSleepsIdleSingleReplica(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	deployment, replicaSet, pod := warmPoolObjects(`{"lifecycle":{"sleepAfterSeconds":60}}`)
+	pod.UID = types.UID("warm-uid")
+	claim := sampleModelClaim()
+	claim.UID = types.UID("claim-uid")
+	claim.Status.Phase = modelv1alpha1.ModelClaimActive
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Port: 20000, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod, claim)
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	requestSuccessTotal := int64(10)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 500}},
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "qwen2-7b", Port: 20000,
+				Phase: runtimePhaseActive, Alive: true, Ready: true,
+				RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
+				ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+			}},
+		},
+	}
+
+	// A first observation establishes a conservative idle baseline.
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	require.Empty(t, runtime.sleepCalls)
+
+	now = now.Add(61 * time.Second)
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "qwen2-7b", runtime.sleepCalls[0].ModelName)
+	assert.Equal(t, 1, runtime.sleepCalls[0].Level)
+	assert.Contains(t, runtime.sleepCalls[0].OperationID, "/qwen2-7b/")
+	gotClaim := getModel(t, r, claim.Name)
+	require.Len(t, gotClaim.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, gotClaim.Status.Instances[0].Phase)
+	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, gotClaim.Status.Phase)
+	gotPod := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{
+		Namespace: testNamespace, Name: pod.Name,
+	}, gotPod))
+	annotation := gotPod.Annotations[constants.ModelClaimPodAnnotationPrefix+claim.Name]
+	assert.Contains(t, annotation, `"port":0`)
+	assert.Contains(t, annotation, `"state":"sleeping"`)
+}
+
+func TestReconcilePoolPoliciesUsesRuntimeTransitionAsWakeGrace(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	deployment, replicaSet, pod := warmPoolObjects(`{"lifecycle":{"sleepAfterSeconds":60}}`)
+	pod.UID = types.UID("warm-uid")
+	claim := sampleModelClaim()
+	claim.UID = types.UID("claim-uid")
+	claim.Status.Phase = modelv1alpha1.ModelClaimActive
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Port: 20000, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod, claim)
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	requestSuccessTotal := int64(10)
+	lastTransition := now
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0"}},
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "qwen2-7b", Port: 20000, IPCName: "kvc_qwen2-7b",
+				Phase: runtimePhaseActive, Alive: true, Ready: true,
+				LastTransition:         &lastTransition,
+				RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
+				ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+			}},
+		},
+	}
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	now = now.Add(120 * time.Second)
+	lastTransition = now.Add(-30 * time.Second)
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	assert.Empty(t, runtime.sleepCalls, "a recent wake transition must start a fresh idle window")
+
+	now = now.Add(31 * time.Second)
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod})
+	assert.Len(t, runtime.sleepCalls, 1)
 }
 
 func reconcileOnce(t *testing.T, r *ModelClaimReconciler, name string) {

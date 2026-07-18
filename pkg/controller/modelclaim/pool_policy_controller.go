@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -46,6 +47,7 @@ type poolPolicyManager struct {
 type poolActivityRecord struct {
 	successTotal int64
 	known        bool
+	lastActive   time.Time
 }
 
 type poolConfigRecord struct {
@@ -115,14 +117,19 @@ func (m *poolPolicyManager) observe(
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	now := m.now()
 	current := *model.RequestSuccessTotal
 	record := m.activity[key]
+	initialized := record.known && current >= record.successTotal
 	delta := int64(0)
-	if record.known && current >= record.successTotal {
+	if initialized {
 		delta = current - record.successTotal
 	}
 	inFlight := max(model.RequestsRunning, int64(0)) + max(model.RequestsWaiting, int64(0))
 	active := inFlight > 0 || delta > 0
+	if !initialized || active {
+		record.lastActive = now
+	}
 	record.successTotal = current
 	record.known = true
 	m.activity[key] = record
@@ -130,6 +137,8 @@ func (m *poolPolicyManager) observe(
 		Active:           active,
 		RequestsInFlight: inFlight,
 		CompletionDelta:  delta,
+		LastActive:       record.lastActive,
+		Initialized:      initialized,
 	}, true
 }
 
@@ -250,7 +259,7 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 	source *poolPolicySource,
 	manager *poolPolicyManager,
 ) error {
-	if source.policy.Reclaim == nil {
+	if source.policy.Reclaim == nil && source.policy.Lifecycle == nil {
 		return nil
 	}
 	pods, err := r.poolPolicyPods(ctx, source.deployment)
@@ -274,10 +283,15 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 			klog.V(4).InfoS("pool policy skips non-single-GPU runtime", "pod", klog.KObj(pod))
 			continue
 		}
-		models, observed := manager.modelsForKVPolicy(pod, snapshot)
-		if !observed {
-			klog.V(4).InfoS("pool policy waits for complete request observations", "pod", klog.KObj(pod))
-		} else {
+		decisionTime := snapshot.ObservedAt
+		if decisionTime.IsZero() {
+			decisionTime = manager.now()
+		}
+		activities, observed := manager.observeSnapshot(pod, snapshot)
+		if source.policy.Reclaim != nil && !observed {
+			klog.V(4).InfoS("pool KV policy waits for complete request observations", "pod", klog.KObj(pod))
+		} else if source.policy.Reclaim != nil {
+			models := modelsForKVPolicy(snapshot, activities)
 			targets, err := computePoolKVTargets(
 				source.policy.Reclaim.CapacityBytes,
 				source.policy.Reclaim.GuaranteedFloorPercent,
@@ -292,8 +306,8 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 						continue
 					}
 					operationID := fmt.Sprintf(
-						"pool-policy-kv/%s/%s/%s/%d",
-						source.key.String(), pod.UID, model.IPCName, target,
+						"pool-policy-kv/%s/%s/%s/%d/%d",
+						source.key.String(), pod.UID, snapshotActivityKey(model), target, decisionTime.UnixNano(),
 					)
 					if _, err := r.Runtime.SetKVLimit(ctx, pod.Status.PodIP, DefaultRuntimePort, &SetKVLimitRequest{
 						ModelName: model.ModelName, LimitBytes: target, OperationID: operationID,
@@ -303,14 +317,39 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 				}
 			}
 		}
+		if source.policy.Lifecycle != nil && !observed {
+			klog.V(4).InfoS("pool lifecycle policy waits for complete request observations", "pod", klog.KObj(pod))
+		} else if source.policy.Lifecycle != nil {
+			r.reconcilePoolIdleSleep(ctx, source, manager, pod, snapshot, activities)
+		}
 	}
 	return nil
 }
 
-func (m *poolPolicyManager) modelsForKVPolicy(
+func (m *poolPolicyManager) observeSnapshot(
 	pod *corev1.Pod,
 	snapshot *RuntimeSnapshot,
-) ([]poolKVModel, bool) {
+) (map[string]poolRequestActivity, bool) {
+	activities := make(map[string]poolRequestActivity, len(snapshot.Models))
+	for i := range snapshot.Models {
+		model := snapshot.Models[i]
+		if model.Phase != runtimePhaseActive || !model.Alive || !model.Ready {
+			continue
+		}
+		activityKey := snapshotActivityKey(model)
+		activity, observed := m.observe(string(pod.UID)+"/"+activityKey, model)
+		if !observed {
+			return nil, false
+		}
+		activities[activityKey] = activity
+	}
+	return activities, true
+}
+
+func modelsForKVPolicy(
+	snapshot *RuntimeSnapshot,
+	activities map[string]poolRequestActivity,
+) []poolKVModel {
 	models := make([]poolKVModel, 0, len(snapshot.Models))
 	for i := range snapshot.Models {
 		model := snapshot.Models[i]
@@ -318,20 +357,149 @@ func (m *poolPolicyManager) modelsForKVPolicy(
 			continue
 		}
 		if model.KVCapacityBytes <= 0 {
-			return nil, false
-		}
-		activity, observed := m.observe(string(pod.UID)+"/"+model.IPCName, model)
-		if !observed {
-			return nil, false
+			return nil
 		}
 		models = append(models, poolKVModel{
 			Name:            model.ModelName,
 			KVUsedBytes:     model.KVUsedBytes,
 			KVCapacityBytes: model.KVCapacityBytes,
-			Activity:        activity,
+			Activity:        activities[snapshotActivityKey(model)],
 		})
 	}
-	return models, true
+	return models
+}
+
+func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
+	ctx context.Context,
+	source *poolPolicySource,
+	manager *poolPolicyManager,
+	pod *corev1.Pod,
+	snapshot *RuntimeSnapshot,
+	activities map[string]poolRequestActivity,
+) {
+	claims := &modelv1alpha1.ModelClaimList{}
+	if err := r.List(ctx, claims, client.InNamespace(pod.Namespace)); err != nil {
+		klog.ErrorS(err, "pool lifecycle policy could not list ModelClaims", "pod", klog.KObj(pod))
+		return
+	}
+	idleAfter := time.Duration(source.policy.Lifecycle.SleepAfterSeconds) * time.Second
+	for i := range snapshot.Models {
+		model := snapshot.Models[i]
+		if model.Phase != runtimePhaseActive || !model.Alive || !model.Ready {
+			continue
+		}
+		activity, found := activities[snapshotActivityKey(model)]
+		if !found || !activity.Initialized || activity.Active {
+			continue
+		}
+		idleSince := activity.LastActive
+		if model.LastTransition != nil && model.LastTransition.After(idleSince) {
+			idleSince = *model.LastTransition
+		}
+		if idleSince.IsZero() || manager.now().Sub(idleSince) < idleAfter {
+			continue
+		}
+
+		claim := claimForRuntimeSnapshot(claims, model)
+		if claim == nil || !isVLLMModel(claim) {
+			continue
+		}
+		port, active := activeClaimInstancePort(claim, pod.Name)
+		if !active {
+			continue
+		}
+		if err := r.annotateWarmPodWithState(
+			ctx, claim, pod, 0, constants.ModelClaimRoutingStateSleeping,
+		); err != nil {
+			klog.ErrorS(err, "pool lifecycle policy could not de-route idle engine", "pod", klog.KObj(pod), "model", model.ModelName)
+			continue
+		}
+		operationID := fmt.Sprintf(
+			"pool-policy-sleep/%s/%s/%s/%d",
+			source.key.String(), pod.UID, snapshotActivityKey(model), idleSince.UnixNano(),
+		)
+		if _, err := r.Runtime.Sleep(ctx, pod.Status.PodIP, DefaultRuntimePort, &SleepRequest{
+			ModelName: model.ModelName, Level: 1, OperationID: operationID,
+		}); err != nil {
+			if restoreErr := r.annotateWarmPodWithState(
+				ctx, claim, pod, port, constants.ModelClaimRoutingStateActive,
+			); restoreErr != nil {
+				klog.ErrorS(restoreErr, "pool lifecycle policy could not restore route", "pod", klog.KObj(pod), "model", model.ModelName)
+			}
+			klog.ErrorS(err, "pool lifecycle policy could not sleep idle engine", "pod", klog.KObj(pod), "model", model.ModelName)
+			continue
+		}
+		if err := r.markClaimInstanceSleeping(ctx, claim, pod.Name); err != nil {
+			klog.ErrorS(err, "pool lifecycle policy could not persist sleeping state", "claim", klog.KObj(claim), "pod", klog.KObj(pod))
+			continue
+		}
+		r.Recorder.Eventf(
+			claim, corev1.EventTypeNormal, "Sleeping",
+			"model %s idle past %ds; sleeping engine on pod %s",
+			model.ModelName, source.policy.Lifecycle.SleepAfterSeconds, pod.Name,
+		)
+	}
+}
+
+func snapshotActivityKey(model RuntimeSnapshotModel) string {
+	if model.IPCName != "" {
+		return model.IPCName
+	}
+	return model.ModelName
+}
+
+func claimForRuntimeSnapshot(
+	claims *modelv1alpha1.ModelClaimList,
+	model RuntimeSnapshotModel,
+) *modelv1alpha1.ModelClaim {
+	if model.ClaimRef == nil || model.ClaimRef.UID == "" {
+		return nil
+	}
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+		if claim.Namespace == model.ClaimRef.Namespace &&
+			claim.Name == model.ClaimRef.Name && string(claim.UID) == model.ClaimRef.UID {
+			return claim
+		}
+	}
+	return nil
+}
+
+func activeClaimInstancePort(pm *modelv1alpha1.ModelClaim, podName string) (int32, bool) {
+	for _, instance := range pm.Status.Instances {
+		if instance.Pod == podName && instance.Phase == modelv1alpha1.ModelClaimActive {
+			return instance.Port, true
+		}
+	}
+	return 0, false
+}
+
+func (r *ModelClaimReconciler) markClaimInstanceSleeping(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	podName string,
+) error {
+	latest := &modelv1alpha1.ModelClaim{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: pm.Namespace, Name: pm.Name}, latest); err != nil {
+		return err
+	}
+	changed := false
+	for i := range latest.Status.Instances {
+		if latest.Status.Instances[i].Pod != podName {
+			continue
+		}
+		if latest.Status.Instances[i].Phase != modelv1alpha1.ModelClaimSleeping {
+			latest.Status.Instances[i].Phase = modelv1alpha1.ModelClaimSleeping
+			changed = true
+		}
+		break
+	}
+	if !changed {
+		return nil
+	}
+	r.recomputeReadiness(latest)
+	setClaimGauges(latest)
+	return r.Status().Update(ctx, latest)
 }
 
 func (r *ModelClaimReconciler) poolPolicyPods(

@@ -100,12 +100,54 @@ func TestUpdatePodAddsAndRemovesModelClaim(t *testing.T) {
 
 func TestModelClaimPortZeroHasNoRoutableBackend(t *testing.T) {
 	c := NewForTest()
-	c.addPod(warmModelClaimPod("p1", "default", map[string]int{"m-live": 9001, "m-booting": 0}))
+	pod := warmModelClaimPod("p1", "default", map[string]int{"m-live": 9001})
+	pod.Annotations[constants.ModelClaimPodAnnotationPrefix+"sleeping"] =
+		`{"model":"m-sleeping","port":0,"state":"sleeping"}`
+	c.addPod(pod)
 
 	assert.True(t, c.HasModel("m-live"))
-	assert.False(t, c.HasModel("m-booting"), "port 0 ModelClaim must have no routable pods")
-	_, err := c.ListPodsByModel("m-booting")
+	assert.False(t, c.HasModel("m-sleeping"), "port 0 ModelClaim must have no routable pods")
+	_, err := c.ListPodsByModel("m-sleeping")
 	assert.Error(t, err)
+
+	provider, ok := any(c).(interface {
+		ModelClaimBinding(string) (*v1.Pod, int, string, bool)
+	})
+	require.True(t, ok, "cache must expose non-routable ModelClaim bindings")
+	boundPod, port, state, found := provider.ModelClaimBinding("m-sleeping")
+	require.True(t, found)
+	assert.Equal(t, pod.Name, boundPod.Name)
+	assert.Zero(t, port)
+	assert.Equal(t, constants.ModelClaimRoutingStateSleeping, state)
+}
+
+func TestModelClaimBindingTracksAnnotationUpdatesAndDeletion(t *testing.T) {
+	c := NewForTest()
+	active := warmModelClaimPod("p1", "default", map[string]int{"m": 9001})
+	c.addPod(active)
+
+	provider, ok := any(c).(interface {
+		ModelClaimBinding(string) (*v1.Pod, int, string, bool)
+	})
+	require.True(t, ok, "cache must expose ModelClaim bindings")
+	_, port, state, found := provider.ModelClaimBinding("m")
+	require.True(t, found)
+	assert.Equal(t, 9001, port)
+	assert.Equal(t, constants.ModelClaimRoutingStateActive, state)
+
+	sleeping := warmModelClaimPod("p1", "default", nil)
+	sleeping.Annotations[constants.ModelClaimPodAnnotationPrefix+"sleeping"] =
+		`{"model":"m","port":0,"state":"sleeping"}`
+	c.updatePod(active, sleeping)
+	_, port, state, found = provider.ModelClaimBinding("m")
+	require.True(t, found)
+	assert.Zero(t, port)
+	assert.Equal(t, constants.ModelClaimRoutingStateSleeping, state)
+	assert.False(t, c.HasModel("m"))
+
+	c.deletePod(sleeping)
+	_, _, _, found = provider.ModelClaimBinding("m")
+	assert.False(t, found)
 }
 
 func TestModelClaimRoutabilityViaAnnotationUpdate(t *testing.T) {
