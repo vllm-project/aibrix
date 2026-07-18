@@ -25,7 +25,6 @@ import (
 // with apply.
 type StormServiceStatusApplyConfiguration struct {
 	ObservedGeneration    *int64                         `json:"observedGeneration,omitempty"`
-	Mode                  *v1alpha1.StormServiceMode     `json:"mode,omitempty"`
 	Replicas              *int32                         `json:"replicas,omitempty"`
 	ReadyReplicas         *int32                         `json:"readyReplicas,omitempty"`
 	NotReadyReplicas      *int32                         `json:"notReadyReplicas,omitempty"`
@@ -51,14 +50,6 @@ func StormServiceStatus() *StormServiceStatusApplyConfiguration {
 // If called multiple times, the ObservedGeneration field is set to the value of the last call.
 func (b *StormServiceStatusApplyConfiguration) WithObservedGeneration(value int64) *StormServiceStatusApplyConfiguration {
 	b.ObservedGeneration = &value
-	return b
-}
-
-// WithMode sets the Mode field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Mode field is set to the value of the last call.
-func (b *StormServiceStatusApplyConfiguration) WithMode(value v1alpha1.StormServiceMode) *StormServiceStatusApplyConfiguration {
-	b.Mode = &value
 	return b
 }
 

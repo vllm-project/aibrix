@@ -30,8 +30,8 @@ type StormServiceSpec struct {
 
 	// Mode is the deployment mode of the StormService. When left empty it is resolved
 	// from spec.replicas for backward compatibility: "Replica" when replicas > 1,
-	// otherwise "Pooled" (see ResolvedMode). The mutating webhook defaults this field
-	// so the intent is recorded on the object.
+	// otherwise "Pooled" (see ResolvedMode). The field is not defaulted, so an object
+	// that does not set it keeps the inferred behavior.
 	// +optional
 	// +kubebuilder:validation:Enum={Replica,Pooled}
 	Mode StormServiceMode `json:"mode,omitempty"`
@@ -112,10 +112,6 @@ type RoleSetTemplateSpec struct {
 type StormServiceStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-
-	// Mode is the resolved deployment mode the controller is operating the StormService in.
-	// +optional
-	Mode StormServiceMode `json:"mode,omitempty"`
 
 	// Total number of non-terminated roleSets targeted by this stormService (their labels match the selector).
 	// +optional

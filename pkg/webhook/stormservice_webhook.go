@@ -53,9 +53,6 @@ func (r *StormServiceCustomDefaulter) Default(_ context.Context, obj runtime.Obj
 		return fmt.Errorf("expected a StormService object but got %T", obj)
 	}
 
-	// Record the resolved deployment mode so the intent is explicit on the object.
-	stormService.Spec.Mode = stormService.Spec.ResolvedMode()
-
 	// Only proceed if the sidecar injection annotation is present
 	if _, exists := stormService.GetAnnotations()[SidecarInjectionAnnotation]; !exists {
 		return nil
@@ -212,23 +209,10 @@ func (r *StormServiceCustomDefaulter) ValidateCreate(ctx context.Context, obj ru
 }
 
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
-func (r *StormServiceCustomDefaulter) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+func (r *StormServiceCustomDefaulter) ValidateUpdate(_ context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
 	stormService, ok := newObj.(*orchestrationv1alpha1.StormService)
 	if !ok {
 		return nil, fmt.Errorf("expected a StormService object but got %T", newObj)
-	}
-	oldStormService, ok := oldObj.(*orchestrationv1alpha1.StormService)
-	if !ok {
-		return nil, fmt.Errorf("expected a StormService object but got %T", oldObj)
-	}
-	// The deployment mode selects the RoleSet topology the controller builds, so
-	// switching it on a live StormService would force a disruptive teardown and
-	// rebuild. Treat the resolved mode as immutable and require recreation instead.
-	// Comparing ResolvedMode rather than spec.Mode keeps objects created before the
-	// mode field existed (stored spec.mode is empty) from being rejected on updates.
-	if oldStormService.Spec.ResolvedMode() != stormService.Spec.ResolvedMode() {
-		return nil, fmt.Errorf("StormService deployment mode is immutable; cannot change from %s to %s",
-			oldStormService.Spec.ResolvedMode(), stormService.Spec.ResolvedMode())
 	}
 	if err := validateStormServiceMode(stormService); err != nil {
 		return nil, err
@@ -238,7 +222,8 @@ func (r *StormServiceCustomDefaulter) ValidateUpdate(_ context.Context, oldObj, 
 
 // validateStormServiceMode rejects mode/replicas combinations that cannot be satisfied.
 // Pooled mode runs a single RoleSet and scales roles through spec.template.spec.roles[],
-// so a replica count above one is ambiguous.
+// so a replica count above one is ambiguous. Only an explicitly declared spec.mode is
+// checked, so objects that rely on the inferred mode keep scaling spec.replicas freely.
 func validateStormServiceMode(stormService *orchestrationv1alpha1.StormService) error {
 	if stormService.Spec.Mode == orchestrationv1alpha1.StormServicePooledMode &&
 		stormService.Spec.Replicas != nil && *stormService.Spec.Replicas > 1 {

@@ -27,33 +27,19 @@ import (
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
 
-func TestStormServiceDefault_ResolvesMode(t *testing.T) {
+// Defaulting spec.mode would pin an inferred mode onto objects that never declared
+// one, which then blocks a later scale-up through validateStormServiceMode.
+func TestStormServiceDefault_LeavesModeUnset(t *testing.T) {
 	defaulter := &StormServiceCustomDefaulter{}
 
-	tests := map[string]struct {
-		replicas *int32
-		mode     orchestrationv1alpha1.StormServiceMode
-		want     orchestrationv1alpha1.StormServiceMode
-	}{
-		"unset replicas defaults to pooled": {replicas: nil, want: orchestrationv1alpha1.StormServicePooledMode},
-		"replicas 1 defaults to pooled":     {replicas: ptr.To[int32](1), want: orchestrationv1alpha1.StormServicePooledMode},
-		"replicas 3 defaults to replica":    {replicas: ptr.To[int32](3), want: orchestrationv1alpha1.StormServiceReplicaMode},
-		"explicit pooled is preserved":      {replicas: ptr.To[int32](1), mode: orchestrationv1alpha1.StormServicePooledMode, want: orchestrationv1alpha1.StormServicePooledMode},
-		"explicit replica is preserved":     {replicas: ptr.To[int32](1), mode: orchestrationv1alpha1.StormServiceReplicaMode, want: orchestrationv1alpha1.StormServiceReplicaMode},
+	ss := &orchestrationv1alpha1.StormService{
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Replicas: ptr.To[int32](1),
+		},
 	}
 
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			ss := &orchestrationv1alpha1.StormService{
-				Spec: orchestrationv1alpha1.StormServiceSpec{
-					Replicas: tc.replicas,
-					Mode:     tc.mode,
-				},
-			}
-			require.NoError(t, defaulter.Default(context.Background(), ss))
-			assert.Equal(t, tc.want, ss.Spec.Mode)
-		})
-	}
+	require.NoError(t, defaulter.Default(context.Background(), ss))
+	assert.Empty(t, ss.Spec.Mode)
 }
 
 func TestStormServiceValidateCreate_ModeReplicas(t *testing.T) {
@@ -91,7 +77,7 @@ func TestStormServiceValidateCreate_ModeReplicas(t *testing.T) {
 	}
 }
 
-func TestStormServiceValidateUpdate_ModeImmutability(t *testing.T) {
+func TestStormServiceValidateUpdate_ModeReplicas(t *testing.T) {
 	validator := &StormServiceCustomDefaulter{}
 
 	tests := map[string]struct {
@@ -101,9 +87,9 @@ func TestStormServiceValidateUpdate_ModeImmutability(t *testing.T) {
 		newReplicas *int32
 		expectError bool
 	}{
-		"unchanged mode is allowed":              {oldMode: orchestrationv1alpha1.StormServicePooledMode, newMode: orchestrationv1alpha1.StormServicePooledMode, expectError: false},
-		"explicit mode change is rejected":       {oldMode: orchestrationv1alpha1.StormServicePooledMode, newMode: orchestrationv1alpha1.StormServiceReplicaMode, expectError: true},
-		"replica-driven mode change is rejected": {oldReplicas: ptr.To[int32](1), newReplicas: ptr.To[int32](3), expectError: true},
+		"inferred mode scales up":               {oldReplicas: ptr.To[int32](1), newReplicas: ptr.To[int32](3), expectError: false},
+		"declared replica mode scales up":       {oldMode: orchestrationv1alpha1.StormServiceReplicaMode, oldReplicas: ptr.To[int32](1), newMode: orchestrationv1alpha1.StormServiceReplicaMode, newReplicas: ptr.To[int32](3), expectError: false},
+		"declared pooled mode rejects scale up": {oldMode: orchestrationv1alpha1.StormServicePooledMode, oldReplicas: ptr.To[int32](1), newMode: orchestrationv1alpha1.StormServicePooledMode, newReplicas: ptr.To[int32](3), expectError: true},
 	}
 
 	for name, tc := range tests {
