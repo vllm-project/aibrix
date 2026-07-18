@@ -38,8 +38,8 @@ Stormservice supports two deployment modes: **Replica Mode** and **Pooled Mode**
 
 .. note::
     1. These two modes are mutually exclusive. The mode is declared through the `stormservice.spec.mode` field, which accepts `Replica` or `Pooled`.
-    2. `spec.mode` is optional. When it is omitted the mode is defaulted for backward compatibility from `stormservice.spec.replicas`: replica mode when `replicas > 1`, otherwise pooled mode. The resolved mode is reported in `stormservice.status.mode`.
-    3. In pooled mode `spec.replicas` must stay at `1`; roles are scaled through `spec.template.spec.roles[].replicas`.
+    2. `spec.mode` is optional and is not defaulted. When it is omitted the mode is inferred for backward compatibility from `stormservice.spec.replicas`: replica mode when `replicas > 1`, otherwise pooled mode.
+    3. When `spec.mode` is set to `Pooled`, `spec.replicas` must stay at `1`; roles are scaled through `spec.template.spec.roles[].replicas`.
 
 
 Replica Mode

@@ -4173,8 +4173,6 @@ spec:
                 type: integer
               currentRevision:
                 type: string
-              mode:
-                type: string
               notReadyReplicas:
                 format: int32
                 type: integer

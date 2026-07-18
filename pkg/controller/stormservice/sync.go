@@ -354,7 +354,6 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 	checkpoint := stormService.Status.DeepCopy()
 
 	stormService.Status.ObservedGeneration = stormService.Generation
-	stormService.Status.Mode = stormService.Spec.ResolvedMode()
 	stormService.Status.CurrentRevision = currentRevision.Name
 	stormService.Status.UpdateRevision = updateRevision.Name
 	stormService.Status.CollisionCount = &collisionCount
