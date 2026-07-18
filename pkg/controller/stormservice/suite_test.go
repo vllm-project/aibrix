@@ -64,9 +64,9 @@ var _ = BeforeSuite(func() {
 	// Only set BinaryAssetsDirectory if KUBEBUILDER_ASSETS is not set
 	// When run via make test, KUBEBUILDER_ASSETS will be set and BinaryAssetsDirectory should be empty
 	if kubebuilderAssets == "" {
-		// Use 1.29.0 to match the Makefile's ENVTEST_K8S_VERSION
+		// Use 1.30.0 to match the Makefile's ENVTEST_K8S_VERSION
 		testEnvConfig.BinaryAssetsDirectory = filepath.Join("..", "..", "..", "bin", "k8s",
-			fmt.Sprintf("1.29.0-%s-%s", runtime.GOOS, runtime.GOARCH))
+			fmt.Sprintf("1.30.0-%s-%s", runtime.GOOS, runtime.GOARCH))
 	}
 
 	testEnv = testEnvConfig

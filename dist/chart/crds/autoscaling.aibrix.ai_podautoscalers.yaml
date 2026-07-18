@@ -42,6 +42,29 @@ spec:
             type: object
           spec:
             properties:
+              circuitBreaker:
+                properties:
+                  action:
+                    default: freeze
+                    enum:
+                    - freeze
+                    - max
+                    type: string
+                  enabled:
+                    type: boolean
+                  failureThreshold:
+                    default: 3
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  recoveryThreshold:
+                    default: 3
+                    format: int32
+                    minimum: 1
+                    type: integer
+                required:
+                - enabled
+                type: object
               maxReplicas:
                 format: int32
                 type: integer
@@ -120,6 +143,29 @@ spec:
               actualScale:
                 format: int32
                 type: integer
+              circuitBreaker:
+                properties:
+                  action:
+                    type: string
+                  failureCount:
+                    format: int32
+                    type: integer
+                  lastTransitionTime:
+                    format: date-time
+                    type: string
+                  protectedReplicas:
+                    format: int32
+                    type: integer
+                  reason:
+                    type: string
+                  recoveryCount:
+                    format: int32
+                    type: integer
+                  state:
+                    type: string
+                required:
+                - state
+                type: object
               conditions:
                 items:
                   properties:

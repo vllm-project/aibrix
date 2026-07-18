@@ -16,3 +16,8 @@ spec:
   targetMetric: "avg_prompt_throughput_toks_per_s"
   targetValue: "20"
   scalingStrategy: "APA"
+  circuitBreaker:
+    enabled: true
+    action: max
+    failureThreshold: 3
+    recoveryThreshold: 3

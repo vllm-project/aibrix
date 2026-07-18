@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -73,6 +74,48 @@ func TestPodAutoscalerInitialization(t *testing.T) {
 		t.Errorf("Spec.ScalingStrategy = %v, want %v", got, want)
 	}
 
+}
+
+func TestPodAutoscalerCircuitBreakerJSON(t *testing.T) {
+	protectedReplicas := int32(4)
+	pa := PodAutoscaler{
+		Spec: PodAutoscalerSpec{
+			CircuitBreaker: &CircuitBreakerConfig{
+				Enabled:           true,
+				Action:            CircuitBreakerActionMax,
+				FailureThreshold:  DefaultCircuitBreakerFailureThreshold,
+				RecoveryThreshold: DefaultCircuitBreakerRecoveryThreshold,
+			},
+		},
+		Status: PodAutoscalerStatus{
+			CircuitBreaker: &CircuitBreakerStatus{
+				State:             CircuitBreakerStateOpen,
+				Action:            CircuitBreakerActionFreeze,
+				FailureCount:      3,
+				RecoveryCount:     1,
+				ProtectedReplicas: &protectedReplicas,
+				Reason:            "AllMetricSourcesFailed",
+			},
+		},
+	}
+
+	data, err := json.Marshal(pa)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	spec := got["spec"].(map[string]any)
+	status := got["status"].(map[string]any)
+	if _, ok := spec["circuitBreaker"]; !ok {
+		t.Fatalf("spec JSON = %s, want circuitBreaker", data)
+	}
+	if _, ok := status["circuitBreaker"]; !ok {
+		t.Fatalf("status JSON = %s, want circuitBreaker", data)
+	}
 }
 
 // Additional test cases can be added here to further validate other aspects of the PodAutoscaler.
