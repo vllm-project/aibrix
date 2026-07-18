@@ -154,17 +154,20 @@ func lifecyclePoolDeployment() *appsv1.Deployment {
 			}},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec: corev1.PodSpec{Containers: []corev1.Container{
-					lifecycleRuntimeContainer(),
-					lifecycleEngineContainer(
-						"busy-engine", lifecycleBusyModel, lifecycleBusyPort,
-						`{"success_total":1,"running":1,"waiting":0,"swapped":0}`,
-					),
-					lifecycleEngineContainer(
-						"idle-engine", lifecycleIdleModel, lifecycleIdlePort,
-						`{"success_total":0,"running":0,"waiting":0,"swapped":0}`,
-					),
-				}},
+				Spec: corev1.PodSpec{
+					TerminationGracePeriodSeconds: ptr.To[int64](1),
+					Containers: []corev1.Container{
+						lifecycleRuntimeContainer(),
+						lifecycleEngineContainer(
+							"busy-engine", lifecycleBusyModel, lifecycleBusyPort,
+							`{"success_total":1,"running":1,"waiting":0,"swapped":0}`,
+						),
+						lifecycleEngineContainer(
+							"idle-engine", lifecycleIdleModel, lifecycleIdlePort,
+							`{"success_total":0,"running":0,"waiting":0,"swapped":0}`,
+						),
+					},
+				},
 			},
 		},
 	}

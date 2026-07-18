@@ -55,3 +55,11 @@ func TestWaitForLifecyclePoolPodsDeleted(t *testing.T) {
 	assert.GreaterOrEqual(t, listCalls, 3)
 	assert.Equal(t, "app="+lifecycleDeploymentName, selector)
 }
+
+func TestLifecyclePoolDeploymentTerminatesPromptly(t *testing.T) {
+	deployment := lifecyclePoolDeployment()
+	gracePeriod := deployment.Spec.Template.Spec.TerminationGracePeriodSeconds
+
+	require.NotNil(t, gracePeriod)
+	assert.LessOrEqual(t, *gracePeriod, int64(1))
+}
