@@ -40,12 +40,7 @@ not express GPU resources or parallelism. With kvcached enabled, do not add
 An optional JSON policy on the warm-pool Deployment drives request-based KV
 limit redistribution and idle sleep. A request for a sleeping model triggers
 an asynchronous wake and receives HTTP 503 with `Retry-After`; the gateway does
-not hold the original request. See the
-[manual GPU validation runbook](../../docs/modelclaim/manual-validation-runbook.md)
-for the complete minikube and A10 procedure, reliability fault injection, and
-the boundary between functional acceptance and performance evidence. Use the
-[kvcached and vLLM sleep mechanism guide](../../docs/modelclaim/kvcached-vllm-sleep-test-guide.md)
-when validating those upstream primitives without the AIBrix control plane.
+not hold the original request.
 
 This sample uses one GPU and independent single-GPU engines. Fixed TP/PP is
 supported only in a separate topology-homogeneous pool whose Pod GPU limit

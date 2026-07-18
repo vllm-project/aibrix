@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -64,12 +65,15 @@ func (r *runtimeModelWakeRequester) RequestWake(pod *v1.Pod, model string) bool 
 	if r == nil || pod == nil || pod.Status.PodIP == "" || model == "" {
 		return false
 	}
-	operationID := modelClaimWakeOperationID(pod, model)
-	if _, alreadyRunning := r.inFlight.LoadOrStore(operationID, struct{}{}); alreadyRunning {
+	// Pod status churn must not bypass in-flight deduplication. The runtime
+	// operation ID stays unique so a later sleep/wake cycle is still applied.
+	wakeKey := modelClaimWakeKey(pod, model)
+	if _, alreadyRunning := r.inFlight.LoadOrStore(wakeKey, struct{}{}); alreadyRunning {
 		return false
 	}
+	operationID := wakeKey + "/" + uuid.NewString()
 	go func() {
-		defer r.inFlight.Delete(operationID)
+		defer r.inFlight.Delete(wakeKey)
 		if err := r.wake(pod.Status.PodIP, model, operationID); err != nil {
 			klog.ErrorS(err, "ModelClaim request-triggered wake failed", "pod", klog.KObj(pod), "model", model)
 			return
@@ -79,16 +83,12 @@ func (r *runtimeModelWakeRequester) RequestWake(pod *v1.Pod, model string) bool 
 	return true
 }
 
-func modelClaimWakeOperationID(pod *v1.Pod, model string) string {
+func modelClaimWakeKey(pod *v1.Pod, model string) string {
 	podID := string(pod.UID)
 	if podID == "" {
 		podID = pod.Namespace + "/" + pod.Name
 	}
-	revision := pod.ResourceVersion
-	if revision == "" {
-		revision = "unknown"
-	}
-	return fmt.Sprintf("gateway-wake/%s/%s/%s", podID, model, revision)
+	return fmt.Sprintf("gateway-wake/%s/%s", podID, model)
 }
 
 func (r *runtimeModelWakeRequester) wake(podIP, model, operationID string) error {

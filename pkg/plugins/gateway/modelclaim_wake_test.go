@@ -48,7 +48,7 @@ func (r *recordingModelWakeRequester) RequestWake(pod *v1.Pod, model string) boo
 	return true
 }
 
-func TestRuntimeModelWakeRequesterDeduplicatesConcurrentRequests(t *testing.T) {
+func TestRuntimeModelWakeRequesterDeduplicatesAcrossPodResourceVersions(t *testing.T) {
 	type wakePayload struct {
 		ModelName   string `json:"model_name"`
 		OperationID string `json:"operation_id"`
@@ -58,13 +58,13 @@ func TestRuntimeModelWakeRequesterDeduplicatesConcurrentRequests(t *testing.T) {
 		payload wakePayload
 		err     error
 	}
-	received := make(chan wakeRequest, 1)
+	received := make(chan wakeRequest, 2)
 	release := make(chan struct{})
-	completed := make(chan struct{})
+	completed := make(chan struct{}, 2)
 	var requestCount int
 	var countMu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		defer close(completed)
+		defer func() { completed <- struct{}{} }()
 		var payload wakePayload
 		decodeErr := json.NewDecoder(request.Body).Decode(&payload)
 		countMu.Lock()
@@ -92,13 +92,14 @@ func TestRuntimeModelWakeRequesterDeduplicatesConcurrentRequests(t *testing.T) {
 	}
 
 	assert.True(t, requester.RequestWake(pod, "qwen"))
-	assert.False(t, requester.RequestWake(pod, "qwen"))
+	updatedPod := pod.DeepCopy()
+	updatedPod.ResourceVersion = "43"
+	assert.False(t, requester.RequestWake(updatedPod, "qwen"))
 	call := <-received
 	require.NoError(t, call.err)
 	assert.Equal(t, "/v1/runtime/models/wake", call.path)
 	assert.Equal(t, "qwen", call.payload.ModelName)
 	assert.Contains(t, call.payload.OperationID, "pod-uid")
-	assert.Contains(t, call.payload.OperationID, "/42")
 	close(release)
 	select {
 	case <-completed:
@@ -109,4 +110,55 @@ func TestRuntimeModelWakeRequesterDeduplicatesConcurrentRequests(t *testing.T) {
 	countMu.Lock()
 	assert.Equal(t, 1, requestCount)
 	countMu.Unlock()
+}
+
+func TestRuntimeModelWakeRequesterUsesUniqueOperationIDsAcrossAttempts(t *testing.T) {
+	type wakePayload struct {
+		ModelName   string `json:"model_name"`
+		OperationID string `json:"operation_id"`
+	}
+	type wakeRequest struct {
+		payload wakePayload
+		err     error
+	}
+	received := make(chan wakeRequest, 2)
+	completed := make(chan struct{}, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		defer func() { completed <- struct{}{} }()
+		var payload wakePayload
+		decodeErr := json.NewDecoder(request.Body).Decode(&payload)
+		received <- wakeRequest{payload: payload, err: decodeErr}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"status":"success"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	parsed, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	host, rawPort, err := net.SplitHostPort(parsed.Host)
+	require.NoError(t, err)
+	port, err := strconv.Atoi(rawPort)
+	require.NoError(t, err)
+	requester := newRuntimeModelWakeRequester(server.Client(), port)
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "warm-1", Namespace: "default", UID: types.UID("pod-uid"), ResourceVersion: "42",
+		},
+		Status: v1.PodStatus{PodIP: host},
+	}
+
+	assert.True(t, requester.RequestWake(pod, "qwen"))
+	first := <-received
+	require.NoError(t, first.err)
+	<-completed
+	require.Eventually(t, func() bool {
+		return requester.RequestWake(pod, "qwen")
+	}, time.Second, 10*time.Millisecond)
+	second := <-received
+	require.NoError(t, second.err)
+	<-completed
+
+	assert.Equal(t, "qwen", first.payload.ModelName)
+	assert.Equal(t, "qwen", second.payload.ModelName)
+	assert.NotEqual(t, first.payload.OperationID, second.payload.OperationID)
 }
