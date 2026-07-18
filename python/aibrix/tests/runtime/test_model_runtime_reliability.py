@@ -96,6 +96,7 @@ def test_re_adopt_keeps_a_live_engine_without_relaunching(tmp_path, monkeypatch)
     assert adopted[0].ipc_name == "kvc_qwen"
     assert adopted[0].phase == "active"
     assert adopted[0].restart_count == 1
+    assert runtime.snapshot_metrics().re_adoption_outcomes == {"success": 1}
 
 
 def test_re_adopt_rejects_a_reused_pid(tmp_path, monkeypatch):
@@ -115,6 +116,7 @@ def test_re_adopt_rejects_a_reused_pid(tmp_path, monkeypatch):
     assert adopted.phase == "restarting"
     assert adopted.restart_count == 1
     assert adopted.next_restart_at == clock[0] + timedelta(seconds=2)
+    assert runtime.snapshot_metrics().re_adoption_outcomes == {"restart_scheduled": 1}
 
 
 def test_supervisor_restarts_only_the_dead_engine_after_backoff(tmp_path):
@@ -148,6 +150,7 @@ def test_supervisor_restarts_only_the_dead_engine_after_backoff(tmp_path):
     assert failed.phase == "booting"
     assert launcher.launches == ["failed", "healthy", "failed"]
     assert healthy.proc is healthy_process
+    assert runtime.snapshot_metrics().restart_attempts == {"failed": 1}
 
 
 def test_supervisor_reports_terminal_failure_after_restart_budget(tmp_path):
@@ -184,6 +187,9 @@ def test_supervisor_reports_terminal_failure_after_restart_budget(tmp_path):
     assert snapshot[0]["alive"] is False
     assert snapshot[0]["ready"] is False
     assert snapshot[0]["phase"] == "failed"
+    metrics = runtime.snapshot_metrics()
+    assert metrics.restart_attempts == {"failed": 2}
+    assert metrics.restart_budget_exhausted == {"failed": 1}
 
 
 def test_supervisor_cleans_an_orphaned_process_group_before_backoff(

@@ -176,6 +176,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			Message: message,
 		})
 		pm.Status.Phase = modelv1alpha1.ModelClaimFailed
+		setClaimGauges(pm)
 		if uerr := r.Status().Update(ctx, pm); uerr != nil {
 			return requeueOnConflict(uerr)
 		}
@@ -203,6 +204,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				Message: err.Error(),
 			})
 			pm.Status.Phase = modelv1alpha1.ModelClaimFailed
+			setClaimGauges(pm)
 			if uerr := r.Status().Update(ctx, pm); uerr != nil {
 				return requeueOnConflict(uerr)
 			}

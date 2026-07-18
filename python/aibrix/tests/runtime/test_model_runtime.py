@@ -170,6 +170,13 @@ def test_failed_kv_limit_operation_is_retriable():
     assert retried.applied is True
     assert kv_controller.calls == 2
     assert inst.completed_operation_ids["kv-limit"] == ["limit-1"]
+    metrics = agent.snapshot_metrics()
+    assert metrics.kv_limit_outcomes == {
+        ("m1", "failed"): 1,
+        ("m1", "applied"): 1,
+    }
+    assert metrics.kv_limit_requested_bytes == {"m1": 4096}
+    assert metrics.kv_limit_applied_bytes == {"m1": 4096}
 
 
 def test_sleep_is_idempotent_by_operation_id():
@@ -205,6 +212,10 @@ def test_failed_sleep_operation_keeps_model_active_and_retriable():
     assert retried.applied is True
     assert launcher.slept == [("m1", 1), ("m1", 1)]
     assert inst.completed_operation_ids["sleep"] == ["sleep-1"]
+    assert agent.snapshot_metrics().lifecycle_outcomes == {
+        ("m1", "sleep", "failed"): 1,
+        ("m1", "sleep", "applied"): 1,
+    }
 
 
 def test_wake_restores_active_phase_and_readiness():
