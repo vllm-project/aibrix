@@ -694,6 +694,17 @@ var _ = Describe("Cache", func() {
 
 		// RunningReq should be 0
 		Expect(runningReqAfter.GetSimpleValue()).To(Equal(0.0))
+
+		// Directly assert on the model-level pendingRequests counter. It is
+		// incremented exactly once (AddRequestCount is guarded by CanAddTrace),
+		// so the two DoneRequestCount calls above must decrement it exactly
+		// once in total. This is the counter the fix protects: without the
+		// CanDoneTrace() guard the second DoneRequestCount over-decrements it
+		// to -1, whereas RealtimeNumRequestsRunning (asserted above) is derived
+		// from pod stats and stays 0 even with the bug present.
+		meta, ok := cache.metaModels.Load(modelName)
+		Expect(ok).To(BeTrue())
+		Expect(atomic.LoadInt32(&meta.pendingRequests)).To(Equal(int32(0)))
 	})
 })
 
