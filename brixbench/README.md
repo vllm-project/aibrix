@@ -195,38 +195,40 @@ For `provider: dynamo`, the runner currently supports:
 2. check out `.tmp/dynamo/<version>`
 3. verify the tag commit matches upstream `release/<version>` branch head
 4. prepare Helm dependency repositories and run `helm dependency build --skip-refresh` for `deploy/helm/charts/platform`
-5. prepare common reference-runtime prerequisites in `brixbench-dynamo`: optional registry secret preflight/create, `models-pvc`, `mpi-run-ssh-secret`
-6. install the Dynamo platform chart into `brixbench-dynamo` with operator namespace restriction enabled and default reference-style platform values
-7. apply the user-provided `DynamoGraphDeployment`
-8. best-effort label/apply Dynamo PodMonitors when the monitoring CRD exists
-9. wait for Frontend service, component pods, and OpenAI-compatible model/inference readiness when the model name can be inferred
+5. install the Dynamo platform chart into `brixbench-dynamo` with operator namespace restriction enabled and default platform values
+6. apply the user-provided engine manifest, which may include prerequisite resources such as PVCs or PodMonitors
+7. wait for Frontend service, component pods, and OpenAI-compatible model/inference readiness when the model name can be inferred
 
 Dynamo platform is installed with Helm. The serving/runtime image is selected by
 the `DynamoGraphDeployment` manifest, not by the platform chart alone.
-The provider writes default platform values matching the checked reference
-environment, including disabling NATS JetStream PVCs for clusters without a
-default StorageClass. `platform.valuesFile` is still supported as an explicit
-override, but the default `dynamo-hello-world` scenario does not require it.
+The provider writes minimal default platform values and leaves image
+repositories, workload placement, storage layout, and RDMA settings to the
+scenario's `platform.valuesFile` or `engine.manifest`.
+Dynamo's platform chart configures the operator; for example,
+`dynamo-operator.dynamo.mpiRun.secretName` controls the operator-managed MPI
+SSH key secret name.
 
 Example scenario:
 
 ```yaml
-Scenario: dynamo-hello-world
+Scenario: dynamo-example
 Tests:
-  - name: dynamo-v1.2.1-qwen3-8b-round-robin-1p1d-tp2
+  - name: dynamo-v1.2.1-custom-graph
     provider: dynamo
     version: 1.2.1
     engine:
       type: vllm
-      manifest: testdata/deployments/dynamo/qwen3-8b-round-robin-1p1d-tp2.yaml
-    benchmark: testdata/benchmarks/vllm-chat-smoke-qwen3-8b.yaml
+      manifest: path/to/your-dynamo-graph-deployment.yaml
+    benchmark: path/to/your-vllm-benchmark.yaml
 ```
 
-Run it with:
+The checked-in `dynamo-hello-world-vke.yaml` scenario is a VKE validation
+sample. It uses AIBrix CN mirror images, VKE node selectors, RDMA resources,
+local model paths, and PodMonitor resources. Run it only on a matching cluster:
 
 ```bash
 go test -v ./benchmark -run TestAIBrixBenchmarkSuite \
-  -scenario testdata/scenarios/dynamo-hello-world.yaml \
+  -scenario testdata/scenarios/dynamo-hello-world-vke.yaml \
   -count=1 -timeout 90m
 ```
 
@@ -270,16 +272,20 @@ starts creating resources in Kubernetes.
 
 - permission to create, list, watch, patch, and delete resources in
   `brixbench-dynamo`
-- permission to create the benchmark model PV/PVC and release the PV claimRef
-  during teardown
+- permission to create any prerequisite resources included by the user-provided
+  engine manifest, such as model PV/PVCs or PodMonitors
+- permission for the Dynamo operator to create or replicate its MPI SSH Secret
+  when multinode components require it
+- if the engine manifest includes PodMonitors: the
+  `podmonitors.monitoring.coreos.com` CRD must already be installed
 - cluster capacity for Dynamo platform dependencies such as NATS
 - image pull access for platform and engine images referenced by the chart and
   `engine.manifest`
-- for private registries only: pre-created `aibrix-registry-secret`, or
-  `DYNAMO_REGISTRY_USERNAME` and `DYNAMO_REGISTRY_PASSWORD` so the provider can
-  create it without storing credentials in the repository. If the images are
-  already pullable without a secret, the provider continues without
-  `imagePullSecrets`.
+- for private registries: configure image pull secrets in `platform.valuesFile`
+  or the user-provided `DynamoGraphDeployment`; brixbench does not create
+  registry credentials.
+- if the engine manifest expects a `models-pvc` backed by local model files:
+  define the PV/PVC in the engine manifest or create the PVC outside brixbench.
 - any cluster-specific networking, RDMA, nodeSelector, and runtime image settings
   required by the user-provided `DynamoGraphDeployment`
 

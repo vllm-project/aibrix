@@ -106,3 +106,39 @@ func TestShouldRunStormServicePreflightOnlyForAIBrix(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldRunDynamoStaleCleanupRequiresResetEnabled(t *testing.T) {
+	dynamoProvider := "dynamo"
+	aibrixProvider := "aibrix"
+	for _, tc := range []struct {
+		name        string
+		test        resolver.Test
+		resetBefore bool
+		want        bool
+	}{
+		{
+			name:        "dynamo with reset",
+			test:        resolver.Test{Provider: &dynamoProvider},
+			resetBefore: true,
+			want:        true,
+		},
+		{
+			name:        "dynamo without reset",
+			test:        resolver.Test{Provider: &dynamoProvider},
+			resetBefore: false,
+			want:        false,
+		},
+		{
+			name:        "aibrix with reset",
+			test:        resolver.Test{Provider: &aibrixProvider},
+			resetBefore: true,
+			want:        false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldRunDynamoStaleCleanup(tc.test, tc.resetBefore); got != tc.want {
+				t.Fatalf("shouldRunDynamoStaleCleanup() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}

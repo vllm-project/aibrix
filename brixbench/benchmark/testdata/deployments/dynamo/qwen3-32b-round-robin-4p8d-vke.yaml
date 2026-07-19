@@ -1,8 +1,8 @@
-# vLLM Disaggregated Serving (4P8D) - Dynamo CRD
+# vLLM Disaggregated Serving (4P8D) - Dynamo CRD, VKE sample
 #
 # Purpose: Deploy Qwen3-32B model with 4 Prefill + 8 Decode (TP=4) on Dynamo
-#          v1.2.0-deepseek-v4-dev.3 + vLLM v0.21.0
-# Usage:   kubectl apply -f qwen3-32b-round-robin-4p8d.yaml -n brixbench-dynamo
+#          v1.2.0-deepseek-v4-dev.3 + vLLM v0.21.0 on a VKE cluster.
+# Usage:   kubectl apply -f qwen3-32b-round-robin-4p8d-vke.yaml -n brixbench-dynamo
 #
 # Configuration:
 #   - Frontend: HTTP API server (OpenAI compatible) - Node 192.168.0.7
@@ -27,6 +27,76 @@
 #   - Prefill workers publish KV cache events to NATS via --kv-events-config
 #     for KV-aware routing (router-mode=kv).
 
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: models-pv-brixbench-dynamo
+spec:
+  capacity:
+    storage: 500Gi
+  accessModes:
+    - ReadOnlyMany
+  hostPath:
+    path: /root/models
+  persistentVolumeReclaimPolicy: Retain
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models-pvc
+spec:
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 500Gi
+  volumeName: models-pv-brixbench-dynamo
+  storageClassName: ""
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: dynamo-vllm-worker-metrics
+  labels:
+    volcengine.vmp: "true"
+spec:
+  podMetricsEndpoints:
+    - interval: 15s
+      path: /metrics
+      port: system
+      honorLabels: true
+      relabelings:
+        - action: replace
+          replacement: dynamo-vllm-worker
+          targetLabel: job
+  selector:
+    matchExpressions:
+      - key: nvidia.com/dynamo-component
+        operator: In
+        values:
+          - VllmDecodeWorker
+          - VllmPrefillWorker
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: dynamo-vllm-frontend-metrics
+  labels:
+    volcengine.vmp: "true"
+spec:
+  podMetricsEndpoints:
+    - interval: 15s
+      path: /metrics
+      port: http
+      honorLabels: true
+      relabelings:
+        - action: replace
+          replacement: dynamo-vllm-frontend
+          targetLabel: job
+  selector:
+    matchLabels:
+      nvidia.com/dynamo-component: Frontend
+---
 apiVersion: nvidia.com/v1alpha1
 kind: DynamoGraphDeployment
 metadata:
@@ -193,6 +263,8 @@ spec:
         nodeSelector:
           kubernetes.io/hostname: "192.168.0.6"
         mainContainer:
+          image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/ai-dynamo-vllm-runtime:1.2.0
+          workingDir: /workspace
           command:
             - /bin/sh
             - -c

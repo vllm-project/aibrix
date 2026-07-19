@@ -96,8 +96,10 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 	result.BenchmarkKind = testCase.BenchmarkKind
 	benchmarkNamespace := benchmarkNamespaceForTestCase(testCase)
 	caseLogDir := caseLogRoot(scenarioLogRoot, testCase.Name)
+	resetBefore := resetBeforeTestEnabled()
+	cleanupAfter := cleanupAfterTestEnabled()
 
-	if testCase.ProviderName() == "dynamo" {
+	if shouldRunDynamoStaleCleanup(testCase, resetBefore) {
 		staleCleanupDone := progressStep(t, "clear stale Dynamo resources in namespace %s for %s", benchmarkNamespace, testCase.Name)
 		if cleanupErr := deployers.CleanupStaleDynamoNamespace(ctx, benchmarkNamespace, testCase.Engine.Manifest, projectRoot, caseLogDir); cleanupErr != nil {
 			result.Error = fmt.Sprintf("Dynamo stale namespace cleanup failed: %v", cleanupErr)
@@ -106,7 +108,7 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 		staleCleanupDone()
 	}
 
-	if resetBeforeTestEnabled() {
+	if resetBefore {
 		namespaceResetDone := progressStep(t, "reset benchmark namespace %s for %s", benchmarkNamespace, testCase.Name)
 		if resetErr := resetBenchmarkNamespace(ctx, benchmarkNamespace); resetErr != nil {
 			result.Error = fmt.Sprintf("Benchmark namespace reset failed: %v", resetErr)
@@ -133,15 +135,17 @@ func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot 
 	result.ResolvedCommit = testCase.ResolvedCommit
 	if err != nil {
 		captureDeploymentArtifacts(t, ctx, deployer)
-		if deployer != nil {
+		if deployer != nil && cleanupAfter {
 			teardownTestResources(t, ctx, deployer, benchmarkNamespace, testCase.Name)
+		} else if deployer != nil {
+			progressLog(t, "Skipping cleanup after failed deployment for %s; benchmark namespace %s will be left in place", testCase.Name, benchmarkNamespace)
 		}
 		result.Error = fmt.Sprintf("Deployment failed: %v", err)
 		return result, fmt.Errorf("Deployment failed: %w", err)
 	}
 	result.GatewayURL = gatewayURL
 	deployDone()
-	if cleanupAfterTestEnabled() {
+	if cleanupAfter {
 		defer teardownTestResources(t, ctx, deployer, benchmarkNamespace, testCase.Name)
 	} else {
 		progressLog(t, "Skipping cleanup after %s; benchmark namespace %s will be left in place", testCase.Name, benchmarkNamespace)
@@ -182,6 +186,10 @@ func benchmarkNamespaceForTestCase(testCase resolver.Test) string {
 
 func shouldRunStormServicePreflight(testCase resolver.Test) bool {
 	return testCase.ProviderName() == "aibrix"
+}
+
+func shouldRunDynamoStaleCleanup(testCase resolver.Test, resetBefore bool) bool {
+	return resetBefore && testCase.ProviderName() == "dynamo"
 }
 
 func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string, testCase *resolver.Test, benchmarkNamespace string, caseLogDir string) (deployers.Deployer, string, error) {

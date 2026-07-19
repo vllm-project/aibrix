@@ -1,3 +1,6 @@
+# AIBrix CN mirror override for VKE smoke validation.
+# Generic Dynamo runs should prefer the deployer's generated default values or
+# a cluster-local values file instead of this mirror-specific override.
 dynamo-operator:
   enabled: true
   istioVirtualServiceEnabled: true
@@ -20,6 +23,8 @@ dynamo-operator:
       secretName: "mpi-run-ssh-secret"
   discoveryBackend: kubernetes
 global:
+  security:
+    allowInsecureImages: true
   etcd:
     install: false
   nats:

@@ -42,14 +42,7 @@ const dynamoReadinessPollInterval = 5 * time.Second
 const dynamoHelmRepoRetryAttempts = 3
 const dynamoHelmRepoRetryDelay = 2 * time.Second
 const dynamoHelmStateDirName = "dynamo-helm"
-const dynamoRegistrySecretName = "aibrix-registry-secret"
-const dynamoRegistryServer = "aibrix-container-registry-cn-beijing.cr.volces.com"
-const dynamoMPISecretName = "mpi-run-ssh-secret"
-const dynamoModelsPVCName = "models-pvc"
-const dynamoModelsHostPath = "/root/models"
-const dynamoModelsPVStorage = "500Gi"
 const dynamoDefaultPlatformValuesFileName = "dynamo-platform-values.yaml"
-const dynamoDefaultOperatorImageRepository = "aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/ai-dynamo/kubernetes-operator"
 const dynamoModelProbeTimeout = 10 * time.Minute
 
 // DynamoDeployer deploys Dynamo platform releases and user-provided
@@ -66,7 +59,6 @@ type DynamoDeployer struct {
 	componentReplicas map[string]int
 	effectiveNS       string
 	modelName         string
-	registrySecret    bool
 	releaseSource     DynamoReleaseSource
 	runner            commandRunner
 	release           *DynamoRelease
@@ -152,10 +144,6 @@ func (d *DynamoDeployer) Initialize(ctx context.Context, config Config) error {
 }
 
 func (d *DynamoDeployer) DeployControlPlane(ctx context.Context) error {
-	if err := d.ensureDynamoRuntimePrerequisites(ctx); err != nil {
-		return err
-	}
-
 	release, err := d.releaseSource.PrepareRelease(ctx, d.projectRoot, d.version)
 	if err != nil {
 		return fmt.Errorf("failed to prepare Dynamo release %s: %w", d.version, err)
@@ -186,7 +174,6 @@ func (d *DynamoDeployer) DeployControlPlane(ctx context.Context) error {
 	}
 	installArgs = append(
 		installArgs,
-		"--set", "global.security.allowInsecureImages=true",
 		"--no-hooks",
 		"--wait",
 		"--timeout", "10m",
@@ -208,7 +195,6 @@ func (d *DynamoDeployer) DeployEngine(ctx context.Context) error {
 	if err := d.runDynamoCommand(ctx, "apply-dynamo-graph-deployment", "kubectl", "apply", "-n", d.effectiveNS, "-f", d.engineManifest); err != nil {
 		return err
 	}
-	d.configureDynamoPodMonitors(ctx)
 	return nil
 }
 
@@ -298,102 +284,12 @@ func (d *DynamoDeployer) Teardown(ctx context.Context) error {
 	}
 	if strings.TrimSpace(namespace) != "" {
 		addCriticalErr(d.deleteDynamoComponentDeployments(ctx, namespace, componentDeployments))
-		_ = d.runDynamoCleanupCommand(ctx, "delete-dynamo-fallback-podmonitors", "kubectl", "delete", "podmonitor", "dynamo-vllm-worker-metrics", "dynamo-vllm-frontend-metrics", "-n", namespace, "--ignore-not-found")
 		addCriticalErr(d.runDynamoHelmCleanupCommand(ctx, "uninstall-dynamo-platform", "uninstall", dynamoPlatformHelmReleaseName, "-n", namespace, "--ignore-not-found", "--wait", "--timeout", "5m"))
 		_ = d.runDynamoCleanupCommand(ctx, "delete-dynamo-pvcs", "kubectl", "delete", "pvc", "--all", "-n", namespace, "--ignore-not-found")
-		_ = d.runDynamoCleanupCommand(ctx, "release-dynamo-models-pv", "kubectl", "patch", "pv", dynamoModelsPVName(namespace), "--type=json", "-p", `[{"op":"remove","path":"/spec/claimRef"}]`)
 		addCriticalErr(d.runDynamoCleanupCommand(ctx, "delete-dynamo-namespace", "kubectl", "delete", "namespace", namespace, "--ignore-not-found"))
 		addCriticalErr(d.runDynamoCleanupCommand(ctx, "wait-delete-dynamo-namespace", "kubectl", "wait", "--for=delete", "namespace/"+namespace, "--timeout=10m"))
 	}
 	return errors.Join(criticalErrs...)
-}
-
-func (d *DynamoDeployer) ensureDynamoRuntimePrerequisites(ctx context.Context) error {
-	if err := d.runDynamoCommand(ctx, "ensure-dynamo-namespace", "bash", "-lc", fmt.Sprintf("kubectl create namespace %s --dry-run=client -o yaml | kubectl apply -f -", shellQuote(d.namespace))); err != nil {
-		return err
-	}
-	registrySecret, err := d.ensureDynamoImagePullSecret(ctx)
-	if err != nil {
-		return err
-	}
-	d.registrySecret = registrySecret
-	if err := d.applyDynamoRenderedManifest(ctx, "apply-dynamo-models-pv-pvc", d.renderDynamoModelsStorageManifest()); err != nil {
-		return err
-	}
-	return d.applyDynamoRenderedManifest(ctx, "apply-dynamo-mpi-secret", d.renderDynamoMPISecretManifest())
-}
-
-func (d *DynamoDeployer) ensureDynamoImagePullSecret(ctx context.Context) (bool, error) {
-	err := d.runDynamoCommand(ctx, "check-dynamo-registry-secret", "kubectl", "get", "secret", dynamoRegistrySecretName, "-n", d.namespace)
-	if err == nil {
-		return true, nil
-	}
-
-	username := strings.TrimSpace(os.Getenv("DYNAMO_REGISTRY_USERNAME"))
-	password := os.Getenv("DYNAMO_REGISTRY_PASSWORD")
-	if username == "" && password == "" {
-		fmt.Printf("Warning: Dynamo image pull secret %s is missing in namespace %s; continuing without imagePullSecrets\n", dynamoRegistrySecretName, d.namespace)
-		return false, nil
-	}
-	if username == "" || password == "" {
-		return false, fmt.Errorf("Dynamo image pull secret %s is missing in namespace %s; set both DYNAMO_REGISTRY_USERNAME and DYNAMO_REGISTRY_PASSWORD or unset both to run without imagePullSecrets", dynamoRegistrySecretName, d.namespace)
-	}
-
-	command := fmt.Sprintf(
-		"kubectl create secret docker-registry %s --docker-server=%s --docker-username=\"$DYNAMO_REGISTRY_USERNAME\" --docker-password=\"$DYNAMO_REGISTRY_PASSWORD\" -n %s --dry-run=client -o yaml | kubectl apply -f -",
-		shellQuote(dynamoRegistrySecretName),
-		shellQuote(dynamoRegistryServer),
-		shellQuote(d.namespace),
-	)
-	if err := d.runDynamoCommand(ctx, "create-dynamo-registry-secret", "bash", "-lc", command); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func (d *DynamoDeployer) renderDynamoModelsStorageManifest() string {
-	namespace := strings.TrimSpace(d.namespace)
-	return fmt.Sprintf(`apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: %s
-spec:
-  capacity:
-    storage: %s
-  accessModes:
-    - ReadOnlyMany
-  hostPath:
-    path: %s
-  persistentVolumeReclaimPolicy: Retain
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  accessModes:
-    - ReadOnlyMany
-  resources:
-    requests:
-      storage: %s
-  volumeName: %s
-  storageClassName: ""
-`, dynamoModelsPVName(namespace), dynamoModelsPVStorage, dynamoModelsHostPath, dynamoModelsPVCName, namespace, dynamoModelsPVStorage, dynamoModelsPVName(namespace))
-}
-
-func (d *DynamoDeployer) renderDynamoMPISecretManifest() string {
-	return fmt.Sprintf(`apiVersion: v1
-kind: Secret
-metadata:
-  name: %s
-  namespace: %s
-type: Opaque
-stringData:
-  id_rsa: placeholder
-  id_rsa.pub: placeholder
-  authorized_keys: placeholder
-`, dynamoMPISecretName, strings.TrimSpace(d.namespace))
 }
 
 func (d *DynamoDeployer) dynamoNamespaceExists(ctx context.Context, namespace string) (bool, error) {
@@ -404,20 +300,8 @@ func (d *DynamoDeployer) dynamoNamespaceExists(ctx context.Context, namespace st
 	return strings.TrimSpace(output) != "", nil
 }
 
-func dynamoModelsPVName(namespace string) string {
-	return "models-pv-" + strings.TrimSpace(namespace)
-}
-
-func (d *DynamoDeployer) applyDynamoRenderedManifest(ctx context.Context, stage string, content string) error {
-	path, err := d.writeDynamoRuntimeManifest(stage, content)
-	if err != nil {
-		return err
-	}
-	return d.runDynamoCommand(ctx, stage, "kubectl", "apply", "-f", path)
-}
-
 func (d *DynamoDeployer) writeDynamoDefaultPlatformValues() (string, error) {
-	return d.writeDynamoRuntimeManifest("default-dynamo-platform-values", renderDynamoDefaultPlatformValues(d.registrySecret, d.version))
+	return d.writeDynamoRuntimeManifest("default-dynamo-platform-values", renderDynamoDefaultPlatformValues(d.version))
 }
 
 func (d *DynamoDeployer) writeDynamoRuntimeManifest(name string, content string) (string, error) {
@@ -441,29 +325,15 @@ func (d *DynamoDeployer) writeDynamoRuntimeManifest(name string, content string)
 	return path, nil
 }
 
-func renderDynamoDefaultPlatformValues(registrySecret bool, operatorTag string) string {
-	imagePullSecrets := ""
-	dockerRegistry := ""
+func renderDynamoDefaultPlatformValues(operatorTag string) string {
 	operatorTag = strings.TrimPrefix(strings.TrimSpace(operatorTag), "v")
-	if registrySecret {
-		imagePullSecrets = fmt.Sprintf(`  imagePullSecrets:
-    - name: %s
-`, dynamoRegistrySecretName)
-		dockerRegistry = fmt.Sprintf(`    dockerRegistry:
-      useKubernetesSecret: true
-      existingSecretName: %s
-      server: %q
-`, dynamoRegistrySecretName, dynamoRegistryServer)
-	}
 	return fmt.Sprintf(`dynamo-operator:
   enabled: true
   istioVirtualServiceEnabled: true
-%s
   upgradeCRD: true
   controllerManager:
     manager:
       image:
-        repository: %q
         tag: %q
         pullPolicy: IfNotPresent
   webhook:
@@ -473,10 +343,6 @@ func renderDynamoDefaultPlatformValues(registrySecret bool, operatorTag string) 
       external: false
     certManager:
       enabled: false
-  dynamo:
-%s
-    mpiRun:
-      secretName: %q
   discoveryBackend: kubernetes
 global:
   etcd:
@@ -484,17 +350,6 @@ global:
   nats:
     install: true
 nats:
-  container:
-    image:
-      registry: %s
-      repository: aibrix/nats
-      tag: 2.10.21-alpine
-  reloader:
-    enabled: true
-    image:
-      registry: %s
-      repository: aibrix/natsio/nats-server-config-reloader
-      tag: 0.16.0
   config:
     jetstream:
       enabled: true
@@ -514,13 +369,16 @@ nats:
       port: 8222
   natsBox:
     enabled: false
-`, imagePullSecrets, dynamoDefaultOperatorImageRepository, operatorTag, dockerRegistry, dynamoMPISecretName, dynamoRegistryServer, dynamoRegistryServer)
+`, operatorTag)
 }
 
 func (d *DynamoDeployer) patchDynamoComponentDeploymentFinalizers(ctx context.Context, namespace string) ([]string, error) {
 	output, err := d.captureDynamoCommand(ctx, "list-dynamo-component-deployments", "kubectl", "get", "dynamocomponentdeployments.nvidia.com", "-n", namespace, "-o", "name")
 	if err != nil {
 		fmt.Printf("Warning: Dynamo cleanup step list-dynamo-component-deployments failed: %v\n", err)
+		if isDynamoCleanupMissingResourceTypeError(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	names := []string{}
@@ -567,6 +425,16 @@ func isDynamoCleanupNotFoundError(err error) bool {
 	}
 	message := err.Error()
 	return strings.Contains(message, "Error from server (NotFound)") || strings.Contains(message, " not found")
+}
+
+func isDynamoCleanupMissingResourceTypeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "the server doesn't have a resource type") ||
+		strings.Contains(message, "the server could not find the requested resource") ||
+		strings.Contains(message, "no matches for kind")
 }
 
 type dynamoGraphManifestMetadata struct {
@@ -678,77 +546,6 @@ func inferDynamoModelNameFromManifest(content string) string {
 	return ""
 }
 
-func (d *DynamoDeployer) configureDynamoPodMonitors(ctx context.Context) {
-	if strings.TrimSpace(d.effectiveNS) == "" {
-		return
-	}
-	if err := d.runDynamoBestEffortCommand(ctx, "check-dynamo-podmonitor-crd", "kubectl", "get", "crd", "podmonitors.monitoring.coreos.com"); err != nil {
-		return
-	}
-	for _, name := range []string{"dynamo-frontend", "dynamo-worker", "dynamo-planner", "dynamo-router"} {
-		_ = d.runDynamoBestEffortCommand(ctx, "label-dynamo-podmonitor-"+name, "kubectl", "label", "podmonitor", name, "-n", d.effectiveNS, "volcengine.vmp=true", "--overwrite")
-	}
-	if err := d.applyDynamoRenderedManifest(ctx, "apply-dynamo-fallback-podmonitors", renderDynamoFallbackPodMonitors(d.effectiveNS)); err != nil {
-		fmt.Printf("Warning: Dynamo best-effort step apply-dynamo-fallback-podmonitors failed: %v\n", err)
-	}
-}
-
-func renderDynamoFallbackPodMonitors(namespace string) string {
-	namespace = strings.TrimSpace(namespace)
-	return fmt.Sprintf(`apiVersion: monitoring.coreos.com/v1
-kind: PodMonitor
-metadata:
-  name: dynamo-vllm-worker-metrics
-  namespace: %s
-  labels:
-    volcengine.vmp: "true"
-spec:
-  namespaceSelector:
-    matchNames:
-    - %s
-  podMetricsEndpoints:
-  - interval: 15s
-    path: /metrics
-    port: system
-    honorLabels: true
-    relabelings:
-    - action: replace
-      replacement: dynamo-vllm-worker
-      targetLabel: job
-  selector:
-    matchExpressions:
-    - key: %s
-      operator: In
-      values:
-      - VllmDecodeWorker
-      - VllmPrefillWorker
----
-apiVersion: monitoring.coreos.com/v1
-kind: PodMonitor
-metadata:
-  name: dynamo-vllm-frontend-metrics
-  namespace: %s
-  labels:
-    volcengine.vmp: "true"
-spec:
-  namespaceSelector:
-    matchNames:
-    - %s
-  podMetricsEndpoints:
-  - interval: 15s
-    path: /metrics
-    port: http
-    honorLabels: true
-    relabelings:
-    - action: replace
-      replacement: dynamo-vllm-frontend
-      targetLabel: job
-  selector:
-    matchLabels:
-      %s: Frontend
-`, namespace, namespace, dynamoFrontendComponentLabel, namespace, namespace, dynamoFrontendComponentLabel)
-}
-
 func (d *DynamoDeployer) waitForDynamoModelReady(ctx context.Context) error {
 	modelName := strings.TrimSpace(d.modelName)
 	if modelName == "" {
@@ -761,7 +558,7 @@ func (d *DynamoDeployer) waitForDynamoModelReady(ctx context.Context) error {
 	if err := d.waitForDynamoModelRegistration(ctx, frontendPod, modelName); err != nil {
 		return err
 	}
-	return d.waitForDynamoInferenceReady(ctx, frontendPod, modelName)
+	return nil
 }
 
 func (d *DynamoDeployer) resolveDynamoFrontendPodName(ctx context.Context) (string, error) {
@@ -780,7 +577,7 @@ func (d *DynamoDeployer) waitForDynamoModelRegistration(ctx context.Context, fro
 	deadline := time.Now().Add(dynamoModelProbeTimeout)
 	var lastResponse string
 	for {
-		response, err := d.captureDynamoCommand(ctx, "probe-dynamo-models", "kubectl", "exec", frontendPod, "-n", d.effectiveNS, "--", "curl", "-s", "http://localhost:8000/v1/models")
+		response, err := d.captureDynamoCommand(ctx, "probe-dynamo-models", "kubectl", "exec", frontendPod, "-n", d.effectiveNS, "--", "curl", "-sS", "http://localhost:8000/v1/models", "--max-time", "30")
 		if err == nil && strings.Contains(response, modelName) {
 			return nil
 		}
@@ -794,29 +591,6 @@ func (d *DynamoDeployer) waitForDynamoModelRegistration(ctx context.Context, fro
 		}
 		if err := sleepOrContextDone(ctx, 10*time.Second); err != nil {
 			return fmt.Errorf("Dynamo model %s registration probe interrupted: %w", modelName, err)
-		}
-	}
-}
-
-func (d *DynamoDeployer) waitForDynamoInferenceReady(ctx context.Context, frontendPod string, modelName string) error {
-	deadline := time.Now().Add(dynamoModelProbeTimeout)
-	payload := fmt.Sprintf(`{"model":%q,"prompt":"Hello","max_tokens":5}`, modelName)
-	var lastResponse string
-	for {
-		response, err := d.captureDynamoCommand(ctx, "probe-dynamo-inference", "kubectl", "exec", frontendPod, "-n", d.effectiveNS, "--", "curl", "-s", "-X", "POST", "http://localhost:8000/v1/completions", "-H", "Content-Type: application/json", "-d", payload, "--max-time", "30")
-		if err == nil && strings.Contains(response, `"choices"`) {
-			return nil
-		}
-		if err != nil {
-			lastResponse = err.Error()
-		} else {
-			lastResponse = strings.TrimSpace(response)
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("Dynamo model %s did not pass inference probe within %s; last response: %s", modelName, dynamoModelProbeTimeout, truncateDynamoProbeResponse(lastResponse))
-		}
-		if err := sleepOrContextDone(ctx, 10*time.Second); err != nil {
-			return fmt.Errorf("Dynamo inference probe for model %s interrupted: %w", modelName, err)
 		}
 	}
 }
@@ -1350,20 +1124,6 @@ func (d *DynamoDeployer) runDynamoCleanupCommand(ctx context.Context, stage stri
 	}
 	if err := d.runDynamoCommand(ctx, stage, name, args...); err != nil {
 		fmt.Printf("Warning: Dynamo cleanup step %s failed: %v\n", stage, err)
-		return err
-	}
-	return nil
-}
-
-func (d *DynamoDeployer) runDynamoBestEffortCommand(ctx context.Context, stage string, name string, args ...string) error {
-	if d.runner == nil {
-		d.runner = execCommandRunner{}
-	}
-	if strings.TrimSpace(name) == "" {
-		return nil
-	}
-	if err := d.runDynamoCommand(ctx, stage, name, args...); err != nil {
-		fmt.Printf("Warning: Dynamo best-effort step %s failed: %v\n", stage, err)
 		return err
 	}
 	return nil

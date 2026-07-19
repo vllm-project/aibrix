@@ -1,5 +1,7 @@
 kind: vllm-bench
 execution: cluster
+# VKE smoke client image and host paths. Copy this file and replace these
+# values for other clusters.
 image: aibrix-container-registry-cn-beijing.cr.volces.com/autodash/vllm-bench:v0.10.2-20260118
 namespace: brixbench-dynamo
 podName: vllm-bench-client

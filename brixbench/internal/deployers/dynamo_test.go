@@ -251,9 +251,6 @@ func TestGitDynamoReleaseSourcePrepareReleaseClonesAndReturnsChartPath(t *testin
 					}
 				},
 			},
-			{},
-			{output: "abc123\n"},
-			{output: "abc123\n"},
 		},
 	}
 	source := &GitDynamoReleaseSource{
@@ -270,8 +267,8 @@ func TestGitDynamoReleaseSourcePrepareReleaseClonesAndReturnsChartPath(t *testin
 	}
 
 	wantCloneArgs := []string{"clone", "--depth=1", "--branch", "v1.2.1", testDynamoRepoURL, repoPath}
-	if len(runner.calls) != 5 {
-		t.Fatalf("expected 5 command calls, got %d", len(runner.calls))
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected 2 command calls, got %d", len(runner.calls))
 	}
 	if runner.calls[1].name != "git" {
 		t.Fatalf("expected git command, got %s", runner.calls[1].name)
@@ -294,9 +291,6 @@ func TestGitDynamoReleaseSourcePrepareReleaseReusesExistingCheckout(t *testing.T
 			{},
 			{},
 			{},
-			{},
-			{output: "abc123\n"},
-			{output: "abc123\n"},
 		},
 	}
 	source := &GitDynamoReleaseSource{
@@ -332,18 +326,6 @@ func TestGitDynamoReleaseSourcePrepareReleaseReusesExistingCheckout(t *testing.T
 			name: "git",
 			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "clean", "-ffdx"},
 		},
-		{
-			name: "git",
-			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "fetch", "--filter=blob:none", testDynamoRepoURL, "+refs/heads/release/1.2.1:refs/remotes/origin/release/1.2.1"},
-		},
-		{
-			name: "git",
-			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "rev-parse", "v1.2.1^{commit}"},
-		},
-		{
-			name: "git",
-			args: []string{"-C", filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1"), "rev-parse", "refs/remotes/origin/release/1.2.1^{commit}"},
-		},
 	}
 	if !reflect.DeepEqual(runner.calls, wantCalls) {
 		t.Fatalf("expected calls %+v, got %+v", wantCalls, runner.calls)
@@ -363,9 +345,6 @@ func TestGitDynamoReleaseSourcePrepareReleaseRejectsCheckoutWithoutChart(t *test
 			{},
 			{},
 			{},
-			{},
-			{output: "abc123\n"},
-			{output: "abc123\n"},
 		},
 	}
 	source := &GitDynamoReleaseSource{
@@ -380,8 +359,8 @@ func TestGitDynamoReleaseSourcePrepareReleaseRejectsCheckoutWithoutChart(t *test
 	if !strings.Contains(err.Error(), "chart path") {
 		t.Fatalf("expected chart path error, got %v", err)
 	}
-	if len(runner.calls) != 8 {
-		t.Fatalf("expected tag validation, sync, and reachability commands, got %d calls", len(runner.calls))
+	if len(runner.calls) != 5 {
+		t.Fatalf("expected tag validation and sync commands, got %d calls", len(runner.calls))
 	}
 }
 
@@ -400,97 +379,6 @@ func TestSyncDynamoReleaseCheckoutReturnsCommandError(t *testing.T) {
 		t.Fatalf("expected sync error, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "fatal: not a git repository") {
-		t.Fatalf("expected command output in error, got %v", err)
-	}
-}
-
-func TestValidateDynamoReleaseMatchesReleaseBranchFetchesBranchAndComparesCommits(t *testing.T) {
-	runner := &fakeCommandRunner{
-		responses: []fakeCommandResponse{
-			{},
-			{output: "abc123\n"},
-			{output: "abc123\n"},
-		},
-	}
-	repoPath := "/repo/.tmp/dynamo/v1.2.1"
-
-	if err := validateDynamoReleaseMatchesReleaseBranch(context.Background(), runner, repoPath, testDynamoRepoURL, "v1.2.1"); err != nil {
-		t.Fatalf("validateDynamoReleaseMatchesReleaseBranch returned error: %v", err)
-	}
-
-	wantCalls := []fakeCommandCall{
-		{
-			name: "git",
-			args: []string{"-C", repoPath, "fetch", "--filter=blob:none", testDynamoRepoURL, "+refs/heads/release/1.2.1:refs/remotes/origin/release/1.2.1"},
-		},
-		{
-			name: "git",
-			args: []string{"-C", repoPath, "rev-parse", "v1.2.1^{commit}"},
-		},
-		{
-			name: "git",
-			args: []string{"-C", repoPath, "rev-parse", "refs/remotes/origin/release/1.2.1^{commit}"},
-		},
-	}
-	if !reflect.DeepEqual(runner.calls, wantCalls) {
-		t.Fatalf("expected calls %+v, got %+v", wantCalls, runner.calls)
-	}
-}
-
-func TestValidateDynamoReleaseMatchesReleaseBranchRejectsMismatchedCommit(t *testing.T) {
-	runner := &fakeCommandRunner{
-		responses: []fakeCommandResponse{
-			{},
-			{output: "abc123\n"},
-			{output: "def456\n"},
-		},
-	}
-	repoPath := "/repo/.tmp/dynamo/v1.2.1"
-
-	err := validateDynamoReleaseMatchesReleaseBranch(context.Background(), runner, repoPath, testDynamoRepoURL, "v1.2.1")
-	if err == nil {
-		t.Fatalf("expected mismatched release branch error")
-	}
-	if !strings.Contains(err.Error(), "does not match release/1.2.1") {
-		t.Fatalf("expected mismatched release branch error, got %v", err)
-	}
-}
-
-func TestValidateDynamoReleaseMatchesReleaseBranchReturnsFetchCommandError(t *testing.T) {
-	runner := &fakeCommandRunner{
-		responses: []fakeCommandResponse{
-			{output: "fatal: couldn't find remote ref release/1.2.1", err: errors.New("exit status 128")},
-		},
-	}
-
-	err := validateDynamoReleaseMatchesReleaseBranch(context.Background(), runner, "/repo/.tmp/dynamo/v1.2.1", testDynamoRepoURL, "v1.2.1")
-	if err == nil {
-		t.Fatalf("expected fetch error")
-	}
-	if !strings.Contains(err.Error(), "failed to fetch Dynamo release branch release/1.2.1") {
-		t.Fatalf("expected fetch error, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "fatal: couldn't find remote ref release/1.2.1") {
-		t.Fatalf("expected command output in error, got %v", err)
-	}
-}
-
-func TestValidateDynamoReleaseMatchesReleaseBranchReturnsRevParseCommandError(t *testing.T) {
-	runner := &fakeCommandRunner{
-		responses: []fakeCommandResponse{
-			{},
-			{output: "fatal: not a valid object name", err: errors.New("exit status 128")},
-		},
-	}
-
-	err := validateDynamoReleaseMatchesReleaseBranch(context.Background(), runner, "/repo/.tmp/dynamo/v1.2.1", testDynamoRepoURL, "v1.2.1")
-	if err == nil {
-		t.Fatalf("expected rev-parse error")
-	}
-	if !strings.Contains(err.Error(), "failed to resolve Dynamo release tag v1.2.1 commit") {
-		t.Fatalf("expected rev-parse command error, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "fatal: not a valid object name") {
 		t.Fatalf("expected command output in error, got %v", err)
 	}
 }
@@ -780,7 +668,6 @@ func TestDynamoDeployerDeployControlPlanePreparesReleaseBuildsDependenciesAndIns
 		"--create-namespace",
 		"--set", "dynamo-operator.namespaceRestriction.enabled=true",
 		"-f", platformValues,
-		"--set", "global.security.allowInsecureImages=true",
 		"--no-hooks",
 		"--wait",
 		"--timeout", "10m",
@@ -791,44 +678,32 @@ func TestDynamoDeployerDeployControlPlanePreparesReleaseBuildsDependenciesAndIns
 	wantRepoAddNATSArgs := []string{
 		"repo", "add", "dynamo-https-nats-io-github-io-k8s-helm-charts", "https://nats-io.github.io/k8s/helm/charts/", "--force-update",
 	}
-	if len(runner.calls) != 8 {
-		t.Fatalf("expected 8 command calls, got %d", len(runner.calls))
+	if len(runner.calls) != 4 {
+		t.Fatalf("expected 4 command calls, got %d", len(runner.calls))
 	}
-	if runner.calls[0].name != "bash" {
-		t.Fatalf("expected namespace bootstrap command, got %s", runner.calls[0].name)
+	if runner.calls[0].name != "env" {
+		t.Fatalf("expected env command, got %s", runner.calls[0].name)
 	}
-	if runner.calls[1].name != "kubectl" || !reflect.DeepEqual(runner.calls[1].args, []string{"get", "secret", "aibrix-registry-secret", "-n", "brixbench-dynamo"}) {
-		t.Fatalf("expected registry secret check, got %+v", runner.calls[1])
+	if !reflect.DeepEqual(runner.calls[0].args, wantDynamoHelmArgs(t, projectRoot, wantRepoAddBitnamiArgs...)) {
+		t.Fatalf("expected args %v, got %v", wantRepoAddBitnamiArgs, runner.calls[0].args)
 	}
-	if runner.calls[2].name != "kubectl" || runner.calls[2].args[0] != "apply" {
-		t.Fatalf("expected PV/PVC apply command, got %+v", runner.calls[2])
+	if runner.calls[1].name != "env" {
+		t.Fatalf("expected env command, got %s", runner.calls[1].name)
 	}
-	if runner.calls[3].name != "kubectl" || runner.calls[3].args[0] != "apply" {
-		t.Fatalf("expected MPI secret apply command, got %+v", runner.calls[3])
+	if !reflect.DeepEqual(runner.calls[1].args, wantDynamoHelmArgs(t, projectRoot, wantRepoAddNATSArgs...)) {
+		t.Fatalf("expected args %v, got %v", wantRepoAddNATSArgs, runner.calls[1].args)
 	}
-	if runner.calls[4].name != "env" {
-		t.Fatalf("expected env command, got %s", runner.calls[4].name)
+	if runner.calls[2].name != "env" {
+		t.Fatalf("expected env command, got %s", runner.calls[2].name)
 	}
-	if !reflect.DeepEqual(runner.calls[4].args, wantDynamoHelmArgs(t, projectRoot, wantRepoAddBitnamiArgs...)) {
-		t.Fatalf("expected args %v, got %v", wantRepoAddBitnamiArgs, runner.calls[4].args)
+	if !reflect.DeepEqual(runner.calls[2].args, wantDynamoHelmArgs(t, projectRoot, wantDependencyBuildArgs...)) {
+		t.Fatalf("expected args %v, got %v", wantDependencyBuildArgs, runner.calls[2].args)
 	}
-	if runner.calls[5].name != "env" {
-		t.Fatalf("expected env command, got %s", runner.calls[5].name)
+	if runner.calls[3].name != "env" {
+		t.Fatalf("expected env command, got %s", runner.calls[3].name)
 	}
-	if !reflect.DeepEqual(runner.calls[5].args, wantDynamoHelmArgs(t, projectRoot, wantRepoAddNATSArgs...)) {
-		t.Fatalf("expected args %v, got %v", wantRepoAddNATSArgs, runner.calls[5].args)
-	}
-	if runner.calls[6].name != "env" {
-		t.Fatalf("expected env command, got %s", runner.calls[6].name)
-	}
-	if !reflect.DeepEqual(runner.calls[6].args, wantDynamoHelmArgs(t, projectRoot, wantDependencyBuildArgs...)) {
-		t.Fatalf("expected args %v, got %v", wantDependencyBuildArgs, runner.calls[6].args)
-	}
-	if runner.calls[7].name != "env" {
-		t.Fatalf("expected env command, got %s", runner.calls[7].name)
-	}
-	if !reflect.DeepEqual(runner.calls[7].args, wantDynamoHelmArgs(t, projectRoot, wantInstallArgs...)) {
-		t.Fatalf("expected args %v, got %v", wantInstallArgs, runner.calls[7].args)
+	if !reflect.DeepEqual(runner.calls[3].args, wantDynamoHelmArgs(t, projectRoot, wantInstallArgs...)) {
+		t.Fatalf("expected args %v, got %v", wantInstallArgs, runner.calls[3].args)
 	}
 }
 
@@ -845,10 +720,6 @@ func TestDynamoDeployerDeployControlPlaneRetriesRetryableHelmRepoFailures(t *tes
 	}
 	runner := &fakeCommandRunner{
 		responses: []fakeCommandResponse{
-			{},
-			{},
-			{},
-			{},
 			{output: "Get \"https://charts.bitnami.com/bitnami/index.yaml\": EOF", err: errors.New("exit status 1")},
 			{},
 			{output: "Get \"https://nats-io.github.io/k8s/helm/charts/index.yaml\": EOF", err: errors.New("exit status 1")},
@@ -869,21 +740,18 @@ func TestDynamoDeployerDeployControlPlaneRetriesRetryableHelmRepoFailures(t *tes
 		t.Fatalf("DeployControlPlane returned error: %v", err)
 	}
 
-	if len(runner.calls) != 10 {
-		t.Fatalf("expected 10 command calls, got %d", len(runner.calls))
+	if len(runner.calls) != 6 {
+		t.Fatalf("expected 6 command calls, got %d", len(runner.calls))
 	}
-	if !reflect.DeepEqual(runner.calls[4].args, runner.calls[5].args) {
-		t.Fatalf("expected retry to repeat repo add args, got %+v then %+v", runner.calls[4], runner.calls[5])
+	if !reflect.DeepEqual(runner.calls[0].args, runner.calls[1].args) {
+		t.Fatalf("expected retry to repeat repo add args, got %+v then %+v", runner.calls[0], runner.calls[1])
 	}
-	if !reflect.DeepEqual(runner.calls[6].args, runner.calls[7].args) {
-		t.Fatalf("expected retry to repeat repo add args, got %+v then %+v", runner.calls[6], runner.calls[7])
+	if !reflect.DeepEqual(runner.calls[2].args, runner.calls[3].args) {
+		t.Fatalf("expected retry to repeat repo add args, got %+v then %+v", runner.calls[2], runner.calls[3])
 	}
 }
 
-func TestDynamoDeployerDeployControlPlaneContinuesWithoutRegistrySecret(t *testing.T) {
-	t.Setenv("DYNAMO_REGISTRY_USERNAME", "")
-	t.Setenv("DYNAMO_REGISTRY_PASSWORD", "")
-
+func TestDynamoDeployerDeployControlPlaneWritesGenericDefaultPlatformValues(t *testing.T) {
 	projectRoot := t.TempDir()
 	chartPath := filepath.Join(t.TempDir(), "deploy", "helm", "charts", "platform")
 	writeDynamoChartLock(t, chartPath)
@@ -897,7 +765,6 @@ func TestDynamoDeployerDeployControlPlaneContinuesWithoutRegistrySecret(t *testi
 	runner := &fakeCommandRunner{
 		responses: []fakeCommandResponse{
 			{},
-			{err: errors.New("secret not found")},
 			{},
 			{},
 			{},
@@ -917,14 +784,13 @@ func TestDynamoDeployerDeployControlPlaneContinuesWithoutRegistrySecret(t *testi
 	if err := deployer.DeployControlPlane(context.Background()); err != nil {
 		t.Fatalf("DeployControlPlane returned error: %v", err)
 	}
-	if deployer.registrySecret {
-		t.Fatalf("expected registrySecret=false when secret and credentials are absent")
+	if len(runner.calls) != 4 {
+		t.Fatalf("expected 4 command calls, got %d", len(runner.calls))
 	}
-	if len(runner.calls) != 8 {
-		t.Fatalf("expected 8 command calls, got %d", len(runner.calls))
-	}
-	if runner.calls[2].name == "bash" {
-		t.Fatalf("did not expect registry secret creation command")
+	for _, call := range runner.calls {
+		if call.name == "kubectl" && len(call.args) > 2 && call.args[0] == "get" && call.args[1] == "secret" {
+			t.Fatalf("did not expect registry secret check by default: %+v", call)
+		}
 	}
 
 	content, err := os.ReadFile(deployer.platformValues)
@@ -937,11 +803,19 @@ func TestDynamoDeployerDeployControlPlaneContinuesWithoutRegistrySecret(t *testi
 			t.Fatalf("generated platform values should not contain %q without registry secret:\n%s", forbidden, values)
 		}
 	}
+	if strings.Contains(values, "mpiRun") || strings.Contains(values, "secretName") {
+		t.Fatalf("generated platform values should not configure deployment-specific MPI secrets:\n%s", values)
+	}
 	if !strings.Contains(values, `tag: "1.2.1"`) {
 		t.Fatalf("expected operator image tag to come from version v1.2.1:\n%s", values)
 	}
 	if strings.Contains(values, "1.2.0-deepseek-v4-dev.3") {
 		t.Fatalf("generated platform values should not use hard-coded dev operator tag:\n%s", values)
+	}
+	for _, forbidden := range []string{"aibrix-container-registry-cn-beijing", "aibrix-public-release-cn-beijing"} {
+		if strings.Contains(values, forbidden) {
+			t.Fatalf("generated platform values should not contain internal registry %q:\n%s", forbidden, values)
+		}
 	}
 }
 
@@ -997,8 +871,8 @@ func TestDynamoDeployerDeployEngineAppliesUserManifest(t *testing.T) {
 	}
 
 	wantArgs := []string{"apply", "-n", "brixbench-dynamo", "-f", manifest}
-	if len(runner.calls) != 7 {
-		t.Fatalf("expected 7 command calls, got %d", len(runner.calls))
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 command call, got %d", len(runner.calls))
 	}
 	if runner.calls[0].name != "kubectl" {
 		t.Fatalf("expected kubectl command, got %s", runner.calls[0].name)
@@ -1240,7 +1114,7 @@ func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *t
 	}
 	deployer := &DynamoDeployer{
 		namespace:      "brixbench-dynamo",
-		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml",
+		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d-vke.yaml",
 		projectRoot:    projectRoot,
 		runner:         runner,
 	}
@@ -1252,7 +1126,7 @@ func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *t
 	wantCalls := []fakeCommandCall{
 		{
 			name: "kubectl",
-			args: []string{"patch", "-n", "brixbench-dynamo", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml", "--type=merge", "-p", `{"metadata":{"finalizers":[]}}`},
+			args: []string{"patch", "-n", "brixbench-dynamo", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d-vke.yaml", "--type=merge", "-p", `{"metadata":{"finalizers":[]}}`},
 		},
 		{
 			name: "kubectl",
@@ -1264,11 +1138,11 @@ func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *t
 		},
 		{
 			name: "kubectl",
-			args: []string{"delete", "-n", "brixbench-dynamo", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml", "--ignore-not-found", "--wait=false"},
+			args: []string{"delete", "-n", "brixbench-dynamo", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d-vke.yaml", "--ignore-not-found", "--wait=false"},
 		},
 		{
 			name: "kubectl",
-			args: []string{"wait", "--for=delete", "-n", "brixbench-dynamo", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml", "--timeout=2m"},
+			args: []string{"wait", "--for=delete", "-n", "brixbench-dynamo", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d-vke.yaml", "--timeout=2m"},
 		},
 		{
 			name: "kubectl",
@@ -1279,20 +1153,12 @@ func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *t
 			args: []string{"wait", "--for=delete", "dynamocomponentdeployment.nvidia.com/vllm-dynamo-frontend", "-n", "brixbench-dynamo", "--timeout=2m"},
 		},
 		{
-			name: "kubectl",
-			args: []string{"delete", "podmonitor", "dynamo-vllm-worker-metrics", "dynamo-vllm-frontend-metrics", "-n", "brixbench-dynamo", "--ignore-not-found"},
-		},
-		{
 			name: "env",
 			args: wantDynamoHelmArgs(t, projectRoot, "uninstall", "dynamo-platform", "-n", "brixbench-dynamo", "--ignore-not-found", "--wait", "--timeout", "5m"),
 		},
 		{
 			name: "kubectl",
 			args: []string{"delete", "pvc", "--all", "-n", "brixbench-dynamo", "--ignore-not-found"},
-		},
-		{
-			name: "kubectl",
-			args: []string{"patch", "pv", "models-pv-brixbench-dynamo", "--type=json", "-p", `[{"op":"remove","path":"/spec/claimRef"}]`},
 		},
 		{
 			name: "kubectl",
@@ -1314,7 +1180,7 @@ func TestDynamoDeployerTeardownReturnsCriticalCleanupErrors(t *testing.T) {
 	}
 	deployer := &DynamoDeployer{
 		namespace:      "brixbench-dynamo",
-		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml",
+		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d-vke.yaml",
 		projectRoot:    t.TempDir(),
 		runner:         runner,
 	}
@@ -1335,11 +1201,11 @@ func TestDynamoDeployerTeardownReturnsCriticalCleanupErrors(t *testing.T) {
 			t.Fatalf("expected error to include %q, got %v", want, err)
 		}
 	}
-	if strings.Contains(err.Error(), "delete-dynamo-pvcs") || strings.Contains(err.Error(), "release-dynamo-models-pv") || strings.Contains(err.Error(), "delete-dynamo-fallback-podmonitors") {
+	if strings.Contains(err.Error(), "delete-dynamo-pvcs") {
 		t.Fatalf("best-effort cleanup errors should not be returned: %v", err)
 	}
-	if len(runner.calls) != 10 {
-		t.Fatalf("expected 10 cleanup commands, got %d", len(runner.calls))
+	if len(runner.calls) != 8 {
+		t.Fatalf("expected 8 cleanup commands, got %d", len(runner.calls))
 	}
 }
 
@@ -1360,7 +1226,7 @@ func TestDynamoDeployerTeardownIgnoresMissingGraphDuringPartialDeploy(t *testing
 	}
 	deployer := &DynamoDeployer{
 		namespace:      "brixbench-dynamo",
-		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d.yaml",
+		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d-vke.yaml",
 		projectRoot:    t.TempDir(),
 		runner:         runner,
 	}
@@ -1368,8 +1234,43 @@ func TestDynamoDeployerTeardownIgnoresMissingGraphDuringPartialDeploy(t *testing
 	if err := deployer.Teardown(context.Background()); err != nil {
 		t.Fatalf("Teardown returned error for missing graph in partial deploy: %v", err)
 	}
-	if len(runner.calls) != 10 {
-		t.Fatalf("expected 10 cleanup commands, got %d", len(runner.calls))
+	if len(runner.calls) != 8 {
+		t.Fatalf("expected 8 cleanup commands, got %d", len(runner.calls))
+	}
+}
+
+func TestDynamoDeployerTeardownIgnoresMissingComponentDeploymentCRD(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{},
+			{err: errors.New(`error: the server doesn't have a resource type "dynamocomponentdeployments"`)},
+			{},
+			{},
+			{},
+			{},
+			{},
+			{},
+			{},
+		},
+	}
+	deployer := &DynamoDeployer{
+		namespace:      "brixbench-dynamo",
+		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d-vke.yaml",
+		projectRoot:    t.TempDir(),
+		runner:         runner,
+	}
+
+	if err := deployer.Teardown(context.Background()); err != nil {
+		t.Fatalf("Teardown returned error for missing component CRD: %v", err)
+	}
+	if len(runner.calls) != 8 {
+		t.Fatalf("expected 8 cleanup commands, got %d", len(runner.calls))
+	}
+	if runner.calls[1].name != "kubectl" || !reflect.DeepEqual(runner.calls[1].args, []string{"get", "dynamocomponentdeployments.nvidia.com", "-n", "brixbench-dynamo", "-o", "name"}) {
+		t.Fatalf("expected component CRD list command, got %+v", runner.calls[1])
+	}
+	if got := runner.calls[len(runner.calls)-1].args; !reflect.DeepEqual(got, []string{"wait", "--for=delete", "namespace/brixbench-dynamo", "--timeout=10m"}) {
+		t.Fatalf("expected namespace delete wait to still run, got %v", got)
 	}
 }
 

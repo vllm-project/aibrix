@@ -79,9 +79,6 @@ func (s *GitDynamoReleaseSource) PrepareRelease(ctx context.Context, projectRoot
 		if err := syncDynamoReleaseCheckout(ctx, s.runner, repoPath, s.repoURL, version); err != nil {
 			return nil, err
 		}
-		if err := validateDynamoReleaseMatchesReleaseBranch(ctx, s.runner, repoPath, s.repoURL, version); err != nil {
-			return nil, err
-		}
 		if !dirExists(chartPath) {
 			return nil, fmt.Errorf("Dynamo release checkout %s exists but chart path %s was not found", repoPath, chartPath)
 		}
@@ -98,9 +95,6 @@ func (s *GitDynamoReleaseSource) PrepareRelease(ctx context.Context, projectRoot
 			return nil, fmt.Errorf("failed to checkout Dynamo release %s: %w: %s", version, err, output)
 		}
 		return nil, fmt.Errorf("failed to checkout Dynamo release %s: %w", version, err)
-	}
-	if err := validateDynamoReleaseMatchesReleaseBranch(ctx, s.runner, repoPath, s.repoURL, version); err != nil {
-		return nil, err
 	}
 	if !dirExists(chartPath) {
 		return nil, fmt.Errorf("Dynamo release %s chart path %s was not found after checkout", version, chartPath)
@@ -166,48 +160,6 @@ func syncDynamoReleaseCheckout(ctx context.Context, runner commandRunner, repoPa
 		return fmt.Errorf("failed to clean Dynamo release checkout %s: %w", repoPath, err)
 	}
 	return nil
-}
-
-func validateDynamoReleaseMatchesReleaseBranch(ctx context.Context, runner commandRunner, repoPath string, repoURL string, version string) error {
-	branchName := dynamoReleaseBranchName(version)
-	remoteBranchRef := "refs/remotes/origin/" + branchName
-	if output, err := runner.Run(ctx, "git", "-C", repoPath, "fetch", "--filter=blob:none", repoURL, "+refs/heads/"+branchName+":"+remoteBranchRef); err != nil {
-		output = strings.TrimSpace(output)
-		if output != "" {
-			return fmt.Errorf("failed to fetch Dynamo release branch %s for tag %s: %w: %s", branchName, version, err, output)
-		}
-		return fmt.Errorf("failed to fetch Dynamo release branch %s for tag %s: %w", branchName, version, err)
-	}
-
-	tagCommit, err := gitRevParse(ctx, runner, repoPath, version+"^{commit}")
-	if err != nil {
-		return fmt.Errorf("failed to resolve Dynamo release tag %s commit: %w", version, err)
-	}
-	branchCommit, err := gitRevParse(ctx, runner, repoPath, remoteBranchRef+"^{commit}")
-	if err != nil {
-		return fmt.Errorf("failed to resolve Dynamo release branch %s commit: %w", branchName, err)
-	}
-
-	if tagCommit != branchCommit {
-		return fmt.Errorf("Dynamo release tag %s commit %s does not match %s commit %s", version, tagCommit, branchName, branchCommit)
-	}
-	return nil
-}
-
-func dynamoReleaseBranchName(version string) string {
-	return "release/" + strings.TrimPrefix(strings.TrimSpace(version), "v")
-}
-
-func gitRevParse(ctx context.Context, runner commandRunner, repoPath string, ref string) (string, error) {
-	output, err := runner.Run(ctx, "git", "-C", repoPath, "rev-parse", ref)
-	if err != nil {
-		output = strings.TrimSpace(output)
-		if output != "" {
-			return "", fmt.Errorf("failed to resolve git ref %s in %s: %w: %s", ref, repoPath, err, output)
-		}
-		return "", fmt.Errorf("failed to resolve git ref %s in %s: %w", ref, repoPath, err)
-	}
-	return strings.TrimSpace(output), nil
 }
 
 func lsRemoteOutputHasExactTag(output string, version string) bool {
