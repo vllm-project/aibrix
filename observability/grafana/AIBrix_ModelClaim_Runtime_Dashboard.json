@@ -136,7 +136,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
+        "w": 5,
         "x": 0,
         "y": 1
       },
@@ -201,8 +201,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 6,
+        "w": 5,
+        "x": 5,
         "y": 1
       },
       "id": 2,
@@ -270,8 +270,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 12,
+        "w": 5,
+        "x": 10,
         "y": 1
       },
       "id": 3,
@@ -339,8 +339,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 18,
+        "w": 5,
+        "x": 15,
         "y": 1
       },
       "id": 4,
@@ -375,6 +375,90 @@
         }
       ],
       "title": "Activation Failures / s",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Worst-case warm-pool policy-annotation validity across the selected namespace(s). Shows Valid only when every pool Deployment's policy annotation parses and validates, Invalid if any pool's annotation is malformed, and no data when no pool has a policy annotation set. The underlying metric (aibrix_modelclaim_pool_policy_valid) is keyed by namespace/deployment, so it is intentionally not filtered by $pool/$pod/$model. When Invalid, identify the offending Deployment via the Events / logs cheat sheet below.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "index": 0,
+                  "text": "Invalid"
+                },
+                "1": {
+                  "index": 1,
+                  "text": "Valid"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "noValue": "No policy set",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "id": 13,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "min(aibrix_modelclaim_pool_policy_valid{namespace=~\"$namespace\"})",
+          "legendFormat": "policy valid",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pool Policy Valid",
       "type": "stat"
     },
     {
