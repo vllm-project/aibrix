@@ -1313,6 +1313,14 @@ func TestDynamoDeployerCaptureArtifactsWritesClusterStateAndManifest(t *testing.
 	if len(runner.calls) != 10 {
 		t.Fatalf("expected 10 capture commands, got %d", len(runner.calls))
 	}
+	wantFrontendLogsArgs := []string{"logs", "-n", "brixbench-dynamo", "-l", "nvidia.com/dynamo-component=Frontend", "--all-containers=true", "--prefix=true", "--tail=2000"}
+	if runner.calls[7].name != "kubectl" || !reflect.DeepEqual(runner.calls[7].args, wantFrontendLogsArgs) {
+		t.Fatalf("expected bounded frontend log capture, got %+v", runner.calls[7])
+	}
+	wantComponentLogsArgs := []string{"logs", "-n", "brixbench-dynamo", "-l", "nvidia.com/dynamo-component,nvidia.com/dynamo-component!=Frontend", "--all-containers=true", "--prefix=true", "--tail=2000"}
+	if runner.calls[8].name != "kubectl" || !reflect.DeepEqual(runner.calls[8].args, wantComponentLogsArgs) {
+		t.Fatalf("expected bounded non-frontend component log capture, got %+v", runner.calls[8])
+	}
 	wantHelmStatusArgs := wantDynamoHelmArgs(t, projectRoot, "status", dynamoPlatformHelmReleaseName, "-n", "brixbench-dynamo")
 	if runner.calls[9].name != "env" || !reflect.DeepEqual(runner.calls[9].args, wantHelmStatusArgs) {
 		t.Fatalf("expected helm status capture, got %+v", runner.calls[9])

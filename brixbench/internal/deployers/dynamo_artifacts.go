@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const dynamoArtifactLogTailLines = "2000"
+
 type dynamoArtifactCapture struct {
 	file  string
 	stage string
@@ -123,13 +125,13 @@ func (d *DynamoDeployer) dynamoArtifactCaptures(namespace string) []dynamoArtifa
 			file:  "frontend-logs.txt",
 			stage: "capture-dynamo-frontend-logs",
 			name:  "kubectl",
-			args:  []string{"logs", "-n", namespace, "-l", dynamoFrontendComponentLabel + "=" + dynamoFrontendComponentName, "--all-containers=true", "--prefix=true", "--tail=-1"},
+			args:  []string{"logs", "-n", namespace, "-l", dynamoFrontendComponentLabel + "=" + dynamoFrontendComponentName, "--all-containers=true", "--prefix=true", "--tail=" + dynamoArtifactLogTailLines},
 		},
 		{
 			file:  "component-logs.txt",
 			stage: "capture-dynamo-component-logs",
 			name:  "kubectl",
-			args:  []string{"logs", "-n", namespace, "-l", dynamoFrontendComponentLabel, "--all-containers=true", "--prefix=true", "--tail=-1"},
+			args:  []string{"logs", "-n", namespace, "-l", dynamoFrontendComponentLabel + "," + dynamoFrontendComponentLabel + "!=" + dynamoFrontendComponentName, "--all-containers=true", "--prefix=true", "--tail=" + dynamoArtifactLogTailLines},
 		},
 	}
 }
