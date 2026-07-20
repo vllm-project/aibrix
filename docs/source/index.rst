@@ -61,6 +61,7 @@ Documentation
    features/multi-engine.rst
    features/heterogeneous-gpu.rst
    features/runtime.rst
+   features/modelclaim.rst
 
 .. toctree::
    :maxdepth: 1

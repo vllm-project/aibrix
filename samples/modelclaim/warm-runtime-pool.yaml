@@ -37,8 +37,9 @@ spec:
             - name: AIBRIX_MODEL_RUNTIME_MOCK
               value: "0"
             - name: ENABLE_KVCACHED
-              # Keep the sidecar itself unpatched. The launcher sets these
-              # values to true only for each child engine process.
+              # The image includes kvcached and kvctl, but the runtime agent
+              # must not be autopatched. The launcher enables kvcached with a
+              # unique IPC name for each child engine process.
               value: "false"
             - name: KVCACHED_AUTOPATCH
               value: "0"
