@@ -34,8 +34,9 @@ import {
   ValidationResult,
   MutationDiff,
   ParseResult,
-  parseJsonl,
+  parseJsonlFile,
   validateBatchFileName,
+  formatBatchFileValidationError,
   applyBatchOverrides,
   serializeJsonl,
   hasAnyOverride,
@@ -66,6 +67,8 @@ function parseNumber(value: string): number | undefined {
 
 type Step = 'model' | 'template' | 'dataset' | 'settings';
 const STEP_INDEX: Record<Step, number> = { model: 1, template: 2, dataset: 3, settings: 4 };
+const BYTES_PER_MEBIBYTE = 1024 * 1024;
+const FULL_PARSE_CACHE_MAX_BYTES = 20 * BYTES_PER_MEBIBYTE;
 
 export function CreateJob({ onBack }: CreateJobProps) {
   const [currentStep, setCurrentStep] = useState<Step>('model');
@@ -258,8 +261,9 @@ export function CreateJob({ onBack }: CreateJobProps) {
     // Validate immediately
     setValidating(true);
     try {
-      const parsed = parseJsonl(await file.text());
-      setSelectedFileParse(parsed);
+      const shouldCacheFullParse = file.size <= FULL_PARSE_CACHE_MAX_BYTES;
+      const parsed = await parseJsonlFile(file, { retainFullRecords: shouldCacheFullParse });
+      setSelectedFileParse(shouldCacheFullParse ? parsed : null);
       const result = validateBatchLines(parsed, {
         expectedModel: selectedServingName,
         supportedEndpoints: selectedTemplate?.spec?.supportedEndpoints,
@@ -269,7 +273,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
       setValidation({
         valid: false,
         totalLines: 0,
-        errors: [`Failed to read file: ${err instanceof Error ? err.message : 'unknown error'}`],
+        errors: [formatBatchFileValidationError(err)],
         warnings: [],
         detectedModel: null,
         endpoints: [],
@@ -460,7 +464,10 @@ export function CreateJob({ onBack }: CreateJobProps) {
 
           let fileToUpload: File = selectedFile;
           if (hasAnyOverride(overrides)) {
-            const parsed = selectedFileParse ?? parseJsonl(await selectedFile.text());
+            const parsed = selectedFileParse ?? await parseJsonlFile(selectedFile, { retainFullRecords: true });
+            if (!selectedFileParse) {
+              setSelectedFileParse(parsed);
+            }
             const { records } = applyBatchOverrides(parsed.records, overrides);
             fileToUpload = new File(
               [serializeJsonl(records)],

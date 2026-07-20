@@ -35,6 +35,12 @@ export interface ParseResult {
   totalLines: number;
 }
 
+export interface ParseJsonlFileOptions {
+  retainFullRecords?: boolean;
+  timeoutMs?: number;
+  readChunkSizeBytes?: number;
+}
+
 export interface BatchOverrides {
   maxTokens?: number;
   temperature?: number;
@@ -54,6 +60,13 @@ const MAX_ERRORS = 20;
 const MAX_DIFF_SAMPLES = 5;
 // OpenAI Batch API hard limit; MDS enforces the same cap (python/aibrix/.../batch.py).
 const MAX_REQUESTS_PER_BATCH = 50000;
+const BYTES_PER_MEBIBYTE = 1024 * 1024;
+const FILE_READ_CHUNK_SIZE_BYTES = BYTES_PER_MEBIBYTE;
+const MIN_FILE_READ_CHUNK_SIZE_BYTES = 1;
+const FILE_VALIDATION_TIMEOUT_MS = 60_000;
+const MILLISECONDS_PER_SECOND = 1000;
+const VALIDATION_YIELD_INTERVAL_LINES = 500;
+const VALIDATION_YIELD_DELAY_MS = 0;
 export const JSONL_EXTENSION_ERROR = 'File must use the .jsonl extension.';
 
 const OVERRIDE_FIELD_MAP: Record<keyof BatchOverrides, string> = {
@@ -66,48 +79,181 @@ const OVERRIDE_FIELD_MAP: Record<keyof BatchOverrides, string> = {
 // Endpoints where completion-style sampling params apply.
 const COMPLETION_ENDPOINTS = new Set(['/v1/chat/completions', '/v1/completions']);
 
+class BatchFileValidationTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(getFileValidationTimeoutError(timeoutMs));
+    this.name = 'BatchFileValidationTimeoutError';
+  }
+}
+
 export function validateBatchFileName(fileName: string): string | null {
   return fileName.trim().toLowerCase().endsWith('.jsonl') ? null : JSONL_EXTENSION_ERROR;
 }
 
+export function getFileValidationTimeoutError(timeoutMs = FILE_VALIDATION_TIMEOUT_MS): string {
+  const timeoutSeconds = Math.ceil(timeoutMs / MILLISECONDS_PER_SECOND);
+  return `Client-side validation timed out after ${timeoutSeconds}s. ` +
+    'The file is too large to validate in the browser; split it into smaller batches or select an already uploaded dataset.';
+}
+
+export function formatBatchFileValidationError(err: unknown): string {
+  if (err instanceof BatchFileValidationTimeoutError) {
+    return err.message;
+  }
+  if (err instanceof Error && err.message) {
+    return `Failed to read file: ${err.message}`;
+  }
+  return 'Failed to read file: unknown error';
+}
+
+interface ParseState extends ParseResult {
+  pendingEmptyLineNumbers: number[];
+}
+
+function createParseState(): ParseState {
+  return {
+    records: [],
+    parseErrors: [],
+    warnings: [],
+    totalLines: 0,
+    pendingEmptyLineNumbers: [],
+  };
+}
+
+function flushPendingEmptyLineWarnings(state: ParseState) {
+  for (const lineNumber of state.pendingEmptyLineNumbers) {
+    state.warnings.push({ lineNumber, message: 'empty line (will be skipped)' });
+  }
+  state.pendingEmptyLineNumbers = [];
+}
+
+function summarizeRecord(record: BatchLineRecord): BatchLineRecord {
+  const rawRecord = record as Record<string, unknown>;
+  const rawBody = rawRecord.body;
+  return {
+    custom_id: rawRecord.custom_id as string | undefined,
+    method: rawRecord.method as string | undefined,
+    url: rawRecord.url as string | undefined,
+    body: rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody)
+      ? { model: (rawBody as { model?: string }).model }
+      : rawBody as BatchLineRecord['body'],
+  };
+}
+
+function processJsonlLine(
+  state: ParseState,
+  rawLine: string,
+  lineNumber: number,
+  retainFullRecords: boolean,
+) {
+  const line = rawLine.trim();
+  if (line === '') {
+    state.pendingEmptyLineNumbers.push(lineNumber);
+    return;
+  }
+
+  flushPendingEmptyLineWarnings(state);
+  state.totalLines++;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    state.parseErrors.push({ lineNumber, message: 'invalid JSON' });
+    return;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    state.parseErrors.push({ lineNumber, message: 'must be a JSON object' });
+    return;
+  }
+
+  const record = parsed as BatchLineRecord;
+  state.records.push({
+    lineNumber,
+    record: retainFullRecords ? record : summarizeRecord(record),
+  });
+}
+
+function finishParseState(state: ParseState): ParseResult {
+  if (state.totalLines === 0 && state.parseErrors.length === 0) {
+    state.parseErrors.push({ lineNumber: 1, message: 'File is empty' });
+  }
+
+  return {
+    records: state.records,
+    parseErrors: state.parseErrors,
+    warnings: state.warnings,
+    totalLines: state.totalLines,
+  };
+}
+
+function assertValidationNotTimedOut(startedAtMs: number, timeoutMs: number) {
+  if (Date.now() - startedAtMs > timeoutMs) {
+    throw new BatchFileValidationTimeoutError(timeoutMs);
+  }
+}
+
+function yieldToMainThread(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, VALIDATION_YIELD_DELAY_MS);
+  });
+}
+
 export function parseJsonl(text: string): ParseResult {
   const rawLines = text.trimEnd().split('\n');
-  const records: ParsedLine[] = [];
-  const parseErrors: ParseResult['parseErrors'] = [];
-  const warnings: ParseResult['warnings'] = [];
-
-  if (rawLines.length === 0 || (rawLines.length === 1 && rawLines[0].trim() === '')) {
-    return { records, parseErrors: [{ lineNumber: 1, message: 'File is empty' }], warnings, totalLines: 0 };
-  }
-
-  let nonEmpty = 0;
+  const state = createParseState();
   for (let i = 0; i < rawLines.length; i++) {
-    const lineNumber = i + 1;
-    const line = rawLines[i].trim();
-    if (line === '') {
-      if (i < rawLines.length - 1) {
-        warnings.push({ lineNumber, message: 'empty line (will be skipped)' });
-      }
-      continue;
-    }
-    nonEmpty++;
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      parseErrors.push({ lineNumber, message: 'invalid JSON' });
-      continue;
-    }
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      parseErrors.push({ lineNumber, message: 'must be a JSON object' });
-      continue;
-    }
-
-    records.push({ lineNumber, record: parsed as BatchLineRecord });
+    processJsonlLine(state, rawLines[i] ?? '', i + 1, true);
   }
 
-  return { records, parseErrors, warnings, totalLines: nonEmpty };
+  return finishParseState(state);
+}
+
+export async function parseJsonlFile(
+  file: File,
+  options: ParseJsonlFileOptions = {},
+): Promise<ParseResult> {
+  const state = createParseState();
+  const decoder = new TextDecoder();
+  const retainFullRecords = options.retainFullRecords ?? false;
+  const timeoutMs = options.timeoutMs ?? FILE_VALIDATION_TIMEOUT_MS;
+  const readChunkSizeBytes = Math.max(
+    options.readChunkSizeBytes ?? FILE_READ_CHUNK_SIZE_BYTES,
+    MIN_FILE_READ_CHUNK_SIZE_BYTES,
+  );
+  const startedAtMs = Date.now();
+  let bufferedText = '';
+  let lineNumber = 1;
+  let linesSinceYield = 0;
+
+  for (let offset = 0; offset < file.size; offset += readChunkSizeBytes) {
+    assertValidationNotTimedOut(startedAtMs, timeoutMs);
+    const chunkEnd = Math.min(offset + readChunkSizeBytes, file.size);
+    const chunk = new Uint8Array(await file.slice(offset, chunkEnd).arrayBuffer());
+    bufferedText += decoder.decode(chunk, { stream: chunkEnd < file.size });
+    const lines = bufferedText.split('\n');
+    bufferedText = lines.pop() ?? '';
+
+    for (const rawLine of lines) {
+      processJsonlLine(state, rawLine, lineNumber, retainFullRecords);
+      lineNumber++;
+      linesSinceYield++;
+
+      if (linesSinceYield >= VALIDATION_YIELD_INTERVAL_LINES) {
+        linesSinceYield = 0;
+        await yieldToMainThread();
+        assertValidationNotTimedOut(startedAtMs, timeoutMs);
+      }
+    }
+  }
+
+  bufferedText += decoder.decode();
+  if (bufferedText !== '') {
+    processJsonlLine(state, bufferedText, lineNumber, retainFullRecords);
+  }
+  assertValidationNotTimedOut(startedAtMs, timeoutMs);
+
+  return finishParseState(state);
 }
 
 export function validateBatchLines(parsed: ParseResult, ctx: ValidationContext): ValidationResult {
@@ -211,23 +357,34 @@ export function validateBatchLines(parsed: ParseResult, ctx: ValidationContext):
   };
 }
 
+function validationFailure(errors: string[]): ValidationResult {
+  return {
+    valid: false,
+    totalLines: 0,
+    errors,
+    warnings: [],
+    detectedModel: null,
+    endpoints: [],
+  };
+}
+
 // Convenience wrapper: read file, parse, validate.
-export async function validateBatchFile(file: File, ctx: ValidationContext): Promise<ValidationResult> {
+export async function validateBatchFile(
+  file: File,
+  ctx: ValidationContext,
+  options: ParseJsonlFileOptions = {},
+): Promise<ValidationResult> {
   const fileNameError = validateBatchFileName(file.name);
   if (fileNameError) {
-    return {
-      valid: false,
-      totalLines: 0,
-      errors: [fileNameError],
-      warnings: [],
-      detectedModel: null,
-      endpoints: [],
-    };
+    return validationFailure([fileNameError]);
   }
 
-  const text = await file.text();
-  const parsed = parseJsonl(text);
-  return validateBatchLines(parsed, ctx);
+  try {
+    const parsed = await parseJsonlFile(file, options);
+    return validateBatchLines(parsed, ctx);
+  } catch (err) {
+    return validationFailure([formatBatchFileValidationError(err)]);
+  }
 }
 
 export function hasAnyOverride(overrides: BatchOverrides): boolean {
