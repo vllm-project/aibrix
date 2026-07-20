@@ -4,6 +4,9 @@ These examples attach two `ModelClaim` objects to one warm GPU runtime pool.
 Each claim is started by the `aibrix-runtime` sidecar as a separate
 kvcached-enabled engine process; the gateway routes by served model name.
 
+See the [ModelClaim feature guide](../../docs/source/features/modelclaim.rst)
+for deployment, API, lifecycle, policy, and troubleshooting details.
+
 The runtime image must be layered on a kvcached-enabled vLLM image. The
 controller uses the runtime's snapshot endpoint to prefer an existing weight
 cache and lower live memory pressure when it chooses among warm pods.
