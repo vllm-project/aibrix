@@ -25,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/webhook"
@@ -207,5 +208,53 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 			},
 			failed: true,
 		}),
+
+		// Explicit Pooled mode runs a single RoleSet, so spec.replicas > 1 is rejected.
+		ginkgo.Entry("rejects explicit Pooled mode with replicas > 1", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return wrapper.MakeStormService("pooled-multi-replica").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Mode(orchestrationapi.StormServicePooledMode).
+					Replicas(ptr.To(int32(2))).
+					Obj()
+			},
+			failed: true,
+		}),
+
+		ginkgo.Entry("accepts explicit Pooled mode with a single replica", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return wrapper.MakeStormService("pooled-single-replica").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Mode(orchestrationapi.StormServicePooledMode).
+					Obj()
+			},
+			failed: false,
+		}),
+
+		// Objects that leave spec.mode empty keep the inferred behavior and scale freely.
+		ginkgo.Entry("accepts replicas > 1 when mode is not declared", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return wrapper.MakeStormService("undeclared-mode-multi").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Replicas(ptr.To(int32(3))).
+					Obj()
+			},
+			failed: false,
+		}),
 	)
+
+	ginkgo.It("rejects scaling an explicit Pooled StormService above one replica", func() {
+		stormService := wrapper.MakeStormService("pooled-scale-up").
+			Namespace(ns.Name).
+			WithDefaultConfiguration().
+			Mode(orchestrationapi.StormServicePooledMode).
+			Obj()
+		gomega.Expect(k8sClient.Create(ctx, stormService)).To(gomega.Succeed())
+
+		stormService.Spec.Replicas = ptr.To(int32(3))
+		gomega.Expect(k8sClient.Update(ctx, stormService)).ShouldNot(gomega.Succeed())
+	})
 })
