@@ -350,7 +350,7 @@ func TestAIBrixBenchmarkSuite(t *testing.T) {
 	progressLog(t, "Wrote scenario summary: %s", scenarioLogRoot)
 
 	figuresDone := progressStep(t, "generate scenario figures for %s", scenario.Name)
-	generatedFigures, figureErr := generateScenarioFigures(scenarioLogRoot, summary)
+	generatedFigures, skipReason, figureErr := generateScenarioFigures(scenarioLogRoot, summary)
 	figuresDone()
 	if figureErr != nil {
 		t.Fatalf("failed to generate scenario figures: %v", figureErr)
@@ -358,6 +358,6 @@ func TestAIBrixBenchmarkSuite(t *testing.T) {
 	if generatedFigures {
 		progressLog(t, "Generated scenario figures under %s/figures", scenarioLogRoot)
 	} else {
-		progressLog(t, "Skipped scenario figure generation because the benchmark kind was mixed/unsupported or .venv/bin/python or plot_summary_vllm_bench.py was not available")
+		progressLog(t, "Warning: skipped scenario figure generation: %s", skipReason)
 	}
 }
