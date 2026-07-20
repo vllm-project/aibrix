@@ -148,6 +148,9 @@ func (d *DynamoDeployer) DeployControlPlane(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to prepare Dynamo release %s: %w", d.version, err)
 	}
+	if release == nil {
+		return fmt.Errorf("failed to prepare Dynamo release %s: release is nil", d.version)
+	}
 	d.release = release
 
 	if err := d.ensureDynamoHelmRepositories(ctx, release.ChartPath); err != nil {
@@ -254,7 +257,8 @@ func (d *DynamoDeployer) Teardown(ctx context.Context) error {
 			criticalErrs = append(criticalErrs, err)
 		}
 	}
-	if strings.TrimSpace(d.engineManifest) != "" {
+	hasEngineManifest := strings.TrimSpace(d.engineManifest) != "" && pathExists(d.engineManifest)
+	if hasEngineManifest {
 		args := []string{"patch"}
 		if strings.TrimSpace(namespace) != "" {
 			args = append(args, "-n", namespace)
@@ -268,7 +272,7 @@ func (d *DynamoDeployer) Teardown(ctx context.Context) error {
 		componentDeployments, err = d.patchDynamoComponentDeploymentFinalizers(ctx, namespace)
 		addCriticalErr(err)
 	}
-	if strings.TrimSpace(d.engineManifest) != "" {
+	if hasEngineManifest {
 		args := []string{"delete"}
 		if strings.TrimSpace(namespace) != "" {
 			args = append(args, "-n", namespace)
@@ -764,6 +768,9 @@ func (d *DynamoDeployer) waitForDynamoComponentPods(ctx context.Context, compone
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		output, err := d.captureDynamoCommand(ctx, "get-dynamo-"+component+"-pods", "kubectl", "get", "pod", "-n", d.effectiveNS, "-l", dynamoFrontendComponentLabel+"="+component, "-o", "json")
 		if err == nil {
 			podCount, parseErr := parseDynamoPodListItemCount(output)
@@ -971,11 +978,17 @@ func readDynamoHelmDependencyRepos(chartPath string) ([]dynamoHelmRepo, error) {
 
 func (d *DynamoDeployer) runDynamoHelmCommandWithRetry(ctx context.Context, stage string, attempts int, args ...string) error {
 	if attempts <= 1 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return d.runDynamoHelmCommand(ctx, stage, args...)
 	}
 
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		lastErr = d.runDynamoHelmCommand(ctx, stage, args...)
 		if lastErr == nil {
 			return nil

@@ -2,6 +2,7 @@ package deployers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,13 +36,14 @@ func (d *DynamoDeployer) CaptureArtifacts(ctx context.Context) error {
 		return fmt.Errorf("failed to create Dynamo artifact directory %s: %w", artifactDir, err)
 	}
 
+	var writeErrs []error
 	for _, capture := range d.dynamoArtifactCaptures(namespace) {
 		output, err := d.captureDynamoCommand(ctx, capture.stage, capture.name, capture.args...)
 		if err != nil {
 			output = fmt.Sprintf("capture failed: %v\n", err)
 		}
 		if err := writeDynamoArtifactFile(artifactDir, capture.file, output); err != nil {
-			return err
+			writeErrs = append(writeErrs, err)
 		}
 	}
 
@@ -50,7 +52,7 @@ func (d *DynamoDeployer) CaptureArtifacts(ctx context.Context) error {
 		helmStatus = fmt.Sprintf("capture failed: %v\n", err)
 	}
 	if err := writeDynamoArtifactFile(artifactDir, "helm-status.txt", helmStatus); err != nil {
-		return err
+		writeErrs = append(writeErrs, err)
 	}
 
 	if strings.TrimSpace(d.engineManifest) != "" {
@@ -59,10 +61,10 @@ func (d *DynamoDeployer) CaptureArtifacts(ctx context.Context) error {
 			content = []byte(fmt.Sprintf("capture failed: failed to read Dynamo engine manifest %s: %v\n", d.engineManifest, err))
 		}
 		if err := writeDynamoArtifactFile(artifactDir, "engine-manifest.yaml", string(content)); err != nil {
-			return err
+			writeErrs = append(writeErrs, err)
 		}
 	}
-	return nil
+	return errors.Join(writeErrs...)
 }
 
 func (d *DynamoDeployer) dynamoArtifactNamespace() string {

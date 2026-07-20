@@ -280,9 +280,13 @@ func TestGitDynamoReleaseSourcePrepareReleaseClonesAndReturnsChartPath(t *testin
 
 func TestGitDynamoReleaseSourcePrepareReleaseReusesExistingCheckout(t *testing.T) {
 	projectRoot := t.TempDir()
-	chartPath := filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1", "deploy", "helm", "charts", "platform")
+	repoPath := filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1")
+	chartPath := filepath.Join(repoPath, "deploy", "helm", "charts", "platform")
 	if err := os.MkdirAll(chartPath, 0o755); err != nil {
 		t.Fatalf("failed to create fake chart path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoPath, ".git"), 0o755); err != nil {
+		t.Fatalf("failed to create fake git directory: %v", err)
 	}
 	runner := &fakeCommandRunner{
 		responses: []fakeCommandResponse{
@@ -332,11 +336,57 @@ func TestGitDynamoReleaseSourcePrepareReleaseReusesExistingCheckout(t *testing.T
 	}
 }
 
+func TestGitDynamoReleaseSourcePrepareReleaseReclonesWhenSyncFails(t *testing.T) {
+	projectRoot := t.TempDir()
+	repoPath := filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1")
+	chartPath := filepath.Join(repoPath, "deploy", "helm", "charts", "platform")
+	if err := os.MkdirAll(filepath.Join(repoPath, ".git"), 0o755); err != nil {
+		t.Fatalf("failed to create fake git directory: %v", err)
+	}
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{output: "abc123\trefs/tags/v1.2.1\n"},
+			{output: "fatal: bad object", err: errors.New("exit status 128")},
+			{
+				after: func() {
+					if err := os.MkdirAll(chartPath, 0o755); err != nil {
+						t.Fatalf("failed to create fake chart path: %v", err)
+					}
+				},
+			},
+		},
+	}
+	source := &GitDynamoReleaseSource{
+		runner:  runner,
+		repoURL: testDynamoRepoURL,
+	}
+
+	release, err := source.PrepareRelease(context.Background(), projectRoot, "v1.2.1")
+	if err != nil {
+		t.Fatalf("PrepareRelease returned error: %v", err)
+	}
+	if release.ChartPath != chartPath {
+		t.Fatalf("expected chart path %s, got %s", chartPath, release.ChartPath)
+	}
+	if len(runner.calls) != 3 {
+		t.Fatalf("expected tag validation, failed sync, and clone commands, got %d calls", len(runner.calls))
+	}
+	if runner.calls[1].name != "git" || runner.calls[1].args[2] != "fetch" {
+		t.Fatalf("expected fetch sync command, got %+v", runner.calls[1])
+	}
+	if runner.calls[2].name != "git" || runner.calls[2].args[0] != "clone" || runner.calls[2].args[len(runner.calls[2].args)-1] != repoPath {
+		t.Fatalf("expected fresh clone command, got %+v", runner.calls[2])
+	}
+}
+
 func TestGitDynamoReleaseSourcePrepareReleaseRejectsCheckoutWithoutChart(t *testing.T) {
 	projectRoot := t.TempDir()
 	repoPath := filepath.Join(projectRoot, ".tmp", "dynamo", "v1.2.1")
 	if err := os.MkdirAll(repoPath, 0o755); err != nil {
 		t.Fatalf("failed to create fake checkout: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoPath, ".git"), 0o755); err != nil {
+		t.Fatalf("failed to create fake git directory: %v", err)
 	}
 	runner := &fakeCommandRunner{
 		responses: []fakeCommandResponse{
@@ -1106,6 +1156,7 @@ func TestDynamoDeployerWaitForComponentPodsWaitsForExpectedReplicaCount(t *testi
 
 func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *testing.T) {
 	projectRoot := t.TempDir()
+	manifest := writeDynamoGraphManifest(t, "brixbench-dynamo", "vllm-dynamo")
 	runner := &fakeCommandRunner{
 		responses: []fakeCommandResponse{
 			{},
@@ -1114,7 +1165,7 @@ func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *t
 	}
 	deployer := &DynamoDeployer{
 		namespace:      "brixbench-dynamo",
-		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d-vke.yaml",
+		engineManifest: manifest,
 		projectRoot:    projectRoot,
 		runner:         runner,
 	}
@@ -1126,7 +1177,7 @@ func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *t
 	wantCalls := []fakeCommandCall{
 		{
 			name: "kubectl",
-			args: []string{"patch", "-n", "brixbench-dynamo", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d-vke.yaml", "--type=merge", "-p", `{"metadata":{"finalizers":[]}}`},
+			args: []string{"patch", "-n", "brixbench-dynamo", "-f", manifest, "--type=merge", "-p", `{"metadata":{"finalizers":[]}}`},
 		},
 		{
 			name: "kubectl",
@@ -1138,11 +1189,11 @@ func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *t
 		},
 		{
 			name: "kubectl",
-			args: []string{"delete", "-n", "brixbench-dynamo", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d-vke.yaml", "--ignore-not-found", "--wait=false"},
+			args: []string{"delete", "-n", "brixbench-dynamo", "-f", manifest, "--ignore-not-found", "--wait=false"},
 		},
 		{
 			name: "kubectl",
-			args: []string{"wait", "--for=delete", "-n", "brixbench-dynamo", "-f", "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d-vke.yaml", "--timeout=2m"},
+			args: []string{"wait", "--for=delete", "-n", "brixbench-dynamo", "-f", manifest, "--timeout=2m"},
 		},
 		{
 			name: "kubectl",
@@ -1175,12 +1226,13 @@ func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *t
 }
 
 func TestDynamoDeployerTeardownReturnsCriticalCleanupErrors(t *testing.T) {
+	manifest := writeDynamoGraphManifest(t, "brixbench-dynamo", "vllm-dynamo")
 	runner := &fakeCommandRunner{
 		err: errors.New("cleanup failed"),
 	}
 	deployer := &DynamoDeployer{
 		namespace:      "brixbench-dynamo",
-		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d-vke.yaml",
+		engineManifest: manifest,
 		projectRoot:    t.TempDir(),
 		runner:         runner,
 	}
@@ -1210,6 +1262,7 @@ func TestDynamoDeployerTeardownReturnsCriticalCleanupErrors(t *testing.T) {
 }
 
 func TestDynamoDeployerTeardownIgnoresMissingGraphDuringPartialDeploy(t *testing.T) {
+	manifest := writeDynamoGraphManifest(t, "brixbench-dynamo", "vllm-dynamo")
 	runner := &fakeCommandRunner{
 		responses: []fakeCommandResponse{
 			{err: errors.New(`Error from server (NotFound): dynamographdeployments.nvidia.com "vllm-dynamo" not found`)},
@@ -1226,7 +1279,7 @@ func TestDynamoDeployerTeardownIgnoresMissingGraphDuringPartialDeploy(t *testing
 	}
 	deployer := &DynamoDeployer{
 		namespace:      "brixbench-dynamo",
-		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d-vke.yaml",
+		engineManifest: manifest,
 		projectRoot:    t.TempDir(),
 		runner:         runner,
 	}
@@ -1240,6 +1293,7 @@ func TestDynamoDeployerTeardownIgnoresMissingGraphDuringPartialDeploy(t *testing
 }
 
 func TestDynamoDeployerTeardownIgnoresMissingComponentDeploymentCRD(t *testing.T) {
+	manifest := writeDynamoGraphManifest(t, "brixbench-dynamo", "vllm-dynamo")
 	runner := &fakeCommandRunner{
 		responses: []fakeCommandResponse{
 			{},
@@ -1255,7 +1309,7 @@ func TestDynamoDeployerTeardownIgnoresMissingComponentDeploymentCRD(t *testing.T
 	}
 	deployer := &DynamoDeployer{
 		namespace:      "brixbench-dynamo",
-		engineManifest: "testdata/deployments/dynamo/qwen3-32b-round-robin-4p8d-vke.yaml",
+		engineManifest: manifest,
 		projectRoot:    t.TempDir(),
 		runner:         runner,
 	}
@@ -1271,6 +1325,32 @@ func TestDynamoDeployerTeardownIgnoresMissingComponentDeploymentCRD(t *testing.T
 	}
 	if got := runner.calls[len(runner.calls)-1].args; !reflect.DeepEqual(got, []string{"wait", "--for=delete", "namespace/brixbench-dynamo", "--timeout=10m"}) {
 		t.Fatalf("expected namespace delete wait to still run, got %v", got)
+	}
+}
+
+func TestDynamoDeployerTeardownSkipsMissingLocalEngineManifest(t *testing.T) {
+	projectRoot := t.TempDir()
+	missingManifest := filepath.Join(t.TempDir(), "missing-dynamo-graph.yaml")
+	runner := &fakeCommandRunner{}
+	deployer := &DynamoDeployer{
+		namespace:      "brixbench-dynamo",
+		engineManifest: missingManifest,
+		projectRoot:    projectRoot,
+		runner:         runner,
+	}
+
+	if err := deployer.Teardown(context.Background()); err != nil {
+		t.Fatalf("Teardown returned error: %v", err)
+	}
+	if len(runner.calls) != 5 {
+		t.Fatalf("expected cleanup to skip manifest commands and keep namespace cleanup, got %+v", runner.calls)
+	}
+	for _, call := range runner.calls {
+		for _, arg := range call.args {
+			if arg == missingManifest {
+				t.Fatalf("did not expect missing manifest %s in cleanup command %+v", missingManifest, call)
+			}
+		}
 	}
 }
 

@@ -76,13 +76,20 @@ func (s *GitDynamoReleaseSource) PrepareRelease(ctx context.Context, projectRoot
 	}
 
 	if pathExists(repoPath) {
-		if err := syncDynamoReleaseCheckout(ctx, s.runner, repoPath, s.repoURL, version); err != nil {
-			return nil, err
+		if dirExists(filepath.Join(repoPath, ".git")) {
+			if err := syncDynamoReleaseCheckout(ctx, s.runner, repoPath, s.repoURL, version); err == nil {
+				if !dirExists(chartPath) {
+					return nil, fmt.Errorf("Dynamo release checkout %s exists but chart path %s was not found", repoPath, chartPath)
+				}
+				return release, nil
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 		}
-		if !dirExists(chartPath) {
-			return nil, fmt.Errorf("Dynamo release checkout %s exists but chart path %s was not found", repoPath, chartPath)
+		if err := os.RemoveAll(repoPath); err != nil {
+			return nil, fmt.Errorf("failed to remove invalid Dynamo release checkout %s: %w", repoPath, err)
 		}
-		return release, nil
 	}
 
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
