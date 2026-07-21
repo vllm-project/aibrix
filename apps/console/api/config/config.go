@@ -27,6 +27,25 @@ import (
 // AuthModeDev is the development auth mode name.
 const AuthModeDev = "dev"
 
+// KubernetesProviderConfig identifies the cluster and namespace used by the
+// Kubernetes deployment provider.
+type KubernetesProviderConfig struct {
+	Kubeconfig string
+	Context    string
+	Namespace  string
+}
+
+// KubernetesWorkloadConfig holds defaults for Kubernetes resources rendered
+// from a deployment template. These values are workload settings, not cluster
+// connection settings.
+type KubernetesWorkloadConfig struct {
+	ServiceType             string
+	ContainerPort           int32
+	ServicePort             int32
+	CPURequest              string
+	HPATargetCPUUtilization int32
+}
+
 // Config holds all configuration for the AIBrix console backend.
 type Config struct {
 	// StoreURI selects the backing store via a URI scheme. Examples:
@@ -138,6 +157,13 @@ type Config struct {
 	// Metrics holds the metrics configuration.
 	// When nil, no metrics backends are initialised and all emissions are no-ops.
 	Metrics *MetricsConfig
+
+	// KubernetesProvider configures access to the cluster used by the
+	// "kubernetes" deployment provider.
+	KubernetesProvider KubernetesProviderConfig
+	// KubernetesWorkload configures default properties of resources rendered by
+	// the "kubernetes" deployment provider.
+	KubernetesWorkload KubernetesWorkloadConfig
 }
 
 // Load reads configuration from environment variables and applies sensible defaults.
@@ -196,6 +222,18 @@ func Load() (*Config, error) {
 		DevMode:                             envBool("DEV_MODE", false),
 		ErrorInjectionEnabled:               envBool("ERROR_INJECTION_ENABLED", false),
 		Metrics:                             loadMetricsConfig(),
+		KubernetesProvider: KubernetesProviderConfig{
+			Kubeconfig: envOrDefaultCompat("KUBERNETES_KUBECONFIG", "K8S_KUBECONFIG", os.Getenv("KUBECONFIG")),
+			Context:    envOrDefaultCompat("KUBERNETES_CONTEXT", "K8S_CONTEXT", ""),
+			Namespace:  envOrDefaultCompat("KUBERNETES_NAMESPACE", "K8S_NAMESPACE", "default"),
+		},
+		KubernetesWorkload: KubernetesWorkloadConfig{
+			ServiceType:             envOrDefaultCompat("KUBERNETES_SERVICE_TYPE", "K8S_SERVICE_TYPE", "ClusterIP"),
+			ContainerPort:           envInt32Compat("KUBERNETES_CONTAINER_PORT", "K8S_CONTAINER_PORT", 8000),
+			ServicePort:             envInt32Compat("KUBERNETES_SERVICE_PORT", "K8S_SERVICE_PORT", 8000),
+			CPURequest:              envOrDefaultCompat("KUBERNETES_CPU_REQUEST", "K8S_CPU_REQUEST", "1"),
+			HPATargetCPUUtilization: envInt32Compat("KUBERNETES_HPA_TARGET_CPU_UTILIZATION", "K8S_HPA_TARGET_CPU_UTILIZATION", 80),
+		},
 	}, nil
 }
 
@@ -217,6 +255,32 @@ func envBool(key string, fallback bool) bool {
 func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envOrDefaultCompat(key, legacyKey, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	if v := os.Getenv(legacyKey); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envInt32Compat(key, legacyKey string, fallback int32) int32 {
+	if v := os.Getenv(key); v != "" {
+		var parsed int
+		if _, err := fmt.Sscanf(v, "%d", &parsed); err == nil {
+			return int32(parsed)
+		}
+	}
+	if v := os.Getenv(legacyKey); v != "" {
+		var parsed int
+		if _, err := fmt.Sscanf(v, "%d", &parsed); err == nil {
+			return int32(parsed)
+		}
 	}
 	return fallback
 }
