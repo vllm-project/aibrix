@@ -299,6 +299,7 @@ func (d *LLMdDeployer) installLLMdRouter(ctx context.Context) error {
 		"-n", d.namespace,
 		"--create-namespace",
 		"--version", llmdRouterChartVersion,
+		"--set", "router.monitoring.prometheus.auth.enabled=false",
 	}
 	for _, valuesFile := range d.controlPlanePaths {
 		args = append(args, "-f", valuesFile)
