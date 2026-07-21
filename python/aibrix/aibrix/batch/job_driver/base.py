@@ -915,7 +915,13 @@ class BaseJobDriver:
             self._accumulate_usage(job.job_id, custom_id, request_output.get("usage"))
 
         response = self._build_response(
-            custom_id, job.job_id, request_id, job.spec, request_output, last_error
+            custom_id,
+            job.job_id,
+            request_id,
+            job.spec,
+            request_output,
+            last_error,
+            request_payload=request_input.get("body"),
         )
         await storage.write_job_output_data(job, request_id, response)
         return request_id, last_error is not None
@@ -1324,7 +1330,13 @@ class BaseJobDriver:
                     self._accumulate_usage(job_id, custom_id, response.get("usage"))
 
             record = self._build_response(
-                custom_id, job_id, request_id, job.spec, response, error
+                custom_id,
+                job_id,
+                request_id,
+                job.spec,
+                response,
+                error,
+                request_payload=request.payload,
             )
             await storage.write_job_output_data(job, request_id, record)
             await completed_request_ids.put((request_id, error is not None))
@@ -1569,6 +1581,7 @@ class BaseJobDriver:
         job_spec: BatchJobSpec,
         request_output: Any = None,
         error: Optional[Exception] = None,
+        request_payload: Optional[Dict[str, Any]] = None,
     ) -> dict[str, Any]:
         response: dict[str, Any] = {
             "id": uuid.uuid4().hex[:5],
@@ -1578,10 +1591,19 @@ class BaseJobDriver:
         }
 
         if error is not None:
+            log_extra: Dict[str, Any] = {
+                "job_id": job_id,
+                "request_id": request_id,
+            }
+            if request_payload is not None:
+                log_extra["request_payload"] = request_payload
+            if isinstance(error, InferenceError):
+                log_extra["error_code"] = error.code.value
+                log_extra["status_code"] = error.status_code
+                log_extra["response_body"] = error.response_body
             logger.error(
                 f"All inference attempts failed after retries: {error}",
-                job_id=job_id,
-                request_id=request_id,
+                **log_extra,
             )  # type: ignore[call-arg]
             response["error"] = BatchJobError(
                 code=BatchJobErrorCode.INFERENCE_FAILED, message=str(error)
