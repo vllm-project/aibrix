@@ -71,8 +71,10 @@ def build_engine_args(
         return _build_sglang_args(spec, ignore_model, served_model_name)
     if engine_type == EngineType.MOCK:
         return _build_mock_args(spec)
+    if engine_type == EngineType.VIPE:
+        return _build_vipe_args(spec, ignore_model, served_model_name)
     raise UnsupportedEngineError(
-        f"engine type '{engine_type.value}' has no adapter yet; supported: vllm, sglang, mock"
+        f"engine type '{engine_type.value}' has no adapter yet; supported: vllm, sglang, mock, vipe"
     )
 
 
@@ -181,6 +183,10 @@ _SGLANG_TYPED_FIELDS = {
     "max_num_seqs",
     "max_model_len",
     "gpu_memory_utilization",
+}
+
+_VIPE_TYPED_FIELDS = {
+    "vipe-storage-tos",
 }
 
 
@@ -293,3 +299,33 @@ def needs_shell_wrapper(engine: EngineSpec) -> bool:
     args directly to the entrypoint.
     """
     return engine.type == EngineType.MOCK
+
+
+def _build_vipe_args(
+    spec: ModelDeploymentTemplateSpec,
+    ignore_model: bool = False,
+    served_model_name: Optional[str] = None,
+) -> List[str]:
+    """Render ViPE launch_server arguments."""
+    args: List[str] = []
+
+    if served_model_name and not _pins_served_model_name(spec):
+        args.extend(["--vipe-default-model", served_model_name])
+
+    ea = spec.engine_args
+    extras = _engine_args_extras(ea.model_dump(exclude_none=True), _VIPE_TYPED_FIELDS)
+    for key, value in sorted(extras.items()):
+        flag = "--" + key.strip().lstrip("-").replace("_", "-")
+        if isinstance(value, bool):
+            if value:
+                args.append(flag)
+        elif isinstance(value, list):
+            for v in value:
+                args.extend([flag, str(v)])
+        elif value is None or str(value).strip() == "":
+            args.append(flag)
+        else:
+            args.extend([flag, str(value).strip()])
+
+    args.extend(spec.engine.serve_args)
+    return args
