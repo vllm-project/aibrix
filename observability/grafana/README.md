@@ -35,6 +35,7 @@ Official import URLs are also listed in
 | `aibrix_modelclaim_ready_replicas` | `namespace`, `model` |
 | `aibrix_modelclaim_activating` | `namespace`, `model` |
 | `aibrix_modelclaim_activation_total` | `namespace`, `model`, `result` |
+| `aibrix_modelclaim_pool_policy_valid` | `namespace`, `deployment` |
 
 **Runtime sidecar** (warm-pool `aibrix-runtime` `/metrics` on port `runtime`):
 
@@ -61,7 +62,10 @@ kubectl apply -f samples/modelclaim/warm-runtime-pool.yaml
 
 Dashboard variables cascade as **namespace → pool → pod → model**. The `pool`
 label is produced by the ServiceMonitor relabel rule (Prometheus cannot use
-`pool.aibrix.ai/name` as a label name).
+`pool.aibrix.ai/name` as a label name). The **Pool Policy Valid** tile is keyed
+by `namespace`/`deployment` (not `pool`/`pod`/`model`), so it follows only the
+`namespace` variable and reports the worst-case validity across warm-pool
+Deployments in the selected namespace(s).
 
 ### Not available yet
 
