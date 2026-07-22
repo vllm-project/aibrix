@@ -31,3 +31,41 @@ Router/EPP image:
 - Brixbench EPP image: `aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/llm-d-router-endpoint-picker:v0.9.0`
 - Upstream Envoy image: `docker.io/envoyproxy/envoy:distroless-v1.33.2`
 - Brixbench Envoy image: `aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/envoyproxy-envoy:distroless-v1.33.2`
+
+## Routing Policy
+
+The checked-in llm-d scenario uses the upstream llm-d v0.8.1 P/D
+disaggregation **cache-plus-load** policy:
+
+```text
+brixbench/benchmark/testdata/deployments/llmd/router/policies/pd-disaggregation-official.yaml
+```
+
+It keeps prefill and decode endpoints separate and uses the Endpoint Picker
+(EPP) default `max-score-picker` with cache and load signals:
+
+- prefill: prefix-cache (weight 3), queue (2), KV-cache utilization (2)
+- decode: active requests (2), prefix-cache (3)
+
+The policy is selected by the scenario's ordered `controlplane` Helm values
+files:
+
+```yaml
+controlplane:
+- brixbench/benchmark/testdata/deployments/llmd/router/base-values.yaml
+- brixbench/benchmark/testdata/deployments/llmd/router/policies/pd-disaggregation-official.yaml
+```
+
+To benchmark another llm-d policy, create a new values overlay under
+`brixbench/benchmark/testdata/deployments/llmd/router/policies/` and reference
+it as the second `controlplane` file in a new scenario test under
+`brixbench/benchmark/testdata/scenarios/`. The runner passes the files to Helm
+in order, so the policy overlay replaces the EPP plugin configuration without
+changes to the deployer, modelserver manifest, or benchmark client.
+
+llm-d endpoint routing is a filter, scorer, and picker pipeline rather than a
+single `router-mode` value. In particular, `round-robin-fairness-policy`
+controls flow-control queue fairness and is not equivalent to Dynamo's
+`--router-mode round-robin`. See the [llm-d EPP scheduling
+reference](https://github.com/llm-d/llm-d/blob/main/docs/architecture/core/router/epp/scheduling.md)
+for supported filters, scorers, and pickers.
