@@ -66,6 +66,7 @@ class EngineType(str, Enum):
     SGLANG = "sglang"
     TRTLLM = "trtllm"
     LMDEPLOY = "lmdeploy"
+    VIPE = "vipe"
     MOCK = "mock"
 
 
