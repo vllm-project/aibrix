@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -111,3 +112,157 @@ class UnloadLoraAdapterRuntimeRequest(NoExtraBaseModel):
     cleanup_local: bool = Field(
         default=True, description="Whether to delete local artifact files"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Runtime model lifecycle protocol (engine <-> control-plane co-design)
+# --------------------------------------------------------------------------- #
+class RuntimeEngineConfig(NoExtraBaseModel):
+    """Engine-specific startup options."""
+
+    args: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Engine CLI flags keyed by flag name, e.g. {'--max-model-len': '2048'}",
+    )
+
+
+class RuntimeClaimRef(NoExtraBaseModel):
+    """Stable ModelClaim identity carried into a runtime instance."""
+
+    namespace: str
+    name: str
+    uid: str
+
+
+class ActivateRuntimeModelRequest(NoProtectedBaseModel):
+    """Bring a model online as its own kvcached-enabled engine process."""
+
+    model_name: str
+    artifact_url: str
+    engine: str = "vllm"
+    port: int = Field(default=0, description="0 lets the agent pick a free port")
+    ipc_name: Optional[str] = Field(
+        default=None,
+        description="kvcached KVCACHED_IPC_NAME; agent derives one if empty",
+    )
+    credentials: Optional[Dict[str, str]] = None
+    engine_config: Optional[RuntimeEngineConfig] = None
+    claim_ref: Optional[RuntimeClaimRef] = None
+    # Legacy compatibility for older callers. New ModelClaim callers should use
+    # engine_config.args for engine CLI flags.
+    additional_config: Optional[Dict[str, str]] = None
+
+
+class ActivateRuntimeModelResponse(NoProtectedBaseModel):
+    status: str  # "success" | "error"
+    model_name: str
+    port: int = 0
+    ipc_name: str = ""
+    message: Optional[str] = None
+
+
+class DeactivateRuntimeModelRequest(NoProtectedBaseModel):
+    """Tear a model down by stopping its engine process."""
+
+    model_name: str
+    mode: str = "stop"
+
+
+class SetRuntimeModelKVLimitRequest(NoProtectedBaseModel):
+    """Controller-only request to set one model's kvcached limit."""
+
+    model_name: str
+    limit_bytes: int = Field(ge=0)
+    operation_id: str = Field(min_length=1)
+
+
+class SleepRuntimeModelRequest(NoProtectedBaseModel):
+    """Controller-only request to put a vLLM engine to sleep."""
+
+    model_name: str
+    level: int = Field(ge=1, le=2)
+    operation_id: str = Field(min_length=1)
+
+
+class WakeRuntimeModelRequest(NoProtectedBaseModel):
+    """Controller-only request to wake a vLLM engine."""
+
+    model_name: str
+    operation_id: str = Field(min_length=1)
+
+
+class RuntimeOperationResponse(NoProtectedBaseModel):
+    """Result of an idempotent runtime control operation."""
+
+    status: str = "success"
+    model_name: str
+    operation_id: str
+    applied: bool
+    phase: str
+
+
+class RuntimeModelInfo(NoProtectedBaseModel):
+    model_name: str
+    port: int
+    ipc_name: str
+    phase: str
+    # Whether the engine can serve right now (a /health probe). The controller
+    # gates routability on this: a model's warm-pod annotation stays at the
+    # non-routable marker (port 0) until ready, so requests never hit a
+    # still-booting engine.
+    ready: bool = False
+    # KV accounting comes from the model's kvcached /dev/shm MemInfoStruct and
+    # is zero when the segment is absent (mock engine, or engine still starting).
+    kv_used_bytes: int = 0
+    kv_total_bytes: int = 0
+
+
+class ListRuntimeModelsResponse(NoProtectedBaseModel):
+    models: List[RuntimeModelInfo]
+
+
+class RuntimeAcceleratorSnapshot(NoProtectedBaseModel):
+    """Live memory observation for one GPU visible to the runtime pod."""
+
+    id: str
+    hbm_total_bytes: int
+    hbm_free_bytes: int
+
+
+class RuntimeSnapshotModel(NoProtectedBaseModel):
+    """One runtime-managed engine in a point-in-time sidecar snapshot."""
+
+    model_name: str
+    artifact_url: str
+    claim_ref: Optional[RuntimeClaimRef] = None
+    port: int
+    ipc_name: str
+    phase: str
+    ready: bool
+    # Process liveness is independent from readiness: a booting engine is
+    # alive but non-routable, while a restart/terminal failure is not alive.
+    alive: bool = True
+    restart_count: int = 0
+    last_error: Optional[str] = None
+    last_transition: Optional[datetime] = None
+    kv_used_bytes: int
+    kv_capacity_bytes: int
+    # Largest amount of GPU memory attributable to this engine on any visible
+    # accelerator. This is an observation for placement ranking, not an
+    # allocation guarantee.
+    hbm_peak_bytes: int = 0
+    # Per-engine request activity is read by the sidecar from localhost. False
+    # means policy must not infer that an engine is idle from unavailable metrics.
+    request_metrics_observed: bool = False
+    requests_running: int = 0
+    requests_waiting: int = 0
+    request_success_total: Optional[int] = None
+
+
+class RuntimeSnapshotResponse(NoProtectedBaseModel):
+    """Runtime state used by the ModelClaim controller's placement cache."""
+
+    observed_at: datetime
+    accelerators: List[RuntimeAcceleratorSnapshot]
+    models: List[RuntimeSnapshotModel]
+    cached_artifacts: List[str]

@@ -50,6 +50,7 @@ from aibrix.batch.job_entity import (
     aggregate_batch_job_status,
     merge_batch_job_status_copies,
 )
+from aibrix.context.infra import InfrastructureContext
 from aibrix.metadata.api.v1.batch import _batch_job_to_openai_response
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -104,6 +105,7 @@ class TestBatchUsageSchema:
 @pytest.fixture
 def driver() -> JobDriver:
     return BaseJobDriver(
+        InfrastructureContext(),
         progress_manager=MagicMock(),
         runtime=ExternalRuntime(NoopEndpointSource()),
     )

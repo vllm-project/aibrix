@@ -15,6 +15,7 @@
 import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from kubernetes.client import ApiException
@@ -30,6 +31,7 @@ from aibrix.batch.job_driver import (
     TerminateResult,
 )
 from aibrix.batch.job_driver.driver_factory import create_job_driver
+from aibrix.batch.job_driver.running_jobs import RunningJobs
 from aibrix.batch.job_driver.runtime.k8s_deployment import DeploymentHandle
 from aibrix.batch.job_entity import (
     BatchJob,
@@ -44,7 +46,7 @@ from aibrix.batch.job_entity import (
     TypeMeta,
 )
 from aibrix.batch.manifest.renderer import RenderError
-from aibrix.context import InfrastructureContext
+from aibrix.context.infra import InfrastructureContext
 
 
 class FakeAppsV1Api:
@@ -303,7 +305,7 @@ async def test_k8s_deployment_runtime_reconnect_accepts_current_payload_keys():
     job = _make_job()
     runtime = _make_runtime(renderer=FakeRenderer())
 
-    handle = await runtime._reconnect(
+    handle = await runtime._load_handle(
         job,
         job.job_id,
         JobRuntimeRef(
@@ -441,11 +443,29 @@ async def test_k8s_deployment_runtime_terminate_cancels_session_and_tears_down()
         renderer=FakeRenderer(),
     )
 
-    async def _update_job_local_status(job_id, worker_id, status, update_keys=None):
-        del worker_id, update_keys
-        return SimpleNamespace(job_id=job_id, status=status)
+    class _ProgressManager:
+        def __init__(self, current_job: BatchJob) -> None:
+            self.current_job = current_job
 
-    progress_manager = SimpleNamespace(update_job_local_status=_update_job_local_status)
+        async def get_job(self, job_id: str) -> BatchJob:
+            assert job_id == self.current_job.job_id
+            return self.current_job
+
+        async def update_job_local_status(
+            self,
+            job_id: str,
+            worker_id: str,
+            status: BatchJobStatus,
+            update_keys=None,
+        ) -> BatchJob:
+            del worker_id, update_keys
+            assert job_id == self.current_job.job_id
+            updated = self.current_job.model_copy(deep=True)
+            updated.status = cast(BatchJobStatus, status.model_copy(deep=True))
+            self.current_job = updated
+            return updated
+
+    progress_manager = _ProgressManager(job)
     wait_entered = asyncio.Event()
 
     async def _blocked_wait_ready(handle, wait_mode="provision"):
@@ -514,14 +534,22 @@ async def test_create_job_driver_passes_infrastructure_context_to_k8s_deployment
 
 def test_provisioning_runtime_drives_base_failure_policy():
     runtime = DeploymentRuntime(_make_infrastructure_context())
-    driver = BaseJobDriver(SimpleNamespace(), runtime)
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        cast(RunningJobs, SimpleNamespace()),
+        runtime,
+    )
 
     assert driver._reraise_on_failure is False
     assert driver._default_failure_code == BatchJobErrorCode.INTERNAL_ERROR
 
 
 def test_standalone_runtime_drives_inline_failure_policy():
-    driver = BaseJobDriver(SimpleNamespace(), ExternalRuntime(None))
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        cast(RunningJobs, SimpleNamespace()),
+        ExternalRuntime(None),
+    )
 
     assert driver._reraise_on_failure is True
     assert driver._default_failure_code == BatchJobErrorCode.INFERENCE_FAILED

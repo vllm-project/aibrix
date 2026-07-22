@@ -683,7 +683,12 @@ async def test_expired_job_cleans_up_during_recovery(
     else:
         job_manager._in_progress_jobs[recovered_job.job_id] = recovered_job
     cleanup_runtime = FakeRuntime()
-    cleanup_driver = BaseJobDriver(job_manager, cleanup_runtime, recovered_job)
+    cleanup_driver = BaseJobDriver(
+        InfrastructureContext(),
+        job_manager,
+        cleanup_runtime,
+        recovered_job,
+    )
 
     monkeypatch.setattr(
         "aibrix.batch.batch_manager.create_job_driver",
@@ -1339,6 +1344,47 @@ async def test_finalizing_transition_persists():
     assert len(recorded) == 1
     assert recorded[0].status.state == BatchJobState.FINALIZING
     assert recorded[0].status.finalizing_at is not None
+
+
+@pytest.mark.asyncio
+async def test_update_job_status_supports_validating_job():
+    job_manager = _job_manager()
+    validating_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
+        metadata=ObjectMeta(
+            name="validating-job",
+            namespace="default",
+            uid="validating-uid",
+            creationTimestamp=datetime.now(),
+        ),
+        spec=BatchJobSpec(
+            input_file_id="f-validating",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        ),
+        status=BatchJobStatus(
+            jobID="validating-job-id",
+            state=BatchJobState.VALIDATING,
+            createdAt=datetime.now(),
+        ),
+    )
+    job_manager._pending_jobs["validating-job-id"] = validating_job
+
+    updated_status = validating_job.status.model_copy(deep=True)
+    updated_status.last_crashed_at = datetime.now()
+
+    updated = await job_manager.update_job_status(
+        "validating-job-id",
+        updated_status,
+    )
+
+    assert "validating-job-id" not in job_manager._pending_jobs
+    assert "validating-job-id" in job_manager._in_progress_jobs
+    assert updated.status.last_crashed_at == updated_status.last_crashed_at
+    assert (
+        job_manager._in_progress_jobs["validating-job-id"].status.last_crashed_at
+        == updated_status.last_crashed_at
+    )
 
 
 @pytest.mark.asyncio

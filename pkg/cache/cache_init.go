@@ -93,6 +93,9 @@ type Store struct {
 
 	// Model related storage
 	metaModels utils.SyncMap[string, *Model] // model_name -> *Model
+	// ModelClaim advertisements include non-routable port-0 states and are kept
+	// separate from metaModels by construction.
+	modelClaims modelClaimState
 
 	// Deploymnent related storage
 	enableProfileCaching bool                                    // Default to load from enableModelGPUProfileCaching, can be configured.

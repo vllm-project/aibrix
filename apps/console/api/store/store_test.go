@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"testing"
 
+	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store/models"
@@ -91,8 +92,8 @@ func TestMemoryStore(t *testing.T) {
 			if dep.Name != testDeploymentName {
 				t.Errorf("expected name %q, got %q", testDeploymentName, dep.Name)
 			}
-			if dep.Status != "Ready" {
-				t.Errorf("expected status 'Ready', got %q", dep.Status)
+			if dep.Status != deploymentstatus.StatusReady {
+				t.Errorf("expected status %q, got %q", deploymentstatus.StatusReady, dep.Status)
 			}
 		})
 
@@ -127,8 +128,8 @@ func TestMemoryStore(t *testing.T) {
 			if dep.Name != req.Name {
 				t.Errorf("expected name %q, got %q", req.Name, dep.Name)
 			}
-			if dep.Status != "Deploying" {
-				t.Errorf("expected status 'Deploying', got %q", dep.Status)
+			if dep.Status != deploymentstatus.StatusDeploying {
+				t.Errorf("expected status %q, got %q", deploymentstatus.StatusDeploying, dep.Status)
 			}
 
 			// Verify it can be retrieved
@@ -167,6 +168,51 @@ func TestMemoryStore(t *testing.T) {
 			_, err = s.GetDeployment(ctx, dep.Id)
 			if err == nil {
 				t.Error("expected error after deletion")
+			}
+		})
+
+		t.Run("UpdateDeploymentStatusPreservesExtendedFields", func(t *testing.T) {
+			deployment := &pb.Deployment{
+				Id:                 "provider-deployment",
+				Name:               "provider-deployment",
+				DeploymentId:       "k8s-resource",
+				BaseModel:          "Test Model",
+				BaseModelId:        "model-test",
+				Replicas:           "1[2]",
+				Status:             deploymentstatus.StatusDeploying,
+				ImplementationKind: "kubernetes",
+			}
+			if _, err := s.SaveDeployment(ctx, deployment); err != nil {
+				t.Fatalf("SaveDeployment failed: %v", err)
+			}
+			if err := s.db.Model(&models.Deployment{}).
+				Where("id = ?", deployment.Id).
+				Updates(map[string]any{
+					"model_source":      "s3://models/test",
+					"startup_command":   "serve",
+					"namespace":         "model-serving",
+					"k8s_resource_name": "k8s-resource",
+				}).Error; err != nil {
+				t.Fatalf("seed extended fields: %v", err)
+			}
+
+			deployment.Status = deploymentstatus.StatusReady
+			deployment.Replicas = "2[4]"
+			updated, err := s.UpdateDeploymentStatus(ctx, deployment)
+			if err != nil {
+				t.Fatalf("UpdateDeploymentStatus failed: %v", err)
+			}
+			if updated.Status != deploymentstatus.StatusReady || updated.Replicas != "2[4]" {
+				t.Fatalf("unexpected updated deployment: status=%q replicas=%q", updated.Status, updated.Replicas)
+			}
+
+			var row models.Deployment
+			if err := s.db.First(&row, "id = ?", deployment.Id).Error; err != nil {
+				t.Fatalf("read deployment row: %v", err)
+			}
+			if row.ModelSource != "s3://models/test" || row.StartupCommand != "serve" ||
+				row.Namespace != "model-serving" || row.K8sResourceName != "k8s-resource" {
+				t.Fatalf("extended fields were overwritten: %+v", row)
 			}
 		})
 

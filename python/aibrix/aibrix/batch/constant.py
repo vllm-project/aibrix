@@ -38,8 +38,12 @@ if not (1 <= DEFAULT_JOB_POOL_SIZE <= 100):
 # Job opts are for testing purpose.
 BATCH_OPTS_FAIL_INIT_RUNTIME = "fail_init_runtime"
 BATCH_OPTS_FAIL_PREPARATION = "fail_preparation"
+BATCH_OPTS_CRASH_DURING_VALIDATION = "crash_during_validation"
+BATCH_OPTS_CRASH_AFTER_N_REQUESTS = "crash_after_n_requests"
 BATCH_OPTS_FAIL_AFTER_N_REQUESTS = "fail_after_n_requests"
 BATCH_OPTS_INTERRUPT_RUNTIME_AFTER_N_REQUESTS = "interrupt_runtime_after_n_requests"
+BATCH_OPTS_CRASH_BEFORE_FINALIZE_SHUTDOWN = "crash_before_finalize_shutdown"
+BATCH_OPTS_CRASH_AFTER_FINALIZE_SHUTDOWN = "crash_after_finalize_shutdown"
 
 # Runtime selection moved to the RuntimeTarget enum
 # (aibrix.batch.job_entity) and the runtime registry keys.

@@ -303,6 +303,15 @@ func (r *RoutingContext) CanAddTrace() bool {
 	return atomic.CompareAndSwapInt32(&r.traceAdded, statusInitial, statusAdded)
 }
 
+// CanDoneTrace returns true only the first time a request finishes its trace
+// bookkeeping. It pairs with CanAddTrace: the model-level pendingRequests
+// counter is incremented once under CanAddTrace, so it must be decremented
+// exactly once here, even though several completion paths (response headers,
+// response body and the receive-error exits) may all call into DoneRequest*.
+func (r *RoutingContext) CanDoneTrace() bool {
+	return atomic.CompareAndSwapInt32(&r.traceAdded, statusAdded, statusDone)
+}
+
 // GetRoutingDelay returns the time duration used for routing the request.
 // Returns 0 if routing did not complete (e.g., prefill failure before SetTargetPod was called).
 func (r *RoutingContext) GetRoutingDelay() time.Duration {
@@ -313,6 +322,14 @@ func (r *RoutingContext) GetRoutingDelay() time.Duration {
 }
 
 func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
+	if port, ok := utils.ModelClaimPortForPod(pod, r.Model); ok {
+		if port > 0 {
+			return r.targetAddressWithPort(pod.Status.PodIP, port)
+		}
+		// Known ModelClaim model that is not yet routable (port 0). Do not fall
+		// back to the default deployment port on this warm pool pod.
+		return ""
+	}
 	return fmt.Sprintf("%v:%v", pod.Status.PodIP, utils.GetModelPortForPod(r.RequestID, pod))
 }
 
@@ -364,6 +381,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.tokens = nil
 	r.predictor = nil
 	r.statsUpdated = statusInitial
+	r.traceAdded = statusInitial
 }
 
 func (r *RoutingContext) debugWait() {

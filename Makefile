@@ -5,6 +5,7 @@ IMAGE_TAG ?= ${GIT_COMMIT_HASH}  # Use git commit hash as default image tag
 # Image URL to use all building/pushing image targets
 AIBRIX_CONTAINER_REGISTRY_NAMESPACE ?= aibrix
 DOCKERFILE_PATH ?= build/container
+KVCACHED_RUNTIME_BASE_IMAGE ?= ghcr.io/ovg-project/kvcached-vllm:latest
 IMAGES := controller-manager gateway-plugins runtime metadata-service
 AIBRIX_IMAGES := $(foreach img,$(IMAGES),$(AIBRIX_CONTAINER_REGISTRY_NAMESPACE)/$(img):nightly)
 
@@ -280,6 +281,11 @@ docker-build-gateway-plugins: ## Build docker image with the gateway plugins.
 docker-build-runtime: ## Build docker image with the AI Runtime.
 	$(call build_and_tag,runtime,Dockerfile.python)
 
+.PHONY: docker-build-kvcached-runtime
+docker-build-kvcached-runtime: ## Build the kvcached-enabled ModelClaim runtime image.
+	$(CONTAINER_TOOL) build --build-arg BASE_IMAGE=$(KVCACHED_RUNTIME_BASE_IMAGE) -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:${IMAGE_TAG} -f ${DOCKERFILE_PATH}/Dockerfile.kvcached-runtime .
+	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) tag ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:${IMAGE_TAG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:nightly; fi
+
 .PHONY: docker-build-metadata-service
 docker-build-metadata-service: ## Build docker image with the metadata-service (same as runtime but different tag).
 	$(call build_and_tag,metadata-service,Dockerfile.python)
@@ -303,6 +309,10 @@ docker-push-gateway-plugins: ## Push docker image with the gateway plugins.
 .PHONY: docker-push-runtime
 docker-push-runtime: ## Push docker image with the AI Runtime.
 	$(call push_image,runtime)
+
+.PHONY: docker-push-kvcached-runtime
+docker-push-kvcached-runtime: ## Push the kvcached-enabled ModelClaim runtime image.
+	$(call push_image,kvcached-runtime)
 
 .PHONY: docker-push-metadata-service
 docker-push-metadata-service: ## Push docker image with the metadata-service (Python).

@@ -55,6 +55,16 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationmodelv1alpha1.ModelAdapterSpecApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelAdapterStatus"):
 		return &applyconfigurationmodelv1alpha1.ModelAdapterStatusApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaim"):
+		return &applyconfigurationmodelv1alpha1.ModelClaimApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimEngineConfig"):
+		return &applyconfigurationmodelv1alpha1.ModelClaimEngineConfigApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimInstance"):
+		return &applyconfigurationmodelv1alpha1.ModelClaimInstanceApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimSpec"):
+		return &applyconfigurationmodelv1alpha1.ModelClaimSpecApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimStatus"):
+		return &applyconfigurationmodelv1alpha1.ModelClaimStatusApplyConfiguration{}
 
 		// Group=orchestration, Version=v1alpha1
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("Condition"):

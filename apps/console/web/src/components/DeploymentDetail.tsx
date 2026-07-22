@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { ChevronLeft, Copy, ExternalLink } from 'lucide-react';
 import { getDeployment } from '../utils/api';
 import type { Deployment } from '../data/mockData';
+import { deploymentStatusClass, normalizeDeploymentStatus } from '../utils/deploymentStatus';
 
 interface DeploymentDetailProps {
   deploymentId: string | null;
@@ -60,6 +61,7 @@ url = "https://api.aibrix.ai/inference/v1/chat/completions"
 payload = {
     "model": "accounts/seedjeffwan-2hvzrk1/deployments/euxdnr5z",
 }`;
+  const deploymentStatus = normalizeDeploymentStatus(deployment.status);
 
   return (
     <div className="p-8">
@@ -79,8 +81,8 @@ payload = {
               <button className="text-gray-400 hover:text-gray-600">
                 <Copy className="w-4 h-4" />
               </button>
-              <span className="inline-flex px-2.5 py-1 text-xs rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                Deployed
+              <span className={`inline-flex px-2.5 py-1 text-xs rounded-full ${deploymentStatusClass(deployment.status)}`}>
+                {deploymentStatus}
               </span>
             </div>
           </div>
@@ -167,8 +169,8 @@ payload = {
             <div className="space-y-3 text-sm">
               <div>
                 <div className="text-gray-500 mb-1">Status</div>
-                <span className="inline-flex px-2.5 py-1 text-xs rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  Deployed
+                <span className={`inline-flex px-2.5 py-1 text-xs rounded-full ${deploymentStatusClass(deployment.status)}`}>
+                  {deploymentStatus}
                 </span>
               </div>
 
@@ -176,6 +178,20 @@ payload = {
                 <div className="text-gray-500 mb-1">Deployed by</div>
                 <div className="text-gray-900">{deployment.createdBy}</div>
               </div>
+
+              {deployment.templateVersion && (
+                <div>
+                  <div className="text-gray-500 mb-1">Template</div>
+                  <div className="text-gray-900">{deployment.templateVersion}</div>
+                </div>
+              )}
+
+              {deployment.implementationKind && (
+                <div>
+                  <div className="text-gray-500 mb-1">Implementation</div>
+                  <div className="text-gray-900">{deployment.implementationKind}</div>
+                </div>
+              )}
 
               <div>
                 <div className="text-gray-500 mb-1">Deployment time</div>

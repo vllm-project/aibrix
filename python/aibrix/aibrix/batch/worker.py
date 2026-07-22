@@ -46,6 +46,7 @@ from aibrix.batch.job_entity import (
     ConditionType,
 )
 from aibrix.batch.state import JobMetaInfo
+from aibrix.context.infra import InfrastructureContext
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -413,6 +414,7 @@ class BatchWorker:
             # the Job, so the coordinator would then aggregate against emptied
             # markers and overwrite the output with zero counts (#2263).
             driver = BaseJobDriver(
+                InfrastructureContext(),
                 runner,
                 ExternalRuntime(GatewayEndpointSource(self.llm_engine_base_url)),
                 worker_mode=True,

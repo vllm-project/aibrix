@@ -482,6 +482,10 @@ class BatchManager(RunningJobs, SchedulableJobs):
         This is called by job entity manager when a job is committed.
         Enhanced to resolve pending job creation futures.
         """
+        # Job can be in validating after a crash during validating. Treat it as newly created.
+        if job.status.state == BatchJobState.VALIDATING:
+            job.status.state = BatchJobState.CREATED
+
         job_id = job.job_id
         if not job_id:
             logger.error("Job ID not found in comitted job")
@@ -573,6 +577,12 @@ class BatchManager(RunningJobs, SchedulableJobs):
             if not job_id:
                 logger.error("Job ID not found in updated job")
                 return False
+
+            # Recovered active jobs can still be staged in `_pending_jobs`
+            # until restart reconciliation runs. Normalize them first so the
+            # category lookup below sees the same in-progress placement that
+            # later cleanup and state-transition handling expect.
+            old_job = self._normalize_recovered_active_job_for_cleanup(job_id, old_job)
 
             # Categorize jobs
             old_category, old_name = self._categorize_jobs(old_job)
@@ -824,7 +834,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
         return validated
 
     async def update_job_status(self, job_id: str, status: BatchJobStatus) -> BatchJob:
-        meta_data = await self._meta_from_in_progress_job(job_id)
+        meta_data = await self._meta_from_updatable_job(job_id)
         updated = meta_data.copy(status)
         if self._job_entity_manager is not None:
             await self._job_entity_manager.update_job_status(updated)
@@ -922,18 +932,6 @@ class BatchManager(RunningJobs, SchedulableJobs):
             persisted.status.finalizing_at = datetime.now(timezone.utc)
         persisted.status.state = BatchJobState.FINALIZING
         if persisted.status.condition is None:
-            request_counts = persisted.status.request_counts
-            if request_counts.completed + request_counts.failed < request_counts.total:
-                # Calibrate total requests
-                logger.warning(
-                    "Calibrate total requests to %d during finalizing with no condition set, completed %d, failed %d",
-                    request_counts.completed + request_counts.failed,
-                    request_counts.completed,
-                    request_counts.failed,
-                )  # type: ignore[call-arg]
-                persisted.status.request_counts.total = (
-                    request_counts.completed + request_counts.failed
-                )
             persisted.status.add_condition(
                 Condition(
                     type=ConditionType.COMPLETED,
@@ -965,16 +963,6 @@ class BatchManager(RunningJobs, SchedulableJobs):
             raise JobUnexpectedStateError(
                 "Job is not in finalizing state", meta_data.status.state
             )
-
-        logger.debug(
-            "mark_job_done source counts",
-            job_id=job.job_id,
-            total=job.status.request_counts.total,
-            launched=job.status.request_counts.launched,
-            completed=job.status.request_counts.completed,
-            failed=job.status.request_counts.failed,
-            state=job.status.state,
-        )  # type: ignore[call-arg]
 
         # Copy the target status snapshot so the live in-progress JobMetaInfo is
         # not mutated to FINALIZED before job_updated_handler computes the old
@@ -1207,6 +1195,21 @@ class BatchManager(RunningJobs, SchedulableJobs):
             )
 
         return self._in_progress_jobs[job_id]
+
+    async def _meta_from_updatable_job(self, job_id: str) -> BatchJob:
+        if job_id in self._in_progress_jobs:
+            return self._in_progress_jobs[job_id]
+        if job_id in self._pending_jobs:
+            pending_job = self._pending_jobs[job_id]
+            if pending_job.status.state == BatchJobState.VALIDATING:
+                del self._pending_jobs[job_id]
+                self._in_progress_jobs[job_id] = self._as_job_meta(pending_job)
+                return self._in_progress_jobs[job_id]
+        job = await self.get_job(job_id)
+        raise JobUnexpectedStateError(
+            "Job has not been scheduled yet or has been processed",
+            job.status.state if job else None,
+        )
 
     def _categorize_jobs(
         self, job: BatchJob, first_seen: bool = False

@@ -187,7 +187,10 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
                     )
                 await asyncio.sleep(self._poll_interval_s)
 
-    async def _check_liveness(self, handle: SSHHandle) -> None:
+    async def _check_liveness(
+        self, handle: SSHHandle, reason: str = "unspecified"
+    ) -> None:
+        del reason
         url = self._base_url(handle) + "/health"
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:

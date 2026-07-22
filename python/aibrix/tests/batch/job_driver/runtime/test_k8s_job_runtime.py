@@ -18,8 +18,10 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from kubernetes import client
 
 from aibrix.batch.job_driver.runtime.k8s_job import K8sJobHandle, K8sJobRuntime
+from aibrix.batch.job_entity import BatchJob, BatchJobEndpoint, BatchJobSpec
 
 
 class _FakeBatchV1Api:
@@ -27,16 +29,28 @@ class _FakeBatchV1Api:
         self.created = []
         self.deleted = []
         self.conditions = []  # what read_namespaced_job_status reports
+        self._existing = set()
 
     def create_namespaced_job(self, namespace, body):
+        name = body["metadata"]["name"]
         self.created.append((namespace, body))
+        self._existing.add((namespace, name))
         return body
 
+    def add_job(self, namespace, name):
+        self._existing.add((namespace, name))
+
     def read_namespaced_job_status(self, name, namespace):
+        if (namespace, name) not in self._existing:
+            raise client.ApiException(status=404)
         return SimpleNamespace(status=SimpleNamespace(conditions=self.conditions))
 
     def delete_namespaced_job(self, name, namespace, propagation_policy):
+        del propagation_policy
+        if (namespace, name) not in self._existing:
+            raise client.ApiException(status=404)
         self.deleted.append(name)
+        self._existing.remove((namespace, name))
 
 
 class _FakeRenderer:
@@ -66,12 +80,15 @@ def _runtime(api):
 
 
 def _job():
-    return SimpleNamespace(
-        session_id="sess",
-        spec=SimpleNamespace(),
-        job_id="jid",
-        status=SimpleNamespace(get_runtime_ref=lambda key: None),
+    job = BatchJob.new_local(
+        BatchJobSpec(
+            input_file_id="input-1",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+        )
     )
+    job.session_id = "sess"
+    job.status.job_id = "jid"
+    return job
 
 
 @pytest.mark.asyncio
@@ -106,6 +123,7 @@ async def test_build_runtime_ref_uses_job_handle_metadata():
 @pytest.mark.asyncio
 async def test_wait_until_done_complete():
     api = _FakeBatchV1Api()
+    api.add_job("ns-x", "batch-job-1")
     api.conditions = [_cond("Complete")]
     out = await _runtime(api)._wait_until_done(K8sJobHandle("ns-x", "batch-job-1"))
     assert out.succeeded is True
@@ -114,6 +132,7 @@ async def test_wait_until_done_complete():
 @pytest.mark.asyncio
 async def test_wait_until_done_failed():
     api = _FakeBatchV1Api()
+    api.add_job("ns-x", "batch-job-1")
     api.conditions = [_cond("Failed", reason="DeadlineExceeded", message="too slow")]
     out = await _runtime(api)._wait_until_done(K8sJobHandle("ns-x", "batch-job-1"))
     assert out.succeeded is False
@@ -123,6 +142,7 @@ async def test_wait_until_done_failed():
 @pytest.mark.asyncio
 async def test_teardown_deletes_job():
     api = _FakeBatchV1Api()
+    api.add_job("ns-x", "batch-job-1")
     await _runtime(api)._teardown(K8sJobHandle("ns-x", "batch-job-1"))
     assert api.deleted == ["batch-job-1"]
 

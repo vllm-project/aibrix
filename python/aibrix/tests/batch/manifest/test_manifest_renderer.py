@@ -51,7 +51,7 @@ from aibrix.batch.template import (
 # Fixtures
 # ─────────────────────────────────────────────────────────────────────────────
 
-_TESTDATA_DIR = Path(__file__).parent / "testdata"
+_TESTDATA_DIR = Path(__file__).parents[1] / "testdata"
 
 
 def _write_yaml(path: Path, obj) -> Path:

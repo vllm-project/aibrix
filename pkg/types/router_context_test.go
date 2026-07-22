@@ -127,6 +127,23 @@ var _ = Describe("RouterContext", func() {
 		ctx2.Delete()
 	})
 
+	It("should reset traceAdded when reused", func() {
+		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
+		// First trace attempt on a fresh context must succeed.
+		Expect(ctx.CanAddTrace()).To(BeTrue())
+		// A second attempt on the same request must fail (trace already added).
+		Expect(ctx.CanAddTrace()).To(BeFalse())
+
+		ctx.Delete()
+		ctx2 := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r2", "")
+		Expect(ctx2).To(BeIdenticalTo(ctx))
+		// After recycling from the pool, the new request must be able to add
+		// its trace again; otherwise pendingRequests +1 is silently skipped.
+		Expect(ctx2.CanAddTrace()).To(BeTrue())
+
+		ctx2.Delete()
+	})
+
 	It("should SetTargetPod twice ok but will not change original value", func() {
 		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
 		pod := &v1.Pod{}

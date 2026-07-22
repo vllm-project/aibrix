@@ -62,6 +62,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - apps
+  resources:
+  - replicasets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - autoscaling
   resources:
   - horizontalpodautoscalers
@@ -188,6 +196,7 @@ rules:
   - model.aibrix.ai
   resources:
   - modeladapters
+  - modelclaims
   verbs:
   - create
   - delete
@@ -200,12 +209,14 @@ rules:
   - model.aibrix.ai
   resources:
   - modeladapters/finalizers
+  - modelclaims/finalizers
   verbs:
   - update
 - apiGroups:
   - model.aibrix.ai
   resources:
   - modeladapters/status
+  - modelclaims/status
   verbs:
   - get
   - patch

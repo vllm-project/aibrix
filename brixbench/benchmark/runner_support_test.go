@@ -32,6 +32,7 @@ import (
 var scenarioFlag = flag.String("scenario", "", "Path to the benchmark scenario YAML file")
 var cleanupAfterTestFlag = flag.Bool("benchmark.cleanup", true, "Clean up benchmark resources after each test case")
 var resetBeforeTestFlag = flag.Bool("benchmark.reset", true, "Reset the benchmark namespace before each test case")
+var podMonitoringFlag = flag.Bool("benchmark.pod-monitoring", true, "Create PodMonitor resources for benchmark workloads")
 
 func sanitizePathComponent(value string) string {
 	value = strings.TrimSpace(strings.ToLower(value))
@@ -148,30 +149,25 @@ func configureBenchmarkEnvironment(t *testing.T, testCaseName string, providerNa
 }
 
 func cleanupAfterTestEnabled() bool {
-	envValue := strings.TrimSpace(os.Getenv("BENCHMARK_CLEANUP_AFTER_TEST"))
-	if envValue == "" {
-		return *cleanupAfterTestFlag
-	}
-
-	enabled, err := strconv.ParseBool(envValue)
-	if err == nil {
-		return enabled
-	}
-
-	switch strings.ToLower(envValue) {
-	case "on", "yes", "y":
-		return true
-	case "off", "no", "n":
-		return false
-	default:
-		return *cleanupAfterTestFlag
-	}
+	return boolEnvOrDefault("BENCHMARK_CLEANUP_AFTER_TEST", *cleanupAfterTestFlag)
 }
 
 func resetBeforeTestEnabled() bool {
-	envValue := strings.TrimSpace(os.Getenv("BENCHMARK_RESET_BEFORE_TEST"))
+	return boolEnvOrDefault("BENCHMARK_RESET_BEFORE_TEST", *resetBeforeTestFlag)
+}
+
+func podMonitoringEnabled() bool {
+	return boolEnvOrDefault("BENCHMARK_POD_MONITORING", *podMonitoringFlag)
+}
+
+func podMonitoringStrictEnabled() bool {
+	return boolEnvOrDefault("BENCHMARK_POD_MONITORING_STRICT", false)
+}
+
+func boolEnvOrDefault(envName string, defaultValue bool) bool {
+	envValue := strings.TrimSpace(os.Getenv(envName))
 	if envValue == "" {
-		return *resetBeforeTestFlag
+		return defaultValue
 	}
 
 	enabled, err := strconv.ParseBool(envValue)
@@ -185,7 +181,7 @@ func resetBeforeTestEnabled() bool {
 	case "off", "no", "n":
 		return false
 	default:
-		return *resetBeforeTestFlag
+		return defaultValue
 	}
 }
 
