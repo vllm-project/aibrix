@@ -20,6 +20,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
@@ -80,8 +81,21 @@ func TestEmitTopologyPolicyPendingReplacementEventForOutdatedPod(t *testing.T) {
 
 	assert.NoError(t, reconciler.emitTopologyPolicyPendingReplacementEvent(ctx, roleSet))
 
-	event := <-recorder.Events
+	event := receiveTopologyPolicyEvent(t, recorder)
 	assert.True(t, strings.Contains(event, corev1.EventTypeWarning))
 	assert.True(t, strings.Contains(event, TopologyPolicyPendingPodReplacementEventType))
 	assert.True(t, strings.Contains(event, "1 active Pod"))
+	assert.False(t, strings.Contains(event, "0 PodSet templates"))
+}
+
+func receiveTopologyPolicyEvent(t *testing.T, recorder *record.FakeRecorder) string {
+	t.Helper()
+
+	select {
+	case event := <-recorder.Events:
+		return event
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for topology policy event")
+		return ""
+	}
 }

@@ -19,6 +19,7 @@ package roleset
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -81,9 +82,8 @@ func (r *RoleSetReconciler) emitTopologyPolicyPendingReplacementEvent(ctx contex
 		roleSet,
 		corev1.EventTypeWarning,
 		TopologyPolicyPendingPodReplacementEventType,
-		"TopologyPolicy changes do not update %s or %s; they will use the new affinity after replacement or recreation.",
-		formatTopologyPolicyEventCount(outdatedPods, "active Pod"),
-		formatTopologyPolicyEventCount(outdatedPodSets, "PodSet template"),
+		"TopologyPolicy changes do not update %s; they will use the new affinity after replacement or recreation.",
+		formatTopologyPolicyEventTargets(outdatedPods, outdatedPodSets),
 	)
 	return nil
 }
@@ -130,4 +130,15 @@ func formatTopologyPolicyEventCount(count int, name string) string {
 		return fmt.Sprintf("1 %s", name)
 	}
 	return fmt.Sprintf("%d %ss", count, name)
+}
+
+func formatTopologyPolicyEventTargets(outdatedPods, outdatedPodSets int) string {
+	targets := make([]string, 0, 2)
+	if outdatedPods > 0 {
+		targets = append(targets, formatTopologyPolicyEventCount(outdatedPods, "active Pod"))
+	}
+	if outdatedPodSets > 0 {
+		targets = append(targets, formatTopologyPolicyEventCount(outdatedPodSets, "PodSet template"))
+	}
+	return strings.Join(targets, " and ")
 }
