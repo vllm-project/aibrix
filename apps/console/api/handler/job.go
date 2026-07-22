@@ -63,8 +63,28 @@ import (
 
 const (
 	defaultListLimit      = 20
+	minJobReplicas        = int32(1)
+	maxJobReplicas        = int32(1024)
 	metricConsoleJobError = "console.job.error"
 )
+
+type JobLimits struct {
+	ResourceRequest JobResourceRequestLimits `json:"resource_request"`
+}
+
+type JobResourceRequestLimits struct {
+	MinReplicas int32 `json:"min_replicas"`
+	MaxReplicas int32 `json:"max_replicas"`
+}
+
+func JobLimitsConfig() JobLimits {
+	return JobLimits{
+		ResourceRequest: JobResourceRequestLimits{
+			MinReplicas: minJobReplicas,
+			MaxReplicas: maxJobReplicas,
+		},
+	}
+}
 
 var supportedCompletionWindows = map[string]struct{}{
 	"1h":  {},
@@ -229,8 +249,8 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	replicas := int32(1)
 	if req.ResourceRequest != nil && req.ResourceRequest.Replicas != 0 {
 		replicas = req.ResourceRequest.Replicas
-		if replicas < 1 || replicas > 128 {
-			return nil, status.Error(codes.InvalidArgument, "resource_request.replicas must be between 1 and 128")
+		if replicas < minJobReplicas || replicas > maxJobReplicas {
+			return nil, status.Errorf(codes.InvalidArgument, "resource_request.replicas must be between %d and %d", minJobReplicas, maxJobReplicas)
 		}
 	}
 
@@ -341,7 +361,7 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 // toPlannerClientConfig projects the proto JobClientConfig into the planner's
 // ClientConfig. Pointer fields carry proto3 presence straight through, so an
 // unset field stays nil and falls back to MDS env defaults. Range validation
-// (e.g. max_concurrency <= 256) is enforced by the metadata service.
+// is enforced by the metadata service.
 func toPlannerClientConfig(c *pb.JobClientConfig) *plannerapi.ClientConfig {
 	if c == nil {
 		return nil

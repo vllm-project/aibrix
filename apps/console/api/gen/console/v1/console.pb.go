@@ -1949,7 +1949,7 @@ func (x *JobResourceRequest) GetReplicas() int32 {
 // distinguishable from an explicit zero.
 type JobClientConfig struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
-	MaxConcurrency      *int32                 `protobuf:"varint,1,opt,name=max_concurrency,json=maxConcurrency,proto3,oneof" json:"max_concurrency,omitempty"`                // absolute in-flight cap, 1..256
+	MaxConcurrency      *int32                 `protobuf:"varint,1,opt,name=max_concurrency,json=maxConcurrency,proto3,oneof" json:"max_concurrency,omitempty"`                // absolute in-flight cap, 1..1024
 	AdaptiveConcurrency *bool                  `protobuf:"varint,2,opt,name=adaptive_concurrency,json=adaptiveConcurrency,proto3,oneof" json:"adaptive_concurrency,omitempty"` // grow concurrency adaptively
 	AdaptiveMaxFactor   *float64               `protobuf:"fixed64,3,opt,name=adaptive_max_factor,json=adaptiveMaxFactor,proto3,oneof" json:"adaptive_max_factor,omitempty"`    // adaptive growth factor, >= 1
 	RetryPolicy         *JobClientRetryPolicy  `protobuf:"bytes,4,opt,name=retry_policy,json=retryPolicy,proto3" json:"retry_policy,omitempty"`

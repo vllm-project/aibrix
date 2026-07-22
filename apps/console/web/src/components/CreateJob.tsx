@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import {
   createJob,
+  getJobLimits,
   listFiles,
   uploadFile,
   listModels as apiListModels,
@@ -23,6 +24,7 @@ import {
 } from '../utils/api';
 import type {
   FileInfo,
+  JobLimits,
   ModelDeploymentTemplate,
   JobClientConfig,
   JobClientRetryPolicy,
@@ -66,6 +68,9 @@ function parseNumber(value: string): number | undefined {
 
 type Step = 'model' | 'template' | 'dataset' | 'settings';
 const STEP_INDEX: Record<Step, number> = { model: 1, template: 2, dataset: 3, settings: 4 };
+const MIN_CLIENT_MAX_CONCURRENCY = 1;
+const MAX_CLIENT_MAX_CONCURRENCY = 1024;
+const MIN_ADAPTIVE_MAX_FACTOR = 1;
 
 export function CreateJob({ onBack }: CreateJobProps) {
   const [currentStep, setCurrentStep] = useState<Step>('model');
@@ -95,6 +100,8 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [models, setModels] = useState<Model[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelSearchQuery, setModelSearchQuery] = useState('');
+  const [jobLimits, setJobLimits] = useState<JobLimits | null>(null);
+  const [jobLimitsError, setJobLimitsError] = useState<string | null>(null);
 
   // Template selection
   const [templates, setTemplates] = useState<ModelDeploymentTemplate[]>([]);
@@ -126,6 +133,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [paramErrors, setParamErrors] = useState<Record<string, string>>({});
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const replicaLimits = jobLimits?.resourceRequest;
 
   useEffect(() => {
     apiListModels().then(m => {
@@ -135,6 +143,18 @@ export function CreateJob({ onBack }: CreateJobProps) {
       console.error('Failed to fetch models:', err);
       setModelsLoading(false);
     });
+  }, []);
+
+  useEffect(() => {
+    getJobLimits()
+      .then((limits) => {
+        setJobLimits(limits);
+        setJobLimitsError(null);
+      })
+      .catch((err) => {
+        setJobLimits(null);
+        setJobLimitsError(err instanceof Error ? err.message : String(err));
+      });
   }, []);
 
   const filteredModels = models.filter(m =>
@@ -344,13 +364,13 @@ export function CreateJob({ onBack }: CreateJobProps) {
     setSubmitError(null);
   };
 
-  const validateParam = (_field: string, value: string, min: number, max: number, isInt: boolean): string => {
+  const validateParam = (_field: string, value: string, min: number | undefined, max: number | undefined, isInt: boolean): string => {
     if (value.trim() === '') return '';
     const num = Number(value);
     if (isNaN(num)) return 'Must be a number';
     if (isInt && !Number.isInteger(num)) return 'Must be an integer';
-    if (num < min) return `Min: ${min}`;
-    if (num > max) return `Max: ${max}`;
+    if (min !== undefined && num < min) return `Min: ${min}`;
+    if (max !== undefined && num > max) return `Max: ${max}`;
     return '';
   };
 
@@ -358,14 +378,20 @@ export function CreateJob({ onBack }: CreateJobProps) {
     field: string,
     value: string,
     setter: (v: string) => void,
-    min: number,
-    max: number,
+    min: number | undefined,
+    max: number | undefined,
     isInt: boolean,
   ) => {
     setter(value);
     const err = validateParam(field, value, min, max, isInt);
     setParamErrors(prev => ({ ...prev, [field]: err }));
   };
+
+  useEffect(() => {
+    if (!replicaLimits) return;
+    const err = validateParam('replicas', replicas, replicaLimits.minReplicas, replicaLimits.maxReplicas, true);
+    setParamErrors(prev => ({ ...prev, replicas: err }));
+  }, [replicaLimits, replicas]);
 
   const hasParamErrors = Object.values(paramErrors).some(e => e !== '');
 
@@ -438,7 +464,10 @@ export function CreateJob({ onBack }: CreateJobProps) {
     selectedExistingFileId: selectedExistingFile?.id ?? '',
     hasInferenceOverrides,
   });
-  const canSubmit = readiness.canSubmit;
+  const canSubmit = readiness.canSubmit && jobLimits !== null;
+  const blockedReason = jobLimits === null
+    ? (jobLimitsError ? `Failed to load job limits: ${jobLimitsError}` : 'Loading job limits...')
+    : readiness.reason;
   const canContinueDataset = selectedExistingFile != null || (selectedFile != null && (validation?.valid ?? false));
   const selectedModelLabel = formatModelSelectionLabel(selectedModel, selectedServingName);
 
@@ -982,15 +1011,22 @@ export function CreateJob({ onBack }: CreateJobProps) {
                   <p className="text-xs text-gray-400 mb-4">
                     Choose how many dedicated workers this batch should provision.
                   </p>
+                  {jobLimitsError && (
+                    <p className="text-xs text-red-500 mb-4">
+                      Failed to load job limits: {jobLimitsError}
+                    </p>
+                  )}
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm mb-1">Service replicas</label>
-                      <p className="text-xs text-gray-400 mb-1">1 – 128</p>
+                      <p className="text-xs text-gray-400 mb-1">
+                        {replicaLimits ? `${replicaLimits.minReplicas} - ${replicaLimits.maxReplicas}` : 'Loading limits...'}
+                      </p>
                       <input
                         type="text"
                         value={replicas}
-                        onChange={(e) => handleParamChange('replicas', e.target.value, setReplicas, 1, 128, true)}
+                        onChange={(e) => handleParamChange('replicas', e.target.value, setReplicas, replicaLimits?.minReplicas, replicaLimits?.maxReplicas, true)}
                         placeholder="1"
                         className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
                           paramErrors.replicas ? 'border-red-300' : 'border-gray-200'
@@ -1013,12 +1049,12 @@ export function CreateJob({ onBack }: CreateJobProps) {
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm mb-1">Max Concurrency</label>
-                      <p className="text-xs text-gray-400 mb-1">1 – 256</p>
+                      <p className="text-xs text-gray-400 mb-1">{MIN_CLIENT_MAX_CONCURRENCY} - {MAX_CLIENT_MAX_CONCURRENCY}</p>
                       <input
                         type="text"
                         value={maxConcurrency}
-                        onChange={(e) => handleParamChange('maxConcurrency', e.target.value, setMaxConcurrency, 1, 256, true)}
-                        placeholder="e.g. 256"
+                        onChange={(e) => handleParamChange('maxConcurrency', e.target.value, setMaxConcurrency, MIN_CLIENT_MAX_CONCURRENCY, MAX_CLIENT_MAX_CONCURRENCY, true)}
+                        placeholder={`e.g. ${MAX_CLIENT_MAX_CONCURRENCY}`}
                         className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
                           paramErrors.maxConcurrency ? 'border-red-300' : 'border-gray-200'
                         }`}
@@ -1034,7 +1070,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
                       <input
                         type="text"
                         value={adaptiveMaxFactor}
-                        onChange={(e) => handleParamChange('adaptiveMaxFactor', e.target.value, setAdaptiveMaxFactor, 1, 1024, false)}
+                        onChange={(e) => handleParamChange('adaptiveMaxFactor', e.target.value, setAdaptiveMaxFactor, MIN_ADAPTIVE_MAX_FACTOR, undefined, false)}
                         placeholder="e.g. 8"
                         className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
                           paramErrors.adaptiveMaxFactor ? 'border-red-300' : 'border-gray-200'
@@ -1243,8 +1279,8 @@ export function CreateJob({ onBack }: CreateJobProps) {
                     {uploading ? 'Uploading file...' : submitting ? 'Creating...' : 'Create Job'}
                   </button>
                 </div>
-                {!canSubmit && readiness.reason && (
-                  <p className="text-xs text-gray-500 text-right">{readiness.reason}</p>
+                {!canSubmit && blockedReason && (
+                  <p className="text-xs text-gray-500 text-right">{blockedReason}</p>
                 )}
               </div>
             )}

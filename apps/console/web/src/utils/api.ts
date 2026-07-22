@@ -89,10 +89,17 @@ export interface JobResourceRequest {
   replicas?: number;
 }
 
+export interface JobLimits {
+  resourceRequest: {
+    minReplicas: number;
+    maxReplicas: number;
+  };
+}
+
 // JobClientConfig mirrors the metadata-service aibrix.client block. All fields
 // optional; omitted ones fall back to metadata-service env defaults.
 export interface JobClientConfig {
-  maxConcurrency?: number;       // absolute in-flight cap, 1..256
+  maxConcurrency?: number;       // absolute in-flight cap, 1..1024
   adaptiveConcurrency?: boolean; // grow concurrency adaptively
   adaptiveMaxFactor?: number;    // adaptive growth factor, >= 1
   retryPolicy?: JobClientRetryPolicy;
@@ -449,6 +456,10 @@ export async function listAllJobs(): Promise<Job[]> {
     after = last.id;
   }
   return all;
+}
+
+export async function getJobLimits(): Promise<JobLimits> {
+  return apiFetch<JobLimits>('/api/v1/config/job-limits');
 }
 
 export async function getJob(id: string, options?: { includeDeployment?: boolean }): Promise<Job> {

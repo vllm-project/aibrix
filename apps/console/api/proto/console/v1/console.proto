@@ -334,7 +334,7 @@ message JobResourceRequest {
 // fields use proto3 presence so "unset" (fall back to env defaults) is
 // distinguishable from an explicit zero.
 message JobClientConfig {
-  optional int32 max_concurrency = 1;       // absolute in-flight cap, 1..256
+  optional int32 max_concurrency = 1;       // absolute in-flight cap, 1..1024
   optional bool adaptive_concurrency = 2;   // grow concurrency adaptively
   optional double adaptive_max_factor = 3;  // adaptive growth factor, >= 1
   JobClientRetryPolicy retry_policy = 4;
@@ -514,7 +514,7 @@ message CreateModelRequest {
 //                   }
 //               },
 //               "client": {                         # optional smart-client controls
-//                   "max_concurrency": 256,          # optional job-global cap, 1..256
+//                   "max_concurrency": 1024,         # optional job-global cap, 1..1024
 //                   "adaptive_concurrency": true,    # optional
 //                   "adaptive_max_factor": 16,       # optional, >= 1
 //                   "retry_policy": {                # optional
