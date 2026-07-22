@@ -523,7 +523,11 @@ class ViPEEngine(LLMEngine):
         if not self._profiling_done.is_set():
             if not self._profiling_started:
                 self._profiling_started = True
-                return await self._run_first_request(req)
+                try:
+                    return await self._run_first_request(req)
+                except Exception:
+                    self._profiling_started = False
+                    raise
             # Another request is already doing profiling — wait for it to finish
             await self._profiling_done.wait()
         return await self._dispatch_to_worker(req)
@@ -533,7 +537,7 @@ class ViPEEngine(LLMEngine):
         import httpx
 
         downloaded = 0
-        async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
             async with client.stream("GET", video_url) as resp:
                 resp.raise_for_status()
                 with input_path.open("wb") as f:
@@ -598,7 +602,9 @@ class ViPEEngine(LLMEngine):
         logger.info("[req-%s] Uploaded %d artifacts", req_id[:8], len(uploaded))
 
         # Clean up temp dir
-        self._active_tmpdirs.pop(req_id, None)
+        tmpdir = self._active_tmpdirs.pop(req_id, None)
+        if tmpdir is not None:
+            tmpdir.cleanup()
 
         result = _build_result_dict(subdir, upload_prefix, uploaded)
         if "profile" in worker_result:
