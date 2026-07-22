@@ -34,6 +34,7 @@ import signal
 import socket
 import sys
 import threading
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -94,6 +95,23 @@ class RuntimeOperationResult:
     operation_id: str
     applied: bool
     phase: str
+
+
+@dataclass(frozen=True)
+class ModelRuntimeMetricsSnapshot:
+    """Lock-consistent inputs for the runtime Prometheus collector."""
+
+    models: List[ModelInstance]
+    resident_models: List[ModelInstance]
+    restart_attempts: Dict[str, int]
+    restart_budget_exhausted: Dict[str, int]
+    re_adoption_outcomes: Dict[str, int]
+    kv_limit_outcomes: Dict[tuple[str, str], int]
+    kv_limit_requested_bytes: Dict[str, int]
+    kv_limit_applied_bytes: Dict[str, int]
+    lifecycle_outcomes: Dict[tuple[str, str, str], int]
+    lifecycle_duration_count: Dict[tuple[str, str, str], int]
+    lifecycle_duration_sum: Dict[tuple[str, str, str], float]
 
 
 class ModelNotFoundError(LookupError):
@@ -833,6 +851,15 @@ class ModelRuntime:
         self._supervisor_interval_seconds = supervisor_interval_seconds
         self._supervisor_stop = threading.Event()
         self._supervisor_thread: Optional[threading.Thread] = None
+        self._restart_attempts: Dict[str, int] = {}
+        self._restart_budget_exhausted: Dict[str, int] = {}
+        self._re_adoption_outcomes: Dict[str, int] = {}
+        self._kv_limit_outcomes: Dict[tuple[str, str], int] = {}
+        self._kv_limit_requested_bytes: Dict[str, int] = {}
+        self._kv_limit_applied_bytes: Dict[str, int] = {}
+        self._lifecycle_outcomes: Dict[tuple[str, str, str], int] = {}
+        self._lifecycle_duration_count: Dict[tuple[str, str, str], int] = {}
+        self._lifecycle_duration_sum: Dict[tuple[str, str, str], float] = {}
         if self._registry is not None:
             self.re_adopt()
         if start_supervisor:
@@ -888,11 +915,16 @@ class ModelRuntime:
             changed = False
             for record in self._registry.load():
                 inst = self._instance_from_registry_record(record)
-                if inst is None or inst.model_name in self._models:
+                if inst is None:
+                    self._increment_metric(self._re_adoption_outcomes, "invalid")
+                    continue
+                if inst.model_name in self._models:
+                    self._increment_metric(self._re_adoption_outcomes, "duplicate")
                     continue
                 self._models[inst.model_name] = inst
 
                 if inst.phase == "failed":
+                    self._increment_metric(self._re_adoption_outcomes, "terminal")
                     # A terminal record is never routed or relaunched. If a
                     # stale process unexpectedly remains, clean it on recovery.
                     self._terminate_stale_process_group(inst)
@@ -901,13 +933,17 @@ class ModelRuntime:
                     if self._process_handle_alive(inst) or process_group_is_alive(
                         inst.pid
                     ):
+                        self._increment_metric(self._re_adoption_outcomes, "stopping")
                         self._launcher.stop(inst)
                     else:
+                        self._increment_metric(self._re_adoption_outcomes, "removed")
                         self._models.pop(inst.model_name, None)
+                        self._clear_model_metric_gauges(inst.model_name)
                         changed = True
                     continue
 
                 if self._process_handle_alive(inst):
+                    self._increment_metric(self._re_adoption_outcomes, "success")
                     if inst.phase != "sleeping":
                         if instance_ready(inst):
                             if inst.phase != "active" or inst.last_error is not None:
@@ -924,6 +960,7 @@ class ModelRuntime:
                         inst, "engine unavailable during runtime re-adoption"
                     )
                     changed = True
+                self._increment_metric(self._re_adoption_outcomes, "restart_scheduled")
 
             if changed:
                 self._persist_locked()
@@ -1116,7 +1153,8 @@ class ModelRuntime:
         self._terminate_stale_process_group(inst)
         inst.last_error = error
         if inst.restart_count >= self._max_restarts:
-            self._transition(inst, "failed")
+            if self._transition(inst, "failed"):
+                self._increment_metric(self._restart_budget_exhausted, inst.model_name)
             inst.last_error = "engine exited; restart budget exhausted"
             inst.next_restart_at = None
             return
@@ -1140,6 +1178,7 @@ class ModelRuntime:
         inst.pid = None
         inst.pid_start_time = None
         try:
+            self._increment_metric(self._restart_attempts, inst.model_name)
             inst.pid = self._launcher.launch(
                 inst,
                 inst.artifact_url,
@@ -1202,6 +1241,7 @@ class ModelRuntime:
 
             for model_name in remove:
                 self._models.pop(model_name, None)
+                self._clear_model_metric_gauges(model_name)
             if changed:
                 self._persist_locked()
 
@@ -1256,6 +1296,7 @@ class ModelRuntime:
                 )
             except Exception:
                 self._models.pop(model_name, None)
+                self._clear_model_metric_gauges(model_name)
                 self._persist_locked()
                 raise
             inst.pid_start_time = process_start_time(inst.pid)
@@ -1303,6 +1344,7 @@ class ModelRuntime:
                 and not process_group_is_alive(inst.pid)
             ):
                 self._models.pop(model_name, None)
+                self._clear_model_metric_gauges(model_name)
                 self._persist_locked()
 
     def set_kv_limit(
@@ -1315,14 +1357,22 @@ class ModelRuntime:
             raise ValueError("operation_id must not be empty")
         with self._lock:
             inst = self._require_instance(model_name)
+            self._kv_limit_requested_bytes[model_name] = limit_bytes
             if self._operation_completed(inst, "kv-limit", operation_id):
+                self._increment_metric(self._kv_limit_outcomes, (model_name, "skipped"))
                 return RuntimeOperationResult(
                     model_name=model_name,
                     operation_id=operation_id,
                     applied=False,
                     phase=inst.phase,
                 )
-            self._kv_controller.set_limit(inst.ipc_name, limit_bytes)
+            try:
+                self._kv_controller.set_limit(inst.ipc_name, limit_bytes)
+            except Exception:
+                self._increment_metric(self._kv_limit_outcomes, (model_name, "failed"))
+                raise
+            self._kv_limit_applied_bytes[model_name] = limit_bytes
+            self._increment_metric(self._kv_limit_outcomes, (model_name, "applied"))
             self._remember_operation(inst, "kv-limit", operation_id)
             return RuntimeOperationResult(
                 model_name=model_name,
@@ -1339,73 +1389,99 @@ class ModelRuntime:
             raise ValueError("sleep level must be 1 or 2")
         if not operation_id:
             raise ValueError("operation_id must not be empty")
-        with self._lock:
-            inst = self._require_instance(model_name)
-            if inst.engine != "vllm":
-                raise UnsupportedModelControlError(
-                    f"sleep is unsupported for engine {inst.engine!r}"
-                )
-            if self._operation_completed(inst, "sleep", operation_id):
-                return RuntimeOperationResult(
-                    model_name=model_name,
-                    operation_id=operation_id,
-                    applied=False,
-                    phase=inst.phase,
-                )
-            if inst.phase == "sleeping":
+        started = time.perf_counter()
+        result = "failed"
+        tracked = False
+        try:
+            with self._lock:
+                inst = self._require_instance(model_name)
+                tracked = True
+                if inst.engine != "vllm":
+                    raise UnsupportedModelControlError(
+                        f"sleep is unsupported for engine {inst.engine!r}"
+                    )
+                if self._operation_completed(inst, "sleep", operation_id):
+                    result = "skipped"
+                    return RuntimeOperationResult(
+                        model_name=model_name,
+                        operation_id=operation_id,
+                        applied=False,
+                        phase=inst.phase,
+                    )
+                if inst.phase == "sleeping":
+                    self._remember_operation(inst, "sleep", operation_id)
+                    result = "skipped"
+                    return RuntimeOperationResult(
+                        model_name=model_name,
+                        operation_id=operation_id,
+                        applied=False,
+                        phase=inst.phase,
+                    )
+                self._launcher.sleep(inst, level)
+                self._transition(inst, "sleeping")
                 self._remember_operation(inst, "sleep", operation_id)
+                self._persist_locked()
+                result = "applied"
                 return RuntimeOperationResult(
                     model_name=model_name,
                     operation_id=operation_id,
-                    applied=False,
+                    applied=True,
                     phase=inst.phase,
                 )
-            self._launcher.sleep(inst, level)
-            self._transition(inst, "sleeping")
-            self._remember_operation(inst, "sleep", operation_id)
-            self._persist_locked()
-            return RuntimeOperationResult(
-                model_name=model_name,
-                operation_id=operation_id,
-                applied=True,
-                phase=inst.phase,
-            )
+        finally:
+            if tracked:
+                self._record_lifecycle_operation(
+                    model_name, "sleep", result, time.perf_counter() - started
+                )
 
     def wake(self, model_name: str, *, operation_id: str) -> RuntimeOperationResult:
         """Wake a vLLM model once for a controller operation ID."""
         if not operation_id:
             raise ValueError("operation_id must not be empty")
-        with self._lock:
-            inst = self._require_instance(model_name)
-            if inst.engine != "vllm":
-                raise UnsupportedModelControlError(
-                    f"wake is unsupported for engine {inst.engine!r}"
-                )
-            if self._operation_completed(inst, "wake", operation_id):
-                return RuntimeOperationResult(
-                    model_name=model_name,
-                    operation_id=operation_id,
-                    applied=False,
-                    phase=inst.phase,
-                )
-            if inst.phase != "sleeping":
+        started = time.perf_counter()
+        result = "failed"
+        tracked = False
+        try:
+            with self._lock:
+                inst = self._require_instance(model_name)
+                tracked = True
+                if inst.engine != "vllm":
+                    raise UnsupportedModelControlError(
+                        f"wake is unsupported for engine {inst.engine!r}"
+                    )
+                if self._operation_completed(inst, "wake", operation_id):
+                    result = "skipped"
+                    return RuntimeOperationResult(
+                        model_name=model_name,
+                        operation_id=operation_id,
+                        applied=False,
+                        phase=inst.phase,
+                    )
+                if inst.phase != "sleeping":
+                    self._remember_operation(inst, "wake", operation_id)
+                    result = "skipped"
+                    return RuntimeOperationResult(
+                        model_name=model_name,
+                        operation_id=operation_id,
+                        applied=False,
+                        phase=inst.phase,
+                    )
+                self._launcher.wake(inst)
+                self._transition(inst, "booting" if inst.proc is not None else "active")
                 self._remember_operation(inst, "wake", operation_id)
+                self._persist_locked()
+                result = "applied"
                 return RuntimeOperationResult(
                     model_name=model_name,
                     operation_id=operation_id,
-                    applied=False,
+                    applied=True,
                     phase=inst.phase,
                 )
-            self._launcher.wake(inst)
-            self._transition(inst, "booting" if inst.proc is not None else "active")
-            self._remember_operation(inst, "wake", operation_id)
-            self._persist_locked()
-            return RuntimeOperationResult(
-                model_name=model_name,
-                operation_id=operation_id,
-                applied=True,
-                phase=inst.phase,
-            )
+        finally:
+            if tracked:
+                self._record_lifecycle_operation(
+                    model_name, "wake", result, time.perf_counter() - started
+                )
 
     def list_models(self) -> List[ModelInstance]:
         """Return all lifecycle records without dropping failed engines.
@@ -1423,6 +1499,24 @@ class ModelRuntime:
             return [
                 inst for inst in self._models.values() if self._instance_alive(inst)
             ]
+
+    def snapshot_metrics(self) -> ModelRuntimeMetricsSnapshot:
+        """Return counters, gauges, and engine states without scrape side effects."""
+        with self._lock:
+            models = list(self._models.values())
+            return ModelRuntimeMetricsSnapshot(
+                models=models,
+                resident_models=[inst for inst in models if self._instance_alive(inst)],
+                restart_attempts=dict(self._restart_attempts),
+                restart_budget_exhausted=dict(self._restart_budget_exhausted),
+                re_adoption_outcomes=dict(self._re_adoption_outcomes),
+                kv_limit_outcomes=dict(self._kv_limit_outcomes),
+                kv_limit_requested_bytes=dict(self._kv_limit_requested_bytes),
+                kv_limit_applied_bytes=dict(self._kv_limit_applied_bytes),
+                lifecycle_outcomes=dict(self._lifecycle_outcomes),
+                lifecycle_duration_count=dict(self._lifecycle_duration_count),
+                lifecycle_duration_sum=dict(self._lifecycle_duration_sum),
+            )
 
     def snapshot(self) -> Dict[str, object]:
         """Return the sidecar's point-in-time scheduling observation.
@@ -1488,6 +1582,25 @@ class ModelRuntime:
         inst: ModelInstance, action: str, operation_id: str
     ) -> bool:
         return operation_id in inst.completed_operation_ids.get(action, [])
+
+    @staticmethod
+    def _increment_metric(metrics: Dict, key) -> None:
+        metrics[key] = metrics.get(key, 0) + 1
+
+    def _record_lifecycle_operation(
+        self, model_name: str, action: str, result: str, duration: float
+    ) -> None:
+        with self._lock:
+            key = (model_name, action, result)
+            self._increment_metric(self._lifecycle_outcomes, key)
+            self._increment_metric(self._lifecycle_duration_count, key)
+            self._lifecycle_duration_sum[key] = (
+                self._lifecycle_duration_sum.get(key, 0.0) + duration
+            )
+
+    def _clear_model_metric_gauges(self, model_name: str) -> None:
+        self._kv_limit_requested_bytes.pop(model_name, None)
+        self._kv_limit_applied_bytes.pop(model_name, None)
 
     @staticmethod
     def _remember_operation(

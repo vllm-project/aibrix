@@ -165,7 +165,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(aibrix_modelclaim_desired_replicas{namespace=~\"$namespace\", model=~\"$model\"}) or vector(0)",
+          "expr": "sum(aibrix_modelclaim_desired_replicas{exported_namespace=~\"$namespace\", model=~\"$model\"}) or vector(0)",
           "legendFormat": "desired",
           "range": true,
           "refId": "A"
@@ -230,7 +230,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(aibrix_modelclaim_ready_replicas{namespace=~\"$namespace\", model=~\"$model\"}) or vector(0)",
+          "expr": "sum(aibrix_modelclaim_ready_replicas{exported_namespace=~\"$namespace\", model=~\"$model\"}) or vector(0)",
           "legendFormat": "ready",
           "range": true,
           "refId": "A"
@@ -299,7 +299,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "count(aibrix_modelclaim_activating{namespace=~\"$namespace\", model=~\"$model\"} == 1) or vector(0)",
+          "expr": "count(aibrix_modelclaim_activating{exported_namespace=~\"$namespace\", model=~\"$model\"} == 1) or vector(0)",
           "legendFormat": "activating",
           "range": true,
           "refId": "A"
@@ -368,7 +368,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(aibrix_modelclaim_activation_total{namespace=~\"$namespace\", model=~\"$model\", result=\"failed\"}[5m])) or vector(0)",
+          "expr": "sum(rate(aibrix_modelclaim_activation_total{exported_namespace=~\"$namespace\", model=~\"$model\", result=\"failed\"}[5m])) or vector(0)",
           "legendFormat": "failed/s",
           "range": true,
           "refId": "A"
@@ -548,7 +548,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "aibrix_modelclaim_desired_replicas{namespace=~\"$namespace\", model=~\"$model\"}",
+          "expr": "aibrix_modelclaim_desired_replicas{exported_namespace=~\"$namespace\", model=~\"$model\"}",
           "legendFormat": "desired {{model}}",
           "range": true,
           "refId": "A"
@@ -559,7 +559,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "aibrix_modelclaim_ready_replicas{namespace=~\"$namespace\", model=~\"$model\"}",
+          "expr": "aibrix_modelclaim_ready_replicas{exported_namespace=~\"$namespace\", model=~\"$model\"}",
           "legendFormat": "ready {{model}}",
           "range": true,
           "refId": "B"
@@ -655,7 +655,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, result) (rate(aibrix_modelclaim_activation_total{namespace=~\"$namespace\", model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, result) (rate(aibrix_modelclaim_activation_total{exported_namespace=~\"$namespace\", model=~\"$model\"}[5m]))",
           "legendFormat": "{{model}} {{result}}",
           "range": true,
           "refId": "A"
@@ -1069,7 +1069,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "aibrix:modelclaim_kv_used_bytes{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"} / (aibrix:modelclaim_kv_total_bytes{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"} > 0)",
+          "expr": "(aibrix:modelclaim_kv_used_bytes{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"} / clamp_min(aibrix:modelclaim_kv_total_bytes{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"}, 1)) or on() vector(0)",
           "legendFormat": "{{model}} @ {{pod}}",
           "range": true,
           "refId": "A"
@@ -1096,7 +1096,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Largest observed GPU-memory footprint per resident engine. Sort the legend by Max to find the largest peaks. HBM headroom is not exported yet (see issue #2455).",
+      "description": "Largest observed GPU-memory footprint per resident engine. Sort the legend by Max to find the largest peaks. HBM headroom is not exported yet.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1198,6 +1198,1121 @@
         "x": 0,
         "y": 40
       },
+      "id": 105,
+      "panels": [],
+      "title": "Engine Operations",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Time each selected ModelClaim has continuously had no ready engine.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 41
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "aibrix_modelclaim_no_ready_duration_seconds{exported_namespace=~\"$namespace\", model=~\"$model\"}",
+          "legendFormat": "{{model}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "No-ready Duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Engine counts for the fixed active, sleeping, restarting, and failed phases.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 41
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (pod, phase) (aibrix:modelclaim_engine_state{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\"})",
+          "legendFormat": "{{phase}} @ {{pod}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Engine State by Runtime Pod",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Supervisor restart-attempt and terminal restart-budget-exhaustion rates.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 41
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (model, pod) (rate(aibrix:modelclaim_engine_restart_attempts_total{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"}[5m])) or on() vector(0)",
+          "legendFormat": "attempt {{model}} @ {{pod}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (model, pod) (rate(aibrix:modelclaim_engine_restart_budget_exhausted_total{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"}[5m])) or on() vector(0)",
+          "legendFormat": "exhausted {{model}} @ {{pod}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Restart Activity / s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Runtime-agent re-adoption outcomes after agent restart.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 49
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (pod, result) (rate(aibrix:modelclaim_engine_re_adoptions_total{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\"}[5m]))",
+          "legendFormat": "{{result}} @ {{pod}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Re-adoption Outcomes / s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Applied, skipped, and failed sleep/wake operation rates.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 49
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (model, pod, action, result) (rate(aibrix:modelclaim_lifecycle_operations_total{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"}[5m])) or on() vector(0)",
+          "legendFormat": "{{action}} {{result}} {{model}} @ {{pod}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Sleep / Wake Outcomes / s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Average duration of sleep/wake operations over five minutes, split by outcome.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 49
+      },
+      "id": 18,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "(sum by (model, pod, action, result) (rate(aibrix:modelclaim_lifecycle_operation_duration_seconds_sum{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"}[5m])) / clamp_min(sum by (model, pod, action, result) (rate(aibrix:modelclaim_lifecycle_operation_duration_seconds_count{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"}[5m])), 1e-9)) or on() vector(0)",
+          "legendFormat": "{{action}} {{result}} {{model}} @ {{pod}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Sleep / Wake Average Duration",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 57
+      },
+      "id": 106,
+      "panels": [],
+      "title": "Pool Policy & KV Control",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Latest Deployment policy-annotation validity: 1 is valid and 0 is invalid.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 58
+      },
+      "id": 19,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "aibrix_modelclaim_pool_policy_valid{exported_namespace=~\"$namespace\"}",
+          "legendFormat": "{{deployment}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pool Policy Validity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Pool-policy evaluation outcomes with bounded reasons.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 58
+      },
+      "id": 20,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (pool, result, reason) (rate(aibrix_modelclaim_pool_policy_evaluations_total{exported_namespace=~\"$namespace\"}[5m]))",
+          "legendFormat": "{{pool}} {{result}}: {{reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Policy Evaluations / s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Pool-policy KV action outcomes with bounded reasons.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 58
+      },
+      "id": 21,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (pool, action, result, reason) (rate(aibrix_modelclaim_pool_policy_actions_total{exported_namespace=~\"$namespace\"}[5m])) or on() vector(0)",
+          "legendFormat": "{{pool}} {{action}} {{result}}: {{reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Policy Actions / s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Runtime KV-limit applied, skipped, and failed operation rates.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 58
+      },
+      "id": 22,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (model, pod, result) (rate(aibrix:modelclaim_kv_limit_operations_total{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"}[5m])) or on() vector(0)",
+          "legendFormat": "{{result}} {{model}} @ {{pod}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "KV Limit Outcomes / s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Latest requested and successfully applied kvcached limits per resident model.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 66
+      },
+      "id": 23,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "aibrix:modelclaim_kv_limit_requested_bytes{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"} or on() vector(0)",
+          "legendFormat": "requested {{model}} @ {{pod}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "aibrix:modelclaim_kv_limit_applied_bytes{namespace=~\"$namespace\", pool=~\"$pool\", pod=~\"$pod\", model=~\"$model\"} or on() vector(0)",
+          "legendFormat": "applied {{model}} @ {{pod}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "KV Limit Requested vs Applied",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 74
+      },
       "id": 104,
       "panels": [],
       "title": "Investigation Aids",
@@ -1212,7 +2327,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 41
+        "y": 75
       },
       "id": 12,
       "options": {
@@ -1221,7 +2336,7 @@
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "## Kubernetes Events and logs\n\nUse the dashboard variables (`namespace`, `pool`, `pod`, `model`) when narrowing an incident.\n\n```bash\n# ModelClaim status and Events\nkubectl get modelclaims -n $namespace\nkubectl describe modelclaim <claim-name> -n $namespace\nkubectl get events -n $namespace --field-selector involvedObject.kind=ModelClaim --sort-by=.lastTimestamp\n\n# Warm-pool Pods and runtime sidecar logs\nkubectl get pods -n $namespace -l pool.aibrix.ai/name=$pool\nkubectl describe pod $pod -n $namespace\nkubectl logs -n $namespace $pod -c aibrix-runtime --tail=200\n\n# Warm-pool policy validation failures (Pool Policy Valid tile). Persistent source of truth is the metric:\n#   PromQL: aibrix_modelclaim_pool_policy_valid == 0   ->  offending {namespace, deployment}\n# A one-time Warning Event is also emitted when a policy first breaks (may have since expired):\nkubectl get events -n $namespace --field-selector reason=InvalidPoolPolicy --sort-by=.lastTimestamp\n# Inspect the offending Deployment's annotation:\nkubectl get deploy DEPLOYMENT -n $namespace -o jsonpath='{.metadata.annotations.pool\\.aibrix\\.ai/policy}'\n\n# Controller-manager ModelClaim reconcile / policy logs\nkubectl logs -n aibrix-system deploy/aibrix-controller-manager --tail=200 | grep -i modelclaim\n```\n\n**Not on this dashboard yet** (tracked in [#2455](https://github.com/vllm-project/aibrix/issues/2455)): sleeping/failed phase gauges, engine restart / restart-budget, agent re-adoption, pool-policy apply/skip/fail, sleep/wake activity, no-ready duration, and HBM headroom.",
+        "content": "## Kubernetes Events and logs\n\nUse the dashboard variables (`namespace`, `pool`, `pod`, `model`) when narrowing an incident.\n\n```bash\n# ModelClaim status and Events\nkubectl get modelclaims -n $namespace\nkubectl describe modelclaim <claim-name> -n $namespace\nkubectl get events -n $namespace --field-selector involvedObject.kind=ModelClaim --sort-by=.lastTimestamp\n\n# Warm-pool Pods and runtime sidecar logs\nkubectl get pods -n $namespace -l pool.aibrix.ai/name=$pool\nkubectl describe pod $pod -n $namespace\nkubectl logs -n $namespace $pod -c aibrix-runtime --tail=200\n\n# Warm-pool policy validation failures (Pool Policy Valid tile). Persistent source of truth is the metric:\n#   PromQL: aibrix_modelclaim_pool_policy_valid == 0   ->  offending {namespace, deployment}\n# A one-time Warning Event is also emitted when a policy first breaks (may have since expired):\nkubectl get events -n $namespace --field-selector reason=InvalidPoolPolicy --sort-by=.lastTimestamp\n# Inspect the offending Deployment's annotation:\nkubectl get deploy DEPLOYMENT -n $namespace -o jsonpath='{.metadata.annotations.pool\\.aibrix\\.ai/policy}'\n\n# Controller-manager ModelClaim reconcile / policy logs\nkubectl logs -n aibrix-system deploy/aibrix-controller-manager --tail=200 | grep -i modelclaim\n```\n\nThe operational panels above cover restart, re-adoption, engine phase, pool-policy, KV-limit, sleep/wake, and no-ready signals. HBM headroom is not exported yet.",
         "mode": "markdown"
       },
       "pluginVersion": "11.3.1",
@@ -1243,7 +2358,7 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(aibrix_modelclaim_desired_replicas, namespace)",
+        "definition": "label_values(aibrix_modelclaim_desired_replicas, exported_namespace)",
         "includeAll": true,
         "allValue": ".*",
         "label": "namespace",
@@ -1251,7 +2366,7 @@
         "name": "namespace",
         "options": [],
         "query": {
-          "query": "label_values(aibrix_modelclaim_desired_replicas, namespace)",
+          "query": "label_values(aibrix_modelclaim_desired_replicas, exported_namespace)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 1,
@@ -1309,7 +2424,7 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(aibrix_modelclaim_desired_replicas{namespace=~\"$namespace\"}, model)",
+        "definition": "label_values(aibrix_modelclaim_desired_replicas{exported_namespace=~\"$namespace\"}, model)",
         "includeAll": true,
         "allValue": ".*",
         "label": "model",
@@ -1317,7 +2432,7 @@
         "name": "model",
         "options": [],
         "query": {
-          "query": "label_values(aibrix_modelclaim_desired_replicas{namespace=~\"$namespace\"}, model)",
+          "query": "label_values(aibrix_modelclaim_desired_replicas{exported_namespace=~\"$namespace\"}, model)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
@@ -1335,6 +2450,6 @@
   "timezone": "",
   "title": "AIBrix ModelClaim Runtime Dashboard",
   "uid": "aibrix-modelclaim-runtime",
-  "version": 1,
+  "version": 3,
   "weekStart": ""
 }

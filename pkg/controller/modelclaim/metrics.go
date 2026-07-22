@@ -17,7 +17,11 @@ limitations under the License.
 package modelclaim
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
@@ -25,7 +29,48 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
-const activationResultFailed = "failed"
+const (
+	activationResultFailed = "failed"
+
+	policyResultApplied = "applied"
+	policyResultSkipped = "skipped"
+	policyResultFailed  = "failed"
+
+	policyReasonApplied             = "applied"
+	policyReasonNoReclaimPolicy     = "no_reclaim_policy"
+	policyReasonNoPods              = "no_pods"
+	policyReasonPodListError        = "pod_list_error"
+	policyReasonSnapshotError       = "snapshot_error"
+	policyReasonEmptySnapshot       = "empty_snapshot"
+	policyReasonUnsupportedTopology = "unsupported_topology"
+	policyReasonIncompleteMetrics   = "incomplete_metrics"
+	policyReasonUnsafePlan          = "unsafe_plan"
+	policyReasonNoChange            = "no_change"
+	policyReasonRuntimeError        = "runtime_error"
+	policyReasonInternalError       = "internal_error"
+
+	policyActionSetKVLimit = "set_kv_limit"
+)
+
+var boundedPolicyReasons = map[string]struct{}{
+	policyReasonApplied:             {},
+	poolPolicyErrorInvalidJSON:      {},
+	poolPolicyErrorUnknownField:     {},
+	poolPolicyErrorUnsupportedMode:  {},
+	poolPolicyErrorInvalidCapacity:  {},
+	poolPolicyErrorInvalidFloor:     {},
+	policyReasonNoReclaimPolicy:     {},
+	policyReasonNoPods:              {},
+	policyReasonPodListError:        {},
+	policyReasonSnapshotError:       {},
+	policyReasonEmptySnapshot:       {},
+	policyReasonUnsupportedTopology: {},
+	policyReasonIncompleteMetrics:   {},
+	policyReasonUnsafePlan:          {},
+	policyReasonNoChange:            {},
+	policyReasonRuntimeError:        {},
+	policyReasonInternalError:       {},
+}
 
 // ModelClaim control-plane observability. These metrics are purely additive:
 // they reflect lifecycle state the controller already computes (desired/ready
@@ -71,6 +116,14 @@ var (
 		},
 		[]string{"namespace", "model", "result"},
 	)
+	claimNoReadyDurationSeconds = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "modelclaim_no_ready_duration_seconds",
+			Help:      "Seconds since a model claim last had a ready engine, or 0 while at least one engine is ready.",
+		},
+		[]string{"namespace", "model"},
+	)
 	// Cardinality is namespace×deployment, bounded by the number of warm pools.
 	poolPolicyValid = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -80,6 +133,22 @@ var (
 		},
 		[]string{"namespace", "deployment"},
 	)
+	poolPolicyEvaluationsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "modelclaim_pool_policy_evaluations_total",
+			Help:      "Count of pool-policy evaluation outcomes with a bounded reason.",
+		},
+		[]string{"namespace", "pool", "result", "reason"},
+	)
+	poolPolicyActionsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "modelclaim_pool_policy_actions_total",
+			Help:      "Count of pool-policy action outcomes with a bounded action and reason.",
+		},
+		[]string{"namespace", "pool", "action", "result", "reason"},
+	)
 )
 
 func init() {
@@ -88,7 +157,10 @@ func init() {
 		claimReadyReplicas,
 		claimActivating,
 		claimActivationTotal,
+		claimNoReadyDurationSeconds,
 		poolPolicyValid,
+		poolPolicyEvaluationsTotal,
+		poolPolicyActionsTotal,
 	)
 }
 
@@ -104,9 +176,14 @@ func b2f(b bool) float64 {
 // status. Called at the end of each reconcile so the gauges track the truth the
 // controller just computed.
 func setClaimGauges(pm *modelv1alpha1.ModelClaim) {
+	setClaimGaugesAt(pm, time.Now())
+}
+
+func setClaimGaugesAt(pm *modelv1alpha1.ModelClaim, now time.Time) {
 	ns, model := pm.Namespace, servedModelName(pm)
 	claimDesiredReplicas.WithLabelValues(ns, model).Set(float64(pm.Status.DesiredReplicas))
 	claimReadyReplicas.WithLabelValues(ns, model).Set(float64(pm.Status.ReadyReplicas))
+	claimNoReadyDurationSeconds.WithLabelValues(ns, model).Set(claimNoReadyDuration(pm, now).Seconds())
 
 	activating := false
 	for i := range pm.Status.Instances {
@@ -124,6 +201,7 @@ func clearClaimMetrics(namespace, model string) {
 	claimDesiredReplicas.DeleteLabelValues(namespace, model)
 	claimReadyReplicas.DeleteLabelValues(namespace, model)
 	claimActivating.DeleteLabelValues(namespace, model)
+	claimNoReadyDurationSeconds.DeleteLabelValues(namespace, model)
 }
 
 // setPoolPolicyValid tracks the latest parse/validation outcome of a warm pool
@@ -144,4 +222,51 @@ func recordActivation(namespace, model string, ok bool) {
 		result = activationResultFailed
 	}
 	claimActivationTotal.WithLabelValues(namespace, model, result).Inc()
+}
+
+// claimNoReadyDuration returns how long a claim has had no ready engine,
+// using its creation time until a Ready condition is available.
+func claimNoReadyDuration(pm *modelv1alpha1.ModelClaim, now time.Time) time.Duration {
+	if pm.Status.ReadyReplicas > 0 {
+		return 0
+	}
+
+	since := pm.CreationTimestamp.Time
+	ready := meta.FindStatusCondition(pm.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
+	if ready != nil {
+		if ready.Status == metav1.ConditionTrue {
+			return 0
+		}
+		since = ready.LastTransitionTime.Time
+	}
+	if since.IsZero() || now.Before(since) {
+		return 0
+	}
+	return now.Sub(since)
+}
+
+// recordPolicyEvaluation records a bounded outcome for a pool-policy evaluation.
+func recordPolicyEvaluation(pool types.NamespacedName, result, reason string) {
+	result, reason = normalizePolicyLabels(result, reason)
+	poolPolicyEvaluationsTotal.WithLabelValues(pool.Namespace, pool.Name, result, reason).Inc()
+}
+
+// recordPolicyAction records a bounded outcome for a pool-policy action.
+func recordPolicyAction(pool types.NamespacedName, action, result, reason string) {
+	result, reason = normalizePolicyLabels(result, reason)
+	poolPolicyActionsTotal.WithLabelValues(pool.Namespace, pool.Name, action, result, reason).Inc()
+}
+
+// normalizePolicyLabels maps unknown values to bounded failure labels.
+func normalizePolicyLabels(result, reason string) (string, string) {
+	switch result {
+	case policyResultApplied, policyResultSkipped, policyResultFailed:
+	default:
+		result = policyResultFailed
+		reason = policyReasonInternalError
+	}
+	if _, ok := boundedPolicyReasons[reason]; !ok {
+		reason = policyReasonInternalError
+	}
+	return result, reason
 }

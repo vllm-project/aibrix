@@ -35,7 +35,10 @@ Official import URLs are also listed in
 | `aibrix_modelclaim_ready_replicas` | `namespace`, `model` |
 | `aibrix_modelclaim_activating` | `namespace`, `model` |
 | `aibrix_modelclaim_activation_total` | `namespace`, `model`, `result` |
+| `aibrix_modelclaim_no_ready_duration_seconds` | `namespace`, `model` |
 | `aibrix_modelclaim_pool_policy_valid` | `namespace`, `deployment` |
+| `aibrix_modelclaim_pool_policy_evaluations_total` | `namespace`, `pool`, `result`, `reason` |
+| `aibrix_modelclaim_pool_policy_actions_total` | `namespace`, `pool`, `action`, `result`, `reason` |
 
 **Runtime sidecar** (warm-pool `aibrix-runtime` `/metrics` on port `runtime`):
 
@@ -45,6 +48,15 @@ Official import URLs are also listed in
 | `aibrix:modelclaim_kv_used_bytes` | `model` (+ scrape labels) |
 | `aibrix:modelclaim_kv_total_bytes` | `model` (+ scrape labels) |
 | `aibrix:modelclaim_hbm_peak_bytes` | `model` (+ scrape labels) |
+| `aibrix:modelclaim_engine_state` | `phase` (+ scrape labels) |
+| `aibrix:modelclaim_engine_restart_attempts_total` | `model` (+ scrape labels) |
+| `aibrix:modelclaim_engine_restart_budget_exhausted_total` | `model` (+ scrape labels) |
+| `aibrix:modelclaim_engine_re_adoptions_total` | `result` (+ scrape labels) |
+| `aibrix:modelclaim_kv_limit_operations_total` | `model`, `result` (+ scrape labels) |
+| `aibrix:modelclaim_kv_limit_requested_bytes` | `model` (+ scrape labels) |
+| `aibrix:modelclaim_kv_limit_applied_bytes` | `model` (+ scrape labels) |
+| `aibrix:modelclaim_lifecycle_operations_total` | `model`, `action`, `result` (+ scrape labels) |
+| `aibrix:modelclaim_lifecycle_operation_duration_seconds` | `model`, `action`, `result` (+ scrape labels) |
 
 Note the naming split: Go controller metrics use underscores
 (`aibrix_modelclaim_*`); the Python runtime collector uses colons
@@ -67,18 +79,12 @@ by `namespace`/`deployment` (not `pool`/`pod`/`model`), so it follows only the
 `namespace` variable and reports the worst-case validity across warm-pool
 Deployments in the selected namespace(s).
 
-### Not available yet
+### Operational panels
 
-The following operator questions need metrics from
-[#2455](https://github.com/vllm-project/aibrix/issues/2455) and are intentionally
-omitted from this dashboard:
+- **Engine Operations** covers availability, engine state, recovery, and
+  sleep/wake activity.
+- **Pool Policy & KV Control** covers policy decisions, actions, and KV limits.
 
-- Sleeping / failed phase overview
-- Engine restart attempts and restart-budget exhaustion
-- Agent re-adoption outcomes
-- Pool-policy applied / skipped / failed actions
-- Sleep / wake activity and no-ready duration
-- HBM headroom (free) remaining
-
-Use the **Investigation Aids** panel for Kubernetes Events and log recipes until
-those metrics land.
+Operational labels use bounded values; detailed errors and identifiers remain
+in logs and Kubernetes Events. No-ready duration is zero while an engine is
+ready, and KV-limit gauges disappear when their model is removed.

@@ -236,6 +236,7 @@ func (r *ModelClaimReconciler) resolvePoolPolicy(
 	if err != nil {
 		errorClass := poolPolicyErrorClass(err)
 		setPoolPolicyValid(pool, false)
+		recordPolicyEvaluation(pool, policyResultSkipped, errorClass)
 		if warn, _ := manager.observeConfig(pool, raw, errorClass); warn {
 			r.Recorder.Eventf(deployment, corev1.EventTypeWarning, "InvalidPoolPolicy",
 				"invalid %s annotation (%s), pool policy disabled: %v",
@@ -260,26 +261,35 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 	manager *poolPolicyManager,
 ) error {
 	if source.policy.Reclaim == nil && source.policy.Lifecycle == nil {
+		recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonNoReclaimPolicy)
 		return nil
 	}
 	pods, err := r.poolPolicyPods(ctx, source.deployment)
 	if err != nil {
+		recordPolicyEvaluation(source.key, policyResultFailed, policyReasonPodListError)
 		return err
+	}
+	if len(pods) == 0 {
+		recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonNoPods)
+		return nil
 	}
 	for i := range pods {
 		pod := &pods[i]
 		snapshot, err := r.Runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
 		if err != nil {
+			recordPolicyEvaluation(source.key, policyResultFailed, policyReasonSnapshotError)
 			klog.V(4).InfoS("pool policy snapshot failed", "pod", klog.KObj(pod), "err", err)
 			continue
 		}
 		if snapshot == nil {
+			recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonEmptySnapshot)
 			klog.V(4).InfoS("pool policy received empty runtime snapshot", "pod", klog.KObj(pod))
 			continue
 		}
 		if len(snapshot.Accelerators) != 1 {
 			// Dynamic KV limits remain held to the verified single-GPU contract
 			// until multi-GPU kvcached accounting is tested.
+			recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonUnsupportedTopology)
 			klog.V(4).InfoS("pool policy skips non-single-GPU runtime", "pod", klog.KObj(pod))
 			continue
 		}
@@ -289,6 +299,7 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 		}
 		activities, observed := manager.observeSnapshot(pod, snapshot)
 		if source.policy.Reclaim != nil && !observed {
+			recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonIncompleteMetrics)
 			klog.V(4).InfoS("pool KV policy waits for complete request observations", "pod", klog.KObj(pod))
 		} else if source.policy.Reclaim != nil {
 			models := modelsForKVPolicy(snapshot, activities)
@@ -298,8 +309,10 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 				models,
 			)
 			if err != nil {
+				recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonUnsafePlan)
 				klog.V(4).InfoS("pool policy did not produce a safe KV plan", "pod", klog.KObj(pod), "err", err)
 			} else {
+				applied, failed := 0, 0
 				for _, model := range snapshot.Models {
 					target, found := targets[model.ModelName]
 					if !found || target == model.KVCapacityBytes {
@@ -309,11 +322,28 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 						"pool-policy-kv/%s/%s/%s/%d/%d",
 						source.key.String(), pod.UID, snapshotActivityKey(model), target, decisionTime.UnixNano(),
 					)
-					if _, err := r.Runtime.SetKVLimit(ctx, pod.Status.PodIP, DefaultRuntimePort, &SetKVLimitRequest{
+					response, err := r.Runtime.SetKVLimit(ctx, pod.Status.PodIP, DefaultRuntimePort, &SetKVLimitRequest{
 						ModelName: model.ModelName, LimitBytes: target, OperationID: operationID,
-					}); err != nil {
+					})
+					switch {
+					case err != nil:
+						failed++
+						recordPolicyAction(source.key, policyActionSetKVLimit, policyResultFailed, policyReasonRuntimeError)
 						klog.ErrorS(err, "pool policy could not apply KV limit", "pod", klog.KObj(pod), "model", model.ModelName, "target", target)
+					case response == nil || !response.Applied:
+						recordPolicyAction(source.key, policyActionSetKVLimit, policyResultSkipped, policyReasonNoChange)
+					default:
+						applied++
+						recordPolicyAction(source.key, policyActionSetKVLimit, policyResultApplied, policyReasonApplied)
 					}
+				}
+				switch {
+				case failed > 0:
+					recordPolicyEvaluation(source.key, policyResultFailed, policyReasonRuntimeError)
+				case applied > 0:
+					recordPolicyEvaluation(source.key, policyResultApplied, policyReasonApplied)
+				default:
+					recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonNoChange)
 				}
 			}
 		}
