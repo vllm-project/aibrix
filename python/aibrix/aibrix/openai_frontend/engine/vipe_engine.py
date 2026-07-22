@@ -425,13 +425,13 @@ class ViPEEngine(LLMEngine):
     # LLMEngine protocol
     # ------------------------------------------------------------------
 
-    def health(self) -> bool:
+    async def health(self) -> bool:
         return self._ready
 
-    def metrics(self) -> str:
+    async def metrics(self) -> str:
         return generate_latest(self._metrics_registry).decode("utf-8")
 
-    def models(self) -> List[Model]:
+    async def models(self) -> List[Model]:
         return [
             Model(
                 id=model_name,

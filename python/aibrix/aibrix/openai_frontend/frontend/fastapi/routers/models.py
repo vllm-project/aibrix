@@ -46,7 +46,7 @@ async def list_models(request: Request) -> ListModelsResponse:
             status_code=StatusCode.SERVER_ERROR, detail="No attached inference engine"
         )
 
-    models: List[Model] = request.app.engine.models()
+    models: List[Model] = await request.app.engine.models()
     return ListModelsResponse(object=ObjectType.list, data=models)
 
 
@@ -61,7 +61,7 @@ async def retrieve_model(request: Request, model_name: str) -> Model:
         )
 
     # TODO: Return model directly from engine instead of searching models
-    models: List[Model] = request.app.engine.models()
+    models: List[Model] = await request.app.engine.models()
     for model in models:
         if model.id == model_name:
             return model

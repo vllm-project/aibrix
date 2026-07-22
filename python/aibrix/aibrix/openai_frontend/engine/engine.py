@@ -49,19 +49,19 @@ class LLMEngine(Protocol):
           generic rather than the current 1:1 with OpenAI endpoints over time.
     """
 
-    def health(self) -> bool:
+    async def health(self) -> bool:
         """
         Returns True if the engine is ready to accept inference requests, or False otherwise.
         """
         pass
 
-    def metrics(self) -> str:
+    async def metrics(self) -> str:
         """
         Returns the engine's metrics in a Prometheus-compatible string format.
         """
         pass
 
-    def models(self) -> List[Model]:
+    async def models(self) -> List[Model]:
         """
         Returns a List of OpenAI Model objects.
         """

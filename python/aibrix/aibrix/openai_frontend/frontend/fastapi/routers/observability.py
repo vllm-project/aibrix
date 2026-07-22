@@ -33,18 +33,23 @@ router = APIRouter()
 
 
 @router.get("/metrics", response_class=PlainTextResponse, tags=["Utilities"])
-def metrics(request: Request) -> PlainTextResponse:
-    return request.app.engine.metrics()
-
-
-@router.get("/health", tags=["Utilities"])
-def health(request: Request) -> Response:
+async def metrics(request: Request) -> PlainTextResponse:
     if not request.app.engine:
         raise HTTPException(
             status_code=StatusCode.SERVER_ERROR, detail="No attached inference engine"
         )
 
-    if not request.app.engine.health():
+    return await request.app.engine.metrics()
+
+
+@router.get("/health", tags=["Utilities"])
+async def health(request: Request) -> Response:
+    if not request.app.engine:
+        raise HTTPException(
+            status_code=StatusCode.SERVER_ERROR, detail="No attached inference engine"
+        )
+
+    if not await request.app.engine.health():
         raise HTTPException(
             status_code=StatusCode.CLIENT_ERROR,
             detail="Attached inference engine is not ready for inference requests.",
