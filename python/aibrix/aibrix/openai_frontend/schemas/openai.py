@@ -37,6 +37,11 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import AnyUrl, BaseModel, ConfigDict, Field, RootModel, confloat, conint
 
 from aibrix.openai_frontend.schemas.vipe import ViPERequest, ViPEResponse
+from aibrix.openai_frontend.schemas.vllm import (
+    ChatCompletionRequestMessageContentPartAudio,
+    ChatCompletionRequestMessageContentPartInputAudio,
+    ChatCompletionRequestMessageContentPartVideo,
+)
 
 
 class Error(BaseModel):
@@ -216,6 +221,9 @@ class ChatCompletionRequestMessageContentPartImage(BaseModel):
 
     type: Type = Field(..., description="The type of the content part.")
     image_url: ImageUrl
+    uuid: Optional[str] = Field(
+        None, description="Optional unique identifier for the content part."
+    )
 
 
 class Type1(Enum):
@@ -674,6 +682,9 @@ class ChatCompletionRequestMessageContentPart(RootModel):
     root: Union[
         ChatCompletionRequestMessageContentPartText,
         ChatCompletionRequestMessageContentPartImage,
+        ChatCompletionRequestMessageContentPartVideo,
+        ChatCompletionRequestMessageContentPartAudio,
+        ChatCompletionRequestMessageContentPartInputAudio,
     ]
 
 
