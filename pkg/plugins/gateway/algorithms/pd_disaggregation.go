@@ -279,6 +279,15 @@ func NewPDRouter() (types.Router, error) {
 func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	readyPods := readyPodList.All()
 
+	// Validate SGLang request body before any pod selection or prefix-index
+	// mutation. A malformed request must not pollute selection counters or
+	// the prefix cache. ctx.Engine is already set by selectTargetPod.
+	if ctx.Engine == SGLangEngine {
+		if err := engine.ValidateSGLangRequest(ctx.ReqBody); err != nil {
+			return "", err
+		}
+	}
+
 	prefillPod, decodePod, err := r.podSelector.Select(ctx, readyPods)
 	if err != nil {
 		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},

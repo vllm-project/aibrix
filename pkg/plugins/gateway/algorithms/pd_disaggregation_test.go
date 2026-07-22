@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -3046,4 +3047,34 @@ func TestSelectKvConnectorType(t *testing.T) {
 			assert.Equal(t, tt.expected, actual)
 		})
 	}
+}
+
+// TestRoute_SGLangDuplicateFieldsRejectsBeforeSelector verifies that an
+// SGLang request with duplicate controlled fields is rejected before
+// podSelector.Select is called, so no prefix-index or counter state is mutated.
+func TestRoute_SGLangDuplicateFieldsRejectsBeforeSelector(t *testing.T) {
+	selectorCalled := false
+	router := &pdRouter{
+		podSelector: selector.NewDefaultSelector(func(_ *types.RoutingContext, _ []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
+			selectorCalled = true
+			return nil, nil, fmt.Errorf("selector should not have been called")
+		}),
+		prefillRequestTracker: pd.NewPrefillRequestTracker(),
+		pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
+	}
+
+	dupBody := []byte(`{"model":"m","messages":[],"bootstrap_host":"a","bootstrap_host":"b"}`)
+	ctx := &types.RoutingContext{
+		Engine:  SGLangEngine,
+		ReqBody: dupBody,
+		Context: context.Background(),
+		ReqPath: testChatCompletionsPath,
+	}
+
+	_, err := router.Route(ctx, &utils.PodArray{Pods: []*v1.Pod{}})
+	assert.Error(t, err)
+	assert.False(t, selectorCalled, "podSelector.Select must not be called for invalid SGLang requests")
+
+	var invalidReqErr *engine.InvalidRequestError
+	assert.True(t, errors.As(err, &invalidReqErr), "must return *InvalidRequestError")
 }

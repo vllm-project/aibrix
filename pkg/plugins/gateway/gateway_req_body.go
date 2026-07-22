@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -32,6 +33,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -130,6 +132,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		externalFilter := routingCtx.ReqHeaders[HeaderExternalFilter]
 		targetPodIP, err := s.selectTargetPod(ctx, routingCtx, podsArr, externalFilter)
 		if targetPodIP == "" || err != nil {
+			var invalidReqErr *engine.InvalidRequestError
+			if errors.As(err, &invalidReqErr) {
+				return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
+					invalidReqErr.Error(), "", "", HeaderErrorRouting, "true"), model, stream, term
+			}
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingAlgorithm, "model", model, "routingDuration", routingCtx.GetRoutingDelay())
 			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, "error on selecting target pod", ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
 		}
