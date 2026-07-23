@@ -28,7 +28,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -113,8 +112,6 @@ type processState struct {
 
 var podName = os.Getenv("POD_NAME")
 var tracer = otel.Tracer("envoy-ext-proc-server")
-var gatewayInFlightCount int64
-var gatewayModelInFlight sync.Map // model -> *int64
 
 func (st *processState) trackModelInFlight() {
 	if st.model == "" || st.trackedModel == st.model {
@@ -124,12 +121,9 @@ func (st *processState) trackModelInFlight() {
 		st.releaseModelInFlight()
 	}
 	st.trackedModel = st.model
-	val, _ := gatewayModelInFlight.LoadOrStore(st.model, new(int64))
-	n := atomic.AddInt64(val.(*int64), 1)
-	metrics.SetGaugeMetric(
+	metrics.IncGaugeMetric(
 		metrics.GatewayModelInFlight,
 		metrics.GetMetricHelp(metrics.GatewayModelInFlight),
-		float64(n),
 		[]string{"gateway_pod", "model"},
 		podName,
 		st.model,
@@ -142,15 +136,9 @@ func (st *processState) releaseModelInFlight() {
 	}
 	modelToRelease := st.trackedModel
 	st.trackedModel = ""
-	val, ok := gatewayModelInFlight.Load(modelToRelease)
-	if !ok {
-		return
-	}
-	n := atomic.AddInt64(val.(*int64), -1)
-	metrics.SetGaugeMetric(
+	metrics.DecGaugeMetric(
 		metrics.GatewayModelInFlight,
 		metrics.GetMetricHelp(metrics.GatewayModelInFlight),
-		float64(n),
 		[]string{"gateway_pod", "model"},
 		podName,
 		modelToRelease,
@@ -207,8 +195,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		requestID: uuid.New().String(),
 	}
 
-	n := atomic.AddInt64(&gatewayInFlightCount, 1)
-	metrics.SetGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), float64(n), []string{"gateway_pod"}, podName)
+	metrics.IncGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), []string{"gateway_pod"}, podName)
 	defer func() {
 		requestBuffers.Delete(st.requestID)
 		if st.span != nil {
@@ -218,8 +205,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			st.ttftSpan.End()
 		}
 		st.releaseModelInFlight()
-		remaining := atomic.AddInt64(&gatewayInFlightCount, -1)
-		metrics.SetGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), float64(remaining), []string{"gateway_pod"}, podName)
+		metrics.DecGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), []string{"gateway_pod"}, podName)
 	}()
 
 	klog.InfoS("processing request", "requestID", st.requestID)

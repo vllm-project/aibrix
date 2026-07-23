@@ -214,13 +214,11 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 		}
 
 		headers = buildEnvoyProxyHeaders(headers, HeaderRequestID, routerCtx.RequestID)
-		// For streaming responses use the first chunk's arrival time so TTFT and
-		// KV-transfer time reflect the first token rather than the final chunk.
-		firstArrival := arrival
-		if stream && !routerCtx.FirstTokenTime.IsZero() {
-			firstArrival = routerCtx.FirstTokenTime
-		}
-		fields := s.requestEndHelper(routerCtx, firstArrival, promptTokens, completionTokens, totalTokens)
+		// arrival is this (final) chunk's arrival time, i.e. the true request-end time.
+		// requestEndHelper derives TTFT from routerCtx.FirstTokenTime for streaming
+		// requests, so passing the final arrival here (rather than the first chunk's)
+		// keeps decode-time/KV-transfer math, which spans first-token-to-end, correct.
+		fields := s.requestEndHelper(routerCtx, arrival, promptTokens, completionTokens, totalTokens)
 		klog.InfoS("request_end", fields...)
 	} else if b.ResponseBody.EndOfStream {
 		complete = true
@@ -394,6 +392,10 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 			metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayPrefillTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(prefillTime)})
 			metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayKVTransferTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(kvTransferTime)})
 			metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayDecodeTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(decodeTime)})
+			if routingCtx.Stream && completionTokens > 0 && decodeTime > 0 {
+				tpot := time.Duration(decodeTime.Nanoseconds() / completionTokens)
+				metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTPOTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(tpot)})
+			}
 			if ttft > ttftThreshold {
 				metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayFirstTokenDelayOver1sTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{
 					"request_id": requestID,

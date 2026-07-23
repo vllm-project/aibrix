@@ -409,6 +409,64 @@ func TestHandleResponseBody_PDPrefillTimingMetricsRequirePrefillEndTime(t *testi
 	}
 }
 
+// TestHandleResponseBody_PDStreamingDecodeTimeAndTPOT guards against a regression where
+// decode_time (and therefore TPOT) collapsed to ~0 for streaming PD requests because the
+// caller passed FirstTokenTime itself as the "arrival" used for the FirstTokenTime-to-end
+// decode window, instead of the final chunk's real arrival time. It also verifies the PD
+// branch emits gateway_tpot_bucket_total, which previously only the non-PD branch did.
+func TestHandleResponseBody_PDStreamingDecodeTimeAndTPOT(t *testing.T) {
+	decodeCounter, cleanupDecode := metrics.SetupCounterMetricsForTest(
+		metrics.GatewayDecodeTimeBucketTotal,
+		[]string{"gateway_pod", "model", "bucket"},
+	)
+	defer cleanupDecode()
+	tpotCounter, cleanupTPOT := metrics.SetupCounterMetricsForTest(
+		metrics.GatewayTPOTBucketTotal,
+		[]string{"gateway_pod", "model", "bucket"},
+	)
+	defer cleanupTPOT()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	mockCache.On("DoneRequestTrace", mock.Anything, "test-req-id", "test-model", int64(10), int64(5), int64(0)).Maybe()
+
+	server := &Server{cache: mockCache}
+	requestTime := time.Now().Add(-250 * time.Millisecond)
+	prefillStartTime := requestTime.Add(20 * time.Millisecond)
+	prefillEndTime := prefillStartTime.Add(30 * time.Millisecond)
+	// FirstTokenTime is set well before "now" to simulate it having been recorded on an
+	// earlier SSE chunk, as it would be in real streaming traffic.
+	firstTokenTime := prefillEndTime.Add(20 * time.Millisecond)
+
+	routerCtx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", "test-req-id", "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.Stream = true
+	routerCtx.RequestTime = requestTime
+	routerCtx.PrefillStartTime = prefillStartTime
+	routerCtx.PrefillEndTime = prefillEndTime
+	routerCtx.FirstTokenTime = firstTokenTime
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 5, \"total_tokens\": 15}}\n\n"),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete := server.HandleResponseBody(context.Background(), routerCtx, "test-req-id", req, utils.User{}, 0, "test-model", true, 0, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp)
+
+	// The final chunk arrives ~70ms after FirstTokenTime here, so decode_time must not
+	// land in the near-zero "0-1ms" bucket.
+	assert.Zero(t, testutil.ToFloat64(decodeCounter.WithLabelValues("", "test-model", "0-1ms")))
+	assert.Equal(t, 1, testutil.CollectAndCount(decodeCounter), "expected exactly one decode_time bucket to be recorded")
+	assert.Equal(t, 1, testutil.CollectAndCount(tpotCounter), "PD streaming path must emit gateway_tpot_bucket_total")
+	mockCache.AssertExpectations(t)
+}
+
 func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
 	mockCache := &MockCache{Cache: cache.NewForTest()}
 	// DoneRequestTrace(ctx, requestID, model, term, inputTokens, outputTokens) - use mock.Anything for dynamic requestID
