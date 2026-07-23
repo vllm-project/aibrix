@@ -127,7 +127,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, status_code) (max by (gateway_pod, model, status, status_code) (rate(gateway_request_model_success_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model, status_code) (rate(gateway_request_model_success_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} success {{status_code}}",
@@ -140,7 +140,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, status_code) (max by (gateway_pod, model, status, status_code) (rate(gateway_request_model_fail_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model, status_code) (rate(gateway_request_model_fail_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} fail {{status_code}}",
@@ -642,7 +642,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_ttft_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model, bucket) (rate(gateway_ttft_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -650,7 +650,7 @@
           "refId": "A"
         }
       ],
-      "title": "Time to First Token (TTFT) — bucket distribution (streaming only)",
+      "title": "Time to First Token (TTFT) \u2014 bucket distribution (streaming only)",
       "type": "timeseries"
     },
     {
@@ -745,7 +745,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_tpot_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model, bucket) (rate(gateway_tpot_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -753,7 +753,7 @@
           "refId": "A"
         }
       ],
-      "title": "Time Per Output Token (TPOT) — bucket distribution",
+      "title": "Time Per Output Token (TPOT) \u2014 bucket distribution",
       "type": "timeseries"
     },
     {
@@ -848,7 +848,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_total_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model, bucket) (rate(gateway_total_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -856,7 +856,7 @@
           "refId": "A"
         }
       ],
-      "title": "Total Request Time — end-to-end bucket distribution",
+      "title": "Total Request Time \u2014 end-to-end bucket distribution",
       "type": "timeseries"
     },
     {
@@ -1132,7 +1132,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (max by (gateway_pod, exported_pod, model) (rate(gateway_input_tokens_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model) (rate(gateway_input_tokens_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} input",
@@ -1235,7 +1235,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (max by (gateway_pod, exported_pod, model) (rate(gateway_output_tokens_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model) (rate(gateway_output_tokens_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} output",
@@ -1338,7 +1338,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_prompt_token_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model, bucket) (rate(gateway_prompt_token_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -1441,7 +1441,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_completion_token_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model, bucket) (rate(gateway_completion_token_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -1462,7 +1462,7 @@
       },
       "id": 234,
       "panels": [],
-      "title": "Prefix Cache Routing — requires prefix-cache routing strategy",
+      "title": "Prefix Cache Routing \u2014 requires prefix-cache routing strategy",
       "type": "row"
     },
     {
@@ -1668,7 +1668,7 @@
           "refId": "A"
         }
       ],
-      "title": "Prefix Match Distribution — bucket",
+      "title": "Prefix Match Distribution \u2014 bucket",
       "type": "timeseries"
     },
     {
@@ -2119,7 +2119,7 @@
       },
       "id": 225,
       "panels": [],
-      "title": "PD Disaggregation — requires P/D disaggregation enabled",
+      "title": "PD Disaggregation \u2014 requires P/D disaggregation enabled",
       "type": "row"
     },
     {
@@ -2214,7 +2214,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (gateway_pod) (gateway_prefill_outstanding_requests)",
+          "expr": "sum by (gateway_pod) (gateway_prefill_outstanding_requests)",
           "hide": false,
           "instant": false,
           "legendFormat": "{{gateway_pod}}",
@@ -2317,7 +2317,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (max by (gateway_pod, model, status, status_code) (rate(gateway_prefill_request_success_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model) (rate(gateway_prefill_request_success_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} success",
@@ -2330,7 +2330,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (max by (gateway_pod, model, status, status_code) (rate(gateway_prefill_request_fail_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model) (rate(gateway_prefill_request_fail_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} fail",
@@ -2433,7 +2433,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, roleset) (max by (gateway_pod, exported_pod, model, roleset) (rate(pd_selected_prefill_pod_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model, roleset) (rate(pd_selected_prefill_pod_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} prefill {{roleset}}",
@@ -2446,7 +2446,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, roleset) (max by (gateway_pod, exported_pod, model, roleset) (rate(pd_selected_decode_pod_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model, roleset) (rate(pd_selected_decode_pod_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} decode {{roleset}}",
@@ -2549,7 +2549,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_routing_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model, bucket) (rate(gateway_routing_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -2557,7 +2557,7 @@
           "refId": "A"
         }
       ],
-      "title": "Routing Decision Time — bucket",
+      "title": "Routing Decision Time \u2014 bucket",
       "type": "timeseries"
     },
     {
@@ -2652,7 +2652,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_prefill_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model, bucket) (rate(gateway_prefill_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -2660,7 +2660,7 @@
           "refId": "A"
         }
       ],
-      "title": "Prefill Phase Time — bucket",
+      "title": "Prefill Phase Time \u2014 bucket",
       "type": "timeseries"
     },
     {
@@ -2755,7 +2755,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_kv_transfer_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model, bucket) (rate(gateway_kv_transfer_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -2763,7 +2763,7 @@
           "refId": "A"
         }
       ],
-      "title": "KV Cache Transfer Time — bucket",
+      "title": "KV Cache Transfer Time \u2014 bucket",
       "type": "timeseries"
     },
     {
@@ -2858,7 +2858,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_decode_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
+          "expr": "sum by (model, bucket) (rate(gateway_decode_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -2866,7 +2866,7 @@
           "refId": "A"
         }
       ],
-      "title": "Decode Phase Time — bucket",
+      "title": "Decode Phase Time \u2014 bucket",
       "type": "timeseries"
     },
     {
@@ -4330,7 +4330,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "AIBrix Gateway — Observability",
+  "title": "AIBrix Gateway \u2014 Observability",
   "uid": "aibrix-envoy-gateway-plugin",
   "version": 29
 }
