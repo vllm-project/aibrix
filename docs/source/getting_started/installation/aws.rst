@@ -80,6 +80,10 @@ valid. The recommended way to request them together is Kubernetes
 Prerequisites
 ~~~~~~~~~~~~~
 
+- Kubernetes **1.34 or later**, where Dynamic Resource Allocation is GA and the
+  API group is ``resource.k8s.io/v1`` (a fixed device request is wrapped in
+  ``exactly:``). On 1.30–1.33 DRA is beta (``resource.k8s.io/v1beta1``) with a
+  different request schema.
 - An EKS nodegroup of ``trn2.48xlarge`` (or ``trn3-dev1.48xlarge``) with EFA
   enabled (``efaEnabled: true`` and ``privateNetworking: true`` in the eksctl
   nodegroup config). EFA capacity is typically obtained through an on-demand
