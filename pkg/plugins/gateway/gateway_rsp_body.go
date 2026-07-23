@@ -71,6 +71,15 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 	arrival := time.Now()
 
+	// Record the arrival time of the first response body chunk. For streaming
+	// responses HandleResponseBody runs once per SSE chunk, but request_end
+	// metrics are only emitted on the final chunk. Without capturing the first
+	// arrival here, TTFT and KV-transfer time would be measured from the last
+	// chunk (≈ total request time) instead of the first token.
+	if stream && routerCtx != nil && routerCtx.FirstTokenTime.IsZero() {
+		routerCtx.FirstTokenTime = arrival
+	}
+
 	var processingRes *extProcPb.ProcessingResponse
 	var promptTokens, completionTokens, totalTokens int64
 	var headers []*configPb.HeaderValueOption
@@ -202,7 +211,13 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 		}
 
 		headers = buildEnvoyProxyHeaders(headers, HeaderRequestID, routerCtx.RequestID)
-		fields := s.requestEndHelper(routerCtx, arrival, promptTokens, completionTokens, totalTokens)
+		// For streaming responses use the first chunk's arrival time so TTFT and
+		// KV-transfer time reflect the first token rather than the final chunk.
+		firstArrival := arrival
+		if stream && !routerCtx.FirstTokenTime.IsZero() {
+			firstArrival = routerCtx.FirstTokenTime
+		}
+		fields := s.requestEndHelper(routerCtx, firstArrival, promptTokens, completionTokens, totalTokens)
 		klog.InfoS("request_end", fields...)
 	} else if b.ResponseBody.EndOfStream {
 		complete = true

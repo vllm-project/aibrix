@@ -143,6 +143,7 @@ _ENGINE_HEALTH_DEFAULTS: Dict[str, str] = {
     EngineType.VLLM.value: "/health",
     EngineType.SGLANG.value: "/health",
     EngineType.TRTLLM.value: "/health",
+    EngineType.VIPE.value: "/health",
 }
 _FALLBACK_HEALTH_ENDPOINT = "/health"
 

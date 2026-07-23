@@ -46,6 +46,7 @@ aibrix_runtime = 'aibrix.app:main'
 aibrix_download = 'aibrix.downloader.__main__:main'
 aibrix_batch_worker = 'aibrix.batch.worker:main'
 aibrix_metadata = 'aibrix.metadata.app:main'
+aibrix_openai_frontend = 'aibrix.openai_frontend.main:main'
 # tools
 aibrix_benchmark = "aibrix.gpu_optimizer.optimizer.profiling.benchmark:main"
 aibrix_gen_profile = 'aibrix.gpu_optimizer.optimizer.profiling.gen_profile:main'
