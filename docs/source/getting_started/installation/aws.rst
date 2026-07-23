@@ -103,13 +103,26 @@ Verify both device classes are discovered:
 Allocate Neuron + EFA together with a ResourceClaimTemplate
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Pair the two device classes in a single claim, constrained to one
-``devicegroup8_id`` so the NeuronCores and EFA devices are co-located and
-mutually routable:
+A single claim requests both device classes and, via a ``constraints`` block,
+pins them to the **same device group** — this is what keeps the NeuronCores and
+EFA NICs on the same PCIe/NUMA locality so the NIXL/LIBFABRIC path between pods
+is valid. Only the ``48xlarge`` Trn size is EFA-enabled.
+
+Two ready-to-use templates are provided in
+`samples/disaggregation/neuron <https://github.com/vllm-project/aibrix/tree/main/samples/disaggregation/neuron>`_:
+
+- ``xl-lnc2-trn2-efa-rct.yaml`` — **half an instance**: 8 NeuronCores + 8 EFA
+  from one ``devicegroup8``. A ``trn2.48xlarge`` has 16 Neuron devices in two
+  such groups, so this template carves the node into two 8-device chunks — one
+  per pod — letting a prefill and a decode pod co-reside on one node, each with
+  an aligned, mutually-routable Neuron + EFA set.
+- ``xxl-lnc2-trn2-efa-rct.yaml`` — **a full instance**: all 16 NeuronCores + 16
+  EFA aligned on one ``devicegroup16`` (a single pod owns the whole node).
+
+The essential shape (see the files for the full manifest):
 
 .. code-block:: yaml
 
-    apiVersion: resource.k8s.io/v1
     kind: ResourceClaimTemplate
     metadata:
       name: xl-lnc2-trn2-efa
@@ -118,35 +131,23 @@ mutually routable:
         devices:
           constraints:
           # Same PCIe/NUMA group for neurons AND efas — required for the NIXL EFA path.
-          - matchAttribute: resource.aws.com/devicegroup8_id
+          - matchAttribute: resource.aws.com/devicegroup8_id   # devicegroup16_id for xxl
             requests: [neurons, efas]
           requests:
           - name: neurons
             exactly:
               deviceClassName: neuron.aws.com
-              allocationMode: ExactCount
-              count: 8                                   # 8 chips (half a 16-chip node)
+              count: 8                                          # 16 for xxl
               selectors:
-              - cel:
-                  expression: device.attributes['neuron.aws.com'].instanceType == 'trn2.48xlarge'
+              - cel: {expression: "device.attributes['neuron.aws.com'].instanceType == 'trn2.48xlarge'"}
           - name: efas
             exactly:
               deviceClassName: efa.networking.k8s.aws
-              allocationMode: ExactCount
-              count: 8
-          config:
-          - requests: [neurons]
-            opaque:
-              driver: neuron.aws.com
-              parameters:
-                apiVersion: neuron.aws.com/v1
-                kind: NeuronConfig
-                logicalNeuronCore: 2
+              count: 8                                          # 16 for xxl
+          ...
 
 A pod references the template via ``resourceClaims`` and ``resources.claims``.
-On a 16-chip ``trn2.48xlarge`` node, two such claims (one per pod) let the prefill
-and decode pods co-locate, each on its own aligned NeuronCore + EFA group. For
-Trn3, use the ``trn3-dev1.48xlarge`` selector.
+For Trn3, use the ``trn3-dev1.48xlarge`` selector.
 
 .. tip::
 
