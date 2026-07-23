@@ -166,6 +166,7 @@ def generate_agent_session_workload(
             plan_prompt_tokens = (
                 config.initial_prompt_tokens + turn * config.context_growth_tokens
             )
+            plan_latency_ms = config.model_latency_ms.sample(rng)
             _add_model_request(
                 timeline=timeline,
                 timestamp=turn_start_ms,
@@ -178,7 +179,7 @@ def generate_agent_session_workload(
                 state_ref=state_ref,
                 prompt_tokens=plan_prompt_tokens,
                 output_tokens=config.output_tokens,
-                expected_latency_ms=config.model_latency_ms.sample(rng),
+                expected_latency_ms=plan_latency_ms,
                 context_delta_tokens=(
                     config.initial_prompt_tokens
                     if turn == 0
@@ -187,9 +188,6 @@ def generate_agent_session_workload(
                 prompt_factory=prompt_factory,
             )
 
-            plan_latency_ms = _request_expected_latency(
-                timeline, turn_start_ms, plan_node
-            )
             tool_start_ms = turn_start_ms + plan_latency_ms
             join_parents: List[str] = []
             join_timestamp = tool_start_ms
@@ -350,15 +348,6 @@ def _add_model_request(
     _entry(timeline, timestamp)["requests"].append(request)
 
 
-def _request_expected_latency(
-    timeline: Dict[int, Dict[str, Any]], timestamp: int, node_id: str
-) -> int:
-    for request in _entry(timeline, timestamp)["requests"]:
-        if request["agent"]["node_id"] == node_id:
-            return request["agent"]["expected_latency_ms"]
-    raise KeyError(f"model node {node_id} not found at timestamp {timestamp}")
-
-
 def _add_event(
     timeline: Dict[int, Dict[str, Any]], timestamp: int, event: Dict[str, Any]
 ) -> None:
@@ -398,8 +387,10 @@ def _default_prompt_factory(
     )
     words = prefix.split()
     filler = ["synthetic", "agent", "context"]
-    while len(words) < target_tokens:
-        words.extend(filler)
+    if len(words) < target_tokens:
+        needed = target_tokens - len(words)
+        repeats = (needed + len(filler) - 1) // len(filler)
+        words.extend(filler * repeats)
     prompt = " ".join(words[:target_tokens])
     return prompt, target_tokens
 

@@ -447,8 +447,10 @@ def generate_agent_sessions(
         if not filler_ids:
             raise ValueError("tokenizer produced no tokens for synthetic filler")
         token_ids = list(prefix_ids)
-        while len(token_ids) < target_tokens:
-            token_ids.extend(filler_ids)
+        if len(token_ids) < target_tokens:
+            needed = target_tokens - len(token_ids)
+            repeats = (needed + len(filler_ids) - 1) // len(filler_ids)
+            token_ids.extend(filler_ids * repeats)
         prompt = tokenizer.decode(
             token_ids[:target_tokens], skip_special_tokens=True
         )
