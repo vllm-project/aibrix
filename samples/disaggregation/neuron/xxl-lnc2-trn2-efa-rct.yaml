@@ -1,0 +1,42 @@
+# Full-instance claim: all 16 NeuronCores + 16 EFA devices of a trn2.48xlarge,
+# aligned on ONE devicegroup16. Use this when a single pod should own the whole
+# node (e.g. a large prefill or decode replica), versus xl-lnc2-trn2-efa which
+# carves the node into two 8-device halves.
+#
+# As with xl, the devicegroup constraint spanning BOTH neurons and efas keeps the
+# NeuronCores and EFA NICs on the same PCIe/NUMA group so the NIXL/LIBFABRIC
+# KV-transfer path is valid.
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: xxl-lnc2-trn2-efa
+spec:
+  spec:
+    devices:
+      constraints:
+      - matchAttribute: resource.aws.com/devicegroup16_id
+        requests:
+        - neurons
+        - efas
+      requests:
+      - name: neurons
+        exactly:
+          allocationMode: ExactCount
+          count: 16
+          deviceClassName: neuron.aws.com
+          selectors:
+          - cel:
+              expression: device.attributes['neuron.aws.com'].instanceType == 'trn2.48xlarge'
+      - name: efas
+        exactly:
+          allocationMode: ExactCount
+          count: 16
+          deviceClassName: efa.networking.k8s.aws
+      config:
+      - requests: ["neurons"]
+        opaque:
+          driver: neuron.aws.com
+          parameters:
+            apiVersion: neuron.aws.com/v1
+            kind: NeuronConfig
+            logicalNeuronCore: 2
