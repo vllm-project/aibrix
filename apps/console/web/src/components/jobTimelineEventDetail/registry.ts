@@ -3,6 +3,7 @@ import { ComponentType } from 'react';
 export interface TimelineEventDetailProps {
   data: unknown;
   jobStatus?: string;
+  refreshTick?: number;
 }
 
 const registry = new Map<string, ComponentType<TimelineEventDetailProps>>();

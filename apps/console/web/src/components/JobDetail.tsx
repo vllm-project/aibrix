@@ -220,6 +220,7 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
   const [cancellingJob, setCancellingJob] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [copyFeedback, setCopyFeedback] = useState<'Copied' | 'Copy failed' | null>(null);
+  const [timelineRefreshTick, setTimelineRefreshTick] = useState(0);
   // Current viewer; datasets are downloadable only by the job owner.
   const [currentUser, setCurrentUser] = useState('');
 
@@ -252,6 +253,9 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
         .then(j => {
           if (cancelled) return;
           setJob(j);
+          if (j.status === 'resource_preparing') {
+            setTimelineRefreshTick(tick => tick + 1);
+          }
           const detail = parseDeploymentDetail(j);
           if (detail) {
             setDeploymentDetail(detail);
@@ -558,6 +562,7 @@ export function JobDetail({ jobId, onBack }: JobDetailProps) {
                         eventType={event.id}
                         jobStatus={job.status}
                         rawJson={job.provision?.rawJson}
+                        refreshTick={timelineRefreshTick}
                       />
                     )}
                   </div>
