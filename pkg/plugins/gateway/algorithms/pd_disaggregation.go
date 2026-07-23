@@ -22,11 +22,9 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -110,11 +108,6 @@ var (
 
 // loadBalancingDecodePolicy is shared for nil-policy fallback and invalid-score fallback (stateless type).
 var loadBalancingDecodePolicy = pd.LoadBalancingDecodePolicy{}
-
-var (
-	pdGatewayPodName     = os.Getenv("POD_NAME")
-	pdPrefillOutstanding int64
-)
 
 func init() {
 	Register(RouterPD, NewPDRouter)
@@ -304,16 +297,10 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		}
 		ctx.RespHeaders[HeaderPrefillTargetPod] = prefillPod.Name
 		ctx.RespHeaders[HeaderPrefillTargetPodIP] = prefillPod.Status.PodIP
-
-		err = func() error {
-			n := atomic.AddInt64(&pdPrefillOutstanding, 1)
-			metrics.SetGaugeMetric(metrics.GatewayPrefillOutstandingRequests, metrics.GetMetricHelp(metrics.GatewayPrefillOutstandingRequests), float64(n), []string{"gateway_pod"}, pdGatewayPodName)
-			defer func() {
-				remaining := atomic.AddInt64(&pdPrefillOutstanding, -1)
-				metrics.SetGaugeMetric(metrics.GatewayPrefillOutstandingRequests, metrics.GetMetricHelp(metrics.GatewayPrefillOutstandingRequests), float64(remaining), []string{"gateway_pod"}, pdGatewayPodName)
-			}()
-			return r.doPrefillRequest(ctx, prefillPod, ctx.Engine)
-		}()
+		// Register before doPrefillRequest so concurrent scorers see in-flight work.
+		// Executor RemovePrefillRequest (sync/async) is the matching decrement.
+		r.prefillRequestTracker.AddPrefillRequest(ctx.RequestID, prefillPod.Name)
+		err = r.doPrefillRequest(ctx, prefillPod, ctx.Engine)
 
 		if err != nil {
 			// Remove is a no-op if the executor already cleaned up (e.g. sync HTTP failure).

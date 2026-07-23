@@ -377,8 +377,15 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayRoutingTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(routingTime)})
 		if !routingCtx.PrefillEndTime.IsZero() {
 			prefillTime := routingCtx.PrefillEndTime.Sub(routingCtx.PrefillStartTime)
+			// KV transfer: time from prefill HTTP completion to first decode token.
 			kvTransferTime := ttft - routingCtx.PrefillEndTime.Sub(routingCtx.RequestTime)
-			decodeTime := time.Since(routingCtx.PrefillEndTime)
+			// Decode generation: time from first token to request end. Do not use
+			// PrefillEndTime here — that interval includes KV transfer and would
+			// double-count kv_transfer_time_taken when summing phase latencies.
+			decodeTime := arrival.Sub(routingCtx.PrefillEndTime)
+			if routingCtx.Stream && !routingCtx.FirstTokenTime.IsZero() {
+				decodeTime = arrival.Sub(routingCtx.FirstTokenTime)
+			}
 			fields = append(fields,
 				"prefill_time_taken", prefillTime,
 				"kv_transfer_time_taken", kvTransferTime,

@@ -127,7 +127,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, status_code) (max by (pod, model, status, status_code) (rate(gateway_request_model_success_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[5m])))",
+          "expr": "sum by (model, status_code) (max by (gateway_pod, model, status, status_code) (rate(gateway_request_model_success_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} success {{status_code}}",
@@ -140,7 +140,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, status_code) (max by (pod, model, status, status_code) (rate(gateway_request_model_fail_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[5m])))",
+          "expr": "sum by (model, status_code) (max by (gateway_pod, model, status, status_code) (rate(gateway_request_model_fail_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} fail {{status_code}}",
@@ -642,7 +642,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (rate(gateway_ttft_bucket_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_ttft_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -745,7 +745,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (rate(gateway_tpot_bucket_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_tpot_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -848,7 +848,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (rate(gateway_total_time_bucket_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_total_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -951,7 +951,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(avg by (pod) (e2e_request_latency_seconds_p50{model=~\"$model\", role!~\"prefill|decode\"}))",
+          "expr": "avg(max by (exported_pod) (e2e_request_latency_seconds_p50{model=~\"$model\", role!~\"prefill|decode\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p50",
@@ -964,7 +964,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(avg by (pod) (e2e_request_latency_seconds_p90{model=~\"$model\", role!~\"prefill|decode\"}))",
+          "expr": "avg(max by (exported_pod) (e2e_request_latency_seconds_p90{model=~\"$model\", role!~\"prefill|decode\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p90",
@@ -977,7 +977,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(avg by (pod) (e2e_request_latency_seconds_p99{model=~\"$model\", role!~\"prefill|decode\"}))",
+          "expr": "avg(max by (exported_pod) (e2e_request_latency_seconds_p99{model=~\"$model\", role!~\"prefill|decode\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p99",
@@ -990,7 +990,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg by (role) (avg by (pod, role) (e2e_request_latency_seconds_p50{model=~\"$model\", role=~\"prefill|decode\"}))",
+          "expr": "avg by (role) (max by (exported_pod, role) (e2e_request_latency_seconds_p50{model=~\"$model\", role=~\"prefill|decode\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p50 {{role}}",
@@ -1003,7 +1003,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg by (role) (avg by (pod, role) (e2e_request_latency_seconds_p90{model=~\"$model\", role=~\"prefill|decode\"}))",
+          "expr": "avg by (role) (max by (exported_pod, role) (e2e_request_latency_seconds_p90{model=~\"$model\", role=~\"prefill|decode\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p90 {{role}}",
@@ -1016,7 +1016,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg by (role) (avg by (pod, role) (e2e_request_latency_seconds_p99{model=~\"$model\", role=~\"prefill|decode\"}))",
+          "expr": "avg by (role) (max by (exported_pod, role) (e2e_request_latency_seconds_p99{model=~\"$model\", role=~\"prefill|decode\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p99 {{role}}",
@@ -1132,7 +1132,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (rate(gateway_input_tokens_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model) (max by (gateway_pod, exported_pod, model) (rate(gateway_input_tokens_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} input",
@@ -1235,7 +1235,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (rate(gateway_output_tokens_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model) (max by (gateway_pod, exported_pod, model) (rate(gateway_output_tokens_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} output",
@@ -1338,7 +1338,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (rate(gateway_prompt_token_bucket_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_prompt_token_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -1441,7 +1441,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (rate(gateway_completion_token_bucket_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_completion_token_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -1557,7 +1557,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "100 * sum(rate(aibrix_prefix_cache_routing_decisions_total{model=~\"$model\", match_percent_bucket!=\"0\"}[5m])) / clamp_min(sum(rate(aibrix_prefix_cache_routing_decisions_total{model=~\"$model\"}[5m])), 1e-9)",
+          "expr": "100 * sum(rate(aibrix_prefix_cache_routing_decisions_total{model=~\"$model\", match_percent_bucket!=\"0\"}[1m])) / clamp_min(sum(rate(aibrix_prefix_cache_routing_decisions_total{model=~\"$model\"}[1m])), 1e-9)",
           "hide": false,
           "instant": false,
           "legendFormat": "hit rate %",
@@ -1660,7 +1660,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, match_percent_bucket) (rate(aibrix_prefix_cache_routing_decisions_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, match_percent_bucket) (rate(aibrix_prefix_cache_routing_decisions_total{model=~\"$model\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{match_percent_bucket}}%]",
@@ -1763,7 +1763,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, selection) (rate(aibrix_prefix_cache_routing_selection_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, selection) (rate(aibrix_prefix_cache_routing_selection_total{model=~\"$model\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} {{selection}}",
@@ -1866,7 +1866,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, reason) (rate(aibrix_prefix_cache_routing_errors_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, reason) (rate(aibrix_prefix_cache_routing_errors_total{model=~\"$model\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} {{reason}}",
@@ -1969,7 +1969,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, using_kv_sync) (rate(aibrix_prefix_cache_load_imbalance_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, using_kv_sync) (rate(aibrix_prefix_cache_load_imbalance_total{model=~\"$model\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} kv_sync={{using_kv_sync}}",
@@ -2072,7 +2072,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le, model) (rate(aibrix_prefix_cache_routing_latency_seconds_bucket{model=~\"$model\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le, model) (rate(aibrix_prefix_cache_routing_latency_seconds_bucket{model=~\"$model\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} p50",
@@ -2085,7 +2085,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.90, sum by (le, model) (rate(aibrix_prefix_cache_routing_latency_seconds_bucket{model=~\"$model\"}[5m])))",
+          "expr": "histogram_quantile(0.90, sum by (le, model) (rate(aibrix_prefix_cache_routing_latency_seconds_bucket{model=~\"$model\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} p90",
@@ -2098,7 +2098,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, model) (rate(aibrix_prefix_cache_routing_latency_seconds_bucket{model=~\"$model\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le, model) (rate(aibrix_prefix_cache_routing_latency_seconds_bucket{model=~\"$model\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} p99",
@@ -2214,7 +2214,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (gateway_pod) (gateway_prefill_outstanding_requests)",
+          "expr": "max by (gateway_pod) (gateway_prefill_outstanding_requests)",
           "hide": false,
           "instant": false,
           "legendFormat": "{{gateway_pod}}",
@@ -2317,7 +2317,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (rate(gateway_prefill_request_success_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model) (max by (gateway_pod, model, status, status_code) (rate(gateway_prefill_request_success_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} success",
@@ -2330,7 +2330,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (rate(gateway_prefill_request_fail_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model) (max by (gateway_pod, model, status, status_code) (rate(gateway_prefill_request_fail_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} fail",
@@ -2433,7 +2433,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, roleset) (rate(pd_selected_prefill_pod_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, roleset) (max by (gateway_pod, exported_pod, model, roleset) (rate(pd_selected_prefill_pod_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} prefill {{roleset}}",
@@ -2446,7 +2446,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, roleset) (rate(pd_selected_decode_pod_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, roleset) (max by (gateway_pod, exported_pod, model, roleset) (rate(pd_selected_decode_pod_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} decode {{roleset}}",
@@ -2549,7 +2549,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (rate(gateway_routing_time_bucket_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_routing_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -2652,7 +2652,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (rate(gateway_prefill_time_bucket_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_prefill_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -2755,7 +2755,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (rate(gateway_kv_transfer_time_bucket_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_kv_transfer_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -2858,7 +2858,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, bucket) (rate(gateway_decode_time_bucket_total{model=~\"$model\"}[5m]))",
+          "expr": "sum by (model, bucket) (max by (gateway_pod, exported_pod, model, bucket) (rate(gateway_decode_time_bucket_total{model=~\"$model\", job=\"aibrix-gateway-plugins\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} [{{bucket}}]",
@@ -3090,7 +3090,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (pod, role) (kv_cache_usage_perc{model=~\"$model\"})",
+          "expr": "max by (exported_pod, role) (kv_cache_usage_perc{model=~\"$model\"})",
           "hide": false,
           "instant": false,
           "legendFormat": "{{pod}} ({{role}})",
@@ -3193,7 +3193,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(max by (pod) (rate(nixl_num_failed_transfers_total{model=~\"$model\"}[5m])))",
+          "expr": "sum(max by (exported_pod) (rate(nixl_num_failed_transfers_total{model=~\"$model\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "failed transfers",
@@ -3206,7 +3206,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(max by (pod) (rate(nixl_num_failed_notifications_total{model=~\"$model\"}[5m])))",
+          "expr": "sum(max by (exported_pod) (rate(nixl_num_failed_notifications_total{model=~\"$model\"}[1m])))",
           "hide": false,
           "instant": false,
           "legendFormat": "failed notifications",
@@ -3309,7 +3309,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(avg by (pod) (http_request_duration_seconds_p50 and on (pod) model_replicas{model_name=~\"$model\"}))",
+          "expr": "avg(max by (exported_pod) (http_request_duration_seconds_p50 and on (exported_pod) model_replicas{model_name=~\"$model\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p50",
@@ -3322,7 +3322,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(avg by (pod) (http_request_duration_seconds_p90 and on (pod) model_replicas{model_name=~\"$model\"}))",
+          "expr": "avg(max by (exported_pod) (http_request_duration_seconds_p90 and on (exported_pod) model_replicas{model_name=~\"$model\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p90",
@@ -3335,7 +3335,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(avg by (pod) (http_request_duration_seconds_p99 and on (pod) model_replicas{model_name=~\"$model\"}))",
+          "expr": "avg(max by (exported_pod) (http_request_duration_seconds_p99 and on (exported_pod) model_replicas{model_name=~\"$model\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p99",
@@ -3438,7 +3438,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(avg by (pod) (request_inference_time_seconds_p50{model=~\"$model\"}))",
+          "expr": "avg(max by (exported_pod) (request_inference_time_seconds_p50{model=~\"$model\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p50",
@@ -3451,7 +3451,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(avg by (pod) (request_inference_time_seconds_p90{model=~\"$model\"}))",
+          "expr": "avg(max by (exported_pod) (request_inference_time_seconds_p90{model=~\"$model\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p90",
@@ -3464,7 +3464,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(avg by (pod) (request_inference_time_seconds_p99{model=~\"$model\"}))",
+          "expr": "avg(max by (exported_pod) (request_inference_time_seconds_p99{model=~\"$model\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p99",
@@ -3567,7 +3567,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(avg by (pod) (iteration_tokens_total_p50{model=~\"$model\"}))",
+          "expr": "avg(max by (exported_pod) (iteration_tokens_total_p50{model=~\"$model\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p50",
@@ -3580,7 +3580,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(avg by (pod) (iteration_tokens_total_p90{model=~\"$model\"}))",
+          "expr": "avg(max by (exported_pod) (iteration_tokens_total_p90{model=~\"$model\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p90",
@@ -3593,7 +3593,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(avg by (pod) (iteration_tokens_total_p99{model=~\"$model\"}))",
+          "expr": "avg(max by (exported_pod) (iteration_tokens_total_p99{model=~\"$model\"}))",
           "hide": false,
           "instant": false,
           "legendFormat": "p99",
@@ -3696,7 +3696,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (pod, role) (engine_sleep_state{model=~\"$model\"})",
+          "expr": "max by (exported_pod, role) (engine_sleep_state{model=~\"$model\"})",
           "hide": false,
           "instant": false,
           "legendFormat": "{{pod}} ({{role}})",
@@ -3827,7 +3827,7 @@
           "downsampleFillPolicyDisabled": false,
           "downsampleInterval": "30s",
           "editorMode": "code",
-          "expr": "sum by (pod) (\n  rate(container_cpu_usage_seconds_total{pod=~\".*aibrix.*\", container!=\"\", container!=\"POD\"}[5m])\n)\n/\nsum by (pod) (\n  kube_pod_container_resource_limits{pod=~\".*aibrix.*\", resource=\"cpu\", unit=\"core\"}\n)",
+          "expr": "sum by (pod) (\n  rate(container_cpu_usage_seconds_total{pod=~\".*aibrix.*\", container!=\"\", container!=\"POD\"}[1m])\n)\n/\nsum by (pod) (\n  kube_pod_container_resource_limits{pod=~\".*aibrix.*\", resource=\"cpu\", unit=\"core\"}\n)",
           "fields": [
             "usage_ratio"
           ],
@@ -4210,7 +4210,7 @@
           "downsampleFillPolicyDisabled": false,
           "downsampleInterval": "30s",
           "editorMode": "code",
-          "expr": "sum by (pod) (\n  rate(container_network_receive_bytes_total{pod=~\".*aibrix.*\"}[5m])\n)",
+          "expr": "sum by (pod) (\n  rate(container_network_receive_bytes_total{pod=~\".*aibrix.*\"}[1m])\n)",
           "fields": [
             "rx_bytes"
           ],
@@ -4248,7 +4248,7 @@
           "downsampleFillPolicyDisabled": false,
           "downsampleInterval": "30s",
           "editorMode": "code",
-          "expr": "sum by (pod) (\n  rate(container_network_transmit_bytes_total{pod=~\".*aibrix.*\"}[5m])\n)",
+          "expr": "sum by (pod) (\n  rate(container_network_transmit_bytes_total{pod=~\".*aibrix.*\"}[1m])\n)",
           "fields": [
             "tx_bytes"
           ],
@@ -4284,10 +4284,7 @@
   "templating": {
     "list": [
       {
-        "current": {
-          "text": "kv-cache-benchmark",
-          "value": "bfdn2yilyaxvkd"
-        },
+        "current": {},
         "includeAll": false,
         "label": "Data Source",
         "name": "datasource",
@@ -4295,9 +4292,11 @@
         "query": "prometheus",
         "refresh": 1,
         "regex": "",
+        "skipUrlSync": false,
         "type": "datasource"
       },
       {
+        "allValue": ".*",
         "current": {
           "text": "All",
           "value": "$__all"
@@ -4307,8 +4306,9 @@
           "uid": "${datasource}"
         },
         "definition": "label_values(gateway_request_model_success_total, model)",
-        "includeAll": false,
+        "includeAll": true,
         "label": "Model",
+        "multi": false,
         "name": "model",
         "options": [],
         "query": {
@@ -4318,6 +4318,7 @@
         },
         "refresh": 1,
         "regex": "",
+        "skipUrlSync": false,
         "sort": 1,
         "type": "query"
       }
