@@ -3,6 +3,7 @@ package deployers
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -115,6 +116,33 @@ func writeDynamoGraphManifest(t *testing.T, namespace string, name string, compo
 		t.Fatalf("failed to write Dynamo graph manifest: %v", err)
 	}
 	return path
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create stdout pipe: %v", err)
+	}
+	os.Stdout = writer
+	defer func() {
+		os.Stdout = oldStdout
+	}()
+
+	fn()
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close stdout writer: %v", err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("failed to read stdout: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("failed to close stdout reader: %v", err)
+	}
+	return string(output)
 }
 
 func writeDynamoChartLock(t *testing.T, chartPath string) {
@@ -1088,6 +1116,69 @@ func TestDynamoDeployerWaitForReadyWaitsForFrontendAndWorkerPods(t *testing.T) {
 	}
 }
 
+func TestDynamoDeployerWaitForModelReadyChecksRegistrationAndChatCompletions(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{output: "vllm-dynamo-frontend-0"},
+			{output: `{"data":[{"id":"qwen3-8b"}]}`},
+			{output: `{"choices":[{"message":{"content":"Hello"}}]}`},
+		},
+	}
+	deployer := &DynamoDeployer{
+		effectiveNS: "brixbench-dynamo",
+		modelName:   "qwen3-8b",
+		runner:      runner,
+	}
+
+	if err := deployer.waitForDynamoModelReady(context.Background()); err != nil {
+		t.Fatalf("waitForDynamoModelReady returned error: %v", err)
+	}
+
+	payload, err := dynamoChatProbePayload("qwen3-8b")
+	if err != nil {
+		t.Fatalf("failed to build expected probe payload: %v", err)
+	}
+	wantCalls := []fakeCommandCall{
+		{
+			name: "kubectl",
+			args: []string{"get", "pod", "-n", "brixbench-dynamo", "-l", "nvidia.com/dynamo-component=Frontend", "-o", "jsonpath={.items[0].metadata.name}"},
+		},
+		{
+			name: "kubectl",
+			args: []string{"exec", "vllm-dynamo-frontend-0", "-n", "brixbench-dynamo", "--", "curl", "-sS", "http://localhost:8000/v1/models", "--max-time", "30"},
+		},
+		{
+			name: "kubectl",
+			args: []string{"exec", "vllm-dynamo-frontend-0", "-n", "brixbench-dynamo", "--", "curl", "-fsS", "http://localhost:8000/v1/chat/completions", "--max-time", "30", "-H", "Content-Type: application/json", "-d", payload},
+		},
+	}
+	if !reflect.DeepEqual(runner.calls, wantCalls) {
+		t.Fatalf("expected calls %+v, got %+v", wantCalls, runner.calls)
+	}
+}
+
+func TestDynamoDeployerWaitForModelReadyWarnsWhenModelNameMissing(t *testing.T) {
+	runner := &fakeCommandRunner{}
+	deployer := &DynamoDeployer{
+		engineManifest: "/tmp/dynamo-graph.yaml",
+		effectiveNS:    "brixbench-dynamo",
+		runner:         runner,
+	}
+
+	output := captureStdout(t, func() {
+		if err := deployer.waitForDynamoModelReady(context.Background()); err != nil {
+			t.Fatalf("waitForDynamoModelReady returned error: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "Warning: Dynamo model readiness probe skipped") {
+		t.Fatalf("expected readiness skip warning, got %q", output)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("expected no probe commands, got %+v", runner.calls)
+	}
+}
+
 func TestDynamoDeployerWaitForFrontendServicePollsUntilCreated(t *testing.T) {
 	runner := &fakeCommandRunner{
 		responses: []fakeCommandResponse{
@@ -1213,6 +1304,10 @@ func TestDynamoDeployerTeardownBestEffortCleansManifestPlatformAndNamespace(t *t
 		},
 		{
 			name: "kubectl",
+			args: []string{"patch", "pv", "models-pv-brixbench-dynamo", "--type=json", "-p", `[{"op":"remove","path":"/spec/claimRef"}]`},
+		},
+		{
+			name: "kubectl",
 			args: []string{"delete", "namespace", "brixbench-dynamo", "--ignore-not-found"},
 		},
 		{
@@ -1256,8 +1351,11 @@ func TestDynamoDeployerTeardownReturnsCriticalCleanupErrors(t *testing.T) {
 	if strings.Contains(err.Error(), "delete-dynamo-pvcs") {
 		t.Fatalf("best-effort cleanup errors should not be returned: %v", err)
 	}
-	if len(runner.calls) != 8 {
-		t.Fatalf("expected 8 cleanup commands, got %d", len(runner.calls))
+	if strings.Contains(err.Error(), "clear-dynamo-models-pv-claimref") {
+		t.Fatalf("best-effort cleanup errors should not be returned: %v", err)
+	}
+	if len(runner.calls) != 9 {
+		t.Fatalf("expected 9 cleanup commands, got %d", len(runner.calls))
 	}
 }
 
@@ -1287,8 +1385,8 @@ func TestDynamoDeployerTeardownIgnoresMissingGraphDuringPartialDeploy(t *testing
 	if err := deployer.Teardown(context.Background()); err != nil {
 		t.Fatalf("Teardown returned error for missing graph in partial deploy: %v", err)
 	}
-	if len(runner.calls) != 8 {
-		t.Fatalf("expected 8 cleanup commands, got %d", len(runner.calls))
+	if len(runner.calls) != 9 {
+		t.Fatalf("expected 9 cleanup commands, got %d", len(runner.calls))
 	}
 }
 
@@ -1317,8 +1415,8 @@ func TestDynamoDeployerTeardownIgnoresMissingComponentDeploymentCRD(t *testing.T
 	if err := deployer.Teardown(context.Background()); err != nil {
 		t.Fatalf("Teardown returned error for missing component CRD: %v", err)
 	}
-	if len(runner.calls) != 8 {
-		t.Fatalf("expected 8 cleanup commands, got %d", len(runner.calls))
+	if len(runner.calls) != 9 {
+		t.Fatalf("expected 9 cleanup commands, got %d", len(runner.calls))
 	}
 	if runner.calls[1].name != "kubectl" || !reflect.DeepEqual(runner.calls[1].args, []string{"get", "dynamocomponentdeployments.nvidia.com", "-n", "brixbench-dynamo", "-o", "name"}) {
 		t.Fatalf("expected component CRD list command, got %+v", runner.calls[1])
@@ -1342,7 +1440,7 @@ func TestDynamoDeployerTeardownSkipsMissingLocalEngineManifest(t *testing.T) {
 	if err := deployer.Teardown(context.Background()); err != nil {
 		t.Fatalf("Teardown returned error: %v", err)
 	}
-	if len(runner.calls) != 5 {
+	if len(runner.calls) != 6 {
 		t.Fatalf("expected cleanup to skip manifest commands and keep namespace cleanup, got %+v", runner.calls)
 	}
 	for _, call := range runner.calls {

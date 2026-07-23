@@ -37,6 +37,7 @@ const DynamoBenchmarkNamespace = "brixbench-dynamo"
 const dynamoClearFinalizersPatch = `{"metadata":{"finalizers":[]}}`
 const dynamoFrontendComponentLabel = "nvidia.com/dynamo-component"
 const dynamoFrontendComponentName = "Frontend"
+const dynamoModelsPVName = "models-pv-brixbench-dynamo"
 const dynamoReadinessTimeout = 10 * time.Minute
 const dynamoReadinessPollInterval = 5 * time.Second
 const dynamoHelmRepoRetryAttempts = 3
@@ -290,10 +291,15 @@ func (d *DynamoDeployer) Teardown(ctx context.Context) error {
 		addCriticalErr(d.deleteDynamoComponentDeployments(ctx, namespace, componentDeployments))
 		addCriticalErr(d.runDynamoHelmCleanupCommand(ctx, "uninstall-dynamo-platform", "uninstall", dynamoPlatformHelmReleaseName, "-n", namespace, "--ignore-not-found", "--wait", "--timeout", "5m"))
 		_ = d.runDynamoCleanupCommand(ctx, "delete-dynamo-pvcs", "kubectl", "delete", "pvc", "--all", "-n", namespace, "--ignore-not-found")
+		d.clearDynamoModelsPVClaimRef(ctx)
 		addCriticalErr(d.runDynamoCleanupCommand(ctx, "delete-dynamo-namespace", "kubectl", "delete", "namespace", namespace, "--ignore-not-found"))
 		addCriticalErr(d.runDynamoCleanupCommand(ctx, "wait-delete-dynamo-namespace", "kubectl", "wait", "--for=delete", "namespace/"+namespace, "--timeout=10m"))
 	}
 	return errors.Join(criticalErrs...)
+}
+
+func (d *DynamoDeployer) clearDynamoModelsPVClaimRef(ctx context.Context) {
+	_ = d.runDynamoCleanupCommand(ctx, "clear-dynamo-models-pv-claimref", "kubectl", "patch", "pv", dynamoModelsPVName, "--type=json", "-p", `[{"op":"remove","path":"/spec/claimRef"}]`)
 }
 
 func (d *DynamoDeployer) dynamoNamespaceExists(ctx context.Context, namespace string) (bool, error) {
@@ -553,6 +559,9 @@ func inferDynamoModelNameFromManifest(content string) string {
 func (d *DynamoDeployer) waitForDynamoModelReady(ctx context.Context) error {
 	modelName := strings.TrimSpace(d.modelName)
 	if modelName == "" {
+		if strings.TrimSpace(d.engineManifest) != "" {
+			fmt.Printf("Warning: Dynamo model readiness probe skipped because no model name could be inferred from %s\n", d.engineManifest)
+		}
 		return nil
 	}
 	frontendPod, err := d.resolveDynamoFrontendPodName(ctx)
@@ -562,7 +571,7 @@ func (d *DynamoDeployer) waitForDynamoModelReady(ctx context.Context) error {
 	if err := d.waitForDynamoModelRegistration(ctx, frontendPod, modelName); err != nil {
 		return err
 	}
-	return nil
+	return d.waitForDynamoInferenceReady(ctx, frontendPod, modelName)
 }
 
 func (d *DynamoDeployer) resolveDynamoFrontendPodName(ctx context.Context) (string, error) {
@@ -597,6 +606,50 @@ func (d *DynamoDeployer) waitForDynamoModelRegistration(ctx context.Context, fro
 			return fmt.Errorf("Dynamo model %s registration probe interrupted: %w", modelName, err)
 		}
 	}
+}
+
+func (d *DynamoDeployer) waitForDynamoInferenceReady(ctx context.Context, frontendPod string, modelName string) error {
+	payload, err := dynamoChatProbePayload(modelName)
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(dynamoModelProbeTimeout)
+	var lastResponse string
+	for {
+		response, err := d.captureDynamoCommand(ctx, "probe-dynamo-chat-completions", "kubectl", "exec", frontendPod, "-n", d.effectiveNS, "--", "curl", "-fsS", "http://localhost:8000/v1/chat/completions", "--max-time", "30", "-H", "Content-Type: application/json", "-d", payload)
+		if err == nil {
+			return nil
+		}
+		if strings.TrimSpace(response) != "" {
+			lastResponse = response
+		} else {
+			lastResponse = err.Error()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("Dynamo model %s did not pass chat completions probe within %s; last response: %s", modelName, dynamoModelProbeTimeout, truncateDynamoProbeResponse(lastResponse))
+		}
+		if sleepErr := sleepOrContextDone(ctx, 10*time.Second); sleepErr != nil {
+			return fmt.Errorf("Dynamo model %s chat completions probe interrupted: %w", modelName, sleepErr)
+		}
+	}
+}
+
+func dynamoChatProbePayload(modelName string) (string, error) {
+	payload := map[string]any{
+		"model": strings.TrimSpace(modelName),
+		"messages": []map[string]string{
+			{
+				"role":    "user",
+				"content": "Hello!",
+			},
+		},
+		"max_tokens": 1,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }
 
 func truncateDynamoProbeResponse(response string) string {

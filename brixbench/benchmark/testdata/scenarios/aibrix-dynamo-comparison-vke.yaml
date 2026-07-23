@@ -1,6 +1,6 @@
 Scenario: aibrix-dynamo-comparison-vke
 Tests:
-  - name: aibrix-main-d41653b
+  - name: aibrix-main-d41653b-qwen3-8b-pd-1p1d-tp2-vke-comparison
     provider: aibrix
     fullstack: false
     commit: d41653b26cf1257157e34ff35ee5f028644473a8
@@ -8,17 +8,22 @@ Tests:
       image:
         baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
         outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      env:
+        ROUTING_ALGORITHM: pd
+        AIBRIX_PREFIX_CACHE_BLOCK_SIZE: 512
+      resources:
+        - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
     engine:
       type: vllm
-      manifest: testdata/deployments/aibrix/models/model.yaml
-    benchmark: testdata/benchmarks/vllm-chat-smoke.yaml
+      manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-1p1d-tp2-vke-comparison.yaml
+    benchmark: testdata/benchmarks/vllm-chat-smoke-qwen3-8b-vke.yaml
 
-  - name: dynamo-v1.2.1-qwen3-8b-round-robin-1p1d-tp2-vke
+  - name: dynamo-v1.2.1-qwen3-8b-round-robin-1p1d-tp2-vke-comparison
     provider: dynamo
     version: 1.2.1
     platform:
       valuesFile: testdata/deployments/dynamo/platform-aibrix-mirror-dev-operator.yaml
     engine:
       type: vllm
-      manifest: testdata/deployments/dynamo/qwen3-8b-round-robin-1p1d-tp2-vke.yaml
+      manifest: testdata/deployments/dynamo/qwen3-8b-round-robin-1p1d-tp2-vke-comparison.yaml
     benchmark: testdata/benchmarks/vllm-chat-smoke-qwen3-8b-vke.yaml
