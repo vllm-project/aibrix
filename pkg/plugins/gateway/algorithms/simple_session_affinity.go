@@ -17,9 +17,7 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"math/rand"
 	"net"
@@ -123,8 +121,23 @@ func rendezvousPod(ctx *types.RoutingContext, pods []*v1.Pod, sessionKey string)
 			continue
 		}
 		addr := net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(int(port)))
-		sum := sha256.Sum256([]byte(sessionKey + "\x00" + addr))
-		score := binary.BigEndian.Uint64(sum[:8])
+		const (
+			fnvOffset64 = 14695981039346656037
+			fnvPrime64  = 1099511628211
+		)
+		score := uint64(fnvOffset64)
+		for i := 0; i < len(sessionKey); i++ {
+			score ^= uint64(sessionKey[i])
+			score *= fnvPrime64
+		}
+		// Separate the two variable-length inputs so their concatenations
+		// cannot alias (for example, "ab"+"c" and "a"+"bc").
+		score ^= 0
+		score *= fnvPrime64
+		for i := 0; i < len(addr); i++ {
+			score ^= uint64(addr[i])
+			score *= fnvPrime64
+		}
 		if selected == nil || score > bestScore || (score == bestScore && addr < bestAddr) {
 			selected = pod
 			bestScore = score
