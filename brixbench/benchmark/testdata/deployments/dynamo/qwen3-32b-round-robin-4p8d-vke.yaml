@@ -195,8 +195,7 @@ spec:
                 --gpu-memory-utilization $GPU_MEM_UTIL \
                 --tensor-parallel-size $TP \
                 --disaggregation-mode decode \
-                --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
-                --enforce-eager
+                --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
           env:
             - name: DYN_LOG
               value: "info"
@@ -298,8 +297,7 @@ spec:
                 --tensor-parallel-size $TP \
                 --disaggregation-mode prefill \
                 --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
-                --kv-events-config '{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:20080","enable_kv_cache_events":true}' \
-                --enforce-eager
+                --kv-events-config '{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:20080","enable_kv_cache_events":true}'
           env:
             - name: DYN_LOG
               value: "info"

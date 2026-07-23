@@ -200,8 +200,7 @@ func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string
 		deployer = deployers.NewAIBrixDeployer()
 		t.Log("Using AIBrix deployer")
 	case "llmd":
-		t.Log("Using LLM-d deployer")
-		// return nil, "", fmt.Errorf("LLM-d deployer not implemented")
+		return nil, "", fmt.Errorf("provider llmd is not implemented")
 	case "dynamo":
 		deployer = deployers.NewDynamoDeployer()
 		t.Log("Using Dynamo deployer")

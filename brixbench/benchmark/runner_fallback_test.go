@@ -17,7 +17,9 @@ limitations under the License.
 package benchmark
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/vllm-project/aibrix/brixbench/internal/resolver"
@@ -140,5 +142,27 @@ func TestShouldRunDynamoStaleCleanupRequiresResetEnabled(t *testing.T) {
 				t.Fatalf("shouldRunDynamoStaleCleanup() = %t, want %t", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSetupAndRunDeploymentRejectsLLMdProvider(t *testing.T) {
+	provider := "llmd"
+	testCase := &resolver.Test{
+		Name:     "manual-llmd",
+		Provider: &provider,
+	}
+
+	deployer, gatewayURL, err := setupAndRunDeployment(context.Background(), t, t.TempDir(), testCase, "benchmark", t.TempDir())
+	if err == nil {
+		t.Fatalf("expected llmd not implemented error")
+	}
+	if deployer != nil {
+		t.Fatalf("expected nil deployer, got %T", deployer)
+	}
+	if gatewayURL != "" {
+		t.Fatalf("expected empty gateway URL, got %q", gatewayURL)
+	}
+	if !strings.Contains(err.Error(), "provider llmd is not implemented") {
+		t.Fatalf("expected llmd not implemented error, got %v", err)
 	}
 }

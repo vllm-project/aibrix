@@ -21,6 +21,9 @@ func validateProviderInputs(test *Test) error {
 }
 
 func validateNullProviderSourceSelection(test *Test) error {
+	if strings.TrimSpace(test.Version) != "" || strings.TrimSpace(test.Commit) != "" || len(test.ControlPlane) > 0 || strings.TrimSpace(test.Platform.ValuesFile) != "" {
+		return fmt.Errorf("provider null does not support version, commit, controlplane, or platform inputs for %s", test.Name)
+	}
 	if strings.TrimSpace(test.LocalPath) != "" {
 		return fmt.Errorf("localPath is only supported for provider aibrix in %s", test.Name)
 	}
