@@ -21,6 +21,7 @@ You can configure multi-strategy routing by setting the `AIBRIX_ROUTING_ALGORITH
 * If a weight is `0`, the strategy is completely ignored.
 * If an invalid strategy is specified, the Gateway rejects the request with **400 Bad Request** instead of silently falling back to `random`.
 * `session-affinity` is treated as a soft-scoring strategy in multi-strategy mode: it boosts the matching pod, but the final weighted winner may still be a different pod. The response session header is updated to the final selected pod.
+* A caller may send an opaque application session identifier in `x-aibrix-session-key`. When no valid gateway-issued `x-session-id` target is ready, rendezvous hashing selects a stable pod for that key. This is useful for concurrent Agent turns that start before a response cookie is available. The opaque key is never returned to the client.
 
 ## Examples
 
