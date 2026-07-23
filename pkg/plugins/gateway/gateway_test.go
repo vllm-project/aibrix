@@ -1446,6 +1446,72 @@ func TestProcess_RecvEOF_NotCompleted(t *testing.T) {
 	mc.AssertExpectations(t)
 }
 
+func TestProcess_CleansRequestBufferOnExitBeforeResponseEnd(t *testing.T) {
+	mc := &MockCache{}
+	mc.On("AddRequestCount", mock.Anything, mock.Anything, mock.Anything).Return(int64(0))
+	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mc.On("HasModel", mock.Anything).Return(true)
+	pods := &utils.PodArray{Pods: []*v1.Pod{
+		{
+			Status: v1.PodStatus{
+				PodIP:      "1.2.3.4",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+	}}
+	mc.On("ListPodsByModel", mock.Anything).Return(pods, nil)
+
+	const requestID = "4bf92f3577b34da6a3ce929d0e0e4736"
+	requestBuffers.Delete(requestID)
+
+	srv := &mockProcessServer{ctx: context.Background()}
+	req := &extProcPb.ProcessingRequest{}
+	recvCount := 0
+	srv.On("Recv").Return(req, nil).Run(func(args mock.Arguments) {
+		switch recvCount {
+		case 0:
+			req.Request = &extProcPb.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extProcPb.HttpHeaders{
+					Headers: &configPb.HeaderMap{
+						Headers: []*configPb.HeaderValue{
+							{Key: ":routing-strategy", Value: "random", RawValue: []byte("random")},
+							{Key: ":path", Value: "/v1/chat/completions", RawValue: []byte("/v1/chat/completions")},
+							{Key: HeaderTraceParent, Value: "00-" + requestID + "-00f067aa0ba902b7-01", RawValue: []byte("00-" + requestID + "-00f067aa0ba902b7-01")},
+						},
+					},
+				},
+			}
+		case 1:
+			req.Request = &extProcPb.ProcessingRequest_RequestBody{
+				RequestBody: &extProcPb.HttpBody{
+					Body: []byte(`{"model": "test", "messages": [{"role": "user", "content": "hello"}]}`),
+				},
+			}
+		case 2:
+			req.Request = &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        []byte(`{"model": "test", "usage": {"prompt_tokens": `),
+					EndOfStream: false,
+				},
+			}
+		}
+		recvCount++
+	}).Times(3)
+	srv.On("Recv").Return((*extProcPb.ProcessingRequest)(nil), io.EOF).Once()
+	srv.On("Send", mock.Anything).Return(nil)
+
+	s := newProcessTestServer(openShutdownCh(), mc)
+
+	err := s.Process(srv)
+
+	assert.Equal(t, io.EOF, err)
+	_, ok := requestBuffers.Load(requestID)
+	assert.False(t, ok, "expected request buffer to be removed when Process exits before response end")
+
+	srv.AssertExpectations(t)
+	mc.AssertExpectations(t)
+}
+
 // TestProcess_RecvGRPCCanceled verifies that a gRPC Canceled error from Recv
 // is treated as a normal stream closure and returned as codes.Canceled.
 func TestProcess_RecvGRPCCanceled(t *testing.T) {
