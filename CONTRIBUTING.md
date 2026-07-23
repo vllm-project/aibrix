@@ -23,7 +23,7 @@ Start by picking an [issue](https://github.com/vllm-project/aibrix/issues) tagge
 - **Creating Branches**: Use the following naming convention: `/<YOUR_NAME>/[feat|patch|bug_fix] description`
 - **Making Commits**: Write detailed commit messages that explain your changes.
 - **Pull Requests**:
-  - Create a pull request on [PR Page](https://github.com/vllm-project/aibrix/pulls) against the master branch.
+  - Create a pull request on [PR Page](https://github.com/vllm-project/aibrix/pulls) against the main branch.
   - Use the provided PR template to describe your changes.
 - **Code Review Process**: Your PR will be reviewed by related contributors. Address feedback to improve and finalize your contribution.
 

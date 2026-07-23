@@ -163,6 +163,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	}
 
 	defer func() {
+		requestBuffers.Delete(st.requestID)
 		if st.span != nil {
 			st.span.End()
 		}
