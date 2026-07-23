@@ -193,11 +193,10 @@ For `provider: dynamo`, the runner currently supports:
 
 1. validate the requested release tag against `https://github.com/ai-dynamo/dynamo.git`
 2. check out `.tmp/dynamo/<version>`
-3. verify the tag commit matches upstream `release/<version>` branch head
-4. prepare Helm dependency repositories and run `helm dependency build --skip-refresh` for `deploy/helm/charts/platform`
-5. install the Dynamo platform chart into `brixbench-dynamo` with operator namespace restriction enabled and default platform values
-6. apply the user-provided engine manifest, which may include prerequisite resources such as PVCs or PodMonitors
-7. wait for Frontend service, component pods, and OpenAI-compatible model/inference readiness when the model name can be inferred
+3. prepare Helm dependency repositories and run `helm dependency build --skip-refresh` for `deploy/helm/charts/platform`
+4. install the Dynamo platform chart into `brixbench-dynamo` with operator namespace restriction enabled and default platform values
+5. apply the user-provided engine manifest, which may include prerequisite resources such as PVCs or PodMonitors
+6. wait for Frontend service, component pods, and OpenAI-compatible model/inference readiness when the model name can be inferred
 
 Dynamo platform is installed with Helm. The serving/runtime image is selected by
 the `DynamoGraphDeployment` manifest, not by the platform chart alone.
