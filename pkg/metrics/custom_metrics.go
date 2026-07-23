@@ -43,50 +43,122 @@ var (
 
 	// Function variables that can be overridden for testing
 	SetGaugeMetricFnForTest         = defaultSetGaugeMetric
+	IncGaugeMetricFnForTest         = defaultIncGaugeMetric
+	DecGaugeMetricFnForTest         = defaultDecGaugeMetric
 	IncrementCounterMetricFnForTest = defaultIncrementCounterMetric
 )
 
+// GatewayPodName returns the gateway pod name used as the gateway_pod metric label.
+func GatewayPodName() string {
+	return gatewayPodName
+}
+
 func SetGaugeMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
 	SetGaugeMetricFnForTest(name, help, value, labelNames, labelValues...)
+}
+
+// IncGaugeMetric increments a gauge by 1. Prefer Inc/Dec over Set for concurrent
+// in-flight counters to avoid stale snapshot races.
+func IncGaugeMetric(name string, help string, labelNames []string, labelValues ...string) {
+	IncGaugeMetricFnForTest(name, help, labelNames, labelValues...)
+}
+
+// DecGaugeMetric decrements a gauge by 1.
+func DecGaugeMetric(name string, help string, labelNames []string, labelValues ...string) {
+	DecGaugeMetricFnForTest(name, help, labelNames, labelValues...)
+}
+
+func DeleteGaugeMetricForPod(metricName string, routingCtx *types.RoutingContext, pod *v1.Pod, extras map[string]string) {
+	customGaugesMu.RLock()
+	gauge, ok := customGauges[metricName]
+	canonicalNames := customGaugeLabelNames[metricName]
+	customGaugesMu.RUnlock()
+	if !ok || gauge == nil {
+		return
+	}
+
+	var model string
+	if routingCtx != nil {
+		model = routingCtx.Model
+	}
+	labelNames, labelValues := buildMetricLabels(pod, model, extras)
+	if len(canonicalNames) == 0 {
+		_ = gauge.DeleteLabelValues(labelValues...)
+		return
+	}
+
+	labelMap := make(map[string]string, len(labelNames))
+	for i, ln := range labelNames {
+		labelMap[ln] = labelValues[i]
+	}
+	orderedValues := make([]string, len(canonicalNames))
+	for i, ln := range canonicalNames {
+		orderedValues[i] = labelMap[ln]
+	}
+	_ = gauge.DeleteLabelValues(orderedValues...)
+}
+
+func getOrCreateGaugeVec(name string, help string, labelNames []string) (*prometheus.GaugeVec, []string) {
+	customGaugesMu.RLock()
+	gauge, ok := customGauges[name]
+	canonicalNames := customGaugeLabelNames[name]
+	customGaugesMu.RUnlock()
+
+	if ok {
+		return gauge, canonicalNames
+	}
+
+	customGaugesMu.Lock()
+	defer customGaugesMu.Unlock()
+	gauge, ok = customGauges[name]
+	canonicalNames = customGaugeLabelNames[name]
+	if !ok {
+		namesCopy := append([]string(nil), labelNames...)
+		gauge = promauto.NewGaugeVec(
+			prometheus.GaugeOpts{Name: name, Help: help},
+			namesCopy,
+		)
+		customGauges[name] = gauge
+		customGaugeLabelNames[name] = namesCopy
+		canonicalNames = namesCopy
+	}
+	return gauge, canonicalNames
+}
+
+func orderedGaugeLabelValues(canonicalNames []string, labelNames []string, labelValues []string) []string {
+	labelValueMap := make(map[string]string, len(labelNames))
+	for i, ln := range labelNames {
+		labelValueMap[ln] = labelValues[i]
+	}
+	orderedValues := make([]string, len(canonicalNames))
+	for i, ln := range canonicalNames {
+		orderedValues[i] = labelValueMap[ln]
+	}
+	return orderedValues
 }
 
 func defaultSetGaugeMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
 	if len(labelNames) != len(labelValues) {
 		return
 	}
+	gauge, canonicalNames := getOrCreateGaugeVec(name, help, labelNames)
+	gauge.WithLabelValues(orderedGaugeLabelValues(canonicalNames, labelNames, labelValues)...).Set(value)
+}
 
-	labelValueMap := make(map[string]string, len(labelNames))
-	for i, ln := range labelNames {
-		labelValueMap[ln] = labelValues[i]
+func defaultIncGaugeMetric(name string, help string, labelNames []string, labelValues ...string) {
+	if len(labelNames) != len(labelValues) {
+		return
 	}
+	gauge, canonicalNames := getOrCreateGaugeVec(name, help, labelNames)
+	gauge.WithLabelValues(orderedGaugeLabelValues(canonicalNames, labelNames, labelValues)...).Inc()
+}
 
-	customGaugesMu.RLock()
-	gauge, ok := customGauges[name]
-	canonicalNames := customGaugeLabelNames[name]
-	customGaugesMu.RUnlock()
-
-	if !ok {
-		customGaugesMu.Lock()
-		gauge, ok = customGauges[name]
-		canonicalNames = customGaugeLabelNames[name]
-		if !ok {
-			namesCopy := append([]string(nil), labelNames...)
-			gauge = promauto.NewGaugeVec(
-				prometheus.GaugeOpts{Name: name, Help: help},
-				namesCopy,
-			)
-			customGauges[name] = gauge
-			customGaugeLabelNames[name] = namesCopy
-			canonicalNames = namesCopy
-		}
-		customGaugesMu.Unlock()
+func defaultDecGaugeMetric(name string, help string, labelNames []string, labelValues ...string) {
+	if len(labelNames) != len(labelValues) {
+		return
 	}
-
-	orderedValues := make([]string, len(canonicalNames))
-	for i, ln := range canonicalNames {
-		orderedValues[i] = labelValueMap[ln]
-	}
-	gauge.WithLabelValues(orderedValues...).Set(value)
+	gauge, canonicalNames := getOrCreateGaugeVec(name, help, labelNames)
+	gauge.WithLabelValues(orderedGaugeLabelValues(canonicalNames, labelNames, labelValues)...).Dec()
 }
 
 func IncrementCounterMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
@@ -382,8 +454,15 @@ func generateDefaultMetricLabelsMap(pod *v1.Pod, model string) map[string]string
 		"model":              model,
 		"engine_type":        GetEngineType(*pod),
 		"roleset":            utils.GetPodEnv(pod, "ROLESET_NAME", ""),
-		"role":               utils.GetPodEnv(pod, "ROLE_NAME", ""),
+		"role":               resolvePodRole(pod),
 		"role_replica_index": utils.GetPodEnv(pod, "ROLE_REPLICA_INDEX", ""),
 		"gateway_pod":        gatewayPodName,
 	}
+}
+
+func resolvePodRole(pod *v1.Pod) string {
+	if role, ok := pod.Labels["role-name"]; ok && role != "" {
+		return role
+	}
+	return utils.GetPodEnv(pod, "ROLE_NAME", "")
 }

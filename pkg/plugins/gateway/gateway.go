@@ -105,12 +105,45 @@ type processState struct {
 	isRespError      bool
 	isGatewayRspDone bool
 	completed        bool
+	trackedModel     string
 	span             trace.Span
 	ttftSpan         trace.Span
 }
 
 var podName = os.Getenv("POD_NAME")
 var tracer = otel.Tracer("envoy-ext-proc-server")
+
+func (st *processState) trackModelInFlight() {
+	if st.model == "" || st.trackedModel == st.model {
+		return
+	}
+	if st.trackedModel != "" {
+		st.releaseModelInFlight()
+	}
+	st.trackedModel = st.model
+	metrics.IncGaugeMetric(
+		metrics.GatewayModelInFlight,
+		metrics.GetMetricHelp(metrics.GatewayModelInFlight),
+		[]string{"gateway_pod", "model"},
+		podName,
+		st.model,
+	)
+}
+
+func (st *processState) releaseModelInFlight() {
+	if st.trackedModel == "" {
+		return
+	}
+	modelToRelease := st.trackedModel
+	st.trackedModel = ""
+	metrics.DecGaugeMetric(
+		metrics.GatewayModelInFlight,
+		metrics.GetMetricHelp(metrics.GatewayModelInFlight),
+		[]string{"gateway_pod", "model"},
+		podName,
+		modelToRelease,
+	)
+}
 
 func httpRouteCacheTTL() time.Duration {
 	if v := os.Getenv(envHTTPRouteCacheTTL); v != "" {
@@ -162,6 +195,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		requestID: uuid.New().String(),
 	}
 
+	metrics.IncGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), []string{"gateway_pod"}, podName)
 	defer func() {
 		requestBuffers.Delete(st.requestID)
 		if st.span != nil {
@@ -170,6 +204,8 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		if st.ttftSpan != nil {
 			st.ttftSpan.End()
 		}
+		st.releaseModelInFlight()
+		metrics.DecGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), []string{"gateway_pod"}, podName)
 	}()
 
 	klog.InfoS("processing request", "requestID", st.requestID)
@@ -184,7 +220,8 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		// This allows Envoy to gracefully close the stream and send 0\r\n\r\n.
 		if st.completed {
 			klog.V(4).InfoS("request actively finished, breaking ext_proc stream", "requestID", st.requestID)
-			if st.model != "" {
+			if st.model != "" && !st.isGatewayRspDone {
+				st.isGatewayRspDone = true
 				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
 			}
 			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
@@ -279,7 +316,8 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 
 		// Fallback: if proactive exit in Process was skipped (should not happen normally)
 		if st.completed {
-			if st.model != "" {
+			if st.model != "" && !st.isGatewayRspDone {
+				st.isGatewayRspDone = true
 				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
 			}
 			klog.V(2).InfoS("stream closed (EOF): completed", "requestID", st.requestID, "model", st.model)
@@ -299,7 +337,8 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 	// Normal stream closure by envoy proxy
 	stErr, ok := status.FromError(err)
 	if ok && stErr.Code() == codes.Canceled {
-		if st.model != "" {
+		if st.model != "" && !st.isGatewayRspDone {
+			st.isGatewayRspDone = true
 			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
 		}
 		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
@@ -366,6 +405,8 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		klog.InfoS("unknown request type", "requestID", st.requestID, "msg_type", fmt.Sprintf("%T", req.Request))
 	}
 
+	st.trackModelInFlight()
+
 	if resp == nil {
 		klog.ErrorS(nil, "no ProcessingResponse generated for message", "requestID", st.requestID, "msg_type", fmt.Sprintf("%T", req.Request))
 		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "no_response_err", "500")
@@ -379,7 +420,6 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 
 	if resp.GetImmediateResponse() == nil {
 		if st.metricLabel != gatewayRespBody {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", "200")
 			return resp, nil
 		}
 		if st.completed && !st.isGatewayRspDone {

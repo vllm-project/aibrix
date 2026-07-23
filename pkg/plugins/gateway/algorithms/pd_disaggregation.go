@@ -297,8 +297,11 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		}
 		ctx.RespHeaders[HeaderPrefillTargetPod] = prefillPod.Name
 		ctx.RespHeaders[HeaderPrefillTargetPodIP] = prefillPod.Status.PodIP
+		// Register before doPrefillRequest so concurrent scorers see in-flight work.
+		// Executor RemovePrefillRequest (sync/async) is the matching decrement.
 		r.prefillRequestTracker.AddPrefillRequest(ctx.RequestID, prefillPod.Name)
 		err = r.doPrefillRequest(ctx, prefillPod, ctx.Engine)
+
 		if err != nil {
 			// Remove is a no-op if the executor already cleaned up (e.g. sync HTTP failure).
 			r.prefillRequestTracker.RemovePrefillRequest(ctx.RequestID)
