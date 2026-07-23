@@ -129,6 +129,8 @@ def add_vipe_args(parser: argparse.ArgumentParser):
 
 
 def _apply_vipe_storage_env(args: argparse.Namespace):
+    # explicitly set STORAGE_TYPE to tos
+    os.environ["STORAGE_TYPE"] = "tos"
     items = args.vipe_storage_tos
     if not items or len(items) < 2:
         return
