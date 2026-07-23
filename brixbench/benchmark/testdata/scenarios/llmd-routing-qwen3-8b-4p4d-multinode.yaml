@@ -1,0 +1,13 @@
+# llm-d v0.8.1 + vLLM Qwen3-8B PD routing — multi-node 4p4d @ 8 rps / 200 prompts.
+Scenario: llmd-routing-qwen3-8b-4p4d-multinode
+Tests:
+- name: llmd-pd-4p4d-multinode-r8
+  provider: llmd
+  version: v0.8.1
+  controlplane:
+  - testdata/deployments/llmd/router/base-values.yaml
+  - testdata/deployments/llmd/router/policies/pd-disaggregation-official.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/llmd/models/qwen3-8b-pd-4p4d-multinode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-multinode-r8-p200.yaml
