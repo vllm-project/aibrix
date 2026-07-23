@@ -144,7 +144,7 @@ jobs:
           # temporary overrides until we reach our goal of 90%
           threshold-file: 0
           threshold-package: 0
-          threshold-total: 25
+          threshold-total: 45
 
           breakdown-file-name: ${{ github.ref_name == 'main' && 'main.breakdown' || '' }}
           diff-base-breakdown-file-name: ${{ steps.download-main-breakdown.outputs.found_artifact == 'true' && 'main.breakdown' || '' }}
