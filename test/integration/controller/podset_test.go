@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	volcanoschedv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
@@ -34,6 +35,7 @@ import (
 
 var _ = ginkgo.Describe("PodSet controller test", func() {
 	var ns *corev1.Namespace
+	// using for podgroup type
 
 	// update represents a test step: optional mutation + validation
 	type update struct {
@@ -142,6 +144,65 @@ var _ = ginkgo.Describe("PodSet controller test", func() {
 							// Validate Status
 							validation.ValidatePodSetStatus(ctx, k8sClient,
 								podset, orchestrationapi.PodSetPhaseReady, 3, 3)
+						},
+					},
+				},
+			},
+		),
+		ginkgo.Entry("normal PodSet create and create its volcano podgroup",
+			&testValidatingCase{
+				makePodSet: func() *orchestrationapi.PodSet {
+					podTemplate := corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"app": "nginx",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "nginx",
+									Image: "nginx:latest",
+								},
+							},
+						},
+					}
+					schedulingStrategy := &orchestrationapi.SchedulingStrategy{
+						VolcanoSchedulingStrategy: &orchestrationapi.VolcanoSchedulingStrategySpec{
+							MinMember: int32(1), Queue: "default",
+						},
+					}
+
+					return wrapper.MakePodSet("podset-normal").
+						Namespace(ns.Name).
+						AddPodSetSchedulingStrategy(schedulingStrategy).
+						PodTemplate(podTemplate).
+						Obj()
+				},
+				updates: []*update{
+					{
+						// trigger PodSet all pods to ready
+						updateFunc: func(podset *orchestrationapi.PodSet) {
+							gomega.Expect(k8sClient.Create(ctx, podset)).To(gomega.Succeed())
+
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey,
+								podset.Name, 2)
+						},
+						checkFunc: func(ctx context.Context, k8sClient client.Client, podset *orchestrationapi.PodSet) {
+							expectedLabels := map[string]string{
+								constants.PodSetNameLabelKey: podset.Name,
+							}
+							podGroup := &volcanoschedv1beta1.PodGroup{}
+							podGroup.SetGroupVersionKind(volcanoschedv1beta1.SchemeGroupVersion.WithKind("PodGroup"))
+							minMember := podset.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinMember
+							// Validate pg CRD exists
+							validation.ValidatePodGroupCRDExist(ctx, dynamicClient, podGroup)
+							// Validate pg Spec
+							validation.ValidatePodGroupSpec(ctx, dynamicClient, podGroup, minMember,
+								podset.Namespace, podset.Name)
+							// Validate pg labels which is labelled by podSet controller
+							validation.ValidatePodGroupLabels(ctx, dynamicClient, podGroup, expectedLabels,
+								podset.Namespace, podset.Name)
 						},
 					},
 				},
