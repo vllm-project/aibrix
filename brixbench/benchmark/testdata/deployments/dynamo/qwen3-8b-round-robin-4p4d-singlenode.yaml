@@ -8,7 +8,11 @@
 #   - Prefill (4) + Decode (4) + Frontend: 192.168.0.7
 #
 # Runtime image matches working VKE smoke / retained 4p4d publish run.
-# UCX_NET_DEVICES keeps IB+eth CM pattern validated for this cluster.
+# UCX env is intentionally NOT forced (Dynamo official guide default):
+# the old UCX_NET_DEVICES=mlx5_4:1,eth1 / UCX_IB_GID_INDEX=7 pins were
+# workarounds from the broken node-RDMA era and, after the 2026-07-23 node
+# fix, pointed at a non-existent device (pod exposes mlx5_2:1) forcing all
+# NIXL KV transfers onto TCP. See md_dev/Birxbench_4p4d_singlenode_Dynamo_TTFT_issue.md.
 
 # vLLM Disaggregated Serving (1P1D) - Dynamo CRD, VKE sample
 #
@@ -191,20 +195,6 @@ spec:
               value: "1"
             - name: CUDA_VISIBLE_DEVICES
               value: "0"
-            - name: UCX_NET_DEVICES
-              value: "mlx5_4:1,eth1"
-            - name: UCX_TLS
-              value: "rc_x,rc,cuda_copy,cuda_ipc,tcp"
-            - name: UCX_IB_ADDR_TYPE
-              value: "eth"
-            - name: UCX_IB_GID_INDEX
-              value: "7"
-            - name: UCX_RNDV_SCHEME
-              value: "get_zcopy"
-            - name: UCX_RNDV_THRESH
-              value: "0"
-            - name: UCX_MEMTYPE_CACHE
-              value: "n"
             - name: GLOO_SOCKET_IFNAME
               value: "eth0"
             - name: NCCL_SOCKET_IFNAME
@@ -280,20 +270,6 @@ spec:
               value: "1"
             - name: CUDA_VISIBLE_DEVICES
               value: "0"
-            - name: UCX_NET_DEVICES
-              value: "mlx5_4:1,eth1"
-            - name: UCX_TLS
-              value: "rc_x,rc,cuda_copy,cuda_ipc,tcp"
-            - name: UCX_IB_ADDR_TYPE
-              value: "eth"
-            - name: UCX_IB_GID_INDEX
-              value: "7"
-            - name: UCX_RNDV_SCHEME
-              value: "get_zcopy"
-            - name: UCX_RNDV_THRESH
-              value: "0"
-            - name: UCX_MEMTYPE_CACHE
-              value: "n"
             - name: GLOO_SOCKET_IFNAME
               value: "eth0"
             - name: NCCL_SOCKET_IFNAME
