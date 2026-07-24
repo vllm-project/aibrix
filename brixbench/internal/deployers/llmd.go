@@ -33,7 +33,7 @@ const llmdRouterChart = "oci://ghcr.io/llm-d/charts/llm-d-router-standalone"
 const llmdRouterChartVersion = "v0.9.0"
 const llmdGAIEVersion = "v1.5.0"
 const llmdGAIEManifestURL = "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/download/v1.5.0/v1-manifests.yaml"
-const llmdDefaultRepoPath = "../llm-d"
+const llmdRepoURL = "https://github.com/llm-d/llm-d.git"
 const llmdReadinessTimeout = 10 * time.Minute
 const llmdReadinessPollInterval = 5 * time.Second
 const llmdHelmStateDirName = "llmd-helm"
@@ -53,7 +53,6 @@ type LLMdDeployer struct {
 	version           string
 	engineManifest    string
 	controlPlanePaths []string
-	llmdRepoPath      string
 	registrySecret    bool
 	runner            commandRunner
 }
@@ -77,13 +76,6 @@ func (d *LLMdDeployer) Initialize(ctx context.Context, config Config) error {
 	d.projectRoot = strings.TrimSpace(config.ProjectRoot)
 	d.engineManifest = strings.TrimSpace(config.EnginePath)
 	d.controlPlanePaths = trimStringSlice(config.ControlPlanePaths)
-	d.llmdRepoPath = strings.TrimSpace(os.Getenv("LLMD_REPO"))
-	if d.llmdRepoPath == "" {
-		d.llmdRepoPath = llmdDefaultRepoPath
-	}
-	if d.llmdRepoPath != "" && !filepath.IsAbs(d.llmdRepoPath) && d.projectRoot != "" {
-		d.llmdRepoPath = filepath.Clean(filepath.Join(d.projectRoot, d.llmdRepoPath))
-	}
 	if config.TestCase != nil {
 		d.version = strings.TrimSpace(config.TestCase.Version)
 		if d.engineManifest == "" {
@@ -281,17 +273,20 @@ func (d *LLMdDeployer) ensureLLMdImagePullSecret(ctx context.Context) (bool, err
 	return true, nil
 }
 
+// validateLLMdReleaseTag confirms scenario version exists as a git tag on the
+// upstream llm-d repository (git ls-remote). Deploy does not clone that repo:
+// the router comes from the OCI Helm chart and engines from brixbench fixtures.
 func (d *LLMdDeployer) validateLLMdReleaseTag(ctx context.Context) error {
-	repoPath := strings.TrimSpace(d.llmdRepoPath)
-	if repoPath == "" || !dirExists(repoPath) {
-		return fmt.Errorf("LLM-d repo path %s was not found; set LLMD_REPO to a local llm-d checkout", repoPath)
+	version := strings.TrimSpace(d.version)
+	if version == "" {
+		return fmt.Errorf("LLM-d deployer requires version")
 	}
-	output, err := d.captureLLMdCommand(ctx, "validate-llmd-release-tag", "git", "-C", repoPath, "rev-parse", d.version+"^{tag}")
+	output, err := d.captureLLMdCommand(ctx, "validate-llmd-release-tag", "git", "ls-remote", "--tags", "--refs", llmdRepoURL, "refs/tags/"+version)
 	if err != nil {
-		return fmt.Errorf("failed to validate LLM-d release tag %s in %s: %w", d.version, repoPath, err)
+		return fmt.Errorf("failed to query LLM-d release tag %s in %s: %w", version, llmdRepoURL, err)
 	}
-	if strings.TrimSpace(output) == "" {
-		return fmt.Errorf("LLM-d release tag %s was not found in %s", d.version, repoPath)
+	if !lsRemoteOutputHasExactTag(output, version) {
+		return fmt.Errorf("LLM-d release tag %s not found in %s", version, llmdRepoURL)
 	}
 	return nil
 }

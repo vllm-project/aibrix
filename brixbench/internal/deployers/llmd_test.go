@@ -18,8 +18,73 @@ package deployers
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 )
+
+func TestValidateLLMdReleaseTagUsesGitLsRemote(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{
+			{output: "0123456789abcdef0123456789abcdef01234567\trefs/tags/v0.8.1\n"},
+		},
+	}
+	deployer := &LLMdDeployer{
+		version: "v0.8.1",
+		logDir:  t.TempDir(),
+		runner:  runner,
+	}
+	if err := deployer.validateLLMdReleaseTag(context.Background()); err != nil {
+		t.Fatalf("validateLLMdReleaseTag returned error: %v", err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected one git ls-remote call, got %d", len(runner.calls))
+	}
+	args := runner.calls[0].args
+	joined := strings.Join(args, " ")
+	if runner.calls[0].name != "git" || !strings.Contains(joined, "ls-remote") || !strings.Contains(joined, llmdRepoURL) {
+		t.Fatalf("unexpected command: %s %v", runner.calls[0].name, args)
+	}
+	if !strings.Contains(joined, "refs/tags/v0.8.1") {
+		t.Fatalf("expected tag ref in args, got %v", args)
+	}
+}
+
+func TestValidateLLMdReleaseTagMissingRemoteTag(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{{output: ""}},
+	}
+	deployer := &LLMdDeployer{
+		version: "v0.0.0",
+		logDir:  t.TempDir(),
+		runner:  runner,
+	}
+	err := deployer.validateLLMdReleaseTag(context.Background())
+	if err == nil {
+		t.Fatal("expected missing tag error")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not found error, got %v", err)
+	}
+}
+
+func TestValidateLLMdReleaseTagPropagatesLsRemoteFailure(t *testing.T) {
+	runner := &fakeCommandRunner{
+		responses: []fakeCommandResponse{{err: errors.New("network down")}},
+	}
+	deployer := &LLMdDeployer{
+		version: "v0.8.1",
+		logDir:  t.TempDir(),
+		runner:  runner,
+	}
+	err := deployer.validateLLMdReleaseTag(context.Background())
+	if err == nil {
+		t.Fatal("expected ls-remote failure")
+	}
+	if !strings.Contains(err.Error(), "failed to query LLM-d release tag") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
 
 func TestInstallLLMdRouterDisablesEPPMetricsAuth(t *testing.T) {
 	runner := &fakeCommandRunner{}

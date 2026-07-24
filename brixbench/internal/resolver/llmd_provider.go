@@ -30,7 +30,7 @@ func validateLLMdSourceSelection(test *Test) error {
 		return fmt.Errorf("provider llmd only supports version, not commit, for %s", test.Name)
 	}
 	if strings.TrimSpace(test.LocalPath) != "" {
-		return fmt.Errorf("provider llmd only supports LLMD_REPO env override, not localPath, for %s", test.Name)
+		return fmt.Errorf("provider llmd does not support localPath for %s (release tag is validated via git ls-remote; no local llm-d checkout required)", test.Name)
 	}
 	if strings.TrimSpace(test.Platform.ValuesFile) != "" {
 		return fmt.Errorf("provider llmd uses controlplane values files; platform.valuesFile is not supported for %s", test.Name)
