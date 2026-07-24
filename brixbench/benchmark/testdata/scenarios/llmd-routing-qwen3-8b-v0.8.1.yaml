@@ -1,7 +1,7 @@
 # Benchmarks Qwen3-8B PD routing through llm-d v0.8.1 standalone router.
 Scenario: llmd-routing-qwen3-8b-v0.8.1
 Tests:
-- name: lat-tc-rt-02-llmd-pd-4p4d-r8
+- name: llmd-pd-4p4d-singlenode-r8
   provider: llmd
   version: v0.8.1
   controlplane:
@@ -9,5 +9,5 @@ Tests:
   - testdata/deployments/llmd/router/policies/pd-disaggregation-official.yaml
   engine:
     type: vllm
-    manifest: testdata/deployments/llmd/models/qwen3-8b-pd-4p4d.yaml
-  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-llmd-pd-4p4d-r8.yaml
+    manifest: testdata/deployments/llmd/models/qwen3-8b-pd-4p4d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-singlenode-r8-p1000.yaml
