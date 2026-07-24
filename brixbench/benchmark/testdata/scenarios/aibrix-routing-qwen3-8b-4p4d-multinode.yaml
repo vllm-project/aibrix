@@ -1,9 +1,12 @@
-# AIBrix latest + vLLM Qwen3-8B PD routing — multi-node 4p4d @ 8 rps / 200 prompts.
+# AIBrix v0.6.0 + vLLM Qwen3-8B PD routing — multi-node 4p4d @ 8 rps / 200 prompts.
+# Uses stock public gateway-plugins:v0.6.0 (via existing v0.6.0-<sha>-benchmark tag on
+# aibrix-public-release); no internal-registry push workaround.
 Scenario: aibrix-routing-qwen3-8b-4p4d-multinode
 Tests:
 - name: aibrix-pd-4p4d-multinode-r8
   provider: aibrix
   fullstack: false
+  version: v0.6.0
   gateway:
     image:
       baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
@@ -18,4 +21,3 @@ Tests:
     type: vllm
     manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p4d-multinode.yaml
   benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-multinode-r8-p200.yaml
-  commit: origin/main
