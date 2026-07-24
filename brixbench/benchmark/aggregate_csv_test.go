@@ -557,7 +557,7 @@ func TestInferTopologyAndRouter(t *testing.T) {
 	if got := inferTopology("aibrix-pd-4p4d-singlenode-r8"); got != "4p4d-singlenode" {
 		t.Fatalf("topology=%q", got)
 	}
-	if got := inferTopology("dynamo-v1.2.1-qwen3-8b-round-robin-4p8d-singlenode-r8"); got != "4p8d-singlenode" {
+	if got := inferTopology("dynamo-v1.2.1-qwen3-8b-round-robin-4p8d-multinode-r8"); got != "4p8d-multinode" {
 		t.Fatalf("topology=%q", got)
 	}
 	if got := inferTopology("llmd-pd-8p4d-multinode-r16"); got != "8p4d-multinode" {

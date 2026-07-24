@@ -1,5 +1,4 @@
 # llm-d v0.8.1 + vLLM Qwen3-8B PD routing — multi-node 4p8d @ 8/16 rps, 1000 prompts.
-# RATE/PROMPTS match the 4p8d singlenode compare scenario for direct
 # singlenode vs multinode comparison.
 Scenario: llmd-routing-qwen3-8b-4p8d-multinode
 Tests:

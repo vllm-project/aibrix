@@ -1,7 +1,6 @@
 # AIBrix v0.6.0 + vLLM Qwen3-8B PD routing — multi-node 4p8d @ 8/16 rps, 1000 prompts.
 # Uses stock public gateway-plugins:v0.6.0 (via existing v0.6.0-<sha>-benchmark tag on
 # aibrix-public-release); no internal-registry push workaround. RATE/PROMPTS match the
-# 4p8d singlenode compare scenario for direct singlenode vs multinode comparison.
 Scenario: aibrix-routing-qwen3-8b-4p8d-multinode
 Tests:
 - name: aibrix-pd-4p8d-multinode-r8

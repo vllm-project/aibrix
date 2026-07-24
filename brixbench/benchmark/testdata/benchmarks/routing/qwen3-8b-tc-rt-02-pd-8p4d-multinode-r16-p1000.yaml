@@ -1,5 +1,4 @@
 # Shared multinode 8p4d routing workload (RATE=16, PROMPTS=1000).
-# Matches testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p4d-singlenode-r16-p1000.yaml
 # so multi-node results are directly comparable to the single-node 8p4d compare run.
 # BASE_URL / namespace are overridden by the Brixbench runner per provider.
 kind: vllm-bench

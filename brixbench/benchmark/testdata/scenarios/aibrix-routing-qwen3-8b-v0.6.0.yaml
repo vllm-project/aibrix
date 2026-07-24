@@ -1,5 +1,5 @@
 # Benchmarks Qwen3-8B PD routing against the AIBrix v0.6.0 release.
-# Covers 4p4d and 4p8d deployments at 8 rps and 32 concurrency.
+# 4p4d singlenode + 4p8d multinode (8-GPU cluster: non-4p4d is multinode-only).
 Scenario: aibrix-routing-qwen3-8b-v0.6.0
 Tests:
 - name: v060-aibrix-pd-4p4d-singlenode-r8
@@ -20,7 +20,7 @@ Tests:
     manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p4d-singlenode.yaml
   benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-singlenode-r8-p1000.yaml
   commit: v0.6.0
-- name: v060-aibrix-pd-4p8d-singlenode-r8
+- name: v060-aibrix-pd-4p8d-multinode-r8
   provider: aibrix
   fullstack: false
   gateway:
@@ -35,6 +35,6 @@ Tests:
     - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-gateway-resources.yaml
   engine:
     type: vllm
-    manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p8d-singlenode.yaml
-  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p8d-singlenode-r8-p1000.yaml
+    manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p8d-multinode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p8d-multinode-r8-p1000.yaml
   commit: v0.6.0

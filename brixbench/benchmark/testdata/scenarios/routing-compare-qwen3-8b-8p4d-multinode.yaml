@@ -2,7 +2,6 @@
 # Shared workload: multi-node 8p4d @ 192.168.0.6 (prefill) + 192.168.0.7
 # (decode), RATE=8 and 16, PROMPTS=1000, prefix_repetition (prefix=6000,
 # suffix=2000, output=1024, concurrency=32, seed=111).
-# RATE/PROMPTS intentionally match routing-compare-qwen3-8b-8p4d-singlenode.yaml
 # so results are directly comparable to the single-node 8p4d compare run.
 #
 # Run with:
