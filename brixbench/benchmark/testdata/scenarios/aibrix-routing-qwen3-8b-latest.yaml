@@ -2,7 +2,7 @@
 # Covers 4p4d and 4p8d deployments at 8 rps and 32 concurrency.
 Scenario: aibrix-routing-qwen3-8b-latest
 Tests:
-- name: lat-tc-rt-02-pd-conf-rt-04-4p4d-r8
+- name: lat-aibrix-pd-4p4d-singlenode-r8
   provider: aibrix
   fullstack: false
   gateway:
@@ -17,8 +17,8 @@ Tests:
     - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-gateway-resources.yaml
   engine:
     type: vllm
-    manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p4d.yaml
-  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-r8.yaml
+    manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p4d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-singlenode-r8-p1000.yaml
   commit: origin/main
 - name: lat-tc-rt-02-pd-conf-rt-01-4p8d-r8
   provider: aibrix
