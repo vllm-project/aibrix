@@ -10,6 +10,7 @@ from aibrix.batch.job_entity.base import _Lenient, _Strict
 #: the gateway / inference endpoints from a single job requesting runaway
 #: concurrency. Conservative for now; raise if real workloads need more.
 MAX_CLIENT_CONCURRENCY = 256
+_MIN_CLIENT_REQUEST_TIMEOUT_SECONDS = 1.0
 
 
 class RuntimeTarget(str, Enum):
@@ -90,6 +91,9 @@ class ClientConfig(_Strict):
 
     max_concurrency: Optional[int] = Field(
         default=None, ge=1, le=MAX_CLIENT_CONCURRENCY
+    )
+    request_timeout_seconds: Optional[float] = Field(
+        default=None, ge=_MIN_CLIENT_REQUEST_TIMEOUT_SECONDS
     )
     adaptive_concurrency: Optional[bool] = None
     adaptive_max_factor: Optional[float] = Field(default=None, ge=1)
