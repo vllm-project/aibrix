@@ -112,6 +112,66 @@ async def test_tos_downloader_download_directory(
 
 
 @pytest.mark.asyncio
+async def test_tos_downloader_empty_prefix_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    """A TOS prefix with no real objects (only directory markers / the prefix
+    itself) must raise so the service layer doesn't write the completion
+    marker over an empty directory."""
+    fake_tos: Any = types.ModuleType("tos")
+
+    class FakeObj:
+        def __init__(self, key: str):
+            self.key = key
+
+    class FakeListResp:
+        def __init__(self, keys: list[str]):
+            self.contents = [FakeObj(key) for key in keys]
+            self.is_truncated = False
+            self.next_continuation_token = None
+
+    class EmptyTosClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def list_objects_type2(self, bucket_name: str, **kwargs):
+            prefix = kwargs.get("prefix", "")
+            # Only directory markers — no real objects under the prefix
+            return FakeListResp([prefix, f"{prefix}sub/"])
+
+        def download_file(self, *a, **kw):  # pragma: no cover - unused
+            raise AssertionError("should not be called")
+
+    fake_tos.TosClientV2 = EmptyTosClient
+
+    fake_tos_exceptions: Any = types.ModuleType("tos.exceptions")
+
+    class TosClientError(Exception):
+        pass
+
+    class TosServerError(Exception):
+        pass
+
+    fake_tos_exceptions.TosClientError = TosClientError
+    fake_tos_exceptions.TosServerError = TosServerError
+    monkeypatch.setitem(sys.modules, "tos", fake_tos)
+    monkeypatch.setitem(sys.modules, "tos.exceptions", fake_tos_exceptions)
+
+    downloader = get_downloader("tos://bucket/missing-prefix/")
+    with pytest.raises(FileNotFoundError, match="No objects found"):
+        await downloader.download(
+            "tos://bucket/missing-prefix/",
+            str(tmp_path),
+            credentials={
+                "TOS_ACCESS_KEY": "AK",
+                "TOS_SECRET_KEY": "SK",
+                "endpoint": "https://tos.example.com",
+                "region": "cn-beijing",
+            },
+        )
+
+
+@pytest.mark.asyncio
 async def test_tos_downloader_download_file(monkeypatch: pytest.MonkeyPatch, tmp_path):
     _install_fake_tos(monkeypatch)
 

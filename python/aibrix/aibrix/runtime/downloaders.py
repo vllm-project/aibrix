@@ -26,6 +26,8 @@ from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 
+PART_SUFFIX = ".part"
+
 
 class ArtifactDownloader(ABC):
     """Base class for artifact downloaders."""
@@ -130,7 +132,9 @@ class S3ArtifactDownloader(ArtifactDownloader):
                 destination_file = os.path.join(
                     local_path, os.path.basename(object_key)
                 )
-                s3_client.download_file(bucket_name, object_key, destination_file)
+                tmp_file = destination_file + PART_SUFFIX
+                s3_client.download_file(bucket_name, object_key, tmp_file)
+                os.replace(tmp_file, destination_file)
                 logger.info(f"Downloaded S3 file to {destination_file}")
 
             return local_path
@@ -153,6 +157,7 @@ class S3ArtifactDownloader(ArtifactDownloader):
     ) -> None:
         """Download all objects under a prefix (directory)."""
         paginator = s3_client.get_paginator("list_objects_v2")
+        downloaded = 0
         for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
             if "Contents" not in page:
                 continue
@@ -170,9 +175,17 @@ class S3ArtifactDownloader(ArtifactDownloader):
                 # Ensure directory exists
                 self._ensure_directory(os.path.dirname(local_file_path))
 
-                # Download file
-                s3_client.download_file(bucket_name, key, local_file_path)
+                # Download file atomically
+                tmp_file = local_file_path + PART_SUFFIX
+                s3_client.download_file(bucket_name, key, tmp_file)
+                os.replace(tmp_file, local_file_path)
+                downloaded += 1
                 logger.debug(f"Downloaded {key} to {local_file_path}")
+
+        if downloaded == 0:
+            raise FileNotFoundError(
+                f"No objects found under S3 prefix: s3://{bucket_name}/{prefix}"
+            )
 
         logger.info(f"Downloaded S3 directory {prefix} to {local_path}")
 
@@ -245,6 +258,7 @@ class GCSArtifactDownloader(ArtifactDownloader):
             if blob_name.endswith("/"):
                 # Download directory
                 blobs = list(bucket.list_blobs(prefix=blob_name))
+                downloaded = 0
                 for blob in blobs:
                     if blob.name == blob_name:  # Skip directory marker
                         continue
@@ -255,20 +269,35 @@ class GCSArtifactDownloader(ArtifactDownloader):
                     # Ensure directory exists
                     self._ensure_directory(os.path.dirname(local_file_path))
 
-                    # Download file
-                    blob.download_to_filename(local_file_path)
+                    # Download file atomically
+                    tmp_file = local_file_path + PART_SUFFIX
+                    blob.download_to_filename(tmp_file)
+                    os.replace(tmp_file, local_file_path)
+                    downloaded += 1
                     logger.debug(f"Downloaded {blob.name} to {local_file_path}")
+
+                if downloaded == 0:
+                    raise FileNotFoundError(
+                        f"No objects found under GCS prefix: "
+                        f"gs://{bucket_name}/{blob_name}"
+                    )
 
                 logger.info(f"Downloaded GCS directory {blob_name} to {local_path}")
             else:
                 # Download single file
                 blob = bucket.blob(blob_name)
                 destination_file = os.path.join(local_path, os.path.basename(blob_name))
-                blob.download_to_filename(destination_file)
+                tmp_file = destination_file + PART_SUFFIX
+                blob.download_to_filename(tmp_file)
+                os.replace(tmp_file, destination_file)
                 logger.info(f"Downloaded GCS file to {destination_file}")
 
             return local_path
 
+        except (FileNotFoundError, PermissionError):
+            # Preserve precise exception types raised by our own validation
+            # (e.g. zero-object prefix) rather than re-wrapping them.
+            raise
         except Exception as e:
             if "404" in str(e):
                 raise FileNotFoundError(f"GCS object not found: {source_url}")
@@ -367,7 +396,7 @@ class TOSArtifactDownloader(ArtifactDownloader):
                 destination_file = os.path.join(
                     local_path, os.path.basename(object_key)
                 )
-                tmp_file = destination_file + ".part"
+                tmp_file = destination_file + PART_SUFFIX
                 await asyncio.to_thread(
                     client.download_file,
                     bucket=bucket_name,
@@ -379,6 +408,10 @@ class TOSArtifactDownloader(ArtifactDownloader):
 
             return local_path
 
+        except (FileNotFoundError, PermissionError):
+            # Preserve precise exception types raised by our own validation
+            # (e.g. zero-object prefix) rather than re-wrapping them.
+            raise
         except (TosClientError, TosServerError) as e:
             logger.error(f"TOS download error: {e}")
             status_code = getattr(e, "status_code", None)
@@ -395,6 +428,7 @@ class TOSArtifactDownloader(ArtifactDownloader):
         # We currently only fetch the first page. This is OK for small model artifacts, but may miss objects
         # if the prefix contains many keys.
         resp = client.list_objects_type2(bucket_name, prefix=prefix)
+        downloaded = 0
         for obj in getattr(resp, "contents", []) or []:
             key = getattr(obj, "key", None)
             if not key or key == prefix:
@@ -412,9 +446,15 @@ class TOSArtifactDownloader(ArtifactDownloader):
             local_file_path = os.path.join(local_path, relative_path)
             os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
 
-            tmp_file = local_file_path + ".part"
+            tmp_file = local_file_path + PART_SUFFIX
             client.download_file(bucket=bucket_name, key=key, file_path=tmp_file)
             os.replace(tmp_file, local_file_path)
+            downloaded += 1
+
+        if downloaded == 0:
+            raise FileNotFoundError(
+                f"No objects found under TOS prefix: tos://{bucket_name}/{prefix}"
+            )
 
         logger.info(f"Downloaded TOS directory {prefix} to {local_path}")
 
@@ -523,19 +563,63 @@ class HTTPArtifactDownloader(ArtifactDownloader):
         parsed = urlparse(source_url)
         filename = os.path.basename(parsed.path) or "downloaded_file"
         destination_file = os.path.join(local_path, filename)
+        tmp_file = destination_file + PART_SUFFIX
+        etag_file = tmp_file + ".etag"
 
         try:
+            # Check for an existing partial download to resume.
+            # Use try/except rather than exists()+getsize() to avoid TOCTOU races.
+            try:
+                existing_size = os.path.getsize(tmp_file)
+            except FileNotFoundError:
+                existing_size = 0
+
+            request_headers = dict(headers)
+            if existing_size > 0:
+                request_headers["Range"] = f"bytes={existing_size}-"
+                # If-Range ensures the server returns 200 (restart) if the
+                # remote file has changed since the partial download began,
+                # preventing corruption from appending mismatched data.
+                try:
+                    with open(etag_file, encoding="utf-8") as f:
+                        stored_etag = f.read().strip()
+                    if stored_etag:
+                        request_headers["If-Range"] = stored_etag
+                except FileNotFoundError:
+                    pass
+
             async with httpx.AsyncClient(follow_redirects=True) as client:
                 async with client.stream(
-                    "GET", source_url, headers=headers
+                    "GET", source_url, headers=request_headers
                 ) as response:
-                    response.raise_for_status()
+                    if existing_size > 0 and response.status_code == 206:
+                        # Server confirmed range is valid; append to partial file
+                        open_mode = "ab"
+                    else:
+                        # Full download: either fresh start, server ignored Range,
+                        # or If-Range mismatch (file changed on server)
+                        response.raise_for_status()
+                        open_mode = "wb"
+                        # Store ETag so a future interrupted download can use If-Range
+                        etag = response.headers.get("etag")
+                        if etag:
+                            with open(etag_file, "w", encoding="utf-8") as f:
+                                f.write(etag)
+                        else:
+                            try:
+                                os.remove(etag_file)
+                            except FileNotFoundError:
+                                pass
 
-                    # Download file
-                    with open(destination_file, "wb") as f:
+                    with open(tmp_file, open_mode) as f:
                         async for chunk in response.aiter_bytes(chunk_size=8192):
                             f.write(chunk)
 
+            os.replace(tmp_file, destination_file)
+            try:
+                os.remove(etag_file)
+            except FileNotFoundError:
+                pass
             logger.info(f"Downloaded HTTP file to {destination_file}")
             return local_path
 
