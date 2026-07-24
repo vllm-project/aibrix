@@ -31,21 +31,22 @@ Start by picking an [issue](https://github.com/vllm-project/aibrix/issues) tagge
 
 - **Feature Proposals and Bug Reporting**: Report bugs or propose new features by creating an issue on our GitHub page. Provide as much detail as possible to facilitate discussions.
 - **Contributing to Documentation**: Help improve our documentation by proposing changes to issue list. Our documentation is at [AIBrix Doc](https://github.com/vllm-project/aibrix/tree/main/development/tutorials)
-- **Organizing Community Events**: If you are interested in organizing meetups or webinars, contact our community manager (TODO: contact information).
+- **Organizing Community Events**: If you are interested in organizing meetups or webinars, contact us through our [Slack channel](https://vllm-dev.slack.com/archives/C08EQ883CSV) or [GitHub Discussions](https://github.com/vllm-project/aibrix/discussions).
 
 ## Community and Communication
 
 Join our community through various channels:
 
-- **Slack Channel**: TODO (Link to be added once channel is public)
-- **Wechat User Groups**: TODO
-- **Email**: TODO
-- **Forums**: TODO
+- **Slack Channel**: [#aibrix on vLLM Slack](https://vllm-dev.slack.com/archives/C08EQ883CSV)
+- **Forums**: [GitHub Discussions](https://github.com/vllm-project/aibrix/discussions)
+- **Issues**: [GitHub Issues](https://github.com/vllm-project/aibrix/issues)
 
 ## FAQ
 
-TODO: Frequently asked questions and answers for new contributors.
+For frequently asked questions, check our [GitHub Discussions](https://github.com/vllm-project/aibrix/discussions) or ask in the [Slack channel](https://vllm-dev.slack.com/archives/C08EQ883CSV).
 
 ## Contact
 
-- **Maintainers**: TODO
+- **GitHub Issues**: [Report bugs or request features](https://github.com/vllm-project/aibrix/issues)
+- **GitHub Discussions**: [Ask questions and share ideas](https://github.com/vllm-project/aibrix/discussions)
+- **Slack**: [#aibrix channel](https://vllm-dev.slack.com/archives/C08EQ883CSV)
