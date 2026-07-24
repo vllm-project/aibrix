@@ -9,7 +9,10 @@
 #   - Decode (4) + Frontend: 192.168.0.7
 #
 # Runtime image matches working VKE smoke / retained 4p4d publish run.
-# UCX_NET_DEVICES keeps IB+eth CM pattern validated for this cluster.
+# UCX_NET_DEVICES is auto-detected per pod at startup (ucx_info -d): the VKE
+# RDMA CNI wires a different HCA (mlx5_0..7) into each pod, so a static pin
+# either silently falls back to TCP (KV transfer ~1s TTFT floor) or crashes.
+# GID index pins were dropped after the 2026-07-23 node RDMA recovery.
 
 # vLLM Disaggregated Serving (1P1D) - Dynamo CRD, VKE sample
 #
@@ -170,6 +173,13 @@ spec:
               export LD_LIBRARY_PATH=/opt/nvidia/nvda_nixl/lib64:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
               export PATH=$PATH:/usr/local/nvidia/bin:/usr/local/nvidia/lib64
               /sbin/ldconfig
+              RDMA_DEV=$(ucx_info -d 2>/dev/null | sed -n 's/.*Device: \(mlx5_[0-9]*:1\).*/\1/p' | sort -u | head -1)
+              if [ -n "$RDMA_DEV" ]; then
+                export UCX_NET_DEVICES="${RDMA_DEV},eth1"
+                echo "UCX_NET_DEVICES auto-detected: $UCX_NET_DEVICES"
+              else
+                echo "WARN: ucx_info found no usable mlx5 device; leaving UCX defaults"
+              fi
               export MODEL=Qwen3-8B
               export SERVED_MODEL_NAME=qwen3-8b
               export MAX_MODEL_LEN=16384
@@ -192,14 +202,13 @@ spec:
               value: "1"
             - name: CUDA_VISIBLE_DEVICES
               value: "0"
-            - name: UCX_NET_DEVICES
-              value: "mlx5_4:1,eth1"
+            # UCX_NET_DEVICES is auto-detected per pod in args above (the VKE
+            # RDMA CNI wires a different HCA into each pod); no GID index pin
+            # after the 2026-07-23 node RDMA recovery changed the GID layout.
             - name: UCX_TLS
               value: "rc_x,rc,cuda_copy,cuda_ipc,tcp"
             - name: UCX_IB_ADDR_TYPE
               value: "eth"
-            - name: UCX_IB_GID_INDEX
-              value: "7"
             - name: UCX_RNDV_SCHEME
               value: "get_zcopy"
             - name: UCX_RNDV_THRESH
@@ -258,6 +267,13 @@ spec:
               export LD_LIBRARY_PATH=/opt/nvidia/nvda_nixl/lib64:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
               export PATH=$PATH:/usr/local/nvidia/bin:/usr/local/nvidia/lib64
               /sbin/ldconfig
+              RDMA_DEV=$(ucx_info -d 2>/dev/null | sed -n 's/.*Device: \(mlx5_[0-9]*:1\).*/\1/p' | sort -u | head -1)
+              if [ -n "$RDMA_DEV" ]; then
+                export UCX_NET_DEVICES="${RDMA_DEV},eth1"
+                echo "UCX_NET_DEVICES auto-detected: $UCX_NET_DEVICES"
+              else
+                echo "WARN: ucx_info found no usable mlx5 device; leaving UCX defaults"
+              fi
               export MODEL=Qwen3-8B
               export SERVED_MODEL_NAME=qwen3-8b
               export MAX_MODEL_LEN=16384
@@ -281,14 +297,13 @@ spec:
               value: "1"
             - name: CUDA_VISIBLE_DEVICES
               value: "0"
-            - name: UCX_NET_DEVICES
-              value: "mlx5_4:1,eth1"
+            # UCX_NET_DEVICES is auto-detected per pod in args above (the VKE
+            # RDMA CNI wires a different HCA into each pod); no GID index pin
+            # after the 2026-07-23 node RDMA recovery changed the GID layout.
             - name: UCX_TLS
               value: "rc_x,rc,cuda_copy,cuda_ipc,tcp"
             - name: UCX_IB_ADDR_TYPE
               value: "eth"
-            - name: UCX_IB_GID_INDEX
-              value: "7"
             - name: UCX_RNDV_SCHEME
               value: "get_zcopy"
             - name: UCX_RNDV_THRESH
