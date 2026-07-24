@@ -46,7 +46,7 @@ spec:
                           cpu: 2
                           memory: 8Gi
                     - name: shutdown-manager
-                      image: aibrix-cn-beijing.cr.volces.com/aibrix/gateway:v1.2.8
+                      image: aibrix-cn-beijing.cr.volces.com/aibrix/gateway:v1.6.3
                       resources:
                         requests:
                           cpu: 10m
