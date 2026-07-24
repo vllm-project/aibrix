@@ -375,24 +375,19 @@ type jsonNumberStringer interface {
 
 func inferTopology(testcase string) string {
 	name := strings.ToLower(testcase)
-	switch {
-	case strings.Contains(name, "4p4d"):
+	for _, size := range []string{"4p4d", "4p8d", "8p4d", "8p8d"} {
+		if !strings.Contains(name, size) {
+			continue
+		}
 		if strings.Contains(name, "multinode") {
-			return "4p4d-multinode"
+			return size + "-multinode"
 		}
 		if strings.Contains(name, "singlenode") {
-			return "4p4d-singlenode"
+			return size + "-singlenode"
 		}
-		return "4p4d"
-	case strings.Contains(name, "4p8d"):
-		return "4p8d"
-	case strings.Contains(name, "8p4d"):
-		return "8p4d"
-	case strings.Contains(name, "8p8d"):
-		return "8p8d"
-	default:
-		return ""
+		return size
 	}
+	return ""
 }
 
 func shortCommit(commit string) string {
