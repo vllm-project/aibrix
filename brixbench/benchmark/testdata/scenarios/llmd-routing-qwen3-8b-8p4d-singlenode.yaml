@@ -1,0 +1,22 @@
+Scenario: llmd-routing-qwen3-8b-8p4d-singlenode
+Tests:
+- name: llmd-pd-8p4d-singlenode-r8
+  provider: llmd
+  version: v0.8.1
+  controlplane:
+  - testdata/deployments/llmd/router/base-values.yaml
+  - testdata/deployments/llmd/router/policies/pd-disaggregation-official.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/llmd/models/qwen3-8b-pd-8p4d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p4d-singlenode-r8-p1000.yaml
+- name: llmd-pd-8p4d-singlenode-r16
+  provider: llmd
+  version: v0.8.1
+  controlplane:
+  - testdata/deployments/llmd/router/base-values.yaml
+  - testdata/deployments/llmd/router/policies/pd-disaggregation-official.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/llmd/models/qwen3-8b-pd-8p4d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p4d-singlenode-r16-p1000.yaml

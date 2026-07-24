@@ -1,0 +1,20 @@
+Scenario: dynamo-routing-qwen3-8b-4p8d-singlenode
+Tests:
+- name: dynamo-v1.2.1-qwen3-8b-round-robin-4p8d-singlenode-r8
+  provider: dynamo
+  version: 1.2.1
+  platform:
+    valuesFile: testdata/deployments/dynamo/platform-aibrix-mirror-dev-operator.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/dynamo/qwen3-8b-round-robin-4p8d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p8d-singlenode-r8-p1000.yaml
+- name: dynamo-v1.2.1-qwen3-8b-round-robin-4p8d-singlenode-r16
+  provider: dynamo
+  version: 1.2.1
+  platform:
+    valuesFile: testdata/deployments/dynamo/platform-aibrix-mirror-dev-operator.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/dynamo/qwen3-8b-round-robin-4p8d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p8d-singlenode-r16-p1000.yaml

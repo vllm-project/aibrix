@@ -1,0 +1,38 @@
+Scenario: aibrix-routing-qwen3-8b-8p4d-singlenode
+Tests:
+- name: aibrix-pd-8p4d-singlenode-r8
+  provider: aibrix
+  fullstack: false
+  version: v0.6.0
+  gateway:
+    image:
+      baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+      outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+    env:
+      ROUTING_ALGORITHM: pd
+      AIBRIX_PREFIX_CACHE_BLOCK_SIZE: 512
+    resources:
+    - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-gateway-resources.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p4d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p4d-singlenode-r8-p1000.yaml
+- name: aibrix-pd-8p4d-singlenode-r16
+  provider: aibrix
+  fullstack: false
+  version: v0.6.0
+  gateway:
+    image:
+      baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+      outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+    env:
+      ROUTING_ALGORITHM: pd
+      AIBRIX_PREFIX_CACHE_BLOCK_SIZE: 512
+    resources:
+    - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-gateway-resources.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-8p4d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p4d-singlenode-r16-p1000.yaml

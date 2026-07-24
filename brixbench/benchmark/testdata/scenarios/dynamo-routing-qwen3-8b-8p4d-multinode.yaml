@@ -1,0 +1,23 @@
+# Dynamo + vLLM Qwen3-8B PD routing — multi-node 8p4d @ 8/16 rps, 1000 prompts.
+# Router: round-robin. RATE/PROMPTS match the 8p4d singlenode compare scenario
+# for direct singlenode vs multinode comparison.
+Scenario: dynamo-routing-qwen3-8b-8p4d-multinode
+Tests:
+- name: dynamo-v1.2.1-qwen3-8b-round-robin-8p4d-multinode-r8
+  provider: dynamo
+  version: 1.2.1
+  platform:
+    valuesFile: testdata/deployments/dynamo/platform-aibrix-mirror-dev-operator.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/dynamo/qwen3-8b-round-robin-8p4d-multinode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p4d-multinode-r8-p1000.yaml
+- name: dynamo-v1.2.1-qwen3-8b-round-robin-8p4d-multinode-r16
+  provider: dynamo
+  version: 1.2.1
+  platform:
+    valuesFile: testdata/deployments/dynamo/platform-aibrix-mirror-dev-operator.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/dynamo/qwen3-8b-round-robin-8p4d-multinode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-8p4d-multinode-r16-p1000.yaml
