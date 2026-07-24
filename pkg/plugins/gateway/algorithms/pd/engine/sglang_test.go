@@ -164,6 +164,9 @@ func TestPrepareSGLangRequestBodies_SameRoomInBothBodies(t *testing.T) {
 }
 
 func TestPreparePrefillPayload_ErrorDoesNotModifyReqBody(t *testing.T) {
+	// PreparePrefillPayload does not call ValidateSGLangRequest itself (Route()
+	// does that). The defense-in-depth guard in prepareSGLangRequestBodies
+	// catches invalid JSON and returns an error without modifying ReqBody.
 	originalBody := []byte(`{not json`)
 	routingCtx := &types.RoutingContext{
 		ReqBody: originalBody,

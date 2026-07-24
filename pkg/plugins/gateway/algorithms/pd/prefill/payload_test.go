@@ -205,25 +205,15 @@ func TestPreparePayload_SGLangHandlerIntegration(t *testing.T) {
 	assert.True(t, gjson.GetBytes(decodeBody, "stream").Bool())
 }
 
-// TestPreparePayload_SGLangHandlerDuplicateFieldsRejected verifies that the
-// RawPrefillPayloadPreparer path (PreparePayload → SGLangHandler.PreparePrefillPayload)
-// rejects duplicate controlled fields and returns *InvalidRequestError without
-// modifying routingCtx.ReqBody.
+// TestPreparePayload_SGLangHandlerDuplicateFieldsRejected verifies that
+// ValidateSGLangRequest — called in Route() — rejects duplicate controlled
+// fields. PreparePrefillPayload itself no longer re-validates, so the test
+// exercises ValidateSGLangRequest directly.
 func TestPreparePayload_SGLangHandlerDuplicateFieldsRejected(t *testing.T) {
 	originalBody := []byte(`{"model":"m","messages":[],"bootstrap_host":"a","bootstrap_host":"b"}`)
-	routingCtx := &types.RoutingContext{
-		ReqBody: originalBody,
-		Context: context.Background(),
-	}
-	pod := &v1.Pod{Status: v1.PodStatus{PodIP: "10.0.0.1"}}
-	handler := engine.Resolve("sglang")
-
-	_, err := PreparePayload(routingCtx, pod, "sglang", handler)
+	err := engine.ValidateSGLangRequest(originalBody)
 	require.Error(t, err)
 
 	var invalidReqErr *engine.InvalidRequestError
 	assert.True(t, errors.As(err, &invalidReqErr), "must return *InvalidRequestError")
-
-	// ReqBody must not be modified on error.
-	assert.Equal(t, originalBody, routingCtx.ReqBody, "ReqBody must be unchanged on error")
 }

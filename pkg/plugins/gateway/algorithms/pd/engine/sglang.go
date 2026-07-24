@@ -156,6 +156,9 @@ func prepareSGLangRequestBodies(
 	bootstrapPort int64,
 	bootstrapRoom int64,
 ) (prefillBody, decodeBody []byte, err error) {
+	// Defense-in-depth: callers (Route → PreparePrefillPayload) are required to
+	// call ValidateSGLangRequest first, but this guard prevents sjson from
+	// silently producing invalid output if a future caller bypasses validation.
 	if !gjson.ValidBytes(originalBody) || !gjson.ParseBytes(originalBody).IsObject() {
 		return nil, nil, &InvalidRequestError{Message: "SGLang prefill request body is not a JSON object"}
 	}
@@ -210,14 +213,9 @@ func (h *SGLangHandler) PreparePrefillPayload(
 	routingCtx *types.RoutingContext,
 	pod *v1.Pod,
 ) ([]byte, error) {
-	// Validate before any mutation to prevent duplicate controlled fields
-	// from surviving sjson.SetBytes (which only replaces the first occurrence).
-	// The normal Route() path also calls ValidateSGLangRequest, but this guard
-	// protects direct callers of the RawPrefillPayloadPreparer interface.
-	if err := ValidateSGLangRequest(routingCtx.ReqBody); err != nil {
-		return nil, err
-	}
-
+	// ValidateSGLangRequest is already called in Route() before this method
+	// is invoked. We skip re-validation here to avoid a redundant O(n) scan
+	// of the request body on the hot path.
 	host, port, room := sglangBootstrapFields(pod)
 	prefillBody, decodeBody, err := prepareSGLangRequestBodies(
 		routingCtx.ReqBody, host, port, room)
