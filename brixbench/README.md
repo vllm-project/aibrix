@@ -411,25 +411,31 @@ The default destination is
 Use `BENCHMARK_TOS_BUCKET` and `BENCHMARK_TOS_PREFIX` to override it, and set
 `BENCHMARK_PUBLISH_TIER` to `minimal`, `standard` (default), or `full`.
 
-Publishing uses the Volcengine TOS Go SDK. Set credentials via environment
-variables (never commit them):
+Publishing uses the **S3-compatible** TOS API (`aws-sdk-go-v2`), matching the
+Python `TOSDownloaderV2` / `S3BaseDownloader` pattern so the same client works
+against public Volcengine TOS and (with the right endpoint) internal
+S3-compatible TOS. Set credentials via environment variables (never commit
+them). If both `TOS_ACCESS_KEY` and `TOS_SECRET_KEY` are unset, the AWS default
+credential chain is used (IRSA / instance profile / `~/.aws`).
 
 ```bash
 export TOS_ACCESS_KEY=...
 export TOS_SECRET_KEY=...
 # optional overrides:
-# export TOS_ENDPOINT=https://tos-cn-beijing.volces.com
+# export TOS_ENDPOINT=https://tos-s3-cn-beijing.volces.com
 # export TOS_REGION=cn-beijing
+# export TOS_S3_FORCE_PATH_STYLE=true   # some internal S3 endpoints
 ```
 
-Do not put TOS credentials, kubeconfigs, or secret values in scenario files or
-the repository. Scenario inputs are copied with common secret fields redacted
-before upload.
+A TOS-native host (`https://tos-cn-beijing.volces.com`) is rewritten to the S3
+API host (`tos-s3-…`) automatically. Do not put TOS credentials, kubeconfigs,
+or secret values in scenario files or the repository. Scenario inputs are
+copied with common secret fields redacted before upload.
 
 Per-run artifacts use `PutObject`. The top-level aggregate CSV
-(`aggregates/benchmark_metrics.csv`) is maintained as an **Appendable** object
-via `AppendObjectV2` (append-only; do not overwrite it with `PutObject` /
-`tosutil cp` or it will lose appendability).
+(`aggregates/benchmark_metrics.csv`) is updated by downloading the existing
+object (if any), appending rows, and `PutObject` again — S3 has no native
+`AppendObject`. Prefer a single publisher at a time for that object.
 
 An upload failure is a warning by default and leaves the local artifacts
 intact. CI should use `BENCHMARK_PUBLISH_STRICT=true`; it retries failed object
