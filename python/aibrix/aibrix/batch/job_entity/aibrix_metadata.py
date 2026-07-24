@@ -8,8 +8,8 @@ from aibrix.batch.job_entity.base import _Lenient, _Strict
 
 #: Absolute upper bound for the per-job smart-client in-flight cap. Protects
 #: the gateway / inference endpoints from a single job requesting runaway
-#: concurrency. Conservative for now; raise if real workloads need more.
-MAX_CLIENT_CONCURRENCY = 256
+#: concurrency while allowing high-throughput jobs to tune above the default.
+MAX_CLIENT_CONCURRENCY = 1024
 
 
 class RuntimeTarget(str, Enum):

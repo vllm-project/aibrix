@@ -28,6 +28,7 @@ from aibrix.batch.job_entity import (
     ResourceDetail,
     RuntimeSpec,
 )
+from aibrix.batch.job_entity.aibrix_metadata import MAX_CLIENT_CONCURRENCY
 from aibrix.batch.manifest.renderer import JobManifestRenderer, RenderError
 from aibrix.batch.template import local_profile_registry, local_template_registry
 
@@ -234,7 +235,7 @@ class TestBatchJobEntityCreation:
         metadata = AibrixMetadata(
             client=ClientConfig.model_validate(
                 {
-                    "max_concurrency": 256,
+                    "max_concurrency": MAX_CLIENT_CONCURRENCY,
                     "adaptive_concurrency": True,
                     "adaptive_max_factor": 16,
                     "retry_policy": {
@@ -250,7 +251,7 @@ class TestBatchJobEntityCreation:
         fields = metadata.to_extension_fields()
         restored = AibrixMetadata.from_extension_fields(**fields)
 
-        assert fields["client"]["max_concurrency"] == 256
+        assert fields["client"]["max_concurrency"] == MAX_CLIENT_CONCURRENCY
         assert restored is not None
         assert restored.client is not None
         assert restored.client.retry_policy is not None
