@@ -20,7 +20,7 @@ Tests:
     manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p4d-singlenode.yaml
   benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-singlenode-r8-p1000.yaml
   commit: v0.6.0
-- name: v060-tc-rt-02-pd-conf-rt-01-4p8d-r8
+- name: v060-aibrix-pd-4p8d-singlenode-r8
   provider: aibrix
   fullstack: false
   gateway:
@@ -35,6 +35,6 @@ Tests:
     - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-gateway-resources.yaml
   engine:
     type: vllm
-    manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p8d.yaml
-  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p8d-r8.yaml
+    manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p8d-singlenode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p8d-singlenode-r8-p1000.yaml
   commit: v0.6.0
