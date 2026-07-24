@@ -4101,6 +4101,29 @@ spec:
                                 type: string
                             type: object
                         type: object
+                      topologyPolicy:
+                        properties:
+                          key:
+                            maxLength: 317
+                            minLength: 1
+                            pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                            type: string
+                          mode:
+                            default: Preferred
+                            enum:
+                            - Preferred
+                            - Required
+                            type: string
+                          scope:
+                            enum:
+                            - StormService
+                            - RoleSet
+                            - Role
+                            type: string
+                        required:
+                        - key
+                        - scope
+                        type: object
                       updateStrategy:
                         default: Sequential
                         enum:

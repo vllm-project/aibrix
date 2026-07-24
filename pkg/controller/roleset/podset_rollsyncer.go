@@ -455,6 +455,11 @@ func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.Ro
 		)
 	}
 
+	// inject topology co-location affinity if TopologyPolicy is specified
+	if roleSet.Spec.TopologyPolicy != nil {
+		injectTopologyAffinity(&podSet.Spec.Template.Spec, roleSet, role.Name, roleSet.Spec.TopologyPolicy)
+	}
+
 	return podSet
 }
 

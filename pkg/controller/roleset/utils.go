@@ -19,11 +19,13 @@ package roleset
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
@@ -52,6 +54,8 @@ const (
 	InPlaceUpdateStartedEventType   = "InPlaceUpdateStarted"
 	InPlaceUpdateCompletedEventType = "InPlaceUpdateCompleted"
 	FailureEventType                = "Failure"
+
+	topologyPreferredAffinityWeight int32 = 100
 )
 
 // GetReadyReplicaCountForRole returns the number of ready roleSets corresponding to the given replica sets.
@@ -174,6 +178,11 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 			templateHash,
 		)
 	}
+
+	// inject topology co-location affinity if TopologyPolicy is specified
+	if roleSet.Spec.TopologyPolicy != nil {
+		injectTopologyAffinity(&pod.Spec, roleSet, role.Name, roleSet.Spec.TopologyPolicy)
+	}
 }
 
 // injectContainerEnvVars injects env variables into container.
@@ -232,6 +241,62 @@ func injectContainerEnvVars(
 	container.Env = envs
 }
 
+// injectTopologyAffinityToPodSpec injects pod affinity into the given PodSpec
+// based on the TopologyPolicy and provided matching labels.
+func injectTopologyAffinityToPodSpec(
+	spec *v1.PodSpec,
+	matchLabels map[string]string,
+	topologyKey string,
+	mode orchestrationv1alpha1.TopologyPolicyMode,
+) {
+	affinityTerm := v1.PodAffinityTerm{
+		TopologyKey: topologyKey,
+		LabelSelector: &metav1.LabelSelector{
+			MatchLabels: matchLabels,
+		},
+	}
+
+	if spec.Affinity == nil {
+		spec.Affinity = &v1.Affinity{}
+	}
+	if spec.Affinity.PodAffinity == nil {
+		spec.Affinity.PodAffinity = &v1.PodAffinity{}
+	}
+
+	// The API defaults Mode to Preferred; this fallback keeps direct callers and older objects safe.
+	if mode == "" {
+		mode = orchestrationv1alpha1.TopologyPolicyPreferred
+	}
+	switch mode {
+	case orchestrationv1alpha1.TopologyPolicyRequired:
+		// avoid duplicate terms
+		for _, term := range spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+			if term.TopologyKey == topologyKey &&
+				term.LabelSelector != nil &&
+				reflect.DeepEqual(term.LabelSelector.MatchLabels, matchLabels) {
+				return
+			}
+		}
+		spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution =
+			append(spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, affinityTerm)
+	default:
+		weightedTerm := v1.WeightedPodAffinityTerm{
+			Weight:          topologyPreferredAffinityWeight,
+			PodAffinityTerm: affinityTerm,
+		}
+		for _, term := range spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
+			if term.Weight == weightedTerm.Weight &&
+				term.PodAffinityTerm.TopologyKey == topologyKey &&
+				term.PodAffinityTerm.LabelSelector != nil &&
+				reflect.DeepEqual(term.PodAffinityTerm.LabelSelector.MatchLabels, matchLabels) {
+				return
+			}
+		}
+		spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution =
+			append(spec.Affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution, weightedTerm)
+	}
+}
+
 func filterRolePods(role *orchestrationv1alpha1.RoleSpec, pods []*v1.Pod) []*v1.Pod {
 	var filtered []*v1.Pod
 	for i := range pods {
@@ -240,6 +305,75 @@ func filterRolePods(role *orchestrationv1alpha1.RoleSpec, pods []*v1.Pod) []*v1.
 		}
 	}
 	return filtered
+}
+
+// getTopologyMatchLabels returns the match labels for topology affinity based on the TopologyPolicy scope.
+// If the scope is invalid, it returns false.
+// - TopologyStormServiceScope: match on StormService name only.
+// - TopologyRoleSetScope: match on StormService name and RoleSet name.
+// - TopologyRoleScope: match on StormService name and Role name.
+func getTopologyMatchLabels(
+	roleSet *orchestrationv1alpha1.RoleSet,
+	roleName string,
+	tp *orchestrationv1alpha1.TopologyPolicy,
+) (map[string]string, bool) {
+	stormServiceName := roleSet.Labels[constants.StormServiceNameLabelKey]
+	if stormServiceName == "" {
+		klog.Warningf("RoleSet %s/%s missing label %q; skipping topology policy enforcement",
+			roleSet.Namespace, roleSet.Name, constants.StormServiceNameLabelKey)
+		return nil, false
+	}
+
+	var matchLabels map[string]string
+	switch tp.Scope {
+	case orchestrationv1alpha1.TopologyStormServiceScope:
+		matchLabels = map[string]string{
+			constants.StormServiceNameLabelKey: stormServiceName,
+		}
+	case orchestrationv1alpha1.TopologyRoleSetScope:
+		matchLabels = map[string]string{
+			constants.StormServiceNameLabelKey: stormServiceName,
+			constants.RoleSetNameLabelKey:      roleSet.Name,
+		}
+	case orchestrationv1alpha1.TopologyRoleScope:
+		matchLabels = map[string]string{
+			constants.StormServiceNameLabelKey: stormServiceName,
+			constants.RoleNameLabelKey:         roleName,
+		}
+	default:
+		klog.Warningf("RoleSet %s/%s: unsupported TopologyPolicy.Scope=%q",
+			roleSet.Namespace, roleSet.Name, tp.Scope)
+		return nil, false
+	}
+	return matchLabels, true
+}
+
+func injectTopologyAffinity(
+	spec *v1.PodSpec,
+	roleSet *orchestrationv1alpha1.RoleSet,
+	roleName string,
+	tp *orchestrationv1alpha1.TopologyPolicy,
+) {
+	if !validateTopologyKey(roleSet, tp) {
+		return
+	}
+
+	matchLabels, ok := getTopologyMatchLabels(roleSet, roleName, tp)
+	if !ok {
+		return
+	}
+
+	injectTopologyAffinityToPodSpec(spec, matchLabels, tp.Key, tp.Mode)
+}
+
+func validateTopologyKey(roleSet *orchestrationv1alpha1.RoleSet, tp *orchestrationv1alpha1.TopologyPolicy) bool {
+	if tp.Key != "" {
+		return true
+	}
+
+	klog.Warningf("RoleSet %s/%s has empty TopologyPolicy.Key; skipping topology policy enforcement",
+		roleSet.Namespace, roleSet.Name)
+	return false
 }
 
 func filterActivePods(pods []*v1.Pod) (active []*v1.Pod, inactive []*v1.Pod) {
