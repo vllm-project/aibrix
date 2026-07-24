@@ -36,6 +36,7 @@ type Config struct {
 	GatewayImageTag        string
 	GatewayEnv             map[string]string
 	GatewayResourceFiles   []string
+	PlatformValuesFile     string
 	TestCase               *resolver.Test
 }
 
