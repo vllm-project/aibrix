@@ -209,6 +209,19 @@ spec:
               value: "1"
             - name: CUDA_VISIBLE_DEVICES
               value: "0"
+            # Acceptance-proven UCX set from the 2026-07-23 multi-node RDMA
+            # acceptance run (no UCX_NET_DEVICES / UCX_IB_GID_INDEX pins;
+            # NET_DEVICES is auto-detected per pod in args above).
+            - name: UCX_TLS
+              value: "rc_x,rc,cuda_copy,cuda_ipc,tcp"
+            - name: UCX_IB_ADDR_TYPE
+              value: "eth"
+            - name: UCX_RNDV_SCHEME
+              value: "get_zcopy"
+            - name: UCX_RNDV_THRESH
+              value: "0"
+            - name: UCX_MEMTYPE_CACHE
+              value: "n"
             - name: GLOO_SOCKET_IFNAME
               value: "eth0"
             - name: NCCL_SOCKET_IFNAME
@@ -291,6 +304,19 @@ spec:
               value: "1"
             - name: CUDA_VISIBLE_DEVICES
               value: "0"
+            # Acceptance-proven UCX set from the 2026-07-23 multi-node RDMA
+            # acceptance run (no UCX_NET_DEVICES / UCX_IB_GID_INDEX pins;
+            # NET_DEVICES is auto-detected per pod in args above).
+            - name: UCX_TLS
+              value: "rc_x,rc,cuda_copy,cuda_ipc,tcp"
+            - name: UCX_IB_ADDR_TYPE
+              value: "eth"
+            - name: UCX_RNDV_SCHEME
+              value: "get_zcopy"
+            - name: UCX_RNDV_THRESH
+              value: "0"
+            - name: UCX_MEMTYPE_CACHE
+              value: "n"
             - name: GLOO_SOCKET_IFNAME
               value: "eth0"
             - name: NCCL_SOCKET_IFNAME
