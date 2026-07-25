@@ -59,6 +59,19 @@ const (
 	defaultReplicaCount            int32 = 1
 	defaultReadyTimeoutSeconds     int32 = 600
 	kubernetesCleanupTimeout             = 30 * time.Second
+
+	// maxResourceNameLength is the Kubernetes DNS label limit (RFC 1035/1123) that
+	// applies to the Deployment, Service, and HPA names created by this provider.
+	maxResourceNameLength = 63
+	// resourceNamePrefix is prepended to every generated resource name.
+	resourceNamePrefix = "aibrix-"
+	// resourceNameUniqueSuffixLength is the length of the random suffix appended to
+	// generated names to keep them collision-free across deployments.
+	resourceNameUniqueSuffixLength = 8
+	// serviceNameSuffix is appended to the generated base name to derive the Service
+	// name. generateResourceName reserves room for it so the derived Service name also
+	// stays within maxResourceNameLength.
+	serviceNameSuffix = "-svc"
 )
 
 // KubernetesClientProvider resolves a Kubernetes client and its workload
@@ -244,7 +257,7 @@ func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.
 	}
 	deploymentCreated := true
 
-	serviceName := resourceName + "-svc"
+	serviceName := resourceName + serviceNameSuffix
 	service := buildService(serviceName, namespace, labels, d.workload)
 	if _, err := clientset.CoreV1().Services(namespace).Create(ctx, service, metav1.CreateOptions{}); err != nil {
 		createErr := status.Errorf(codes.Internal, "create service %q: %v", serviceName, err)
@@ -315,11 +328,11 @@ func (d *kubernetesDeploymentProvider) Observe(ctx context.Context, deployment *
 	}
 
 	serviceFound := true
-	if _, err := clientset.CoreV1().Services(namespace).Get(ctx, resourceName+"-svc", metav1.GetOptions{}); err != nil {
+	if _, err := clientset.CoreV1().Services(namespace).Get(ctx, resourceName+serviceNameSuffix, metav1.GetOptions{}); err != nil {
 		if apierrors.IsNotFound(err) {
 			serviceFound = false
 		} else {
-			return nil, status.Errorf(codes.Internal, "get service %q: %v", resourceName+"-svc", err)
+			return nil, status.Errorf(codes.Internal, "get service %q: %v", resourceName+serviceNameSuffix, err)
 		}
 	}
 
@@ -430,7 +443,7 @@ func cleanupCreatedKubernetesResources(ctx context.Context, clientset kubernetes
 		}
 	}
 	if serviceCreated {
-		serviceName := resourceName + "-svc"
+		serviceName := resourceName + serviceNameSuffix
 		if err := clientset.CoreV1().Services(namespace).Delete(ctx, serviceName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			cleanupErrs = append(cleanupErrs, fmt.Sprintf("delete service %q: %v", serviceName, err))
 		}
@@ -670,7 +683,7 @@ func buildService(name, namespace string, labels map[string]string, cfg config.K
 		Spec: corev1.ServiceSpec{
 			Type: serviceType,
 			Selector: map[string]string{
-				"app.kubernetes.io/instance": strings.TrimSuffix(name, "-svc"),
+				"app.kubernetes.io/instance": strings.TrimSuffix(name, serviceNameSuffix),
 			},
 			Ports: []corev1.ServicePort{{
 				Name:       "http",
@@ -918,12 +931,17 @@ func generateResourceName(name string) string {
 	if base == "" {
 		base = "deployment"
 	}
-	suffix := strings.ToLower(uuid.NewString()[:8])
-	maxBaseLength := 63 - len("aibrix--") - len(suffix)
+	suffix := strings.ToLower(uuid.NewString()[:resourceNameUniqueSuffixLength])
+	// The base name is reused to derive related resources by appending a fixed suffix
+	// (e.g. the Service is named resourceName+serviceNameSuffix). Reserve room for the
+	// prefix, the joining dash, the unique suffix, and the longest derived suffix so
+	// those derived names also satisfy maxResourceNameLength. Without reserving the
+	// derived suffix, a base name that fills the limit yields an invalid Service name.
+	maxBaseLength := maxResourceNameLength - len(resourceNamePrefix) - len("-") - resourceNameUniqueSuffixLength - len(serviceNameSuffix)
 	if len(base) > maxBaseLength {
 		base = strings.Trim(base[:maxBaseLength], "-")
 	}
-	return fmt.Sprintf("aibrix-%s-%s", base, suffix)
+	return fmt.Sprintf("%s%s-%s", resourceNamePrefix, base, suffix)
 }
 
 func sanitizeName(value string) string {

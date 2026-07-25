@@ -28,6 +28,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -251,6 +252,118 @@ func TestGenerateResourceNameRetainsUniqueSuffixAfterTruncation(t *testing.T) {
 	}
 	if first == second {
 		t.Fatalf("resource names should retain unique suffixes: %q", first)
+	}
+}
+
+func TestGenerateResourceNameDerivedNamesStayWithinKubernetesLimit(t *testing.T) {
+	// maxBaseLength is the largest base name generateResourceName keeps before it
+	// truncates, mirroring the reservation the implementation makes for the prefix,
+	// the joining dash, the unique suffix, and the derived service suffix.
+	maxBaseLength := maxResourceNameLength - len(resourceNamePrefix) - len("-") - resourceNameUniqueSuffixLength - len(serviceNameSuffix)
+
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{name: "short name below boundary", input: "my-model"},
+		{name: "name exactly at the base boundary", input: strings.Repeat("a", maxBaseLength)},
+		{name: "name one over the base boundary", input: strings.Repeat("a", maxBaseLength+1)},
+		{name: "very long dashed name", input: strings.Repeat("long-name-", 10)},
+		{name: "hundred character name from the bug report", input: strings.Repeat("a", 100)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resourceName := generateResourceName(tc.input)
+
+			// The base name is used directly for the Deployment and HPA; it must be valid.
+			if errs := validation.IsDNS1035Label(resourceName); len(errs) > 0 {
+				t.Fatalf("resource name %q is not a valid DNS label: %v", resourceName, errs)
+			}
+
+			// The Service name is derived by appending serviceNameSuffix — this is the name
+			// the bug report showed exceeding 63 characters, so assert the final value, not
+			// just the base. The fake client used elsewhere does not enforce this limit.
+			serviceName := resourceName + serviceNameSuffix
+			if len(serviceName) > maxResourceNameLength {
+				t.Fatalf("service name %q exceeds %d characters (len=%d)", serviceName, maxResourceNameLength, len(serviceName))
+			}
+			if errs := validation.IsDNS1035Label(serviceName); len(errs) > 0 {
+				t.Fatalf("service name %q is not a valid DNS label: %v", serviceName, errs)
+			}
+
+			// Truncation must preserve the random suffix so names stay collision-free.
+			if !strings.HasPrefix(resourceName, resourceNamePrefix) {
+				t.Fatalf("resource name %q missing prefix %q", resourceName, resourceNamePrefix)
+			}
+			gotSuffix := resourceName[len(resourceName)-resourceNameUniqueSuffixLength:]
+			if strings.ContainsRune(gotSuffix, '-') {
+				t.Fatalf("resource name %q does not retain a %d-char unique suffix (got %q)", resourceName, resourceNameUniqueSuffixLength, gotSuffix)
+			}
+		})
+	}
+}
+
+func TestCreateWithLongNameProducesValidKubernetesResourceNames(t *testing.T) {
+	const namespace = "aibrix-console"
+	client := fake.NewSimpleClientset(&corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: namespace},
+	})
+	workload := config.KubernetesWorkloadConfig{
+		ServiceType:             string(corev1.ServiceTypeClusterIP),
+		ContainerPort:           8000,
+		ServicePort:             8000,
+		CPURequest:              "1",
+		HPATargetCPUUtilization: 80,
+	}
+	implementation := NewKubernetesDeploymentProvider(
+		staticKubernetesClientProvider{clientset: client, namespace: namespace},
+		workload,
+	)
+	template := &pb.ModelDeploymentTemplate{
+		Id:      "template-1",
+		Name:    "vllm-template",
+		Version: "v1.0.0",
+		ModelId: "model-1",
+		Spec: &pb.ModelDeploymentTemplateSpec{
+			Engine:      &pb.EngineSpec{Type: "vllm", Image: "example/vllm:latest"},
+			ModelSource: &pb.ModelSourceSpec{Uri: "org/model"},
+			Accelerator: &pb.AcceleratorSpec{Type: "CPU", Count: 1},
+		},
+	}
+	// A 100-character user-facing name, as in the bug report. The base resource name
+	// previously filled the 63-char limit on its own, so appending "-svc" for the Service
+	// produced an invalid name and Service creation failed after the Deployment existed.
+	req := &pb.CreateDeploymentRequest{
+		Name: strings.Repeat("a", 100),
+		Overrides: &pb.DeploymentOverrides{
+			MinReplicas:       1,
+			MaxReplicas:       3,
+			EnableAutoScaling: true,
+		},
+	}
+
+	if err := implementation.Validate(context.Background(), template, req); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if _, err := implementation.Create(context.Background(), template, req); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	deployments, _ := client.AppsV1().Deployments(namespace).List(context.Background(), metav1.ListOptions{})
+	services, _ := client.CoreV1().Services(namespace).List(context.Background(), metav1.ListOptions{})
+	hpas, _ := client.AutoscalingV2().HorizontalPodAutoscalers(namespace).List(context.Background(), metav1.ListOptions{})
+	if len(deployments.Items) != 1 || len(services.Items) != 1 || len(hpas.Items) != 1 {
+		t.Fatalf("created resources: deployments=%d services=%d hpas=%d", len(deployments.Items), len(services.Items), len(hpas.Items))
+	}
+
+	// The fake client does not enforce API-server name validation, so assert every
+	// generated resource name is a valid DNS label explicitly.
+	names := []string{deployments.Items[0].Name, services.Items[0].Name, hpas.Items[0].Name}
+	for _, name := range names {
+		if errs := validation.IsDNS1035Label(name); len(errs) > 0 {
+			t.Fatalf("generated resource name %q is not a valid DNS label: %v", name, errs)
+		}
 	}
 }
 
