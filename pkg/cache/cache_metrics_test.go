@@ -480,11 +480,14 @@ func TestUpdateModelReplicaMetrics(t *testing.T) {
 
 	store.updateModelReplicaMetrics()
 	require.Len(t, emitted, 2)
-	require.Equal(t, "prefill", emitted[0]["role"])
-	require.Equal(t, "qwen3-8B", emitted[0]["model_name"])
-	require.Equal(t, "prefill-0", emitted[0]["pod"])
-	require.Equal(t, "decode", emitted[1]["role"])
-	require.Equal(t, "decode-0", emitted[1]["pod"])
+	byPod := make(map[string]map[string]string, len(emitted))
+	for _, labels := range emitted {
+		byPod[labels["pod"]] = labels
+	}
+	require.Equal(t, "prefill", byPod["prefill-0"]["role"])
+	require.Equal(t, "qwen3-8B", byPod["prefill-0"]["model_name"])
+	require.Equal(t, "decode", byPod["decode-0"]["role"])
+	require.Equal(t, "qwen3-8B", byPod["decode-0"]["model_name"])
 	require.Equal(t, 2, store.modelReplicaEmitted.Len())
 
 	store.metaPods.Delete("default/prefill-0")
