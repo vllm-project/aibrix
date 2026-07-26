@@ -54,6 +54,26 @@ describe('Playground helpers', () => {
     }));
   });
 
+  it('skips malformed SSE data and continues streaming later events', async () => {
+    const encoder = new TextEncoder();
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: not-json\n\n'));
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const deltas: string[] = [];
+
+    const content = await streamPlaygroundChat({
+      model: '/models/mock',
+      messages: [{ role: 'user', content: 'Hi' }],
+    }, (delta) => deltas.push(delta), async () => response);
+
+    expect(content).toBe('Hello');
+    expect(deltas).toEqual(['Hello']);
+  });
+
   it('surfaces an upstream error instead of returning an empty answer', async () => {
     const fetcher = vi.fn(async () => new Response('model unavailable', { status: 503 }));
     await expect(streamPlaygroundChat({

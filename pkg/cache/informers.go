@@ -104,15 +104,7 @@ func initCacheInformers(instance *Store, config *rest.Config, stopCh <-chan stru
 // getModelNameFromPod retrieves model name from pod labels first, then annotations.
 // This supports cases where model names contain characters invalid for K8s labels (e.g., '/').
 func getModelNameFromPod(pod *v1.Pod) (string, bool) {
-	// Try label first (standard case)
-	if modelName, ok := pod.Labels[modelIdentifier]; ok && modelName != "" {
-		return modelName, true
-	}
-	// Fallback to annotation (allows special characters like '/' in model paths)
-	if modelName, ok := pod.Annotations[modelIdentifier]; ok && modelName != "" {
-		return modelName, true
-	}
-	return "", false
+	return constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
 }
 
 func (c *Store) addPod(obj interface{}) {

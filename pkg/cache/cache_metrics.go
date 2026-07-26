@@ -41,7 +41,6 @@ const (
 	// the request port and metrics port may differ, so a dedicated metrics port is required.
 	MetricPortLabel                     = constants.ModelLabelMetricPort
 	engineLabel                         = constants.ModelLabelEngine
-	modelLabel                          = constants.ModelLabelName
 	defaultMetricPort                   = 8000
 	defaultEngineLabelValue             = "vllm"
 	defaultPodMetricRefreshIntervalInMS = 50
@@ -406,10 +405,10 @@ func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, s
 	if scope == metrics.PodMetricScope {
 		pod.Metrics.Store(metricName, metricValue)
 	} else if scope == metrics.PodModelMetricScope {
-		var err error
 		if modelName == "" {
-			modelName, err = getPodLabel(pod, modelLabel)
-			if err != nil {
+			var ok bool
+			modelName, ok = constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
+			if !ok {
 				return fmt.Errorf("modelName should not be empty for scope %v", scope)
 			}
 		}
@@ -622,11 +621,11 @@ func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.Engine
 
 // parseModelMetricKey parses a key like "model/metric" into model name and metric name
 func parseModelMetricKey(key string) (modelName, metricName string) {
-	modelName, metricName, found := strings.Cut(key, "/")
-	if !found {
+	separator := strings.LastIndexByte(key, '/')
+	if separator < 0 {
 		return "", key // Fallback if parsing fails
 	}
-	return modelName, metricName
+	return key[:separator], key[separator+1:]
 }
 
 func resolveMetricModelName(pod *Pod, modelName string) string {
@@ -634,8 +633,8 @@ func resolveMetricModelName(pod *Pod, modelName string) string {
 		return modelName
 	}
 
-	if podModel, err := getPodLabel(pod, modelLabel); err == nil && podModel != "" {
-		klog.V(4).InfoS("Using pod label as model name fallback",
+	if podModel, ok := constants.ModelNameFromMetadata(pod.Labels, pod.Annotations); ok {
+		klog.V(4).InfoS("Using pod metadata as model name fallback",
 			"pod", pod.Name, "originalModel", modelName, "resolvedModel", podModel)
 		return podModel
 	}

@@ -287,10 +287,10 @@ func TestCreateBuildsKubernetesResources(t *testing.T) {
 		t.Fatalf("service name = %q, want %q", got, serviceName)
 	}
 	resourceLabels := map[string]map[string]string{
-		"deployment":   deployments.Items[0].Labels,
-		"pod template": deployments.Items[0].Spec.Template.Labels,
-		"service":      services.Items[0].Labels,
-		"hpa":          hpas.Items[0].Labels,
+		defaultResourceNameBase: deployments.Items[0].Labels,
+		"pod template":          deployments.Items[0].Spec.Template.Labels,
+		"service":               services.Items[0].Labels,
+		"hpa":                   hpas.Items[0].Labels,
 	}
 	for location, labels := range resourceLabels {
 		if got := labels["app.kubernetes.io/managed-by"]; got != "aibrix-console" {
@@ -298,9 +298,9 @@ func TestCreateBuildsKubernetesResources(t *testing.T) {
 		}
 	}
 	for location, labels := range map[string]map[string]string{
-		"deployment":   resourceLabels["deployment"],
-		"pod template": resourceLabels["pod template"],
-		"service":      resourceLabels["service"],
+		defaultResourceNameBase: resourceLabels[defaultResourceNameBase],
+		"pod template":          resourceLabels["pod template"],
+		"service":               resourceLabels["service"],
 	} {
 		if got := labels[constants.ModelLabelName]; got != "" {
 			t.Errorf("%s has invalid Kubernetes model label %q", location, got)
@@ -313,10 +313,10 @@ func TestCreateBuildsKubernetesResources(t *testing.T) {
 		}
 	}
 	for location, annotations := range map[string]map[string]string{
-		"deployment":   deployments.Items[0].Annotations,
-		"pod template": deployments.Items[0].Spec.Template.Annotations,
-		"service":      services.Items[0].Annotations,
-		"hpa":          hpas.Items[0].Annotations,
+		defaultResourceNameBase: deployments.Items[0].Annotations,
+		"pod template":          deployments.Items[0].Spec.Template.Annotations,
+		"service":               services.Items[0].Annotations,
+		"hpa":                   hpas.Items[0].Annotations,
 	} {
 		if got := annotations["console.aibrix.ai/deployment-id"]; got != created.GetId() {
 			t.Errorf("%s Console deployment ID annotation = %q, want %q", location, got, created.GetId())
@@ -325,12 +325,12 @@ func TestCreateBuildsKubernetesResources(t *testing.T) {
 			t.Errorf("%s Console deployment name annotation = %q, want %q", location, got, req.GetName())
 		}
 		if got := annotations[constants.ModelLabelName]; got != "/models/mock" {
-			if location == "deployment" || location == "pod template" {
+			if location == defaultResourceNameBase || location == "pod template" {
 				t.Errorf("%s model annotation = %q, want /models/mock", location, got)
 			}
 		}
 		if got := annotations[constants.ModelAnnoServiceName]; got != serviceName {
-			if location == "deployment" || location == "pod template" {
+			if location == defaultResourceNameBase || location == "pod template" {
 				t.Errorf("%s service annotation = %q, want %q", location, got, serviceName)
 			}
 		}

@@ -33,15 +33,28 @@ export function DeploymentDetail({
       setLoading(false);
       return;
     }
+
+    let active = true;
+
     setLoading(true);
     setError(null);
     getDeployment(deploymentId)
-      .then(setDeployment)
+      .then((item) => {
+        if (active) setDeployment(item);
+      })
       .catch((err: unknown) => {
+        if (!active) return;
+
         setDeployment(null);
         setError(err instanceof Error ? err.message : 'Failed to load deployment');
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
   }, [deploymentId]);
 
   const copy = (value: string, label: string) => {

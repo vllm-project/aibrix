@@ -47,7 +47,6 @@ import (
 const (
 	// TODO (varun): cleanup model related identifiers and establish common consensus
 	modelHeaderIdentifier = "model"
-	modelIdentifier       = constants.ModelLabelName
 	modelPortIdentifier   = constants.ModelLabelPort
 	// TODO (varun): parameterize it or dynamically resolve it
 	aibrixEnvoyGateway          = "aibrix-eg"
@@ -238,7 +237,7 @@ func (m *ModelRouter) deleteRouteFromUnstructuredObj(obj interface{}) {
 }
 
 func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string, annotations map[string]string) {
-	modelName, ok := modelNameFromMetadata(labels, annotations)
+	modelName, ok := constants.ModelNameFromMetadata(labels, annotations)
 	if !ok {
 		return
 	}
@@ -373,7 +372,7 @@ func (m *ModelRouter) createReferenceGrant(namespace string) {
 }
 
 func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[string]string) {
-	modelName, ok := modelNameFromMetadata(labels, annotations)
+	modelName, ok := constants.ModelNameFromMetadata(labels, annotations)
 	if !ok {
 		return
 	}
@@ -406,7 +405,7 @@ func (m *ModelRouter) deleteReferenceGrant(namespace string) {
 	}
 	for i := range deploymentList.Items {
 		deployment := &deploymentList.Items[i]
-		if _, ok := modelNameFromMetadata(deployment.Labels, deployment.Annotations); ok {
+		if _, ok := constants.ModelNameFromMetadata(deployment.Labels, deployment.Annotations); ok {
 			klog.InfoS("Skip deleting ReferenceGrant: model deployment still exists",
 				"namespace", namespace, "deployment", deployment.Name)
 			return
@@ -427,16 +426,6 @@ func (m *ModelRouter) deleteReferenceGrant(namespace string) {
 		}
 	}
 	klog.InfoS("delete reference grant", "referencegrant", referenceGrantName)
-}
-
-func modelNameFromMetadata(labels, annotations map[string]string) (string, bool) {
-	if modelName := labels[modelIdentifier]; modelName != "" {
-		return modelName, true
-	}
-	if modelName := annotations[modelIdentifier]; modelName != "" {
-		return modelName, true
-	}
-	return "", false
 }
 
 func consoleRouteLabels(labels map[string]string) map[string]string {

@@ -209,18 +209,30 @@ export function Playground({ initialDeploymentId, onNavigateToDeployment }: Play
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    let active = true;
+
     setDeploymentsLoading(true);
     setDeploymentsError(null);
     listDeployments()
       .then((items) => {
+        if (!active) return;
+
         const callable = callableDeployments(items);
         setDeployments(callable);
         setSelectedDeployment(preferredDeployment(callable, initialDeploymentId));
       })
       .catch((error: unknown) => {
+        if (!active) return;
+
         setDeploymentsError(error instanceof Error ? error.message : 'Failed to load deployments');
       })
-      .finally(() => setDeploymentsLoading(false));
+      .finally(() => {
+        if (active) setDeploymentsLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
   }, [initialDeploymentId]);
 
   const scrollToBottom = useCallback(() => {

@@ -294,8 +294,9 @@ func InitWithPodsModelMetrics(st *Store, podMetrics map[string]map[string]metric
 			return true
 		}
 		if podmetrics, ok := podMetrics[podName]; ok {
+			modelName, _ := constants.ModelNameFromMetadata(metaPod.Pod.Labels, metaPod.Pod.Annotations)
 			for metricName, metric := range podmetrics {
-				if err := st.updatePodRecord(metaPod, metaPod.Pod.Labels[modelIdentifier], metricName, metrics.PodModelMetricScope, metric); err != nil {
+				if err := st.updatePodRecord(metaPod, modelName, metricName, metrics.PodModelMetricScope, metric); err != nil {
 					return false
 				}
 			}

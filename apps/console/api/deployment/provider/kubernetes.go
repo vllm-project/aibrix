@@ -67,6 +67,9 @@ const (
 	maxResourceNameLength = 63
 	// resourceNamePrefix is prepended to every generated resource name.
 	resourceNamePrefix = "aibrix-"
+	// defaultResourceNameBase is used when the user-facing name has no
+	// characters that can be represented in a Kubernetes resource name.
+	defaultResourceNameBase = "deployment"
 	// resourceNameUniqueSuffixLength is the length of the Console deployment ID
 	// prefix appended to generated names so runtime resources remain unique and
 	// visibly traceable to their Console object.
@@ -1005,7 +1008,7 @@ func containsFlag(args []string, flag string) bool {
 func generateResourceName(name, deploymentID string) string {
 	base := sanitizeName(name)
 	if base == "" {
-		base = "deployment"
+		base = defaultResourceNameBase
 	}
 	suffix := strings.ToLower(deploymentID[:resourceNameUniqueSuffixLength])
 	// The base name is reused to derive related resources by appending a fixed suffix

@@ -25,6 +25,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
@@ -55,7 +56,7 @@ func TestUpdatePodRecord(t *testing.T) {
 				Name:      "p1",
 				Namespace: "default",
 				Labels: map[string]string{
-					modelLabel: "m2",
+					constants.ModelLabelName: "m2",
 				},
 			},
 		},
@@ -89,6 +90,11 @@ func TestUpdatePodMetricsFromTypedResultModelFallback(t *testing.T) {
 			wantModel: "raw-model",
 		},
 		{
+			name:      "keeps path-style model name",
+			rawModel:  "/models/mock",
+			wantModel: "/models/mock",
+		},
+		{
 			name:      "falls back for empty model name",
 			rawModel:  "",
 			wantModel: "pod-model",
@@ -109,7 +115,7 @@ func TestUpdatePodMetricsFromTypedResultModelFallback(t *testing.T) {
 						Name:      "p1",
 						Namespace: "default",
 						Labels: map[string]string{
-							modelLabel: "pod-model",
+							constants.ModelLabelName: "pod-model",
 						},
 					},
 				},
@@ -128,6 +134,31 @@ func TestUpdatePodMetricsFromTypedResultModelFallback(t *testing.T) {
 	}
 }
 
+func TestUpdatePodMetricsFromTypedResultAnnotationFallback(t *testing.T) {
+	store := &Store{}
+	pod := &Pod{
+		Pod: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "p1",
+				Namespace: "default",
+				Annotations: map[string]string{
+					constants.ModelLabelName: "/models/mock",
+				},
+			},
+		},
+	}
+	result := &metrics.EngineMetricsResult{
+		ModelMetrics: map[string]metrics.MetricValue{
+			store.getPodModelMetricName("", metrics.NumRequestsWaiting): &metrics.SimpleMetricValue{Value: 1},
+		},
+	}
+
+	store.updatePodMetricsFromTypedResult(pod, result)
+
+	_, ok := pod.ModelMetrics.Load(store.getPodModelMetricName("/models/mock", metrics.NumRequestsWaiting))
+	require.True(t, ok)
+}
+
 func TestSanitizeMetricLabelsFallback(t *testing.T) {
 	pod := &Pod{
 		Pod: &v1.Pod{
@@ -135,8 +166,8 @@ func TestSanitizeMetricLabelsFallback(t *testing.T) {
 				Name:      "p1",
 				Namespace: "default",
 				Labels: map[string]string{
-					modelLabel:  "pod-model",
-					engineLabel: "trtllm",
+					constants.ModelLabelName: "pod-model",
+					engineLabel:              "trtllm",
 				},
 			},
 		},
@@ -439,8 +470,8 @@ func TestUpdateModelReplicaMetrics(t *testing.T) {
 
 	readyPod := func(name, model, role string, groupIndex string) *Pod {
 		labels := map[string]string{
-			modelLabel:       model,
-			pdRoleIdentifier: role,
+			constants.ModelLabelName: model,
+			pdRoleIdentifier:         role,
 		}
 		if groupIndex != "" {
 			labels[podGroupIndex] = groupIndex
@@ -472,7 +503,10 @@ func TestUpdateModelReplicaMetrics(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "unready",
 				Namespace: "default",
-				Labels:    map[string]string{modelLabel: "qwen3-8B", pdRoleIdentifier: "prefill"},
+				Labels: map[string]string{
+					constants.ModelLabelName: "qwen3-8B",
+					pdRoleIdentifier:         "prefill",
+				},
 			},
 			Status: v1.PodStatus{Phase: v1.PodPending},
 		},

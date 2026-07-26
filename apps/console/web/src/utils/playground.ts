@@ -46,15 +46,19 @@ function eventContent(event: string): string {
     .join('\n');
   if (!data || data === '[DONE]') return '';
 
-  const parsed = JSON.parse(data) as {
-    choices?: Array<{
-      delta?: { content?: string };
-      message?: { content?: string };
-      text?: string;
-    }>;
-  };
-  const choice = parsed.choices?.[0];
-  return choice?.delta?.content ?? choice?.message?.content ?? choice?.text ?? '';
+  try {
+    const parsed = JSON.parse(data) as {
+      choices?: Array<{
+        delta?: { content?: string };
+        message?: { content?: string };
+        text?: string;
+      }>;
+    };
+    const choice = parsed.choices?.[0];
+    return choice?.delta?.content ?? choice?.message?.content ?? choice?.text ?? '';
+  } catch {
+    return '';
+  }
 }
 
 export async function streamPlaygroundChat(

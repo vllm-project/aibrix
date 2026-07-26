@@ -88,12 +88,14 @@ func (a *storeProviderAdapter) GetPod(ctx context.Context, podKey string) (*kvev
 		return nil, false
 	}
 
+	modelName, _ := constants.ModelNameFromMetadata(metaPod.Pod.Labels, metaPod.Pod.Annotations)
+
 	// Create lightweight copy
 	return &kvevent.PodInfo{
 		Name:      metaPod.Pod.Name,
 		Namespace: metaPod.Pod.Namespace,
 		PodIP:     metaPod.Pod.Status.PodIP,
-		ModelName: metaPod.Pod.Labels[constants.ModelLabelName],
+		ModelName: modelName,
 		Labels:    metaPod.Pod.Labels, // Shallow copy - labels are read-only
 		Models:    metaPod.Models.Array(),
 	}, true
@@ -112,12 +114,14 @@ func (a *storeProviderAdapter) RangePods(ctx context.Context, f func(key string,
 		default:
 		}
 
+		modelName, _ := constants.ModelNameFromMetadata(metaPod.Pod.Labels, metaPod.Pod.Annotations)
+
 		// Create lightweight copy
 		podInfo := &kvevent.PodInfo{
 			Name:      metaPod.Pod.Name,
 			Namespace: metaPod.Pod.Namespace,
 			PodIP:     metaPod.Pod.Status.PodIP,
-			ModelName: metaPod.Pod.Labels[constants.ModelLabelName],
+			ModelName: modelName,
 			Labels:    metaPod.Pod.Labels,
 			Models:    metaPod.Models.Array(),
 		}

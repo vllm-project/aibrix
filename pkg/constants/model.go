@@ -95,3 +95,16 @@ const (
 	// See docs/source/designs/model-config-profiles.rst for schema.
 	ModelAnnoConfig = "model.aibrix.ai/config"
 )
+
+// ModelNameFromMetadata returns the served model name from Kubernetes metadata.
+// Labels remain the preferred source, while annotations support names containing
+// characters that Kubernetes label values reject, such as '/'.
+func ModelNameFromMetadata(labels, annotations map[string]string) (string, bool) {
+	if modelName := labels[ModelLabelName]; modelName != "" {
+		return modelName, true
+	}
+	if modelName := annotations[ModelLabelName]; modelName != "" {
+		return modelName, true
+	}
+	return "", false
+}

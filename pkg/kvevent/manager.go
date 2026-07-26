@@ -241,8 +241,8 @@ func (m *Manager) OnPodDelete(pod *v1.Pod) {
 		return
 	}
 
-	modelName := pod.Labels[constants.ModelLabelName]
-	if modelName != "" {
+	modelName, hasModelName := constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
+	if hasModelName {
 		loraID := int64(-1)
 		if loraStr := constants.GetLoraID(pod.Labels); loraStr != "" {
 			if parsed, err := strconv.ParseInt(loraStr, 10, 64); err == nil {
@@ -266,10 +266,11 @@ func canSubscribeToPod(podInfo *PodInfo) bool {
 
 // Check if the pod can be subscribed
 func isPodSubscribable(pod *v1.Pod) bool {
+	_, hasModelName := constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
 	return constants.IsKVEventsEnabled(pod.Labels) &&
 		pod.Status.Phase == v1.PodRunning &&
 		pod.Status.PodIP != "" &&
-		pod.Labels[constants.ModelLabelName] != ""
+		hasModelName
 }
 
 func isSamePod(pod1 *v1.Pod, pod2 *v1.Pod) bool {
