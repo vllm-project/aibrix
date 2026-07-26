@@ -29,6 +29,7 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/config"
 	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -39,6 +40,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -188,7 +190,7 @@ func (d *kubernetesDeploymentProvider) validateConfig() error {
 	return nil
 }
 
-func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.ModelDeploymentTemplate, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
+func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.ModelDeploymentTemplate, servingName string, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
 	spec := proto.Clone(template.GetSpec()).(*pb.ModelDeploymentTemplateSpec)
 	accelerator := spec.GetAccelerator()
 	overrides := req.GetOverrides()
@@ -239,16 +241,35 @@ func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.
 	}
 
 	resourceName := generateResourceName(req.GetName())
+	serviceName := resourceName + serviceNameSuffix
+	servingName = strings.TrimSpace(servingName)
+	if servingName == "" {
+		servingName = spec.GetModelSource().GetUri()
+	}
+	containerPort := defaultContainerPort
+	if d.workload.ContainerPort > 0 {
+		containerPort = d.workload.ContainerPort
+	}
 	labels := map[string]string{
 		"app.kubernetes.io/name":     "aibrix-console-deployment",
 		"app.kubernetes.io/instance": resourceName,
 		"aibrix.io/template-id":      template.GetId(),
 		"aibrix.io/provider":         d.Kind(),
 		"aibrix.io/model-id":         template.GetModelId(),
+		constants.ModelLabelPort:     strconv.Itoa(int(containerPort)),
+		constants.ModelLabelEngine:   strings.ToLower(spec.GetEngine().GetType()),
+	}
+	annotations := map[string]string{
+		constants.ModelAnnoServiceName: serviceName,
+	}
+	if len(k8svalidation.IsValidLabelValue(servingName)) == 0 {
+		labels[constants.ModelLabelName] = servingName
+	} else {
+		annotations[constants.ModelLabelName] = servingName
 	}
 
 	replicasValue := minReplicas
-	deployment := buildDeployment(resourceName, namespace, labels, d.workload, spec, replicasValue)
+	deployment := buildDeployment(resourceName, namespace, labels, annotations, d.workload, spec, replicasValue)
 	if _, err := clientset.AppsV1().Deployments(namespace).Create(ctx, deployment, metav1.CreateOptions{}); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, status.Errorf(codes.FailedPrecondition, "kubernetes namespace %q does not exist", namespace)
@@ -257,7 +278,6 @@ func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.
 	}
 	deploymentCreated := true
 
-	serviceName := resourceName + serviceNameSuffix
 	service := buildService(serviceName, namespace, labels, d.workload)
 	if _, err := clientset.CoreV1().Services(namespace).Create(ctx, service, metav1.CreateOptions{}); err != nil {
 		createErr := status.Errorf(codes.Internal, "create service %q: %v", serviceName, err)
@@ -556,13 +576,21 @@ func validateDeploymentSizing(spec *pb.ModelDeploymentTemplateSpec, req *pb.Crea
 	return nil
 }
 
-func buildDeployment(name, namespace string, labels map[string]string, cfg config.KubernetesWorkloadConfig, spec *pb.ModelDeploymentTemplateSpec, replicas int32) *appsv1.Deployment {
+func buildDeployment(name, namespace string, labels, annotations map[string]string, cfg config.KubernetesWorkloadConfig, spec *pb.ModelDeploymentTemplateSpec, replicas int32) *appsv1.Deployment {
 	containerPort := defaultContainerPort
 	if cfg.ContainerPort > 0 {
 		containerPort = cfg.ContainerPort
 	}
 	engine := spec.GetEngine()
 	modelSource := spec.GetModelSource()
+	args := buildContainerArgs(spec)
+	servedModelName := labels[constants.ModelLabelName]
+	if servedModelName == "" {
+		servedModelName = annotations[constants.ModelLabelName]
+	}
+	if servedModelName != "" && !strings.EqualFold(engine.GetType(), "mock") && !containsFlag(args, "--served-model-name") {
+		args = append(args, "--served-model-name", servedModelName)
+	}
 	container := corev1.Container{
 		Name:  "engine",
 		Image: engine.GetImage(),
@@ -570,7 +598,7 @@ func buildDeployment(name, namespace string, labels map[string]string, cfg confi
 			Name:          "http",
 			ContainerPort: containerPort,
 		}},
-		Args: buildContainerArgs(spec),
+		Args: args,
 		Env:  buildContainerEnv(spec),
 	}
 	cpuRequest := resource.MustParse(defaultCPURequest)
@@ -630,11 +658,28 @@ func buildDeployment(name, namespace string, labels map[string]string, cfg confi
 		})
 	}
 
+	podLabels := map[string]string{
+		"app.kubernetes.io/instance": name,
+		"app.kubernetes.io/name":     "aibrix-console-deployment",
+	}
+	for _, key := range []string{constants.ModelLabelName, constants.ModelLabelPort, constants.ModelLabelEngine} {
+		if value := labels[key]; value != "" {
+			podLabels[key] = value
+		}
+	}
+	podAnnotations := map[string]string{}
+	for _, key := range []string{constants.ModelLabelName, constants.ModelAnnoServiceName} {
+		if value := annotations[key]; value != "" {
+			podAnnotations[key] = value
+		}
+	}
+
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Labels:    labels,
+			Name:        name,
+			Namespace:   namespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
@@ -645,10 +690,8 @@ func buildDeployment(name, namespace string, labels map[string]string, cfg confi
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/instance": name,
-						"app.kubernetes.io/name":     "aibrix-console-deployment",
-					},
+					Labels:      podLabels,
+					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{container},

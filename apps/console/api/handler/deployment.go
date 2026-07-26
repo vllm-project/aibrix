@@ -92,7 +92,7 @@ func (h *DeploymentHandler) CreateDeployment(ctx context.Context, req *pb.Create
 		if validateErr := providerImpl.Validate(ctx, template, req); validateErr != nil {
 			return nil, validateErr
 		}
-		deployment, err := providerImpl.Create(ctx, template, req)
+		deployment, err := providerImpl.Create(ctx, template, model.GetServingName(), req)
 		if err != nil {
 			return nil, err
 		}

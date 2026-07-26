@@ -17,11 +17,70 @@ limitations under the License.
 package modelrouter
 
 import (
+	"context"
 	"testing"
 
+	"github.com/vllm-project/aibrix/pkg/constants"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 )
+
+func TestCreateHTTPRouteSupportsAnnotatedModelAndServiceNames(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := gatewayv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := gatewayv1beta1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &ModelRouter{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
+	m.createHTTPRoute(
+		"default",
+		map[string]string{constants.ModelLabelPort: "8000"},
+		map[string]string{
+			constants.ModelLabelName:       "/models/mock",
+			constants.ModelAnnoServiceName: "console-mock-svc",
+		},
+	)
+
+	routes := &gatewayv1.HTTPRouteList{}
+	if err := m.Client.List(context.Background(), routes, client.InNamespace(aibrixEnvoyGatewayNamespace)); err != nil {
+		t.Fatal(err)
+	}
+	if len(routes.Items) != 1 {
+		t.Fatalf("created %d HTTPRoutes, want 1", len(routes.Items))
+	}
+	route := routes.Items[0]
+	if errs := validation.IsDNS1123Subdomain(route.Name); len(errs) > 0 {
+		t.Fatalf("HTTPRoute name %q is invalid: %v", route.Name, errs)
+	}
+	if len(route.Spec.Rules) != 1 || len(route.Spec.Rules[0].BackendRefs) != 1 {
+		t.Fatalf("unexpected HTTPRoute rules: %#v", route.Spec.Rules)
+	}
+	backend := route.Spec.Rules[0].BackendRefs[0].Name
+	if backend != "console-mock-svc" {
+		t.Errorf("backend service = %q, want console-mock-svc", backend)
+	}
+	gotHeader := route.Spec.Rules[0].Matches[0].Headers[0]
+	if gotHeader.Type == nil || *gotHeader.Type != gatewayv1.HeaderMatchExact ||
+		gotHeader.Name != modelHeaderIdentifier || gotHeader.Value != "/models/mock" {
+		t.Errorf("model header match = %#v", gotHeader)
+	}
+
+	grant := &gatewayv1beta1.ReferenceGrant{}
+	if err := m.Client.Get(context.Background(), client.ObjectKey{
+		Namespace: "default",
+		Name:      "aibrix-system-reserved-referencegrant-in-default",
+	}, grant); err != nil {
+		t.Errorf("ReferenceGrant was not created: %v", err)
+	}
+}
 
 func TestAppendCustomModelRouterPaths(t *testing.T) {
 

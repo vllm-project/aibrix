@@ -82,6 +82,10 @@ const (
 )
 
 const (
+	// ModelAnnoServiceName identifies the Kubernetes Service backing a model when
+	// its externally served name cannot also be used as a Kubernetes object name.
+	ModelAnnoServiceName = "model.aibrix.ai/service-name"
+
 	// ModelAnnoRouterCustomPath is the anno for add PathPrefixes in httpRoute, split by comma
 	// Example: "model.aibrix.ai/model-router-custom-paths": "/score,/version"
 	ModelAnnoRouterCustomPath = "model.aibrix.ai/model-router-custom-paths"

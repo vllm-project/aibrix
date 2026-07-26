@@ -31,8 +31,9 @@ import (
 )
 
 type fakeDeploymentProvider struct {
-	observeCalls int
-	deleteCalls  int
+	observeCalls      int
+	deleteCalls       int
+	createServingName string
 }
 
 func (p *fakeDeploymentProvider) Kind() string { return "fake" }
@@ -41,7 +42,8 @@ func (p *fakeDeploymentProvider) Validate(context.Context, *pb.ModelDeploymentTe
 	return nil
 }
 
-func (p *fakeDeploymentProvider) Create(_ context.Context, template *pb.ModelDeploymentTemplate, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
+func (p *fakeDeploymentProvider) Create(_ context.Context, template *pb.ModelDeploymentTemplate, servingName string, req *pb.CreateDeploymentRequest) (*pb.Deployment, error) {
+	p.createServingName = servingName
 	return &pb.Deployment{
 		Id:                 "deployment-provider-backed",
 		Name:               req.GetName(),
@@ -83,7 +85,7 @@ func TestDeploymentHandlerTemplateLifecycle(t *testing.T) {
 	s := store.NewMemoryStore(nil)
 	t.Cleanup(func() { _ = s.Close() })
 
-	model, err := s.CreateModel(ctx, &pb.Model{Id: "model-1", Name: "Test Model"})
+	model, err := s.CreateModel(ctx, &pb.Model{Id: "model-1", Name: "Test Model", ServingName: "/models/test"})
 	if err != nil {
 		t.Fatalf("CreateModel() error = %v", err)
 	}
@@ -117,6 +119,9 @@ func TestDeploymentHandlerTemplateLifecycle(t *testing.T) {
 	}
 	if created.GetBaseModel() != model.GetName() || created.GetBaseModelId() != model.GetId() {
 		t.Fatalf("model traceability = %q/%q", created.GetBaseModel(), created.GetBaseModelId())
+	}
+	if implementation.createServingName != model.GetServingName() {
+		t.Fatalf("provider serving name = %q, want %q", implementation.createServingName, model.GetServingName())
 	}
 	if created.GetCreatedBy() != "owner@example.com" {
 		t.Fatalf("created_by = %q", created.GetCreatedBy())

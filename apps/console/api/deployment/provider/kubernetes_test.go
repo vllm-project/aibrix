@@ -25,6 +25,7 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/config"
 	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -142,7 +143,7 @@ func TestBuildDeploymentIncludesResourcesRequiredByHPA(t *testing.T) {
 		Accelerator: &pb.AcceleratorSpec{Type: "NVIDIA-H100", Count: 2},
 	}
 
-	deployment := buildDeployment("test", "default", map[string]string{}, cfg, spec, 1)
+	deployment := buildDeployment("test", "default", map[string]string{}, nil, cfg, spec, 1)
 	resources := deployment.Spec.Template.Spec.Containers[0].Resources
 	if got := resources.Requests.Cpu().String(); got != "500m" {
 		t.Fatalf("expected CPU request 500m, got %s", got)
@@ -157,6 +158,39 @@ func TestBuildDeploymentIncludesResourcesRequiredByHPA(t *testing.T) {
 	}
 	if got := deployment.Spec.Template.Spec.Containers[0].LivenessProbe.InitialDelaySeconds; got != 900 {
 		t.Fatalf("expected liveness delay 900, got %d", got)
+	}
+}
+
+func TestBuildDeploymentPreservesExplicitServedModelName(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		engineArgs map[string]string
+		serveArgs  []string
+	}{
+		{name: "engine args", engineArgs: map[string]string{"served_model_name": "custom-model"}},
+		{name: "serve args", serveArgs: []string{"--served-model-name", "custom-model"}},
+		{name: "equals serve arg", serveArgs: []string{"--served-model-name=custom-model"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := &pb.ModelDeploymentTemplateSpec{
+				Engine:      &pb.EngineSpec{Type: "vllm", Image: "example/vllm:latest", ServeArgs: tc.serveArgs},
+				ModelSource: &pb.ModelSourceSpec{Uri: "org/model"},
+				EngineArgs:  tc.engineArgs,
+			}
+			labels := map[string]string{constants.ModelLabelName: "generated-service-name"}
+			deployment := buildDeployment("test", "default", labels, nil, config.KubernetesWorkloadConfig{}, spec, 1)
+			args := deployment.Spec.Template.Spec.Containers[0].Args
+
+			servedModelFlags := 0
+			for _, arg := range args {
+				if arg == "--served-model-name" || strings.HasPrefix(arg, "--served-model-name=") {
+					servedModelFlags++
+				}
+			}
+			if servedModelFlags != 1 || slices.Contains(args, "generated-service-name") {
+				t.Fatalf("explicit served model name should win, got args %v", args)
+			}
+		})
 	}
 }
 
@@ -183,7 +217,7 @@ func TestCreateBuildsKubernetesResources(t *testing.T) {
 		ModelId: "model-1",
 		Spec: &pb.ModelDeploymentTemplateSpec{
 			Engine:      &pb.EngineSpec{Type: "vllm", Image: "example/vllm:latest"},
-			ModelSource: &pb.ModelSourceSpec{Uri: "org/model"},
+			ModelSource: &pb.ModelSourceSpec{Uri: "/models/mock"},
 			Accelerator: &pb.AcceleratorSpec{Type: "CPU", Count: 1},
 		},
 	}
@@ -199,7 +233,7 @@ func TestCreateBuildsKubernetesResources(t *testing.T) {
 	if err := implementation.Validate(context.Background(), template, req); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	created, err := implementation.Create(context.Background(), template, req)
+	created, err := implementation.Create(context.Background(), template, "/models/mock", req)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -215,6 +249,42 @@ func TestCreateBuildsKubernetesResources(t *testing.T) {
 	hpas, _ := client.AutoscalingV2().HorizontalPodAutoscalers(namespace).List(context.Background(), metav1.ListOptions{})
 	if len(deployments.Items) != 1 || len(services.Items) != 1 || len(hpas.Items) != 1 {
 		t.Fatalf("created resources: deployments=%d services=%d hpas=%d", len(deployments.Items), len(services.Items), len(hpas.Items))
+	}
+
+	serviceName := created.GetDeploymentId() + serviceNameSuffix
+	if got := services.Items[0].Name; got != serviceName {
+		t.Fatalf("service name = %q, want %q", got, serviceName)
+	}
+	for location, labels := range map[string]map[string]string{
+		"deployment":   deployments.Items[0].Labels,
+		"pod template": deployments.Items[0].Spec.Template.Labels,
+	} {
+		if got := labels[constants.ModelLabelName]; got != "" {
+			t.Errorf("%s has invalid Kubernetes model label %q", location, got)
+		}
+		if got := labels[constants.ModelLabelPort]; got != "8000" {
+			t.Errorf("%s model port label = %q, want 8000", location, got)
+		}
+		if got := labels[constants.ModelLabelEngine]; got != "vllm" {
+			t.Errorf("%s model engine label = %q, want vllm", location, got)
+		}
+	}
+	for location, annotations := range map[string]map[string]string{
+		"deployment":   deployments.Items[0].Annotations,
+		"pod template": deployments.Items[0].Spec.Template.Annotations,
+	} {
+		if got := annotations[constants.ModelLabelName]; got != "/models/mock" {
+			t.Errorf("%s model annotation = %q, want /models/mock", location, got)
+		}
+		if got := annotations[constants.ModelAnnoServiceName]; got != serviceName {
+			t.Errorf("%s service annotation = %q, want %q", location, got, serviceName)
+		}
+	}
+
+	args := deployments.Items[0].Spec.Template.Spec.Containers[0].Args
+	servedModelFlag := slices.Index(args, "--served-model-name")
+	if servedModelFlag < 0 || servedModelFlag+1 >= len(args) || args[servedModelFlag+1] != "/models/mock" {
+		t.Errorf("container args do not serve the Console model /models/mock: %v", args)
 	}
 }
 
@@ -346,7 +416,7 @@ func TestCreateWithLongNameProducesValidKubernetesResourceNames(t *testing.T) {
 	if err := implementation.Validate(context.Background(), template, req); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	if _, err := implementation.Create(context.Background(), template, req); err != nil {
+	if _, err := implementation.Create(context.Background(), template, "org/model", req); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 
