@@ -42,10 +42,16 @@ func TestCreateHTTPRouteSupportsAnnotatedModelAndServiceNames(t *testing.T) {
 	m := &ModelRouter{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
 	m.createHTTPRoute(
 		"default",
-		map[string]string{constants.ModelLabelPort: "8000"},
 		map[string]string{
-			constants.ModelLabelName:       "/models/mock",
-			constants.ModelAnnoServiceName: "console-mock-svc",
+			constants.ModelLabelPort:       "8000",
+			"app.kubernetes.io/managed-by": "aibrix-console",
+		},
+		map[string]string{
+			constants.ModelLabelName:                   "/models/mock",
+			constants.ModelAnnoServiceName:             "console-mock-svc",
+			"console.aibrix.ai/deployment-id":          "a9d93c63-681a-4124-9c07-dd4e607bd700",
+			"console.aibrix.ai/deployment-name":        "test",
+			"console.aibrix.ai/unrelated-future-field": "do-not-copy",
 		},
 	)
 
@@ -59,6 +65,18 @@ func TestCreateHTTPRouteSupportsAnnotatedModelAndServiceNames(t *testing.T) {
 	route := routes.Items[0]
 	if errs := validation.IsDNS1123Subdomain(route.Name); len(errs) > 0 {
 		t.Fatalf("HTTPRoute name %q is invalid: %v", route.Name, errs)
+	}
+	if got := route.Labels["app.kubernetes.io/managed-by"]; got != "aibrix-console" {
+		t.Errorf("HTTPRoute managed-by label = %q, want aibrix-console", got)
+	}
+	if got := route.Annotations["console.aibrix.ai/deployment-id"]; got != "a9d93c63-681a-4124-9c07-dd4e607bd700" {
+		t.Errorf("HTTPRoute Console deployment ID annotation = %q", got)
+	}
+	if got := route.Annotations["console.aibrix.ai/deployment-name"]; got != "test" {
+		t.Errorf("HTTPRoute Console deployment name annotation = %q", got)
+	}
+	if _, ok := route.Annotations["console.aibrix.ai/unrelated-future-field"]; ok {
+		t.Error("HTTPRoute copied an unapproved Console annotation")
 	}
 	if len(route.Spec.Rules) != 1 || len(route.Spec.Rules[0].BackendRefs) != 1 {
 		t.Fatalf("unexpected HTTPRoute rules: %#v", route.Spec.Rules)

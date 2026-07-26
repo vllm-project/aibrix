@@ -275,8 +275,10 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      utils.ModelRouterName(modelName),
-			Namespace: aibrixEnvoyGatewayNamespace,
+			Name:        utils.ModelRouterName(modelName),
+			Namespace:   aibrixEnvoyGatewayNamespace,
+			Labels:      consoleRouteLabels(labels),
+			Annotations: consoleRouteAnnotations(annotations),
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
@@ -435,6 +437,31 @@ func modelNameFromMetadata(labels, annotations map[string]string) (string, bool)
 		return modelName, true
 	}
 	return "", false
+}
+
+func consoleRouteLabels(labels map[string]string) map[string]string {
+	if labels[constants.AppLabelManagedBy] != constants.ConsoleManagedByValue {
+		return nil
+	}
+	return map[string]string{
+		constants.AppLabelManagedBy: constants.ConsoleManagedByValue,
+	}
+}
+
+func consoleRouteAnnotations(annotations map[string]string) map[string]string {
+	result := map[string]string{}
+	for _, key := range []string{
+		constants.ConsoleDeploymentIDAnnotation,
+		constants.ConsoleDeploymentNameAnnotation,
+	} {
+		if value := annotations[key]; value != "" {
+			result[key] = value
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // append matches if model-router-custom-paths is set

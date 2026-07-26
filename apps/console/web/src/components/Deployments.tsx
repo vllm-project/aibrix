@@ -130,7 +130,7 @@ export function Deployments({ onSelectDeployment, onCreateDeployment }: Deployme
                       <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
                       <div>
                         <div className="text-sm text-gray-900">{deployment.name}</div>
-                        <div className="text-xs text-gray-400">ID: {deployment.deploymentId}</div>
+                        <div className="text-xs text-gray-400">Kubernetes Deployment: {deployment.deploymentId}</div>
                       </div>
                     </div>
                   </td>

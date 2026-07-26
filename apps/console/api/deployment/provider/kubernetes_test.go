@@ -267,6 +267,13 @@ func TestCreateBuildsKubernetesResources(t *testing.T) {
 	if created.GetReplicas() != "1[3]" {
 		t.Fatalf("replicas = %q", created.GetReplicas())
 	}
+	if len(created.GetId()) < resourceNameUniqueSuffixLength {
+		t.Fatalf("Console deployment ID %q is too short", created.GetId())
+	}
+	wantResourceSuffix := created.GetId()[:resourceNameUniqueSuffixLength]
+	if !strings.HasSuffix(created.GetDeploymentId(), "-"+wantResourceSuffix) {
+		t.Errorf("runtime resource %q does not use Console deployment ID suffix %q", created.GetDeploymentId(), wantResourceSuffix)
+	}
 
 	deployments, _ := client.AppsV1().Deployments(namespace).List(context.Background(), metav1.ListOptions{})
 	services, _ := client.CoreV1().Services(namespace).List(context.Background(), metav1.ListOptions{})
@@ -279,9 +286,21 @@ func TestCreateBuildsKubernetesResources(t *testing.T) {
 	if got := services.Items[0].Name; got != serviceName {
 		t.Fatalf("service name = %q, want %q", got, serviceName)
 	}
-	for location, labels := range map[string]map[string]string{
+	resourceLabels := map[string]map[string]string{
 		"deployment":   deployments.Items[0].Labels,
 		"pod template": deployments.Items[0].Spec.Template.Labels,
+		"service":      services.Items[0].Labels,
+		"hpa":          hpas.Items[0].Labels,
+	}
+	for location, labels := range resourceLabels {
+		if got := labels["app.kubernetes.io/managed-by"]; got != "aibrix-console" {
+			t.Errorf("%s managed-by label = %q, want aibrix-console", location, got)
+		}
+	}
+	for location, labels := range map[string]map[string]string{
+		"deployment":   resourceLabels["deployment"],
+		"pod template": resourceLabels["pod template"],
+		"service":      resourceLabels["service"],
 	} {
 		if got := labels[constants.ModelLabelName]; got != "" {
 			t.Errorf("%s has invalid Kubernetes model label %q", location, got)
@@ -296,12 +315,24 @@ func TestCreateBuildsKubernetesResources(t *testing.T) {
 	for location, annotations := range map[string]map[string]string{
 		"deployment":   deployments.Items[0].Annotations,
 		"pod template": deployments.Items[0].Spec.Template.Annotations,
+		"service":      services.Items[0].Annotations,
+		"hpa":          hpas.Items[0].Annotations,
 	} {
+		if got := annotations["console.aibrix.ai/deployment-id"]; got != created.GetId() {
+			t.Errorf("%s Console deployment ID annotation = %q, want %q", location, got, created.GetId())
+		}
+		if got := annotations["console.aibrix.ai/deployment-name"]; got != req.GetName() {
+			t.Errorf("%s Console deployment name annotation = %q, want %q", location, got, req.GetName())
+		}
 		if got := annotations[constants.ModelLabelName]; got != "/models/mock" {
-			t.Errorf("%s model annotation = %q, want /models/mock", location, got)
+			if location == "deployment" || location == "pod template" {
+				t.Errorf("%s model annotation = %q, want /models/mock", location, got)
+			}
 		}
 		if got := annotations[constants.ModelAnnoServiceName]; got != serviceName {
-			t.Errorf("%s service annotation = %q, want %q", location, got, serviceName)
+			if location == "deployment" || location == "pod template" {
+				t.Errorf("%s service annotation = %q, want %q", location, got, serviceName)
+			}
 		}
 	}
 
@@ -339,13 +370,21 @@ func TestValidateRejectsAutoscalingWithoutReplicaRange(t *testing.T) {
 
 func TestGenerateResourceNameRetainsUniqueSuffixAfterTruncation(t *testing.T) {
 	longName := strings.Repeat("long-name-", 10)
-	first := generateResourceName(longName)
-	second := generateResourceName(longName)
+	firstID := "a9d93c63-681a-4124-9c07-dd4e607bd700"
+	secondID := "b8e82d52-a52d-4f23-8913-4536533748ba"
+	first := generateResourceName(longName, firstID)
+	second := generateResourceName(longName, secondID)
 	if len(first) > 63 || len(second) > 63 {
 		t.Fatalf("resource names exceed DNS label limit: %q, %q", first, second)
 	}
 	if first == second {
 		t.Fatalf("resource names should retain unique suffixes: %q", first)
+	}
+	if got := generateResourceName(longName, firstID); got != first {
+		t.Fatalf("resource name is not stable for Console deployment ID: got %q, want %q", got, first)
+	}
+	if !strings.HasSuffix(first, "-a9d93c63") {
+		t.Fatalf("resource name %q does not use Console deployment ID prefix", first)
 	}
 }
 
@@ -368,7 +407,7 @@ func TestGenerateResourceNameDerivedNamesStayWithinKubernetesLimit(t *testing.T)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resourceName := generateResourceName(tc.input)
+			resourceName := generateResourceName(tc.input, "a9d93c63-681a-4124-9c07-dd4e607bd700")
 
 			// The base name is used directly for the Deployment and HPA; it must be valid.
 			if errs := validation.IsDNS1035Label(resourceName); len(errs) > 0 {
@@ -386,7 +425,7 @@ func TestGenerateResourceNameDerivedNamesStayWithinKubernetesLimit(t *testing.T)
 				t.Fatalf("service name %q is not a valid DNS label: %v", serviceName, errs)
 			}
 
-			// Truncation must preserve the random suffix so names stay collision-free.
+			// Truncation must preserve the Console ID suffix so names stay traceable.
 			if !strings.HasPrefix(resourceName, resourceNamePrefix) {
 				t.Fatalf("resource name %q missing prefix %q", resourceName, resourceNamePrefix)
 			}

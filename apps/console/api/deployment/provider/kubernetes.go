@@ -67,8 +67,9 @@ const (
 	maxResourceNameLength = 63
 	// resourceNamePrefix is prepended to every generated resource name.
 	resourceNamePrefix = "aibrix-"
-	// resourceNameUniqueSuffixLength is the length of the random suffix appended to
-	// generated names to keep them collision-free across deployments.
+	// resourceNameUniqueSuffixLength is the length of the Console deployment ID
+	// prefix appended to generated names so runtime resources remain unique and
+	// visibly traceable to their Console object.
 	resourceNameUniqueSuffixLength = 8
 	// serviceNameSuffix is appended to the generated base name to derive the Service
 	// name. generateResourceName reserves room for it so the derived Service name also
@@ -240,7 +241,8 @@ func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.
 		return nil, err
 	}
 
-	resourceName := generateResourceName(req.GetName())
+	consoleDeploymentID := uuid.NewString()
+	resourceName := generateResourceName(req.GetName(), consoleDeploymentID)
 	serviceName := resourceName + serviceNameSuffix
 	servingName = strings.TrimSpace(servingName)
 	if servingName == "" {
@@ -250,6 +252,7 @@ func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.
 	if d.workload.ContainerPort > 0 {
 		containerPort = d.workload.ContainerPort
 	}
+	consoleLabels, consoleAnnotations := consoleResourceMetadata(consoleDeploymentID, req.GetName())
 	labels := map[string]string{
 		"app.kubernetes.io/name":     "aibrix-console-deployment",
 		"app.kubernetes.io/instance": resourceName,
@@ -259,8 +262,14 @@ func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.
 		constants.ModelLabelPort:     strconv.Itoa(int(containerPort)),
 		constants.ModelLabelEngine:   strings.ToLower(spec.GetEngine().GetType()),
 	}
+	for key, value := range consoleLabels {
+		labels[key] = value
+	}
 	annotations := map[string]string{
 		constants.ModelAnnoServiceName: serviceName,
+	}
+	for key, value := range consoleAnnotations {
+		annotations[key] = value
 	}
 	if len(k8svalidation.IsValidLabelValue(servingName)) == 0 {
 		labels[constants.ModelLabelName] = servingName
@@ -278,7 +287,7 @@ func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.
 	}
 	deploymentCreated := true
 
-	service := buildService(serviceName, namespace, labels, d.workload)
+	service := buildService(serviceName, namespace, labels, consoleAnnotations, d.workload)
 	if _, err := clientset.CoreV1().Services(namespace).Create(ctx, service, metav1.CreateOptions{}); err != nil {
 		createErr := status.Errorf(codes.Internal, "create service %q: %v", serviceName, err)
 		cleanupErr := cleanupCreatedKubernetesResourcesWithTimeout(clientset, namespace, resourceName, deploymentCreated, false, false)
@@ -287,7 +296,7 @@ func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.
 	serviceCreated := true
 
 	if enableAutoScaling && maxReplicas > minReplicas {
-		hpa := buildHPA(resourceName, namespace, d.workload, minReplicas, maxReplicas)
+		hpa := buildHPA(resourceName, namespace, consoleLabels, consoleAnnotations, d.workload, minReplicas, maxReplicas)
 		if _, err := clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).Create(ctx, hpa, metav1.CreateOptions{}); err != nil {
 			createErr := status.Errorf(codes.Internal, "create hpa %q: %v", resourceName, err)
 			cleanupErr := cleanupCreatedKubernetesResourcesWithTimeout(clientset, namespace, resourceName, deploymentCreated, serviceCreated, false)
@@ -296,7 +305,7 @@ func (d *kubernetesDeploymentProvider) Create(ctx context.Context, template *pb.
 	}
 
 	return &pb.Deployment{
-		Id:                 uuid.NewString(),
+		Id:                 consoleDeploymentID,
 		Name:               req.GetName(),
 		DeploymentId:       resourceName,
 		Replicas:           replicas,
@@ -401,7 +410,16 @@ func (d *kubernetesDeploymentProvider) Update(ctx context.Context, deployment *p
 	}
 
 	if autoScaling && maxReplicas > minReplicas {
-		desired := buildHPA(resourceName, namespace, d.workload, minReplicas, maxReplicas)
+		consoleLabels, consoleAnnotations := consoleResourceMetadata(deployment.GetId(), deployment.GetName())
+		desired := buildHPA(
+			resourceName,
+			namespace,
+			consoleLabels,
+			consoleAnnotations,
+			d.workload,
+			minReplicas,
+			maxReplicas,
+		)
 		if apierrors.IsNotFound(err) {
 			if _, createErr := hpaClient.Create(ctx, desired, metav1.CreateOptions{}); createErr != nil {
 				return nil, status.Errorf(codes.Internal, "create hpa %q: %v", resourceName, createErr)
@@ -658,13 +676,23 @@ func buildDeployment(name, namespace string, labels, annotations map[string]stri
 		"app.kubernetes.io/instance": name,
 		"app.kubernetes.io/name":     "aibrix-console-deployment",
 	}
-	for _, key := range []string{constants.ModelLabelName, constants.ModelLabelPort, constants.ModelLabelEngine} {
+	for _, key := range []string{
+		constants.AppLabelManagedBy,
+		constants.ModelLabelName,
+		constants.ModelLabelPort,
+		constants.ModelLabelEngine,
+	} {
 		if value := labels[key]; value != "" {
 			podLabels[key] = value
 		}
 	}
 	podAnnotations := map[string]string{}
-	for _, key := range []string{constants.ModelLabelName, constants.ModelAnnoServiceName} {
+	for _, key := range []string{
+		constants.ConsoleDeploymentIDAnnotation,
+		constants.ConsoleDeploymentNameAnnotation,
+		constants.ModelLabelName,
+		constants.ModelAnnoServiceName,
+	} {
 		if value := annotations[key]; value != "" {
 			podAnnotations[key] = value
 		}
@@ -697,7 +725,11 @@ func buildDeployment(name, namespace string, labels, annotations map[string]stri
 	}
 }
 
-func buildService(name, namespace string, labels map[string]string, cfg config.KubernetesWorkloadConfig) *corev1.Service {
+func buildService(
+	name, namespace string,
+	labels, annotations map[string]string,
+	cfg config.KubernetesWorkloadConfig,
+) *corev1.Service {
 	servicePort := defaultServicePort
 	containerPort := defaultContainerPort
 	serviceType := corev1.ServiceTypeClusterIP
@@ -715,9 +747,10 @@ func buildService(name, namespace string, labels map[string]string, cfg config.K
 	}
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Labels:    labels,
+			Name:        name,
+			Namespace:   namespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: corev1.ServiceSpec{
 			Type: serviceType,
@@ -733,15 +766,22 @@ func buildService(name, namespace string, labels map[string]string, cfg config.K
 	}
 }
 
-func buildHPA(name, namespace string, cfg config.KubernetesWorkloadConfig, minReplicas, maxReplicas int32) *autoscalingv2.HorizontalPodAutoscaler {
+func buildHPA(
+	name, namespace string,
+	labels, annotations map[string]string,
+	cfg config.KubernetesWorkloadConfig,
+	minReplicas, maxReplicas int32,
+) *autoscalingv2.HorizontalPodAutoscaler {
 	targetCPU := defaultHPATargetCPUUtilization
 	if cfg.HPATargetCPUUtilization > 0 {
 		targetCPU = cfg.HPATargetCPUUtilization
 	}
 	return &autoscalingv2.HorizontalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
+			Name:        name,
+			Namespace:   namespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
 			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
@@ -962,15 +1002,15 @@ func containsFlag(args []string, flag string) bool {
 	return false
 }
 
-func generateResourceName(name string) string {
+func generateResourceName(name, deploymentID string) string {
 	base := sanitizeName(name)
 	if base == "" {
 		base = "deployment"
 	}
-	suffix := strings.ToLower(uuid.NewString()[:resourceNameUniqueSuffixLength])
+	suffix := strings.ToLower(deploymentID[:resourceNameUniqueSuffixLength])
 	// The base name is reused to derive related resources by appending a fixed suffix
 	// (e.g. the Service is named resourceName+serviceNameSuffix). Reserve room for the
-	// prefix, the joining dash, the unique suffix, and the longest derived suffix so
+	// prefix, the joining dash, the Console ID suffix, and the longest derived suffix so
 	// those derived names also satisfy maxResourceNameLength. Without reserving the
 	// derived suffix, a base name that fills the limit yields an invalid Service name.
 	maxBaseLength := maxResourceNameLength - len(resourceNamePrefix) - len("-") - resourceNameUniqueSuffixLength - len(serviceNameSuffix)
@@ -978,6 +1018,17 @@ func generateResourceName(name string) string {
 		base = strings.Trim(base[:maxBaseLength], "-")
 	}
 	return fmt.Sprintf("%s%s-%s", resourceNamePrefix, base, suffix)
+}
+
+func consoleResourceMetadata(deploymentID, deploymentName string) (map[string]string, map[string]string) {
+	labels := map[string]string{
+		constants.AppLabelManagedBy: constants.ConsoleManagedByValue,
+	}
+	annotations := map[string]string{
+		constants.ConsoleDeploymentIDAnnotation:   deploymentID,
+		constants.ConsoleDeploymentNameAnnotation: deploymentName,
+	}
+	return labels, annotations
 }
 
 func sanitizeName(value string) string {
