@@ -98,6 +98,7 @@ func (h *DeploymentHandler) CreateDeployment(ctx context.Context, req *pb.Create
 		}
 		deployment.BaseModel = model.GetName()
 		deployment.BaseModelId = model.GetId()
+		deployment.ServingName = model.GetServingName()
 		deployment.CreatedBy = currentUserEmail(ctx)
 		saved, err := h.store.SaveDeployment(ctx, deployment)
 		if err != nil {

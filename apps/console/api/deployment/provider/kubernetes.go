@@ -606,10 +606,6 @@ func buildDeployment(name, namespace string, labels, annotations map[string]stri
 		cpuRequest = resource.MustParse(cfg.CPURequest)
 	}
 	container.Resources.Requests = corev1.ResourceList{corev1.ResourceCPU: cpuRequest}
-	if strings.EqualFold(engine.GetType(), "mock") {
-		container.Command = []string{"/bin/sh", "-c"}
-		container.Args = []string{strings.Join(container.Args, " ")}
-	}
 	if healthPath := engine.GetHealthEndpoint(); healthPath != "" {
 		livenessDelay := engine.GetReadyTimeoutSeconds()
 		if livenessDelay <= 0 {
@@ -851,10 +847,7 @@ func buildContainerArgs(spec *pb.ModelDeploymentTemplateSpec) []string {
 	engine := spec.GetEngine()
 	modelSource := spec.GetModelSource()
 	if strings.EqualFold(engine.GetType(), "mock") {
-		if len(engine.GetServeArgs()) > 0 {
-			return append([]string(nil), engine.GetServeArgs()...)
-		}
-		return []string{"WORKER_VICTIM=1 python app.py || true"}
+		return nil
 	}
 
 	args := make([]string, 0)

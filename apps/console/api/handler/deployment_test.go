@@ -19,6 +19,7 @@ package handler
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/vllm-project/aibrix/apps/console/api/deployment/provider"
 	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
@@ -28,6 +29,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 type fakeDeploymentProvider struct {
@@ -80,6 +82,15 @@ func deploymentContext(email string) context.Context {
 	)
 }
 
+func TestDeploymentProtoExposesDetailMetadata(t *testing.T) {
+	fields := (&pb.Deployment{}).ProtoReflect().Descriptor().Fields()
+	for _, name := range []string{"serving_name", "created_at"} {
+		if fields.ByName(protoreflect.Name(name)) == nil {
+			t.Errorf("Deployment proto is missing %s", name)
+		}
+	}
+}
+
 func TestDeploymentHandlerTemplateLifecycle(t *testing.T) {
 	ctx := deploymentContext("owner@example.com")
 	s := store.NewMemoryStore(nil)
@@ -122,6 +133,12 @@ func TestDeploymentHandlerTemplateLifecycle(t *testing.T) {
 	}
 	if implementation.createServingName != model.GetServingName() {
 		t.Fatalf("provider serving name = %q, want %q", implementation.createServingName, model.GetServingName())
+	}
+	if created.GetServingName() != model.GetServingName() {
+		t.Fatalf("serving_name = %q, want %q", created.GetServingName(), model.GetServingName())
+	}
+	if _, err := time.Parse(time.RFC3339, created.GetCreatedAt()); err != nil {
+		t.Fatalf("created_at = %q, want RFC3339 timestamp: %v", created.GetCreatedAt(), err)
 	}
 	if created.GetCreatedBy() != "owner@example.com" {
 		t.Fatalf("created_by = %q", created.GetCreatedBy())

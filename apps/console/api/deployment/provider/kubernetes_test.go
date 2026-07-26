@@ -127,6 +127,30 @@ func TestBuildContainerArgsUsesSGLangMappings(t *testing.T) {
 	}
 }
 
+func TestBuildDeploymentUsesMockImageCommand(t *testing.T) {
+	spec := &pb.ModelDeploymentTemplateSpec{
+		Engine:      &pb.EngineSpec{Type: "mock", Image: "aibrix/mock-app:latest"},
+		ModelSource: &pb.ModelSourceSpec{Uri: "/models/mock"},
+	}
+
+	deployment := buildDeployment(
+		"mock-deployment",
+		"default",
+		map[string]string{},
+		map[string]string{},
+		config.KubernetesWorkloadConfig{},
+		spec,
+		1,
+	)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if len(container.Command) != 0 {
+		t.Fatalf("mock container command = %v, want image command", container.Command)
+	}
+	if len(container.Args) != 0 {
+		t.Fatalf("mock container args = %v, want image defaults", container.Args)
+	}
+}
+
 func TestBuildDeploymentIncludesResourcesRequiredByHPA(t *testing.T) {
 	cfg := config.KubernetesWorkloadConfig{
 		CPURequest:    "500m",

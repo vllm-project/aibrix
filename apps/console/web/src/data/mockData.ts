@@ -207,6 +207,8 @@ export interface Deployment {
   templateId?: string;
   templateVersion?: string;
   implementationKind?: string;
+  servingName: string;
+  createdAt: string;
 }
 
 export type ModelCategory = 'LLM' | 'Audio' | 'Image' | 'Video' | 'Vision' | 'Embedding' | 'Reranks';
@@ -300,6 +302,8 @@ export const mockDeployments: Deployment[] = [
     deploymentId: 'euxdnr5z',
     baseModel: 'DeepSeek R1 Distill Llama 8B',
     baseModelId: 'deepseek-r1-distil-llama-8b',
+    servingName: '/models/deepseek-r1-distil-llama-8b',
+    createdAt: '2026-01-18T23:53:06Z',
     replicas: '1[01]',
     gpusPerReplica: 1,
     gpuType: 'NVIDIA H100 80GB',

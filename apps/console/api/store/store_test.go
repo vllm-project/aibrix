@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
@@ -168,6 +169,27 @@ func TestMemoryStore(t *testing.T) {
 			_, err = s.GetDeployment(ctx, dep.Id)
 			if err == nil {
 				t.Error("expected error after deletion")
+			}
+		})
+
+		t.Run("SaveDeploymentPersistsDetailMetadata", func(t *testing.T) {
+			deployment := &pb.Deployment{
+				Id:           "deployment-with-detail-metadata",
+				Name:         "deployment-with-detail-metadata",
+				DeploymentId: "k8s-detail-resource",
+				Replicas:     "1[1]",
+				Status:       deploymentstatus.StatusDeploying,
+				ServingName:  "/models/mock",
+			}
+			saved, err := s.SaveDeployment(ctx, deployment)
+			if err != nil {
+				t.Fatalf("SaveDeployment failed: %v", err)
+			}
+			if saved.GetServingName() != "/models/mock" {
+				t.Errorf("serving name = %q, want /models/mock", saved.GetServingName())
+			}
+			if _, err := time.Parse(time.RFC3339, saved.GetCreatedAt()); err != nil {
+				t.Errorf("created_at %q is not RFC3339: %v", saved.GetCreatedAt(), err)
 			}
 		})
 

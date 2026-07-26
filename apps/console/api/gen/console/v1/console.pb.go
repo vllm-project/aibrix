@@ -121,6 +121,8 @@ type Deployment struct {
 	TemplateId         string                 `protobuf:"bytes,12,opt,name=template_id,json=templateId,proto3" json:"template_id,omitempty"`
 	TemplateVersion    string                 `protobuf:"bytes,13,opt,name=template_version,json=templateVersion,proto3" json:"template_version,omitempty"`
 	ImplementationKind string                 `protobuf:"bytes,14,opt,name=implementation_kind,json=implementationKind,proto3" json:"implementation_kind,omitempty"` // "kubernetes", "stormservice"
+	ServingName        string                 `protobuf:"bytes,15,opt,name=serving_name,json=servingName,proto3" json:"serving_name,omitempty"`                      // model value used for inference requests
+	CreatedAt          string                 `protobuf:"bytes,16,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`                            // RFC3339 creation timestamp
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -249,6 +251,20 @@ func (x *Deployment) GetTemplateVersion() string {
 func (x *Deployment) GetImplementationKind() string {
 	if x != nil {
 		return x.ImplementationKind
+	}
+	return ""
+}
+
+func (x *Deployment) GetServingName() string {
+	if x != nil {
+		return x.ServingName
+	}
+	return ""
+}
+
+func (x *Deployment) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
 	}
 	return ""
 }
@@ -5729,7 +5745,7 @@ var File_console_v1_console_proto protoreflect.FileDescriptor
 const file_console_v1_console_proto_rawDesc = "" +
 	"\n" +
 	"\x18console/v1/console.proto\x12\n" +
-	"console.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\"\xc5\x03\n" +
+	"console.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\"\x87\x04\n" +
 	"\n" +
 	"Deployment\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
@@ -5749,7 +5765,10 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\vtemplate_id\x18\f \x01(\tR\n" +
 	"templateId\x12)\n" +
 	"\x10template_version\x18\r \x01(\tR\x0ftemplateVersion\x12/\n" +
-	"\x13implementation_kind\x18\x0e \x01(\tR\x12implementationKind\"0\n" +
+	"\x13implementation_kind\x18\x0e \x01(\tR\x12implementationKind\x12!\n" +
+	"\fserving_name\x18\x0f \x01(\tR\vservingName\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x10 \x01(\tR\tcreatedAt\"0\n" +
 	"\x16ListDeploymentsRequest\x12\x16\n" +
 	"\x06search\x18\x01 \x01(\tR\x06search\"S\n" +
 	"\x17ListDeploymentsResponse\x128\n" +
