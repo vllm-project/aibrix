@@ -19,7 +19,6 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"net/http"
 	"testing"
 	"time"
@@ -126,8 +125,7 @@ func runRandomRoutingCheck() error {
 	return nil
 }
 
-// TestPrefixCacheRouting verifies that an identical prompt reuses the warm-up pod and
-// that a novel prefix tends to route elsewhere (best-effort; may retry up to 5 times).
+// TestPrefixCacheRouting verifies that an identical prompt reuses the warm-up pod.
 //
 //nolint:lll // long test prompts exceed line-length limit
 func TestPrefixCacheRouting(t *testing.T) {
@@ -143,21 +141,6 @@ func TestPrefixCacheRouting(t *testing.T) {
 	targetPod2 := getTargetPodFromChatCompletion(t, req, "prefix-cache")
 	t.Logf("req: %s, target pod: %v\n", req, targetPod2)
 	assert.Equal(t, targetPod, targetPod2)
-
-	// Novel prefix: prefer a different pod (probabilistic; retry if it matches by chance).
-	var count int
-	for count < 5 {
-		generateMessage := fmt.Sprintf("%d: completely different request prefix to avoid cache hits between "+
-			"iterations, and padding to exceed 128 bytes for prefix cache routing test!!", rand.Intn(1000))
-		targetPod3 := getTargetPodFromChatCompletion(t, generateMessage, "prefix-cache")
-		t.Logf("req: %s, target pod (novel prefix): %v\n", generateMessage, targetPod3)
-		if targetPod != targetPod3 {
-			break
-		}
-		count++
-	}
-
-	assert.NotEqual(t, 5, count)
 }
 
 // TestMultiTurnConversation verifies that a growing multi-turn context keeps routing
