@@ -35,6 +35,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
@@ -106,8 +107,10 @@ type processState struct {
 	isGatewayRspDone bool
 	completed        bool
 	trackedModel     string
-	span             trace.Span
-	ttftSpan         trace.Span
+	rootSpan         trace.Span // main span
+	inferenceSpan    trace.Span // routing completion to final response body
+	firstRespSpan    trace.Span // routing completion to first response body chunk
+	toLastRespSpan   trace.Span // first response body chunk to stream completion
 }
 
 var podName = os.Getenv("POD_NAME")
@@ -190,19 +193,26 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 }
 
 func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
+	rootSpan := trace.SpanFromContext(srv.Context())
+	requestID := uuid.New().String()
+	if rootSpan.SpanContext().HasTraceID() {
+		requestID = rootSpan.SpanContext().TraceID().String()
+	}
+
 	st := &processState{
 		ctx:       srv.Context(),
-		requestID: uuid.New().String(),
+		requestID: requestID,
+		rootSpan:  rootSpan,
 	}
 
 	metrics.IncGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), []string{"gateway_pod"}, podName)
 	defer func() {
 		requestBuffers.Delete(st.requestID)
-		if st.span != nil {
-			st.span.End()
-		}
-		if st.ttftSpan != nil {
-			st.ttftSpan.End()
+		// end spans created by this server
+		for _, span := range []trace.Span{st.toLastRespSpan, st.firstRespSpan, st.inferenceSpan} {
+			if span != nil {
+				span.End()
+			}
 		}
 		st.releaseModelInFlight()
 		metrics.DecGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), []string{"gateway_pod"}, podName)
@@ -219,6 +229,10 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		// Proactively break the loop if the response is fully processed.
 		// This allows Envoy to gracefully close the stream and send 0\r\n\r\n.
 		if st.completed {
+			if st.toLastRespSpan != nil {
+				st.toLastRespSpan.End()
+				st.toLastRespSpan = nil
+			}
 			klog.V(4).InfoS("request actively finished, breaking ext_proc stream", "requestID", st.requestID)
 			if st.model != "" && !st.isGatewayRspDone {
 				st.isGatewayRspDone = true
@@ -364,20 +378,24 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 
 	switch req.Request.(type) {
 	case *extProcPb.ProcessingRequest_RequestHeaders:
-		st.ctx, st.span = tracer.Start(st.ctx, "ExtProc_HTTP_Request")
-
 		resp, st.user, st.rpm, st.routerCtx = s.HandleRequestHeaders(st.ctx, st.requestID, req)
 		if st.routerCtx != nil {
 			st.model = st.routerCtx.Model
-			st.requestID = st.routerCtx.RequestID
+			st.routerCtx.Span = st.rootSpan
 		}
 		st.metricLabel = "gateway_req_headers"
 
 	case *extProcPb.ProcessingRequest_RequestBody:
 		resp, st.model, st.stream, st.traceTerm = s.HandleRequestBody(st.ctx, st.routerCtx, st.requestID, req, st.user)
 		st.metricLabel = gatewayReqBody
-		// create a ttftSpan to collect time from reqBody to first respBody
-		_, st.ttftSpan = tracer.Start(st.ctx, "Wait_For_LLM_First_Token")
+		// ImmediateResponse means the request was rejected locally and never
+		// entered the inference stage.
+		if resp != nil && resp.GetImmediateResponse() == nil {
+			_, st.inferenceSpan = tracer.Start(st.ctx, "llm.inference")
+			if st.stream {
+				_, st.firstRespSpan = tracer.Start(st.ctx, "llm.time_to_first_response_chunk")
+			}
+		}
 
 	case *extProcPb.ProcessingRequest_ResponseHeaders:
 		resp, st.isRespError, st.respErrorCode = s.HandleResponseHeaders(st.ctx, st.routerCtx, st.requestID, st.model, req)
@@ -388,10 +406,14 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		st.metricLabel = gatewayRespHeaders
 
 	case *extProcPb.ProcessingRequest_ResponseBody:
-		// stop collecting on first resp only
-		if st.ttftSpan != nil {
-			st.ttftSpan.End()
-			st.ttftSpan = nil
+		// Stop collecting on the first response body chunk.
+		if st.firstRespSpan != nil {
+			st.firstRespSpan.End()
+			st.firstRespSpan = nil
+			// after the first response body chunk arrives
+			if st.stream && st.toLastRespSpan == nil {
+				_, st.toLastRespSpan = tracer.Start(st.ctx, "llm.time_from_first_to_last_response_chunk")
+			}
 		}
 		if st.isRespError {
 			body := string(req.Request.(*extProcPb.ProcessingRequest_ResponseBody).ResponseBody.GetBody())
@@ -468,7 +490,7 @@ func (s *Server) sendProcessingResponse(srv extProcPb.ExternalProcessor_ProcessS
 
 func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingContext, pods types.PodList, externalFilterExpr string) (string, error) {
 	var span trace.Span
-	_, span = tracer.Start(ctx, "selectTargetPod")
+	_, span = tracer.Start(ctx, "process.select_target_pod")
 	defer span.End()
 
 	if pods.Len() == 0 {
@@ -505,7 +527,13 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return routeCtx.TargetAddress(), nil
 	}
 	utils.CryptoShuffle(readyPods)
-
+	if routeCtx.Span != nil {
+		routeCtx.Span.SetAttributes(
+			attribute.Int("candidate_pods", pods.Len()),
+			attribute.Int("ready_pods", len(readyPods)),
+			attribute.String("routing_strategy", string(routeCtx.Algorithm)),
+		)
+	}
 	return router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 }
 
@@ -675,7 +703,7 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routing
 		httprouteErr = s.validateHTTPRouteStatus(ctx, model)
 	}
 
-	_, span := tracer.Start(ctx, "responseErrorProcessingWithHeaders")
+	_, span := tracer.Start(ctx, "process.response_error_processing_with_headers")
 	defer span.End()
 
 	if errMsg != "" && httprouteErr != nil {

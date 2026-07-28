@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"go.opentelemetry.io/otel/trace"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -85,11 +86,12 @@ type RoutingContext struct {
 	Message        string
 	RequestID      string
 	User           *string
-	RequestTime    time.Time // Time when the routing context is created.
-	RequestEndTime time.Time // Time when the routing is done and sent to inference engine.
-	PendingLoad    float64   // Normalized pending load of request, available after AddRequestCount call. See cache.PendingLoadProvider
-	TraceTerm      int64     // Trace term identifier, available after AddRequestCount call.
-	RoutedTime     time.Time // Time consumed during routing.
+	Span           trace.Span // record attrs for main span
+	RequestTime    time.Time  // Time when the routing context is created.
+	RequestEndTime time.Time  // Time when the routing is done and sent to inference engine.
+	PendingLoad    float64    // Normalized pending load of request, available after AddRequestCount call. See cache.PendingLoadProvider
+	TraceTerm      int64      // Trace term identifier, available after AddRequestCount call.
+	RoutedTime     time.Time  // Time consumed during routing.
 
 	ReqHeaders       map[string]string
 	ReqBody          []byte
@@ -377,6 +379,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.FirstTokenTime = time.Time{}
 	// RoutedTime will not be reset, it must before ReqeustTime at this time.
 
+	r.Span = nil
 	r.RespHeaders = map[string]string{}
 	r.ConfigProfile = nil
 	r.targetPodSet = make(chan struct{}) // Initialize channel

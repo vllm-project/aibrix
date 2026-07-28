@@ -219,6 +219,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 		// requests, so passing the final arrival here (rather than the first chunk's)
 		// keeps decode-time/KV-transfer math, which spans first-token-to-end, correct.
 		fields := s.requestEndHelper(routerCtx, arrival, promptTokens, completionTokens, totalTokens)
+		if routerCtx.Span != nil {
+			routerCtx.Span.SetAttributes(fieldsToAttributes(fields)...)
+		}
 		klog.InfoS("request_end", fields...)
 	} else if b.ResponseBody.EndOfStream {
 		complete = true

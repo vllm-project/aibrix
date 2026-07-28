@@ -49,7 +49,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	var routingCtx *types.RoutingContext
 	var reqConfigProfile string
 
-	_, span := tracer.Start(ctx, "HandleRequestHeaders")
+	_, span := tracer.Start(ctx, "process.handle_request_headers")
 	defer span.End()
 
 	h := req.Request.(*extProcPb.ProcessingRequest_RequestHeaders)
@@ -74,9 +74,6 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			reqHeaders[n.Key] = string(n.RawValue)
 		case HeaderSessionKey:
 			reqHeaders[n.Key] = string(n.RawValue)
-		case HeaderTraceParent:
-			reqHeaders[n.Key] = string(n.RawValue)
-			requestID = GetTraceID(string(n.RawValue), requestID)
 		}
 	}
 
