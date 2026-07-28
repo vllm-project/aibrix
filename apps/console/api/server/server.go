@@ -235,7 +235,12 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	}
 
 	// Register file proxy routes
-	fileHandler := handler.NewFileHandler(s.cfg.MetadataServiceURL, s.injector, s.store)
+	fileHandler := handler.NewFileHandler(
+		s.cfg.MetadataServiceURL,
+		s.cfg.MetadataFileUploadTimeout,
+		s.injector,
+		s.store,
+	)
 	fileHandler.RegisterRoutes(mux)
 
 	// Register the Kubernetes-backed ModelAdapter BFF.
