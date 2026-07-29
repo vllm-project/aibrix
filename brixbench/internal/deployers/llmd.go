@@ -33,7 +33,7 @@ const llmdRouterChart = "oci://ghcr.io/llm-d/charts/llm-d-router-standalone"
 const llmdRouterChartVersion = "v0.9.0"
 const llmdGAIEVersion = "v1.5.0"
 const llmdGAIEManifestURL = "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/download/v1.5.0/v1-manifests.yaml"
-const llmdDefaultRepoPath = "/home/jinhyu.kim/workspace/Setup_Benchmark/llm-d"
+const llmdDefaultRepoPath = "../llm-d"
 const llmdReadinessTimeout = 10 * time.Minute
 const llmdReadinessPollInterval = 5 * time.Second
 const llmdHelmStateDirName = "llmd-helm"
@@ -80,6 +80,9 @@ func (d *LLMdDeployer) Initialize(ctx context.Context, config Config) error {
 	d.llmdRepoPath = strings.TrimSpace(os.Getenv("LLMD_REPO"))
 	if d.llmdRepoPath == "" {
 		d.llmdRepoPath = llmdDefaultRepoPath
+	}
+	if d.llmdRepoPath != "" && !filepath.IsAbs(d.llmdRepoPath) && d.projectRoot != "" {
+		d.llmdRepoPath = filepath.Clean(filepath.Join(d.projectRoot, d.llmdRepoPath))
 	}
 	if config.TestCase != nil {
 		d.version = strings.TrimSpace(config.TestCase.Version)

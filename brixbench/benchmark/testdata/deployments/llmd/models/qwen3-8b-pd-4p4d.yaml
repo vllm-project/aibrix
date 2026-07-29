@@ -45,13 +45,11 @@ spec:
         llm-d.ai/engine-type: vllm
     spec:
       serviceAccountName: pd-disaggregation-nvidia-gpu-vllm-sa
-      imagePullSecrets:
-        - name: aibrix-registry-secret
       nodeSelector:
         kubernetes.io/hostname: 192.168.0.6
       containers:
         - name: modelserver
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/llmd-vllm-openai:v0.23.0
+          image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/llmd-vllm-openai:v0.23.0
           command: ["vllm", "serve"]
           args:
             - "/models/Qwen3-8B"
@@ -210,13 +208,11 @@ spec:
         llm-d.ai/engine-type: vllm
     spec:
       serviceAccountName: pd-disaggregation-nvidia-gpu-vllm-sa
-      imagePullSecrets:
-        - name: aibrix-registry-secret
       nodeSelector:
         kubernetes.io/hostname: 192.168.0.6
       initContainers:
         - name: routing-proxy
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/llmd-router-disagg-sidecar:v0.9.0
+          image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/llmd-router-disagg-sidecar:v0.9.0
           imagePullPolicy: Always
           restartPolicy: Always
           args:
@@ -235,7 +231,7 @@ spec:
             runAsNonRoot: true
       containers:
         - name: modelserver
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/llmd-vllm-openai:v0.23.0
+          image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/llmd-vllm-openai:v0.23.0
           command: ["vllm", "serve"]
           args:
             - "/models/Qwen3-8B"

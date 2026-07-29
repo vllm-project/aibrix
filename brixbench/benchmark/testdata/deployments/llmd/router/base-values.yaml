@@ -3,7 +3,7 @@ router:
   epp:
     replicas: 1
     image:
-      registry: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix
+      registry: aibrix-public-release-cn-beijing.cr.volces.com/aibrix
       repository: llm-d-router-endpoint-picker
       tag: v0.9.0
       pullPolicy: IfNotPresent
@@ -24,7 +24,7 @@ router:
     protocol: http
 
   proxy:
-    image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/envoyproxy-envoy:distroless-v1.33.2
+    image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/envoyproxy-envoy:distroless-v1.33.2
     args:
       - "--service-node"
       - "envoy-sidecar"
