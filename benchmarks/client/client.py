@@ -18,6 +18,24 @@ session_history_lock = threading.Lock()  # Use threading lock for thread safety
 pending_sessioned_requests: Dict[str, List[Tuple[Dict, float]]] = {}
 completed_sessions = asyncio.Queue()
 
+def resolve_output_tokens(request: Dict, max_output: Optional[int]) -> Tuple[Optional[int], Optional[Dict]]:
+    """Resolve how many output tokens a single request should generate.
+
+    Workloads emitted by the generator carry a per-request ``output_length``, and
+    replaying a recorded trace faithfully means honoring it instead of letting
+    every request run up to one global cap. When it is present the response is
+    pinned to exactly that many tokens (``min_tokens`` is a vLLM extension, so it
+    travels in ``extra_body``). ``--output-token-limit`` keeps its documented
+    meaning as a ceiling, and requests without a usable ``output_length`` fall
+    back to it unchanged.
+    """
+    output_length = request.get("output_length", None)
+    if not isinstance(output_length, int) or output_length <= 0:
+        return max_output, None
+    if max_output is not None:
+        output_length = min(output_length, max_output)
+    return output_length, {"min_tokens": output_length}
+
 async def send_request_streaming(client: openai.AsyncOpenAI,
                              model: str,
                              max_output: int, 
@@ -42,11 +60,13 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
         if target_time > start_time:
             await asyncio.sleep(target_time - start_time)
         dispatch_time = asyncio.get_event_loop().time()
+        max_tokens, extra_body = resolve_output_tokens(request, max_output)
         response_stream = await client.chat.completions.create(
             model=model,
             messages=prompt,
             temperature=0,
-            max_tokens=max_output,
+            max_tokens=max_tokens,
+            extra_body=extra_body,
             stream=True,
             stream_options={"include_usage": True},
         )
@@ -182,11 +202,13 @@ async def send_request_batch(client: openai.AsyncOpenAI,
         if target_time > start_time:
             await asyncio.sleep(target_time - start_time)
         dispatch_time = asyncio.get_event_loop().time()
+        max_tokens, extra_body = resolve_output_tokens(request, max_output)
         response = await client.chat.completions.create(
             model=model,
             messages=prompt,
             temperature=0,
-            max_tokens=max_output,
+            max_tokens=max_tokens,
+            extra_body=extra_body,
         )
         if hasattr(response, 'response') and hasattr(response.response, 'headers'):
             target_pod = response.response.headers.get('target-pod')
