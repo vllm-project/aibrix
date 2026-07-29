@@ -71,7 +71,7 @@ func (w *ModelAdapterWebhook) ValidateCreate(ctx context.Context, obj runtime.Ob
 	}
 
 	if err := utils.ValidateArtifactURL(adapter.Spec.ArtifactURL); err != nil {
-		allErrs = append(allErrs, field.NotSupported(specPath.Child("artifactURL"), adapter.Spec.ArtifactURL, utils.AllowedSchemas))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("artifactURL"), adapter.Spec.ArtifactURL, err.Error()))
 	}
 
 	return nil, allErrs.ToAggregate()

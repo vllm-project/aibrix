@@ -123,5 +123,15 @@ var _ = ginkgo.Describe("modelAdapter default and validation", func() {
 			},
 			failed: true,
 		}),
+		ginkgo.Entry("adapter creation with misspelled huggingface schema should be failed", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("hugingface://yard1/llama-2-7b-sql-lora-tests").
+					PodSelector(&metav1.LabelSelector{}).
+					Obj()
+			},
+			failed: true,
+		}),
 	)
 })

@@ -5,11 +5,13 @@ export function TimelineEventDetailCard({
   eventType,
   jobStatus,
   rawJson,
+  refreshTick,
 }: {
   provider: string;
   eventType: string;
   jobStatus: string;
   rawJson?: string;
+  refreshTick?: number;
 }) {
   const Renderer = getTimelineEventDetailRenderer(provider, eventType);
   if (!Renderer || !rawJson) {
@@ -25,5 +27,5 @@ export function TimelineEventDetailCard({
   } catch {
     return null;
   }
-  return <Renderer data={data} jobStatus={jobStatus} />;
+  return <Renderer data={data} jobStatus={jobStatus} refreshTick={refreshTick} />;
 }

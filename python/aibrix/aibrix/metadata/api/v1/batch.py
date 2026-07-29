@@ -140,7 +140,7 @@ class AibrixExtension(BaseModel):
                     "model_template": {"name": "llama3-70b-prod"},
                     "profile": {"name": "prod-24h"},
                     "client": {
-                        "max_concurrency": 256,
+                        "max_concurrency": 1024,
                         "adaptive_concurrency": True,
                         "adaptive_max_factor": 16,
                         "retry_policy": {

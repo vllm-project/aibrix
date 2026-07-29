@@ -42,6 +42,7 @@ from aibrix.batch.job_entity import (
     RuntimeSpec,
     TypeMeta,
 )
+from aibrix.batch.job_entity.aibrix_metadata import MAX_CLIENT_CONCURRENCY
 from aibrix.batch.storage.input_validation import validate_request_body_for_endpoint
 from aibrix.metadata.api.v1.batch import (
     BatchSpec,
@@ -327,7 +328,7 @@ def test_batch_spec_accepts_client_config():
             "completion_window": "24h",
             "aibrix": {
                 "client": {
-                    "max_concurrency": 256,
+                    "max_concurrency": MAX_CLIENT_CONCURRENCY,
                     "adaptive_concurrency": True,
                     "adaptive_max_factor": 16,
                     "retry_policy": {
@@ -345,7 +346,7 @@ def test_batch_spec_accepts_client_config():
 
     assert batch_job_spec.aibrix is not None
     assert batch_job_spec.aibrix.client is not None
-    assert batch_job_spec.aibrix.client.max_concurrency == 256
+    assert batch_job_spec.aibrix.client.max_concurrency == MAX_CLIENT_CONCURRENCY
     assert batch_job_spec.aibrix.client.adaptive_concurrency is True
     assert batch_job_spec.aibrix.client.adaptive_max_factor == 16
     retry = batch_job_spec.aibrix.client.retry_policy
@@ -360,7 +361,7 @@ def test_batch_spec_accepts_client_config():
     "client",
     [
         {"max_concurrency": 0},
-        {"max_concurrency": 257},
+        {"max_concurrency": MAX_CLIENT_CONCURRENCY + 1},
         {"adaptive_max_factor": 0.5},
         {"retry_policy": {"max_retries": -1}},
         {"retry_policy": {"base_delay_seconds": -0.1}},

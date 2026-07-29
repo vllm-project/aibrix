@@ -19,11 +19,11 @@ package e2e
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/openai/openai-go/v3"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,53 +43,81 @@ func TestModelRPSLimit(t *testing.T) {
 		time.Sleep(time.Until(nextWindow))
 	}
 
-	sendRequest := func(t *testing.T, profile string) error {
-		t.Helper()
+	sendRequest := func(profile string) error {
 		client := createOpenAIClientWithConfigProfile(gatewayURL, apiKey, profile, nil)
 		_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
-			Messages: []openai.ChatCompletionMessageParamUnion{openai.UserMessage(msg)},
-			Model:    modelNameQwen3,
+			Messages:  []openai.ChatCompletionMessageParamUnion{openai.UserMessage(msg)},
+			Model:     modelNameQwen3,
+			MaxTokens: openai.Int(1),
 		})
 		return err
+	}
+
+	sendConcurrentRequests := func(profile string, count int) []error {
+		errs := make([]error, count)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(count)
+		for i := range count {
+			go func(index int) {
+				defer wg.Done()
+				<-start
+				errs[index] = sendRequest(profile)
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+		return errs
+	}
+
+	requireOneAllowedOneRejected := func(t *testing.T, errs []error) {
+		t.Helper()
+		require.Len(t, errs, 2)
+
+		var allowed, rejected int
+		for _, err := range errs {
+			if err == nil {
+				allowed++
+				continue
+			}
+
+			var apiErr *openai.Error
+			require.True(t, errors.As(err, &apiErr), "error should be an openai API error, got: %v", err)
+			require.Equal(t, 429, apiErr.StatusCode, "exceeded RPS limit should return HTTP 429")
+			rejected++
+		}
+
+		require.Equal(t, 1, allowed, "exactly one request should be allowed within the 1 RPS window")
+		require.Equal(t, 1, rejected, "exactly one request should be rejected within the 1 RPS window")
 	}
 
 	t.Run("first_request_succeeds", func(t *testing.T) {
 		waitForFreshWindow()
 
-		err := sendRequest(t, "rps-limited")
+		err := sendRequest("rps-limited")
 		require.NoError(t, err, "first request within the RPS limit should succeed")
 	})
 
 	t.Run("second_request_in_same_window_is_rejected", func(t *testing.T) {
 		waitForFreshWindow()
 
-		// First request exhausts the 1 RPS budget.
-		err := sendRequest(t, "rps-limited")
-		require.NoError(t, err, "first request should succeed")
-
-		// Second request in the same 1-second window must be rejected.
-		err = sendRequest(t, "rps-limited")
-		require.Error(t, err, "second request should be rejected after RPS limit is exhausted")
-
-		var apiErr *openai.Error
-		require.True(t, errors.As(err, &apiErr), "error should be an openai API error, got: %v", err)
-		assert.Equal(t, 429, apiErr.StatusCode, "exceeded RPS limit should return HTTP 429")
+		// Start both requests together so both reach the gateway in the same
+		// fixed window regardless of backend completion latency.
+		errs := sendConcurrentRequests("rps-limited", 2)
+		requireOneAllowedOneRejected(t, errs)
 	})
 
 	t.Run("requests_succeed_after_window_resets", func(t *testing.T) {
 		waitForFreshWindow()
 
-		// Exhaust the window.
-		err := sendRequest(t, "rps-limited")
-		require.NoError(t, err, "first request should succeed")
-
-		err = sendRequest(t, "rps-limited")
-		require.Error(t, err, "second request should be throttled")
+		// Exhaust the window with a concurrent burst.
+		errs := sendConcurrentRequests("rps-limited", 2)
+		requireOneAllowedOneRejected(t, errs)
 
 		// Wait for the window to roll over, then verify requests succeed again.
 		waitForFreshWindow()
 
-		err = sendRequest(t, "rps-limited")
+		err := sendRequest("rps-limited")
 		require.NoError(t, err, "request in the next window should succeed after the counter resets")
 	})
 
@@ -97,7 +125,7 @@ func TestModelRPSLimit(t *testing.T) {
 		// The default profile has no requestsPerSecond, so multiple rapid requests
 		// to the same model must all succeed regardless of how many are sent.
 		for i := 0; i < 3; i++ {
-			err := sendRequest(t, "least-request")
+			err := sendRequest("least-request")
 			require.NoError(t, err, "request %d without RPS profile should succeed", i+1)
 		}
 	})

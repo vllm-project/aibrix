@@ -26,14 +26,30 @@ import (
 )
 
 // PreparePayload transforms routingCtx.ReqBody into a prefill-specific payload
-// ready to be POSTed to the prefill pod. It delegates all engine-specific field
-// injection to handler.AugmentPrefillRequest, then applies common constraints:
-// max_tokens=1, stream=false, no stream_options, no min_tokens. TRT-LLM does not
-// accept max_completion_tokens, so that field is omitted for that engine.
+// ready to be POSTed to the prefill pod.
+//
+// When the handler implements RawPrefillPayloadPreparer, the handler fully owns
+// payload construction — it must inject engine-specific bootstrap fields, apply
+// the common prefill constraints (max_tokens=1, max_completion_tokens=1,
+// stream=false, no stream_options, no min_tokens), and side-effect
+// routingCtx.ReqBody with the decode body. This path avoids re-serializing
+// nested fields and preserves byte-level ordering of messages, tools, etc.
+//
+// Otherwise, the fallback path unmarshals the body into map[string]any, calls
+// handler.AugmentPrefillRequest for engine-specific field injection, then
+// applies the common constraints before re-marshaling.
 //
 // This function is exported so pdRouter can expose a thin backward-compat wrapper
 // for tests that call preparePrefillPayload directly.
 func PreparePayload(routingCtx *types.RoutingContext, pod *v1.Pod, llmEngine string, handler engine.EngineHandler) ([]byte, error) {
+	// Engines that implement RawPrefillPayloadPreparer mutate only top-level
+	// fields on the original JSON bytes, preserving the byte ordering of all
+	// nested objects (messages, tools, …). This keeps prompt_token_ids stable
+	// across prefill, decode, and repeated requests.
+	if rawPreparer, ok := handler.(engine.RawPrefillPayloadPreparer); ok {
+		return rawPreparer.PreparePrefillPayload(routingCtx, pod)
+	}
+
 	var completionRequest map[string]any
 	if err := sonic.Unmarshal(routingCtx.ReqBody, &completionRequest); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal prefill request body: %w", err)

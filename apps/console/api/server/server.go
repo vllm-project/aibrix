@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -237,6 +238,16 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 
 	// Register auth routes
 	s.auth.RegisterAuthRoutes(mux)
+
+	// Register frontend-consumed configuration.
+	if err := mux.HandlePath("GET", "/api/v1/config/job-limits", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(handler.JobLimitsConfig()); err != nil {
+			klog.Errorf("write job limits response: %v", err)
+		}
+	}); err != nil {
+		return err
+	}
 
 	// Register health endpoint
 	if err := mux.HandlePath("GET", "/api/v1/health", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {

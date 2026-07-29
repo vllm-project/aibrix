@@ -41,6 +41,24 @@ const (
 	prefillRequestSuccessStatus = "pd-prefill-request-success"
 )
 
+func incPrefillOutstanding() {
+	metrics.IncGaugeMetric(
+		metrics.GatewayPrefillOutstandingRequests,
+		metrics.GetMetricHelp(metrics.GatewayPrefillOutstandingRequests),
+		[]string{"gateway_pod"},
+		metrics.GatewayPodName(),
+	)
+}
+
+func decPrefillOutstanding() {
+	metrics.DecGaugeMetric(
+		metrics.GatewayPrefillOutstandingRequests,
+		metrics.GetMetricHelp(metrics.GatewayPrefillOutstandingRequests),
+		[]string{"gateway_pod"},
+		metrics.GatewayPodName(),
+	)
+}
+
 // DefaultExecutor is the standard PrefillExecutor. It owns the HTTP client and
 // the prefill-request tracker so that prefill logic can be tested in isolation
 // from the routing/scoring concerns in pdRouter.
@@ -113,6 +131,8 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 			ReqHeaders:  maps.Clone(routingCtx.ReqHeaders),
 		}
 		go func() {
+			incPrefillOutstanding()
+			defer decPrefillOutstanding()
 			defer e.tracker.RemovePrefillRequest(requestID)
 
 			if _, err := e.executeHTTP(apiURL, asyncCtx, payload); err != nil {
@@ -152,6 +172,8 @@ func (e *DefaultExecutor) handleSync(
 	mergeFn func(*types.RoutingContext, map[string]any, *v1.Pod) error,
 	errorContext string,
 ) error {
+	incPrefillOutstanding()
+	defer decPrefillOutstanding()
 	defer e.tracker.RemovePrefillRequest(routingCtx.RequestID)
 
 	responseData, err := e.executeHTTP(apiURL, routingCtx, payload)

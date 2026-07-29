@@ -18,7 +18,7 @@ jobs:
     name: Lint
     steps:
       - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@v1.3.1
         with:
           tool-cache: false
       - name: Check out source repository

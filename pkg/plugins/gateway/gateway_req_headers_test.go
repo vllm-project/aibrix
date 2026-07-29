@@ -187,6 +187,34 @@ func Test_handleRequestHeaders(t *testing.T) {
 			},
 			validate: defaultSuccessValidator,
 		},
+		{
+			name: "extract opaque session key for session affinity routing",
+			requestHeaders: []*configPb.HeaderValue{
+				{
+					Key:      HeaderSessionKey,
+					RawValue: []byte("agent-session-42"),
+				},
+				{
+					Key:      HeaderRoutingStrategy,
+					RawValue: []byte("session-affinity"),
+				},
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				headers: []*configPb.HeaderValueOption{
+					{Header: &configPb.HeaderValue{Key: HeaderWentIntoReqHeaders, RawValue: []byte("true")}},
+				},
+				routingCtx: &types.RoutingContext{
+					ReqHeaders: map[string]string{
+						HeaderSessionKey:      "agent-session-42",
+						HeaderRoutingStrategy: "session-affinity",
+					},
+				},
+				user: utils.User{},
+				rpm:  0,
+			},
+			validate: defaultSuccessValidator,
+		},
 	}
 
 	for _, tt := range tests {

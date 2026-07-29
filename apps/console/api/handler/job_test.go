@@ -180,6 +180,80 @@ func TestCreateJobDefaultsCompletionWindowTo24h(t *testing.T) {
 	}
 }
 
+func TestCreateJobAcceptsMaxReplicas(t *testing.T) {
+	planner := &fakeJobPlanner{
+		job: plannerJobWithOwner("job-console-1", "owner@example.com"),
+	}
+	handler := NewJobHandler(nil, planner, "", false, nil)
+
+	_, err := handler.CreateJob(context.Background(), &pb.CreateJobRequest{
+		InputDataset: "file-input",
+		Endpoint:     "/v1/chat/completions",
+		ResourceRequest: &pb.JobResourceRequest{
+			Replicas: maxJobReplicas,
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("CreateJob returned error: %v", err)
+	}
+	if planner.enqueued == nil || planner.enqueued.ResourceRequest == nil {
+		t.Fatal("planner.Enqueue was not called with resource request")
+	}
+	if got := planner.enqueued.ResourceRequest.Replicas; got != int(maxJobReplicas) {
+		t.Fatalf("replicas = %d, want %d", got, maxJobReplicas)
+	}
+}
+
+func TestJobLimitsConfigMatchesValidationConstants(t *testing.T) {
+	limits := JobLimitsConfig()
+
+	if got := limits.ResourceRequest.MinReplicas; got != minJobReplicas {
+		t.Fatalf("min replicas = %d, want %d", got, minJobReplicas)
+	}
+	if got := limits.ResourceRequest.MaxReplicas; got != maxJobReplicas {
+		t.Fatalf("max replicas = %d, want %d", got, maxJobReplicas)
+	}
+}
+
+func TestCreateJobRejectsReplicasOutsideAllowedRange(t *testing.T) {
+	testCases := []struct {
+		name     string
+		replicas int32
+	}{
+		{
+			name:     "negative replicas",
+			replicas: -minJobReplicas,
+		},
+		{
+			name:     "too many replicas",
+			replicas: maxJobReplicas + 1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			planner := &fakeJobPlanner{}
+			handler := NewJobHandler(nil, planner, "", false, nil)
+
+			_, err := handler.CreateJob(context.Background(), &pb.CreateJobRequest{
+				InputDataset: "file-input",
+				Endpoint:     "/v1/chat/completions",
+				ResourceRequest: &pb.JobResourceRequest{
+					Replicas: tc.replicas,
+				},
+			})
+
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("CreateJob code = %v, want InvalidArgument; err=%v", status.Code(err), err)
+			}
+			if planner.enqueued != nil {
+				t.Fatalf("planner.Enqueue called for invalid replicas: %#v", planner.enqueued)
+			}
+		})
+	}
+}
+
 func TestCreateJobAcceptsSupportedCompletionWindows(t *testing.T) {
 	for _, window := range []string{"1h", "2h", "6h", "12h", "24h"} {
 		t.Run(window, func(t *testing.T) {

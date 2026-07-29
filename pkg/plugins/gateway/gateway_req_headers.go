@@ -72,6 +72,8 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			reqConfigProfile = strings.TrimSpace(string(n.RawValue))
 		case HeaderSessionID:
 			reqHeaders[n.Key] = string(n.RawValue)
+		case HeaderSessionKey:
+			reqHeaders[n.Key] = string(n.RawValue)
 		case HeaderTraceParent:
 			reqHeaders[n.Key] = string(n.RawValue)
 			requestID = GetTraceID(string(n.RawValue), requestID)
