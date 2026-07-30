@@ -87,4 +87,18 @@ describe('api helpers', () => {
       },
     });
   });
+
+  it('serializes ModelAdapter creation without exposing the Kubernetes CRD', () => {
+    expect(camelToSnake({
+      name: 'sql-assistant',
+      artifactUrl: 'huggingface://example/sql-assistant',
+      deploymentName: 'qwen-serving',
+      placement: 'all',
+    })).toEqual({
+      name: 'sql-assistant',
+      artifact_url: 'huggingface://example/sql-assistant',
+      deployment_name: 'qwen-serving',
+      placement: 'all',
+    });
+  });
 });

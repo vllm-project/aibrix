@@ -29,6 +29,7 @@ import (
 	"github.com/vllm-project/aibrix/apps/console/api/config"
 	deploymentstatus "github.com/vllm-project/aibrix/apps/console/api/deployment/status"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	aibrixclient "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -87,11 +88,26 @@ type KubernetesClientProvider interface {
 	Client() (kubernetes.Interface, string, error)
 }
 
+// ModelClientProvider resolves the AIBrix typed client against the same
+// cluster and namespace as the core Kubernetes client.
+type ModelClientProvider interface {
+	ModelClient() (aibrixclient.Interface, string, error)
+}
+
+// ClusterClientProvider exposes both clientsets backed by one Kubernetes
+// configuration.
+type ClusterClientProvider interface {
+	KubernetesClientProvider
+	ModelClientProvider
+}
+
 type kubeconfigClientProvider struct {
-	cfg             config.KubernetesProviderConfig
-	mu              sync.Mutex
-	cachedClientset kubernetes.Interface
-	cachedNamespace string
+	cfg                  config.KubernetesProviderConfig
+	mu                   sync.Mutex
+	cachedRESTConfig     *rest.Config
+	cachedClientset      kubernetes.Interface
+	cachedModelClientset aibrixclient.Interface
+	cachedNamespace      string
 }
 
 type kubernetesDeploymentProvider struct {
@@ -102,9 +118,10 @@ type kubernetesDeploymentProvider struct {
 var (
 	_ DeploymentProvider       = (*kubernetesDeploymentProvider)(nil)
 	_ KubernetesClientProvider = (*kubeconfigClientProvider)(nil)
+	_ ModelClientProvider      = (*kubeconfigClientProvider)(nil)
 )
 
-func NewKubernetesClientProvider(cfg config.KubernetesProviderConfig) KubernetesClientProvider {
+func NewKubernetesClientProvider(cfg config.KubernetesProviderConfig) ClusterClientProvider {
 	return &kubeconfigClientProvider{cfg: cfg}
 }
 
@@ -515,6 +532,44 @@ func (p *kubeconfigClientProvider) Client() (kubernetes.Interface, string, error
 		return p.cachedClientset, p.cachedNamespace, nil
 	}
 
+	restConfig, namespace, err := p.restConfig()
+	if err != nil {
+		return nil, "", err
+	}
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return nil, "", status.Errorf(codes.Internal, "create kubernetes client: %v", err)
+	}
+	p.cachedClientset = clientset
+	return clientset, namespace, nil
+}
+
+func (p *kubeconfigClientProvider) ModelClient() (aibrixclient.Interface, string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.cachedModelClientset != nil {
+		return p.cachedModelClientset, p.cachedNamespace, nil
+	}
+
+	restConfig, namespace, err := p.restConfig()
+	if err != nil {
+		return nil, "", err
+	}
+	clientset, err := aibrixclient.NewForConfig(restConfig)
+	if err != nil {
+		return nil, "", status.Errorf(codes.Internal, "create AIBrix client: %v", err)
+	}
+	p.cachedModelClientset = clientset
+	return clientset, namespace, nil
+}
+
+// restConfig must be called while p.mu is held.
+func (p *kubeconfigClientProvider) restConfig() (*rest.Config, string, error) {
+	if p.cachedRESTConfig != nil {
+		return p.cachedRESTConfig, p.cachedNamespace, nil
+	}
+
 	namespace := defaultKubernetesNamespace
 	if p.cfg.Namespace != "" {
 		namespace = p.cfg.Namespace
@@ -549,13 +604,9 @@ func (p *kubeconfigClientProvider) Client() (kubernetes.Interface, string, error
 		}
 	}
 
-	clientset, err := kubernetes.NewForConfig(restConfig)
-	if err != nil {
-		return nil, "", status.Errorf(codes.Internal, "create kubernetes client: %v", err)
-	}
-	p.cachedClientset = clientset
+	p.cachedRESTConfig = restConfig
 	p.cachedNamespace = namespace
-	return clientset, namespace, nil
+	return restConfig, namespace, nil
 }
 
 func validateDeploymentSizing(spec *pb.ModelDeploymentTemplateSpec, req *pb.CreateDeploymentRequest) error {

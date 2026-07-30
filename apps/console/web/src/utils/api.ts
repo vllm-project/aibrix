@@ -145,6 +145,58 @@ export interface DeploymentOverrides {
   engineArgs?: Record<string, string>;
 }
 
+export type ModelAdapterPlacement = 'all' | 'single';
+
+export interface ModelAdapterTarget {
+  name: string;
+  namespace: string;
+  kind: 'Deployment';
+  apiVersion: string;
+  baseModel: string;
+  engine: string;
+  port: number;
+  readyReplicas: number;
+  desiredReplicas: number;
+  selector: string;
+  updateStrategy: string;
+  createdAt: string;
+}
+
+export interface ModelAdapterPod {
+  name: string;
+  ready: string;
+  status: string;
+  restarts: number;
+  createdAt: string;
+  podIp: string;
+  node: string;
+}
+
+export interface ModelAdapter {
+  name: string;
+  namespace: string;
+  apiVersion: string;
+  artifactUrl: string;
+  baseModel: string;
+  schedulerName: string;
+  placement: ModelAdapterPlacement;
+  phase: string;
+  readyReplicas: number;
+  desiredReplicas: number;
+  candidates: number;
+  createdAt: string;
+  podSelector: string;
+  target?: ModelAdapterTarget;
+  instances: ModelAdapterPod[];
+}
+
+export interface CreateModelAdapterRequest {
+  name: string;
+  artifactUrl: string;
+  deploymentName: string;
+  placement: ModelAdapterPlacement;
+}
+
 // --- Model Deployment Templates ---
 //
 // Mirrors apps/console/api/proto/console/v1/console.proto. The proto comment
@@ -371,7 +423,7 @@ export function camelToSnake<T>(data: unknown): T {
 
 // --- Fetch helper ---
 
-class APIError extends Error {
+export class APIError extends Error {
   status: number;
 
   constructor(message: string, status: number) {
@@ -519,6 +571,37 @@ export async function deleteDeployment(id: string): Promise<void> {
   return apiFetch<void>(`/api/v1/deployments/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
+}
+
+// --- ModelAdapters ---
+
+export async function listModelAdapters(): Promise<ModelAdapter[]> {
+  const data = await apiFetch<{ modelAdapters: ModelAdapter[] }>('/api/v1/model-adapters');
+  return data.modelAdapters || [];
+}
+
+export async function getModelAdapter(name: string): Promise<ModelAdapter> {
+  return apiFetch<ModelAdapter>(`/api/v1/model-adapters/${encodeURIComponent(name)}`);
+}
+
+export async function createModelAdapter(
+  request: CreateModelAdapterRequest,
+): Promise<ModelAdapter> {
+  return apiFetch<ModelAdapter>('/api/v1/model-adapters', {
+    method: 'POST',
+    body: JSON.stringify(camelToSnake(request)),
+  });
+}
+
+export async function deleteModelAdapter(name: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/model-adapters/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function listModelAdapterTargets(): Promise<ModelAdapterTarget[]> {
+  const data = await apiFetch<{ targets: ModelAdapterTarget[] }>('/api/v1/model-adapter-targets');
+  return data.targets || [];
 }
 
 // --- Models ---
