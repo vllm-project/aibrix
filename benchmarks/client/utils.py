@@ -1,7 +1,11 @@
 import json
 import openai
 import threading
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Optional
+
+# Matches the gateway's caller-owned session affinity header. Keep in sync
+# with HeaderSessionKey in pkg/plugins/gateway/types.go.
+AIBRIX_SESSION_KEY_HEADER = "x-aibrix-session-key"
 
 def load_workload(input_path: str) -> List[Any]:
     load_struct = None
@@ -13,8 +17,25 @@ def load_workload(input_path: str) -> List[Any]:
             load_struct = json.load(file)
     return load_struct
 
+def session_key_headers(session_id, enabled: bool) -> Optional[Dict[str, str]]:
+    """
+    Build per-request headers carrying the workload session identity.
+
+    When enabled and the request has a session_id, returns the
+    x-aibrix-session-key header so the gateway's session-affinity routing
+    can be exercised during replay. Returns None otherwise, so the request
+    goes out without extra headers (existing behavior).
+
+    :param session_id: The session identifier from the workload request, or None.
+    :param enabled: Whether session key header injection is enabled.
+    :return: A headers dict or None.
+    """
+    if not enabled or session_id is None:
+        return None
+    return {AIBRIX_SESSION_KEY_HEADER: str(session_id)}
+
 # Function to wrap the prompt into OpenAI's chat completion message format.
-def prepare_prompt(prompt: str, 
+def prepare_prompt(prompt: str,
                    session_id: str = None, 
                    history: Dict = None,
                    history_lock: threading.Lock = None) -> List[Dict]:
