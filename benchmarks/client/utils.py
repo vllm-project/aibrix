@@ -17,7 +17,7 @@ def load_workload(input_path: str) -> List[Any]:
             load_struct = json.load(file)
     return load_struct
 
-def session_key_headers(session_id, enabled: bool) -> Optional[Dict[str, str]]:
+def session_key_headers(session_id: Optional[Any], enabled: bool) -> Optional[Dict[str, str]]:
     """
     Build per-request headers carrying the workload session identity.
 

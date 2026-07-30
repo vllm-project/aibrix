@@ -9,7 +9,7 @@ import traceback
 import threading
 
 
-from typing import List, Dict, Callable, Optional, Set, Tuple
+from typing import Any, List, Dict, Callable, Optional, Set, Tuple
 from client.utils import (load_workload, prepare_prompt, update_response, create_client, session_key_headers)
 
 logging.basicConfig(level=logging.INFO)
@@ -42,7 +42,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
                              request: Dict,
                              output_file: str,
                              request_id: int,
-                             session_id: int,
+                             session_id: Optional[Any],
                              target_time: int,
                              session_key_header: bool = False,
                              ):
@@ -188,7 +188,7 @@ async def send_request_batch(client: openai.AsyncOpenAI,
                              request: Dict,
                              output_file: str,
                              request_id: int,
-                             session_id: int,
+                             session_id: Optional[Any],
                              target_time: int,
                              session_key_header: bool = False,
                              ):
@@ -477,8 +477,8 @@ def main(args):
         # Get max_concurrent_sessions from args if provided
         max_concurrent_sessions = args.max_concurrent_sessions if hasattr(args, 'max_concurrent_sessions') else None
 
-        # Get session_key_header from args if provided (benchmark.py builds a
-        # Namespace without this attribute, so default to disabled)
+        # Get session_key_header from args if provided (default to False for
+        # callers whose Namespace does not carry this attribute)
         session_key_header = getattr(args, 'session_key_header', False)
 
         start_time = time.time()
