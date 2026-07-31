@@ -169,7 +169,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 				attribute.String("target_pod", targetPodName),
 				attribute.String("target_pod_ip", targetPodIP),
 				attribute.Float64("outstanding_requests_at_start", request_count),
-				attribute.String("routing_time_taken", routingDelay.String()),
+				attribute.Int64("routing_time_taken_ms", routingDelay.Milliseconds()),
 			)
 		}
 		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream, "routing_strategy", routingAlgorithm,

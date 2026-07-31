@@ -498,6 +498,14 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	}
 	readyPods := utils.FilterRoutablePods(pods.All())
 
+	if routeCtx.Span != nil {
+		routeCtx.Span.SetAttributes(
+			attribute.Int("candidate_pods", pods.Len()),
+			attribute.Int("ready_pods", len(readyPods)),
+			attribute.String("routing_strategy", string(routeCtx.Algorithm)),
+		)
+	}
+
 	// filter pod by header 'external-filter'
 	var err error
 	readyPods, err = utils.FilterPodsByLabelSelector(readyPods, externalFilterExpr)
@@ -527,13 +535,6 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return routeCtx.TargetAddress(), nil
 	}
 	utils.CryptoShuffle(readyPods)
-	if routeCtx.Span != nil {
-		routeCtx.Span.SetAttributes(
-			attribute.Int("candidate_pods", pods.Len()),
-			attribute.Int("ready_pods", len(readyPods)),
-			attribute.String("routing_strategy", string(routeCtx.Algorithm)),
-		)
-	}
 	return router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 }
 
