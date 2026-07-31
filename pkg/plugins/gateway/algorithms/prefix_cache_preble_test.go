@@ -1,0 +1,377 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package routingalgorithms
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
+	v1 "k8s.io/api/core/v1"
+)
+
+// MockPodList implements types.PodList for testing
+type MockPodList struct {
+	pods []*v1.Pod
+}
+
+func (m *MockPodList) Len() int {
+	return len(m.pods)
+}
+
+func (m *MockPodList) All() []*v1.Pod {
+	return m.pods
+}
+
+func (m *MockPodList) Indexes() []string {
+	return []string{}
+}
+
+func (m *MockPodList) ListByIndex(index string) []*v1.Pod {
+	return m.pods
+}
+
+func (m *MockPodList) ListPortsForPod() map[string][]int {
+	return nil
+}
+
+func createTestRoutingContext(model, message, requestID string) *types.RoutingContext {
+	ctx := context.Background()
+	return types.NewRoutingContext(ctx, RouterPrefixCachePreble, model, message, requestID, "")
+}
+
+func newTestRouter(cacheSize int, metricCache cache.Cache) *prefixCacheAndLoadRouter {
+	if metricCache == nil {
+		metricCache = cache.NewForTest()
+	}
+	return &prefixCacheAndLoadRouter{
+		cache:       prefixcacheindexer.NewLPRadixCache(cacheSize),
+		metricCache: metricCache,
+		histogram: &SlidingWindowHistogram{
+			windowDuration:             slidingWindowPeriod,
+			histogram:                  make(map[*prefixcacheindexer.TreeNode]int),
+			nodeToCount:                make(map[*prefixcacheindexer.TreeNode]int),
+			hitTokens:                  make(map[*prefixcacheindexer.TreeNode]int),
+			promptTokens:               make(map[*prefixcacheindexer.TreeNode]int),
+			decodingSize:               make(map[*prefixcacheindexer.TreeNode]int),
+			timestamps:                 []histogramEntry{},
+			numPods:                    0,
+			podAllocations:             make(map[*prefixcacheindexer.TreeNode]map[int]bool),
+			currentDecodeLengthsPerPod: make(map[string]int),
+			avgTimePerTokenPerPod:      make(map[string][]float64),
+			perNodeTotalDecodeLengths:  make(map[*prefixcacheindexer.TreeNode]int),
+		},
+		numPods:        0,
+		podAllocations: make(map[*prefixcacheindexer.TreeNode]map[int]bool),
+	}
+}
+
+func TestPrefixCacheAndLoadRouterRouting(t *testing.T) {
+	tests := []struct {
+		name           string
+		setupRouter    func() *prefixCacheAndLoadRouter
+		setupContext   func() *types.RoutingContext
+		setupPodList   func() types.PodList
+		expectedError  bool
+		validateResult func(t *testing.T, router *prefixCacheAndLoadRouter, ctx *types.RoutingContext, selectedPod string)
+	}{
+		{
+			name: "cost_model_routing_with_different_costs",
+			setupRouter: func() *prefixCacheAndLoadRouter {
+				router := newTestRouter(2, nil)
+
+				// Create historical data to generate cost differences
+				tokens1, _ := utils.TokenizeInputText("Historical request one")
+				node1, _, _ := router.cache.AddPrefix(tokens1, "test-model", "")
+				node1.AddOrUpdatePodForModel("test-model", "pod-1", time.Now())
+
+				tokens2, _ := utils.TokenizeInputText("Historical request two")
+				node2, _, _ := router.cache.AddPrefix(tokens2, "test-model", "")
+				node2.AddOrUpdatePodForModel("test-model", "pod-2", time.Now())
+
+				// Set up histogram with cost differences
+				router.histogram.histogram[node1] = 100
+				router.histogram.nodeToCount[node1] = 3
+				router.histogram.decodingSize[node1] = 100
+				router.histogram.hitTokens[node1] = 50
+				router.histogram.promptTokens[node1] = 100
+
+				router.histogram.histogram[node2] = 50
+				router.histogram.nodeToCount[node2] = 1
+				router.histogram.decodingSize[node2] = 30
+				router.histogram.hitTokens[node2] = 25
+				router.histogram.promptTokens[node2] = 50
+
+				// Set different decode lengths and time per token
+				router.histogram.currentDecodeLengthsPerPod["pod-1"] = 300
+				router.histogram.currentDecodeLengthsPerPod["pod-2"] = 50
+
+				router.histogram.avgTimePerTokenPerPod["pod-1"] = []float64{0.3, 0.4, 0.5}
+				router.histogram.avgTimePerTokenPerPod["pod-2"] = []float64{0.1, 0.12, 0.15}
+
+				return router
+			},
+			setupContext: func() *types.RoutingContext {
+				// New request that won't match existing prefixes (low match ratio)
+				return createTestRoutingContext("test-model", "Completely different new request", "req-cost-test")
+			},
+			setupPodList: func() types.PodList {
+				pods := []*v1.Pod{
+					newPod("pod-1", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+					newPod("pod-2", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+				}
+				return &MockPodList{pods: pods}
+			},
+			expectedError: false,
+			validateResult: func(t *testing.T, router *prefixCacheAndLoadRouter, ctx *types.RoutingContext, selectedPod string) {
+				if ctx.TargetPod() == nil {
+					t.Error("Expected target pod to be set")
+					return
+				}
+
+				t.Logf("Selected pod: %s", ctx.TargetPod().Name)
+
+				// For cost model routing, we expect a pod to be selected
+				// The specific cost values may change due to route execution side effects
+				// What's important is that the routing logic worked and selected a pod
+			},
+		},
+		{
+			name: "prefix_cache_routing_with_matching_prefix",
+			setupRouter: func() *prefixCacheAndLoadRouter {
+				router := newTestRouter(3, nil)
+
+				// Pre-populate cache with the exact prefix that the test request will use
+				// This ensures the AddPrefix call in Route() will find the existing node
+				testTokens, _ := utils.TokenizeInputText("Hello world shared content extra")
+				node, _, _ := router.cache.AddPrefix(testTokens, "test-model", "")
+				// Associate specific pods with this cached prefix
+				node.AddOrUpdatePodForModel("test-model", "pod-1", time.Now())
+				node.AddOrUpdatePodForModel("test-model", "pod-3", time.Now())
+
+				// Set up histogram data
+				router.histogram.histogram[node] = len(testTokens)
+				router.histogram.nodeToCount[node] = 2
+				router.histogram.decodingSize[node] = 45
+				router.histogram.hitTokens[node] = len(testTokens) - 1
+				router.histogram.promptTokens[node] = len(testTokens)
+
+				return router
+			},
+			setupContext: func() *types.RoutingContext {
+				// Request that exactly matches the cached prefix
+				return createTestRoutingContext("test-model", "Hello world shared content extra", "req-prefix-test")
+			},
+			setupPodList: func() types.PodList {
+				pods := []*v1.Pod{
+					newPod("pod-1", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+					newPod("pod-2", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"}), // Not in cache
+					newPod("pod-3", "10.0.0.3", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+				}
+				return &MockPodList{pods: pods}
+			},
+			expectedError: false,
+			validateResult: func(t *testing.T, router *prefixCacheAndLoadRouter, ctx *types.RoutingContext, selectedPod string) {
+				if ctx.TargetPod() == nil {
+					t.Error("Expected target pod to be set")
+					return
+				}
+
+				selectedPodName := ctx.TargetPod().Name
+				t.Logf("Selected pod: %s", selectedPodName)
+
+				// Verify that one of the pods with cached prefix was selected
+				if selectedPodName != "pod-1" && selectedPodName != "pod-3" {
+					t.Errorf("Expected pod-1 or pod-3 (pods with cached prefix) to be selected, got %s", selectedPodName)
+				}
+			},
+		},
+		{
+			name: "no_pods_available_error",
+			setupRouter: func() *prefixCacheAndLoadRouter {
+				return newTestRouter(4, nil)
+			},
+			setupContext: func() *types.RoutingContext {
+				return createTestRoutingContext("test-model", "Any request", "req-no-pods")
+			},
+			setupPodList: func() types.PodList {
+				return &MockPodList{pods: []*v1.Pod{}} // Empty pod list
+			},
+			expectedError: true,
+			validateResult: func(t *testing.T, router *prefixCacheAndLoadRouter, ctx *types.RoutingContext, selectedPod string) {
+				// Error case - no validation needed
+			},
+		},
+		{
+			name: "load_imbalance_restricts_to_least_loaded_pods",
+			setupRouter: func() *prefixCacheAndLoadRouter {
+				pods := []*v1.Pod{
+					newPod("pod-light-1", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+					newPod("pod-light-2", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+					newPod("pod-busy-1", "10.0.0.3", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+					newPod("pod-busy-2", "10.0.0.4", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+				}
+				// light pods: 1 running request each, busy pods: 10 running requests each
+				// diff = 9, which exceeds default threshold of 8
+				metricCache := cache.NewWithPodsMetricsForTest(
+					pods,
+					"test-model",
+					map[string]map[string]metrics.MetricValue{
+						"pod-light-1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+						"pod-light-2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+						"pod-busy-1":  {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 10}},
+						"pod-busy-2":  {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 10}},
+					})
+
+				router := newTestRouter(4, metricCache)
+
+				// Populate prefix cache with a request that has prefix matches on all pods
+				tokens, _ := utils.TokenizeInputText("shared prefix content")
+				node, _, _ := router.cache.AddPrefix(tokens, "test-model", "")
+				node.AddOrUpdatePodForModel("test-model", "pod-light-1", time.Now())
+				node.AddOrUpdatePodForModel("test-model", "pod-light-2", time.Now())
+				node.AddOrUpdatePodForModel("test-model", "pod-busy-1", time.Now())
+				node.AddOrUpdatePodForModel("test-model", "pod-busy-2", time.Now())
+
+				// Setup histogram data for all pods
+				router.histogram.histogram[node] = len(tokens)
+				router.histogram.nodeToCount[node] = 4
+				router.histogram.decodingSize[node] = 45
+				router.histogram.hitTokens[node] = len(tokens) - 1
+				router.histogram.promptTokens[node] = len(tokens)
+
+				return router
+			},
+			setupContext: func() *types.RoutingContext {
+				return createTestRoutingContext("test-model", "shared prefix content", "req-imbalance-test")
+			},
+			setupPodList: func() types.PodList {
+				pods := []*v1.Pod{
+					newPod("pod-light-1", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+					newPod("pod-light-2", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+					newPod("pod-busy-1", "10.0.0.3", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+					newPod("pod-busy-2", "10.0.0.4", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+				}
+				return &MockPodList{pods: pods}
+			},
+			expectedError: false,
+			validateResult: func(t *testing.T, router *prefixCacheAndLoadRouter, ctx *types.RoutingContext, selectedPod string) {
+				if ctx.TargetPod() == nil {
+					t.Error("Expected target pod to be set")
+					return
+				}
+
+				selectedPodName := ctx.TargetPod().Name
+				t.Logf("Selected pod: %s", selectedPodName)
+
+				// Under load imbalance, only light pods should be selected
+				if selectedPodName != "pod-light-1" && selectedPodName != "pod-light-2" {
+					t.Errorf("Expected pod-light-1 or pod-light-2 (least loaded pods) under imbalance, got %s", selectedPodName)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := tt.setupRouter()
+			ctx := tt.setupContext()
+			podList := tt.setupPodList()
+
+			result, err := router.Route(ctx, podList)
+
+			if tt.expectedError {
+				if err == nil {
+					t.Error("Expected error but got none")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+
+			if result == "" {
+				t.Error("Expected non-empty result")
+			}
+
+			if tt.validateResult != nil {
+				tt.validateResult(t, router, ctx, result)
+			}
+		})
+	}
+}
+
+func TestPrefixCacheAndLoadRouterScoreAllHandlesEmptyInput(t *testing.T) {
+	router := newTestRouter(2, nil)
+	podList := &MockPodList{pods: []*v1.Pod{
+		newPod("pod-1", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("pod-2", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+	}}
+	ctx := createTestRoutingContext("test-model", "", "req-empty-input")
+
+	scores, scored, err := router.ScoreAll(ctx, podList)
+	if err != nil {
+		t.Fatalf("ScoreAll returned unexpected error for empty input: %v", err)
+	}
+	if len(scores) != podList.Len() || len(scored) != podList.Len() {
+		t.Fatalf("expected %d scores and scored flags, got %d and %d", podList.Len(), len(scores), len(scored))
+	}
+	for i := range scored {
+		if !scored[i] {
+			t.Fatalf("expected pod %d to remain scored for empty input", i)
+		}
+		if scores[i] != 0 {
+			t.Fatalf("expected zero score for empty input, got %v", scores[i])
+		}
+	}
+}
+
+func TestPrefixCacheAndLoadRouterScoreAllDoesNotMutateCache(t *testing.T) {
+	router := newTestRouter(2, nil)
+	seedTokens, err := utils.TokenizeInputText("shared prefix")
+	if err != nil {
+		t.Fatalf("failed to tokenize seed text: %v", err)
+	}
+	node, _, _ := router.cache.AddPrefix(seedTokens, "test-model", "pod-1")
+	beforeNodeCount := len(router.cache.GetAllNodes())
+	beforeLastAccess := node.GetLastAccess()
+
+	ctx := createTestRoutingContext("test-model", "shared prefix with uncached suffix", "req-score-readonly")
+	podList := &MockPodList{pods: []*v1.Pod{
+		newPod("pod-1", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("pod-2", "10.0.0.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+	}}
+
+	_, _, err = router.ScoreAll(ctx, podList)
+	if err != nil {
+		t.Fatalf("ScoreAll returned unexpected error: %v", err)
+	}
+
+	if got := len(router.cache.GetAllNodes()); got != beforeNodeCount {
+		t.Fatalf("expected ScoreAll to keep node count %d, got %d", beforeNodeCount, got)
+	}
+	if got := node.GetLastAccess(); !got.Equal(beforeLastAccess) {
+		t.Fatalf("expected ScoreAll not to update lastAccess, before=%v after=%v", beforeLastAccess, got)
+	}
+}

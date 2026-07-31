@@ -1,0 +1,383 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+LocalStorage specific tests.
+
+Tests functionality specific to the local filesystem storage implementation.
+"""
+
+import os
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from aibrix.storage import LocalStorage
+from aibrix.storage.factory import create_storage_from_env
+
+
+class TestLocalStorage:
+    """Test LocalStorage specific functionality."""
+
+    @pytest.mark.asyncio
+    async def test_local_storage_initialization(self):
+        """Test LocalStorage initialization with different base paths."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Test with explicit base path
+            storage = LocalStorage(base_path=tmp_dir)
+            assert storage.base_path == Path(tmp_dir)
+            assert storage.base_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_environment_variable_override(self):
+        """Test that STORAGE_LOCAL_PATH environment variable is respected."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Set environment variable
+            original_value = os.environ.get("STORAGE_LOCAL_PATH")
+            os.environ["STORAGE_LOCAL_PATH"] = tmp_dir
+
+            try:
+                # Create storage without base_path - should use env var
+                storage = LocalStorage()
+                assert str(storage.base_path) == tmp_dir
+            finally:
+                # Restore original environment
+                if original_value is not None:
+                    os.environ["STORAGE_LOCAL_PATH"] = original_value
+                else:
+                    os.environ.pop("STORAGE_LOCAL_PATH", None)
+
+    @pytest.mark.asyncio
+    async def test_factory_uses_explicit_local_storage_type(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            monkeypatch.setenv("STORAGE_TYPE", "local")
+            monkeypatch.setenv("STORAGE_LOCAL_PATH", tmp_dir)
+            storage = create_storage_from_env()
+            assert isinstance(storage, LocalStorage)
+            assert str(storage.base_path) == tmp_dir
+
+    @pytest.mark.asyncio
+    async def test_directory_creation(self, local_storage: LocalStorage):
+        """Test that directories are created automatically."""
+        key = "deep/nested/path/file.txt"
+        content = "Nested file content"
+
+        # Store file in nested path
+        await local_storage.put_object(key, content)
+
+        # Verify file exists
+        assert await local_storage.object_exists(key)
+
+        # Verify directory structure was created
+        full_path = local_storage._get_full_path(key)
+        assert full_path.parent.exists()
+        assert full_path.parent.is_dir()
+
+        # Cleanup
+        await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_file_permissions(self, local_storage: LocalStorage):
+        """Test that files are created with appropriate permissions."""
+        key = "test/permissions.txt"
+        content = "Test file permissions"
+
+        # Store file
+        await local_storage.put_object(key, content)
+
+        # Check file exists and is readable
+        full_path = local_storage._get_full_path(key)
+        assert full_path.exists()
+        assert full_path.is_file()
+        assert os.access(full_path, os.R_OK)
+        assert os.access(full_path, os.W_OK)
+
+        # Cleanup
+        await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_list_with_delimiter(self, local_storage: LocalStorage):
+        """Test listing with delimiter for directory-like behavior."""
+        # Create test structure
+        test_files = [
+            "dir1/file1.txt",
+            "dir1/file2.txt",
+            "dir1/subdir/file3.txt",
+            "dir2/file4.txt",
+        ]
+
+        for key in test_files:
+            await local_storage.put_object(key, f"content of {key}")
+
+        # List with delimiter - should show directories
+        result, _ = await local_storage.list_objects("", "/")
+
+        # Should include files at root and directories
+        dir_entries = [item for item in result if item.endswith("/")]
+        assert "dir1/" in dir_entries
+        assert "dir2/" in dir_entries
+
+        # List specific directory
+        dir1_contents, _ = await local_storage.list_objects("dir1/", "/")
+        file_entries = [item for item in dir1_contents if not item.endswith("/")]
+
+        assert "dir1/file1.txt" in file_entries
+        assert "dir1/file2.txt" in file_entries
+
+        # Cleanup
+        for key in test_files:
+            await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_list_objects_supports_after_key(self, local_storage: LocalStorage):
+        test_files = [
+            "after/file1.txt",
+            "after/file2.txt",
+            "after/file3.txt",
+        ]
+
+        for key in test_files:
+            await local_storage.put_object(key, f"content of {key}")
+
+        first_page, _ = await local_storage.list_objects("after/", limit=2)
+        second_page, _ = await local_storage.list_objects(
+            "after/",
+            limit=2,
+            after_key=first_page[-1],
+        )
+
+        assert first_page == ["after/file3.txt", "after/file2.txt"]
+        assert second_page == ["after/file1.txt"]
+
+        for key in test_files:
+            await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_list_with_flat_string_prefix(self, local_storage: LocalStorage):
+        """list_objects matches a STRING prefix, not just a directory path.
+
+        Flat root-level keys like ``flatkey:<id>`` (no '/') must be found by a
+        partial prefix such as ``flatkey:``. The old directory-descent
+        implementation returned nothing for any non-directory prefix.
+        """
+        await local_storage.put_object("flatkey:abc", b"a")
+        await local_storage.put_object("flatkey:def", b"b")
+        await local_storage.put_object("other:zzz", b"c")
+
+        keys, _ = await local_storage.list_objects(prefix="flatkey:")
+        assert keys == ["flatkey:def", "flatkey:abc"]
+
+        # A delimiter must not break flat-prefix matching.
+        keys2, _ = await local_storage.list_objects(prefix="flatkey:", delimiter=":")
+        assert keys2 == ["flatkey:def", "flatkey:abc"]
+
+        for key in ("flatkey:abc", "flatkey:def", "other:zzz"):
+            await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_list_prefix_orders_by_created_at_desc(
+        self, local_storage: LocalStorage
+    ):
+        keys = ["batchjob:job-b", "batchjob:job-a", "batchjob:job-c"]
+        created_at_by_key = {
+            "batchjob:job-b": "2026-01-01T00:00:01+00:00",
+            "batchjob:job-a": "2026-01-01T00:00:02+00:00",
+            "batchjob:job-c": "2026-01-01T00:00:03+00:00",
+        }
+
+        for key in keys:
+            await local_storage.put_object(key, key)
+            metadata_path = local_storage._get_metadata_path(key)
+            metadata = local_storage._read_json_file(metadata_path)
+            metadata["created_at"] = created_at_by_key[key]
+            local_storage._write_json_file(metadata_path, metadata)
+
+        first_page, _ = await local_storage.list_objects(prefix="batchjob:", limit=2)
+        second_page, _ = await local_storage.list_objects(
+            prefix="batchjob:",
+            limit=2,
+            after_key=first_page[-1],
+        )
+
+        assert first_page == ["batchjob:job-c", "batchjob:job-a"]
+        assert second_page == ["batchjob:job-b"]
+
+        for key in keys:
+            await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_hierarchical_keys_with_colon_parent_are_supported(
+        self, local_storage: LocalStorage
+    ):
+        key = "batchstatus_copies:job-1/cluster-a"
+
+        await local_storage.put_object(key, b"payload")
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchstatus_copies:job-1/",
+            delimiter="/",
+        )
+        assert objects == [key]
+        assert await local_storage.object_exists(key)
+
+        await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_recursive_list_preserves_nested_subfolders(
+        self, local_storage: LocalStorage
+    ):
+        key = "batchstatus_copies:job-1/cluster-a/default/workload-1"
+
+        await local_storage.put_object(key, b"payload")
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchstatus_copies:job-1/",
+        )
+        assert objects == [key]
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchstatus_copies:job-1/cluster-a/",
+        )
+        assert objects == [key]
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchstatus_copies:job-1/cluster-a/default/",
+        )
+        assert objects == [key]
+
+        assert await local_storage.object_exists(key)
+
+        await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_operations(self, local_storage: LocalStorage):
+        """Test concurrent read/write operations."""
+        import asyncio
+
+        async def write_file(key: str, content: str):
+            await local_storage.put_object(key, content)
+
+        async def read_file(key: str) -> str:
+            data = await local_storage.get_object(key)
+            return data.decode("utf-8")
+
+        # Write multiple files concurrently
+        keys = [f"concurrent/file_{i}.txt" for i in range(10)]
+        write_tasks = [write_file(key, f"content_{i}") for i, key in enumerate(keys)]
+        await asyncio.gather(*write_tasks)
+
+        # Read multiple files concurrently
+        read_tasks = [read_file(key) for key in keys]
+        results = await asyncio.gather(*read_tasks)
+
+        # Verify results
+        for i, result in enumerate(results):
+            assert result == f"content_{i}"
+
+        # Cleanup
+        for key in keys:
+            await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_large_file_handling(self, local_storage: LocalStorage):
+        """Test handling of larger files."""
+        key = "test/large_file.bin"
+        # Create 1MB of data
+        chunk_size = 1024
+        num_chunks = 1024
+        content = b"A" * chunk_size * num_chunks
+
+        # Store large file
+        await local_storage.put_object(key, content)
+
+        # Verify size
+        size = await local_storage.get_object_size(key)
+        assert size == len(content)
+
+        # Test range reads on large file
+        start_chunk = await local_storage.get_object(key, 0, chunk_size - 1)
+        assert len(start_chunk) == chunk_size
+        assert start_chunk == b"A" * chunk_size
+
+        # Test end chunk
+        end_start = len(content) - chunk_size
+        end_chunk = await local_storage.get_object(key, end_start, None)
+        assert len(end_chunk) == chunk_size
+        assert end_chunk == b"A" * chunk_size
+
+        # Cleanup
+        await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_path_traversal_protection(self, local_storage: LocalStorage):
+        """Test that path traversal attempts are properly sanitized and denied."""
+        # These dangerous keys should be sanitized to prevent path traversal
+        dangerous_keys = [
+            "../etc/passwd",
+            "../../sensitive/file.txt",
+            "normal/../../../etc/hosts",
+            "../../../root/.ssh/id_rsa",
+            "..\\..\\windows\\system32\\config\\sam",  # Windows-style traversal
+            "....//....//etc/shadow",  # Double-dot traversal
+            "/etc/passwd",  # Absolute path
+            "~/../../etc/passwd",  # Home directory traversal
+        ]
+
+        expected_sanitized_keys = [
+            "etc/passwd",  # "../etc/passwd" -> "etc/passwd"
+            "sensitive/file.txt",  # "../../sensitive/file.txt" -> "sensitive/file.txt"
+            "normal/etc/hosts",  # "normal/../../../etc/hosts" -> "normal/etc/hosts"
+            "root/.ssh/id_rsa",  # "../../../root/.ssh/id_rsa" -> "root/.ssh/id_rsa"
+            "windows/system32/config/sam",  # Windows path sanitized
+            "etc/shadow",  # "....//....//etc/shadow" -> "etc/shadow"
+            "etc/passwd",  # "/etc/passwd" -> "etc/passwd"
+            "~/etc/passwd",  # "~/../../etc/passwd" -> "~/etc/passwd"
+        ]
+
+        for i, key in enumerate(dangerous_keys):
+            content = f"content for {key}"
+            await local_storage.put_object(key, content)
+
+            # Verify the key was sanitized
+            full_path = local_storage._get_full_path(key)
+
+            # Should be stored safely within base directory
+            assert (
+                local_storage.base_path in full_path.parents
+                or full_path == local_storage.base_path
+            ), (
+                f"Path {full_path} should be within base directory {local_storage.base_path}"
+            )
+
+            # Verify the path doesn't contain traversal patterns
+            relative_path = full_path.relative_to(local_storage.base_path)
+            assert ".." not in str(relative_path), (
+                f"Sanitized path should not contain '..' but got: {relative_path}"
+            )
+
+            # Should be retrievable with the original key
+            result = await local_storage.get_object(key)
+            assert result.decode("utf-8") == content
+
+            # Verify the actual stored filename matches expected sanitized version
+            expected_sanitized = expected_sanitized_keys[i]
+            assert str(relative_path).startswith(
+                expected_sanitized.replace("/", os.sep)
+            ), (
+                f"Expected sanitized key '{expected_sanitized}' but got '{relative_path}'"
+            )
+
+            # Cleanup
+            await local_storage.delete_object(key)

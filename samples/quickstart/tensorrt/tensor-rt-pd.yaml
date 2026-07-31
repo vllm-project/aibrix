@@ -1,0 +1,169 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: qwen-tensorrt-1p1d
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: qwen-tensorrt-1p1d
+  template:
+    metadata:
+      labels:
+        app: qwen-tensorrt-1p1d
+    spec:
+      roles:
+        - name: prefill
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: Qwen3-8B
+                model.aibrix.ai/port: "8101"
+                model.aibrix.ai/engine: trtllm
+            spec:
+              containers:
+                - name: prefill
+                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/tensorrt-llm:1.3.0rc8
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                    - containerPort: 8101
+                  env:
+                    - name: POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+                    - name: MODEL
+                      value: "Qwen3-8B"
+                    - name: MAX_SEQ_LEN
+                      value: "16384"
+                    - name: GPU_MEM_FRACTION
+                      value: "0.90"
+                  command: ["bash", "-c"]
+                  args:
+                    - |
+                      cat > /tmp/ctx_config.yaml <<'CFGEOF'
+                      backend: pytorch
+                      disable_overlap_scheduler: true
+                      kv_cache_config:
+                        free_gpu_memory_fraction: __GPU_MEM_FRACTION__
+                        enable_block_reuse: true
+                        event_buffer_max_size: 1024
+                      cache_transceiver_config:
+                        backend: DEFAULT
+                      enable_iter_perf_stats: true
+                      return_perf_metrics: true
+                      CFGEOF
+                      sed -i 's/^                      //' /tmp/ctx_config.yaml
+                      sed -i "s/__GPU_MEM_FRACTION__/${GPU_MEM_FRACTION}/" /tmp/ctx_config.yaml
+
+                      echo "=== Prefill Worker 0 ==="
+                      echo "Model: /models/$MODEL"
+                      echo "Port: 8101"
+                      echo "Config:"
+                      cat /tmp/ctx_config.yaml
+                      echo "========================"
+
+                      trtllm-serve serve /models/$MODEL \
+                        --server_role CONTEXT \
+                        --host 0.0.0.0 --port 8101 \
+                        --backend pytorch \
+                        --config /tmp/ctx_config.yaml \
+                        --log_level debug
+                  resources:
+                    limits:
+                      nvidia.com/gpu: 1
+                    requests:
+                      nvidia.com/gpu: 1
+                  securityContext:
+                    capabilities:
+                      add:
+                        - IPC_LOCK
+                  volumeMounts:
+                    - mountPath: /models
+                      name: model-hostpath
+              volumes:
+                - name: model-hostpath
+                  hostPath:
+                    path: /data01/models
+                    type: DirectoryOrCreate
+
+        - name: decode
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: Qwen3-8B
+                model.aibrix.ai/port: "8103"
+                model.aibrix.ai/engine: trtllm
+            spec:
+              containers:
+                - name: decode
+                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/tensorrt-llm:1.3.0rc8
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                    - containerPort: 8103
+                  env:
+                    - name: POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+                    - name: MODEL
+                      value: "Qwen3-8B"
+                    - name: MAX_SEQ_LEN
+                      value: "16384"
+                    - name: GPU_MEM_FRACTION
+                      value: "0.90"
+                  command: ["/bin/bash", "-c"]
+                  args:
+                    - |
+                      cat > /tmp/gen_config.yaml <<'CFGEOF'
+                      backend: pytorch
+                      disable_overlap_scheduler: false
+                      kv_cache_config:
+                        free_gpu_memory_fraction: __GPU_MEM_FRACTION__
+                        enable_block_reuse: true
+                        event_buffer_max_size: 1024
+                      cache_transceiver_config:
+                        backend: DEFAULT
+                      enable_iter_perf_stats: true
+                      return_perf_metrics: true
+                      CFGEOF
+                      sed -i 's/^                      //' /tmp/gen_config.yaml
+                      sed -i "s/__GPU_MEM_FRACTION__/${GPU_MEM_FRACTION}/" /tmp/gen_config.yaml
+
+                      echo "=== Decode Worker 0 ==="
+                      echo "Model: /models/$MODEL"
+                      echo "Port: 8103"
+                      echo "Config:"
+                      cat /tmp/gen_config.yaml
+                      echo "========================"
+
+                      trtllm-serve serve /models/$MODEL \
+                        --server_role GENERATION \
+                        --host 0.0.0.0 --port 8103 \
+                        --backend pytorch \
+                        --config /tmp/gen_config.yaml \
+                        --log_level debug
+                  resources:
+                    limits:
+                      nvidia.com/gpu: 1
+                    requests:
+                      nvidia.com/gpu: 1
+                  securityContext:
+                    capabilities:
+                      add:
+                        - IPC_LOCK
+                  volumeMounts:
+                    - mountPath: /models
+                      name: model-hostpath
+              volumes:
+                - name: model-hostpath
+                  hostPath:
+                    path: /data01/models
+                    type: DirectoryOrCreate

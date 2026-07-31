@@ -1,0 +1,47 @@
+name: Python AIBrix KVCache Tests
+
+on:
+  push:
+    branches: [ "main", "release-*" ]
+    paths:
+      - 'python/aibrix_kvcache/**'
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'python/aibrix_kvcache/**'
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    name: Lint
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+      - name: Check out source repository
+        uses: actions/checkout@v6
+      - name: Set up Python environment ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          cd python/aibrix_kvcache
+          python -m pip install --upgrade pip
+          pip install -U pip pre-commit
+          pip install -r requirements/build.txt -r requirements/dev.txt -r requirements/core.txt
+      - name: Run Pre-Commit
+        run: |
+          cd python/aibrix_kvcache
+          pre-commit run --all-files
+      - name: Build and Install
+        run: |
+          cd python/aibrix_kvcache
+          pip install . -v
+      - name: Run Test
+        run: |
+          cd python/aibrix_kvcache/tests
+          python -m pytest .

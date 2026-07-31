@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../../../../config/standalone/autoscaler-controller
+
+images:
+- name: aibrix/controller-manager
+  newName: aibrix/controller-manager
+  newTag: external-metrics-e2e

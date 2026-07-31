@@ -1,0 +1,338 @@
+/*
+Copyright 2025 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package modeladapter
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/bytedance/sonic"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/metrics"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
+)
+
+const (
+	VLLMEngine   string = "vllm"
+	SGLangEngine string = "sglang"
+
+	ModelListRuntimeAPIPath  = "/v1/models"
+	LoadLoraRuntimeAPIPath   = "/v1/lora_adapter/load"
+	UnloadLoraRuntimeAPIPath = "/v1/lora_adapter/unload"
+
+	ModelListVLLMAPIPath         = "/v1/models"
+	LoadLoraAdapterVLLMAPIPath   = "/v1/load_lora_adapter"
+	UnloadLoraAdapterVLLMAPIPath = "/v1/unload_lora_adapter"
+
+	ModelListSGLangAPIPath         = "/v1/models"
+	LoadLoraAdapterSGLangAPIPath   = "/load_lora_adapter"
+	UnloadLoraAdapterSGLangAPIPath = "/unload_lora_adapter"
+)
+
+func NewLoraClientWithK8sClient(runtimeConfig config.RuntimeConfig, k8sClient kubernetes.Interface) *loraClient {
+	return &loraClient{
+		runtimeConfig: runtimeConfig,
+		httpClient: &http.Client{
+			Timeout: time.Duration(HTTPTimeoutSeconds) * time.Second,
+		},
+		k8sClient: k8sClient,
+	}
+}
+
+func NewLoraClient(runtimeConfig config.RuntimeConfig) *loraClient {
+	return &loraClient{
+		runtimeConfig: runtimeConfig,
+		httpClient: &http.Client{
+			Timeout: time.Duration(HTTPTimeoutSeconds) * time.Second,
+		},
+	}
+}
+
+type loraClient struct {
+	runtimeConfig config.RuntimeConfig
+	httpClient    *http.Client
+	k8sClient     kubernetes.Interface
+}
+
+// LoadAdapter loads the loras in inference engines
+func (c *loraClient) LoadAdapter(ctx context.Context, instance *modelv1alpha1.ModelAdapter, targetPod *corev1.Pod) (loaded bool, exists bool, err error) {
+	// Determine whether to use runtime sidecar:
+	// - If global flag is disabled, always use direct engine API
+	// - If global flag is enabled, detect if pod has sidecar container
+	useSidecar := c.runtimeConfig.EnableRuntimeSidecar && DetectRuntimeSidecar(targetPod)
+	if useSidecar {
+		klog.V(4).InfoS("Using runtime sidecar API for adapter loading", "pod", targetPod.Name, "adapter", instance.Name)
+	} else {
+		klog.V(4).InfoS("Using direct engine API for adapter loading", "pod", targetPod.Name, "adapter", instance.Name)
+	}
+
+	urls := BuildURLs(targetPod.Status.PodIP, c.runtimeConfig, useSidecar, metrics.GetEngineType(*targetPod))
+
+	models, err := c.getModels(urls.ListModelsURL, instance)
+	if err != nil {
+		return false, false, err
+	}
+	if models[instance.Name] {
+		return false, true, nil
+	}
+
+	err = c.loadAdapterCall(ctx, urls.LoadAdapterURL, instance, useSidecar)
+	if err != nil {
+		return false, false, err
+	}
+	return true, false, nil
+}
+
+// UnloadAdapter unloads the loras from inference engines, ignores http error.
+func (c *loraClient) UnloadAdapter(instance *modelv1alpha1.ModelAdapter, targetPod *corev1.Pod) error {
+	// Determine whether to use runtime sidecar:
+	// - If global flag is disabled, always use direct engine API
+	// - If global flag is enabled, detect if pod has sidecar container
+	useSidecar := c.runtimeConfig.EnableRuntimeSidecar && DetectRuntimeSidecar(targetPod)
+	if useSidecar {
+		klog.V(4).InfoS("Using runtime sidecar API for adapter unload", "pod", targetPod.Name, "adapter", instance.Name)
+	} else {
+		klog.V(4).InfoS("Using direct engine API for adapter unload", "pod", targetPod.Name, "adapter", instance.Name)
+	}
+
+	// Build payload using helper function
+	payloadBytes, err := buildUnloadPayload(instance, useSidecar)
+	if err != nil {
+		return err
+	}
+
+	urls := BuildURLs(targetPod.Status.PodIP, c.runtimeConfig, useSidecar, metrics.GetEngineType(*targetPod))
+	req, err := http.NewRequest("POST", urls.UnloadAdapterURL, bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token, ok := instance.Spec.AdditionalConfig["api-key"]; ok {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		klog.ErrorS(err, "Failed to call unload lora adapter api", "url", urls.UnloadAdapterURL)
+		return nil // ignore http errors
+	}
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			klog.InfoS("Error closing response body:", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if err != nil {
+			klog.Warningf("Failed to unload LoRA adapter from pod %s (status %d), and failed to read response body: %v", targetPod.Name, resp.StatusCode, err)
+		} else {
+			klog.Warningf("Failed to unload LoRA adapter from pod %s (status %d): %s", targetPod.Name, resp.StatusCode, body)
+		}
+	}
+
+	return nil
+}
+
+func (c *loraClient) getModels(url string, instance *modelv1alpha1.ModelAdapter) (map[string]bool, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Check if "api-key" exists in the map and set the Authorization header accordingly
+	if token, ok := instance.Spec.AdditionalConfig["api-key"]; ok {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			klog.InfoS("Error closing response body:", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if err != nil {
+			return nil, fmt.Errorf("failed to get models (status %d), and failed to read response body: %w", resp.StatusCode, err)
+		}
+		return nil, fmt.Errorf("failed to get models (status %d): %s", resp.StatusCode, body)
+	}
+
+	var response struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return nil, err
+	}
+
+	models := make(map[string]bool)
+	for _, item := range response.Data {
+		models[item.ID] = true
+	}
+
+	return models, nil
+}
+
+// Separate method to load the LoRA adapter
+func (c *loraClient) loadAdapterCall(ctx context.Context, url string, instance *modelv1alpha1.ModelAdapter, useSidecar bool) error {
+	var payloadBytes []byte
+	var err error
+
+	// Build payload based on runtime mode
+	if useSidecar {
+		// Runtime path - send original URL for artifact delegation
+		payload := map[string]interface{}{
+			"lora_name":    instance.Name,
+			"artifact_url": instance.Spec.ArtifactURL, // Send original URL unchanged
+		}
+
+		// Add credentials if provided
+		if instance.Spec.CredentialsSecretRef != nil && c.k8sClient != nil {
+			secret, err := c.k8sClient.CoreV1().Secrets(instance.Namespace).Get(ctx, instance.Spec.CredentialsSecretRef.Name, metav1.GetOptions{})
+			if err != nil {
+				klog.ErrorS(err, "Failed to get credentials secret", "secret", instance.Spec.CredentialsSecretRef.Name, "namespace", instance.Namespace)
+				return err
+			}
+
+			// Convert secret data to string map
+			credentials := make(map[string]string)
+			for k, v := range secret.Data {
+				credentials[k] = string(v)
+			}
+			payload["credentials"] = credentials
+		}
+
+		// Add additional config if provided
+		if instance.Spec.AdditionalConfig != nil {
+			payload["additional_config"] = instance.Spec.AdditionalConfig
+		}
+
+		payloadBytes, err = sonic.Marshal(payload)
+		if err != nil {
+			return err
+		}
+
+		klog.V(4).InfoS("Using runtime path for artifact delegation",
+			"ModelAdapter", klog.KObj(instance),
+			"artifactURL", instance.Spec.ArtifactURL)
+
+	} else {
+		// Direct path - transform URL for engine (existing logic)
+		artifactURL := instance.Spec.ArtifactURL
+
+		// Transform huggingface:// URLs to paths
+		if strings.HasPrefix(instance.Spec.ArtifactURL, "huggingface://") {
+			var err error
+			artifactURL, err = extractHuggingFacePath(instance.Spec.ArtifactURL)
+			if err != nil {
+				klog.ErrorS(err, "Invalid artifact URL", "artifactURL", artifactURL)
+				return err
+			}
+		}
+		// TODO: Add support for other URL transformations if needed
+
+		payload := map[string]string{
+			"lora_name": instance.Name,
+			"lora_path": artifactURL,
+		}
+
+		payloadBytes, err = sonic.Marshal(payload)
+		if err != nil {
+			return err
+		}
+
+		klog.V(4).InfoS("Using direct path to engine",
+			"ModelAdapter", klog.KObj(instance),
+			"transformedURL", artifactURL)
+	}
+
+	// Send HTTP request
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Check if "api-key" exists in the map and set the Authorization header accordingly
+	if token, ok := instance.Spec.AdditionalConfig["api-key"]; ok {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			klog.InfoS("Error closing response body:", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if err != nil {
+			return fmt.Errorf("failed to load LoRA adapter (status %d), and failed to read response body: %w", resp.StatusCode, err)
+		}
+		return fmt.Errorf("failed to load LoRA adapter (status %d): %s", resp.StatusCode, body)
+	}
+
+	klog.InfoS("Successfully loaded LoRA adapter",
+		"ModelAdapter", klog.KObj(instance),
+		"url", url)
+
+	return nil
+}
+
+// buildUnloadPayload creates the unload request payload based on runtime mode
+func buildUnloadPayload(instance *modelv1alpha1.ModelAdapter, useSidecar bool) ([]byte, error) {
+	var payloadBytes []byte
+	var err error
+
+	if useSidecar {
+		// Runtime path - include cleanup flag
+		payload := map[string]interface{}{
+			"lora_name":     instance.Name,
+			"cleanup_local": true, // Clean up local artifacts on unload
+		}
+		payloadBytes, err = sonic.Marshal(payload)
+	} else {
+		// Direct path - simple unload
+		payload := map[string]string{
+			"lora_name": instance.Name,
+		}
+		payloadBytes, err = sonic.Marshal(payload)
+	}
+
+	return payloadBytes, err
+}

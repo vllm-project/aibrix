@@ -1,0 +1,235 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-plugins
+  namespace: system
+  labels:
+    app: gateway-plugins
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app: gateway-plugins
+  ports:
+    - name: gateway
+      protocol: TCP
+      port: 50052
+      targetPort: 50052
+    - name: profiling
+      protocol: TCP
+      port: 6060
+      targetPort: 6060
+    - name: metrics
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-plugins
+  namespace: system
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway-plugins
+  template:
+    metadata:
+      labels:
+        app: gateway-plugins
+    spec:
+      affinity:
+        podAntiAffinity: # pods are placed on different nodes
+           preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - gateway-plugins
+                topologyKey: "kubernetes.io/hostname"
+        nodeAffinity: # prevent gateway pod to be placed on gpu node.
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: nvidia.com/gpu.present
+                  operator: NotIn
+                  values:
+                    - "true"
+      initContainers:
+        - name: init-c
+          image: busybox
+          command: ['sh', '-c', 'until echo "ping" | nc aibrix-redis-master 6379 -w 1  | grep -c PONG; do echo waiting for service aibrix-redis-master; sleep 2; done']
+      containers:
+        - name: gateway-plugin
+          image: gateway-plugins:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: gateway
+              containerPort: 50052
+            - name: profiling
+              containerPort: 6060
+            - name: metrics
+              containerPort: 8080
+          resources:
+            limits:
+              cpu: 1
+              memory: 1Gi
+            requests:
+              cpu: 1
+              memory: 1Gi
+          env:
+            - name: REDIS_HOST
+              value: aibrix-redis-master
+            - name: REDIS_PORT
+              value: "6379"
+            - name: AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS
+              value: "50"
+            - name: AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE
+              value: "character"
+            - name: AIBRIX_PREFIX_CACHE_BLOCK_SIZE
+              value: "128"
+            - name: AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT
+              value: "16"
+            - name: AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR
+              value: "2"
+            - name: AIBRIX_PREFILL_REQUEST_TIMEOUT
+              value: "60"
+            - name: AIBRIX_STATESYNC_ENABLED
+              value: "false"
+            - name: AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED
+              value: "false"
+            - name: AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER
+              value: "false"
+            # Uncomment to enable request tracing for GPU optimizer, default "false".
+            # - name: AIBRIX_GPU_OPTIMIZER_TRACING_FLAG
+            #   value: "true"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          livenessProbe:
+            grpc:
+              port: 50052
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            grpc:
+              port: 50052
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      serviceAccountName: aibrix-gateway-plugins
+---
+# this is a dummy route for incoming request to list models registered to aibrix-control-plane
+# TODO (varun): check if this dummy route can be removed in future
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reserved-router-metadata-endpoint
+  namespace: system
+spec:
+  parentRefs:
+    - name: aibrix-eg
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/models
+        - path:
+            type: PathPrefix
+            value: /v1/files
+        - path:
+            type: PathPrefix
+            value: /v1/batches
+      backendRefs:
+        - name: aibrix-metadata-service
+          port: 8090
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: skip-ext-proc
+  namespace: system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: aibrix-reserved-router-metadata-endpoint
+---
+# this is a dummy route for incoming request and,
+# then request is routed to httproute using model name OR
+# request is routed based on the target for that model service
+# TODO (varun): check if this dummy route can be removed in future
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reserved-router
+  namespace: system
+spec:
+  parentRefs:
+    - name: aibrix-eg
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/chat/completions
+        - path:
+            type: PathPrefix
+            value: /v1/responses
+        - path:
+            type: PathPrefix
+            value: /v1/completions
+        - path:
+            type: PathPrefix
+            value: /v1/embeddings
+        - path:
+            type: PathPrefix
+            value: /v1/rerank
+        - path:
+            type: PathPrefix
+            value: /v1/classify
+        - path:
+            type: PathPrefix
+            value: /v1/images/generations
+        - path:
+            type: PathPrefix
+            value: /v1/video/generations
+      backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: gateway-plugins-extension-policy
+  namespace: system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: aibrix-reserved-router
+  extProc:
+    - backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+      processingMode:
+        request:
+          body: Buffered
+        response:
+          body: Streamed
+      messageTimeout: 60s

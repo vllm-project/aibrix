@@ -1,0 +1,24 @@
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: facebook-opt-13b-autoscaling
+  namespace: default
+  labels:
+    app.kubernetes.io/name: aibrix
+  annotations:
+    kpa.autoscaling.aibrix.ai/scale-down-delay: 1m
+spec:
+  scalingStrategy: KPA
+  minReplicas: 1
+  maxReplicas: 4
+  metricsSources:
+    - metricSourceType: pod
+      protocolType: http
+      port: '8000'
+      path: metrics
+      targetMetric: gpu_cache_usage_perc
+      targetValue: '70'
+  scaleTargetRef:
+    apiVersion: orchestration.aibrix.ai/v1alpha1
+    kind: RayClusterFleet
+    name: facebook-opt-13b

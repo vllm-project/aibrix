@@ -1,0 +1,154 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg
+  namespace: aibrix-system
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: aibrix-custom-proxy-config
+    namespace: aibrix-system
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg
+  namespace: aibrix-system
+spec:
+  gatewayClassName: aibrix-eg
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80   
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: custom-proxy-config
+  namespace: aibrix-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        replicas: 1
+        strategy:
+          type: RollingUpdate
+          rollingUpdate:
+            maxUnavailable: 1
+            maxSurge: 1
+        pod:
+          affinity:
+            podAntiAffinity: # pods are placed on different nodes
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchExpressions:
+                      - key: app.kubernetes.io/name
+                        operator: In
+                        values:
+                          - envoy
+                  topologyKey: "kubernetes.io/hostname"
+            nodeAffinity: # prevent gateway pod to be placed on gpu node.
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                    - key: nvidia.com/gpu.present
+                      operator: NotIn
+                      values:
+                        - "true"
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: envoy
+                      image: envoyproxy/envoy:v1.33.2
+                      resources:
+                        requests:
+                          cpu: 1
+                          memory: 1Gi
+                        limits:
+                          cpu: 1
+                          memory: 1Gi
+                    - name: shutdown-manager
+                      image: envoyproxy/gateway:v1.2.8
+                      resources:
+                        requests:
+                          cpu: 10m
+                          memory: 32Mi
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: client-connection-buffersize
+  namespace: aibrix-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: aibrix-eg
+  connection:
+    bufferLimit: 4194304
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: epp
+  namespace: aibrix-system
+spec:
+  type: "JSONPatch"
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: aibrix-eg
+  jsonPatches:
+  - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+    name: "aibrix-system/aibrix-eg/http"
+    operation:
+      op: add
+      path: "/virtual_hosts/0/routes/0"
+      value:
+        name: original_route
+        match:
+          prefix: "/"
+          headers:
+          - name: "routing-strategy"
+            string_match:
+              safe_regex:
+                regex: .*
+        route:  
+          cluster: original_destination_cluster
+          timeout: 120s  # Increase route timeout
+        typed_per_filter_config:
+          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0":
+            "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
+            "config": {}
+  - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
+    name: "envoy-patch-policy-override2"
+    operation:
+      op: add
+      path: ""
+      value:
+        name: original_destination_cluster
+        type: ORIGINAL_DST  
+        original_dst_lb_config:
+          use_http_header: true
+          http_header_name: "target-pod"
+        connect_timeout: 6s
+        lb_policy: CLUSTER_PROVIDED
+        dns_lookup_family: V4_ONLY
+  - type: type.googleapis.com/envoy.config.listener.v3.Listener
+    name: aibrix-system/aibrix-eg/http
+    operation:
+      op: add
+      path: /default_filter_chain/filters/0/typed_config/preserve_external_request_id
+      value: false
+
+  

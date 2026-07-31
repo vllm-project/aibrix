@@ -1,0 +1,53 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: aibrix-custom-proxy-config
+  namespace: aibrix-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              ipFamilies:
+                - IPv4
+              ipFamilyPolicy: SingleStack
+              type: LoadBalancer
+      envoyDeployment:
+        replicas: 1
+        pod:
+          affinity:
+            nodeAffinity: # prevent gateway pod to be placed on gpu node.
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                    - key: vke.node.gpu.schedule
+                      operator: NotIn
+                      values:
+                        - nvidia
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: envoy
+                      image: aibrix-cn-beijing.cr.volces.com/aibrix/envoy:v1.33.2
+                      resources:
+                        requests:
+                          cpu: 2
+                          memory: 8Gi
+                        limits:
+                          cpu: 2
+                          memory: 8Gi
+                    - name: shutdown-manager
+                      image: aibrix-cn-beijing.cr.volces.com/aibrix/gateway:v1.2.8
+                      resources:
+                        requests:
+                          cpu: 10m
+                          memory: 32Mi

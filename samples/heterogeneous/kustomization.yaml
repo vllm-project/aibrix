@@ -1,0 +1,32 @@
+kind: Kustomization
+
+resources:
+- deepseek-coder-7b-service.yaml
+- deepseek-coder-7b-l20-deployment.yaml
+- deepseek-coder-7b-l20-podautoscaler.yaml
+- deepseek-coder-7b-v100-deployment.yaml
+- deepseek-coder-7b-v100-podautoscaler.yaml
+
+patches:
+- patch: |-  # Use the '|' and '-' for inline patching, warm up 10 hosts and start with 7
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: deepseek-coder-7b-v100
+      labels:
+        model.aibrix.ai/min_replicas: "1"
+  target:
+    kind: Deployment
+    name: deepseek-coder-7b-v100
+- patch: |-  # Use the '|' and '-' for inline patching, warm up 10 hosts and start with 7
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: deepseek-coder-7b-l20
+      labels:
+        model.aibrix.ai/min_replicas: "0"
+  target:
+    kind: Deployment
+    name: deepseek-coder-7b-l20
+
+apiVersion: kustomize.config.k8s.io/v1beta1

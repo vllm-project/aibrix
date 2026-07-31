@@ -1,0 +1,102 @@
+# Deployment name comes from DeploymentManifestRenderer.render(deployment_name=...).
+# When omitted, the renderer generates "<template-name>-<8hex>".
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deepseek-coder-7b-l20
+  namespace: default
+  labels:
+    # Deployment labels are renderer defaults derived from deployment_name + resolved engine port.
+    adapter.model.aibrix.ai/enabled: "true"
+    model.aibrix.ai/name: deepseek-coder-7b-l20
+    model.aibrix.ai/port: "8000"
+    model.aibrix.ai/min_replicas: "1"
+spec:
+  # Replica count comes from DeploymentManifestRenderer.render(replicas=...).
+  replicas: 4
+  selector:
+    matchLabels:
+      # Selector labels are renderer defaults derived from deployment_name.
+      adapter.model.aibrix.ai/enabled: "true"
+      app: deepseek-coder-7b-l20
+      model.aibrix.ai/name: deepseek-coder-7b-l20
+  template:
+    metadata:
+      labels:
+        # Pod labels currently mirror selector labels; not separately configurable.
+        adapter.model.aibrix.ai/enabled: "true"
+        app: deepseek-coder-7b-l20
+        model.aibrix.ai/name: deepseek-coder-7b-l20
+      annotations:
+        # Prometheus annotations are renderer defaults from _prometheus_annotations().
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8000"
+        prometheus.io/scrape: "true"
+    spec:
+      containers:
+        # aibrix-runtime will not be included in the deployment.
+        # - name: aibrix-runtime
+        #   # Runtime sidecar is always injected before the engine container.
+        #   image: aibrix/runtime:nightly
+        #   command:
+        #     - aibrix_runtime
+        #     - --port
+        #     - "8080"
+        #   env:
+        #     - name: INFERENCE_ENGINE
+        #       value: vllm
+        #     - name: INFERENCE_ENGINE_ENDPOINT
+        #       value: http://localhost:8000
+        #   ports:
+        #     - containerPort: 8080
+        #       protocol: TCP
+        #   livenessProbe:
+        #     httpGet:
+        #       path: /healthz
+        #       port: 8080
+        #     initialDelaySeconds: 3
+        #     periodSeconds: 2
+        #   readinessProbe:
+        #     httpGet:
+        #       path: /ready
+        #       port: 8080
+        #     initialDelaySeconds: 5
+        #     periodSeconds: 10
+        - name: llm-engine
+          # Engine image, port, health path, model URI, and GPU count come from model_template.spec.
+          image: ignored-by-override
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+            failureThreshold: 3
+          args:
+            - --model
+            - /models/deepseek-coder-6.7b-instruct
+            - --port
+            - "8000"
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            # Shared-memory mount is added by the renderer to the engine container.
+            - name: dshm
+              mountPath: /dev/shm
+      initContainers: []
+      # Pod termination grace period is a renderer default.
+      terminationGracePeriodSeconds: 300
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi
+      # Current renderer behavior:
+      # - gpu_type argument is accepted but not yet applied
+      # - remote model downloads add an extra model-hostpath volume and init container

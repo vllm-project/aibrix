@@ -1,0 +1,176 @@
+name: Linter and Unit Tests
+
+on:
+  workflow_dispatch:  # Allows manual trigger
+  push:
+    branches: [ "main", "release-*" ]
+    paths:
+      - '.github/workflows/**'
+      - 'pkg/**'
+      - 'apps/**'
+      - 'test/**'
+      - 'cmd/**'
+      - 'api/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.golangci.yml'
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - '.github/workflows/**'
+      - 'pkg/**'
+      - 'apps/**'
+      - 'test/**'
+      - 'cmd/**'
+      - 'api/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.golangci.yml'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.22'
+      - name: Lint
+        run: make lint-all
+
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.22'
+      - name: Verify Codegen
+        run: bash ${GITHUB_WORKSPACE}/hack/verify-codegen.sh
+      - name: Generate CRDs
+        run: make manifests
+      - name: Verify CRD Synchronization
+        run: bash ${GITHUB_WORKSPACE}/hack/verify-crd-sync.sh
+
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+      issues: write
+      id-token: write
+      pull-requests: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.22'
+      - name: Install ZMQ dependencies
+        run: sudo apt-get update && sudo apt-get install -y libkrb5-dev libzmq3-dev
+
+      # github action has errors, requires debugging
+      # - name: Cache Go modules
+      #   uses: actions/cache@v5
+      #   with:
+      #     path: |
+      #       ~/.cache/go-build
+      #       ~/go/pkg/mod
+      #     key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+      #     restore-keys: |
+      #       ${{ runner.os }}-go-
+
+      - name: Run Unit Tests
+        run: make test
+
+      - name: upload cover profile artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: cover.out
+          path: cover.out
+          if-no-files-found: error
+          retention-days: 1
+      
+      - name: Run Race Condition Tests
+        run: make test-race-condition
+
+      - name: Run Integration Tests
+        run: make test-integration
+
+
+  check-coverage:
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      packages: write
+      contents: read
+      issues: write
+      id-token: write
+      pull-requests: write
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6
+
+      - name: download cover.out
+        uses: actions/download-artifact@v8
+        with:
+          name: cover.out
+  
+      - name: download artifact (main.breakdown)
+        id: download-main-breakdown
+        uses: dawidd6/action-download-artifact@v9
+        with:
+          branch: main
+          workflow_conclusion: success
+          name: main.breakdown
+          if_no_artifact_found: warn
+
+      - name: check test coverage
+        id: coverage
+        uses: vladopajic/go-test-coverage@v2
+        continue-on-error: true # Should fail after coverage comment is posted
+        with:
+          config: ./.github/.testcoverage.yml
+          profile: cover.out
+
+          # temporary overrides until we reach our goal of 90%
+          threshold-file: 0
+          threshold-package: 0
+          threshold-total: 45
+
+          breakdown-file-name: ${{ github.ref_name == 'main' && 'main.breakdown' || '' }}
+          diff-base-breakdown-file-name: ${{ steps.download-main-breakdown.outputs.found_artifact == 'true' && 'main.breakdown' || '' }}
+      
+      - name: upload artifact (main.breakdown)
+        uses: actions/upload-artifact@v7
+        if: github.ref_name == 'main'
+        with:
+          name: main.breakdown
+          path: main.breakdown # as specified via `breakdown-file-name`
+          if-no-files-found: error
+
+      - name: "finally check coverage"
+        if: steps.coverage.outcome == 'failure'
+        shell: bash
+        run: echo "coverage check failed" && exit 1
+
+      # getting error: https://github.com/thollander/actions-comment-pull-request?tab=readme-ov-file#permissions
+      # requires a change from pull_request to pull_request_target.
+      # - name: post coverage report
+      #   uses: thollander/actions-comment-pull-request@v3
+      #   with:
+      #     # github-token: ${{ secrets.GITHUB_TOKEN }}
+      #     comment-tag: coverage-report
+      #     message: |
+      #       go-test-coverage report:
+      #       ```
+      #       ${{ fromJSON(steps.coverage.outputs.report) }}```
+      

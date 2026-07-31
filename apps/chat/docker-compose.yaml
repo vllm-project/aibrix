@@ -1,0 +1,30 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - AIBRIX_GATEWAY_URL=http://host.docker.internal:8888
+      - CORS_ORIGINS=http://localhost:5173
+      - AUTH_MODE=none
+    volumes:
+      - ./api:/app
+    restart: unless-stopped
+
+  web:
+    image: node:18-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./web:/app
+      - chat-node-modules:/app/node_modules
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  chat-node-modules:

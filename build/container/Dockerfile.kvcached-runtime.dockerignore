@@ -1,0 +1,11 @@
+# The dedicated daemon only copies its Python package and supervisor. Keep the
+# build context small, especially for GPU hosts that may have large local caches.
+**
+!python/
+!python/aibrix/
+!python/aibrix/aibrix/
+!python/aibrix/aibrix/**
+!build/
+!build/container/
+!build/container/entrypoints/
+!build/container/entrypoints/aibrix-kvcached-runtime-supervisor.sh

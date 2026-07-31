@@ -1,0 +1,23 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: aibrix
+  name: mock-llama2-7b-hpa
+  namespace: default
+spec:
+  maxReplicas: 10
+  metrics:
+  - pods:
+      metric:
+        name: gpu_cache_usage_perc
+      target:
+        averageValue: "40"
+        type: AverageValue
+    type: Pods
+  minReplicas: 1
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mock-llama2-7b

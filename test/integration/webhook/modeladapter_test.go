@@ -1,0 +1,137 @@
+/*
+Copyright 2025 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package webhook
+
+import (
+	"github.com/onsi/ginkgo/v2"
+	"github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+
+	modelapi "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/test/utils/wrapper"
+)
+
+var _ = ginkgo.Describe("modelAdapter default and validation", func() {
+	var ns *corev1.Namespace
+
+	ginkgo.BeforeEach(func() {
+		// Create test namespace before each test.
+		ns = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "test-ns-",
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+	})
+
+	ginkgo.AfterEach(func() {
+		gomega.Expect(k8sClient.Delete(ctx, ns)).To(gomega.Succeed())
+		var adapters modelapi.ModelAdapterList
+		gomega.Expect(k8sClient.List(ctx, &adapters)).To(gomega.Succeed())
+
+		for _, item := range adapters.Items {
+			gomega.Expect(k8sClient.Delete(ctx, &item)).To(gomega.Succeed())
+		}
+	})
+
+	type testValidatingCase struct {
+		adapter func() *modelapi.ModelAdapter
+		failed  bool
+	}
+	ginkgo.DescribeTable("test validating",
+		func(tc *testValidatingCase) {
+			if tc.failed {
+				gomega.Expect(k8sClient.Create(ctx, tc.adapter())).Should(gomega.HaveOccurred())
+			} else {
+				gomega.Expect(k8sClient.Create(ctx, tc.adapter())).To(gomega.Succeed())
+			}
+		},
+		ginkgo.Entry("normal creation", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("s3://test-bucket/test-model").
+					PodSelector(&metav1.LabelSelector{}).
+					Obj()
+			},
+			failed: false,
+		}),
+		ginkgo.Entry("adapter creation with invalid artifactURL should be failed", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("aabbcc").
+					PodSelector(&metav1.LabelSelector{}).
+					Obj()
+			},
+			failed: true,
+		}),
+		ginkgo.Entry("adapter creation with empty artifactURL should be failed", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("").
+					PodSelector(&metav1.LabelSelector{}).
+					Obj()
+			},
+			failed: true,
+		}),
+		ginkgo.Entry("adapter creation with replicas less than 0 should be failed", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("s3://test-bucket/test-model").
+					PodSelector(&metav1.LabelSelector{}).
+					Replicas(ptr.To[int32](0)).
+					Obj()
+			},
+			failed: true,
+		}),
+		ginkgo.Entry("adapter creation with empty podSelector should be failed", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("s3://test-bucket/test-model").
+					PodSelector(nil).
+					Obj()
+			},
+			failed: true,
+		}),
+		ginkgo.Entry("adapter creation with unsupported schema should be failed", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("ms://").
+					PodSelector(&metav1.LabelSelector{}).
+					Obj()
+			},
+			failed: true,
+		}),
+		ginkgo.Entry("adapter creation with misspelled huggingface schema should be failed", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("hugingface://yard1/llama-2-7b-sql-lora-tests").
+					PodSelector(&metav1.LabelSelector{}).
+					Obj()
+			},
+			failed: true,
+		}),
+	)
+})

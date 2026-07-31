@@ -1,0 +1,154 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package gateway
+
+import (
+	"context"
+	"fmt"
+
+	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	"k8s.io/klog/v2"
+)
+
+func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extProcPb.ProcessingResponse, error) {
+	if user.Rpm == 0 {
+		user.Rpm = int64(DefaultRPM)
+	}
+	if user.Tpm == 0 {
+		user.Tpm = user.Rpm * int64(DefaultTPMMultiplier)
+	}
+
+	code, err := s.checkRPM(ctx, user.Name, user.Rpm)
+	if err != nil {
+		errorCode := ""
+		if code == envoyTypePb.StatusCode_TooManyRequests {
+			errorCode = ErrorCodeRateLimitExceeded
+		}
+		return 0, generateErrorResponse(
+			code,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorRPMExceeded, RawValue: []byte("true"),
+			}}},
+			err.Error(), errorCode, ""), err
+	}
+
+	rpm, code, err := s.incrRPM(ctx, user.Name)
+	if err != nil {
+		return 0, generateErrorResponse(
+			code,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorIncrRPM, RawValue: []byte("true"),
+			}}},
+			err.Error(), "", ""), err
+	}
+
+	code, err = s.checkTPM(ctx, user.Name, user.Tpm)
+	if err != nil {
+		errorCode := ""
+		if code == envoyTypePb.StatusCode_TooManyRequests {
+			errorCode = ErrorCodeRateLimitExceeded
+		}
+		return 0, generateErrorResponse(
+			code,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorTPMExceeded, RawValue: []byte("true"),
+			}}},
+			err.Error(), errorCode, ""), err
+	}
+
+	return rpm, nil, nil
+}
+
+func (s *Server) checkRPM(ctx context.Context, username string, rpmLimit int64) (envoyTypePb.StatusCode, error) {
+	rpmCurrent, err := s.ratelimiter.Get(ctx, fmt.Sprintf("%v_RPM_CURRENT", username))
+	if err != nil {
+		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get RPM for user: %v", username)
+	}
+
+	if rpmCurrent >= rpmLimit {
+		return envoyTypePb.StatusCode_TooManyRequests, fmt.Errorf("user: %v has exceeded RPM: %v", username, rpmLimit)
+	}
+
+	return envoyTypePb.StatusCode_OK, nil
+}
+
+func (s *Server) incrRPM(ctx context.Context, username string) (int64, envoyTypePb.StatusCode, error) {
+	rpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_RPM_CURRENT", username), 1)
+	if err != nil {
+		return rpm, envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to increment RPM for user: %v", username)
+	}
+
+	return rpm, envoyTypePb.StatusCode_OK, nil
+}
+
+func (s *Server) checkTPM(ctx context.Context, username string, tpmLimit int64) (envoyTypePb.StatusCode, error) {
+	tpmCurrent, err := s.ratelimiter.Get(ctx, fmt.Sprintf("%v_TPM_CURRENT", username))
+	if err != nil {
+		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get TPM for user: %v", username)
+	}
+
+	if tpmCurrent >= tpmLimit {
+		return envoyTypePb.StatusCode_TooManyRequests, fmt.Errorf("user: %v has exceeded TPM: %v", username, tpmLimit)
+	}
+
+	return envoyTypePb.StatusCode_OK, nil
+}
+
+// enforceModelRPS atomically increments the per-model RPS counter and rejects the request
+// if the new value exceeds the limit.
+func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) *extProcPb.ProcessingResponse {
+	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
+		return nil
+	}
+	limit := routingCtx.ConfigProfile.RequestsPerSecond
+	newVal, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), 1)
+	if err != nil {
+		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+			fmt.Sprintf("fail to increment RPS for model: %v", model),
+			"", "", HeaderErrorIncrModelRPS, "true")
+	}
+	if newVal > limit {
+		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
+			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
+			ErrorCodeRateLimitExceeded, "", HeaderErrorModelRPSExceeded, "true")
+	}
+	return nil
+}
+
+// decrModelRPS decrements the per-model RPS counter by 1. Call this when a routing
+// failure occurs after enforceModelRPS has already incremented the counter, so that
+// requests which never reached the backend do not consume quota.
+// Note: if the 1-second window expires between the increment and this decrement, the
+// decrement lands on a fresh (zero) key and drives the counter negative. Preventing this
+// would require an atomic floor-at-zero Lua script, which is not worth the added complexity
+// given the window resets within one second and the counter self-corrects.
+func (s *Server) decrModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) {
+	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
+		return
+	}
+	if _, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1); err != nil {
+		klog.ErrorS(err, "fail to decrement RPS for model", "model", model)
+	}
+}
+
+func modelRPSKey(model string) string {
+	return fmt.Sprintf("%v_MODEL_RPS_CURRENT", model)
+}

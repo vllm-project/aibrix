@@ -1,0 +1,269 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package routingalgorithms
+
+import (
+	"context"
+	"slices"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
+	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
+
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+func Test_PrefixCacheE2E(t *testing.T) {
+	readyPods := getReadyPods()
+	c := cache.NewWithPodsMetricsForTest(
+		readyPods,
+		"m1",
+		map[string]map[string]metrics.MetricValue{
+			"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
+			"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
+			"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
+			"p4": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
+		})
+	podList := podsFromCache(c)
+
+	// Create tokenizer using factory method
+	tokenizerObj, err := tokenizer.NewTokenizer("character", nil)
+	assert.NoError(t, err)
+
+	prefixCacheRouter := prefixCacheRouter{
+		cache:              c,
+		tokenizer:          tokenizerObj,
+		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+		// No KV sync router, uses original implementation
+	}
+
+	const testInputStr = "abcdegfh"
+
+	// no prefix match -> select least request pod
+	input := testInputStr
+	// pre_request_count: [p1: 0, p2: 0, p3: 0, p4: 0]
+	// post_request_count: [p1: 0, p2: 0, p3: 0, p4: 1(abcdefgh)]
+	t.Log(input)
+	ctx1 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r1", "")
+	p4, err := prefixCacheRouter.Route(ctx1, podList)
+	assert.NoError(t, err)
+
+	c.AddRequestCount(ctx1, ctx1.RequestID, ctx1.Model)
+	t.Log(p4)
+
+	// no prefix match -> select least request pod
+	input = "wxyz"
+	// pre_request_count: [p1: 0, p2: 0, p3: 0, p4: 1(abcdefgh)]
+	// post_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 1(abcdefgh)]
+	t.Log(input)
+	ctx2 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r2", "")
+	p3, err := prefixCacheRouter.Route(ctx2, podList)
+	assert.NoError(t, err)
+	assert.NotEqual(t, p4, p3)
+
+	c.AddRequestCount(ctx2, ctx2.RequestID, ctx2.Model)
+	t.Log(p3)
+
+	// prefix match, load balanced -> select cached pod
+	input = testInputStr
+	// pre_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 1(abcdefgh)]
+	// post_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 2(abcdefgh)]
+	t.Log(input)
+	ctx3 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r3", "")
+	targetPod, err := prefixCacheRouter.Route(ctx3, podList)
+	assert.NoError(t, err)
+	assert.Equal(t, p4, targetPod)
+
+	c.AddRequestCount(ctx3, ctx3.RequestID, ctx3.Model)
+	t.Log(targetPod)
+
+	// prefix match, load imbalanced -> select least request pod, p1 or p2 both are available
+	input = "abcd"
+	// pre_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 2(abcdefgh)]
+	// post_request_count: [p1: 0, p2: 1 (abcd), p3: 1 (wxyz), p4: 2(abcdefgh)]
+	t.Log(input)
+	ctx4 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r4", "")
+	p2, err := prefixCacheRouter.Route(ctx4, podList)
+	assert.NoError(t, err)
+	assert.NotEqual(t, p4, p2)
+
+	c.AddRequestCount(ctx4, ctx4.RequestID, ctx4.Model)
+	t.Log(p2)
+
+	// prefix match, load imbalanced -> selects p2 with lower prefix match
+	input = "abcdefghijkl"
+	// pre_request_count: [p1: 0, p2: 1 (abcd), p3: 1 (wxyz), p4: 2 (abcdefgh)]
+	// post_request_count: [p1: 0, p2: 2 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
+	t.Log(input)
+	ctx5 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r5", "")
+	targetPod, err = prefixCacheRouter.Route(ctx5, podList)
+	assert.NoError(t, err)
+	assert.Equal(t, p2, targetPod)
+
+	c.AddRequestCount(ctx5, ctx5.RequestID, ctx5.Model)
+	t.Log(targetPod)
+
+	// prefix match, load balanced -> selects p2 or p4
+	input = "abcdefgh"
+	// pre_request_count: [p1: 0, p2: 2 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
+	// post_request_count: [p1: 0, p2: 3 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
+	t.Log(input)
+	ctx6 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r6", "")
+	targetPod, err = prefixCacheRouter.Route(ctx6, podList)
+	assert.NoError(t, err)
+	assert.True(t, slices.Contains([]string{p2, p4}, targetPod))
+	c.AddRequestCount(ctx6, ctx6.RequestID, ctx6.Model)
+	t.Log(targetPod)
+
+	// pre prefix match, load imbalance -> select least request pod
+	input = "abcdefgh"
+	// pre_request_count: [p1: 0, p2: 3 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
+	// post_request_count: [p1: 0 , p2: 9 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
+	t.Log(input)
+	for i := 0; i < 6; i++ {
+		ctx := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r7-12", "")
+		ctx.SetTargetPod(ctx6.TargetPod())
+		c.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
+	}
+	ctx7 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r7", "")
+	p1, err := prefixCacheRouter.Route(ctx7, podList)
+	// post_request_count: [p1: 9 (abcdefgh), p2: 0 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
+	t.Log(p2, p3, p4)
+	t.Log(p1)
+	assert.NoError(t, err)
+	assert.False(t, slices.Contains([]string{p2, p3, p4}, p1))
+}
+
+func getReadyPods() []*v1.Pod {
+	return []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "p1", Labels: map[string]string{
+				utils.DeploymentIdentifier: "deployment",
+			}},
+			Status: v1.PodStatus{
+				PodIP: "1.1.1.1",
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodReady,
+						Status: v1.ConditionTrue,
+					},
+				},
+			}},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "p2", Labels: map[string]string{
+				utils.DeploymentIdentifier: "deployment",
+			}},
+			Status: v1.PodStatus{
+				PodIP: "2.2.2.2",
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodReady,
+						Status: v1.ConditionTrue,
+					},
+				},
+			}},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "p3", Labels: map[string]string{
+				utils.DeploymentIdentifier: "deployment",
+			}},
+			Status: v1.PodStatus{
+				PodIP: "3.3.3.3",
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodReady,
+						Status: v1.ConditionTrue,
+					},
+				},
+			}},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "p4", Labels: map[string]string{
+				utils.DeploymentIdentifier: "deployment",
+			}},
+			Status: v1.PodStatus{
+				PodIP: "4.4.4.4",
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodReady,
+						Status: v1.ConditionTrue,
+					},
+				},
+			}},
+	}
+}
+
+func TestPrefixCache_ScoreAll(t *testing.T) {
+	readyPods := getReadyPods()
+	c := cache.NewWithPodsMetricsForTest(
+		readyPods,
+		"m1",
+		map[string]map[string]metrics.MetricValue{
+			"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
+			"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
+			"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
+			"p4": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 0}},
+		})
+	podList := podsFromCache(c)
+
+	tokenizerObj, err := tokenizer.NewTokenizer("character", nil)
+	assert.NoError(t, err)
+
+	prefixCacheRouter := prefixCacheRouter{
+		cache:              c,
+		tokenizer:          tokenizerObj,
+		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+	}
+
+	// Make an initial request to route to p1 so that it caches the prefix
+	const testInputStr2 = "abcdegfh"
+	input := testInputStr2
+	ctx1 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r1", "")
+	_, err = prefixCacheRouter.Route(ctx1, podList)
+	assert.NoError(t, err)
+
+	// Now try ScoreAll with the same input, p1 should have higher score (or the selected pod)
+	ctx2 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r2", "")
+	scores, scored, err := prefixCacheRouter.ScoreAll(ctx2, podList)
+
+	assert.NoError(t, err)
+	assert.Equal(t, 4, len(scores))
+	assert.Equal(t, 4, len(scored))
+
+	// All should be scored
+	for _, s := range scored {
+		assert.True(t, s)
+	}
+
+	// At least one pod should have a score > 0 (the one that matched the prefix)
+	hasPositiveScore := false
+	for _, s := range scores {
+		if s > 0 {
+			hasPositiveScore = true
+			break
+		}
+	}
+	assert.True(t, hasPositiveScore)
+
+	// Check polarity
+	assert.Equal(t, types.PolarityMost, prefixCacheRouter.Polarity())
+}

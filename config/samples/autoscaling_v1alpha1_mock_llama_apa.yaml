@@ -1,0 +1,18 @@
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: podautoscaler-example-mock-llama-apa
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  namespace: aibrix-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: llama2-70b
+  minReplicas: 1
+  maxReplicas: 10
+  targetMetric: "avg_prompt_throughput_toks_per_s"
+  targetValue: "20"
+  scalingStrategy: "APA"

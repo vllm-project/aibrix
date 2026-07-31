@@ -1,0 +1,13 @@
+resources:
+- metadata.yaml
+- redis.yaml
+
+patches:
+# Uncomment the following lines to enable S3 as the object store
+# - path: s3-env-patch.yaml
+# Uncomment the following lines to enable TOS as the object store
+# - path: tos-env-patch.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/component: aibrix-metadata-service

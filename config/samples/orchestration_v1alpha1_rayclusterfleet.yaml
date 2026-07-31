@@ -1,0 +1,43 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: RayClusterFleet
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: fleet
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: llama-2-7b-hf
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: llama-2-7b-hf
+    spec:
+      rayVersion: '2.10.0' # should match the Ray version in the image of the containers
+      headGroupSpec:
+        rayStartParams:
+          dashboard-host: '0.0.0.0'
+        template:
+          spec:
+            containers:
+              - name: ray-head
+                image: rayproject/ray:2.10.0
+                ports:
+                  - containerPort: 6379
+                    name: gcs-server
+                  - containerPort: 8265
+                    name: dashboard
+                  - containerPort: 10001
+                    name: client
+                resources:
+                  limits:
+                    cpu: "1000m"
+                  requests:
+                    cpu: "200m"

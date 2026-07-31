@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: aibrix-controller-manager
+    {{- include "aibrix.labels" . | nindent 4 }}
+  name: {{ include "aibrix.fullname" . }}-controller-manager
+spec:
+  replicas: {{ .Values.controllerManager.replicas }}
+  selector:
+    matchLabels:
+      {{- include "aibrix.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: aibrix-controller-manager
+  template:
+    metadata:
+      labels:
+        {{- include "aibrix.labels" . | nindent 8 }}
+        app.kubernetes.io/component: aibrix-controller-manager
+    spec:
+      {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" .Values.controllerManager.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
+      containers:
+      - args:
+        - --leader-elect
+        - --leader-election-namespace={{ .Release.Namespace }}
+        - --health-probe-bind-address=:8081
+        - --metrics-bind-address=:8080
+        - --enable-runtime-sidecar
+        command:
+        - /manager
+        env:
+        - name: AIBRIX_GATEWAY_TIMEOUT_SECONDS
+          value: "{{ .Values.controllerManager.gatewayTimeoutSeconds }}"
+{{- $envs := .Values.controllerManager.container.envs }}
+{{- range $key := keys $envs | sortAlpha }}
+        - name: {{ $key }}
+          value: {{ index $envs $key | quote }}
+{{- end }}
+        image: {{ .Values.controllerManager.container.image.repository }}:{{ .Values.controllerManager.container.image.tag }}
+        imagePullPolicy: {{ .Values.controllerManager.container.image.imagePullPolicy }}
+        name: manager
+        ports:
+        - containerPort: 9443
+          name: webhook-server
+          protocol: TCP
+        resources: {{ toYaml .Values.controllerManager.container.resources | nindent 10 }}
+        livenessProbe:
+          {{- toYaml .Values.controllerManager.container.probes.liveness | nindent 12 }}
+        readinessProbe:
+          {{- toYaml .Values.controllerManager.container.probes.readiness | nindent 12 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - mountPath: /tmp/k8s-webhook-server/serving-certs
+          name: cert
+          readOnly: true
+      securityContext:
+        runAsNonRoot: true
+      serviceAccountName: {{ include "aibrix.controllerManager.serviceAccountName" . }}
+      terminationGracePeriodSeconds: 10
+      volumes:
+      - name: cert
+        secret:
+          defaultMode: 420
+          secretName: aibrix-webhook-server-cert
+      {{- with .Values.controllerManager.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controllerManager.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,515 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import asyncio
+import json
+import uuid
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+
+from aibrix import envs
+from aibrix.batch.job_entity import BatchJob, BatchJobError
+from aibrix.batch.job_entity.batch_job import BatchUsage
+from aibrix.batch.storage.batch_metastore import (
+    METASTORE_LIST_PAGE_SIZE,
+    delete_metadata,
+    get_metadata,
+    is_request_done,
+    is_request_locking_supported,
+    list_metastore_keys,
+    lock_request,
+    unlock_request,
+)
+from aibrix.logger import init_logger
+from aibrix.storage.base import BaseStorage
+
+logger = init_logger(__name__)
+
+
+class BatchStorageAdapter:
+    """Adapter that bridges the new async storage interface with the batch storage interface.
+
+    This adapter provides batch-specific operations while using the new
+    aibrix.storage module underneath. It handles the sync/async conversion and maps
+    batch-specific operations to the generic object storage interface.
+    """
+
+    def __init__(self, storage: BaseStorage):
+        self.storage = storage
+
+    async def write_job_input_data(
+        self, file_id: str, input_data_file_name: str
+    ) -> None:
+        """Write job input data from a file to storage.
+
+        Reads the JSONL file and stores the entire file content
+        """
+        # Read the entire JSONL file
+        with open(input_data_file_name, "r") as file:
+            file_content = file.read()
+
+        # Store the whole file content
+        await self.storage.put_object(file_id, file_content, "application/jsonl")
+
+        logger.info(f"Stored complete input file for {file_id}")
+
+    async def read_job_input_info(self, job: BatchJob) -> Tuple[int, bool]:
+        """Read job input info from storage.
+
+        Args:
+            job: BatchJob
+
+        Returns:
+            Tuple of total line number and input existence
+        """
+        try:
+            await self.storage.head_object(job.spec.input_file_id)
+            return 0, True
+        except Exception:
+            return 0, False
+
+    async def read_job_next_input_data(
+        self, job: BatchJob, start_index: int
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Read job input data line by line with request locking.
+
+        Args:
+            job: BatchJob
+            start_index: Starting line index
+
+        Returns:
+            AsyncIterator of lines that were successfully locked for processing
+        """
+        idx = start_index
+        done = 0  # Track done requests so far
+        # Locking relies on TTL + set-if-not-exists, which some metastore
+        # backends (e.g. the LOCAL dev/test metastore) do not support. Probe
+        # once up front so we don't emit an identical "locking not supported"
+        # warning for every request in the job.
+        locking_supported = is_request_locking_supported()
+        if not locking_supported:
+            logger.info(
+                "Metastore does not support request locking; "
+                "processing all requests without dedup",
+                job_id=job.job_id,
+            )  # type:ignore[call-arg]
+        # Use 'async for' to iterate and 'yield' each item.
+        async for line in self.storage.readline_iter(
+            job.spec.input_file_id, start_index
+        ):
+            line = line.strip()
+            if len(line) == 0:
+                continue
+
+            # Try to lock this request before processing.
+            lock_key = self._get_request_meta_output_key(job, idx)
+            if not locking_supported:
+                # Locking is unavailable on this backend; process every request
+                # without dedup, preserving the previous behavior (minus the
+                # per-request warning, which we already logged once above).
+                locked = True
+            else:
+                try:
+                    # Try to acquire lock with configurable expiration
+                    locked = await lock_request(
+                        lock_key, expiration_seconds=envs.INFERENCE_TASK_TIMEOUT
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Error on locking request in the job, assuming locking not supported",
+                        job_id=job.job_id,
+                        line_no=idx,
+                        error=e,
+                    )  # type:ignore[call-arg]
+                    locked = True
+
+            if locked:
+                request_data = json.loads(line)
+                request_data["_request_index"] = idx  # Add index for tracking
+                request_data["_done"] = done  # return done requests so far
+                logger.debug(
+                    "Locked and will processing request in the job",
+                    job_id=job.job_id,
+                    line_no=idx,
+                    requset=request_data,
+                )  # type:ignore[call-arg]
+                yield request_data
+            elif await is_request_done(lock_key):
+                done += 1
+            else:
+                logger.debug(
+                    "Skipping already locked request in the job",
+                    job_id=job.job_id,
+                    line_no=idx,
+                )  # type:ignore[call-arg]
+
+            idx += 1
+
+    async def is_request_done(self, job: BatchJob, request_index: int) -> bool:
+        """Check if a request is done.
+
+        Args:
+            job: BatchJob
+            request_index: Index of the request being processed
+
+        Returns:
+            True if the request is done, False otherwise
+        """
+        lock_key = self._get_request_meta_output_key(job, request_index)
+        return await is_request_done(lock_key)
+
+    async def prepare_job_ouput_files(self, job: BatchJob) -> BatchJob:
+        """Prepare job output and error files for batch processing.
+
+        This method creates two separate multipart uploads:
+        1. **Output file**: Stores successful request responses
+        2. **Error file**: Stores failed request responses
+
+        Both files are ALWAYS created upfront, regardless of whether errors occur.
+        Workers write to the appropriate file based on request success/failure.
+
+        File ID generation:
+        - output_file_id: UUID v3 derived from job_id + "output"
+        - error_file_id: UUID v3 derived from job_id + "error"
+        - temp_output_file_id: Multipart upload ID for output file
+        - temp_error_file_id: Multipart upload ID for error file
+
+        Args:
+            job: BatchJob object to prepare files for
+
+        Returns:
+            Updated BatchJob with file IDs populated
+
+        Note:
+            Error files will exist even if no requests fail. The file will simply
+            be empty or contain no parts if all requests succeed.
+        """
+        if job.status.temp_output_file_id or job.status.temp_error_file_id:
+            return job
+
+        job_uuid = uuid.UUID(job.job_id)
+        job.status.output_file_id, job.status.error_file_id = (
+            str(uuid.uuid3(job_uuid, "output")),
+            str(uuid.uuid3(job_uuid, "error")),
+        )
+        tasks = [
+            self.storage.create_multipart_upload(
+                job.status.output_file_id, "application/jsonl", small_parts=True
+            ),
+            self.storage.create_multipart_upload(
+                job.status.error_file_id, "application/jsonl", small_parts=True
+            ),
+        ]
+        (
+            job.status.temp_output_file_id,
+            job.status.temp_error_file_id,
+        ) = await asyncio.gather(*tasks)
+
+        logger.info(
+            "Prepared batch job output files",
+            job_id=job.job_id,
+            output_file_id=job.status.output_file_id,
+            error_file_id=job.status.error_file_id,
+        )  # type: ignore[call-arg]
+
+        return job
+
+    async def write_job_output_data(
+        self, job: BatchJob, request_index: int, output_data: Dict[str, Any]
+    ) -> None:
+        """Write job result to storage and unlock the request.
+
+        Args:
+            job: BatchJob object
+            request_index: Index of the request being processed
+            output_data: Single result dictionary
+        """
+        assert (
+            job.status.output_file_id
+            and job.status.error_file_id
+            and job.status.temp_output_file_id
+            and job.status.temp_error_file_id
+        )
+
+        # output_data["error"] may be a BatchJobError when inference
+        # fails (see job_driver.create_response_record). The class
+        # exposes ``json_serializer`` for exactly this case; without
+        # ``default=`` json.dumps raises TypeError, which would then
+        # surface as the batch-level error message.
+        json_str = json.dumps(output_data, default=BatchJobError.json_serializer) + "\n"
+        is_error = "error" in output_data and output_data["error"] is not None
+        etag = await self.storage.upload_part(
+            job.status.error_file_id if is_error else job.status.output_file_id,
+            job.status.temp_error_file_id
+            if is_error
+            else job.status.temp_output_file_id,
+            request_index,
+            json_str,
+        )
+
+        # Unlock the request by setting completion status.
+        unlock_key = self._get_request_meta_output_key(job, request_index)
+        completion_status = self._get_request_meta_output_val(is_error, etag)
+        await unlock_request(unlock_key, completion_status)
+
+        logger.debug(
+            f"Stored result for job {job.job_id} request {request_index}, status: {completion_status}"
+        )
+
+    async def finalize_job_output_data(self, job: BatchJob) -> BatchJob:
+        authoritative_total = job.status.request_counts.total
+        if (
+            job.status.output_file_id is None
+            or job.status.error_file_id is None
+            or job.status.temp_output_file_id is None
+            or job.status.temp_error_file_id is None
+        ):
+            return job
+
+        prefix = self._get_request_meta_output_key(job, None)
+        output: List[Dict[str, str | int]] = []
+        error: List[Dict[str, str | int]] = []
+        completed = 0
+        failed = 0
+        valid_keys: List[str] = []
+        launched = 0
+        max_index = -1
+        continuation_token = None
+
+        while True:
+            # 1. Get keys
+            keys, continuation_token = await list_metastore_keys(
+                prefix,
+                limit=METASTORE_LIST_PAGE_SIZE,
+                continuation_token=continuation_token,
+            )
+
+            logger.debug(
+                "Metastore key batch found during job finalizing",
+                job_id=job.job_id,
+                prefix=prefix,
+                key_count=len(keys),
+                continuation_token=continuation_token,
+            )  # type: ignore[call-arg]
+
+            # 2. Extract indices from keys and determine maximum index for total count
+            indexed_keys: List[Tuple[int, str]] = []
+            for key in keys:
+                try:
+                    idx = int(key[len(prefix) :])
+                    indexed_keys.append((idx, key))
+                except ValueError:
+                    logger.warning(
+                        "Invalid key format found in metastore",
+                        key=key,
+                        job_id=job.job_id,
+                    )  # type: ignore[call-arg]
+
+            if indexed_keys:
+                indexed_keys.sort(key=lambda item: item[0])
+                launched += len(indexed_keys)
+                max_index = max(max_index, indexed_keys[-1][0])
+
+                etag_results = await asyncio.gather(
+                    *[get_metadata(key) for _, key in indexed_keys]
+                )
+
+                # 3. Calculate actual counts based on metastore keys
+                for (idx, key), (meta_val, exist) in zip(indexed_keys, etag_results):
+                    if not exist:
+                        continue
+
+                    etag, is_error = self._parse_request_meta_output_val(meta_val)
+                    if etag == "":
+                        continue
+
+                    valid_keys.append(key)
+                    val: Dict[str, str | int] = {"etag": etag, "part_number": idx}
+
+                    if is_error:
+                        error.append(val)
+                        failed += 1
+                    else:
+                        output.append(val)
+                        completed += 1
+
+            if continuation_token is None:
+                break
+
+        metastore_total = max_index + 1 if launched > 0 else 0
+        total = max(authoritative_total, metastore_total)
+
+        logger.info(
+            "Finalizing job output data using metastore keys",
+            job_id=job.job_id,
+            launched=launched,
+            total=total,
+            metastore_total=metastore_total,
+            authoritative_total=authoritative_total,
+        )  # type: ignore[call-arg]
+
+        # 4. Update job object with calculated request counts if they differ.
+        # Preserve the validated input total when it is larger, but allow
+        # metastore truth to grow a stale lower total after restart recovery.
+        if (
+            job.status.request_counts.total != total
+            or job.status.request_counts.launched != launched
+            or job.status.request_counts.completed != completed
+            or job.status.request_counts.failed != failed
+        ):
+            logger.info(
+                "Updating job request counts based on metastore data",
+                job_id=job.job_id,
+                old_total=job.status.request_counts.total,
+                new_total=total,
+                old_launched=job.status.request_counts.launched,
+                new_launched=launched,
+                old_completed=job.status.request_counts.completed,
+                new_completed=completed,
+                old_failed=job.status.request_counts.failed,
+                new_failed=failed,
+            )  # type: ignore[call-arg]
+
+            if total > job.status.request_counts.total:
+                job.status.request_counts.total = total
+            job.status.request_counts.launched = launched
+            job.status.request_counts.completed = completed
+            job.status.request_counts.failed = failed
+
+        # Aggregate results sequentially: parallel completes hammer
+        # MinIO bucket-level locks under small_parts mode (each complete
+        # does N list/delete/put_object calls under .multipart/).
+        await self.storage.complete_multipart_upload(
+            job.status.output_file_id,
+            job.status.temp_output_file_id,
+            output,
+        )
+        await self.storage.complete_multipart_upload(
+            job.status.error_file_id,
+            job.status.temp_error_file_id,
+            error,
+        )
+
+        # Sum usage from the assembled output file.
+        job.status.usage = await self._sum_usage_from_output(job.status.output_file_id)
+
+        # Delete metadata for valid keys only
+        if valid_keys:
+            for start in range(0, len(valid_keys), METASTORE_LIST_PAGE_SIZE):
+                batch = valid_keys[start : start + METASTORE_LIST_PAGE_SIZE]
+                await asyncio.gather(*[delete_metadata(key) for key in batch])
+        return job
+
+    async def _sum_usage_from_output(self, output_file_id: str) -> BatchUsage:
+        """Read the merged output JSONL and sum the per-line usage.
+
+        Returns a zero BatchUsage if the output is empty or no line
+        carries usage (e.g. rerank batches). Tolerates malformed lines:
+        skips JSON-decode failures rather than aborting finalize.
+        """
+        usage = BatchUsage()
+        try:
+            async for line in self.storage.readline_iter(output_file_id):
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    response = obj.get("response")
+                    if not isinstance(response, dict):
+                        continue
+                    body = response.get("body")
+                    if not isinstance(body, dict):
+                        continue
+                    raw = body.get("usage")
+                    if not isinstance(raw, dict):
+                        continue
+                    # OpenAI-flavored usage uses prompt/completion;
+                    # AIBrix's BatchUsage stores input/output. Map both.
+                    usage.input_tokens += int(
+                        raw.get("input_tokens") or raw.get("prompt_tokens") or 0
+                    )
+                    usage.output_tokens += int(
+                        raw.get("output_tokens") or raw.get("completion_tokens") or 0
+                    )
+                    usage.total_tokens += int(raw.get("total_tokens") or 0)
+                    prompt_details = raw.get("prompt_tokens_details")
+                    if isinstance(prompt_details, dict):
+                        usage.input_tokens_details.cached_tokens += int(
+                            prompt_details.get("cached_tokens") or 0
+                        )
+                    completion_details = raw.get("completion_tokens_details")
+                    if isinstance(completion_details, dict):
+                        usage.output_tokens_details.reasoning_tokens += int(
+                            completion_details.get("reasoning_tokens") or 0
+                        )
+                except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                    # Skip malformed lines / unexpected nested types
+                    # rather than aborting finalize.
+                    continue
+        except FileNotFoundError:
+            return usage
+        return usage
+
+    async def read_job_output_data(self, file_id: str) -> List[Dict[str, Any]]:
+        """Read job results output from storage.
+
+        Args:
+            file_id: File identifier
+
+        Returns:
+            List of result dictionaries
+        """
+        request_results = []
+
+        async for line in self.storage.readline_iter(file_id):
+            json_obj = json.loads(line)
+            request_results.append(json_obj)
+
+        logger.info(f"Loaded complete output file for {file_id}")
+
+        return request_results
+
+    async def delete_job_data(self, file_id: str) -> None:
+        """Delete all data for the given job ID (both input and output)."""
+        # List all objects with the job prefix
+        try:
+            await self.storage.delete_object(file_id)
+
+            logger.info(f"Deleted file {file_id}")
+        except Exception as e:
+            logger.error(f"Failed to delete data for job {file_id}: {e}")
+
+    def _get_request_meta_output_key(self, job: BatchJob, idx: Optional[int]) -> str:
+        prefix = f"batch:{job.job_id}:done/"
+        if idx is None:
+            return prefix
+        return f"{prefix}{idx}"
+
+    def _get_request_meta_output_val(self, is_error: bool, etag: str) -> str:
+        return f"{'error' if is_error else 'output'}:{etag}"
+
+    def _parse_request_meta_output_val(self, meta_val: str) -> Tuple[str, bool]:
+        """valid output can be:
+        1. output:[etag]
+        2. error:[etag]
+        3. processing
+        """
+        status = meta_val.split(":", 1)
+        if len(status) == 2:
+            is_error, etag = status
+            return etag, is_error == "error"
+        else:
+            return "", False

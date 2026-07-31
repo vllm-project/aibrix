@@ -1,0 +1,70 @@
+{{- if or .Values.gateway.enable .Values.gateway.envoyAsSideCar }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "aibrix.gatewayPlugin.serviceAccountName" . }}
+  annotations:
+    {{- toYaml .Values.gatewayPlugin.serviceAccount.annotations | nindent 4 }}
+  labels:
+    {{- include "aibrix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gateway-plugin
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "aibrix.fullname" . }}-gateway-plugins
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - model.aibrix.ai
+  resources:
+  - modeladapters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - httproutes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    {{- include "aibrix.labels" . | nindent 4 }}
+  name: {{ include "aibrix.fullname" . }}-gateway-plugins
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "aibrix.fullname" . }}-gateway-plugins
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "aibrix.gatewayPlugin.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -1,0 +1,4 @@
+kind: Kustomization
+
+resources:
+- k8s_job_rbac.yaml

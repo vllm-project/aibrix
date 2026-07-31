@@ -1,0 +1,43 @@
+run:
+  timeout: 5m
+  allow-parallel-runners: true
+
+issues:
+  # don't skip warning about doc comments
+  # don't exclude the default set of lint
+  exclude-use-default: false
+  # restore some of the defaults
+  # (fill in the rest as needed)
+  exclude-rules:
+    - path: "api/*"
+      linters:
+        - lll
+    - path: "pkg/*"
+      linters:
+        - dupl
+        - lll
+    # disable lll check for flag descriptions
+    - path: "cmd/controllers/main.go"
+      linters:
+        - lll
+linters:
+  disable-all: true
+  enable:
+    - dupl
+    - errcheck
+    - goconst
+    - gocyclo
+    - gofmt
+    - goimports
+    - gosimple
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nakedret
+#    - prealloc
+    - staticcheck
+    - typecheck
+    - unconvert
+#    - unparam
+#    - unused

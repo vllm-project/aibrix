@@ -1,0 +1,236 @@
+/*
+Copyright 2026 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package benchmark
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/vllm-project/aibrix/brixbench/internal/deployers"
+	"github.com/vllm-project/aibrix/brixbench/internal/resolver"
+)
+
+func progressLog(t *testing.T, format string, args ...any) {
+	message := fmt.Sprintf(format, args...)
+	t.Helper()
+	t.Log(message)
+	fmt.Printf("[benchmark] %s\n", message)
+}
+
+func progressStep(t *testing.T, format string, args ...any) func() {
+	message := fmt.Sprintf(format, args...)
+	startedAt := time.Now()
+	progressLog(t, "START %s", message)
+	return func() {
+		progressLog(t, "DONE %s (%s)", message, time.Since(startedAt).Round(time.Second))
+	}
+}
+
+func teardownTestResources(t *testing.T, ctx context.Context, deployer deployers.Deployer, benchmarkNamespace string, testCaseName string) {
+	t.Helper()
+
+	cleanupDone := progressStep(t, "cleanup namespace %s for %s", benchmarkNamespace, testCaseName)
+	defer cleanupDone()
+	if err := deployer.Teardown(ctx); err != nil {
+		t.Errorf("failed to cleanup test resources: %v", err)
+	}
+}
+
+func captureDeploymentArtifacts(t *testing.T, ctx context.Context, deployer deployers.Deployer) {
+	t.Helper()
+	if deployer == nil {
+		return
+	}
+	if err := deployer.CaptureArtifacts(ctx); err != nil {
+		t.Logf("Warning: failed to capture deployment artifacts: %v", err)
+	}
+}
+
+func captureCasePodLogs(t *testing.T, ctx context.Context, testCase *resolver.Test, benchmarkNamespace string, caseLogDir string) {
+	t.Helper()
+
+	captureCaseResourceYAML(t, ctx, testCase, benchmarkNamespace, caseLogDir)
+
+	benchmarkPodName := benchmarkPodNameForTest(testCase.Name)
+	enginePodNames, err := listPodsInNamespace(ctx, benchmarkNamespace)
+	if err != nil {
+		t.Logf("Warning: failed to list engine pods in %s for log capture: %v", benchmarkNamespace, err)
+		return
+	}
+
+	var enginePods []string
+	for _, podName := range enginePodNames {
+		if podName == benchmarkPodName {
+			continue
+		}
+		enginePods = append(enginePods, podName)
+	}
+	capturePodLogs(t, ctx, benchmarkNamespace, enginePods, filepath.Join(caseLogDir, "engine-logs"), "engine")
+
+	if testCase.ProviderName() != "aibrix" {
+		return
+	}
+
+	gatewayPodNames, err := listPodsWithPrefix(ctx, "aibrix-system", "aibrix-gateway-plugins-")
+	if err != nil {
+		t.Logf("Warning: failed to list gateway pods in aibrix-system for log capture: %v", err)
+		return
+	}
+	capturePodLogs(t, ctx, "aibrix-system", gatewayPodNames, filepath.Join(caseLogDir, "gateway-logs"), "gateway")
+}
+
+func captureCaseResourceYAML(t *testing.T, ctx context.Context, testCase *resolver.Test, benchmarkNamespace string, caseLogDir string) {
+	t.Helper()
+
+	resourceDir := filepath.Join(caseLogDir, "resource-yaml")
+	if err := os.MkdirAll(resourceDir, 0755); err != nil {
+		t.Logf("Warning: failed to create resource yaml directory %s: %v", resourceDir, err)
+		return
+	}
+
+	captureResourceYAML(t, ctx, benchmarkNamespace, "pods", "", filepath.Join(resourceDir, "benchmark-namespace-pods.yaml"))
+	captureStormServiceYAMLs(t, ctx, benchmarkNamespace, resourceDir)
+
+	if testCase.ProviderName() != "aibrix" {
+		return
+	}
+	gatewayPodNames, err := listPodsWithPrefix(ctx, "aibrix-system", "aibrix-gateway-plugins-")
+	if err != nil {
+		t.Logf("Warning: failed to list gateway pods in aibrix-system for yaml capture: %v", err)
+		return
+	}
+	for _, podName := range gatewayPodNames {
+		captureResourceYAML(t, ctx, "aibrix-system", "pod", podName, filepath.Join(resourceDir, fmt.Sprintf("gateway-pod-%s.yaml", sanitizePathComponent(podName))))
+	}
+}
+
+func captureResourceYAML(t *testing.T, ctx context.Context, namespace string, resourceType string, resourceName string, outputPath string) {
+	t.Helper()
+
+	args := []string{"get", resourceType}
+	if resourceName != "" {
+		args = append(args, resourceName)
+	}
+	args = append(args, "-n", namespace, "-o", "yaml")
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	output, cmdErr := cmd.CombinedOutput()
+
+	body := output
+	if cmdErr != nil {
+		body = append(body, []byte(fmt.Sprintf("\n[yaml capture error] %v\n", cmdErr))...)
+	}
+	if writeErr := os.WriteFile(outputPath, body, 0644); writeErr != nil {
+		t.Logf("Warning: failed to write yaml capture %s: %v", outputPath, writeErr)
+		return
+	}
+	progressLog(t, "Saved resource yaml: %s", outputPath)
+}
+
+func captureStormServiceYAMLs(t *testing.T, ctx context.Context, namespace string, resourceDir string) {
+	t.Helper()
+
+	services, err := listStormServices(ctx)
+	if err != nil {
+		t.Logf("Warning: failed to list StormServices for yaml capture: %v", err)
+		captureResourceYAML(t, ctx, namespace, "stormservice", "", filepath.Join(resourceDir, "stormservices.yaml"))
+		return
+	}
+
+	captured := false
+	for _, service := range services {
+		if service.Namespace != namespace {
+			continue
+		}
+		outputPath := filepath.Join(resourceDir, fmt.Sprintf("stormservice-%s.yaml", sanitizePathComponent(service.Name)))
+		captureResourceYAML(t, ctx, namespace, "stormservice", service.Name, outputPath)
+		captured = true
+	}
+	if !captured {
+		captureResourceYAML(t, ctx, namespace, "stormservice", "", filepath.Join(resourceDir, "stormservices.yaml"))
+	}
+}
+
+func capturePodLogs(t *testing.T, ctx context.Context, namespace string, podNames []string, logDir string, logKind string) {
+	t.Helper()
+
+	if len(podNames) == 0 {
+		return
+	}
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		t.Logf("Warning: failed to create %s log directory %s: %v", logKind, logDir, err)
+		return
+	}
+
+	for _, podName := range podNames {
+		logPath := filepath.Join(logDir, fmt.Sprintf("%s.log", sanitizePathComponent(podName)))
+		command := fmt.Sprintf("kubectl logs -n %q %q --all-containers=true --timestamps=true", namespace, podName)
+		cmd := exec.CommandContext(ctx, "bash", "-c", command)
+		output, cmdErr := cmd.CombinedOutput()
+
+		logBody := output
+		if cmdErr != nil {
+			logBody = append(logBody, []byte(fmt.Sprintf("\n[log capture error] %v\n", cmdErr))...)
+		}
+		if writeErr := os.WriteFile(logPath, logBody, 0644); writeErr != nil {
+			t.Logf("Warning: failed to write %s logs for pod %s: %v", logKind, podName, writeErr)
+			continue
+		}
+		progressLog(t, "Saved %s pod logs for %s: %s", logKind, podName, logPath)
+	}
+}
+
+func listPodsWithPrefix(ctx context.Context, namespace string, prefix string) ([]string, error) {
+	podNames, err := listPodsInNamespace(ctx, namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	var filtered []string
+	for _, podName := range podNames {
+		if strings.HasPrefix(podName, prefix) {
+			filtered = append(filtered, podName)
+		}
+	}
+	return filtered, nil
+}
+
+func listPodsInNamespace(ctx context.Context, namespace string) ([]string, error) {
+	command := fmt.Sprintf("kubectl get pods -n %q -o jsonpath='{range .items[*]}{.metadata.name}{\"\\n\"}{end}'", namespace)
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list pods in namespace %s: %v, output: %s", namespace, err, string(output))
+	}
+
+	var podNames []string
+	for _, line := range strings.Split(string(output), "\n") {
+		podName := strings.TrimSpace(strings.Trim(line, "'"))
+		if podName == "" {
+			continue
+		}
+		podNames = append(podNames, podName)
+	}
+	sort.Strings(podNames)
+	return podNames, nil
+}

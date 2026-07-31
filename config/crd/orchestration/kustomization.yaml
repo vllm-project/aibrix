@@ -1,0 +1,7 @@
+resources:
+- orchestration.aibrix.ai_rayclusterreplicasets.yaml
+- orchestration.aibrix.ai_rayclusterfleets.yaml
+- orchestration.aibrix.ai_kvcaches.yaml
+- orchestration.aibrix.ai_stormservices.yaml
+- orchestration.aibrix.ai_rolesets.yaml
+- orchestration.aibrix.ai_podsets.yaml

@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aibrix-external-metrics-adapter
+  namespace: aibrix-system
+  labels:
+    app.kubernetes.io/name: aibrix-external-metrics-adapter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aibrix-external-metrics-adapter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aibrix-external-metrics-adapter
+    spec:
+      containers:
+      - name: adapter
+        image: aibrix/external-metrics-adapter:e2e
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: METRIC_NAME
+          value: aibrix_test_queue_depth
+        - name: METRIC_VALUE
+          value: "100"
+        ports:
+        - name: https
+          containerPort: 8443
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 2
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 10

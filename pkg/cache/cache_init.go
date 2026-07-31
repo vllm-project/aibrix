@@ -1,0 +1,738 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package cache
+
+import (
+	"container/list"
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/rest"
+	"k8s.io/klog/v2"
+
+	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/cache/discovery"
+	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	syncindexer "github.com/vllm-project/aibrix/pkg/utils/syncprefixcacheindexer"
+)
+
+var (
+	store = &Store{} // Global cache store instance
+	once  sync.Once  // Singleton pattern control lock
+)
+
+// InitOptions configures the cache initialization behavior
+type InitOptions struct {
+	// EnableKVSync configures whether to start the ZMQ KV event sync
+	EnableKVSync bool
+
+	// RedisClient is required for KVSync and other features. Can be nil.
+	RedisClient *redis.Client
+
+	// ModelRouterProvider is needed only by the gateway. Can be nil.
+	ModelRouterProvider ModelRouterProviderFunc
+
+	// DiscoveryProvider is an optional service discovery provider.
+	// If set, it will be used instead of Kubernetes informers.
+	// This enables standalone/development mode without Kubernetes.
+	DiscoveryProvider discovery.Provider
+}
+
+const (
+	// For output predictor
+	maxInputTokens  = 1024 * 1024       // 1M
+	maxOutputTokens = 1024 * 1024       // 1M
+	movingWindow    = 240 * time.Second // keep window same with window size of GPU optimizer.
+)
+
+// Store contains core data structures and components of the caching system
+type Store struct {
+	mu                  sync.RWMutex            // Read-write lock for concurrency safety
+	initialized         bool                    // Initialization status flag
+	redisClient         *redis.Client           // Redis client instance
+	prometheusApi       prometheusv1.API        // Prometheus API client
+	modelRouterProvider ModelRouterProviderFunc // Function to get model router
+
+	// Metrics related fields
+	subscribers          []metrics.MetricSubscriber    // List of metric subscribers
+	metrics              map[string]any                // Generic metric storage
+	pendingLoadProvider  CappedLoadProvider            // Provider that defines load in terms of pending requests.
+	numRequestsTraces    int32                         // Request trace counter
+	engineMetricsFetcher *metrics.EngineMetricsFetcher // Centralized typed metrics fetcher
+
+	// Request trace fields
+	enableTracing bool                                   // Default to load from enableGPUOptimizerTracing, can be configured.
+	requestTrace  *utils.SyncMap[string, *RequestTrace]  // Request trace data (model_name -> *RequestTrace)
+	podStats      utils.SyncMap[string, *podStatsRecord] // Request stats data bound to request completion, not pod lifetime.
+
+	// Pod related storage
+	metaPods utils.SyncMap[string, *Pod] // pod_namespace/pod_name -> *Pod
+
+	// Model related storage
+	metaModels utils.SyncMap[string, *Model] // model_name -> *Model
+	// ModelClaim advertisements include non-routable port-0 states and are kept
+	// separate from metaModels by construction.
+	modelClaims modelClaimState
+
+	// Deploymnent related storage
+	enableProfileCaching bool                                    // Default to load from enableModelGPUProfileCaching, can be configured.
+	deploymentProfiles   utils.SyncMap[string, *ModelGPUProfile] // aibrix:profile_[model_name]_[deployment_name] -> *ModelGPUProfile
+
+	// buffer for sync map operations
+	bufferPod   *Pod
+	bufferModel *Model
+
+	// podMetricsWorkerCount
+	// Number of concurrent workers used to update Pod metrics
+	podMetricsWorkerCount int
+
+	// podMetricsJobs Channel for sending Pod metrics update jobs to workers
+	podMetricsJobs chan *Pod
+
+	// Sync prefix indexer - only created when KV sync is enabled
+	syncPrefixIndexer *syncindexer.SyncPrefixHashTable
+
+	// KV event management - optional enhancement
+	kvEventManager *KVEventManager
+
+	// Prometheus event queue
+	promqlJobs chan *Pod
+
+	// List of registered request trackers
+	requestTrackers []RequestTracker
+
+	// gatewaySnapshotCache holds a periodically refreshed snapshot of all gateway pod entries
+	// from Redis, grouped by pod key (namespace/name) → []fields. Swapped atomically by
+	// initGatewaySnapshotSync. Readers call Load() to get map[string][]map[string]string.
+	gatewaySnapshotCache atomic.Value
+
+	// modelReplicaEmitted tracks pods currently exported via model_replicas for stale-series cleanup.
+	modelReplicaEmitted utils.SyncMap[string, modelReplicaState]
+}
+
+// Get retrieves the cache instance
+// Returns:
+//
+//	Cache: Cache interface instance
+//	error: Returns error if cache is not initialized
+func Get() (Cache, error) {
+	if !store.initialized {
+		return nil, errors.New("cache is not initialized")
+	}
+	return store, nil
+}
+
+// New creates a new cache store instance
+// Parameters:
+//
+//	redisClient: Redis client instance
+//	prometheusApi: Prometheus API client
+//
+// Returns:
+//
+//	Store: Initialized cache store instance
+func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterProvider ModelRouterProviderFunc) *Store {
+
+	store = &Store{
+		initialized:           true,
+		redisClient:           redisClient,
+		prometheusApi:         prometheusApi,
+		enableTracing:         enableGPUOptimizerTracing,
+		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
+		modelRouterProvider:   modelRouterProvider,
+		podMetricsWorkerCount: defaultPodMetricsWorkerCount,
+		podMetricsJobs:        make(chan *Pod, 100),              // Initialize the job channel with a buffer size of 100
+		engineMetricsFetcher:  metrics.NewEngineMetricsFetcher(), // Initialize centralized typed metrics fetcher
+		enableProfileCaching:  enableModelGPUProfileCaching,
+	}
+
+	// Start podMetrics worker pool
+	for w := 0; w < store.podMetricsWorkerCount; w++ {
+		go store.worker(store.podMetricsJobs)
+	}
+
+	return store
+}
+
+// NewForTest initializes the cache store for testing purposes, it can be repeated call for reset.
+func NewForTest() *Store {
+	store := &Store{
+		initialized:          true,
+		enableTracing:        enableGPUOptimizerTracing,
+		enableProfileCaching: enableModelGPUProfileCaching,
+		engineMetricsFetcher: metrics.NewEngineMetricsFetcher(), // Initialize centralized typed metrics fetcher
+	}
+	if store.enableTracing {
+		store.requestTrace = &utils.SyncMap[string, *RequestTrace]{}
+	}
+	if store.enableProfileCaching {
+		initProfileCache(store, nil, true)
+	}
+	return store
+}
+
+func NewWithPodsForTest(pods []*v1.Pod, model string) *Store {
+	return InitWithPods(NewForTest(), pods, model)
+}
+
+func NewWithPodsMetricsForTest(pods []*v1.Pod, model string, podMetrics map[string]map[string]metrics.MetricValue) *Store {
+	cache := InitWithPodsMetrics(InitWithPods(NewForTest(), pods, model), podMetrics)
+	return InitWithPodsModelMetrics(cache, podMetrics)
+}
+
+func NewWithPodsModelMetricsForTest(pods []*v1.Pod, model string, podMetrics map[string]map[string]metrics.MetricValue) *Store {
+	return InitWithPodsModelMetrics(InitWithPods(NewForTest(), pods, model), podMetrics)
+}
+
+// InitWithModelRouterProvider initializes the cache store with model router provider for testing purposes, it can be repeated call for reset.
+// Call this function before InitWithPods for expected behavior.
+func InitWithModelRouterProvider(st *Store, modelRouterProvider ModelRouterProviderFunc) *Store {
+	st.modelRouterProvider = modelRouterProvider
+	return st
+}
+
+// InitWithRequestTrace initializes the cache store with request trace.
+func InitWithRequestTrace(st *Store) *Store {
+	if !st.enableTracing {
+		st.enableTracing = true
+		st.requestTrace = &utils.SyncMap[string, *RequestTrace]{}
+	}
+	return st
+}
+
+// InitWithProfileCache initializes the cache store with request trace.
+func InitWithProfileCache(st *Store) *Store {
+	if !st.enableProfileCaching {
+		st.enableProfileCaching = true
+		initProfileCache(st, nil, true)
+	}
+	return st
+}
+
+// InitWithPods initializes the cache store with pods for testing purposes, it can be repeated call for reset.
+func InitWithPods(st *Store, pods []*v1.Pod, model string) *Store {
+	for _, pod := range pods {
+		if pod.Labels == nil {
+			pod.Labels = make(map[string]string)
+		}
+		pod.Labels[modelIdentifier] = model
+		st.addPod(pod)
+	}
+	return st
+}
+
+// InitWithAsyncPods initializes the cache store with pods initialized in an async way, this simulate the timeline of how store initializes
+func InitWithAsyncPods(st *Store, pods []*v1.Pod, model string) <-chan *Store {
+	ret := make(chan *Store, 1)
+	var wait sync.WaitGroup
+	for _, pod := range pods {
+		wait.Add(1)
+		if pod.Labels == nil {
+			pod.Labels = make(map[string]string)
+		}
+		pod.Labels[modelIdentifier] = model
+		go func() {
+			st.addPod(pod)
+			wait.Done()
+		}()
+	}
+	go func() {
+		wait.Wait()
+		ret <- st
+		close(ret)
+	}()
+	return ret
+}
+
+// InitWithPodsMetrics initializes the cache store with pods metrics for testing purposes, it can be repeated call for reset.
+func InitWithPodsMetrics(st *Store, podMetrics map[string]map[string]metrics.MetricValue) *Store {
+	st.metaPods.Range(func(key string, metaPod *Pod) bool {
+		_, podName, ok := utils.ParsePodKey(key)
+		if !ok {
+			return true
+		}
+		if podmetrics, ok := podMetrics[podName]; ok {
+			for metricName, metric := range podmetrics {
+				if err := st.updatePodRecord(metaPod, "", metricName, metrics.PodMetricScope, metric); err != nil {
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return st
+}
+
+// InitWithPodsModelMetrics initializes the cache store with pods modelMetrics for testing purposes, it can be repeated call for reset.
+func InitWithPodsModelMetrics(st *Store, podMetrics map[string]map[string]metrics.MetricValue) *Store {
+	st.metaPods.Range(func(key string, metaPod *Pod) bool {
+		_, podName, ok := utils.ParsePodKey(key)
+		if !ok {
+			return true
+		}
+		if podmetrics, ok := podMetrics[podName]; ok {
+			modelName, _ := constants.ModelNameFromMetadata(metaPod.Pod.Labels, metaPod.Pod.Annotations)
+			for metricName, metric := range podmetrics {
+				if err := st.updatePodRecord(metaPod, modelName, metricName, metrics.PodModelMetricScope, metric); err != nil {
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return st
+}
+
+// InitForTest initialize the global store object for testing.
+func InitForTest() *Store {
+	store = NewForTest()
+	return store
+}
+
+// InitWithOptions initializes the cache store with configurable behavior
+// Parameters:
+//
+//	config: Kubernetes configuration
+//	stopCh: Stop signal channel
+//	opts: Configuration options for initialization
+//
+// Returns:
+//
+//	*Store: Pointer to initialized store instance
+func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptions) *Store {
+	once.Do(func() {
+		// Log initialization based on configuration
+		var service string
+		if opts.EnableKVSync {
+			service = "gateway"
+		} else if opts.RedisClient != nil {
+			service = "metadata"
+		} else {
+			service = "controllers"
+		}
+
+		klog.InfoS("initialize cache",
+			"service", service,
+			"enableKVSync", opts.EnableKVSync,
+			"hasRedisClient", opts.RedisClient != nil,
+			"hasModelRouterProvider", opts.ModelRouterProvider != nil,
+			"enableModelGPUProfileCaching", enableModelGPUProfileCaching,
+			"enableGPUOptimizerTracing", enableGPUOptimizerTracing)
+
+		// Configure cache components based on service needs
+		if service == "metadata" || service == "controllers" {
+			enableGPUOptimizerTracing = false
+			enableModelGPUProfileCaching = false
+		}
+
+		// Create store with provided dependencies
+		store = New(opts.RedisClient, initPrometheusAPI(config), opts.ModelRouterProvider)
+
+		// Initialize service discovery — all modes go through the Provider interface
+		provider := opts.DiscoveryProvider
+		if provider == nil {
+			// Default: Kubernetes informer-based discovery
+			provider = discovery.NewKubernetesProvider(config)
+		}
+		if err := initDiscoveryProvider(store, provider, stopCh); err != nil {
+			klog.Fatalf("Failed to initialize discovery provider: %v", err)
+		}
+		klog.InfoS("Using discovery provider", "type", provider.Type())
+		initMetricsCache(store, stopCh)
+
+		// Initialize profile cache if enabled
+		if store.enableProfileCaching {
+			initProfileCache(store, stopCh, false)
+		}
+
+		// Initialize trace cache if enabled and Redis is available
+		if store.enableTracing && opts.RedisClient != nil {
+			initTraceCache(opts.RedisClient, stopCh)
+		}
+
+		// Initialize gateway snapshot sync if Redis is available
+		if opts.RedisClient != nil {
+			klog.Info("Initializing gateway snapshot sync")
+			initGatewaySnapshotSync(store, stopCh)
+		}
+
+		// Initialize KV event sync if enabled
+		if opts.EnableKVSync {
+			if opts.RedisClient == nil {
+				klog.Fatalf("InitOptions: EnableKVSync is true but RedisClient is nil")
+			}
+			if err := store.initKVEventSync(); err != nil {
+				klog.Errorf("Failed to initialize KV event sync: %v", err)
+				// Continue without KV sync - this is not a fatal error
+			}
+		}
+	})
+
+	return store
+}
+
+// initMetricsCache initializes metrics cache update loop
+// Parameters:
+//
+//	store: Cache store instance
+//	stopCh: Stop signal channel
+func initMetricsCache(store *Store, stopCh <-chan struct{}) {
+	ticker := time.NewTicker(podMetricRefreshInterval)
+	store.initPromQLWorker(stopCh)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				// Periodically update metrics
+				store.updatePodMetrics()
+				store.updateModelMetrics()
+				if klog.V(5).Enabled() {
+					store.debugInfo()
+				}
+			case <-stopCh:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+}
+
+// initDiscoveryProvider initializes the cache using a discovery provider.
+// All initial state and ongoing changes are delivered through Watch().
+func initDiscoveryProvider(store *Store, provider discovery.Provider, stopCh <-chan struct{}) error {
+	if err := provider.Watch(func(ev discovery.WatchEvent) {
+		handleDiscoveryObject(store, ev.Type, ev.Object, ev.OldObject)
+	}, stopCh); err != nil {
+		return fmt.Errorf("failed to initialize discovery provider: %w", err)
+	}
+	return nil
+}
+
+func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj any) {
+	switch o := obj.(type) {
+	case *v1.Pod:
+		switch evType {
+		case discovery.EventAdd:
+			store.addPod(o)
+		case discovery.EventUpdate:
+			oldPod, ok := oldObj.(*v1.Pod)
+			if !ok {
+				klog.Errorf("Pod update event for %s/%s with incorrect old object type: %T", o.Namespace, o.Name, oldObj)
+				return
+			}
+			store.updatePod(oldPod, o)
+		case discovery.EventDelete:
+			store.deletePod(o)
+		}
+	case *modelv1alpha1.ModelAdapter:
+		switch evType {
+		case discovery.EventAdd:
+			store.addModelAdapter(o)
+		case discovery.EventUpdate:
+			oldAdapter, ok := oldObj.(*modelv1alpha1.ModelAdapter)
+			if !ok {
+				klog.Errorf("ModelAdapter update event for %s/%s with incorrect old object type: %T", o.Namespace, o.Name, oldObj)
+				return
+			}
+			store.updateModelAdapter(oldAdapter, o)
+		case discovery.EventDelete:
+			store.deleteModelAdapter(o)
+		}
+	default:
+		klog.Warningf("Discovery event with unknown object type: %T", obj)
+	}
+}
+
+// initMetricsCache initializes metrics cache update loop
+// Parameters:
+//
+//	store: Cache store instance
+//	stopCh: Stop signal channel
+func initProfileCache(store *Store, stopCh <-chan struct{}, forTesting bool) {
+	store.pendingLoadProvider = newPendingLoadProvider(store)
+	if forTesting {
+		return
+	}
+	// Skip initialization below during testing
+	ticker := time.NewTicker(defaultModelGPUProfileRefreshInterval)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				// Periodically update metrics
+				store.updateDeploymentProfiles(context.Background())
+			case <-stopCh:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+}
+
+// initTraceCache initializes request tracing cache
+// Parameters:
+//
+//	redisClient: Redis client instance
+//	stopCh: Stop signal channel
+func initTraceCache(redisClient *redis.Client, stopCh <-chan struct{}) {
+	// Calculate time offset for window alignment
+	tickerOffset := time.Duration(time.Now().UnixNano()) % RequestTraceWriteInterval
+	var traceAlignmentTimer *time.Timer
+	var traceTicker *time.Ticker
+
+	// Select alignment method based on offset
+	if tickerOffset > MaxRequestTraceIntervalOffset {
+		traceAlignmentTimer = time.NewTimer(RequestTraceWriteInterval - tickerOffset)
+	} else {
+		traceTicker = time.NewTicker(RequestTraceWriteInterval)
+	}
+
+	go func() {
+		if redisClient == nil {
+			return
+		}
+		if traceAlignmentTimer != nil {
+			// Wait for time window alignment, but bail out early if shutdown is
+			// requested during the alignment phase to avoid leaking the Timer.
+			select {
+			case <-traceAlignmentTimer.C:
+			case <-stopCh:
+				traceAlignmentTimer.Stop()
+				return
+			}
+			traceAlignmentTimer = nil
+			traceTicker = time.NewTicker(RequestTraceWriteInterval)
+		}
+		klog.Infof("trace ticker start at %s", time.Now())
+		for {
+			select {
+			case <-traceTicker.C:
+				// Periodically write trace data to storage
+				if atomic.LoadInt32(&store.numRequestsTraces) == 0 {
+					continue
+				}
+				t := time.Now().Unix()
+				roundT := t - t%int64(RequestTraceWriteInterval/time.Second)
+				store.writeRequestTraceToStorage(roundT)
+			case <-stopCh:
+				traceTicker.Stop()
+				return
+			}
+		}
+	}()
+}
+
+// initKVEventSync initializes the KV event synchronization system
+func (s *Store) initKVEventSync() error {
+	klog.Info("Initializing KV event synchronization")
+
+	// Check if KV sync should be enabled
+	kvSyncEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheKVEventSyncEnabled, false)
+	remoteTokenizerEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
+
+	// Early return if not enabled
+	if !kvSyncEnabled {
+		klog.Info("KV event sync is disabled")
+		return nil
+	}
+
+	if !remoteTokenizerEnabled {
+		klog.Warning("KV sync requires remote tokenizer, feature disabled")
+		return nil
+	}
+
+	// Track initialization state for cleanup
+	var initialized bool
+	defer func() {
+		if !initialized {
+			s.cleanupKVEventSync()
+		}
+	}()
+
+	// Create and validate event manager first
+	s.kvEventManager = NewKVEventManager(s)
+	if s.kvEventManager == nil {
+		return fmt.Errorf("failed to create KV event manager")
+	}
+
+	// Validate configuration before allocating more resources
+	if err := s.kvEventManager.validateConfiguration(); err != nil {
+		return fmt.Errorf("invalid KV event sync configuration: %w", err)
+	}
+
+	// Create sync indexer after validation passes - use shared singleton
+	s.syncPrefixIndexer = syncindexer.GetSharedSyncPrefixHashTable()
+	if s.syncPrefixIndexer == nil {
+		return fmt.Errorf("failed to create sync prefix indexer")
+	}
+
+	// Start event manager
+	if err := s.kvEventManager.Start(); err != nil {
+		return fmt.Errorf("failed to start KV event sync: %w", err)
+	}
+
+	// Mark as successfully initialized
+	initialized = true
+	klog.Info("KV event synchronization initialized successfully")
+
+	return nil
+}
+
+// cleanupKVEventSync cleans up partially initialized KV event sync resources
+func (s *Store) cleanupKVEventSync() {
+	klog.Info("Cleaning up KV event sync resources")
+
+	// Stop event manager if it exists
+	if s.kvEventManager != nil {
+		s.kvEventManager.Stop()
+		s.kvEventManager = nil
+	}
+
+	// Clear sync indexer reference
+	// NOTE: Do NOT call Close() on the shared singleton instance
+	// as it may still be used by other components (e.g., gateway router).
+	// The singleton's lifecycle is managed globally and should only be
+	// closed during process shutdown, not during Store cleanup.
+	if s.syncPrefixIndexer != nil {
+		s.syncPrefixIndexer = nil
+	}
+}
+
+// GetSyncPrefixIndexer returns the sync prefix hash indexer
+func (s *Store) GetSyncPrefixIndexer() *syncindexer.SyncPrefixHashTable {
+	// Return sync indexer only if KV sync is enabled
+	// Router will fall back to original indexer if this returns nil
+	return s.syncPrefixIndexer
+}
+
+// Close gracefully shuts down the cache store
+func (s *Store) Close() {
+	klog.Info("Closing cache store")
+
+	// Clean up KV event sync resources
+	s.cleanupKVEventSync()
+
+	// Other cleanup can be added here in the future
+}
+
+func (c *Store) enqueuePromQL(pod *Pod) {
+	if c.promqlJobs == nil {
+		return
+	}
+	// Non-blocking enqueue so slow PromQL queries do not affect the main path.
+	select {
+	case c.promqlJobs <- pod:
+	default:
+		// Drop when the queue is full (the next pod refresh cycle will enqueue again).
+		klog.V(5).InfoS("PromQL queue full, dropping promql job", "pod", pod.Name)
+	}
+}
+
+func (c *Store) initPromQLWorker(stopCh <-chan struct{}) {
+	if c.prometheusApi == nil {
+		klog.InfoS("Prometheus API is nil, skip initializing PromQL worker")
+		return
+	}
+	c.promqlJobs = make(chan *Pod, 2*c.podMetricsWorkerCount)
+	go c.promQueryLoop(stopCh)
+}
+
+func (c *Store) promQueryLoop(stopCh <-chan struct{}) {
+	ticker := time.NewTicker(promQueryInterval)
+	defer ticker.Stop()
+
+	// pendingPods keeps at most one pending job per pod key (ns/name).
+	// If the same pod is enqueued multiple times, we overwrite with the latest *Pod.
+	pendingPods := make(map[string]*Pod)
+
+	// fifoKeys records the processing order of pending pod keys.
+	// A key is appended only when it is first seen in pendingPods.
+	fifoKeys := list.New()
+
+	// Build stable key for dedupe/order.
+	podKey := func(p *Pod) string {
+		ns := p.Namespace
+		if ns == "" && p.Pod != nil {
+			ns = p.Pod.Namespace
+		}
+		return ns + "/" + p.Name
+	}
+
+	// Helper: enqueue into (pendingPods + fifoKeys) with dedupe.
+	enqueuePending := func(key string, p *Pod) {
+		if _, exists := pendingPods[key]; !exists {
+			fifoKeys.PushBack(key) // first time seen: record order
+		}
+		pendingPods[key] = p // always keep latest pod pointer
+	}
+
+	for {
+		select {
+		case <-stopCh:
+			return
+
+		// Accept pods from worker and deduplicate.
+		case p := <-c.promqlJobs:
+			if p == nil || p.Pod == nil || !utils.FilterReadyPod(p.Pod) {
+				continue
+			}
+			key := podKey(p)
+			if key == "" || key == "/" {
+				continue
+			}
+			enqueuePending(key, p)
+
+		// Every tick, process exactly one pending pod to cap QPS.
+		case <-ticker.C:
+			if fifoKeys.Len() == 0 {
+				continue
+			}
+
+			// Pop head key (FIFO).
+			element := fifoKeys.Front()
+			key := element.Value.(string)
+			fifoKeys.Remove(element)
+
+			// Get latest pod pointer and mark it as dequeued.
+			p := pendingPods[key]
+			delete(pendingPods, key)
+
+			// Pod may become unready while waiting in queue.
+			if p == nil || p.Pod == nil || !utils.FilterReadyPod(p.Pod) {
+				continue
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), promQueryTimeout)
+			err := c.updateMetricFromPromQL(ctx, p)
+			cancel()
+
+			if err != nil {
+				// Best-effort retry: put it back to the tail.
+				enqueuePending(key, p)
+			}
+		}
+	}
+}

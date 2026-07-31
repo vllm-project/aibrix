@@ -1,0 +1,25 @@
+kind: Kustomization
+
+resources:
+- ../mock
+- ../templates/podautoscaler
+
+patches:
+- path: rename_deployment_a100.json
+  target:
+    kind: Deployment
+    name: mock-llama2-7b
+- path: rename_podautoscaler_a100.json
+  target:
+    kind: PodAutoscaler
+    name: podautoscaler-mock-llama2-7b
+- path: patch_deployment_a100.yaml
+  target:
+    kind: Deployment
+    name: simulator-llama2-7b-a100
+- path: patch_podautoscaler_a100.yaml
+  target:
+    kind: PodAutoscaler
+    name: podautoscaler-simulator-llama2-7b-a100
+    
+apiVersion: kustomize.config.k8s.io/v1beta1

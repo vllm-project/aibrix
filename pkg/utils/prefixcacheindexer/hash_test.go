@@ -1,0 +1,302 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package prefixcacheindexer
+
+import (
+	"fmt"
+	"math/rand"
+	"sync"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
+
+func Test_PrefixHashTableE2E(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+	model := "m1"
+	model2 := "m2"
+	targetPod := "p1"
+	targetPod2 := "p2"
+
+	matchedPods, prefixHashes := cache.MatchPrefix([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9}, model, getReadyPods())
+	assert.Equal(t, 0, len(matchedPods))
+	assert.Equal(t, 2, len(prefixHashes))
+
+	// add unmatched prefix hashes
+	cache.AddPrefix(prefixHashes, model, targetPod)
+
+	// run match prefix will different combinations
+	matchedPods, prefixHashes = cache.MatchPrefix([]byte{1, 2, 3, 4, 5, 6, 7}, model, getReadyPods())
+	assert.Equal(t, 1, len(matchedPods))
+	assert.Equal(t, targetPod, getFirstKey(matchedPods))
+	assert.Equal(t, 1, len(prefixHashes))
+
+	matchedPods, prefixHashes = cache.MatchPrefix([]byte{1, 2, 3, 4, 5, 6, 7, 8}, model, getReadyPods())
+	assert.Equal(t, 1, len(matchedPods))
+	assert.Equal(t, targetPod, getFirstKey(matchedPods))
+	assert.Equal(t, 2, len(prefixHashes))
+
+	matchedPods, prefixHashes = cache.MatchPrefix([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9}, model, getReadyPods())
+	assert.Equal(t, 1, len(matchedPods))
+	assert.Equal(t, targetPod, getFirstKey(matchedPods))
+	assert.Equal(t, 2, len(prefixHashes))
+
+	matchedPods, prefixHashes = cache.MatchPrefix([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}, model, getReadyPods())
+	assert.Equal(t, 1, len(matchedPods))
+	assert.Equal(t, targetPod, getFirstKey(matchedPods))
+	assert.Equal(t, 3, len(prefixHashes))
+
+	// there is no way to match prefix, even same block has been added
+	matchedPods, prefixHashes = cache.MatchPrefix([]byte{5, 6, 7, 8, 9, 10, 11, 12, 13}, model, getReadyPods())
+	assert.Equal(t, 0, len(matchedPods))
+	assert.Equal(t, 2, len(prefixHashes))
+
+	// different model sharing same prefix
+	matchedPods, prefixHashes = cache.MatchPrefix([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}, model2, getReadyPods())
+	assert.Equal(t, 0, len(matchedPods))
+	assert.Equal(t, 3, len(prefixHashes))
+
+	cache.AddPrefix(prefixHashes, model2, targetPod)
+	cache.AddPrefix(prefixHashes[0:2], model2, targetPod2)
+
+	matchedPods, prefixHashes = cache.MatchPrefix([]byte{1, 2, 3, 4, 5, 6, 7, 8}, model2, getReadyPods())
+	assert.Equal(t, 2, len(matchedPods))
+	assert.Equal(t, 2, len(prefixHashes))
+
+	matchedPods, prefixHashes = cache.MatchPrefix([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}, model2, getReadyPods())
+	assert.Equal(t, 2, len(matchedPods))
+	assert.Equal(t, 100, matchedPods[targetPod])
+	assert.Equal(t, 66, matchedPods[targetPod2])
+	assert.Equal(t, 3, len(prefixHashes))
+}
+
+func Test_PrefixHashTableConcurrency(t *testing.T) {
+	prefixHashTable := NewPrefixHashTable()
+	model := "m1"
+	targetPod := "p1"
+	var wg sync.WaitGroup
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tokens := []byte(fmt.Sprintf("this is %v message", rand.Intn(10)))
+			_, prefixHashes := prefixHashTable.MatchPrefix(tokens, model, getReadyPods())
+			prefixHashTable.AddPrefix(prefixHashes, model, targetPod)
+		}()
+	}
+	wg.Wait()
+}
+
+func getFirstKey(matchedPods map[string]int) string {
+	var targetPod string
+	for pod := range matchedPods {
+		targetPod = pod
+		break
+	}
+	return targetPod
+}
+
+func getReadyPods() map[string]struct{} {
+	return map[string]struct{}{
+		"p1": {},
+		"p2": {},
+		"p3": {},
+	}
+}
+
+func TestHashChaining(t *testing.T) {
+	// Test that hash chaining works correctly
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+	cache := NewPrefixHashTable()
+
+	// Same prefix should produce same hashes
+	tokens1 := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	tokens2 := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	hashes1 := cache.GetPrefixHashes(tokens1)
+	hashes2 := cache.GetPrefixHashes(tokens2)
+	assert.Equal(t, hashes1, hashes2)
+
+	// Different prefixes should produce different hashes
+	tokens3 := []byte{1, 2, 3, 4, 5, 6, 7, 9} // Last byte different
+	hashes3 := cache.GetPrefixHashes(tokens3)
+	assert.NotEqual(t, hashes1[1], hashes3[1]) // Second block should be different
+
+	// First block same, but second block different should affect all subsequent
+	tokens4 := []byte{1, 2, 3, 4, 9, 10, 11, 12} // Second block different
+	hashes4 := cache.GetPrefixHashes(tokens4)
+	assert.Equal(t, hashes1[0], hashes4[0])    // First block should be same
+	assert.NotEqual(t, hashes1[1], hashes4[1]) // Second block should be different
+
+	// Verify hash chaining - changing early blocks affects later ones
+	tokens5 := []byte{0, 2, 3, 4, 5, 6, 7, 8} // First byte different
+	hashes5 := cache.GetPrefixHashes(tokens5)
+	assert.NotEqual(t, hashes1[0], hashes5[0]) // First block different
+	assert.NotEqual(t, hashes1[1], hashes5[1]) // Second block also different due to chaining
+}
+
+func BenchmarkGetPrefixHashes(b *testing.B) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+	tokens := make([]byte, 1024)
+	for i := range tokens {
+		tokens[i] = byte(i % 256)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = cache.GetPrefixHashes(tokens)
+	}
+}
+
+func BenchmarkPrefixHashTableAddPrefix(b *testing.B) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+	model := "m1"
+	podPrefix := "pod-"
+	tokens := make([]byte, 1024)
+	for i := range tokens {
+		tokens[i] = byte((i * 31) % 256)
+	}
+	prefixHashes := cache.GetPrefixHashes(tokens)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cache.AddPrefix(prefixHashes, model, fmt.Sprintf("%s%d", podPrefix, i))
+	}
+}
+
+func BenchmarkPrefixHashTableMatchPrefix(b *testing.B) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+	model := "m1"
+	tokens := make([]byte, 1024)
+	for i := range tokens {
+		tokens[i] = byte((i * 17) % 256)
+	}
+	prefixHashes := cache.GetPrefixHashes(tokens)
+
+	for i := 0; i < 16; i++ {
+		cache.AddPrefix(prefixHashes, model, fmt.Sprintf("p%d", i))
+	}
+
+	readyPods := make(map[string]struct{}, 24)
+	for i := 0; i < 16; i++ {
+		readyPods[fmt.Sprintf("p%d", i)] = struct{}{}
+	}
+	for i := 0; i < 8; i++ {
+		readyPods[fmt.Sprintf("other-%d", i)] = struct{}{}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		pods := make(map[string]struct{}, len(readyPods))
+		for k := range readyPods {
+			pods[k] = struct{}{}
+		}
+		_, _ = cache.MatchPrefix(tokens, model, pods)
+	}
+}
+
+func BenchmarkPrefixHashTableAddAndMatchParallel(b *testing.B) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+	model := "m1"
+	seedTokens := make([]byte, 1024)
+	for i := range seedTokens {
+		seedTokens[i] = byte((i * 29) % 256)
+	}
+	seedHashes := cache.GetPrefixHashes(seedTokens)
+
+	// Seed cache with a baseline pod so MatchPrefix can observe hits.
+	cache.AddPrefix(seedHashes, model, "p0")
+
+	allReadyPods := make(map[string]struct{}, 24)
+	for i := 0; i < 16; i++ {
+		allReadyPods[fmt.Sprintf("p%d", i)] = struct{}{}
+	}
+	for i := 0; i < 8; i++ {
+		allReadyPods[fmt.Sprintf("other-%d", i)] = struct{}{}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		localIter := 0
+		for pb.Next() {
+			pod := fmt.Sprintf("p%d", localIter%16)
+			cache.AddPrefix(seedHashes, model, pod)
+
+			// MatchPrefix mutates readyPods; use a fresh copy each iteration.
+			readyPods := make(map[string]struct{}, len(allReadyPods))
+			for k := range allReadyPods {
+				readyPods[k] = struct{}{}
+			}
+			_, _ = cache.MatchPrefix(seedTokens, model, readyPods)
+
+			localIter++
+		}
+	})
+}
+
+func TestPrefixCacheHashSeed(t *testing.T) {
+	t.Run("statesync_enabled_defaults_to_zero", func(t *testing.T) {
+		t.Setenv(envStateSyncEnabled, "true")
+		t.Setenv(envPrefixCacheHashSeed, "")
+		assert.Equal(t, uint64(0), prefixCacheHashSeed())
+	})
+
+	t.Run("statesync_enabled_uses_env", func(t *testing.T) {
+		t.Setenv(envStateSyncEnabled, "true")
+		t.Setenv(envPrefixCacheHashSeed, "42")
+		assert.Equal(t, uint64(42), prefixCacheHashSeed())
+	})
+
+	t.Run("statesync_disabled_uses_env", func(t *testing.T) {
+		t.Setenv(envStateSyncEnabled, "false")
+		t.Setenv(envPrefixCacheHashSeed, "99")
+		assert.Equal(t, uint64(99), prefixCacheHashSeed())
+	})
+
+	t.Run("statesync_disabled_random_when_unset", func(t *testing.T) {
+		t.Setenv(envStateSyncEnabled, "false")
+		t.Setenv(envPrefixCacheHashSeed, "")
+		a := prefixCacheHashSeed()
+		b := prefixCacheHashSeed()
+		assert.NotEqual(t, a, b)
+	})
+}

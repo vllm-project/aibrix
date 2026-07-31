@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "aibrix.gpuOptimizer.serviceAccountName" . }}
+  annotations:
+    {{- toYaml .Values.gpuOptimizer.serviceAccount.annotations | nindent 4 }}
+  labels:
+    {{- include "aibrix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gpu-optimizer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "aibrix.fullname" . }}-gpu-optimizer
+  labels:
+    {{- include "aibrix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gpu-optimizer
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "aibrix.fullname" . }}-gpu-optimizer
+  labels:
+    {{- include "aibrix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gpu-optimizer
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "aibrix.gpuOptimizer.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "aibrix.fullname" . }}-gpu-optimizer
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../crd/model
+  - ../../rbac/model
+  - ../../rbac/controller-manager
+  - ../../manager
+  # lora needs webhook manifest
+  - ../../webhook
+  - ../../internalcert
+
+# Adds namespace to all resources.
+namespace: aibrix-system
+
+# Value of this field is prepended to the
+# names of all resources, e.g. a deployment named
+# "wordpress" becomes "alices-wordpress".
+# Note that it should also match with the prefix (text before '-') of the namespace
+# field above.
+namePrefix: aibrix-lora-
+
+images:
+  - name: controller
+    newName: aibrix/controller-manager
+    newTag: v0.7.0
+
+patches:
+  - path: patch.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: controller-manager
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: aibrix
+      app.kubernetes.io/component: aibrix-model-adapter-controller
+      app.kubernetes.io/version: nightly
+      app.kubernetes.io/managed-by: kubectl

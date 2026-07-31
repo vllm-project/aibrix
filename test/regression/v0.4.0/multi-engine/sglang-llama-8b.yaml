@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+    model.aibrix.ai/engine: sglang
+    model.aibrix.ai/port: "8000"
+  name: deepseek-r1-distill-llama-8b
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+      model.aibrix.ai/engine: sglang
+      model.aibrix.ai/port: "8000"
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+        model.aibrix.ai/engine: sglang
+        model.aibrix.ai/port: "8000"
+    spec:
+      containers:
+        - command:
+            - python3
+            - -m
+            - sglang.launch_server
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --model-path
+            - /root/models/DeepSeek-R1-Distill-Llama-8B
+            - --served-model-name
+            - DeepSeek-R1-Distill-Llama-8B
+            - --attention-backend
+            - flashinfer
+            - --enable-metrics
+            - --log-level-http
+            - "warning"
+          image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang:v0.4.9.post3-cu126-nixl-v0.4.1
+          imagePullPolicy: IfNotPresent
+          name: sglang
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: model-vol
+              mountPath: /root/models
+      volumes:
+        - name: model-vol
+          hostPath:
+            path: /root/models
+            type: Directory

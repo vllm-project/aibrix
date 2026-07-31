@@ -1,0 +1,341 @@
+import argparse
+import os
+import shutil
+import time
+from pathlib import Path
+from typing import Optional, Union
+from urllib.parse import urljoin
+
+import uvicorn
+from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi.datastructures import State
+from fastapi.responses import JSONResponse
+from httpx import Headers
+from prometheus_client import make_asgi_app, multiprocess
+from starlette.routing import Mount
+
+from aibrix import __version__, envs
+from aibrix.config import EXCLUDE_METRICS_HTTP_ENDPOINTS
+from aibrix.logger import init_logger
+from aibrix.metrics.engine_rules import get_metric_standard_rules
+from aibrix.metrics.http_collector import HTTPCollector
+from aibrix.metrics.metrics import (
+    HTTP_COUNTER_METRICS,
+    HTTP_LATENCY_METRICS,
+    INFO_METRICS,
+    REGISTRY,
+)
+from aibrix.openapi.engine.base import InferenceEngine, get_inference_engine
+from aibrix.openapi.model import ModelManager
+from aibrix.openapi.protocol import (
+    DownloadModelRequest,
+    ErrorResponse,
+    ListModelRequest,
+    LoadLoraAdapterRequest,
+    LoadLoraAdapterRuntimeRequest,
+    UnloadLoraAdapterRequest,
+    UnloadLoraAdapterRuntimeRequest,
+)
+from aibrix.runtime.artifact_service import ArtifactDelegationService
+from aibrix.runtime.model_runtime_api import model_runtime_router
+
+logger = init_logger(__name__)
+router = APIRouter()
+
+
+def initial_prometheus_multiproc_dir():
+    if "PROMETHEUS_MULTIPROC_DIR" not in os.environ:
+        prometheus_multiproc_dir = envs.PROMETHEUS_MULTIPROC_DIR
+    else:
+        prometheus_multiproc_dir = os.environ["PROMETHEUS_MULTIPROC_DIR"]
+
+    # Note: ensure it will be automatically cleaned up upon exit.
+    path = Path(prometheus_multiproc_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    if path.is_dir():
+        for item in path.iterdir():
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+    os.environ["PROMETHEUS_MULTIPROC_DIR"] = envs.PROMETHEUS_MULTIPROC_DIR
+
+
+# filter_and_set_headers only keeps necessary headers
+def filter_and_set_headers(request_headers):
+    # Create a new Headers object to ensure proper case-insensitive handling
+    filtered_headers = Headers()
+
+    # List of headers to retain
+    headers_to_keep = ["content-type", "authorization"]
+
+    # the httpx library internally normalizes all header keys to lower case for consistent access and comparison.
+    # However, we lowercase the headers for comparison just in case we may switch libraries.
+    for header, value in request_headers.items():
+        if header.lower() in headers_to_keep:
+            filtered_headers[header] = value
+
+    return filtered_headers
+
+
+def inference_engine(request: Request) -> InferenceEngine:
+    # header are dynamic for each request, allocate headers in runtime
+    engine = request.app.state.inference_engine
+    engine.headers = filter_and_set_headers(request.headers)
+    return engine
+
+
+def mount_metrics(app: FastAPI):
+    # setup multiprocess collector
+    initial_prometheus_multiproc_dir()
+    prometheus_multiproc_dir_path = os.environ["PROMETHEUS_MULTIPROC_DIR"]
+    logger.info(
+        f"AIBrix to use {prometheus_multiproc_dir_path} as PROMETHEUS_MULTIPROC_DIR"
+    )
+    # registry = CollectorRegistry()
+    multiprocess.MultiProcessCollector(REGISTRY)
+
+    # construct scrape metric config
+    engine = envs.INFERENCE_ENGINE
+
+    scrape_endpoint = urljoin(envs.INFERENCE_ENGINE_ENDPOINT, envs.METRIC_SCRAPE_PATH)
+    collector = HTTPCollector(scrape_endpoint, get_metric_standard_rules(engine))
+    REGISTRY.register(collector)
+    logger.info(
+        f"AIBrix to scrape metrics from {scrape_endpoint}, use {engine} standard rules"
+    )
+
+    # Runtime model lifecycle, operation, and KV metrics.
+    from aibrix.runtime.model_runtime_metrics import ModelRuntimeKVCollector
+
+    REGISTRY.register(ModelRuntimeKVCollector())
+
+    # Add prometheus asgi middleware to route /metrics requests
+    metrics_route = Mount("/metrics", make_asgi_app(registry=REGISTRY))
+
+    app.routes.append(metrics_route)
+
+
+def init_app_state(state: State) -> None:
+    state.inference_engine = get_inference_engine(
+        envs.INFERENCE_ENGINE,
+        envs.INFERENCE_ENGINE_VERSION,
+        envs.INFERENCE_ENGINE_ENDPOINT,
+    )
+
+
+def inference_engine_ready() -> bool:
+    try:
+        # Check if the engine is initialized
+        # Seems no need to check engine's status since main container has its own checks.
+        return (
+            True if envs.INFERENCE_ENGINE and envs.INFERENCE_ENGINE_ENDPOINT else False
+        )
+    except Exception as e:
+        logger.error(f"Readiness check failed: {e}")
+        return False
+
+
+@router.post("/v1/lora_adapter/load")
+async def load_lora_adapter(
+    request: Union[LoadLoraAdapterRuntimeRequest, LoadLoraAdapterRequest],
+    raw_request: Request,
+):
+    """
+    Load LoRA adapter with support for both direct and delegated artifact loading.
+
+    Direct mode: { "lora_name": "...", "lora_path": "..." }
+    Delegation mode: { "lora_name": "...", "artifact_url": "s3://...", "credentials_secret": "..." }
+    """
+    # Check if this is a delegation request (has artifact_url)
+    if isinstance(request, LoadLoraAdapterRuntimeRequest):
+        # Use artifact delegation
+        artifact_service = ArtifactDelegationService()
+
+        logger.info(
+            f"Loading adapter with artifact delegation: {request.lora_name} from {request.artifact_url}"
+        )
+        delegation_response = await artifact_service.load_adapter_with_delegation(
+            request, inference_engine(raw_request)
+        )
+
+        if delegation_response.status == "error":
+            return JSONResponse(
+                content={"error": delegation_response.message}, status_code=500
+            )
+
+        return JSONResponse(content=delegation_response.model_dump(), status_code=200)
+    else:
+        # Direct proxy to engine (existing behavior)
+        logger.info(
+            f"Loading adapter directly: {request.lora_name} from {request.lora_path}"
+        )
+        response = await inference_engine(raw_request).load_lora_adapter(request)
+
+        if isinstance(response, ErrorResponse):
+            return JSONResponse(
+                content=response.model_dump(), status_code=response.code
+            )
+
+        return Response(status_code=200, content=response)
+
+
+@router.post("/v1/lora_adapter/unload")
+async def unload_lora_adapter(
+    request: Union[UnloadLoraAdapterRuntimeRequest, UnloadLoraAdapterRequest],
+    raw_request: Request,
+):
+    """
+    Unload LoRA adapter with support for both direct and delegated cleanup.
+
+    Direct mode: { "lora_name": "..." }
+    Delegation mode: { "lora_name": "...", "cleanup_local": true }
+    """
+    # Check if this is a delegation request (has cleanup_local)
+    if isinstance(request, UnloadLoraAdapterRuntimeRequest):
+        # Use artifact delegation for cleanup
+        artifact_service = ArtifactDelegationService()
+
+        logger.info(
+            f"Unloading adapter with cleanup: {request.lora_name}, cleanup={request.cleanup_local}"
+        )
+        result = await artifact_service.unload_adapter(
+            request, inference_engine(raw_request)
+        )
+
+        return JSONResponse(
+            content={"status": "success", "message": result}, status_code=200
+        )
+    else:
+        # Direct proxy to engine (existing behavior)
+        logger.info(f"Unloading adapter directly: {request.lora_name}")
+        response = await inference_engine(raw_request).unload_lora_adapter(request)
+
+        if isinstance(response, ErrorResponse):
+            return JSONResponse(
+                content=response.model_dump(), status_code=response.code
+            )
+
+        return Response(status_code=200, content=response)
+
+
+# /v1/models is a query to inference engine, this is different from following
+# /v1/model/list which is used to fetch runtime managed models locally.
+@router.get("/v1/models")
+async def list_engine_models(raw_request: Request):
+    response = await inference_engine(raw_request).list_models()
+    if isinstance(response, ErrorResponse):
+        return JSONResponse(content=response.model_dump(), status_code=response.code)
+
+    return JSONResponse(status_code=200, content=response)
+
+
+@router.post("/v1/model/download")
+async def download_model(request: DownloadModelRequest):
+    response = await ModelManager.model_download(request)
+    if isinstance(response, ErrorResponse):
+        return JSONResponse(content=response.model_dump(), status_code=response.code)
+
+    return JSONResponse(status_code=200, content=response.model_dump())
+
+
+@router.get("/v1/model/list")
+async def list_model(request: Optional[ListModelRequest] = None):
+    response = await ModelManager.model_list(request)
+    if isinstance(response, ErrorResponse):
+        return JSONResponse(content=response.model_dump(), status_code=response.code)
+
+    return JSONResponse(status_code=200, content=response.model_dump())
+
+
+# Runtime model lifecycle endpoints used by ModelClaim and future full-model
+# control-plane integrations.
+router.include_router(model_runtime_router)
+
+
+@router.get("/healthz")
+async def liveness_check():
+    # Simply return a 200 status for liveness check
+    return JSONResponse(content={"status": "ok"}, status_code=200)
+
+
+@router.get("/ready")
+async def readiness_check():
+    # Check if the inference engine is ready
+    if inference_engine_ready():
+        return JSONResponse(content={"status": "ready"}, status_code=200)
+    return JSONResponse(content={"status": "not ready"}, status_code=503)
+
+
+def build_app(args: argparse.Namespace):
+    if args.enable_fastapi_docs:
+        app = FastAPI(debug=False)
+    else:
+        app = FastAPI(debug=False, openapi_url=None, docs_url=None, redoc_url=None)
+
+    INFO_METRICS.info(
+        {
+            "version": __version__.__version__,
+            "engine": envs.INFERENCE_ENGINE,
+            "engine_version": envs.INFERENCE_ENGINE_VERSION,
+        }
+    )
+    mount_metrics(app)
+    init_app_state(app.state)
+    app.include_router(router)
+
+    @app.middleware("http")
+    async def add_router_prometheus_middlerware(request: Request, call_next):
+        method = request.method
+        endpoint = request.scope.get("path")
+        # Exclude endpoints that do not require metrics
+        if endpoint in EXCLUDE_METRICS_HTTP_ENDPOINTS:
+            response = await call_next(request)
+            return response
+
+        start_time = time.perf_counter()
+        response = await call_next(request)
+        process_time = time.perf_counter() - start_time
+
+        status = response.status_code
+        HTTP_LATENCY_METRICS.labels(
+            method=method, endpoint=endpoint, status=status
+        ).observe(process_time)
+        HTTP_COUNTER_METRICS.labels(
+            method=method, endpoint=endpoint, status=status
+        ).inc()
+        return response
+
+    return app
+
+
+def nullable_str(val: str):
+    if not val or val == "None":
+        return None
+    return val
+
+
+def parse_runtime_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run aibrix runtime server")
+    parser.add_argument(
+        "--host", type=nullable_str, default="0.0.0.0", help="host name"
+    )
+    parser.add_argument("--port", type=int, default=8080, help="port number")
+    parser.add_argument(
+        "--enable-fastapi-docs",
+        action="store_true",
+        default=False,
+        help="Enable FastAPI's OpenAPI schema, Swagger UI, and ReDoc endpoint",
+    )
+    return parser.parse_args(argv)
+
+
+def main():
+    args = parse_runtime_args()
+    logger.info("Use %s to startup runtime server", args)
+    app = build_app(args=args)
+    uvicorn.run(app, host=args.host, port=args.port)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,120 @@
+# Example: Independent autoscaling for prefill and decode roles in StormService
+#
+# This demonstrates how to scale different roles independently based on their
+# specific metrics in StormService pooled mode (replicas=1).
+
+---
+# PodAutoscaler for prefill role
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: ss-pool-prefill
+  namespace: default
+  annotations:
+    autoscaling.aibrix.ai/storm-service-mode: "pool"
+spec:
+  scaleTargetRef:
+    apiVersion: orchestration.aibrix.ai/v1alpha1
+    kind: StormService
+    name: ss-pool
+
+  # Select the prefill role within the StormService
+  subTargetSelector:
+    roleName: prefill
+
+  minReplicas: 2
+  maxReplicas: 20
+  scalingStrategy: APA
+
+  metricsSources:
+    - metricSourceType: pod
+      protocolType: http
+      port: "8000"
+      path: /metrics
+      targetMetric: "prefill_queue_length"
+      targetValue: "10"
+
+---
+# PodAutoscaler for decode role
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: ss-pool-decode
+  namespace: default
+  annotations:
+    autoscaling.aibrix.ai/storm-service-mode: "pool"
+spec:
+  scaleTargetRef:
+    apiVersion: orchestration.aibrix.ai/v1alpha1
+    kind: StormService
+    name: ss-pool
+
+  # Select the decode role within the StormService
+  subTargetSelector:
+    roleName: decode
+
+  minReplicas: 3
+  maxReplicas: 30
+  scalingStrategy: APA
+
+  metricsSources:
+    - metricSourceType: pod
+      protocolType: http
+      port: "8000"
+      path: /metrics
+      targetMetric: "decode_batch_utilization"
+      targetValue: "70"
+
+  # Different scaling behavior for decode
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600  # More conservative scale-down
+
+---
+# The StormService being autoscaled (pooled mode)
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: ss-pool
+  namespace: default
+spec:
+  updateStrategy:
+    type: InPlaceUpdate
+    maxSurge: 2
+    maxUnavailable: 1
+  replicas: 1  # Pooled mode
+  stateful: true
+  selector:
+    matchLabels:
+      app: llm-xpyd
+  template:
+    metadata:
+      labels:
+        app: llm-xpyd
+    spec:
+      roles:
+        - name: prefill
+          replicas: 5  # Will be managed by PodAutoscaler
+          stateful: true
+          template:
+            spec:
+              containers:
+                - name: prefill
+                  image: vllm/vllm-openai:latest
+                  ports:
+                    - containerPort: 8000
+                      name: metrics
+                  # ... other config
+
+        - name: decode
+          replicas: 5  # Will be managed by PodAutoscaler
+          stateful: true
+          template:
+            spec:
+              containers:
+                - name: decode
+                  image: vllm/vllm-openai:latest
+                  ports:
+                    - containerPort: 8000
+                      name: metrics
+                  # ... other config

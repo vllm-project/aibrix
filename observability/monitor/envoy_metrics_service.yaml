@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: envoy-admin-metrics
+  namespace: envoy-gateway-system
+  labels:
+    app.kubernetes.io/name: envoy
+    app.kubernetes.io/component: proxy
+    app.kubernetes.io/managed-by: envoy-gateway
+spec:
+  ports:
+  - name: metrics
+    port: 19001
+    targetPort: 19001
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: envoy
+    app.kubernetes.io/component: proxy
+    app.kubernetes.io/managed-by: envoy-gateway
+  type: ClusterIP

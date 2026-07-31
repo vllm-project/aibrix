@@ -1,0 +1,73 @@
+{{- if and .Values.gateway.enable (not .Values.gateway.envoyAsSideCar) }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "aibrix.fullname" . }}-reserved-router
+  labels:
+    {{- include "aibrix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gateway-plugin
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ include "aibrix.fullname" . }}-eg
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/chat/completions
+        - path:
+            type: PathPrefix
+            value: /v1/completions
+        - path:
+            type: PathPrefix
+            value: /v1/embeddings
+        - path:
+            type: PathPrefix
+            value: /v1/images/generations
+        - path:
+            type: PathPrefix
+            value: /v1/video/generations
+        - path:
+            type: PathPrefix
+            value: /v1/rerank
+        - path:
+            type: PathPrefix
+            value: /v1/classify
+      backendRefs:
+        - group: ''
+          kind: Service
+          name: {{ include "aibrix.fullname" . }}-gateway-plugins
+          port: 50052
+          weight: 1
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "aibrix.fullname" . }}-reserved-router-metadata-endpoint
+  labels:
+    {{- include "aibrix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gateway
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ include "aibrix.fullname" . }}-eg
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/models
+        - path:
+            type: PathPrefix
+            value: /v1/files
+        - path:
+            type: PathPrefix
+            value: /v1/batches
+      backendRefs:
+        - group: ''
+          kind: Service
+          name: {{ include "aibrix.fullname" . }}-metadata-service
+          port: 8090
+          weight: 1
+{{- end }}

@@ -1,0 +1,362 @@
+/*
+Copyright 2026 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package benchmark
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/vllm-project/aibrix/brixbench/internal/deployers"
+	"github.com/vllm-project/aibrix/brixbench/internal/drivers"
+	"github.com/vllm-project/aibrix/brixbench/internal/monitoring"
+	"github.com/vllm-project/aibrix/brixbench/internal/observability"
+	"github.com/vllm-project/aibrix/brixbench/internal/resolver"
+)
+
+const (
+	defaultScenarioPath       = "testdata/scenarios/aibrix-hello-world.yaml"
+	defaultBenchmarkNamespace = "brixbench-adhoc"
+	defaultPushgatewayJobName = "benchmark-suite"
+)
+
+func fallbackGatewayEndpoint() (string, bool) {
+	if endpoint := os.Getenv("BENCHMARK_GATEWAY_ENDPOINT"); endpoint != "" {
+		return endpoint, true
+	}
+	return "", false
+}
+
+func resolveGatewayEndpoint(detectedEndpoint string, detectErr error) (string, error) {
+	if detectErr == nil && detectedEndpoint != "" {
+		return detectedEndpoint, nil
+	}
+	if override, ok := fallbackGatewayEndpoint(); ok {
+		return override, nil
+	}
+	if detectErr != nil {
+		return "", fmt.Errorf("failed to determine gateway endpoint automatically: %w; set BENCHMARK_GATEWAY_ENDPOINT to override explicitly", detectErr)
+	}
+	return "", fmt.Errorf("missing gateway endpoint; set BENCHMARK_GATEWAY_ENDPOINT to override explicitly")
+}
+
+func configuredMetricExporter() observability.MetricExporter {
+	pushgatewayURL := os.Getenv("BENCHMARK_PUSHGATEWAY_URL")
+	if pushgatewayURL == "" {
+		return nil
+	}
+
+	jobName := os.Getenv("BENCHMARK_PUSHGATEWAY_JOB")
+	if jobName == "" {
+		jobName = defaultPushgatewayJobName
+	}
+
+	return observability.NewPrometheusPushExporter(pushgatewayURL, jobName)
+}
+
+func executeScenarioTestCase(t *testing.T, scenarioName string, scenarioLogRoot string, testCase resolver.Test, exporter observability.MetricExporter) (scenarioCaseResult, error) {
+	t.Helper()
+
+	ctx := context.Background()
+	var deployer deployers.Deployer
+	result := scenarioCaseResult{
+		TestCase:      testCase.Name,
+		Version:       testCase.Version,
+		Commit:        testCase.Commit,
+		Status:        "failed",
+		BenchmarkKind: "",
+	}
+
+	testDone := progressStep(t, "test case %s", testCase.Name)
+	defer testDone()
+
+	projectRoot, err := resolveProjectRoot()
+	if err != nil {
+		result.Error = fmt.Sprintf("Preparation failed: %v", err)
+		return result, fmt.Errorf("failed to determine working directory: %w", err)
+	}
+
+	result.BenchmarkKind = testCase.BenchmarkKind
+	benchmarkNamespace := benchmarkNamespaceForTestCase(testCase)
+	caseLogDir := caseLogRoot(scenarioLogRoot, testCase.Name)
+	resetBefore := resetBeforeTestEnabled()
+	cleanupAfter := cleanupAfterTestEnabled()
+
+	if shouldRunDynamoStaleCleanup(testCase, resetBefore) {
+		staleCleanupDone := progressStep(t, "clear stale Dynamo resources in namespace %s for %s", benchmarkNamespace, testCase.Name)
+		if cleanupErr := deployers.CleanupStaleDynamoNamespace(ctx, benchmarkNamespace, testCase.Engine.Manifest, projectRoot, caseLogDir); cleanupErr != nil {
+			result.Error = fmt.Sprintf("Dynamo stale namespace cleanup failed: %v", cleanupErr)
+			return result, fmt.Errorf("Dynamo stale namespace cleanup failed: %w", cleanupErr)
+		}
+		staleCleanupDone()
+	}
+
+	if resetBefore {
+		namespaceResetDone := progressStep(t, "reset benchmark namespace %s for %s", benchmarkNamespace, testCase.Name)
+		if resetErr := resetBenchmarkNamespace(ctx, benchmarkNamespace); resetErr != nil {
+			result.Error = fmt.Sprintf("Benchmark namespace reset failed: %v", resetErr)
+			return result, fmt.Errorf("Benchmark namespace reset failed: %w", resetErr)
+		}
+		namespaceResetDone()
+
+		if shouldRunStormServicePreflight(testCase) {
+			preflightDone := progressStep(t, "check existing StormService resources for %s", testCase.Name)
+			if preflightErr := ensureStormServicesCleared(ctx); preflightErr != nil {
+				result.Error = fmt.Sprintf("StormService preflight failed: %v", preflightErr)
+				return result, fmt.Errorf("StormService preflight failed: %w", preflightErr)
+			}
+			preflightDone()
+		}
+	} else {
+		progressLog(t, "Skipping benchmark namespace reset before %s; namespace %s will be reused", testCase.Name, benchmarkNamespace)
+	}
+
+	deployDone := progressStep(t, "deploy control plane and engine for %s", testCase.Name)
+	deployer, gatewayURL, err := setupAndRunDeployment(ctx, t, projectRoot, &testCase, benchmarkNamespace, caseLogDir)
+	result.Version = testCase.Version
+	result.Commit = testCase.Commit
+	result.ResolvedCommit = testCase.ResolvedCommit
+	if err != nil {
+		captureDeploymentArtifacts(t, ctx, deployer)
+		if deployer != nil && cleanupAfter {
+			teardownTestResources(t, ctx, deployer, benchmarkNamespace, testCase.Name)
+		} else if deployer != nil {
+			progressLog(t, "Skipping cleanup after failed deployment for %s; benchmark namespace %s will be left in place", testCase.Name, benchmarkNamespace)
+		}
+		result.Error = fmt.Sprintf("Deployment failed: %v", err)
+		return result, fmt.Errorf("Deployment failed: %w", err)
+	}
+	result.GatewayURL = gatewayURL
+	deployDone()
+	if cleanupAfter {
+		defer teardownTestResources(t, ctx, deployer, benchmarkNamespace, testCase.Name)
+	} else {
+		progressLog(t, "Skipping cleanup after %s; benchmark namespace %s will be left in place", testCase.Name, benchmarkNamespace)
+	}
+	defer captureCasePodLogs(t, ctx, &testCase, benchmarkNamespace, caseLogDir)
+
+	configureBenchmarkEnvironment(t, testCase.Name, testCase.ProviderName(), benchmarkNamespace, gatewayURL)
+	progressLog(t, "Gateway endpoint for %s: %s", testCase.Name, gatewayURL)
+
+	benchmarkDone := progressStep(t, "run benchmark and export metrics for %s", testCase.Name)
+	metrics, resultPath, err := runBenchmarkAndExportMetrics(ctx, &testCase, scenarioName, scenarioLogRoot, exporter)
+	result.ResultPath = resultPath
+	if err != nil {
+		result.Metrics = metrics
+		captureDeploymentArtifacts(t, ctx, deployer)
+		if errors.Is(err, observability.ErrNotImplemented) {
+			result.Error = fmt.Sprintf("Metrics export failed: %v", err)
+			return result, fmt.Errorf("metrics export failed: %w", err)
+		}
+		result.Error = fmt.Sprintf("Benchmark execution failed: %v", err)
+		return result, fmt.Errorf("Benchmark execution failed: %w", err)
+	}
+	result.Metrics = metrics
+	result.Status = "passed"
+	captureDeploymentArtifacts(t, ctx, deployer)
+	benchmarkDone()
+
+	progressLog(t, "Successfully ran test for %s", testCase.Name)
+	return result, nil
+}
+
+func benchmarkNamespaceForTestCase(testCase resolver.Test) string {
+	if testCase.ProviderName() == "dynamo" {
+		return deployers.DynamoBenchmarkNamespace
+	}
+	return defaultBenchmarkNamespace
+}
+
+func shouldRunStormServicePreflight(testCase resolver.Test) bool {
+	return testCase.ProviderName() == "aibrix"
+}
+
+func shouldRunDynamoStaleCleanup(testCase resolver.Test, resetBefore bool) bool {
+	return resetBefore && testCase.ProviderName() == "dynamo"
+}
+
+func setupAndRunDeployment(ctx context.Context, t *testing.T, projectRoot string, testCase *resolver.Test, benchmarkNamespace string, caseLogDir string) (deployers.Deployer, string, error) {
+	// Select Deployer
+	var deployer deployers.Deployer
+	switch providerName := testCase.ProviderName(); providerName {
+	case "aibrix":
+		deployer = deployers.NewAIBrixDeployer()
+		t.Log("Using AIBrix deployer")
+	case "llmd":
+		return nil, "", fmt.Errorf("provider llmd is not implemented")
+	case "dynamo":
+		deployer = deployers.NewDynamoDeployer()
+		t.Log("Using Dynamo deployer")
+	case "":
+		if testCase.Engine.Type != "vllm" {
+			return nil, "", fmt.Errorf("provider: null only supports engine.type=vllm, got %q", testCase.Engine.Type)
+		}
+		deployer = deployers.NewPlainVLLMDeployer()
+		t.Log("Using plain vLLM deployer")
+	default:
+		return nil, "", fmt.Errorf("unknown provider: %s", providerName)
+	}
+
+	// Initialize the deployer with the parsed file paths
+	if err := deployer.Initialize(ctx, deployers.Config{
+		ControlPlanePaths:      testCase.ControlPlane,
+		EnginePath:             testCase.Engine.Manifest,
+		Namespace:              benchmarkNamespace,
+		LogDir:                 caseLogDir,
+		ProjectRoot:            projectRoot,
+		FullStack:              testCase.FullStack,
+		VKEDev:                 testCase.VKEDev,
+		ResolvedCommit:         testCase.ResolvedCommit,
+		WorkspacePath:          testCase.WorkspacePath,
+		GatewayImageRepository: testCase.GatewayImageRepository,
+		GatewayImageTag:        testCase.GatewayImageTag,
+		GatewayEnv:             testCase.Gateway.Env,
+		GatewayResourceFiles:   testCase.Gateway.Resources,
+		PlatformValuesFile:     testCase.Platform.ValuesFile,
+		TestCase:               testCase,
+	}); err != nil {
+		return nil, "", fmt.Errorf("failed to initialize deployer: %w", err)
+	}
+
+	// Execute Deployment logic
+	if err := deployer.DeployControlPlane(ctx); err != nil {
+		return deployer, "", fmt.Errorf("failed to deploy control plane: %w", err)
+	}
+	if err := deployer.DeployGateway(ctx); err != nil {
+		return deployer, "", fmt.Errorf("failed to deploy gateway: %w", err)
+	}
+	if err := deployer.DeployEngine(ctx); err != nil {
+		return deployer, "", fmt.Errorf("failed to deploy engine: %w", err)
+	}
+	if err := deployer.WaitForReady(ctx); err != nil {
+		return deployer, "", fmt.Errorf("engine not ready: %w", err)
+	}
+	if err := monitoring.Ensure(ctx, monitoring.Config{
+		Namespace: benchmarkNamespace,
+		Provider:  testCase.ProviderName(),
+		Engine:    testCase.Engine.Type,
+		Enabled:   podMonitoringEnabled(),
+		Strict:    podMonitoringStrictEnabled(),
+	}); err != nil {
+		return deployer, "", fmt.Errorf("pod monitoring setup failed: %w", err)
+	}
+
+	// Get dynamically assigned Gateway IP/URL
+	detectedGatewayURL, endpointErr := deployer.GetGatewayEndpoint(ctx)
+	gatewayUrl, err := resolveGatewayEndpoint(detectedGatewayURL, endpointErr)
+	if err != nil {
+		return deployer, "", err
+	}
+	t.Logf("Using Gateway Endpoint: %s", gatewayUrl)
+
+	return deployer, gatewayUrl, nil
+}
+
+func newBenchmarkDriver(benchmarkKind string) (drivers.Driver, error) {
+	switch benchmarkKind {
+	case "vllm-bench":
+		return drivers.NewVLLMBenchDriver(), nil
+	default:
+		return nil, fmt.Errorf("unsupported benchmark kind: %s", benchmarkKind)
+	}
+}
+
+func exportMetricsIfConfigured(ctx context.Context, exporter observability.MetricExporter, metrics map[string]any, labels map[string]string) error {
+	if exporter == nil {
+		fmt.Printf("[benchmark] Metrics export disabled; no exporter configured\n")
+		return nil
+	}
+	return exporter.Export(ctx, metrics, labels)
+}
+
+func runBenchmarkAndExportMetrics(ctx context.Context, testCase *resolver.Test, scenarioName string, suiteLogRoot string, exporter observability.MetricExporter) (map[string]any, string, error) {
+	benchmarkPath, err := resolveBenchmarkPath(testCase.Benchmark)
+	if err != nil {
+		return nil, "", err
+	}
+
+	var driver drivers.Driver
+	driver, err = newBenchmarkDriver(testCase.BenchmarkKind)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Save benchmark artifacts under the suite-level top-level run directory.
+	logDir := caseLogRoot(suiteLogRoot, testCase.Name)
+	err = driver.Run(ctx, benchmarkPath, logDir)
+	if err != nil {
+		return nil, "", fmt.Errorf("benchmark execution failed: %w", err)
+	}
+
+	// Collect and Export Metrics
+	metrics, err := driver.CollectMetrics()
+	if err != nil {
+		return nil, driver.ResultPath(), fmt.Errorf("failed to collect metrics: %w", err)
+	}
+
+	labels := map[string]string{
+		"scenario": scenarioName,
+		"testcase": testCase.Name,
+		"version":  testCase.Version,
+	}
+	if err := exportMetricsIfConfigured(ctx, exporter, metrics, labels); err != nil {
+		return metrics, driver.ResultPath(), fmt.Errorf("failed to export metrics: %w", err)
+	}
+
+	return metrics, driver.ResultPath(), nil
+}
+
+func TestAIBrixBenchmarkSuite(t *testing.T) {
+	// 0. Setup Observability Exporter only when the Pushgateway endpoint is configured.
+	exporter := configuredMetricExporter()
+
+	// 1. Get Scenario Path (from flag first, then env var, then default)
+	scenarioPath := resolveScenarioPath(t)
+
+	// 2. Resolve YAML configuration
+	scenario, err := resolver.Resolve(scenarioPath)
+	if err != nil {
+		t.Fatalf("failed to resolve scenario %s: %v", scenarioPath, err)
+	}
+
+	progressLog(t, "Running Scenario: %s", scenario.Name)
+	runStartedAt := nowInUTC()
+	runID := formatScenarioRunID(runStartedAt, scenario.Name)
+	scenarioLogRoot := filepath.Join("testdata/logs", runID)
+	progressLog(t, "Suite log root for %s: %s", scenario.Name, scenarioLogRoot)
+	resultsByCase := runScenarioTests(t, scenario, scenarioLogRoot, exporter)
+	summary := buildScenarioSummary(scenario.Name, resultsByCase)
+	if writeErr := writeScenarioArtifacts(scenarioLogRoot, runID, summary); writeErr != nil {
+		t.Fatalf("failed to write scenario artifacts: %v", writeErr)
+	}
+	progressLog(t, "Wrote scenario summary: %s", scenarioLogRoot)
+
+	figuresDone := progressStep(t, "generate scenario figures for %s", scenario.Name)
+	generatedFigures, skipReason, figureErr := generateScenarioFigures(scenarioLogRoot, summary)
+	figuresDone()
+	if figureErr != nil {
+		t.Fatalf("failed to generate scenario figures: %v", figureErr)
+	}
+	if generatedFigures {
+		progressLog(t, "Generated scenario figures under %s/figures", scenarioLogRoot)
+	} else {
+		progressLog(t, "Warning: skipped scenario figure generation: %s", skipReason)
+	}
+}

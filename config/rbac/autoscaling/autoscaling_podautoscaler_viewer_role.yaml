@@ -1,0 +1,23 @@
+# permissions for end users to view podautoscalers.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: autoscaling-podautoscaler-viewer-role
+rules:
+- apiGroups:
+  - autoscaling.aibrix.ai
+  resources:
+  - podautoscalers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - autoscaling.aibrix.ai
+  resources:
+  - podautoscalers/status
+  verbs:
+  - get
