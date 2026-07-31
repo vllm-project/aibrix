@@ -5,7 +5,12 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock
 
 from client import client as client_module
-from client.utils import AIBRIX_SESSION_KEY_HEADER, session_key_headers
+from client import utils as utils_module
+from client.utils import (
+    AIBRIX_SESSION_KEY_HEADER,
+    GATEWAY_MAX_SESSION_KEY_LEN,
+    session_key_headers,
+)
 
 
 class SessionKeyHeadersTest(unittest.TestCase):
@@ -26,6 +31,25 @@ class SessionKeyHeadersTest(unittest.TestCase):
             session_key_headers(42, enabled=True),
             {AIBRIX_SESSION_KEY_HEADER: "42"},
         )
+
+    def test_over_long_session_key_warns_once_but_is_still_sent(self):
+        utils_module._warned_session_keys.clear()
+        long_key = "s" * (GATEWAY_MAX_SESSION_KEY_LEN + 1)
+        with self.assertLogs(level="WARNING") as logs:
+            headers = session_key_headers(long_key, enabled=True)
+            session_key_headers(long_key, enabled=True)
+        # Header is still sent unmodified; the client only surfaces the issue.
+        self.assertEqual(headers, {AIBRIX_SESSION_KEY_HEADER: long_key})
+        # Warned exactly once despite two calls with the same session id.
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn(str(GATEWAY_MAX_SESSION_KEY_LEN), logs.output[0])
+
+    def test_max_length_session_key_does_not_warn(self):
+        utils_module._warned_session_keys.clear()
+        max_key = "s" * GATEWAY_MAX_SESSION_KEY_LEN
+        headers = session_key_headers(max_key, enabled=True)
+        self.assertEqual(headers, {AIBRIX_SESSION_KEY_HEADER: max_key})
+        self.assertEqual(utils_module._warned_session_keys, set())
 
 
 class _FakeStream:

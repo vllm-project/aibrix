@@ -33,7 +33,7 @@ The output will be stored as a `.jsonl` file in `output.jsonl`
 
 ### Session affinity replay
 
-For sessioned workloads (requests carrying `session_id`), pass `--session-key-header` to send each request's `session_id` as the `x-aibrix-session-key` header. This lets the AIBrix gateway's session-affinity routing be exercised during replay (see `HeaderSessionKey` in `pkg/plugins/gateway/types.go`), enabling session-affinity and prefix-cache experiments. The flag is off by default and has no effect on requests without a `session_id`. When driving the client through `benchmark.py`, set `client_session_key_header: true` in the config instead.
+For sessioned workloads (requests carrying `session_id`), pass `--session-key-header` to send each request's `session_id` as the `x-aibrix-session-key` header (see `HeaderSessionKey` in `pkg/plugins/gateway/types.go`). The gateway only consumes this header when the request is routed with the `session-affinity` strategy, so pair the flag with `--routing-strategy session-affinity` (or `routing_strategy: session-affinity` in the `benchmark.py` config) — with any other strategy the header is sent but ignored. Note the gateway caps session keys at 256 bytes; longer keys are dropped and the request silently falls back to load-balanced routing (the client logs a warning per over-long session). The flag is off by default and has no effect on requests without a `session_id`. When driving the client through `benchmark.py`, set `client_session_key_header: true` in the config instead.
 
 Run analysis on metrics collected. For streaming client, we can specify a goodput target (e2e/tpot/ttft) like the following: 
 
