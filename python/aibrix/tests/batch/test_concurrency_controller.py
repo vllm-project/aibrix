@@ -234,3 +234,30 @@ def test_concurrency_outcome_extracts_nested_llm_latency_metrics():
     assert outcome.ttft_seconds == 0.12
     assert outcome.tpot_seconds == 0.025
     assert outcome.e2e_tpot_seconds == 0.1
+
+
+def test_concurrency_outcome_falls_back_to_ms_when_plain_key_is_unusable():
+    """A non-numeric value under the plain key must not hide a usable `<key>_ms`.
+
+    Servers that report `"ttft": "N/A"` alongside `"ttft_ms": 120` were losing the
+    metric entirely, because the failed float() skipped straight to the next key
+    instead of trying the `_ms` form of the same one.
+    """
+    outcome = concurrency_outcome_from_result(
+        {
+            "usage": {"input_tokens": 7, "output_tokens": 5},
+            "metrics": {
+                "time_to_first_token": "N/A",
+                "time_to_first_token_ms": 120,
+            },
+            "timings": {
+                "time_per_output_token": "",
+                "time_per_output_token_ms": 25,
+            },
+        },
+        None,
+        latency_seconds=0.5,
+    )
+
+    assert outcome.ttft_seconds == 0.12
+    assert outcome.tpot_seconds == 0.025
