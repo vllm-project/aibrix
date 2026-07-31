@@ -32,6 +32,34 @@ Router/EPP image:
 - Upstream Envoy image: `docker.io/envoyproxy/envoy:distroless-v1.33.2`
 - Brixbench Envoy image: `aibrix-public-release-cn-beijing.cr.volces.com/aibrix/envoyproxy-envoy:distroless-v1.33.2`
 
+## Scenario `version` vs router chart version
+
+These are intentionally separate pins for the smoke path:
+
+- Scenario YAML `version` (for example `v0.8.1`) is the **llm-d git release
+  tag**. The deployer validates that tag in the local `LLMD_REPO` checkout
+  (guides / recipe alignment). It does **not** select the Helm chart version.
+- The standalone router chart is pinned in the deployer as
+  `llmdRouterChartVersion` (`v0.9.0` today), matching the Images section above
+  and `router/base-values.yaml`.
+
+Supporting arbitrary chart versions from scenario YAML is out of scope for this
+smoke fixture; bump the deployer constant (and matching images/values) together
+when upgrading the router stack.
+
+## Engine deployment name contract
+
+`LLMdDeployer.WaitForReady` currently waits on fixed Deployment names for the
+checked-in P/D smoke manifests:
+
+- `llmd-brixbench-epp` (Helm release `llmd-brixbench`)
+- `pd-disaggregation-nvidia-gpu-vllm-prefill`
+- `pd-disaggregation-nvidia-gpu-vllm-decode`
+
+Custom engine manifests used with this provider must keep those Deployment
+names (or update the deployer constants in lockstep). Arbitrary Deployment
+name discovery is not supported yet.
+
 ## Routing Policy
 
 The checked-in llm-d scenario uses the upstream llm-d v0.8.1 P/D
